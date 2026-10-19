@@ -36,10 +36,6 @@
             <td><a href="/docs/install-leader/container">Run the container image</a></td>
           </tr>
           <tr>
-            <td><a href={latestFile('smeltr-image.tar.gz')}>Image archive</a></td>
-            <td><a href="/docs/install-leader/container#archive">Run the container image</a></td>
-          </tr>
-          <tr>
             <td><a href={latestFile('smeltr-linux.tar.gz')}>Linux x86-64</a></td>
             <td><a href="/docs/install-leader/binary">Install the binary</a></td>
           </tr>
@@ -48,16 +44,11 @@
             <td><a href="/docs/install-leader/binary">Install the binary</a></td>
           </tr>
           <tr>
-            <td><a href={latestFile('SHA256SUMS')}>Checksums</a></td>
-            <td></td>
-          </tr>
-          <tr>
             <td>
-              Reports: <a href={latestFile('smeltr-sbom.cdx.json')}>SBOM</a>,
-              <a href={latestFile('smeltr-stig.html')}>STIG</a>,
-              <a href={latestFile('smeltr-cves.txt')}>CVEs</a>
+              <a href={latestFile('smeltr-extras.zip')}>Extras</a>: image archive, SBOM, STIG and
+              CVE report
             </td>
-            <td></td>
+            <td><a href="/docs/install-leader/container#archive">Run the container image</a></td>
           </tr>
           <tr>
             <td><a href={source}>Source code</a></td>
