@@ -18,4 +18,7 @@ if (-not $v) { throw "no version in $exe, so build.rs read no repository" }
 $dll = & (Join-Path $PSScriptRoot 'fips-dll.ps1') (Join-Path $target 'dist')
 $zip = 'smeltr-windows.zip'
 Compress-Archive -Force -Path $exe, $dll, LICENSE, THIRD-PARTY-NOTICES.md -DestinationPath $zip
-"$((Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower())  $zip" | Set-Content SHA256SUMS
+# Not `Get-FileHash`: under the pwsh 7 that starts it on a runner, Windows PowerShell inherits pwsh's module path and
+# cannot load the module that defines it.
+$sha = [Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes((Resolve-Path $zip)))
+"$(-join ($sha | ForEach-Object { $_.ToString('x2') }))  $zip" | Set-Content SHA256SUMS
