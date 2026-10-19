@@ -26,7 +26,7 @@
   <pre><code>sha256sum smeltr-linux.tar.gz</code></pre>
   <p>
     On Windows use <code>Get-FileHash -Algorithm SHA256 smeltr-windows.zip</code>. The archive holds
-    the executable, the license and the third-party notices.
+    the executable, the cryptography library it loads, the license and the third-party notices.
   </p>
 
   <h2 id="install">Install the binary</h2>
