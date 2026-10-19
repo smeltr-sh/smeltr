@@ -144,6 +144,15 @@ const refused = (errors: ApiError[], status = 200): Answer => ({
   body: { ok: false, errors },
 });
 
+/** How long the page holds its asks for a cold service, which Cloudflare can take minutes to boot, and how often it
+ * knocks meanwhile. */
+const WAKE_LIMIT_MS = 180_000;
+const WAKE_RETRY_MS = 3_000;
+
+/** Whether the service is still waking, for the demo's strip, and the event that says it changed. */
+export const waking = { now: false };
+export const WAKING_EVENT = 'smeltr-demo:waking';
+
 /** The service failing to answer, as a refusal both of the GUI's readers show: one that reads `errors` and one that
  * reads `error` from a status that is not 200 (`api.ts`, `apiJson`). */
 const unreachable = (message: string, status: number): Answer => ({
@@ -235,6 +244,9 @@ export class DemoLeader {
   private state: State;
   private readonly started = Date.now();
   private readonly maps = new Map<string, Promise<Answer>>();
+
+  /** Settles once the service answers. The asks wait on it, so a cold start holds them rather than fails them. */
+  private awake: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly recording: Recording,
@@ -373,7 +385,27 @@ export class DemoLeader {
     return (body?.groups ?? []).map((g) => g.id);
   }
 
+  /** Boots the service now, so it is up by the time the visitor asks it anything, and holds every ask until it
+   * answers or `WAKE_LIMIT_MS` passes. `announce` hears when it starts waking and when it is done. */
+  wake(announce: (waking: boolean) => void = () => {}) {
+    announce(true);
+    this.awake = (async () => {
+      const until = this.now() + WAKE_LIMIT_MS;
+      while (this.now() < until) {
+        try {
+          // Anything but a 5xx is a service that answers: a local smeltr-demo has no /wake, and says 404.
+          if ((await fetch(`${this.service}/wake`, { method: 'POST' })).status < 500) break;
+        } catch {
+          // Nothing answered at all; the next try may.
+        }
+        await new Promise((r) => setTimeout(r, WAKE_RETRY_MS));
+      }
+      announce(false);
+    })();
+  }
+
   private async ask(path: string, body: unknown): Promise<Answer> {
+    await this.awake;
     try {
       const res = await fetch(`${this.service}${path}`, {
         method: 'POST',

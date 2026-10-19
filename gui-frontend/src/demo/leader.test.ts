@@ -295,6 +295,29 @@ describe('DemoLeader', () => {
     expect(kept.status).toBe(200);
   });
 
+  it('holds its asks while the service wakes, and sends them once it answers', async () => {
+    vi.useFakeTimers();
+    const asked: string[] = [];
+    let up = false;
+    vi.stubGlobal('fetch', async (url: string) => {
+      asked.push(url);
+      if (url.endsWith('/wake')) return new Response(null, { status: up ? 204 : 503 });
+      return new Response(JSON.stringify({ ok: true, errors: [] }));
+    });
+    const leader = new DemoLeader(recording(), 'http://service', null, Date.now);
+    const heard: boolean[] = [];
+    leader.wake((waking) => heard.push(waking));
+    const proposed = leader.answer('POST', at('/api/onboard/propose'), '{}');
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(asked).toEqual(['http://service/wake', 'http://service/wake']);
+    up = true;
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect((await proposed).status).toBe(200);
+    expect(asked.at(-1)).toBe('http://service/onboard/propose');
+    expect(heard).toEqual([true, false]);
+    vi.useRealTimers();
+  });
+
   it("says what the service said when it refuses, or that it can't be reached", async () => {
     const leader = new DemoLeader(recording(), 'http://service', null, () => RECORDED);
     const propose = () =>
