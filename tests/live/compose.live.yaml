@@ -1,0 +1,369 @@
+# The services the live tests need, for `just live-up`. A test fixture
+# only: no replication, no security.
+
+# The project the root's compose files had, so a stack started before the move is the same stack.
+name: smeltr
+
+services:
+  kafka:
+    # KRaft: no ZooKeeper.
+    image: apache/kafka:3.9.0
+    ports:
+      - "19092:19092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:19092,CONTROLLER://:9093
+      # The address clients are told to reconnect to. Not 9092: the Event Hubs emulator below has that.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:19092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # The live tests that assert an offset range or a record order read a
+      # topic they let the broker auto-create, and offsets are per partition.
+      # Pinned rather than left to the image default, which the tests would
+      # otherwise silently depend on.
+      KAFKA_NUM_PARTITIONS: 1
+    healthcheck:
+      test:
+        ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "localhost:19092", "--list"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  # Two nodes, so a destination that sniffs has more than one to spread its requests over. They share one network
+  # namespace and talk over loopback, which keeps Elasticsearch out of production mode and its bootstrap checks
+  # (`vm.max_map_count`) off the host. Each names its own HTTP port at `localhost`, which a test reaches on any host.
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    ports:
+      - "9200:9200"
+      - "9201:9201"
+    environment:
+      cluster.name: smeltr-live
+      node.name: es1
+      cluster.initial_master_nodes: es1
+      transport.host: 127.0.0.1
+      transport.port: "9300"
+      http.port: "9200"
+      http.publish_host: localhost
+      node.attr.zone: z1
+      # A fixture on a developer's disk, which is often fuller than Elasticsearch's watermarks allow.
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+      # `ES_TEST_URL` carries no credential; the auth path has unit tests.
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf 'http://localhost:9200/_cluster/health?wait_for_nodes=2&timeout=1s' || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  elasticsearch-2:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    network_mode: "service:elasticsearch"
+    environment:
+      cluster.name: smeltr-live
+      node.name: es2
+      node.roles: data,ingest
+      discovery.seed_hosts: 127.0.0.1:9300
+      transport.host: 127.0.0.1
+      transport.port: "9301"
+      http.port: "9201"
+      http.publish_host: localhost
+      node.attr.zone: z2
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+
+  # HEC and the management API both over plain HTTP, so the test needs no certificate. The token below has
+  # acknowledgement off; `just live-up` adds one with it on. Running it accepts Splunk's license and general terms.
+  splunk:
+    image: splunk/splunk:9.4
+    ports:
+      - "8088:8088"
+      - "8089:8089"
+    environment:
+      SPLUNK_START_ARGS: --accept-license
+      SPLUNK_GENERAL_TERMS: --accept-sgt-current-at-splunk-com
+      SPLUNK_PASSWORD: smeltr-live-1
+      SPLUNK_HEC_TOKEN: 00000000-0000-0000-0000-000000000001
+      SPLUNK_HEC_SSL: "false"
+      SPLUNKD_SSL_ENABLE: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8088/services/collector/health || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
+
+  # A universal forwarder, for the S2S receiver: the newest release, since each can change what a forwarder sends. It
+  # reads the files s2s_live_tests writes under target/s2s-forwarder and sends them to the receivers the test opens on
+  # the host, as the app in tests/fixtures/s2s-forwarder says. Only those two directories are mounted: a checkout can
+  # hold a leader's or a worker's secrets, which this image has no business reading. live-up creates the first, since
+  # Docker would create it owned by root. The app is copied in, not mounted, since the image's set-up takes ownership of
+  # everything under the forwarder's home. Running it accepts Splunk's license and general terms.
+  splunk-uf:
+    image: splunk/universalforwarder:10.6.0.5@sha256:944fd52a8da3cb5709532a8d8e349732fdccaf6e09c165d1877be7c41f1c88e3
+    hostname: s2s-forwarder
+    entrypoint:
+      - /bin/sh
+      - -c
+      - sudo rm -rf /opt/splunkforwarder-etc/apps/smeltr-s2s && sudo cp -r /smeltr/tests/fixtures/s2s-forwarder /opt/splunkforwarder-etc/apps/smeltr-s2s && exec /sbin/entrypoint.sh "$$@"
+      - splunk-uf
+    command: ["start-service"]
+    environment:
+      SPLUNK_START_ARGS: --accept-license
+      SPLUNK_GENERAL_TERMS: --accept-sgt-current-at-splunk-com
+      SPLUNK_PASSWORD: smeltr-live-1
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ../../target/s2s-forwarder:/smeltr/target/s2s-forwarder:ro
+      - ../fixtures/s2s-forwarder:/smeltr/tests/fixtures/s2s-forwarder:ro
+    healthcheck:
+      test: ["CMD-SHELL", "/sbin/checkstate.sh || exit 1"]
+      interval: 5s
+      timeout: 30s
+      retries: 60
+
+  # S3, STS and SQS on one port. Pinned: later images need a licence key. Any access key is accepted, and AssumeRole
+  # answers for any role.
+  localstack:
+    image: localstack/localstack:4.9
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: s3,sts,sqs
+      # Queue URLs on localhost: the default names a host under localstack.cloud, which resolves only with public DNS.
+      LOCALSTACK_HOST: localhost:4566
+      SQS_ENDPOINT_STRATEGY: "off"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  # An Iceberg REST catalog: Apache Iceberg's own test fixture, keeping its tables in LocalStack's S3 under the bucket
+  # iceberg-live, which the test makes. Its catalog is a SQLite file in the container, so a new container starts
+  # empty. In memory, each connection the catalog reopens after a failed commit would see an empty database. Its
+  # journal is WAL, so writers committing at once are not refused as busy.
+  iceberg-rest:
+    image: apache/iceberg-rest-fixture:1.9.2
+    ports:
+      - "8181:8181"
+    environment:
+      CATALOG_URI: jdbc:sqlite:file:/tmp/iceberg-catalog.db?journal_mode=WAL
+      CATALOG_WAREHOUSE: s3://iceberg-live/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://localstack:4566
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+    depends_on: [localstack]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8181/v1/config || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  # A schema registry, for Kafka's Avro: Apicurio, kept in memory, answering Confluent's API under
+  # /apis/ccompat/v7. A new container starts empty.
+  schema-registry:
+    image: apicurio/apicurio-registry:3.3.2
+    ports:
+      - "8082:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/apis/ccompat/v7/subjects || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  # A git host with Git LFS, for following a remote and pushing branches to it. `just live-up` makes its one user.
+  gitea:
+    image: gitea/gitea:1.24
+    ports:
+      - "3000:3000"
+    environment:
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__server__ROOT_URL: http://127.0.0.1:3000/
+      GITEA__server__LFS_START_SERVER: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/healthz || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  # Google Cloud Storage. Any bearer token is accepted. object_store writes through the XML API, which only this
+  # fork of fake-gcs-server answers, the one object_store's own tests run against.
+  fake-gcs:
+    image: tustvold/fake-gcs-server@sha256:dcd3aeacc07c731f1336e90c2889be2af8626ae993ee1fe2c0ba042ebbeb5a04
+    command: ["-scheme", "http", "-backend", "memory", "-port", "4443", "-public-host", "localhost:4443"]
+    ports:
+      - "4443:4443"
+
+  # Pub/Sub, for the Pub/Sub/GCS source: Cloud SDK 588.0.0's emulator. It takes any request unsigned.
+  pubsub:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:be2f0e582a94c9e06e7a384fe2b3b39d590eeb8da65a110eda991598c100fe80
+    command: ["gcloud", "beta", "emulators", "pubsub", "start", "--host-port=0.0.0.0:8085", "--project=smeltr"]
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8085/ || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  # Azure Blob and Queue Storage, as the account devstoreaccount1 and its published key.
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.35.0
+    command: ["azurite", "--blobHost", "0.0.0.0", "--queueHost", "0.0.0.0", "--tableHost", "0.0.0.0", "--skipApiVersionCheck"]
+    ports:
+      - "10000:10000"
+      - "10001:10001"
+
+  # Azure Event Hubs, for the Event Hubs source, keeping its state in Azurite's blobs and tables. Its event hubs are
+  # fixed by the config below. It tells Kafka clients to reconnect to localhost:9092 whatever port it is published
+  # on, so it has that port and the Kafka above has another. It has no shell to run a healthcheck in; `just live-up`
+  # waits on its health port. Running it accepts its license.
+  event-hubs:
+    image: mcr.microsoft.com/azure-messaging/eventhubs-emulator@sha256:be413f0d59541621879e6d197d73f64f3b3ac5fa45861641fdc1430252b8b44b
+    volumes:
+      - ../fixtures/event-hubs-emulator.json:/Eventhubs_Emulator/ConfigFiles/Config.json:ro
+    ports:
+      - "9092:9092"
+      - "5300:5300"
+    environment:
+      BLOB_SERVER: azurite
+      METADATA_SERVER: azurite
+      ACCEPT_EULA: "Y"
+    depends_on: [azurite]
+
+  # An SFTP server, for the SFTP listing source. The user smeltr signs in with the password below or with either key
+  # under tests/live/sftp/authorized, and writes under `upload`. Its host keys are fixed, so a test can pin either; sshd
+  # refuses a host key others can read, so each is copied in with its mode set rather than mounted in place.
+  sftp:
+    image: atmoz/sftp@sha256:7e439fabeae536fa254340724c042e11999924d906417dbb5c73602ad518813f
+    entrypoint:
+      - /bin/sh
+      - -c
+      - install -m 600 /etc/sftp-keys/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key && install -m 600 /etc/sftp-keys/ssh_host_rsa_key /etc/ssh/ssh_host_rsa_key && exec /entrypoint "$$@"
+      - sftp
+    command: ["smeltr:smeltr-live-1:1001::upload"]
+    volumes:
+      - ./sftp/ssh_host_ed25519_key:/etc/sftp-keys/ssh_host_ed25519_key:ro
+      - ./sftp/ssh_host_rsa_key:/etc/sftp-keys/ssh_host_rsa_key:ro
+      - ./sftp/authorized:/home/smeltr/.ssh/keys:ro
+    ports:
+      - "2222:22"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 22 || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # PostgreSQL 17, for the SQL source. `smeltr` owns the database and writes the rows a test reads; the source signs
+  # in as `smeltr_reader`, which may only SELECT. The init script runs once, on an empty data directory.
+  postgres:
+    image: postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
+    environment:
+      POSTGRES_USER: smeltr
+      POSTGRES_PASSWORD: smeltr-live-1
+      POSTGRES_DB: smeltr
+    volumes:
+      - ./postgres:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "15432:5432"
+    healthcheck:
+      # Over TCP: while the init script runs, the server listens on its socket alone.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U smeltr -d smeltr || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  # MySQL 8.4 and MariaDB 11.4, for the SQL source, from one init script. `smeltr` owns the database `smeltr` and
+  # writes the rows a test reads; the source signs in as `smeltr_reader`, which may only SELECT. The script runs once,
+  # on an empty data directory. MySQL keeps a binary log, which refuses a function from a user without SUPER unless
+  # told to trust it; a test makes one that writes, to see the read-only transaction refuse it.
+  mysql:
+    image: mysql@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242
+    command: ["--log-bin-trust-function-creators=1"]
+    environment:
+      MYSQL_ROOT_PASSWORD: smeltr-live-1
+      MYSQL_DATABASE: smeltr
+      MYSQL_USER: smeltr
+      MYSQL_PASSWORD: smeltr-live-1
+    volumes:
+      - ./mysql:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "13306:3306"
+    healthcheck:
+      # Over TCP: while the init script runs, the server listens on its socket alone.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u smeltr -psmeltr-live-1 --silent || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 90
+
+  mariadb:
+    image: mariadb@sha256:1292844148b311e4ed4300022a996d39083f415a963e970cf47cad1b3b18e3a6
+    environment:
+      MARIADB_ROOT_PASSWORD: smeltr-live-1
+      MARIADB_DATABASE: smeltr
+      MARIADB_USER: smeltr
+      MARIADB_PASSWORD: smeltr-live-1
+    volumes:
+      - ./mysql:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "13307:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -u smeltr -psmeltr-live-1 --silent || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 90
+
+  # Keycloak, for OIDC sign-in. The `smeltr` realm holds a confidential client `smeltr`, the group `smeltr-admins`,
+  # `ada` in it and `bob` outside it, all with the password `smeltr-live-1`. Imported at start, so a restart resets it.
+  keycloak:
+    image: keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: smeltr-live-1
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - "8180:8080"
+    healthcheck:
+      # The image has no curl; bash speaks HTTP to the management port itself.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+
+  # Let's Encrypt's test authority, for the leader's ACME tests. It validates by connecting back to the host the
+  # tests run on: `host.docker.internal` resolves to it, and the leader under test listens on 5001 (TLS-ALPN-01)
+  # and 5002 (HTTP-01), the ports the config names. Its own certificate is minica's, whose root the tests trust
+  # from `tests/live/pebble/minica.pem`; the root it issues under is new at every start, read from the management
+  # port.
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:2.10.1
+    command: ["-config", "/test/config/pebble-config.json", "-strict"]
+    environment:
+      # Validation at once, and every nonce accepted: a client's retries are not what these tests check.
+      PEBBLE_VA_NOSLEEP: "1"
+      PEBBLE_WFE_NONCEREJECT: "0"
+    volumes:
+      - ./pebble/pebble-config.json:/test/config/pebble-config.json:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "14000:14000"
+      - "15000:15000"
+    # No healthcheck: the image holds Pebble alone, no shell to run one, and Pebble listens within a second of
+    # starting. `--wait` takes it as ready once running.

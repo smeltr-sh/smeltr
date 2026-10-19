@@ -1,0 +1,380 @@
+//! The key that seals a leader-stored secret's value, and the sealing itself.
+//!
+//! One key, generated the first time a value is stored and kept in its own file outside the leader's data directory:
+//! a backup of that directory must not carry the key that opens it. A value is sealed under the key with the
+//! secret's name as associated data, so a ciphertext cannot be moved to another name.
+//!
+//! This protects a stolen file, a backup, a discarded disk. It does not protect a running leader, which holds the
+//! key in order to serve workers.
+
+use std::fs;
+use std::io::Write;
+use std::path::Path;
+
+use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
+use aws_lc_rs::hmac;
+use aws_lc_rs::rand::SecureRandom;
+
+use super::auth;
+use super::private_file;
+
+#[derive(Debug)]
+pub struct KeyError(pub String);
+
+impl std::fmt::Display for KeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for KeyError {}
+
+/// A sealed value, as stored. `key_id` names the key that sealed it: a row carrying any other is unusable, which is
+/// the same fact as a missing one and travels the same path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sealed {
+    key_id: String,
+    nonce: [u8; NONCE_LEN],
+    ciphertext: Vec<u8>,
+}
+
+impl Sealed {
+    /// One read back from storage, or `None` when the nonce is not the length a sealed value carries -- the only
+    /// way the three columns can disagree with each other.
+    pub fn from_parts(key_id: String, nonce: &[u8], ciphertext: Vec<u8>) -> Option<Sealed> {
+        Some(Sealed {
+            key_id,
+            nonce: nonce.try_into().ok()?,
+            ciphertext,
+        })
+    }
+
+    /// Which key sealed it. Comparing this to the leader's own is how a row is called unusable without opening it.
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    pub fn nonce(&self) -> &[u8] {
+        &self.nonce
+    }
+
+    pub fn ciphertext(&self) -> &[u8] {
+        &self.ciphertext
+    }
+
+    /// One text line, for a value kept where only text goes: a leader setting.
+    pub fn to_text(&self) -> String {
+        format!(
+            "{}:{}:{}",
+            self.key_id,
+            auth::hex_encode(&self.nonce),
+            auth::hex_encode(&self.ciphertext)
+        )
+    }
+
+    /// [`Sealed::to_text`] read back, or `None` when `text` is not one.
+    pub fn from_text(text: &str) -> Option<Sealed> {
+        let mut parts = text.split(':');
+        let (key_id, nonce, ciphertext) = (parts.next()?, parts.next()?, parts.next()?);
+        Sealed::from_parts(key_id.to_string(), &hex_decode(nonce)?, hex_decode(ciphertext)?)
+    }
+}
+
+pub struct SealingKey {
+    key_id: String,
+    key: LessSafeKey,
+}
+
+impl SealingKey {
+    /// Names the key without exposing it: a digest of the material, truncated. Stored beside every sealed value.
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    /// `value` sealed under this key, bound to `name`.
+    pub fn seal(&self, name: &str, value: &[u8]) -> Sealed {
+        let mut nonce = [0u8; NONCE_LEN];
+        aws_lc_rs::rand::SystemRandom::new()
+            .fill(&mut nonce)
+            .expect("the OS random number generator");
+        let mut buf = value.to_vec();
+        self.key
+            .seal_in_place_append_tag(
+                Nonce::assume_unique_for_key(nonce),
+                Aad::from(name.as_bytes()),
+                &mut buf,
+            )
+            .expect("sealing a value already held in memory");
+        Sealed {
+            key_id: self.key_id.clone(),
+            nonce,
+            ciphertext: buf,
+        }
+    }
+
+    /// The value back, or `None` when `sealed` was not sealed by this key under this name.
+    pub fn open(&self, name: &str, sealed: &Sealed) -> Option<Vec<u8>> {
+        if sealed.key_id != self.key_id {
+            return None;
+        }
+        let mut buf = sealed.ciphertext.clone();
+        let plain = self
+            .key
+            .open_in_place(
+                Nonce::assume_unique_for_key(sealed.nonce),
+                Aad::from(name.as_bytes()),
+                &mut buf,
+            )
+            .ok()?;
+        Some(plain.to_vec())
+    }
+
+    /// Whether `candidate` is the sealed value. The answer an admin gets about a secret; the value itself never
+    /// leaves this process.
+    pub fn verify(&self, name: &str, sealed: &Sealed, candidate: &str) -> bool {
+        let Some(value) = self.open(name, sealed) else {
+            return false;
+        };
+        // Through HMAC tags rather than byte by byte. This is an oracle an admin may ask repeatedly, so the
+        // comparison must not take longer the closer a guess gets, nor refuse faster for a candidate of the wrong
+        // length. Tags are one length whatever the value's, which hides it; a per-call key means they mean
+        // nothing outside this line.
+        let mut material = [0u8; 32];
+        aws_lc_rs::rand::SystemRandom::new()
+            .fill(&mut material)
+            .expect("the OS random number generator");
+        let key = hmac::Key::new(hmac::HMAC_SHA256, &material);
+        hmac::verify(&key, candidate.as_bytes(), hmac::sign(&key, &value).as_ref()).is_ok()
+    }
+}
+
+/// The key at `path`, or `None` when there is none yet. A leader reads this at startup to refuse a key file anyone
+/// but its owner can read, before it has any reason to seal anything.
+pub fn load(path: &Path) -> Result<Option<SealingKey>, KeyError> {
+    let material = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(KeyError(format!("{}: {e}", path.display()))),
+    };
+    private_file::check(path, "the secret key").map_err(KeyError)?;
+    key_from(material.trim(), path).map(Some)
+}
+
+/// The key at `path`, generating one there if it does not exist. Called the first time a value is stored, so a
+/// leader that never stores one never writes a key.
+pub fn load_or_create(path: &Path) -> Result<SealingKey, KeyError> {
+    if let Some(key) = load(path)? {
+        return Ok(key);
+    }
+    create(path)
+}
+
+/// Writes a new key readable by its owner alone, in a directory of the same. Says so once, which is the only moment
+/// an operator is looking.
+fn create(path: &Path) -> Result<SealingKey, KeyError> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        private_file::create_dir(parent).map_err(|e| KeyError(format!("{}: {e}", parent.display())))?;
+    }
+    let material = auth::generate_secret();
+    let mut file = match private_file::create(path) {
+        Ok(file) => file,
+        // Somebody wrote it between the caller's `load` and here -- two secrets stored at once, on a leader that
+        // had none. There is only ever one key, and theirs is as good as this one, so read it rather than failing
+        // a store over which call arrived first.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return load(path)?.ok_or_else(|| KeyError(format!("{}: {e}", path.display())));
+        }
+        Err(e) => return Err(KeyError(format!("{}: {e}", path.display()))),
+    };
+    file.write_all(material.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|e| KeyError(format!("{}: {e}", path.display())))?;
+    tracing::warn!(
+        target: "secrets.key_created",
+        path = %path.display(),
+        "wrote a new secret key. Back it up somewhere other than the leader's data directory: restoring that \
+         directory without this key leaves every stored secret unopenable."
+    );
+    key_from(&material, path)
+}
+
+fn key_from(material: &str, path: &Path) -> Result<SealingKey, KeyError> {
+    let bytes = hex_decode(material).ok_or_else(|| {
+        KeyError(format!(
+            "{}: not a secret key -- expected {} hex characters",
+            path.display(),
+            AES_256_GCM.key_len() * 2
+        ))
+    })?;
+    let key = UnboundKey::new(&AES_256_GCM, &bytes).map_err(|_| {
+        KeyError(format!(
+            "{}: not a secret key -- it holds {} bytes, not {}",
+            path.display(),
+            bytes.len(),
+            AES_256_GCM.key_len()
+        ))
+    })?;
+    Ok(SealingKey {
+        key_id: auth::hash_secret(material)[..KEY_ID_LEN].to_string(),
+        key: LessSafeKey::new(key),
+    })
+}
+
+/// Enough of the digest to tell two keys apart in a row and a log line.
+const KEY_ID_LEN: usize = 16;
+
+pub(crate) fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if !s.is_ascii() || !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
+/// Refuses a key file anyone but its owner can read: the cheapest catch for a restore that lost its permissions.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key() -> SealingKey {
+        key_from(&auth::generate_secret(), Path::new("<test>")).expect("a freshly generated key")
+    }
+
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("smeltr-secrets-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir.join("sealing.key")
+    }
+
+    #[test]
+    fn a_sealed_value_opens_under_its_own_name() {
+        let key = key();
+        let sealed = key.seal("kafka-west-sasl", b"hunter2");
+        assert_eq!(key.open("kafka-west-sasl", &sealed).as_deref(), Some(&b"hunter2"[..]));
+    }
+
+    /// The name is associated data, so a row's ciphertext cannot be copied into another row and read there.
+    #[test]
+    fn a_ciphertext_does_not_open_under_another_name() {
+        let key = key();
+        let sealed = key.seal("kafka-west-sasl", b"hunter2");
+        assert_eq!(key.open("kafka-east-sasl", &sealed), None);
+    }
+
+    #[test]
+    fn another_key_does_not_open_it() {
+        let sealed = key().seal("kafka-west-sasl", b"hunter2");
+        assert_eq!(key().open("kafka-west-sasl", &sealed), None);
+    }
+
+    /// Not the same test: a foreign key's tag would fail anyway. This pins the `key_id` gate, which is what lets a
+    /// row be called unusable without attempting to open it.
+    #[test]
+    fn a_row_sealed_under_another_key_id_is_refused_before_it_is_opened() {
+        let key = key();
+        let mut sealed = key.seal("kafka-west-sasl", b"hunter2");
+        sealed.key_id = "0123456789abcdef".to_string();
+        assert_ne!(sealed.key_id, key.key_id());
+        assert_eq!(key.open("kafka-west-sasl", &sealed), None);
+    }
+
+    #[test]
+    fn a_tampered_ciphertext_does_not_open() {
+        let key = key();
+        let mut sealed = key.seal("kafka-west-sasl", b"hunter2");
+        sealed.ciphertext[0] ^= 1;
+        assert_eq!(key.open("kafka-west-sasl", &sealed), None);
+    }
+
+    /// A fresh nonce per sealing: the same value stored twice must not be recognizable as the same value.
+    #[test]
+    fn sealing_one_value_twice_gives_two_ciphertexts() {
+        let key = key();
+        assert_ne!(
+            key.seal("kafka-west-sasl", b"hunter2").ciphertext,
+            key.seal("kafka-west-sasl", b"hunter2").ciphertext
+        );
+    }
+
+    #[test]
+    fn verify_answers_for_the_value_and_for_nothing_else() {
+        let key = key();
+        let sealed = key.seal("kafka-west-sasl", b"hunter2");
+        assert!(key.verify("kafka-west-sasl", &sealed, "hunter2"));
+        assert!(!key.verify("kafka-west-sasl", &sealed, "hunter3"));
+        assert!(!key.verify("kafka-west-sasl", &sealed, "hunter2 "));
+        assert!(!key.verify("kafka-west-sasl", &sealed, ""));
+        assert!(!key.verify("kafka-east-sasl", &sealed, "hunter2"));
+    }
+
+    #[test]
+    fn nothing_is_written_until_a_value_needs_sealing() {
+        let path = temp_path("absent");
+        assert!(load(&path).expect("an absent key is not an error").is_none());
+        assert!(!path.exists());
+    }
+
+    /// The losing half of two stores racing on a leader with no key yet: `create` finds the file already there and
+    /// reads it, rather than failing over which call arrived first. Written directly, since the race itself is not
+    /// reproducible on demand.
+    #[test]
+    fn a_key_that_appeared_since_the_caller_looked_is_read_rather_than_refused() {
+        let path = temp_path("raced");
+        let winner = load_or_create(&path).expect("write a key");
+        let loser = create(&path).expect("the file is already there");
+        assert_eq!(winner.key_id(), loser.key_id());
+    }
+
+    #[test]
+    fn the_key_written_on_first_use_is_the_one_read_back() {
+        let path = temp_path("first-use");
+        let first = load_or_create(&path).expect("write a key");
+        let again = load_or_create(&path).expect("read it back");
+        assert_eq!(first.key_id(), again.key_id());
+
+        let sealed = first.seal("kafka-west-sasl", b"hunter2");
+        assert_eq!(again.open("kafka-west-sasl", &sealed).as_deref(), Some(&b"hunter2"[..]));
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_key_refuses() {
+        let path = temp_path("not-a-key");
+        private_file::create_dir(path.parent().expect("a parent")).expect("create the directory");
+        fs::write(&path, "not hex").expect("write the file");
+        assert!(load(&path).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_key_file_anyone_can_read_refuses() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_path("world-readable");
+        load_or_create(&path).expect("write a key");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("loosen it");
+        assert!(load(&path).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_key_and_its_directory_belong_to_their_owner_alone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_path("modes");
+        load_or_create(&path).expect("write a key");
+        let mode = |p: &Path| fs::metadata(p).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(path.parent().expect("a parent")), 0o700);
+    }
+
+    #[test]
+    fn hex_reads_a_key_and_nothing_else() {
+        assert_eq!(hex_decode("00ff10"), Some(vec![0, 255, 16]));
+        assert_eq!(hex_decode(""), Some(vec![]));
+        assert_eq!(hex_decode("abc"), None);
+        assert_eq!(hex_decode("zz"), None);
+        assert_eq!(hex_decode("ké"), None);
+    }
+}

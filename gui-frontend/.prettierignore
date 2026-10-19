@@ -1,0 +1,13 @@
+dist
+node_modules
+.svelte-check
+
+# Markdown is deliberately not formatted. Prettier rewrites `*emphasis*`
+# to `_emphasis_` (against the house style every other doc here uses), and
+# — the real problem — it reformats fenced code blocks. STYLE_GUIDE.md
+# quotes the logo's SVG verbatim from `App.svelte` precisely so the two can
+# be compared line for line; reflowing the quoted copy makes the document
+# disagree with the code it exists to describe.
+*.md
+dist-demo
+src/demo/recorded.json

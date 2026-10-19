@@ -1,0 +1,2 @@
+confluent-kafka==2.15.1
+pillow==12.3.0

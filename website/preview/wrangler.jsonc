@@ -1,0 +1,52 @@
+// The demo: the page at /demo/try and the preview service it asks, one Worker deployed from `website/` by
+//
+//     npx wrangler deploy --config preview/wrangler.jsonc
+//
+// which builds the page and the container image and ships both, so the two always come from one commit. Workers
+// Builds runs it on every push to the `demo` branch. The site's own Worker serves every other path on smeltr.sh;
+// the routes below take /demo/try and /preview/* ahead of it.
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "smeltr-preview",
+  "main": "index.ts",
+  "compatibility_date": "2026-08-01",
+  "observability": {
+    "enabled": true,
+  },
+  "routes": [
+    { "pattern": "smeltr.sh/preview/*", "zone_name": "smeltr.sh" },
+    { "pattern": "smeltr.sh/demo/try", "zone_name": "smeltr.sh" },
+    { "pattern": "smeltr.sh/demo/try/*", "zone_name": "smeltr.sh" },
+  ],
+  // Run from `website/`, as the deploy is.
+  "build": { "command": "node preview/build-try.mjs" },
+  // The page, served ahead of `main`: a path that names no file reaches the Worker, which answers it 404.
+  "assets": { "directory": "./build" },
+  "containers": [
+    {
+      "class_name": "Preview",
+      "image": "./Dockerfile",
+      // The repository root: the image builds smeltr-demo from source.
+      "image_build_context": "../..",
+      // Bounds what the demo can cost: at most this many run, however many visit.
+      "max_instances": 2,
+      "instance_type": "basic",
+      "constraints": {
+        "regions": ["ENAM", "WNAM"],
+      },
+    },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "PREVIEW", "class_name": "Preview" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Preview"] }],
+  "ratelimits": [
+    {
+      "name": "LIMIT",
+      // Any number unique in the account; it names this limit's counters.
+      "namespace_id": "1171",
+      // Per visitor. The GUI asks again on each edit, so this leaves room for typing.
+      "simple": { "limit": 120, "period": 60 },
+    },
+  ],
+}

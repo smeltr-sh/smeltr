@@ -1,0 +1,55 @@
+{
+  "basic": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": { "type": "json" },
+        "declared": [
+          { "name": "price", "type": "f64" },
+          { "name": "qty", "type": "i64" }
+        ]
+      },
+      {
+        "id": "eval",
+        "type": "eval",
+        "assignments": [
+          { "target": "total", "expr": "price * qty" },
+          { "target": "large", "expr": "total > 100" },
+          { "target": "debug", "expr": "null" }
+        ]
+      }
+    ],
+    "input": [{ "price": 12.5, "qty": 10, "debug": "trace-1" }],
+    "output": [{ "price": 12.5, "qty": 10, "total": 125.0, "large": true }]
+  },
+  "filtered": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": { "type": "json" },
+        "declared": [
+          { "name": "service", "type": "str" },
+          { "name": "status", "type": "i64" }
+        ]
+      },
+      {
+        "id": "eval",
+        "type": "eval",
+        "filter": "status >= 500",
+        "assignments": [{ "target": "severity", "expr": "\"error\"" }]
+      }
+    ],
+    "input": [
+      { "service": "checkout", "status": 503 },
+      { "service": "checkout", "status": 200 }
+    ],
+    "output": [
+      { "service": "checkout", "status": 503, "severity": "error" },
+      { "service": "checkout", "status": 200 }
+    ]
+  }
+}

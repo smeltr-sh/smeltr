@@ -1,0 +1,21 @@
+// The functions every pipeline has. `expr::inline` reads them as a pipeline's own.
+
+// A new array of `f` of each element of `xs`, in order: `xs.map(x => x * 2)`.
+function map(xs, f) {
+  let out = [];
+  for (let x of xs) {
+    out = push(out, f(x));
+  }
+  out
+}
+
+// A new array of the elements of `xs` that `f` is true of, in order: `xs.filter(x => x > 0)`.
+function filter(xs, f) {
+  let out = [];
+  for (let x of xs) {
+    if (f(x)) {
+      out = push(out, x);
+    }
+  }
+  out
+}

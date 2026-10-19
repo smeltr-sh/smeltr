@@ -1,0 +1,12 @@
+// The GUI builds this folder too, and its bundler reads the nearest
+// tsconfig.json. The site's own extends SvelteKit's generated config, which
+// exists only after `svelte-kit sync` in website/, so this plain one stands
+// in for it here. The tokenizer needs nothing from either.
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true
+  }
+}

@@ -1,0 +1,154 @@
+[
+  {
+    "name": "WORD",
+    "matches": "A run of Unicode word characters, as regex `\\w`: letters, digits, marks and connector punctuation such as `_`.",
+    "example": "user_42"
+  },
+  { "name": "NOTSPACE", "matches": "A run of anything but whitespace.", "example": "/a?b=1" },
+  { "name": "SPACE", "matches": "Any whitespace, or none.", "example": "   " },
+  { "name": "INT", "matches": "An integer, with an optional sign.", "example": "-17" },
+  { "name": "POSINT", "matches": "A positive integer, with no leading zero.", "example": "8080" },
+  {
+    "name": "BASE10NUM",
+    "matches": "A decimal number, with an optional sign and fraction.",
+    "example": "-3.25"
+  },
+  { "name": "BASE16NUM", "matches": "A hexadecimal number written with `0x`.", "example": "0x1F" },
+  { "name": "NUMBER", "matches": "The same as `BASE10NUM`.", "example": "42.5" },
+  {
+    "name": "IPV4",
+    "matches": "A dotted IPv4 address, each part 0 to 255, with no leading zeros.",
+    "example": "10.0.0.1"
+  },
+  {
+    "name": "IPV6",
+    "matches": "An IPv6 address in any RFC 4291 form, with an optional zone such as `%eth0`.",
+    "example": "fe80::1%eth0"
+  },
+  { "name": "IP", "matches": "An IPv4 address, else an IPv6 one.", "example": "2001:db8::1" },
+  {
+    "name": "HOSTNAME",
+    "matches": "A dotted host name; each label is letters, digits and inner `-`.",
+    "example": "api.example.com"
+  },
+  {
+    "name": "IPORHOST",
+    "matches": "An IP address, else a host name.",
+    "example": "web-01.example.com"
+  },
+  { "name": "USERNAME", "matches": "Letters, digits, `.`, `_` and `-`.", "example": "j.doe-2" },
+  {
+    "name": "UUID",
+    "matches": "A UUID in its 8-4-4-4-12 hexadecimal form.",
+    "example": "123e4567-e89b-12d3-a456-426614174000"
+  },
+  {
+    "name": "MAC",
+    "matches": "A MAC address as six colon-separated hexadecimal pairs.",
+    "example": "00:1A:2b:3C:4d:5E"
+  },
+  {
+    "name": "DATA",
+    "matches": "Any text, as little as lets the rest of the pattern match.",
+    "example": "anything at all"
+  },
+  {
+    "name": "GREEDYDATA",
+    "matches": "Any text, as much as lets the rest of the pattern match.",
+    "example": "anything at all"
+  },
+  {
+    "name": "QUOTEDSTRING",
+    "matches": "Text in double or single quotes, with backslash escapes; the quotes are part of the match.",
+    "example": "\"say \\\"hi\\\"\""
+  },
+  {
+    "name": "LOGLEVEL",
+    "matches": "A log level name in any case: trace, debug, info, notice, warn, warning, err, error, crit, critical, fatal, severe, emerg, emergency, alert.",
+    "example": "WARNING"
+  },
+  {
+    "name": "MONTH",
+    "matches": "A month name, full or three letters, in any case.",
+    "example": "Sep"
+  },
+  {
+    "name": "MONTHNUM",
+    "matches": "A month number, 1 to 12, with an optional leading zero.",
+    "example": "09"
+  },
+  {
+    "name": "MONTHDAY",
+    "matches": "A day of the month, 1 to 31, with an optional leading zero.",
+    "example": "04"
+  },
+  { "name": "YEAR", "matches": "A year of two or four digits.", "example": "2026" },
+  { "name": "HOUR", "matches": "An hour, 0 to 23.", "example": "23" },
+  { "name": "MINUTE", "matches": "A minute, 00 to 59.", "example": "59" },
+  {
+    "name": "SECOND",
+    "matches": "A second, 00 to 59 with an optional fraction after `.` or `,`, or a bare 60.",
+    "example": "07,125"
+  },
+  {
+    "name": "TIME",
+    "matches": "`HOUR:MINUTE`, with an optional `:SECOND`.",
+    "example": "09:30:15"
+  },
+  {
+    "name": "TIMESTAMP_ISO8601",
+    "matches": "`YEAR-MONTHNUM-MONTHDAY`, `T` or a space, then `TIME` and an optional `Z` or offset. Its parts take the widths of their own patterns, so `26-1-4T9:30` matches too.",
+    "example": "2026-10-04T09:30:15.250+02:00"
+  },
+  {
+    "name": "HTTPDATE",
+    "matches": "A web server log's date, `day/month/year:time zone`.",
+    "example": "04/Oct/2026:09:30:15 +0000"
+  },
+  {
+    "name": "SYSLOGTIMESTAMP",
+    "matches": "A syslog date, `month day time`.",
+    "example": "Oct  4 09:30:15"
+  },
+  {
+    "name": "SYSLOGHOST",
+    "matches": "A syslog line's host, an IP address or host name.",
+    "example": "10.0.0.1"
+  },
+  { "name": "URIPROTO", "matches": "A URI scheme.", "example": "https" },
+  {
+    "name": "URIHOST",
+    "matches": "An IPv4 address or host name, with an optional `:port`.",
+    "example": "example.com:8443"
+  },
+  {
+    "name": "URIPATH",
+    "matches": "A run of ASCII letters, digits and `$.+!*'(){},~:;=@#%_/-`. It stops at `?` and at `&`.",
+    "example": "/api/v1/users"
+  },
+  {
+    "name": "URIPATHPARAM",
+    "matches": "A URI path with an optional `?query`.",
+    "example": "/search?q=smeltr&page=2"
+  },
+  {
+    "name": "SYSLOGLINE",
+    "matches": "A classic syslog line: an optional `<priority>`, a date, a host, an optional `program[pid]:`, then the message.",
+    "example": "<34>Oct 11 22:14:15 mymachine su[230]: 'su root' failed"
+  },
+  {
+    "name": "SYSLOG5424LINE",
+    "matches": "An RFC 5424 syslog line: `<priority>version`, a timestamp, host, app, process id and message id, structured data, then an optional message; a field written as `-` is left out.",
+    "example": "<165>1 2003-10-11T22:14:15.003Z mymachine.example.com evntslog - ID47 [exampleSDID@32473 iut=\"3\"] An application event"
+  },
+  {
+    "name": "COMMONAPACHELOG",
+    "matches": "A web server's common log line: client, identity, user, `[date]`, the quoted request, status and bytes; a field written as `-` is left out.",
+    "example": "127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] \"GET /apache_pb.gif HTTP/1.0\" 200 2326"
+  },
+  {
+    "name": "COMBINEDAPACHELOG",
+    "matches": "A combined log line: a common log line, then the quoted referrer and user agent; a field written as `-` is left out.",
+    "example": "127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] \"GET /apache_pb.gif HTTP/1.0\" 200 2326 \"http://example.com/start.html\" \"Mozilla/4.08\""
+  }
+]

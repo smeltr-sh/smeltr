@@ -1,0 +1,432 @@
+{
+  "json": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "json"
+        },
+        "declared": [
+          {
+            "name": "service",
+            "type": "str"
+          },
+          {
+            "name": "status",
+            "type": "i64"
+          }
+        ]
+      }
+    ],
+    "input": ["{\"service\":\"checkout\",\"status\":200,\"region\":\"eu\"}"],
+    "output": [
+      {
+        "service": "checkout",
+        "status": 200,
+        "region": "eu"
+      }
+    ]
+  },
+  "csv": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "csv",
+          "delimiter": ","
+        },
+        "declared": [
+          {
+            "name": "service",
+            "type": "str"
+          },
+          {
+            "name": "debug",
+            "type": "skip"
+          },
+          {
+            "name": "status",
+            "type": "i64"
+          }
+        ]
+      }
+    ],
+    "input": [
+      "checkout,trace-1,200",
+      "\"check,out\",trace-2",
+      "\"say \"\"hi\"\"\",trace-3,404,extra"
+    ],
+    "output": [
+      {
+        "service": "checkout",
+        "status": 200
+      },
+      {
+        "service": "check,out"
+      },
+      {
+        "service": "say \"hi\"",
+        "status": 404
+      }
+    ]
+  },
+  "keyValue": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "keyValue",
+          "pairSep": " ",
+          "kvSep": "="
+        },
+        "declared": [
+          {
+            "name": "service",
+            "type": "str"
+          },
+          {
+            "name": "status",
+            "type": "i64"
+          }
+        ]
+      }
+    ],
+    "input": ["service=checkout status=200"],
+    "output": [
+      {
+        "service": "checkout",
+        "status": 200
+      }
+    ]
+  },
+  "keyValueQuoted": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "keyValue",
+          "pairSep": " ",
+          "kvSep": "=",
+          "quote": "\""
+        },
+        "declared": [
+          {
+            "name": "message",
+            "type": "str"
+          },
+          {
+            "name": "status",
+            "type": "i64"
+          }
+        ]
+      }
+    ],
+    "input": ["message=\"order placed\" status=200"],
+    "output": [
+      {
+        "message": "order placed",
+        "status": 200
+      }
+    ]
+  },
+  "grok": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "grok",
+          "patterns": ["^%{WORD:service} %{INT:status}$"]
+        },
+        "declared": [
+          {
+            "name": "service",
+            "type": "str"
+          },
+          {
+            "name": "status",
+            "type": "i64"
+          }
+        ]
+      }
+    ],
+    "input": ["checkout 200"],
+    "output": [
+      {
+        "service": "checkout",
+        "status": 200
+      }
+    ]
+  },
+  "grokCustom": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "grok",
+          "patterns": ["^%{AB:kind}c %{LOGLEVEL:level} ERROR$"],
+          "customPatterns": [
+            {
+              "name": "AB",
+              "pattern": "a|b"
+            }
+          ]
+        },
+        "declared": [
+          {
+            "name": "kind",
+            "type": "str"
+          },
+          {
+            "name": "level",
+            "type": "str"
+          }
+        ]
+      }
+    ],
+    "input": ["ac warn ERROR", "bc WARN ERROR"],
+    "output": [
+      {
+        "kind": "a",
+        "level": "warn"
+      },
+      {
+        "kind": "b",
+        "level": "WARN"
+      }
+    ]
+  },
+  "splitDotsJson": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "json",
+          "splitDots": true
+        },
+        "declared": [
+          {
+            "name": "status",
+            "type": "i64"
+          }
+        ]
+      }
+    ],
+    "input": ["{\"geo.city\":\"Oslo\",\"status\":200}"],
+    "output": [
+      {
+        "geo": {
+          "city": "Oslo"
+        },
+        "status": 200
+      }
+    ]
+  },
+  "splitDotsKeyValue": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "keyValue",
+          "pairSep": " ",
+          "kvSep": "=",
+          "splitDots": false
+        },
+        "declared": []
+      }
+    ],
+    "input": ["src.ip=10.0.0.1 action=allow"],
+    "output": [
+      {
+        "src.ip": "10.0.0.1",
+        "action": "allow"
+      }
+    ]
+  },
+  "regex": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "grok",
+          "patterns": ["^(?<service>[a-z]+) (?<status>\\d+)$"]
+        },
+        "declared": [
+          {
+            "name": "service",
+            "type": "str"
+          },
+          {
+            "name": "status",
+            "type": "i64"
+          }
+        ]
+      }
+    ],
+    "input": ["checkout 200"],
+    "output": [
+      {
+        "service": "checkout",
+        "status": 200
+      }
+    ]
+  },
+  "failTag": {
+    "exceptions": "tag",
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "json"
+        },
+        "declared": [
+          {
+            "name": "status",
+            "type": "i64"
+          }
+        ]
+      }
+    ],
+    "input": ["{\"service\":\"checkout\",\"status\":200}", "{\"service\":\"checkout\",\"status\":"],
+    "output": [
+      {
+        "service": "checkout",
+        "status": 200
+      },
+      {
+        "service": "checkout",
+        "smeltr": {
+          "exception": {
+            "pipeline": "example",
+            "exceptions": [
+              {
+                "step": "parse",
+                "kind": "Unparsable",
+                "message": "_raw is \"{\\\"service\\\":\\\"checkout\\\",\\\"status\\\":\", which json could not parse"
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "failDrop": {
+    "exceptions": "drop",
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "json"
+        },
+        "declared": [
+          {
+            "name": "status",
+            "type": "i64"
+          }
+        ]
+      }
+    ],
+    "input": ["{\"service\":\"checkout\",\"status\":200}", "{\"service\":\"checkout\",\"status\":"],
+    "output": [
+      {
+        "service": "checkout",
+        "status": 200
+      }
+    ]
+  },
+  "grokSyslog": {
+    "steps": [
+      {
+        "id": "syslog-header",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "grok",
+          "patterns": [
+            "^<%{INT:pri}>%{INT:version} %{TIMESTAMP_ISO8601:time} %{NOTSPACE:host} %{NOTSPACE:app} %{NOTSPACE:procid} %{NOTSPACE:msgid} (?<sd>-|(?:\\[[^\\]]*\\])+)(?: %{GREEDYDATA:message})?$",
+            "^<%{INT:pri}>%{SYSLOGTIMESTAMP:time} %{SYSLOGHOST:host} %{DATA:app}(?:\\[%{POSINT:procid}\\])?: %{GREEDYDATA:message}$"
+          ]
+        },
+        "declared": [
+          {
+            "name": "pri",
+            "type": "i64"
+          },
+          {
+            "name": "time",
+            "type": "str"
+          },
+          {
+            "name": "host",
+            "type": "str"
+          },
+          {
+            "name": "app",
+            "type": "str"
+          },
+          {
+            "name": "procid",
+            "type": "str"
+          },
+          {
+            "name": "msgid",
+            "type": "str"
+          },
+          {
+            "name": "sd",
+            "type": "str"
+          },
+          {
+            "name": "message",
+            "type": "str"
+          }
+        ]
+      }
+    ],
+    "input": [
+      "<165>1 2026-10-11T22:14:15.003Z fw01.example.com sshd 4123 AUTH [origin ip=\"10.20.0.7\"] Accepted publickey for deploy",
+      "<34>Oct 11 22:14:15 fw01 su: 'su root' failed for deploy on /dev/pts/8"
+    ],
+    "output": [
+      {
+        "pri": 165,
+        "version": "1",
+        "time": "2026-10-11T22:14:15.003Z",
+        "host": "fw01.example.com",
+        "app": "sshd",
+        "procid": "4123",
+        "msgid": "AUTH",
+        "sd": "[origin ip=\"10.20.0.7\"]",
+        "message": "Accepted publickey for deploy"
+      },
+      {
+        "pri": 34,
+        "time": "Oct 11 22:14:15",
+        "host": "fw01",
+        "app": "su",
+        "message": "'su root' failed for deploy on /dev/pts/8"
+      }
+    ]
+  }
+}

@@ -1,0 +1,31 @@
+# A build needs the Rust source, the frontend source, and the repository that stamps the version. Nothing else
+# reaches the build context, so nothing else reaches the scanner.
+
+target
+gui-frontend/node_modules
+gui-frontend/dist
+website
+# Except what the GUI builds from: the tokenizer its expression fields color code with, the language reference
+# they suggest from, and the palette and controls it shares with the site.
+!website/src/lib/highlight
+!website/src/lib/foundry
+!website/src/lib/reference.json
+!website/src/lib/code-language.json
+
+# This build's own output. Sending it back as context would grow with every build.
+handoff
+
+# Runtime state a checkout accumulates locally, never something an image build should ever see or embed.
+smeltr-leader-data
+smeltr-worker-data
+smeltr-leader-secrets
+smeltr.toml
+
+*.md
+docs
+LICENSE*
+
+# Except these: the export stage puts them in the handoff folder, so a site that gets the binary gets the
+# terms it is licensed under and the attribution the licenses ask for with it.
+!LICENSE
+!THIRD-PARTY-NOTICES.md

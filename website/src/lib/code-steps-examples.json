@@ -1,0 +1,521 @@
+{
+  "blocks": {
+    "typed": {
+      "code": "y = 1;\nratio: f64 = 3;\nlet label: str = \"checkout\";\nservice = label;",
+      "input": {
+        "id": 7
+      },
+      "output": {
+        "id": 7,
+        "y": 1,
+        "ratio": 3.0,
+        "service": "checkout"
+      }
+    },
+    "assignment": {
+      "code": "let label = \"checkout\";\nservice = label.toUpperCase();\ndebug = null;",
+      "input": {
+        "service": "cart",
+        "debug": "trace-7",
+        "status": 200
+      },
+      "output": {
+        "service": "CHECKOUT",
+        "status": 200
+      }
+    },
+    "condition": {
+      "code": "if (status >= 500) {\n  severity = \"error\";\n} else {\n  severity = \"normal\";\n}",
+      "declared": {
+        "status": "i64"
+      },
+      "input": {
+        "status": 503
+      },
+      "output": {
+        "status": 503,
+        "severity": "error"
+      }
+    },
+    "arrays": {
+      "code": "values = [1, 2, 3, 4];\nkept = values.filter(x => x > 2);\ndoubled = kept.map(x => x * 2);",
+      "input": {
+        "id": 7
+      },
+      "output": {
+        "id": 7,
+        "values": [1, 2, 3, 4],
+        "kept": [3, 4],
+        "doubled": [6, 8]
+      }
+    },
+    "objects": {
+      "code": "details = {service: \"checkout\", status: 200};\ncopy = details;\ndetails = {status: 500};\ncombined = {...copy, status: 500};",
+      "input": {
+        "id": 7
+      },
+      "output": {
+        "id": 7,
+        "details": {
+          "status": 500
+        },
+        "copy": {
+          "service": "checkout",
+          "status": 200
+        },
+        "combined": {
+          "service": "checkout",
+          "status": 500
+        }
+      }
+    },
+    "loop": {
+      "code": "let total = 0;\nfor (let value of [4, 5, 6]) {\n  total = total + value;\n}\nsum = total;",
+      "input": {
+        "id": 7
+      },
+      "output": {
+        "id": 7,
+        "sum": 15
+      }
+    },
+    "whileLoop": {
+      "code": "let count = 0;\nwhile (count < 3) {\n  count = count + 1;\n}\nattempts = count;",
+      "input": {
+        "id": 7
+      },
+      "output": {
+        "id": 7,
+        "attempts": 3
+      }
+    },
+    "pairsLoop": {
+      "code": "labels: {region: str, ...} = {region: \"east\"};\nfor (let pair of pairs) {\n  labels[pair.key] = pair.value;\n}",
+      "declared": {
+        "pairs": "array<{key: str, value: str}>"
+      },
+      "input": {
+        "pairs": [
+          {
+            "key": "team",
+            "value": "payments"
+          }
+        ]
+      },
+      "output": {
+        "pairs": [
+          {
+            "key": "team",
+            "value": "payments"
+          }
+        ],
+        "labels": {
+          "region": "east",
+          "team": "payments"
+        }
+      }
+    },
+    "fn": {
+      "code": "function addTax(amount: f64): f64 {\n  return amount * 1.2;\n}\nprice = addTax(10);",
+      "input": {
+        "id": 7
+      },
+      "output": {
+        "id": 7,
+        "price": 12.0
+      }
+    },
+    "convert": {
+      "code": "ratio: f64 = 1.5;\nratio = 2;\ncount: i64 = extra;\nrounded = 2.7 as i64;",
+      "input": {
+        "extra": "5"
+      },
+      "output": {
+        "extra": "5",
+        "ratio": 2.0,
+        "count": 5,
+        "rounded": 3
+      }
+    },
+    "objectTypes": {
+      "code": "closed = obj as {ip: str};\nopen = obj as {ip: str, ...};\ntext = obj as {ip: str, port: str};",
+      "input": {
+        "obj": {
+          "ip": "a",
+          "port": 1
+        }
+      },
+      "output": {
+        "obj": {
+          "ip": "a",
+          "port": 1
+        },
+        "closed": {
+          "ip": "a"
+        },
+        "open": {
+          "ip": "a",
+          "port": 1
+        },
+        "text": {
+          "ip": "a",
+          "port": "1"
+        }
+      }
+    },
+    "keyedWrite": {
+      "code": "o = {ip: \"a\"};\no[key] = 1;",
+      "declared": {
+        "key": "str"
+      },
+      "input": {
+        "key": "port"
+      },
+      "output": {
+        "key": "port",
+        "o": {
+          "ip": "a",
+          "port": 1
+        }
+      }
+    },
+    "tryCatch": {
+      "code": "try {\n  count = parseInt(text);\n} catch (e) {\n  count = 0;\n  problem = e.kind;\n  detail = e.message;\n} finally {\n  checked = true;\n}",
+      "input": {
+        "text": "many"
+      },
+      "output": {
+        "checked": true,
+        "count": 0,
+        "detail": "text is \"many\", which could not convert to i64 in count",
+        "problem": "CoercionRefused",
+        "text": "many"
+      },
+      "declared": {
+        "text": "str"
+      }
+    },
+    "typedCatch": {
+      "code": "try {\n  ratio = bytes / packets;\n  count = parseInt(text);\n} catch (e: DivideByZero | NaN) {\n  ratio = 0.0;\n} catch (e) {\n  problem = e.kind;\n}",
+      "input": {
+        "bytes": 1200,
+        "packets": 0,
+        "text": "many"
+      },
+      "output": {
+        "bytes": 1200,
+        "packets": 0,
+        "ratio": 0.0,
+        "text": "many"
+      },
+      "declared": {
+        "bytes": "i64",
+        "packets": "i64",
+        "text": "str"
+      }
+    },
+    "rethrow": {
+      "code": "try {\n  try {\n    count = parseInt(text);\n  } catch (e) {\n    retried = true;\n    throw e;\n  }\n} catch (e) {\n  count = 0;\n  problem = e.kind;\n}",
+      "input": {
+        "text": "many"
+      },
+      "output": {
+        "count": 0,
+        "problem": "CoercionRefused",
+        "retried": true,
+        "text": "many"
+      },
+      "declared": {
+        "text": "str"
+      }
+    },
+    "switch": {
+      "code": "switch (status) {\n  case 200:\n  case 204:\n    outcome = \"ok\";\n    break;\n  case 404:\n    outcome = \"missing\";\n    break;\n  default:\n    outcome = \"error\";\n}",
+      "declared": {
+        "status": "i64"
+      },
+      "input": [
+        {
+          "status": 204
+        },
+        {
+          "status": 404
+        },
+        {
+          "status": 503
+        }
+      ],
+      "output": [
+        {
+          "outcome": "ok",
+          "status": 204
+        },
+        {
+          "outcome": "missing",
+          "status": 404
+        },
+        {
+          "outcome": "error",
+          "status": 503
+        }
+      ]
+    },
+    "fallThrough": {
+      "code": "let actions: array<str> = [];\nswitch (level) {\n  case 3:\n    actions = actions.push(\"page\");\n  case 2:\n    actions = actions.push(\"ticket\");\n  default:\n    actions = actions.push(\"log\");\n}\nnotify = actions;",
+      "declared": {
+        "level": "i64"
+      },
+      "input": [
+        {
+          "level": 3
+        },
+        {
+          "level": 1
+        }
+      ],
+      "output": [
+        {
+          "level": 3,
+          "notify": ["page", "ticket", "log"]
+        },
+        {
+          "level": 1,
+          "notify": ["log"]
+        }
+      ]
+    },
+    "leaveLoop": {
+      "code": "let skipped = 0;\nfor (let code of codes) {\n  if (code < 400) {\n    skipped = skipped + 1;\n    continue;\n  }\n  first_error = code;\n  break;\n}\nskipped_before = skipped;",
+      "declared": {
+        "codes": "array<i64>"
+      },
+      "input": {
+        "codes": [200, 301, 503, 404]
+      },
+      "output": {
+        "codes": [200, 301, 503, 404],
+        "first_error": 503,
+        "skipped_before": 2
+      }
+    },
+    "removeMove": {
+      "code": "delete(password, debug);\nmove(msg, message);",
+      "declared": {
+        "password": "str",
+        "debug": "bool",
+        "msg": "str"
+      },
+      "input": {
+        "user": "ana",
+        "password": "hunter2",
+        "debug": true,
+        "msg": "signed in"
+      },
+      "output": {
+        "message": "signed in",
+        "user": "ana"
+      }
+    },
+    "drop": {
+      "code": "if (path == \"/health\") drop();",
+      "declared": {
+        "path": "str"
+      },
+      "input": [
+        {
+          "path": "/health"
+        },
+        {
+          "path": "/pay"
+        }
+      ],
+      "output": [
+        {
+          "path": "/pay"
+        }
+      ]
+    },
+    "unroll": {
+      "code": "unroll(items, true);",
+      "declared": {
+        "items": "array<str>"
+      },
+      "input": [
+        {
+          "order": "A1",
+          "items": ["pen", "ink"]
+        }
+      ],
+      "output": [
+        {
+          "items": "pen",
+          "order": "A1"
+        },
+        {
+          "items": "ink",
+          "order": "A1"
+        }
+      ]
+    },
+    "parseKv": {
+      "code": "Object.assign($, kv(line));",
+      "declared": {
+        "line": "str"
+      },
+      "input": {
+        "line": "user=ana action=\"sign in\""
+      },
+      "output": {
+        "action": "sign in",
+        "line": "user=ana action=\"sign in\"",
+        "user": "ana"
+      }
+    },
+    "parseCef": {
+      "code": "Object.assign($, cef(line));",
+      "declared": {
+        "line": "str"
+      },
+      "input": {
+        "line": "CEF:0|Acme|FW|1.0|100|Blocked|5|src=10.0.0.1 msg=port scan"
+      },
+      "output": {
+        "deviceEventClassId": "100",
+        "deviceProduct": "FW",
+        "deviceVendor": "Acme",
+        "deviceVersion": "1.0",
+        "line": "CEF:0|Acme|FW|1.0|100|Blocked|5|src=10.0.0.1 msg=port scan",
+        "msg": "port scan",
+        "name": "Blocked",
+        "severity": "5",
+        "src": "10.0.0.1",
+        "version": "0"
+      }
+    },
+    "parseCsv": {
+      "code": "row = csv(line, [\"time\", null, \"user\"], {delimiter: \"|\"});",
+      "declared": {
+        "line": "str"
+      },
+      "input": {
+        "line": "09:30|web-1|ana"
+      },
+      "output": {
+        "line": "09:30|web-1|ana",
+        "row": {
+          "time": "09:30",
+          "user": "ana"
+        }
+      }
+    },
+    "parseGrok": {
+      "code": "let hit: {status: i64, path: str} = grok(line, [\"%{VERB:verb} %{URIPATH:path} %{INT:status}\"], {patterns: {VERB: \"[A-Z]+\"}});\nstatus = hit.status;\npath = hit.path;",
+      "declared": {
+        "line": "str"
+      },
+      "input": {
+        "line": "GET /pay 503"
+      },
+      "output": {
+        "line": "GET /pay 503",
+        "path": "/pay",
+        "status": 503
+      }
+    },
+    "parseJson": {
+      "code": "let body: {when: datetime, ...} = json(payload, {formats: {when: \"%d/%m/%Y\"}});\nObject.assign($, body);",
+      "declared": {
+        "payload": "str"
+      },
+      "input": {
+        "payload": "{\"when\": \"04/10/2026\", \"ok\": true}"
+      },
+      "output": {
+        "ok": true,
+        "payload": "{\"when\": \"04/10/2026\", \"ok\": true}",
+        "when": "2026-10-04T00:00:00.000000Z"
+      }
+    },
+    "lookup": {
+      "code": "Object.assign($, lookup(\"users\", user, {column: \"user\", fields: {team: \"team\", level: [\"level\", \"0\"]}}));",
+      "declared": {
+        "user": "str"
+      },
+      "input": [
+        {
+          "user": "alice"
+        },
+        {
+          "user": "zed"
+        }
+      ],
+      "output": [
+        {
+          "level": "3",
+          "team": "payments",
+          "user": "alice"
+        },
+        {
+          "level": "0",
+          "user": "zed"
+        }
+      ],
+      "lookupTables": [
+        {
+          "id": "users",
+          "type": "inline",
+          "headers": ["user", "team", "level"],
+          "rows": [
+            ["alice", "payments", "3"],
+            ["bob", "search", "1"]
+          ]
+        }
+      ]
+    },
+    "lookupCidr": {
+      "code": "Object.assign($, lookup(\"nets\", ip, {match: \"cidr\", column: \"net\", all: true, fields: {zones: \"zone\"}}));",
+      "declared": {
+        "ip": "str"
+      },
+      "input": {
+        "ip": "10.1.2.3"
+      },
+      "output": {
+        "ip": "10.1.2.3",
+        "zones": ["internal", "lab"]
+      },
+      "lookupTables": [
+        {
+          "id": "nets",
+          "type": "inline",
+          "headers": ["net", "zone"],
+          "rows": [
+            ["10.0.0.0/8", "internal"],
+            ["10.1.0.0/16", "lab"]
+          ]
+        }
+      ]
+    }
+  },
+  "errors": {
+    "conversion": [
+      {
+        "code": "x: i64 = \"5\";",
+        "fixes": ["\"5\" as i64"]
+      },
+      {
+        "code": "n: i64 = 1; n = 2.5;",
+        "fixes": ["2.5 as i64", "n: f64 = 2.5"]
+      }
+    ],
+    "objects": [
+      {
+        "code": "o: {ip: str} = {ip: \"a\"}; o[key] = 1;",
+        "declared": {
+          "key": "str"
+        },
+        "fixes": ["o: {...} = o as {...}"]
+      }
+    ]
+  }
+}

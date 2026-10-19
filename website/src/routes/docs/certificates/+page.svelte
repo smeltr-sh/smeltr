@@ -1,0 +1,216 @@
+<script lang="ts">
+  import GuideLayout from '#lib/components/GuideLayout.svelte';
+  const sections = [
+    { id: 'model', title: 'Choose the trust model' },
+    { id: 'download', title: 'Obtain and verify the public CA' },
+    { id: 'source', title: 'Choose where the certificate comes from' },
+    { id: 'acme', title: 'Order a certificate over ACME' },
+    { id: 'rotation', title: 'Rotate the authority' },
+  ];
+</script>
+
+<GuideLayout
+  title="Certificates and TLS"
+  description="Certificates and TLS for Smeltr administrators."
+  {sections}
+>
+  <h1>Certificates and TLS</h1>
+  <p>
+    TLS encrypts connections and checks the server’s identity. A certificate authority (CA) signs
+    server certificates. Clients must trust that authority before accepting its certificates.
+  </p>
+  <h2 id="model">Choose the trust model</h2>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th></th><th>TLS at the leader</th><th>TLS at a proxy</th></tr></thead>
+      <tbody>
+        <tr><th>Certificate served by</th><td>Smeltr</td><td>Reverse proxy or ingress</td></tr>
+        <tr
+          ><th>Setting</th><td><code>leader.tls.enabled = true</code></td><td
+            ><code>leader.tls.enabled = false</code>; keep upstream private</td
+          ></tr
+        >
+        <tr
+          ><th>Worker trust</th><td>Enrollment codes establish trust in the leader CA</td><td
+            >System trust; configure private CA trust separately</td
+          ></tr
+        >
+        <tr
+          ><th>Browser trust</th><td
+            >Verify the CA fingerprint, then install its public certificate</td
+          ><td>Trust the proxy certificate; install a private CA if needed</td></tr
+        >
+        <tr
+          ><th>Certificate changes</th><td>Admin → System → Certificates</td><td
+            >At the proxy or ingress</td
+          ></tr
+        >
+      </tbody>
+    </table>
+  </div>
+  <h2 id="download">Obtain and verify the public CA</h2>
+  <p>
+    For direct TLS the generated CA is at <code>tls/ca.pem</code> beneath leader.storage.data_dir.
+    Obtain that public file through a trusted host-management channel for initial browser setup.
+    Once signed in, Admin → System → Certificates also provides <strong>Download ca.pem</strong> and the
+    authority fingerprint. Never distribute the CA private key.
+  </p>
+  <pre><code
+      >openssl x509 -in /var/lib/smeltr/tls/ca.pem -noout -subject -dates -fingerprint -sha256</code
+    ></pre>
+  <p>
+    Verify the certificate names against the public URL and any worker-only DNS names. Add
+    worker-only names with leader.tls.extra_san, restart for startup-setting changes, and check the
+    certificate shown in the UI. Do not use a certificate warning bypass as the production setup
+    procedure.
+  </p>
+  <h2 id="source">Choose where the certificate comes from</h2>
+  <p>
+    Admin → System → Certificates shows the authority and the certificate this leader serves, and a <strong
+      >Source</strong
+    > chooser with the one in force marked.
+  </p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>Source</th><th>Where the certificate comes from</th></tr></thead>
+      <tbody>
+        <tr
+          ><th>Leader issued</th><td
+            >The leader's own authority signs it. <strong>Issue a new one</strong> replaces it under the
+            same authority.</td
+          ></tr
+        >
+        <tr
+          ><th>Uploaded</th><td
+            >An administrator pastes Certificate, Private key and Authority, all PEM, and selects
+            <strong>Serve this certificate</strong>. The certificate must cover every name the page
+            lists.</td
+          ></tr
+        >
+        <tr
+          ><th>ACME</th><td
+            >The leader orders it from a certificate authority and renews it.
+            <a href="#acme">Order a certificate over ACME</a>.</td
+          ></tr
+        >
+      </tbody>
+    </table>
+  </div>
+  <p>A new certificate from the same authority is served at once.</p>
+  <p>
+    A new authority has to reach the workers first. The page shows the switch in progress while the
+    leader hands the authority to them. The leader then serves the new certificate.
+  </p>
+  <ul>
+    <li><strong>Cut over now</strong> serves it without waiting.</li>
+    <li><strong>Abandon switch</strong> cancels the switch.</li>
+  </ul>
+  <p>
+    Browsers must be told to trust a new authority separately. If the page says the socket refused
+    the reload, restart the leader. Replace proxy certificates at the proxy.
+  </p>
+  <h2 id="acme">Order a certificate over ACME</h2>
+  <p>
+    Let's Encrypt and other certificate authorities issue certificates automatically over ACME. The
+    authority checks that each name on the certificate reaches this leader, then issues it. The
+    leader renews it on its own.
+  </p>
+  <h3>Before you start</h3>
+  <ul>
+    <li>
+      Every name on the certificate points at this leader in DNS. A public authority such as Let's
+      Encrypt won't issue for <code>localhost</code> or a private address.
+    </li>
+    <li>
+      With the TLS-ALPN-01 challenge, the default, port 443 on each name must reach this leader.
+    </li>
+    <li>
+      With the HTTP-01 challenge, port 80 on each name must reach this leader. The leader listens on
+      leader.tls.acme_http_port only while it orders. That setting is 80 unless something forwards
+      80 to another port.
+    </li>
+    <li>
+      If this leader runs its own worker, set worker.leader.url to one of the certificate's names.
+      That worker otherwise reaches the leader at localhost, and the leader refuses a certificate
+      that doesn't cover it.
+    </li>
+  </ul>
+  <h3>Order it</h3>
+  <ol>
+    <li>Under Source, choose <strong>ACME</strong>.</li>
+    <li>
+      Pick the <strong>Directory</strong>: Let's Encrypt, or Other to type another authority's URL.
+    </li>
+    <li>Check <strong>Names</strong>. They start as this leader's own names, without localhost.</li>
+    <li>
+      Enter a <strong>Contact email</strong>. The authority sends notices about the account there.
+    </li>
+    <li>Agree to the terms of service.</li>
+    <li>
+      Select <strong>Get certificate</strong>. The first certificate from an authority is a switch,
+      as described above.
+    </li>
+  </ol>
+  <h3>Renewal</h3>
+  <p>With ACME in force, the page shows when the certificate renews.</p>
+  <ul>
+    <li>
+      The leader renews when one-third of the certificate's life remains, e.g. 30 days of a 90-day
+      certificate.
+    </li>
+    <li>If an order fails, the page shows why, and the leader tries again every hour.</li>
+    <li>
+      <strong>Save</strong> keeps your changes for the next renewal. <strong>Renew now</strong> orders
+      a certificate right away.
+    </li>
+    <li>A renewal under a new root is a switch, like the first order.</li>
+  </ul>
+  <p>The leader stops renewing once you choose another source.</p>
+  <h3>Advanced settings</h3>
+  <p>Under <strong>Advanced</strong>:</p>
+  <ul>
+    <li><strong>Challenge</strong> picks TLS-ALPN-01 or HTTP-01.</li>
+    <li>
+      <strong>Authority</strong> takes the root a private authority issues under, as PEM. It is needed
+      only when the platform does not already trust that root.
+    </li>
+    <li>
+      <strong>EAB key ID</strong> and <strong>EAB HMAC key</strong> are for an authority that requires
+      an account with it. It gives you both. The leader stores the HMAC key encrypted and never shows
+      it again.
+    </li>
+  </ul>
+  <h2 id="rotation">Rotate the authority</h2>
+  <ol>
+    <li>
+      Back up the leader state and key; inventory offline workers and workers using explicit
+      worker.leader.ca files.
+    </li>
+    <li>
+      Under Rotate authority, set <strong>Wait for the fleet</strong> and select
+      <strong>Start rotation</strong>.
+    </li>
+    <li>
+      The leader publishes the incoming authority on heartbeats while it still signs under the old
+      one. Ensure workers have received it. Explicit CA-file overrides require manual maintenance;
+      update browser trust separately.
+    </li>
+    <li>
+      Only after verifying client readiness choose <strong>Cut over now</strong>, or allow the
+      deadline to do so automatically. The leader retires the old authority and withdraws enrollment
+      codes naming it.
+    </li>
+    <li>
+      Verify heartbeats and browser access after cutover. Before cutover, <strong
+        >Abandon rotation</strong
+      > cancels the pending rotation.
+    </li>
+  </ol>
+  <aside class="callout">
+    <p>
+      A worker that missed the incoming authority can lose the ability to verify the leader at
+      cutover and require re-enrollment. The deadline is an automatic cutover, not merely a
+      reminder. Do not start rotation without a plan for offline workers.
+    </p>
+  </aside>
+</GuideLayout>

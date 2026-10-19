@@ -1,0 +1,323 @@
+[package]
+name = "smeltr"
+version = "0.1.0"
+edition = "2024"
+# An application, not a crates.io library.
+publish = false
+license = "BUSL-1.1"
+# The integration tests are one binary, `tests/integration.rs`, which says why.
+autotests = false
+
+# `tools/citations` checks the tree's documents without building smeltr.
+[workspace]
+members = ["tools/citations", "tools/check-scope"]
+
+[dependencies]
+bytemuck = "1.25.2"
+# Checks that a lookup table's kept index reads back as it was written.
+crc32fast = "1.5.1"
+# Ingest decodes each record to UTF-8 once, so `_raw` is a string. WHATWG labels and encodings.
+encoding_rs = "0.8.35"
+# Grok patterns and the expression language's regex literals.
+regex = "1"
+# `regex`'s own parser, named directly: grok reads a pattern's structure to decide what it may split off.
+regex-syntax = "0.8"
+# The config file's DTOs. The hot-path JSON parser for `_raw` is hand-rolled.
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+# `registeredDomain`'s public suffixes, compiled in, so two workers built from one commit read a host alike.
+psl = "2"
+# `lookup::mmdb` and `lookup::cidr`.
+maxminddb = "0.30.3"
+ipnetwork = "0.21.1"
+# Integers in the JSON writer. `write!` costs a formatter per number; a document carries a dozen or more.
+itoa = "1"
+# Floats in what a SQL source stores, spelled as serde_json spelled them, so a stored position and hash read the same.
+zmij = "1"
+# A bytes value's one text spelling, wherever one is written as text.
+base64 = "0.23"
+
+# The startup file. TOML because a human hand-edits it and comments matter.
+toml = "1"
+# Lookup files are mapped, so a host holds one copy of each in its page cache however many plans name it.
+memmap2 = "0.9"
+# The leader's HTTP stack. The data plane never enters an async runtime.
+axum = { version = "0.7", features = ["multipart"] }
+# A body's frames, which axum does not re-export: a gRPC answer ends in trailers, which only a frame carries. Already
+# in the build under hyper.
+http-body = "1"
+# `sync` is for the semaphore that bounds how many password hashes run at once. `fs` and `tokio-util` stream a
+# stored lookup file to a worker without holding it.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "fs", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+# Binds the leader's own listen socket, so a bind failure can be reported before handing it to axum/tokio, with
+# SO_REUSEADDR set on Unix the way tokio's own bind already did.
+socket2 = "0.6"
+
+# `cmake-build` vendors librdkafka, so a build needs a C toolchain and
+# nothing preinstalled. `ssl-vendored` is what makes `security.protocol=SSL`
+# and SASL work at all, with a vendored OpenSSL that does not get the
+# host's security updates; `ssl` swaps in the system one. `zstd` offers
+# the Zstd codec and costs libclang at build time (`zstd-sys` runs bindgen,
+# and its `bindgen` feature cannot be turned off from here).
+rdkafka = { version = "0.39", features = ["cmake-build", "ssl-vendored", "libz-static", "curl-static", "zstd"] }
+
+# Git, in-process, for both tiers' halves that do not have to run system git. `parallel` is what makes
+# `Repository` `Send`, so it is a correctness requirement rather than a speed one; `merge` reaches
+# `bring_current` and drags in the attribute stack whether or not we want it. `blocking-http-transport-curl-rustls`
+# is the worker's fetch: the `reqwest` backend is `gix-transport`'s own experimental one and does not carry a
+# custom certificate authority, which a worker fetching from a leader that signs its own certificate must have.
+# Serving the repository stays on system git (leader/git.rs) -- framing the smart-HTTP protocol by hand is a
+# second implementation of something git already ships.
+gix = { version = "0.88", default-features = false, features = [
+    "sha1",
+    "merge",
+    "revision",
+    "max-performance-safe",
+    "auto-chain-error",
+    "blocking-http-transport-curl-rustls",
+] }
+# Pinned to rustls and to vendoring: `curl-sys` links a system libcurl when `pkg-config` finds one, which would make
+# what a worker's fetch is built against a fact about the build host rather than about smeltr. `static-curl` builds
+# curl's own vendored source instead, the same shape `rdkafka`'s `curl-static` feature already commits this build to.
+curl = { version = "0.4", default-features = false, features = ["rustls", "static-curl"] }
+# The leader's store. `bundled` vendors SQLite.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+# The worker's heartbeat client, and the Elasticsearch destination. Blocking:
+# a worker thread has no async runtime.
+# `rustls-no-provider` is the same choice `axum-server` is given below: take the
+# provider the process installed rather than select one here. Its default
+# `rustls` feature would select `ring`.
+ureq = { version = "3.4.0", default-features = false, features = [
+    "json",
+    "gzip",
+    "rustls-no-provider",
+    "rustls-webpki-roots",
+] }
+
+# The leader's certificate authority (`leader::tls`) and the TLS server around
+# axum. `time` is rcgen's own calendar type, named here because a certificate's
+# validity period is written in it.
+# `aws_lc_rs` is what selects rcgen's AWS-LC code path; which module that code
+# then calls is settled by the `aws-lc-rs` dependency below. rcgen's own `fips`
+# feature asks for the FIPS module without selecting the code path, and builds
+# into a file that names neither backend.
+rcgen = { version = "0.14.9", default-features = false, features = ["aws_lc_rs", "pem", "x509-parser"] }
+time = { version = "0.3.55", default-features = false, features = ["std"] }
+# Reading a certificate the leader did not write: the dates and names behind
+# Admin -> System -> Certificates, and what a worker reports about the
+# authority it holds. Reading is most of it, and `default-features = false`
+# leaves the rest out.
+# `verify-aws` is the exception, and it answers which root in a bundle signed a given certificate: what an
+# enrollment code names, and what bounds the certificate's expiry. Nothing else here can tell two roots with the
+# same subject apart. The `-aws` half of the name is the backend, the same AWS-LC every other signature check goes
+# through; the plain `verify` is the same code over `ring`.
+x509-parser = { version = "0.18.1", default-features = false, features = ["verify-aws"] }
+axum-server = { version = "0.8.0", default-features = false, features = ["tls-rustls-no-provider"] }
+# The ACME client behind a certificate the leader orders for itself (`leader::acme`). `fips` signs its requests
+# through the same AWS-LC module as everything else; its HTTP goes through the reqwest below rather than its own
+# hyper, so what it trusts is what every other client of this process trusts.
+instant-acme = { version = "0.8.5", default-features = false, features = ["fips"] }
+bytes = "1"
+# Named for the timer the leader's listener hands hyper: without one, hyper's header-read timeout is no timeout.
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "server-auto"] }
+
+# Named so `main` can install AWS-LC as the process's one rustls backend. `fips` is what holds every cipher
+# suite and key-exchange group this process offers inside the module's validation boundary: the feature drops the
+# rest here, so there is no set to filter later and no second set for anything to select.
+rustls = { version = "0.23.43", default-features = false, features = ["aws_lc_rs", "fips", "std", "tls12"] }
+
+#For ctrl-c clean exit from the leader
+object_store = { version = "0.14", default-features = false, features = ["aws", "azure", "gcp"] }
+russh = { version = "0.64", default-features = false, features = ["aws-lc-rs", "rsa"] }
+russh-sftp = "3.0"
+futures-util = "0.3"
+async-trait = "0.1"
+http = "1"
+# The leader's AI agent sends its calls through the leader's own router, as a service. Already built for axum.
+tower-service = "0.3"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+zstd = { version = "0.14", default-features = false }
+lz4_flex = { version = "0.14", default-features = false, features = ["std", "frame"] }
+snap = { version = "1", default-features = false }
+# Prometheus orders exemplars of one time and value by their labels' xxhash64.
+twox-hash = { version = "2", default-features = false, features = ["xxhash64"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2"] }
+# What every outbound client trusts (`io::trust`): Mozilla's roots as whole certificates, which ureq and
+# librdkafka take where `webpki-roots` gives only trust anchors, and the host's own store.
+webpki-root-certs = "1"
+rustls-native-certs = "0.8"
+# The PostgreSQL source. TLS goes through the rustls above with smeltr's provider, so neither feature set names a
+# backend.
+tokio-postgres = { version = "0.7", default-features = false, features = ["runtime"] }
+tokio-postgres-rustls = { version = "0.14", default-features = false }
+# The MySQL and MariaDB source. `rustls-tls` without a provider feature: its TLS is the rustls above, whose
+# provider is smeltr's. `minimal-rust` is the compression backend smeltr already builds, and leaves out the
+# derive macros a driver that reads rows by hand never uses.
+mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "rustls-tls", "tls12"] }
+ctrlc = { version = "3.5.2", features = ["termination"] }
+
+# Hashing, randomness and the sealing of stored secrets, and -- through `rustls`, `rcgen` and `x509-parser` --
+# every signature this fleet makes or checks. One provider, so there is one answer to which implementation
+# performed a given operation.
+#
+# `fips` links the validated AWS-LC module rather than the ordinary one. Every build links it, so a deployment
+# never has to be rebuilt to become eligible: `aws_lc_rs::try_fips_mode()` answers yes in all of them. It makes
+# no compliance claim on its own, which rests on the module's validation and the operating environment as well.
+#
+# It costs a build: `aws-lc-fips-sys` compiles AWS-LC from source, so CMake, Go and a C/C++ compiler are
+# required everywhere, and `aws-lc-sys` is built beside it and left unused because `rustls` asks for it.
+aws-lc-rs = { version = "1.18", features = ["fips"] }
+
+# Password verification for local accounts. Argon2id is what OWASP's password-storage
+# guidance names first; AWS-LC hashes tokens, which are already high-entropy, and a
+# password is not. The PHC string it writes carries its own parameters, so a stored
+# hash stays verifiable after the work factor moves.
+argon2 = "0.6.0"
+# `md5`, a built-in function: a record's fingerprint, never a security check. AWS-LC's Rust API offers no MD5.
+md-5 = "0.11.0"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
+tracing-log = "0.2.0"
+parquet = { version = "60", default-features = false, features = ["arrow", "zstd", "lz4", "snap", "flate2-rust_backend"] }
+arrow-array = "60"
+arrow-schema = "60"
+arrow-buffer = "60"
+arrow-select = "60"
+# Iceberg's manifests and manifest lists. Its deflate codec, the one they are written with, is `miniz_oxide`, Rust
+# only; every other codec is a feature left off.
+apache-avro = { version = "0.22", default-features = false }
+# OTLP/HTTP's protobuf bodies, decoded into the few log messages `io::otlp` declares by hand.
+prost = { version = "0.14", default-features = false, features = ["derive", "std"] }
+
+# No `[features]`: every module compiles in every build, and the role a
+# process plays is configuration (`src/bin/smeltr/main.rs`).
+
+[dev-dependencies]
+# The tests' own Avro reader and writer take every codec smeltr's containers do, so they check smeltr's snappy and
+# zstandard as they check its deflate. Their crates are already in the graph.
+apache-avro = { version = "0.22", default-features = false, features = ["snappy", "zstandard"] }
+
+# Last: a target table runs to the next header, and anything under it
+# would be declared for one target alone.
+#
+# Ending a process tree, per platform because the mechanisms differ. A unix
+# child spawned into its own process group is signaled through `killpg`;
+# a Windows one is held by a job object that takes its processes with it
+# when the handle closes. Both crates are already in the graph through
+# other dependencies, so naming them here adds no crate to the build.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
+# The global allocator. glibc's returns a freed batch's memory to the OS and faults it back in on the next batch;
+# mimalloc keeps what idle threads freed until they work again. jemalloc hands freed pages back from its own threads.
+tikv-jemallocator = "0.7"
+# `mallctl`, so an idle thread hands back the blocks its cache holds.
+tikv-jemalloc-sys = "0.7"
+
+[target.'cfg(windows)'.dependencies]
+# The global allocator. jemalloc does not build for MSVC.
+mimalloc = "0.1"
+# `mi_collect`, so an idle thread hands back the pages it holds free. Only mimalloc's owning thread frees them, and an
+# idle thread never gets round to it.
+libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
+# `Win32_System_Diagnostics_ToolHelp`, `Win32_System_ProcessStatus`, `Win32_System_SystemInformation`
+# and `Win32_Storage_FileSystem` are this worker's process tree, its memory footprint, the host's
+# total, and the free space under its state directory (`resources.rs`) -- none is a process-tree-ending mechanism like the rest of this list,
+# but they cost no new crate either.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
+# Kerberos (GSSAPI), per platform because the providers differ. Windows has
+# one already: librdkafka selects SSPI on `_WIN32` alone, needing nothing
+# linked, and `sasl2-sys` refuses to build there at all. Linux needs Cyrus
+# SASL, and `gssapi-vendored` compiles it and MIT krb5 from source.
+[target.'cfg(target_os = "linux")'.dependencies]
+rdkafka = { version = "0.39", features = ["gssapi-vendored"] }
+
+[[bin]]
+name = "smeltr"
+path = "src/bin/smeltr/main.rs"
+
+# The website demo's preview service (`src/bin/smeltr-demo/main.rs`), built only into the demo's image.
+[[bin]]
+name = "smeltr-demo"
+path = "src/bin/smeltr-demo/main.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[[test]]
+name = "connector-speed"
+path = "tests/connector-speed.rs"
+test = false
+
+[[test]]
+name = "flush-cost"
+path = "tests/flush-cost.rs"
+test = false
+
+[[test]]
+name = "record-cost"
+path = "tests/record-cost.rs"
+test = false
+
+[[test]]
+name = "logs-cost"
+path = "tests/logs-cost.rs"
+test = false
+
+[[test]]
+name = "memory-budget-cost"
+path = "tests/memory-budget-cost.rs"
+test = false
+
+[[test]]
+name = "guard-cost"
+path = "tests/guard-cost.rs"
+test = false
+
+[[test]]
+name = "panos-ecs-profile"
+path = "tests/panos-ecs-profile.rs"
+
+[[test]]
+name = "reference-pipelines"
+path = "tests/reference-pipelines.rs"
+
+[[test]]
+name = "tick-profile"
+path = "tests/tick-profile.rs"
+test = false
+
+# Line tables keep file and line in a backtrace for our own code. Dependencies carry none: their debuginfo, linked
+# into every test binary, was a third of `target/`.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# Argon2 is deliberately slow, and an unoptimized build of it is slow by a further order of magnitude: the test
+# suite hashes dozens of times and spent twenty seconds doing it. Optimizing the hash and its compression function
+# leaves every other crate debuggable and changes nothing a release build does.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
+# What ships: the whole program, `std` included, optimized as one. Parse runs a few percent faster than `release`, and
+# what is inlined no longer moves with unrelated edits. A build takes about twice as long.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1

@@ -1,0 +1,25 @@
+// Deployment config for Cloudflare Workers.
+//
+// The Workers dashboard has no "build output directory" field -- unlike
+// Pages, it takes that from this file, which is why `npx wrangler deploy`
+// fails without it. `assets.directory` below is that setting.
+//
+// There is no `main`, deliberately: this is an assets-only Worker. Every
+// route is prerendered to static HTML at build time (see
+// `src/routes/+layout.ts`), so there is no script to run per request and
+// nothing for a Worker to do that the asset server does not already do.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Must match the Worker service the dashboard's Builds are configured
+  // on. `wrangler deploy` deploys to whatever this names, creating it if
+  // absent -- so a mismatch silently publishes to a second Worker while
+  // the one wired to the repo stays empty.
+  "name": "smeltr",
+  "compatibility_date": "2026-08-01",
+  "assets": {
+    "directory": "./build",
+    // `adapter-static` writes `404.html`; this serves it for unmatched
+    // paths. The default would return a bare 404 with no page.
+    "not_found_handling": "404-page",
+  },
+}

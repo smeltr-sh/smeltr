@@ -1,0 +1,962 @@
+[
+  {
+    "name": "01-status",
+    "hash": "#/status",
+    "themes": ["light", "dark"],
+    "full": true,
+    "delay": 2500,
+    "steps": [{ "delay": 2500 }, { "text": "Expand all" }, { "text": "15m" }, { "delay": 3000 }]
+  },
+  { "name": "03-logs", "hash": "#/status/logs", "themes": ["light", "dark"], "delay": 2500 },
+  {
+    "name": "04-map",
+    "site": "fleet-map",
+    "hash": "#/map",
+    "themes": ["light", "dark"],
+    "full": true,
+    "delay": 4000
+  },
+  {
+    "name": "05-map-source-stats",
+    "hash": "#/map?group=network&kind=source&id=panw-firewalls",
+    "themes": ["light", "dark"],
+    "delay": 5000
+  },
+
+  {
+    "name": "06-editor-panos",
+    "hash": "#/build/pipelines/panos-traffic/for/panos-traffic-sample",
+    "scope": "network",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "wait": "button.expander",
+    "steps": [
+      { "delay": 2500 },
+      { "drag": [".divider", 640] },
+      { "delay": 500 },
+      {
+        "keepColumns": [
+          "source.ip",
+          "user.name",
+          "user.department",
+          "network.application",
+          "event.outcome"
+        ]
+      },
+      { "click": "button[aria-label='row 1']" },
+      { "delay": 1500 }
+    ]
+  },
+  {
+    "name": "06b-routes-exceptions",
+    "site": "exception-answers",
+    "hash": "#/build/routes",
+    "scope": "network",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1400,
+    "delay": 2500,
+    "steps": [{ "delay": 800 }]
+  },
+  {
+    "name": "07-editor-panos-lookup-step",
+    "site": "pipeline-editor",
+    "hash": "#/build/pipelines/panos-traffic/for/panos-traffic-sample",
+    "scope": "network",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "wait": "button.expander",
+    "steps": [
+      { "delay": 2500 },
+      { "drag": [".divider", 640] },
+      { "delay": 500 },
+      { "card": 4, "expand": true, "diff": true },
+      { "delay": 2500 },
+      { "text": "Changed only" },
+      { "delay": 800 },
+      { "click": "button[aria-label='row 0']" },
+      { "click": "button[aria-label='row 2']" },
+      { "click": "button[aria-label='row 3']" },
+      { "delay": 1500 }
+    ]
+  },
+  {
+    "name": "07b-editor-panos-csv-step",
+    "hash": "#/build/pipelines/panos-traffic/for/panos-traffic-sample",
+    "scope": "network",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "wait": "button.expander",
+    "steps": [
+      { "delay": 2500 },
+      { "drag": [".divider", 640] },
+      { "delay": 500 },
+      { "card": 2, "expand": true, "diff": true },
+      { "delay": 2500 },
+      { "click": "button[aria-label='row 0']" },
+      { "delay": 1500 }
+    ]
+  },
+  {
+    "name": "08-editor-nginx-grok-step",
+    "site": "build-parse",
+    "hash": "#/build/pipelines/nginx-access/for/nginx-sample",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "wait": "button.expander",
+    "steps": [
+      { "delay": 2500 },
+      { "drag": [".divider", 700] },
+      { "delay": 500 },
+      { "card": 0, "expand": true, "diff": true },
+      { "delay": 2500 },
+      { "click": "button[aria-label='row 1']" },
+      { "delay": 1500 }
+    ]
+  },
+  {
+    "name": "09-editor-auth-code-step",
+    "hash": "#/build/pipelines/linux-auth/for/auth-sample",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "wait": "button.expander",
+    "steps": [
+      { "delay": 2500 },
+      { "drag": [".divider", 700] },
+      { "delay": 500 },
+      { "card": 2, "expand": true, "diff": true },
+      { "delay": 2500 },
+      { "text": "Changed only" },
+      { "delay": 800 },
+      { "click": "button[aria-label='row 3']" },
+      { "click": "button[aria-label='row 6']" },
+      { "delay": 1500 }
+    ]
+  },
+  {
+    "name": "10-editor-fortigate-kv-step",
+    "hash": "#/build/pipelines/fortigate-traffic/for/fortigate-sample",
+    "scope": "network",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "wait": "button.expander",
+    "steps": [
+      { "delay": 2500 },
+      { "drag": [".divider", 640] },
+      { "delay": 500 },
+      { "card": 0, "expand": true, "diff": true },
+      { "delay": 2500 },
+      { "click": "button[aria-label='row 0']" },
+      { "delay": 1500 }
+    ]
+  },
+
+  {
+    "name": "11-pipelines",
+    "hash": "#/build/pipelines",
+    "scope": "network",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "delay": 2500
+  },
+  {
+    "name": "12-sources",
+    "hash": "#/build/sources",
+    "scope": "network",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "delay": 2500
+  },
+  {
+    "name": "12a-source-kafka-form",
+    "site": "kafka-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1050,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Pull, all workers')" },
+      { "click": "button.tile:has-text('Kafka')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "events-in"] },
+      { "fill": ["dialog label:has(> .name:text-is('brokers')) input", "localhost:9092"] },
+      { "fill": ["dialog label:has(> .name:text-is('topics')) input", "smeltr-events-in"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12b-source-s3-sqs-form",
+    "site": "s3-sqs-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1050,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Pull, all workers')" },
+      { "click": "button.tile:has-text('S3 via SQS')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "bucket-logs"] },
+      {
+        "fill": [
+          "dialog label:has(> .name:has-text('queue URL')) input",
+          "https://sqs.us-east-2.amazonaws.com/111122223333/smeltr-logs"
+        ]
+      },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12c-source-azure-blob-queue-form",
+    "site": "azure-blob-queue-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1050,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Pull, all workers')" },
+      { "click": "button.tile:has-text('Azure Blob via Storage queue')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "blob-logs"] },
+      {
+        "fill": [
+          "dialog label:has(> .name:has-text('queue URL')) input",
+          "https://acmelogs.queue.core.windows.net/blob-events"
+        ]
+      },
+      { "fill": ["dialog label:has(> .name:text-is('account')) input", "acmelogs"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12d-source-gcs-pubsub-form",
+    "site": "gcs-pubsub-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1050,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Pull, all workers')" },
+      { "click": "button.tile:has-text('GCS via Pub/Sub')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "bucket-logs"] },
+      {
+        "fill": [
+          "dialog label:has(> .name:text-is('subscription')) input",
+          "projects/acme/subscriptions/gcs-events"
+        ]
+      },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12e-source-event-hubs-form",
+    "site": "event-hubs-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1050,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Pull, all workers')" },
+      { "click": "button.tile:has-text('Azure Event Hubs')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "entra-logs"] },
+      { "fill": ["dialog label:has(> .name:text-is('namespace')) input", "acme-logs"] },
+      {
+        "fill": [
+          "dialog label:has(> .name:text-is('event hubs')) input",
+          "insights-logs-signinlogs"
+        ]
+      },
+      { "fill": ["dialog label:has(> .name:text-is('consumer group')) input", "smeltr"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12f-source-http-api-form",
+    "site": "http-api-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1150,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Pull, one worker')" },
+      { "click": "button.tile:has-text('HTTP API')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "events"] },
+      {
+        "fill": [
+          "dialog label:has(> .name:text-is('url')) input",
+          "https://api.example.com/v1/events?limit=500"
+        ]
+      },
+      { "select": ["dialog label:has(> .name:text-is('records')) select", "array"] },
+      { "fill": ["dialog label:has(> .name:text-is('records at')) input", "/data"] },
+      { "select": ["dialog label:has(> .name:text-is('pages')) select", "follow"] },
+      { "fill": ["dialog label:has(> .name:text-is('since parameter')) input", "since"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12g-source-okta-form",
+    "site": "okta-logs-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1050,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Pull, one worker')" },
+      { "click": "button.tile:has-text('Okta System Log')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "okta-audit"] },
+      { "fill": ["dialog label:has(> .name:text-is('org')) input", "https://acme.okta.com"] },
+      {
+        "fill": ["dialog label:has(> .name:text-is('client id')) input", "0oa1b2c3d4e5f6g7h8i9"]
+      },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12h-source-hec-receiver-form",
+    "site": "hec-receiver-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Push, all workers')" },
+      { "click": "button.tile:has-text('HEC receiver')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "otel-logs"] },
+      { "fill": ["dialog label:has(> .name:text-is('port')) input", "8088"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12i-source-s2s-receiver-form",
+    "site": "s2s-receiver-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Push, all workers')" },
+      { "click": "button.tile:has-text('S2S receiver')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "forwarders"] },
+      { "fill": ["dialog label:has(> .name:text-is('port')) input", "9997"] },
+      { "text": "+ sourcetype" },
+      { "fill": ["dialog input[aria-label='sourcetype']", "java:app"] },
+      { "fill": ["dialog input[aria-label='line breaker']", "([\\r\\n]+)\\d{4}-\\d{2}-\\d{2}"] },
+      { "text": "+ sourcetype" },
+      { "fill": ["dialog input[aria-label='sourcetype'] >> nth=1", "access_combined"] },
+      { "fill": ["dialog input[aria-label='line breaker'] >> nth=1", "([\\r\\n]+)"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12j-source-otlp-receiver-form",
+    "site": "otlp-receiver-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Push, all workers')" },
+      { "click": "button.tile:has-text('OTLP receiver')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "otel-logs"] },
+      { "fill": ["dialog label:has(> .name:text-is('port')) input", "4318"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12k-source-syslog-receiver-form",
+    "site": "syslog-receiver-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Push, all workers')" },
+      { "click": "button.tile:has-text('Syslog receiver')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "network-syslog"] },
+      { "fill": ["dialog label:has(> .name:text-is('port')) input", "6514"] },
+      { "fill": ["dialog .chip-draft", "10.20.0.0/16"] },
+      { "press": "Enter" },
+      { "fill": ["dialog .chip-draft", "192.168.1.20"] },
+      { "press": "Enter" },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12l-source-http-receiver-form",
+    "site": "http-receiver-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Push, all workers')" },
+      { "click": "button.tile:has-text('HTTP receiver')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "ci-hooks"] },
+      { "fill": ["dialog label:has(> .name:text-is('port')) input", "8088"] },
+      { "fill": ["dialog label:has(> .name:text-is('path')) input", "/hooks/ci"] },
+      { "select": ["dialog label:has(> .name:text-is('records')) select", "lines"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12m-source-s3-list-form",
+    "site": "s3-list-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1400,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Pull, one worker')" },
+      { "click": "button.tile:has-text('S3 listing')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "bucket-export"] },
+      { "fill": ["dialog label:has(> .name:text-is('bucket')) input", "acme-logs"] },
+      { "fill": ["dialog label:has(> .name:text-is('prefix')) input", "app/"] },
+      { "select": ["dialog label:has(> .name:text-is('after commit')) select", "move"] },
+      { "fill": ["dialog label:has(> .name:text-is('move prefix')) input", "done/"] },
+      { "select": ["dialog label:has(> .name:text-is('framing')) select", "lines"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12n-source-gcs-list-form",
+    "site": "gcs-list-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1400,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Pull, one worker')" },
+      { "click": "button.tile:has-text('GCS listing')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "bucket-export"] },
+      { "fill": ["dialog label:has(> .name:text-is('bucket')) input", "acme-logs"] },
+      { "fill": ["dialog label:has(> .name:text-is('prefix')) input", "app/"] },
+      { "select": ["dialog label:has(> .name:text-is('after commit')) select", "move"] },
+      { "fill": ["dialog label:has(> .name:text-is('move prefix')) input", "done/"] },
+      { "select": ["dialog label:has(> .name:text-is('framing')) select", "lines"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12o-source-azure-blob-list-form",
+    "site": "azure-blob-list-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1400,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Pull, one worker')" },
+      { "click": "button.tile:has-text('Azure Blob listing')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "container-export"] },
+      { "fill": ["dialog label:has(> .name:text-is('account')) input", "acmelogs"] },
+      { "fill": ["dialog label:has(> .name:text-is('container')) input", "logs"] },
+      { "fill": ["dialog label:has(> .name:text-is('prefix')) input", "app/"] },
+      { "select": ["dialog label:has(> .name:text-is('after commit')) select", "move"] },
+      { "fill": ["dialog label:has(> .name:text-is('move prefix')) input", "done/"] },
+      { "select": ["dialog label:has(> .name:text-is('framing')) select", "lines"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12p-source-sftp-form",
+    "site": "sftp-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1500,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Pull, one worker')" },
+      { "click": "button.tile:has-text('SFTP')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "partner-drop"] },
+      { "fill": ["dialog label:has(> .name:text-is('host')) input", "sftp.example.com"] },
+      { "fill": ["dialog label:has(> .name:text-is('username')) input", "smeltr"] },
+      { "select": ["dialog label:has(> .name:text-is('credential')) select", "privateKey"] },
+      {
+        "fill": [
+          "dialog label:has(> .name:text-is('host key')) input",
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID3o82ivVxzYDbjz/HQTXSvCvoEb7fBpGzXPVbqK+q63"
+        ]
+      },
+      { "fill": ["dialog label:has(> .name:text-is('directory')) input", "/srv/export"] },
+      { "fill": ["dialog label:has(> .name:text-is('prefix')) input", "incoming/"] },
+      { "select": ["dialog label:has(> .name:text-is('after commit')) select", "move"] },
+      { "fill": ["dialog label:has(> .name:text-is('move prefix')) input", "done/"] },
+      { "select": ["dialog label:has(> .name:text-is('framing')) select", "lines"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12q-source-metrics-form",
+    "site": "metrics-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Local, each worker')" },
+      { "click": "button.tile:has-text('smeltr metrics')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "worker-metrics"] },
+      { "fill": ["dialog label:has(> .name:text-is('bucket seconds')) input", "10"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12r-source-logs-form",
+    "site": "logs-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Local, each worker')" },
+      { "click": "button.tile:has-text('smeltr logs')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "worker-logs"] },
+      { "select": ["dialog label:has(> .name:text-is('min level')) select", "info"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12s-source-prometheus-receiver-form",
+    "site": "prometheus-receiver-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Push, all workers')" },
+      { "click": "button.tile:has-text('Prometheus receiver')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "prometheus"] },
+      { "fill": ["dialog label:has(> .name:text-is('port')) input", "9090"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12t-source-elastic-receiver-form",
+    "site": "elastic-receiver-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1000,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Push, all workers')" },
+      { "click": "button.tile:has-text('Elasticsearch receiver')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "beats"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12u-source-postgres-form",
+    "site": "postgres-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1100,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Pull, one worker')" },
+      { "click": "button.tile:has-text('PostgreSQL')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "auth-events"] },
+      { "fill": ["dialog label:has(> .name:text-is('host')) input", "db.internal"] },
+      { "fill": ["dialog label:has(> .name:text-is('database')) input", "auth"] },
+      { "fill": ["dialog label:has(> .name:text-matches('^user')) input", "smeltr_reader"] },
+      {
+        "fill": [
+          "dialog [role=group]:has(> .name:text-matches('^query')) textarea",
+          "SELECT event_id, occurred_at, user_name FROM auth.events"
+        ]
+      },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "12v-source-mysql-form",
+    "site": "mysql-source-form",
+    "hash": "#/build/sources",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1100,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add source" },
+      { "click": "button:has-text('Pull, one worker')" },
+      { "click": "button.tile:has-text('MySQL')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "auth-events"] },
+      { "fill": ["dialog label:has(> .name:text-is('host')) input", "db.internal"] },
+      { "fill": ["dialog label:has(> .name:text-is('database')) input", "auth"] },
+      { "fill": ["dialog label:has(> .name:text-matches('^user')) input", "smeltr_reader"] },
+      {
+        "fill": [
+          "dialog [role=group]:has(> .name:text-matches('^query')) textarea",
+          "SELECT event_id, occurred_at, user_name FROM events"
+        ]
+      },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "13-destinations",
+    "hash": "#/build/destinations",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "delay": 2500
+  },
+  {
+    "name": "13b-destination-overrides",
+    "site": "destination-overrides",
+    "hash": "#/build/destinations",
+    "scope": "network",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1500,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "es-network" },
+      { "delay": 1000 }
+    ]
+  },
+  {
+    "name": "13c-destination-s3-form",
+    "site": "s3-destination-form",
+    "hash": "#/build/destinations",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1250,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add destination" },
+      { "click": "dialog button.tile:has(:text-is('S3')), dialog button.tile:text-is('S3')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "archive"] },
+      { "fill": ["label:has(> .name:text-is('bucket')) input", "acme-logs"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "13d-destination-gcs-form",
+    "site": "gcs-destination-form",
+    "hash": "#/build/destinations",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1250,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add destination" },
+      { "click": "dialog button.tile:has(:text-is('GCS')), dialog button.tile:text-is('GCS')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "archive"] },
+      { "fill": ["label:has(> .name:text-is('bucket')) input", "acme-logs"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "13e-destination-azure-form",
+    "site": "azure-blob-destination-form",
+    "hash": "#/build/destinations",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1250,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add destination" },
+      {
+        "click": "dialog button.tile:has(:text-is('Azure Blob')), dialog button.tile:text-is('Azure Blob')"
+      },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "archive"] },
+      { "fill": ["dialog label:has(> .name:text-is('account')) input", "acmelogs"] },
+      { "fill": ["label:has(> .name:text-is('container')) input", "events"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "13f-destination-http-form",
+    "site": "http-destination-form",
+    "hash": "#/build/destinations",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "height": 1250,
+    "steps": [
+      { "delay": 2500 },
+      { "text": "+ Add destination" },
+      { "click": "dialog button.tile:has(:text-is('HTTP')), dialog button.tile:text-is('HTTP')" },
+      { "fill": ["dialog label:has(> .name:text-is('id')) input", "intake"] },
+      {
+        "fill": [
+          "dialog label:has(> .name:text-is('url')) input",
+          "https://intake.example.com/v1/logs"
+        ]
+      },
+      { "select": ["dialog label:has(> .name:text-is('format')) select", "jsonArray"] },
+      { "click": "dialog button:has-text('+ header')" },
+      { "fill": ["dialog input[aria-label='header name']", "X-Source"] },
+      { "fill": ["dialog input[aria-label='header value']", "smeltr"] },
+      { "blur": true }
+    ]
+  },
+  {
+    "name": "14-routes",
+    "hash": "#/build/routes",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "full": true,
+    "delay": 2000,
+    "steps": [
+      { "delay": 2000 },
+      { "clickAll": ".collapsible > .head > button.toggle[aria-expanded='false']" },
+      { "delay": 2000 }
+    ]
+  },
+  {
+    "name": "15-route-preview",
+    "site": "route-preview",
+    "hash": "#/build/routes/preview",
+    "scope": "apps",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "delay": 2000,
+    "steps": [
+      { "delay": 2000 },
+      { "select": ["#rp-sample", "nginx-sample"] },
+      { "text": "Run" },
+      { "delay": 3000 }
+    ]
+  },
+  {
+    "name": "15b-route-preview-network",
+    "hash": "#/build/routes/preview",
+    "scope": "network",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "delay": 2000,
+    "steps": [
+      { "delay": 2000 },
+      { "select": ["#rp-sample", "fortigate-sample"] },
+      { "text": "Run" },
+      { "delay": 3000 }
+    ]
+  },
+  {
+    "name": "16-samples-and-tests",
+    "site": "build-tests",
+    "hash": "#/build",
+    "scope": "network",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "delay": 3000
+  },
+  {
+    "name": "16b-capture-form",
+    "site": "capture-form",
+    "hash": "#/build",
+    "scope": "network",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "steps": [
+      { "delay": 1500 },
+      { "text": "Add sample" },
+      { "click": "dialog button.tile:has-text('Capture')" },
+      { "select": ["dialog label:has(> .name:text-is('Group')) select", "network"] },
+      { "select": ["dialog label:has(> .name:text-is('Capture target')) select", "panw-firewalls"] },
+      {
+        "fill": [
+          "dialog label:has(> .name:text-is('Keep records where')) input",
+          "_raw.includes(\"block-high-risk-apps\")"
+        ]
+      },
+      { "fill": ["dialog input[aria-label='records']", "200"] },
+      { "text": "Leave it empty to keep everything." }
+    ]
+  },
+  {
+    "name": "16c-capture-running",
+    "site": "capture-running",
+    "hash": "#/build",
+    "scope": "network",
+    "branch": "work",
+    "height": 1640,
+    "clip": { "x": 0, "y": 0, "width": 1440, "height": 1100 },
+    "themes": ["light", "dark"],
+    "steps": [
+      { "delay": 1500 },
+      { "text": "Add sample" },
+      { "click": "dialog button.tile:has-text('Capture')" },
+      { "select": ["dialog label:has(> .name:text-is('Group')) select", "network"] },
+      { "select": ["dialog label:has(> .name:text-is('Capture target')) select", "panw-firewalls"] },
+      {
+        "fill": [
+          "dialog label:has(> .name:text-is('Keep records where')) input",
+          "_raw.includes(\"block-high-risk-apps\")"
+        ]
+      },
+      { "fill": ["dialog input[aria-label='records']", "200"] },
+      { "click": "dialog button[type=submit]:has-text('Start')" },
+      { "wait": "text=/so far from 2 of 2 workers/" }
+    ]
+  },
+  {
+    "name": "16d-capture-sample",
+    "hash": "#/build",
+    "scope": "network",
+    "branch": "work",
+    "height": 1640,
+    "clip": { "x": 0, "y": 0, "width": 1440, "height": 1100 },
+    "themes": ["light", "dark"],
+    "steps": [
+      { "delay": 1500 },
+      { "text": "Add sample" },
+      { "click": "dialog button.tile:has-text('Capture')" },
+      { "select": ["dialog label:has(> .name:text-is('Group')) select", "network"] },
+      { "select": ["dialog label:has(> .name:text-is('Capture target')) select", "panw-firewalls"] },
+      {
+        "fill": [
+          "dialog label:has(> .name:text-is('Keep records where')) input",
+          "_raw.includes(\"block-high-risk-apps\")"
+        ]
+      },
+      { "fill": ["dialog input[aria-label='records']", "200"] },
+      { "click": "dialog button[type=submit]:has-text('Start')" },
+      { "wait": "text=Save the capture" }
+    ]
+  },
+  {
+    "name": "17-lookup-tables",
+    "hash": "#/build/lookups",
+    "scope": "network",
+    "branch": "work",
+    "themes": ["light", "dark"],
+    "delay": 2500
+  },
+
+  {
+    "name": "18-changes",
+    "site": "build-changes",
+    "hash": "#/changes",
+    "themes": ["light", "dark"],
+    "delay": 3000
+  },
+  {
+    "name": "19-review-change",
+    "site": "build-change",
+    "hash": "#/changes/review/flag-high-risk-apps",
+    "themes": ["light", "dark"],
+    "height": 1100,
+    "delay": 5000
+  },
+  {
+    "name": "20-branches",
+    "hash": "#/changes/branches",
+    "themes": ["light", "dark"],
+    "delay": 2500
+  },
+  {
+    "name": "21-history",
+    "site": "deployment-history",
+    "hash": "#/changes/history",
+    "themes": ["light", "dark"],
+    "width": 1600,
+    "delay": 2500
+  },
+
+  { "name": "22-workers", "hash": "#/admin", "themes": ["light", "dark"], "delay": 2500 },
+  {
+    "name": "23-worker-groups",
+    "hash": "#/admin/groups",
+    "themes": ["light", "dark"],
+    "delay": 2500
+  },
+  { "name": "24-secrets", "hash": "#/admin/secrets", "themes": ["light", "dark"], "delay": 2500 },
+  { "name": "25-accounts", "hash": "#/admin/accounts", "themes": ["light", "dark"], "delay": 2500 },
+  {
+    "name": "26-system",
+    "hash": "#/admin/system/general",
+    "themes": ["light", "dark"],
+    "delay": 2500
+  },
+  {
+    "name": "26b-git-remote",
+    "site": "git-remote-settings",
+    "hash": "#/admin/system/git",
+    "themes": ["light", "dark"],
+    "steps": [
+      { "delay": 2500 },
+      {
+        "fill": [
+          "label:has(> .name:text-is('URL')) input",
+          "https://github.com/acme/smeltr-config.git"
+        ]
+      },
+      { "fill": ["label:has(> .name:text-is('User')) input", "smeltr"] },
+      { "blur": true }
+    ]
+  }
+]

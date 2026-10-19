@@ -1,0 +1,552 @@
+{
+  "abs": [
+    {
+      "params": "(i64/f64)",
+      "result": "the value's type"
+    }
+  ],
+  "at": [
+    {
+      "params": "(str, i64)",
+      "result": "str"
+    },
+    {
+      "params": "(array of scalars, i64)",
+      "result": "the element type"
+    }
+  ],
+  "ceil": [
+    {
+      "params": "(f64)",
+      "result": "i64"
+    }
+  ],
+  "cidrNetwork": [
+    {
+      "params": "(str, i64)",
+      "result": "str"
+    }
+  ],
+  "clamp": [
+    {
+      "params": "(i64/f64, i64/f64, i64/f64)",
+      "result": "i64 when every argument is, else f64"
+    }
+  ],
+  "communityId": [
+    {
+      "params": "(str, i64, str, i64, str)",
+      "result": "str"
+    },
+    {
+      "params": "(str, i64, str, i64, i64)",
+      "result": "str"
+    },
+    {
+      "params": "(str, i64, str, i64, str, i64)",
+      "result": "str"
+    },
+    {
+      "params": "(str, i64, str, i64, i64, i64)",
+      "result": "str"
+    }
+  ],
+  "concat": [
+    {
+      "params": "(array of scalars, array of scalars, ...)",
+      "result": "the array's type"
+    }
+  ],
+  "countIn": [
+    {
+      "params": "(duration, str)",
+      "result": "f64"
+    }
+  ],
+  "day": [
+    {
+      "params": "(datetime)",
+      "result": "i64"
+    }
+  ],
+  "dayOfWeek": [
+    {
+      "params": "(datetime)",
+      "result": "i64"
+    }
+  ],
+  "decode": [
+    {
+      "params": "(bytes, str)",
+      "result": "str"
+    }
+  ],
+  "duration": [
+    {
+      "params": "(i64/f64, str)",
+      "result": "duration"
+    }
+  ],
+  "encode": [
+    {
+      "params": "(str, str)",
+      "result": "bytes"
+    }
+  ],
+  "endsWith": [
+    {
+      "params": "(str, str)",
+      "result": "bool"
+    }
+  ],
+  "epochMillis": [
+    {
+      "params": "(datetime)",
+      "result": "i64"
+    }
+  ],
+  "epochSeconds": [
+    {
+      "params": "(datetime)",
+      "result": "i64"
+    }
+  ],
+  "floor": [
+    {
+      "params": "(f64)",
+      "result": "i64"
+    }
+  ],
+  "fromEpochMillis": [
+    {
+      "params": "(i64)",
+      "result": "datetime"
+    }
+  ],
+  "fromEpochSeconds": [
+    {
+      "params": "(i64)",
+      "result": "datetime"
+    }
+  ],
+  "hour": [
+    {
+      "params": "(datetime)",
+      "result": "i64"
+    }
+  ],
+  "htmlStrip": [
+    {
+      "params": "(str)",
+      "result": "str"
+    }
+  ],
+  "idiv": [
+    {
+      "params": "(i64/f64, i64/f64)",
+      "result": "i64 when every argument is, else f64"
+    }
+  ],
+  "inCidr": [
+    {
+      "params": "(str, str, ...)",
+      "result": "bool"
+    }
+  ],
+  "includes": [
+    {
+      "params": "(str, str)",
+      "result": "bool"
+    },
+    {
+      "params": "(array of scalars, value)",
+      "result": "bool"
+    }
+  ],
+  "indexOf": [
+    {
+      "params": "(str, str)",
+      "result": "i64"
+    },
+    {
+      "params": "(array of scalars, value)",
+      "result": "i64"
+    }
+  ],
+  "insert": [
+    {
+      "params": "(array, i64, value, ...)",
+      "result": "the array's type"
+    }
+  ],
+  "ipNormalize": [
+    {
+      "params": "(str)",
+      "result": "str"
+    }
+  ],
+  "ipScope": [
+    {
+      "params": "(str)",
+      "result": "str"
+    }
+  ],
+  "ipVersion": [
+    {
+      "params": "(str)",
+      "result": "i64"
+    }
+  ],
+  "isIp": [
+    {
+      "params": "(str)",
+      "result": "bool"
+    }
+  ],
+  "isNull": [
+    {
+      "params": "(any)",
+      "result": "bool"
+    }
+  ],
+  "join": [
+    {
+      "params": "(array of scalars, str)",
+      "result": "str"
+    }
+  ],
+  "lastIndexOf": [
+    {
+      "params": "(str, str)",
+      "result": "i64"
+    }
+  ],
+  "length": [
+    {
+      "params": "(str/bytes/array)",
+      "result": "i64"
+    }
+  ],
+  "match": [
+    {
+      "params": "(str, /pattern/)",
+      "result": "array(str)"
+    }
+  ],
+  "max": [
+    {
+      "params": "(i64/f64, i64/f64, ...)",
+      "result": "i64 when every argument is, else f64"
+    }
+  ],
+  "md5": [
+    {
+      "params": "(str/bytes)",
+      "result": "str"
+    }
+  ],
+  "millisecond": [
+    {
+      "params": "(datetime)",
+      "result": "i64"
+    }
+  ],
+  "min": [
+    {
+      "params": "(i64/f64, i64/f64, ...)",
+      "result": "i64 when every argument is, else f64"
+    }
+  ],
+  "minute": [
+    {
+      "params": "(datetime)",
+      "result": "i64"
+    }
+  ],
+  "month": [
+    {
+      "params": "(datetime)",
+      "result": "i64"
+    }
+  ],
+  "now": [
+    {
+      "params": "()",
+      "result": "datetime"
+    }
+  ],
+  "padEnd": [
+    {
+      "params": "(str, i64)",
+      "result": "str"
+    },
+    {
+      "params": "(str, i64, str)",
+      "result": "str"
+    }
+  ],
+  "padStart": [
+    {
+      "params": "(str, i64)",
+      "result": "str"
+    },
+    {
+      "params": "(str, i64, str)",
+      "result": "str"
+    }
+  ],
+  "parseBytes": [
+    {
+      "params": "(str)",
+      "result": "bytes"
+    },
+    {
+      "params": "(str, str)",
+      "result": "bytes"
+    }
+  ],
+  "parseDuration": [
+    {
+      "params": "(str)",
+      "result": "duration"
+    }
+  ],
+  "parseFloat": [
+    {
+      "params": "(str)",
+      "result": "f64"
+    }
+  ],
+  "parseHex": [
+    {
+      "params": "(str)",
+      "result": "i64"
+    }
+  ],
+  "parseInt": [
+    {
+      "params": "(str)",
+      "result": "i64"
+    },
+    {
+      "params": "(str, i64)",
+      "result": "i64"
+    }
+  ],
+  "parseTime": [
+    {
+      "params": "(str)",
+      "result": "datetime"
+    },
+    {
+      "params": "(str, str)",
+      "result": "datetime"
+    },
+    {
+      "params": "(str, datetime)",
+      "result": "datetime"
+    },
+    {
+      "params": "(str, str, datetime)",
+      "result": "datetime"
+    }
+  ],
+  "parseUrl": [
+    {
+      "params": "(str)",
+      "result": "{domain: str, fragment: str, path: str, extension: str, port: i64, query: str, scheme: str, user_info: str, username: str, password: str}"
+    }
+  ],
+  "parseUserAgent": [
+    {
+      "params": "(str)",
+      "result": "{name: str, version: str, os: {name: str, version: str, full: str}, device: {name: str}}"
+    }
+  ],
+  "push": [
+    {
+      "params": "(array, value, ...)",
+      "result": "the array's type"
+    }
+  ],
+  "registeredDomain": [
+    {
+      "params": "(str)",
+      "result": "{domain: str, registered_domain: str, top_level_domain: str, subdomain: str}"
+    }
+  ],
+  "remove": [
+    {
+      "params": "(array of scalars, i64)",
+      "result": "the array's type"
+    }
+  ],
+  "repeat": [
+    {
+      "params": "(str, i64)",
+      "result": "str"
+    }
+  ],
+  "replaceAll": [
+    {
+      "params": "(str, /pattern/, str)",
+      "result": "str"
+    }
+  ],
+  "replaceFirst": [
+    {
+      "params": "(str, /pattern/, str)",
+      "result": "str"
+    }
+  ],
+  "resize": [
+    {
+      "params": "(array of scalars, i64)",
+      "result": "the array's type"
+    }
+  ],
+  "round": [
+    {
+      "params": "(f64)",
+      "result": "i64"
+    }
+  ],
+  "second": [
+    {
+      "params": "(datetime)",
+      "result": "i64"
+    }
+  ],
+  "sha1": [
+    {
+      "params": "(str/bytes)",
+      "result": "str"
+    }
+  ],
+  "sha256": [
+    {
+      "params": "(str/bytes)",
+      "result": "str"
+    }
+  ],
+  "sha512": [
+    {
+      "params": "(str/bytes)",
+      "result": "str"
+    }
+  ],
+  "sign": [
+    {
+      "params": "(i64/f64)",
+      "result": "i64"
+    }
+  ],
+  "slice": [
+    {
+      "params": "(str, i64)",
+      "result": "str"
+    },
+    {
+      "params": "(str, i64, i64)",
+      "result": "str"
+    },
+    {
+      "params": "(array of scalars, i64)",
+      "result": "the array's type"
+    },
+    {
+      "params": "(array of scalars, i64, i64)",
+      "result": "the array's type"
+    }
+  ],
+  "sort": [
+    {
+      "params": "(array of scalars)",
+      "result": "the array's type"
+    },
+    {
+      "params": "(array of scalars, bool)",
+      "result": "the array's type"
+    }
+  ],
+  "split": [
+    {
+      "params": "(str, str)",
+      "result": "array(str)"
+    },
+    {
+      "params": "(str, /pattern/)",
+      "result": "array(str)"
+    }
+  ],
+  "startsWith": [
+    {
+      "params": "(str, str)",
+      "result": "bool"
+    }
+  ],
+  "test": [
+    {
+      "params": "(str, /pattern/)",
+      "result": "bool"
+    }
+  ],
+  "toLowerCase": [
+    {
+      "params": "(str)",
+      "result": "str"
+    }
+  ],
+  "toString": [
+    {
+      "params": "(i64/f64/bool/str/bytes/datetime/duration)",
+      "result": "str"
+    },
+    {
+      "params": "(bytes, str)",
+      "result": "str"
+    }
+  ],
+  "toUpperCase": [
+    {
+      "params": "(str)",
+      "result": "str"
+    }
+  ],
+  "trim": [
+    {
+      "params": "(str)",
+      "result": "str"
+    }
+  ],
+  "trimEnd": [
+    {
+      "params": "(str)",
+      "result": "str"
+    }
+  ],
+  "trimStart": [
+    {
+      "params": "(str)",
+      "result": "str"
+    }
+  ],
+  "trunc": [
+    {
+      "params": "(f64)",
+      "result": "i64"
+    }
+  ],
+  "urlDecode": [
+    {
+      "params": "(str)",
+      "result": "str"
+    }
+  ],
+  "year": [
+    {
+      "params": "(datetime)",
+      "result": "i64"
+    }
+  ]
+}

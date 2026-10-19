@@ -1,0 +1,27 @@
+# npm's crash log. This project uses npm -- there is a package-lock.json
+# and no yarn or pnpm lockfile -- so their logs are not listed.
+logs
+*.log
+npm-debug.log*
+
+node_modules
+# The bundler's output. Not committed: build.rs refuses a release build
+# against a stale one, and `just build` is what regenerates it.
+dist
+dist-demo
+
+# Vite's local env files, which are where a developer's own secrets go.
+*.local
+
+# Editor and OS droppings. These are not produced by this project's
+# tooling, but they appear in any checkout regardless of it, and keeping
+# them here spares every contributor the same global config.
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.sw?
+
+# `svelte-check --incremental`'s cache of transpiled Svelte files. Local
+# to a checkout and rebuilt on demand; deleting it costs one slow run.
+.svelte-check

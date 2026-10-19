@@ -1,0 +1,11 @@
+node_modules
+.svelte-kit
+/build
+/preview/build
+
+# `wrangler dev` scratch: bundles and local asset state.
+.wrangler
+
+# `svelte-check --incremental`'s cache of transpiled Svelte files. Local
+# to a checkout and rebuilt on demand; deleting it costs one slow run.
+.svelte-check

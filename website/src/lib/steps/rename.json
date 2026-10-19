@@ -1,0 +1,178 @@
+{
+  "basic": {
+    "steps": [
+      {
+        "id": "rename",
+        "type": "rename",
+        "pairs": [
+          {
+            "from": "src",
+            "to": "source.ip"
+          },
+          {
+            "from": "msg",
+            "to": "message"
+          }
+        ]
+      }
+    ],
+    "input": [
+      {
+        "src": "10.0.0.1",
+        "msg": "login ok",
+        "status": 200
+      }
+    ],
+    "output": [
+      {
+        "message": "login ok",
+        "source": {
+          "ip": "10.0.0.1"
+        },
+        "status": 200
+      }
+    ]
+  },
+  "object": {
+    "steps": [
+      {
+        "id": "rename",
+        "type": "rename",
+        "pairs": [
+          {
+            "from": "client",
+            "to": "source"
+          }
+        ]
+      }
+    ],
+    "input": [
+      {
+        "client": {
+          "ip": "10.0.0.1",
+          "port": 51234
+        }
+      }
+    ],
+    "output": [
+      {
+        "source": {
+          "ip": "10.0.0.1",
+          "port": 51234
+        }
+      }
+    ]
+  },
+  "replace": {
+    "steps": [
+      {
+        "id": "rename",
+        "type": "rename",
+        "pairs": [
+          {
+            "from": "level",
+            "to": "severity"
+          }
+        ]
+      }
+    ],
+    "input": [
+      {
+        "level": "warn",
+        "severity": 4
+      }
+    ],
+    "output": [
+      {
+        "severity": "warn"
+      }
+    ]
+  },
+  "missing": {
+    "steps": [
+      {
+        "id": "rename",
+        "type": "rename",
+        "pairs": [
+          {
+            "from": "src",
+            "to": "source.ip"
+          }
+        ]
+      }
+    ],
+    "input": [
+      {
+        "src": "10.0.0.1"
+      },
+      {
+        "status": 200
+      }
+    ],
+    "output": [
+      {
+        "source": {
+          "ip": "10.0.0.1"
+        }
+      },
+      {
+        "status": 200
+      }
+    ]
+  },
+  "filtered": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "json"
+        },
+        "declared": [
+          {
+            "name": "kind",
+            "type": "str"
+          },
+          {
+            "name": "addr",
+            "type": "str"
+          }
+        ]
+      },
+      {
+        "id": "rename",
+        "type": "rename",
+        "filter": "kind == \"proxy\"",
+        "pairs": [
+          {
+            "from": "addr",
+            "to": "proxy.ip"
+          }
+        ]
+      }
+    ],
+    "input": [
+      {
+        "kind": "proxy",
+        "addr": "10.0.0.9"
+      },
+      {
+        "kind": "client",
+        "addr": "10.0.0.1"
+      }
+    ],
+    "output": [
+      {
+        "kind": "proxy",
+        "proxy": {
+          "ip": "10.0.0.9"
+        }
+      },
+      {
+        "kind": "client",
+        "addr": "10.0.0.1"
+      }
+    ]
+  }
+}

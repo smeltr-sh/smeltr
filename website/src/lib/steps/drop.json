@@ -1,0 +1,37 @@
+{
+  "basic": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": { "type": "json" },
+        "declared": [{ "name": "level", "type": "str" }]
+      },
+      { "id": "drop", "type": "drop", "condition": "level == \"debug\"" }
+    ],
+    "input": [
+      { "level": "info", "message": "order placed" },
+      { "level": "debug", "message": "cache hit" },
+      { "level": "error", "message": "payment failed" }
+    ],
+    "output": [
+      { "level": "info", "message": "order placed" },
+      { "level": "error", "message": "payment failed" }
+    ]
+  },
+  "missing": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": { "type": "json" },
+        "declared": [{ "name": "level", "type": "str" }]
+      },
+      { "id": "drop", "type": "drop", "condition": "level == \"debug\"" }
+    ],
+    "input": [{ "message": "no level" }],
+    "output": [{ "message": "no level" }]
+  }
+}

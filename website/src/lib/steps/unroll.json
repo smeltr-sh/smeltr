@@ -1,0 +1,52 @@
+{
+  "basic": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": { "type": "json" },
+        "declared": [{ "name": "items", "type": { "type": "array", "of": "str" } }]
+      },
+      { "id": "unroll", "type": "unroll", "field": "items" }
+    ],
+    "input": [{ "order": 17, "items": ["apple", "pear"] }],
+    "output": [{ "items": "apple" }, { "items": "pear" }]
+  },
+  "keepParent": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": { "type": "json" },
+        "declared": [{ "name": "items", "type": { "type": "array", "of": "str" } }]
+      },
+      { "id": "unroll", "type": "unroll", "field": "items", "keepParentFields": true }
+    ],
+    "input": [{ "order": 17, "items": ["apple", "pear"] }],
+    "output": [
+      { "order": 17, "items": "apple" },
+      { "order": 17, "items": "pear" }
+    ]
+  },
+  "empty": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": { "type": "json" },
+        "declared": [{ "name": "items", "type": { "type": "array", "of": "str" } }]
+      },
+      { "id": "unroll", "type": "unroll", "field": "items", "keepParentFields": true }
+    ],
+    "input": [
+      { "order": 17, "items": ["apple"] },
+      { "order": 18, "items": [] },
+      { "order": 19, "items": null },
+      { "order": 20 }
+    ],
+    "output": [{ "order": 17, "items": "apple" }]
+  }
+}

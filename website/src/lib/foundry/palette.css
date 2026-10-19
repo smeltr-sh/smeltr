@@ -1,0 +1,140 @@
+/* The Foundry palette (STYLE_GUIDE.md in gui-frontend, "Color"), shared by
+   the GUI and the website. The website builds from `website/` alone, so the
+   one copy lives here and the GUI imports it.
+
+   Two layers. The first is fixed: state colors, the code palette, faces
+   and radii mean the same thing in every theme. The second is the palette:
+   chrome, accent, the second color and the comment note. The GUI lays its
+   other palettes over this one as `[data-palette]` blocks, and its dense
+   type scale beside it.
+
+   Dark follows the system unless `data-theme` names a theme; the second
+   dark block restates the first so an explicit choice wins in both
+   directions. */
+
+:root {
+  color-scheme: light;
+  /* The accent turned to the far side of the wheel, at its own lightness
+     and chroma: the second color for a panel that must tell two peers
+     apart when the accent can only speak for one of them. Hue 250 rather
+     than 230 or 240, which fall outside sRGB at this chroma and would
+     paint clipped -- a color nobody chose. */
+  --counter: oklch(56% 0.15 250);
+  --error: oklch(48% 0.2 25);
+  --warn: oklch(60% 0.14 85);
+  --added: oklch(46% 0.13 145);
+  --removed: oklch(54% 0.18 25);
+  /* A field a step rewrote, which is neither of the above. It sits apart
+     from added and removed at the molten hue; inventing another would land
+     it among the group hues. */
+  --changed: oklch(56% 0.15 42);
+  /* Comment steps: a note, not a warning. */
+  --comment-bg: oklch(93% 0.03 95);
+  --comment-border: oklch(75% 0.08 90);
+  --comment-ink: oklch(45% 0.09 85);
+  /* Code coloring (`website/src/lib/highlight/highlight.ts`), dark enough to read on --bg. */
+  --tok-keyword: oklch(48% 0.18 305);
+  --tok-function: oklch(48% 0.15 255);
+  --tok-string: oklch(48% 0.13 145);
+  --tok-number: oklch(56% 0.13 68);
+  --tok-literal: oklch(54% 0.17 40);
+  --tok-type: oklch(52% 0.12 85);
+  --tok-regex: oklch(50% 0.17 20);
+  --tok-key: oklch(46% 0.1 210);
+  --font-display: 'Geist', 'Helvetica Neue', Arial, sans-serif;
+  --font-body: 'IBM Plex Sans', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', Consolas, Menlo, monospace;
+  /* Square and dense (STYLE_GUIDE.md, "Shape"): a control or a row, then
+     a card. A pill is 999px. */
+  --radius: 3px;
+  --radius-card: 4px;
+
+  /* Foundry: graphite and steel, so the molten accent is the only warm
+     thing on the page. */
+  --bg: oklch(97.5% 0.004 240);
+  --panel: oklch(94.5% 0.006 240);
+  /* Where typed values sit: an input, a step card at rest. */
+  --field: oklch(99.5% 0 0);
+  --ink: oklch(18% 0.012 250);
+  --dim: oklch(48% 0.012 250);
+  --border: oklch(86% 0.008 240);
+  --accent: oklch(60% 0.17 45);
+  /* Text on an accent-filled surface. --accent lightens in dark mode,
+     so a fixed white would lose contrast. */
+  --on-accent: oklch(99% 0.005 60);
+  /* The nav's own surface, so the chrome can be a band above the work. */
+  --band-accent: oklch(54% 0.16 45);
+  --band-on-accent: oklch(99% 0.005 60);
+  --band-bg: oklch(20% 0.012 250);
+  --band-ink: oklch(95% 0.004 250);
+  --band-dim: oklch(70% 0.008 250);
+  --band-line: oklch(28% 0.012 250);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --counter: oklch(66% 0.16 250);
+    --error: oklch(70% 0.19 25);
+    --added: oklch(66% 0.15 145);
+    --removed: oklch(68% 0.17 20);
+    --changed: oklch(66% 0.16 42);
+    --comment-bg: oklch(24% 0.04 90);
+    --comment-border: oklch(45% 0.07 85);
+    --comment-ink: oklch(78% 0.09 88);
+    --tok-keyword: oklch(76% 0.13 305);
+    --tok-function: oklch(78% 0.11 250);
+    --tok-string: oklch(80% 0.13 140);
+    --tok-number: oklch(82% 0.12 72);
+    --tok-literal: oklch(74% 0.15 42);
+    --tok-type: oklch(85% 0.12 95);
+    --tok-regex: oklch(74% 0.14 20);
+    --tok-key: oklch(80% 0.08 205);
+
+    --bg: oklch(16% 0.01 250);
+    --panel: oklch(21% 0.012 250);
+    --field: oklch(13% 0.01 250);
+    --ink: oklch(93% 0.006 240);
+    --dim: oklch(66% 0.01 245);
+    --border: oklch(30% 0.012 250);
+    --accent: oklch(70% 0.17 48);
+    --on-accent: oklch(14% 0.01 250);
+    --band-bg: oklch(11% 0.01 250);
+    --band-ink: var(--ink);
+    --band-dim: var(--dim);
+    --band-line: oklch(24% 0.012 250);
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --counter: oklch(66% 0.16 250);
+  --error: oklch(70% 0.19 25);
+  --added: oklch(66% 0.15 145);
+  --removed: oklch(68% 0.17 20);
+  --changed: oklch(66% 0.16 42);
+  --comment-bg: oklch(24% 0.04 90);
+  --comment-border: oklch(45% 0.07 85);
+  --comment-ink: oklch(78% 0.09 88);
+  --tok-keyword: oklch(76% 0.13 305);
+  --tok-function: oklch(78% 0.11 250);
+  --tok-string: oklch(80% 0.13 140);
+  --tok-number: oklch(82% 0.12 72);
+  --tok-literal: oklch(74% 0.15 42);
+  --tok-type: oklch(85% 0.12 95);
+  --tok-regex: oklch(74% 0.14 20);
+  --tok-key: oklch(80% 0.08 205);
+
+  --bg: oklch(16% 0.01 250);
+  --panel: oklch(21% 0.012 250);
+  --field: oklch(13% 0.01 250);
+  --ink: oklch(93% 0.006 240);
+  --dim: oklch(66% 0.01 245);
+  --border: oklch(30% 0.012 250);
+  --accent: oklch(70% 0.17 48);
+  --on-accent: oklch(14% 0.01 250);
+  --band-bg: oklch(11% 0.01 250);
+  --band-ink: var(--ink);
+  --band-dim: var(--dim);
+  --band-line: oklch(24% 0.012 250);
+}

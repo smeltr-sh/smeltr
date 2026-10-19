@@ -1,0 +1,98 @@
+/* The shared controls (STYLE_GUIDE.md in gui-frontend, "Controls"), for
+   the GUI and the website alike. Every `<button>` and every text field is
+   one of these, with no class to remember; `.btn` draws a link as a button.
+   Each site sets the `--text-*` sizes they name. `:where()`
+   keeps them at zero specificity, so a control that is its own thing -- a
+   tab, a menu row, a chip -- sets what it needs in its own scoped rule and
+   wins. A page never restyles these; a new look is a variant here. */
+:where(button, .btn) {
+  display: inline-block;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--ink);
+  padding: 0.35rem 0.8rem;
+  font: inherit;
+  font-size: var(--text-label);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+:where(button:not(:disabled), .btn):hover {
+  border-color: var(--ink);
+}
+
+/* The one primary action in a view. */
+:where(button, .btn).primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+/* An action beside the primary one that still draws the eye. */
+:where(button, .btn).secondary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* The answer that destroys something. A control that only asks first is
+   a plain button. */
+:where(button, .btn).danger {
+  background: var(--error);
+  border-color: var(--error);
+  color: var(--on-accent);
+}
+
+/* A call to action on a page of the website. */
+:where(button, .btn).large {
+  padding: 0.65rem 1rem;
+  font-weight: 600;
+}
+
+/* An action inside a row of a list. */
+:where(button, .btn).compact {
+  padding: 0.15rem 0.5rem;
+  font-size: var(--text-note);
+}
+
+:where(button):disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+:where(
+  input:not([type='checkbox'], [type='radio'], [type='range'], [type='color']),
+  select,
+  textarea
+) {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--field);
+  color: var(--ink);
+  padding: 0.45rem 0.55rem;
+  font: inherit;
+  font-size: var(--text-body);
+  line-height: 1.25;
+}
+
+/* A select draws its own box and ignores line-height, so it is given the text input's height. */
+:where(select:not([multiple], [size])) {
+  box-sizing: border-box;
+  height: calc(1.25em + 0.9rem + 2px);
+}
+
+/* A value that does not hold its type or form, as the control itself says (`aria-invalid`). */
+:where(input[aria-invalid='true'], select[aria-invalid='true'], textarea[aria-invalid='true']) {
+  border-color: var(--error);
+}
+
+:where(.error) {
+  color: var(--error);
+}
+
+/* Below 16px a phone zooms the page into a focused field. */
+@media (max-width: 720px) {
+  :where(input, select, textarea) {
+    font-size: 1rem;
+  }
+}

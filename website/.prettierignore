@@ -1,0 +1,11 @@
+/build
+node_modules
+.svelte-check
+.svelte-kit
+.wrangler
+static
+
+# Markdown is deliberately not formatted, matching gui-frontend: prettier
+# rewrites `*emphasis*` to `_emphasis_` against the house style, and
+# reflows fenced code blocks.
+*.md

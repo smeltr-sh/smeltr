@@ -1,0 +1,20 @@
+# `just dist` on Windows: the binary, the license and the notices in `smeltr-windows.zip`, and SHA256SUMS over
+# it. From any branch with nothing uncommitted, like the Linux recipe, whose comment says why the name carries
+# no version.
+param([string]$Version)
+$ErrorActionPreference = 'Stop'
+
+$changes = git status --porcelain
+if ($LASTEXITCODE -ne 0) { exit 1 }
+if ($changes) { throw 'dist builds a commit: commit or stash what is uncommitted' }
+cargo auditable build --locked --profile dist --bin smeltr
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+# Windows PowerShell 5.1, which `just dist` runs, has no `??`.
+$target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { 'target' }
+$exe = Join-Path $target 'dist/smeltr.exe'
+$v = (Select-String -Path $exe -Pattern $Version -Encoding ascii | Select-Object -First 1).Matches[0].Value
+if (-not $v) { throw "no version in $exe, so build.rs read no repository" }
+$zip = 'smeltr-windows.zip'
+Compress-Archive -Force -Path $exe, LICENSE, THIRD-PARTY-NOTICES.md -DestinationPath $zip
+"$((Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower())  $zip" | Set-Content SHA256SUMS

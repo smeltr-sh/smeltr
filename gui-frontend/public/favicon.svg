@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <path fill-rule="evenodd" fill="oklch(60% 0.17 45)"
+    d="M32 8 C42 24 48 34 48 42 A16 16 0 1 1 16 42 C16 34 22 24 32 8 Z
+       M32 22 C37 30 40 35 40 40 A8 8 0 1 1 24 40 C24 35 27 30 32 22 Z" />
+</svg>

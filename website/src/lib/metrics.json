@@ -1,0 +1,520 @@
+[
+  {
+    "group": "Sources",
+    "name": "smeltr_rows_polled_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Records the source returned."
+  },
+  {
+    "group": "Sources",
+    "name": "smeltr_bytes_polled_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Bytes of those records."
+  },
+  {
+    "group": "Sources",
+    "name": "smeltr_tick_poll_seconds_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Seconds spent waiting on the source for records."
+  },
+  {
+    "group": "Sources",
+    "name": "smeltr_tick_idle_polls_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Polls that returned no records."
+  },
+  {
+    "group": "Sources",
+    "name": "smeltr_commits_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Offset commits the source accepted."
+  },
+  {
+    "group": "Sources",
+    "name": "smeltr_commits_dropped_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Offset commits that failed and were let go. The next commit covers their records."
+  },
+  {
+    "group": "Sources",
+    "name": "smeltr_source_in_flight",
+    "kind": "gauge",
+    "labels": ["source"],
+    "what": "Batches read and not yet committed."
+  },
+  {
+    "group": "Sources",
+    "name": "smeltr_source_lag",
+    "kind": "gauge",
+    "labels": ["source", "topic", "partition"],
+    "what": "What the source has yet to finish. Kafka: records in the partition past the group's committed offset. SQS and Azure Storage Queue: messages on the queue, held ones included, as partition 0 of a topic named for the queue."
+  },
+  {
+    "group": "Sources",
+    "name": "smeltr_source_messages_finished_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Queue messages the source finished with: every object they named read and committed. A queue's lag drains at this rate."
+  },
+  {
+    "group": "Sources",
+    "name": "smeltr_source_blocked",
+    "kind": "gauge",
+    "labels": ["source"],
+    "what": "1 while the source is stopped on a record it may not pass: an exception or refusal answered `block`, or nothing could process or deliver the record. 0 once it reads again."
+  },
+  {
+    "group": "Sources",
+    "name": "smeltr_source_dropped_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Records the source let go because it had no room for them. A syslog receiver over UDP counts each datagram that arrives while it is full or blocked."
+  },
+  {
+    "group": "Sources",
+    "name": "smeltr_source_full_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Times a receiver had no memory left for what a sender offered: a request it answered busy, or a connection it stopped reading. Its memory, not its sender, set the pace."
+  },
+  {
+    "group": "Sources",
+    "name": "smeltr_source_poll_failures_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Reads of the source that failed. The source is read again after a wait, and what it has not delivered stays uncommitted there."
+  },
+  {
+    "group": "Sources",
+    "name": "smeltr_source_refused_total",
+    "kind": "counter",
+    "labels": ["source", "reason"],
+    "what": "Requests a receiver refused, by reason: token, unreadable, too_large, unsupported, late, busy or other."
+  },
+  {
+    "group": "Processing",
+    "name": "smeltr_tick_batches_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Batches run through routes and pipelines."
+  },
+  {
+    "group": "Processing",
+    "name": "smeltr_tick_process_seconds_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Seconds spent running those batches."
+  },
+  {
+    "group": "Processing",
+    "name": "smeltr_tick_flush_seconds_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Seconds spent handing processed batches to destinations."
+  },
+  {
+    "group": "Processing",
+    "name": "smeltr_batches_waiting_for_room_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Hand-offs that waited because a destination's queue was full."
+  },
+  {
+    "group": "Processing",
+    "name": "smeltr_batches_poisoned_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Batches a pipeline could not finish because it crashed on them."
+  },
+  {
+    "group": "Processing",
+    "name": "smeltr_batches_dlq_total",
+    "kind": "counter",
+    "labels": ["source", "destination"],
+    "what": "Batches no pipeline could process, sent whole to a dead-letter destination."
+  },
+  {
+    "group": "Processing",
+    "name": "smeltr_route_matched_total",
+    "kind": "counter",
+    "labels": ["source", "route"],
+    "what": "Records the route's condition matched."
+  },
+  {
+    "group": "Processing",
+    "name": "smeltr_rows_unmatched_total",
+    "kind": "counter",
+    "labels": ["source", "cause"],
+    "what": "Records that met Unmatched. `cause` is `route` (no route matched) or `rule` (no delivery rule of its route took it)."
+  },
+  {
+    "group": "Processing",
+    "name": "smeltr_rows_dropped_total",
+    "kind": "counter",
+    "labels": ["source", "reason"],
+    "what": "Records let go. `reason` is `unmatched` (Unmatched answered drop), `exception` (an exception answered drop), `unprocessable` (no pipeline could process it) or `rejected` (a destination refused it for good)."
+  },
+  {
+    "group": "Processing",
+    "name": "smeltr_rows_dlq_over_budget_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Records sent to a dead-letter destination because one alone does not fit the memory budget."
+  },
+  {
+    "group": "Pipeline steps",
+    "name": "smeltr_function_calls_total",
+    "kind": "counter",
+    "labels": ["pipeline", "function"],
+    "what": "Instructions the step ran. A step can compile to several, and one inside a loop counts on every pass."
+  },
+  {
+    "group": "Pipeline steps",
+    "name": "smeltr_function_seconds_total",
+    "kind": "counter",
+    "labels": ["pipeline", "function"],
+    "what": "Seconds the step ran. A step inside a loop is not timed: its time goes to the loop step."
+  },
+  {
+    "group": "Pipeline steps",
+    "name": "smeltr_rows_dropped_total",
+    "kind": "counter",
+    "labels": ["pipeline", "function"],
+    "what": "Records the step removed."
+  },
+  {
+    "group": "Pipeline steps",
+    "name": "smeltr_rows_errored_total",
+    "kind": "counter",
+    "labels": ["pipeline", "function", "kind"],
+    "what": "Records the step gave an exception, by its kind."
+  },
+  {
+    "group": "Pipeline steps",
+    "name": "smeltr_rows_in_total",
+    "kind": "counter",
+    "labels": ["pipeline", "function"],
+    "what": "Records in each batch that reached a loop step, whether its condition holds for them or not."
+  },
+  {
+    "group": "Pipeline steps",
+    "name": "smeltr_rows_out_total",
+    "kind": "counter",
+    "labels": ["pipeline", "function"],
+    "what": "Records the loop step's condition let in."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_rows_sent_total",
+    "kind": "counter",
+    "labels": ["destination"],
+    "what": "Records handed to the destination."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_rows_without_doc_id_total",
+    "kind": "counter",
+    "labels": ["destination"],
+    "what": "Records sent to a `dedupe` or `overwrite` destination with no document ID."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_rows_send_failed_total",
+    "kind": "counter",
+    "labels": ["destination"],
+    "what": "Records in a hand-over that failed. They are sent again."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_flushes_total",
+    "kind": "counter",
+    "labels": ["destination"],
+    "what": "Hand-overs the destination finished."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_rows_delivered_total",
+    "kind": "counter",
+    "labels": ["destination"],
+    "what": "Records in batches the destination acknowledged, including records it refused within them."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_bytes_delivered_total",
+    "kind": "counter",
+    "labels": ["destination"],
+    "what": "Bytes of those records."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_rows_rejected_total",
+    "kind": "counter",
+    "labels": ["source", "destination"],
+    "what": "Records the destination refused for good."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_rows_salvaged_total",
+    "kind": "counter",
+    "labels": ["destination"],
+    "what": "Refused records a dead-letter destination took."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_rows_lost_total",
+    "kind": "counter",
+    "labels": ["destination"],
+    "what": "Refused records with nowhere left to go."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_destination_healthy",
+    "kind": "gauge",
+    "labels": ["destination"],
+    "what": "1 while the destination takes writes, 0 after a failed send."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_destination_stalls_total",
+    "kind": "counter",
+    "labels": ["destination"],
+    "what": "Failed sends that marked the destination unhealthy."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_destination_in_flight",
+    "kind": "gauge",
+    "labels": ["destination"],
+    "what": "Requests the destination may have open at once."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_destination_held_rows",
+    "kind": "gauge",
+    "labels": ["destination"],
+    "what": "Rows the destination refused and keeps to send again."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_destination_open_bytes",
+    "kind": "gauge",
+    "labels": ["destination"],
+    "what": "Bytes in a destination pending an upload."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_destination_queue_bytes",
+    "kind": "gauge",
+    "labels": ["destination"],
+    "what": "Bytes waiting in the destination's queue."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_destination_queue_budget_bytes",
+    "kind": "gauge",
+    "labels": ["destination"],
+    "what": "The most bytes the destination's queue holds."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_destination_unwritten_total",
+    "kind": "counter",
+    "labels": ["destination", "kind"],
+    "what": "What the store took but said it did not store as sent, in its own units: a Prometheus remote_write 2.0 store's samples, histograms and exemplars, and documents an Elasticsearch failure store took."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_destination_throttled_seconds_total",
+    "kind": "counter",
+    "labels": ["destination"],
+    "what": "Seconds the destination was held back because it was asked to slow down: by its brokers for Kafka, and in the backoff after a throttled answer for an HTTP destination (Elasticsearch, Splunk HEC, HTTP, Prometheus). Summed over concurrent requests."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_destination_buffered_bytes",
+    "kind": "gauge",
+    "labels": ["destination"],
+    "what": "Bytes waiting inside the Kafka client. Kafka only."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_destination_rtt_seconds",
+    "kind": "gauge",
+    "labels": ["destination"],
+    "what": "Mean round trip to the brokers in seconds. Kafka only."
+  },
+  {
+    "group": "Memory",
+    "name": "smeltr_memory_budget_bytes",
+    "kind": "gauge",
+    "labels": [],
+    "what": "The worker's memory budget. 0 under `thread=deploy` means none."
+  },
+  {
+    "group": "Memory",
+    "name": "smeltr_memory_peak_bytes",
+    "kind": "gauge",
+    "labels": [],
+    "what": "The most memory the worker's threads have held at once. Present only with a memory budget."
+  },
+  {
+    "group": "Memory",
+    "name": "smeltr_memory_splits_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Batches split in half to fit the memory budget."
+  },
+  {
+    "group": "Memory",
+    "name": "smeltr_memory_abandoned_seconds_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Seconds spent on attempts given up for memory."
+  },
+  {
+    "group": "Memory",
+    "name": "smeltr_destination_pool_bytes",
+    "kind": "gauge",
+    "labels": [],
+    "what": "Bytes the destination queues sized to the worker's memory have borrowed above their reserves. At smeltr_destination_pool_budget_bytes, memory is what holds them back."
+  },
+  {
+    "group": "Memory",
+    "name": "smeltr_destination_pool_budget_bytes",
+    "kind": "gauge",
+    "labels": [],
+    "what": "The most the destination queues sized to the worker's memory may borrow above their reserves, together."
+  },
+  {
+    "group": "Memory",
+    "name": "smeltr_receiver_pool_bytes",
+    "kind": "gauge",
+    "labels": [],
+    "what": "Bytes the receivers sized to the worker's memory have borrowed from the pool they share. At smeltr_receiver_pool_budget_bytes, memory is what holds them back."
+  },
+  {
+    "group": "Memory",
+    "name": "smeltr_memory_allocated_bytes",
+    "kind": "gauge",
+    "labels": [],
+    "what": "Bytes the worker's runtime has allocated and not freed. What its resident memory holds above this is what the allocator keeps of what was freed, and what C libraries allocate themselves."
+  },
+  {
+    "group": "Memory",
+    "name": "smeltr_receiver_pool_budget_bytes",
+    "kind": "gauge",
+    "labels": [],
+    "what": "The most the receivers sized to the worker's memory may borrow above their reserves, together."
+  },
+  {
+    "group": "Memory",
+    "name": "smeltr_memory_part_bytes",
+    "kind": "gauge",
+    "labels": ["part", "source", "destination"],
+    "what": "The most one part of the deployment may hold, one sample per part: what `part` names, under the source or destination it belongs to when it belongs to one. Together they are what the worker's memory must fit."
+  },
+  {
+    "group": "Memory",
+    "name": "smeltr_source_held_bytes",
+    "kind": "gauge",
+    "labels": ["source"],
+    "what": "Bytes a source holds that its reader has not taken."
+  },
+  {
+    "group": "Memory",
+    "name": "smeltr_source_lane_bytes",
+    "kind": "gauge",
+    "labels": ["source"],
+    "what": "Bytes waiting between a source's reader and transform."
+  },
+  {
+    "group": "Memory",
+    "name": "smeltr_process_memory_bytes",
+    "kind": "gauge",
+    "labels": ["process"],
+    "what": "Bytes of memory a worker process holds: the supervisor's or the runtime's."
+  },
+  {
+    "group": "Worker",
+    "name": "smeltr_worker_threads_budget",
+    "kind": "gauge",
+    "labels": [],
+    "what": "The most threads the deployment may use."
+  },
+  {
+    "group": "Worker",
+    "name": "smeltr_worker_slice_bytes",
+    "kind": "gauge",
+    "labels": [],
+    "what": "The raw bytes of a batch a transform thread runs at once, sized to the CPU's cache."
+  },
+  {
+    "group": "Worker",
+    "name": "smeltr_worker_readers",
+    "kind": "gauge",
+    "labels": [],
+    "what": "Reader threads, one per source."
+  },
+  {
+    "group": "Worker",
+    "name": "smeltr_worker_transform_threads",
+    "kind": "gauge",
+    "labels": [],
+    "what": "Threads running pipelines."
+  },
+  {
+    "group": "Worker",
+    "name": "smeltr_worker_egress_threads",
+    "kind": "gauge",
+    "labels": [],
+    "what": "Threads sending to destinations."
+  },
+  {
+    "group": "Worker",
+    "name": "smeltr_capture_records_total",
+    "kind": "counter",
+    "labels": ["source"],
+    "what": "Records a sample capture read. Its `source` label holds the source's name."
+  },
+  {
+    "group": "Logs",
+    "name": "smeltr_logs_written_total",
+    "kind": "counter",
+    "labels": ["process", "site"],
+    "what": "Log events written since the process started, by the `site` that wrote them."
+  },
+  {
+    "group": "Logs",
+    "name": "smeltr_logs_dropped_total",
+    "kind": "counter",
+    "labels": ["process"],
+    "what": "Log events dropped for want of room since the process started."
+  },
+  {
+    "group": "Logs",
+    "name": "smeltr_logs_unread_total",
+    "kind": "counter",
+    "labels": ["process"],
+    "what": "Log events a full logs reader's queue refused since the process started, one count per reader."
+  },
+  {
+    "group": "Logs",
+    "name": "smeltr_logs_undelivered_total",
+    "kind": "counter",
+    "labels": ["process"],
+    "what": "Log events refused while the leader was out of contact, since the process started."
+  },
+  {
+    "group": "Logs",
+    "name": "smeltr_logs_unwritable_total",
+    "kind": "counter",
+    "labels": ["process"],
+    "what": "Log events the console would not take since the process started."
+  }
+]

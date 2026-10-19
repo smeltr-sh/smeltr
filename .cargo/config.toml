@@ -1,0 +1,21 @@
+[target.'cfg(windows)']
+rustflags = ["-A", "linker_messages"]
+[env]
+# This checkout, so a workspace crate built into a `target/` other checkouts share rebuilds when the build moves
+# between them: each crate's build script reruns when it changes. Cargo alone keys their builds by file times.
+SMELTR_CHECKOUT = { value = ".", relative = true }
+CMAKE_TOOLCHAIN_FILE_x86_64_pc_windows_msvc = { value = "cmake/windows-librdkafka.cmake", relative = true }
+# Both CMake builds here -- librdkafka and AWS-LC's validated module -- are
+# generated for Ninja rather than MSBuild, because the second one only builds
+# that way and the setting reaches every build in the tree rather than one.
+#
+# `aws-lc-fips-sys` would choose Ninja for itself. It stops before it can: the
+# line above is what it stops on, since it takes any toolchain file as a sign
+# the environment is configuring the build and returns before the Windows
+# branch that picks the generator. There is no way to hand a toolchain file to
+# one dependency alone -- `[env]` reaches every build script -- so the
+# generator is named here instead of left to the default.
+#
+# Ninja therefore has to be on PATH, and that is the whole of the
+# requirement: `winget install Ninja-build.Ninja`
+CMAKE_GENERATOR_x86_64_pc_windows_msvc = "Ninja"

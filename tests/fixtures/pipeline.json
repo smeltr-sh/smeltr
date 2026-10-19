@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": "kafka-main",
+      "type": "kafka",
+      "brokers": "b1:9092,b2:9092",
+      "topics": ["logs-raw"],
+      "groupId": "smeltr"
+    },
+    {
+      "id": "self-metrics",
+      "type": "metrics",
+      "bucketSeconds": 10
+    }
+  ],
+  "destinations": [
+    {
+      "id": "kafka-out",
+      "type": "kafka",
+      "brokers": "b1:9092",
+      "defaultTopic": "logs-out"
+    },
+    {
+      "id": "kafka-dlq",
+      "type": "kafka",
+      "brokers": "b1:9092",
+      "defaultTopic": "logs-dlq"
+    }
+  ],
+  "pipelines": [
+    {
+      "id": "main",
+      "name": "Main pipeline",
+      "steps": [
+        {
+          "id": "parse",
+          "type": "parser",
+          "input": "_raw",
+          "kind": { "type": "json" },
+          "declared": [{ "name": "status", "type": "i64" }]
+        },
+        {
+          "id": "severity",
+          "type": "eval",
+          "assignments": [
+            { "target": "severity", "expr": "status >= 400 ? \"high\" : \"low\"" }
+          ]
+        },
+        {
+          "id": "declare-alert",
+          "type": "code",
+          "body": "alert: bool = null;"
+        },
+        {
+          "id": "high-only",
+          "type": "if",
+          "condition": "severity == \"high\"",
+          "then": [
+            {
+              "id": "tag-high",
+              "type": "eval",
+              "assignments": [{ "target": "alert", "expr": "true" }]
+            }
+          ],
+          "else": []
+        }
+      ]
+    },
+    {
+      "id": "metrics-pipe",
+      "name": "Metrics passthrough",
+      "steps": []
+    }
+  ],
+  "routes": [
+    {
+      "id": "errors",
+      "source": "kafka-main",
+      "condition": "__source.offset < 0",
+      "pipeline": "main",
+
+      "deliver": [
+        { "when": "smeltr.exception == null", "to": ["kafka-out"] },
+        { "when": "smeltr.exception != null", "to": ["kafka-dlq"] }
+      ]
+    },
+    {
+      "id": "catch-all",
+      "source": "kafka-main",
+      "condition": null,
+      "pipeline": "main",
+
+      "deliver": [{ "to": ["kafka-out"] }]
+    },
+    {
+      "id": "metrics-route",
+      "source": "self-metrics",
+      "condition": null,
+      "pipeline": "metrics-pipe",
+
+      "deliver": [{ "to": ["kafka-out"] }]
+    }
+  ]
+}

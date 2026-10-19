@@ -1,0 +1,154 @@
+/* The Foundry palette and the shared controls come from `lib/foundry/`,
+   imported first by the root layout; the GUI reads the same files. Here
+   is what only the site has: a reader's type scale, not the app's dense
+   one. */
+
+:root {
+  --text-body: 1rem;
+  --text-label: 0.92rem;
+  --text-note: 0.85rem;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  /* Anchored headings otherwise land under the sticky header. */
+  scroll-padding-top: calc(var(--site-header-height, 5rem) + 1rem);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 1rem;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
+  margin: 0;
+  text-wrap: balance;
+}
+
+/* A link in prose is ink and underlined: the accent is the one primary
+   action's (STYLE_GUIDE.md, "Restraint"). */
+a {
+  color: var(--ink);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--mono);
+}
+
+.tok-keyword {
+  color: var(--tok-keyword);
+}
+.tok-number {
+  color: var(--tok-number);
+}
+.tok-literal {
+  color: var(--tok-literal);
+}
+.tok-string {
+  color: var(--tok-string);
+}
+.tok-type {
+  color: var(--tok-type);
+}
+.tok-regex {
+  color: var(--tok-regex);
+}
+.tok-function {
+  color: var(--tok-function);
+}
+.tok-key {
+  color: var(--tok-key);
+}
+.tok-comment {
+  color: var(--dim);
+  font-style: italic;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  padding: 0.6rem 1rem;
+  background: var(--accent);
+  color: var(--on-accent);
+  border-radius: 0 0 var(--radius) 0;
+}
+
+.skip-link:focus {
+  left: 0;
+}
+
+/* A screenshot taken in both themes: only the one matching the page's theme shows. */
+.shot-light {
+  display: block;
+}
+.shot-dark {
+  display: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .shot-light {
+    display: none;
+  }
+  :root:not([data-theme='light']) .shot-dark {
+    display: block;
+  }
+}
+:root[data-theme='dark'] .shot-light {
+  display: none;
+}
+:root[data-theme='dark'] .shot-dark {
+  display: block;
+}
+
+/* One table, in the docs and on every page that holds one in an article. */
+article .table-scroll {
+  overflow-x: auto;
+}
+article table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9rem;
+}
+article th,
+article td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.65rem;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: break-word;
+}

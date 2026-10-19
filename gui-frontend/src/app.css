@@ -1,0 +1,68 @@
+/* Component-level styling lives in App.svelte; this is just a reset. */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+/* Width scale. Every row of the app -- the nav, the trail, the page -- is
+   held to one measure, so none of them can disagree with another or change
+   between routes. A narrow thing -- a form, an explanatory paragraph --
+   takes its measure inside the column rather than shrinking it.
+
+   --width-page     the column: the whole window up to its 1600px ceiling,
+                    so a narrower window loses no room to margins. A table
+                    row 3840px wide is as unreadable as a paragraph would be.
+   --width-prose    a reading measure, ~68ch, applied inside a column.
+
+   `--measure` overrides the page width where one is set, on the root
+   (`App.svelte`) so the nav and the trail move with the page rather than
+   disagreeing with it -- the pipeline editor's own workspace is the one
+   page that sets it, to the full width. */
+:root {
+  --width-page: 100rem;
+  --width-prose: clamp(20rem, 58vw, 42rem);
+}
+
+.column {
+  max-width: var(--measure, var(--width-page));
+  margin-inline: auto;
+  padding: 2rem 1.5rem 4rem;
+}
+
+/* An instruction that must be read before acting: data lost, a step that
+   cannot be undone, a condition that blocks the task. The only prose a
+   page shows unasked (STYLE_GUIDE.md, "Text"). */
+.critical {
+  max-width: 68ch;
+  margin: 0 0 1rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* The group a page is editing, drawn down the gutter it already has
+   (STYLE_GUIDE.md, "Group hues"). Only a single-page tab still using
+   `.column` directly gets this rail -- every other page shows its own,
+   at the seam between `SectionShell`'s rail and its content, since
+   that is the pane actually being edited. The chip at the head of that
+   rail carries the same color a different way, as a dot (App.svelte).
+
+   `--scope-h` is set on the root only for the pages a scope applies to. With
+   it absent this declaration is invalid at computed-value time and paints
+   nothing, which is how every other page stays uncolored. */
+.column {
+  position: relative;
+}
+
+.column::before {
+  content: '';
+  position: absolute;
+  left: 0.5rem;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-radius: 2px;
+  background: oklch(var(--scope-l) var(--scope-c) var(--scope-h));
+}

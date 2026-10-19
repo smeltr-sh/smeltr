@@ -1,0 +1,283 @@
+{
+  "exact": {
+    "lookupTables": [
+      {
+        "id": "users",
+        "type": "inline",
+        "headers": ["user", "team", "level"],
+        "rows": [
+          ["alice", "payments", "3"],
+          ["bob", "search", "1"]
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "json"
+        },
+        "declared": [
+          {
+            "name": "user",
+            "type": "str"
+          }
+        ]
+      },
+      {
+        "id": "lookup",
+        "type": "lookup",
+        "input": "user",
+        "table": "users",
+        "matchKind": "exact",
+        "multiplicity": "best",
+        "keyColumn": "user",
+        "outputs": [
+          {
+            "source": "team",
+            "field": "team",
+            "default": "unknown"
+          },
+          {
+            "source": "level",
+            "field": "user_level",
+            "default": "",
+            "type": "i64"
+          }
+        ]
+      }
+    ],
+    "input": [
+      {
+        "user": "alice"
+      },
+      {
+        "user": "carol"
+      }
+    ],
+    "output": [
+      {
+        "user": "alice",
+        "team": "payments",
+        "user_level": 3
+      },
+      {
+        "user": "carol",
+        "team": "unknown"
+      }
+    ]
+  },
+  "cidr": {
+    "lookupTables": [
+      {
+        "id": "networks",
+        "type": "inline",
+        "headers": ["network", "zone"],
+        "rows": [
+          ["10.0.0.0/8", "internal"],
+          ["10.1.0.0/16", "office"]
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "json"
+        },
+        "declared": [
+          {
+            "name": "client_ip",
+            "type": "str"
+          }
+        ]
+      },
+      {
+        "id": "lookup",
+        "type": "lookup",
+        "input": "client_ip",
+        "table": "networks",
+        "matchKind": "cidr",
+        "multiplicity": "best",
+        "keyColumn": "network",
+        "outputs": [
+          {
+            "source": "zone",
+            "field": "zone",
+            "default": "external"
+          }
+        ]
+      }
+    ],
+    "input": [
+      {
+        "client_ip": "10.1.2.3"
+      },
+      {
+        "client_ip": "10.9.0.1"
+      },
+      {
+        "client_ip": "8.8.8.8"
+      }
+    ],
+    "output": [
+      {
+        "client_ip": "10.1.2.3",
+        "zone": "office"
+      },
+      {
+        "client_ip": "10.9.0.1",
+        "zone": "internal"
+      },
+      {
+        "client_ip": "8.8.8.8",
+        "zone": "external"
+      }
+    ]
+  },
+  "cidrAll": {
+    "lookupTables": [
+      {
+        "id": "networks",
+        "type": "inline",
+        "headers": ["network", "zone"],
+        "rows": [
+          ["10.0.0.0/8", "internal"],
+          ["10.1.0.0/16", "office"]
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "json"
+        },
+        "declared": [
+          {
+            "name": "client_ip",
+            "type": "str"
+          }
+        ]
+      },
+      {
+        "id": "lookup",
+        "type": "lookup",
+        "input": "client_ip",
+        "table": "networks",
+        "matchKind": "cidr",
+        "multiplicity": "all",
+        "keyColumn": "network",
+        "outputs": [
+          {
+            "source": "zone",
+            "field": "zones",
+            "default": ""
+          }
+        ]
+      }
+    ],
+    "input": [
+      {
+        "client_ip": "10.1.2.3"
+      },
+      {
+        "client_ip": "8.8.8.8"
+      }
+    ],
+    "output": [
+      {
+        "client_ip": "10.1.2.3",
+        "zones": ["internal", "office"]
+      },
+      {
+        "client_ip": "8.8.8.8",
+        "zones": []
+      }
+    ]
+  },
+  "regex": {
+    "lookupTables": [
+      {
+        "id": "roles",
+        "type": "inline",
+        "headers": ["pattern", "role"],
+        "rows": [
+          ["^web-", "web"],
+          ["^db-", "database"],
+          ["^db-.*-replica$", "replica"]
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": {
+          "type": "json"
+        },
+        "declared": [
+          {
+            "name": "host",
+            "type": "str"
+          }
+        ]
+      },
+      {
+        "id": "lookup",
+        "type": "lookup",
+        "input": "host",
+        "table": "roles",
+        "matchKind": "regex",
+        "multiplicity": "best",
+        "keyColumn": "pattern",
+        "outputs": [
+          {
+            "source": "role",
+            "field": "role",
+            "default": "other"
+          }
+        ]
+      }
+    ],
+    "input": [
+      {
+        "host": "db-03-replica"
+      },
+      {
+        "host": "db-01"
+      },
+      {
+        "host": "web-02"
+      },
+      {
+        "host": "cache-01"
+      }
+    ],
+    "output": [
+      {
+        "host": "db-03-replica",
+        "role": "replica"
+      },
+      {
+        "host": "db-01",
+        "role": "database"
+      },
+      {
+        "host": "web-02",
+        "role": "web"
+      },
+      {
+        "host": "cache-01",
+        "role": "other"
+      }
+    ]
+  }
+}

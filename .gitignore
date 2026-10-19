@@ -1,0 +1,49 @@
+# Cargo's build directory. Everything cargo generates lives under here,
+# including MSVC .pdb files and criterion's benchmark output, so neither
+# needs a rule of its own.
+target
+
+# rustfmt's --backup mode writes these next to the source it rewrote.
+**/*.rs.bk
+
+# rustc dumps an internal-compiler-error report into the working
+# directory, not into target/.
+rustc-ice-*.txt
+
+# Python writes its bytecode cache beside any module it imports.
+__pycache__/
+
+# Local runtime state, at the paths the binary uses when nothing
+# overrides them. Created the moment it runs, and holding real secrets:
+# smeltr-leader-data has this leader's TLS private key and its SQLite
+# database, smeltr-worker-data a worker's persisted bearer credential.
+#
+# Deliberately not anchored to the repo root. These paths are relative to
+# whatever directory the binary was started in, so running one from a
+# subdirectory of a checkout puts those secrets there instead -- where a
+# root-anchored rule would not cover them.
+smeltr-leader-data/
+smeltr-worker-data/
+
+# A real startup config (smeltr.example.toml stays checked in as the
+# template) can carry real hostnames or a worker's one-time enrollment
+# code. Same reasoning as above, including why it is not anchored.
+smeltr.toml
+
+# A leader generates this on first use; it opens every stored value and is never committed.
+smeltr-leader-secrets/
+
+# `just dist` writes these: a stripped binary of tens of megabytes, the
+# files that package and run it, and the tarball of all three. Every one
+# derives from this checkout.
+handoff/
+smeltr-*.tar
+smeltr-*.tar.gz
+smeltr-*.tar.gz.sha256
+smeltr-*.zip
+SHA256SUMS
+
+# `just stig` and `just cves` write their reports here.
+stig/
+cves/
+sbom/

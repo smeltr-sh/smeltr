@@ -1,0 +1,3278 @@
+{
+  "groups": [
+    {
+      "id": "names",
+      "title": "Naming a field",
+      "blurb": "A bare name is letters, digits, `_` and `$`, dotted. `source.ip` is one column. A name is the same name wherever it stands: read, written, or passed. `$` is the record itself, an [object](#objects): `$.source.ip` and `source.ip` are one read. A field whose name holds any other character is written `$[\"...\"]`, so `$[\"source.ip\"]` is a different field: one key with a dot in it.",
+      "rows": [
+        {
+          "symbol": ".",
+          "gloss": "the field of that dotted name, or a child of an object",
+          "examples": [
+            {
+              "given": ["geo = {\"city\": \"Oslo\", \"lat\": 59}"],
+              "expr": "geo.city",
+              "result": "\"Oslo\""
+            },
+            {
+              "given": ["source.ip = \"10.0.0.1\""],
+              "expr": "source.ip.startsWith(\"10.\")",
+              "result": "true",
+              "note": "one flat column"
+            }
+          ]
+        },
+        {
+          "symbol": "$[]",
+          "gloss": "a field of the record by its name, for one a bare spelling cannot hold",
+          "examples": [
+            {
+              "given": ["$[\"user-agent\"] = \"curl\""],
+              "expr": "$[\"user-agent\"].toUpperCase()",
+              "result": "\"CURL\""
+            }
+          ]
+        }
+      ],
+      "notes": [
+        "`$[\"...\"]` takes a string literal and names a field, not a value: `$[\"x-y\"].z` is the one field `x-y.z`, as `a.b` is. `$[k]` with `k` a value reads whichever field `k` names on that row, as any object's `o[k]` does.",
+        "On a named field, a fixed string key follows the same path: `geo[\"city\"]` reads `geo.city`. A declared field a record lacks reads as null."
+      ],
+      "rejected": [
+        {
+          "expr": "@timestamp",
+          "why": "`@` cannot start a bare name. Write `$[\"@timestamp\"]`."
+        }
+      ],
+      "functions": []
+    },
+    {
+      "id": "objects",
+      "title": "Objects",
+      "blurb": "The record is an object: `$` is the whole record, and each field is one of its keys. An object is written `{\"a\": 1, \"b\": 2}`. `o[k]` reads the key that `k` holds on each row.",
+      "rows": [],
+      "notes": [],
+      "rejected": [],
+      "functions": [
+        {
+          "name": "keys",
+          "signature": "object.keys()",
+          "summary": "The object's keys, as an array of strings, in the order the record writes them. A field holding null is left out.",
+          "examples": [
+            {
+              "expr": "{\"a\": 1, \"b\": 2}.keys()",
+              "result": "[\"a\",\"b\"]"
+            }
+          ]
+        },
+        {
+          "name": "entries",
+          "signature": "object.entries()",
+          "summary": "Each key with its value, as `{key, value}`, in the order of `keys`. Every value must be of one type.",
+          "examples": [
+            {
+              "expr": "{\"a\": 1, \"b\": 2}.entries()",
+              "result": "[{\"key\":\"a\",\"value\":1},{\"key\":\"b\",\"value\":2}]"
+            }
+          ]
+        },
+        {
+          "name": "fromEntries",
+          "signature": "fromEntries(pairs)",
+          "summary": "An object of an array of `{key, value}`. A later key replaces an earlier one, and a null key is left out.",
+          "examples": [
+            {
+              "expr": "fromEntries([{\"key\": \"a\", \"value\": 1}, {\"key\": \"a\", \"value\": 2}])",
+              "result": "{\"a\":2}"
+            }
+          ]
+        },
+        {
+          "name": "omit",
+          "signature": "object.omit(key, ...)",
+          "summary": "The object without those keys.",
+          "examples": [
+            {
+              "expr": "{\"a\": 1, \"b\": 2, \"c\": 3}.omit(\"a\", \"c\")",
+              "result": "{\"b\":2}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tests",
+      "title": "Comparison and logic",
+      "blurb": "The operators that answer a question or pick a value rather than compute one. None belongs to a single type: comparison works across numbers, text, instants and spans, and `??` takes a value of any type.",
+      "rows": [
+        {
+          "symbol": "==",
+          "gloss": "equal",
+          "examples": [
+            {
+              "expr": "404 == 404",
+              "result": "true"
+            },
+            {
+              "expr": "null == null",
+              "result": "true"
+            },
+            {
+              "expr": "null == 0",
+              "result": "false"
+            }
+          ]
+        },
+        {
+          "symbol": "!=",
+          "gloss": "not equal",
+          "examples": [
+            {
+              "expr": "404 != 200",
+              "result": "true"
+            },
+            {
+              "expr": "null != 0",
+              "result": "true"
+            },
+            {
+              "expr": "null != null",
+              "result": "false"
+            }
+          ]
+        },
+        {
+          "symbol": "<",
+          "gloss": "less",
+          "examples": [
+            {
+              "expr": "1.5 < 2",
+              "result": "true"
+            },
+            {
+              "expr": "null < 1",
+              "result": "false"
+            }
+          ]
+        },
+        {
+          "symbol": "<=",
+          "gloss": "less or equal",
+          "examples": [
+            {
+              "expr": "2 <= 2",
+              "result": "true"
+            },
+            {
+              "expr": "null <= 1",
+              "result": "false"
+            }
+          ]
+        },
+        {
+          "symbol": ">",
+          "gloss": "greater",
+          "examples": [
+            {
+              "expr": "duration(1, \"s\") > duration(999, \"ms\")",
+              "result": "true"
+            },
+            {
+              "expr": "1 > null",
+              "result": "false"
+            }
+          ]
+        },
+        {
+          "symbol": ">=",
+          "gloss": "greater or equal",
+          "examples": [
+            {
+              "expr": "2 >= 3",
+              "result": "false"
+            },
+            {
+              "expr": "null >= null",
+              "result": "false"
+            }
+          ]
+        },
+        {
+          "symbol": "&&",
+          "gloss": "both / and",
+          "examples": [
+            {
+              "expr": "\"GET\" == \"GET\" && 200 < 300",
+              "result": "true"
+            },
+            {
+              "expr": "true && false",
+              "result": "false"
+            },
+            {
+              "expr": "true && null",
+              "result": "false"
+            }
+          ]
+        },
+        {
+          "symbol": "||",
+          "gloss": "either / or",
+          "examples": [
+            {
+              "expr": "true || false",
+              "result": "true"
+            },
+            {
+              "expr": "false || null",
+              "result": "false"
+            },
+            {
+              "expr": "true || null",
+              "result": "true"
+            }
+          ]
+        },
+        {
+          "symbol": "!",
+          "gloss": "not",
+          "examples": [
+            {
+              "expr": "!true",
+              "result": "false"
+            },
+            {
+              "expr": "!null",
+              "result": "true"
+            }
+          ]
+        },
+        {
+          "symbol": "??",
+          "gloss": "the left value unless it is null",
+          "examples": [
+            {
+              "expr": "\"nope\".parseInt() ?? -1",
+              "result": "-1",
+              "note": "the left is null, so the fallback stands in",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "(true ? null : [1, 2]) ?? [9]",
+              "result": "[9]",
+              "note": "a null array value uses the fallback"
+            },
+            {
+              "expr": "[] ?? [9]",
+              "result": "[]",
+              "note": "an empty array is already a value"
+            }
+          ]
+        },
+        {
+          "symbol": "?:",
+          "gloss": "ternary; if true, then take the first, otherwise take the second",
+          "examples": [
+            {
+              "expr": "200 < 300 ? \"ok\" : \"bad\"",
+              "result": "\"ok\""
+            },
+            {
+              "expr": "true ? 1 : 2.5",
+              "result": "1.0",
+              "note": "the branches widen to a common type"
+            },
+            {
+              "expr": "null ? \"yes\" : \"no\"",
+              "result": "\"no\""
+            }
+          ]
+        }
+      ],
+      "rejected": [
+        {
+          "expr": "\"10\" < 9",
+          "why": "Text and a number have no common type. Convert first: `\"10\".parseInt() < 9` is `false`."
+        },
+        {
+          "expr": "true > false",
+          "why": "`bool` has no ordering."
+        },
+        {
+          "expr": "0 || 200 < 300",
+          "why": "There is no truthiness: `||` takes `bool` operands."
+        }
+      ],
+      "notes": [
+        "Both operands of a comparison must have the same type, except that an `i64` beside an `f64` widens to `f64`. Ordering works on numbers, text, instants and spans. Text orders by Unicode code point, so it is case-sensitive: `\"Z\" < \"a\"` is `true`. `bool` and `bytes` take `==` and `!=` only.",
+        "Comparisons always return a boolean. Equality is true when both values are null, and false when only one is null. `!=` gives the opposite result. Ordering (`<`, `<=`, `>` and `>=`) is false if either value is null; null is not converted to zero.",
+        "`!`, `&&` and `||` read null as false and always return a boolean. For example, `!null` is `true`, `true && null` is `false`, and `false || null` is `false`. Non-null operands must be booleans; numbers and strings are not converted to true or false.",
+        "`??` tests null and nothing else, so `0` and `\"\"` pass through: `\"\" ?? \"fallback\"` is `\"\"`. It binds looser than `&&` and `||`, so `a ?? b && c` is `a ?? (b && c)`.",
+        "Every branch must compile. Branches whose types do not meet, such as a `str` and an `i64`, give a `variant`.",
+        "A `variant`, a value read from an open object `{...}` or made from one, has a type only per row. `== null`, `!= null`, `isNull` and `??` compile on it, and so does a read by a `str` or `i64` key, as `v.k`, `v[k]` or `v[0]`. A read gives a `variant`, null where the row's value holds nothing; a negative index counts from the end. Any other operator, condition or function argument needs a type first, as in `n: i64 = v`. A ternary whose branches are a `variant` and another type is a `variant`: each row keeps the value of the branch it took.",
+        "Null and an empty array are different. A conditional array value that selects null stays null: `== null` is true and `??` uses its fallback. The length of a null array is null; `length([])` is `0`."
+      ],
+      "functions": [
+        {
+          "name": "isNull",
+          "signature": "value.isNull()",
+          "summary": "True when the value is null or the field is absent.",
+          "examples": [
+            {
+              "expr": "\"\".isNull()",
+              "result": "false"
+            },
+            {
+              "expr": "\"nope\".parseInt().isNull()",
+              "result": "true",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "\"smeltr\".at(99).isNull()",
+              "result": "true",
+              "throws": ["IndexOutOfRange"]
+            },
+            {
+              "expr": "isNull(\"\")",
+              "note": "the same call, written as a function",
+              "result": "false"
+            }
+          ],
+          "notes": [
+            "A declared field a record lacks reads as null, so `isNull(user.id)` is how you test for absence."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "conversion",
+      "title": "Conversion",
+      "blurb": "Reading one type as another. A parse whose text does not convert is null on that row and throws a `CoercionRefused` exception on the record; it never returns an approximation. Blank text is null and throws nothing. Text that reads as an instant is read with [parseTime](#parseTime).",
+      "functions": [
+        {
+          "name": "toString",
+          "signature": "value.toString(form = \"base64\")",
+          "summary": "Renders a number, bool, datetime or duration as text, exactly as the JSON output would. Bytes render in the form named: `\"base64\"`, `\"hex\"` (two lowercase digits a byte) or `\"binary\"` (eight `0`s and `1`s a byte, high bit first). A form it does not know is null and throws a `CoercionRefused` exception.",
+          "examples": [
+            {
+              "expr": "404.toString()",
+              "result": "\"404\""
+            },
+            {
+              "expr": "\"1998-08-30T12:00:00Z\".parseTime().toString()",
+              "result": "\"1998-08-30T12:00:00.000000Z\""
+            },
+            {
+              "expr": "duration(1, \"s\").toString()",
+              "result": "\"1000000\"",
+              "note": "a span writes as its microsecond count"
+            },
+            {
+              "expr": "\"café\".encode(\"utf-8\").toString()",
+              "result": "\"Y2Fmw6k=\"",
+              "note": "bytes write as base64 where no form is named, as the JSON output writes them"
+            },
+            {
+              "expr": "\"café\".encode(\"utf-8\").toString(\"hex\")",
+              "result": "\"636166c3a9\""
+            },
+            {
+              "expr": "toString(404)",
+              "note": "the same call, written as a function",
+              "result": "\"404\""
+            }
+          ]
+        },
+        {
+          "name": "parseInt",
+          "signature": "value.parseInt(radix = 10)",
+          "summary": "Parses a whole string as an integer. Surrounding whitespace is allowed; trailing junk is not.",
+          "examples": [
+            {
+              "expr": "\"42\".parseInt()",
+              "result": "42"
+            },
+            {
+              "expr": "\" 42 \".parseInt()",
+              "result": "42",
+              "note": "surrounding space is ignored"
+            },
+            {
+              "expr": "\"12abc\".parseInt()",
+              "result": "null",
+              "note": "not `12`: the whole text must be a number",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "\"0x1f\".parseInt(16)",
+              "result": "31",
+              "note": "an explicit radix, 2 to 36"
+            },
+            {
+              "expr": "parseInt(\"ff\", 16)",
+              "result": "255",
+              "note": "the same call, written as a function"
+            }
+          ]
+        },
+        {
+          "name": "parseHex",
+          "signature": "value.parseHex()",
+          "summary": "Parses a hexadecimal string, with or without a `0x` prefix. An alias for `parseInt(value, 16)`.",
+          "examples": [
+            {
+              "expr": "\"0x1f\".parseHex()",
+              "result": "31"
+            },
+            {
+              "expr": "\"ff\".parseHex()",
+              "result": "255",
+              "note": "the `0x` is optional"
+            },
+            {
+              "expr": "\"zz\".parseHex()",
+              "result": "null",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "parseHex(\"ff\")",
+              "result": "255",
+              "note": "the same call, written as a function"
+            }
+          ]
+        },
+        {
+          "name": "parseFloat",
+          "signature": "value.parseFloat()",
+          "summary": "Parses a whole string as a floating-point number.",
+          "examples": [
+            {
+              "expr": "\"3.5\".parseFloat()",
+              "result": "3.5"
+            },
+            {
+              "expr": "\"1e3\".parseFloat()",
+              "result": "1000.0",
+              "note": "an `f64` always writes a decimal point, so it cannot be read back as an integer"
+            },
+            {
+              "expr": "\"3.5kb\".parseFloat()",
+              "result": "null",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "parseFloat(\"3.5\")",
+              "result": "3.5",
+              "note": "the same call, written as a function"
+            }
+          ]
+        },
+        {
+          "name": "parseBytes",
+          "signature": "value.parseBytes(form = \"base64\")",
+          "summary": "Reads text back into the bytes `toString` wrote, in the form named: `\"base64\"` (padded or not), `\"hex\"` (either case) or `\"binary\"`.",
+          "examples": [
+            {
+              "expr": "\"Y2Fmw6k=\".parseBytes().decode(\"utf-8\")",
+              "result": "\"café\""
+            },
+            {
+              "expr": "\"636166c3a9\".parseBytes(\"hex\").toString()",
+              "result": "\"Y2Fmw6k=\""
+            },
+            {
+              "expr": "\"not base64!\".parseBytes()",
+              "result": "null",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "parseBytes(\"Y2Fmw6k=\").toString(\"hex\")",
+              "note": "the same call, written as a function",
+              "result": "\"636166c3a9\""
+            }
+          ]
+        },
+        {
+          "name": "decode",
+          "signature": "bytes.decode(encoding)",
+          "summary": "Reads bytes as text in the encoding named: a WHATWG label such as `\"utf-8\"`, `\"utf-16le\"` or `\"latin1\"`, or `\"auto\"`, which detects as a source's `encoding` does. Bytes that do not decode become U+FFFD. An encoding it does not know is null and throws a `CoercionRefused` exception.",
+          "examples": [
+            {
+              "expr": "\"6361 66e9\".replaceAll(/ /, \"\").parseBytes(\"hex\").decode(\"latin1\")",
+              "result": "\"café\""
+            },
+            {
+              "expr": "\"Y2Fmw6k=\".parseBytes().decode(\"auto\")",
+              "result": "\"café\""
+            },
+            {
+              "expr": "\"Y2Fmw6k=\".parseBytes().decode(\"klingon\")",
+              "result": "null",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "decode(parseBytes(\"Y2Fmw6k=\"), \"utf-8\")",
+              "note": "the same call, written as a function",
+              "result": "\"café\""
+            }
+          ]
+        },
+        {
+          "name": "encode",
+          "signature": "text.encode(encoding)",
+          "summary": "The text's bytes in the encoding named, by the labels `decode` takes. `\"auto\"` names no encoding to write. A character the encoding cannot spell makes the result null and throws a `CoercionRefused` exception.",
+          "examples": [
+            {
+              "expr": "\"café\".encode(\"latin1\").toString(\"hex\")",
+              "result": "\"636166e9\""
+            },
+            {
+              "expr": "\"hi\".encode(\"utf-16le\").toString(\"hex\")",
+              "result": "\"68006900\""
+            },
+            {
+              "expr": "\"日本\".encode(\"latin1\")",
+              "result": "null",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "encode(\"café\", \"utf-8\").toString(\"hex\")",
+              "note": "the same call, written as a function",
+              "result": "\"636166c3a9\""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "numbers",
+      "title": "Numbers",
+      "blurb": "`i64` and `f64`. An `i64` beside an `f64` widens to `f64`. An arithmetic `i64` result never wraps. The bitwise operators take `i64` only and work over all 64 bits.",
+      "rows": [
+        {
+          "symbol": "+",
+          "gloss": "add numbers",
+          "examples": [
+            {
+              "expr": "200 + 1",
+              "result": "201"
+            }
+          ]
+        },
+        {
+          "symbol": "-",
+          "gloss": "subtract numbers",
+          "examples": [
+            {
+              "expr": "1000 - 1",
+              "result": "999"
+            }
+          ]
+        },
+        {
+          "symbol": "-",
+          "gloss": "negate",
+          "examples": [
+            {
+              "expr": "-(41)",
+              "result": "-41"
+            }
+          ]
+        },
+        {
+          "symbol": "*",
+          "gloss": "multiply",
+          "examples": [
+            {
+              "expr": "1.5 * 4",
+              "result": "6.0"
+            }
+          ]
+        },
+        {
+          "symbol": "/",
+          "gloss": "divide, always `f64`",
+          "examples": [
+            {
+              "expr": "1500 / 1000",
+              "result": "1.5"
+            },
+            {
+              "expr": "1 / 0",
+              "result": "null",
+              "note": "by zero is null, not infinity",
+              "throws": ["DivideByZero"]
+            }
+          ]
+        },
+        {
+          "symbol": "%",
+          "gloss": "remainder, signed like the left operand",
+          "examples": [
+            {
+              "expr": "-5 % 3",
+              "result": "-2"
+            },
+            {
+              "expr": "5 % -3",
+              "result": "2",
+              "note": "the sign comes from the left operand, not the right"
+            },
+            {
+              "expr": "5 % 0",
+              "result": "null",
+              "note": "a zero divisor is null, as dividing by zero is",
+              "throws": ["DivideByZero"]
+            }
+          ]
+        },
+        {
+          "symbol": "**",
+          "gloss": "power",
+          "examples": [
+            {
+              "expr": "3 ** 8",
+              "result": "6561.0"
+            },
+            {
+              "expr": "2 ** 3 ** 2",
+              "result": "512.0",
+              "note": "right-associative, so `2 ** (3 ** 2)`"
+            }
+          ]
+        },
+        {
+          "symbol": "&",
+          "gloss": "bits set in both",
+          "examples": [
+            {
+              "expr": "0xff & 0x0f",
+              "result": "15",
+              "note": "`11111111 & 00001111` = `00001111`"
+            }
+          ]
+        },
+        {
+          "symbol": "|",
+          "gloss": "bits set in either",
+          "examples": [
+            {
+              "expr": "6 | 3",
+              "result": "7",
+              "note": "`110 | 011` = `111`"
+            }
+          ]
+        },
+        {
+          "symbol": "^",
+          "gloss": "bits set in exactly one",
+          "examples": [
+            {
+              "expr": "6 ^ 3",
+              "result": "5",
+              "note": "`110 ^ 011` = `101`"
+            }
+          ]
+        },
+        {
+          "symbol": "~",
+          "gloss": "every bit flipped, so `~n` is `-n - 1`",
+          "examples": [
+            {
+              "expr": "~0",
+              "result": "-1",
+              "note": "`000…0` flipped is `111…1`, all 64 bits set"
+            },
+            {
+              "expr": "~6",
+              "result": "-7",
+              "note": "`000…0110` flipped is `111…1001`"
+            }
+          ]
+        },
+        {
+          "symbol": "<<",
+          "gloss": "shift toward the high end",
+          "examples": [
+            {
+              "expr": "1 << 8",
+              "result": "256"
+            }
+          ]
+        },
+        {
+          "symbol": ">>",
+          "gloss": "shift toward the low end, sign-preserving",
+          "examples": [
+            {
+              "expr": "-8 >> 1",
+              "result": "-4"
+            },
+            {
+              "expr": "256 >> 4",
+              "result": "16"
+            }
+          ]
+        }
+      ],
+      "rejected": [
+        {
+          "expr": "1.5 & 1",
+          "why": "Bitwise operators take `i64` only."
+        }
+      ],
+      "notes": [
+        "An `i64` result that does not fit, from `+`, `-`, `*`, negation, `abs`, `idiv`, `round`, `floor`, `ceil` or `trunc`, is null on that row and throws an `Overflow` exception on the record: `9223372036854775807 * 2` is null, not a wrapped negative.",
+        "A value divided by zero with `/`, `%` or `idiv` is null on that row and throws a `DivideByZero` exception on the record. A null divided by zero is null and throws nothing.",
+        "An `f64` result that is not finite, such as `1e308 * 10`, throws no exception. JSON has no spelling for it, so the output omits the field.",
+        "Bitwise operands are signed and already 64 bits wide, so there is no narrowing step and no unsigned shift. The shift count is taken modulo 64, and bits pushed off the end are gone: `1 << 65` is `2`, and `(1 << 62) << 2` is `0`."
+      ],
+      "functions": [
+        {
+          "name": "abs",
+          "signature": "value.abs()",
+          "summary": "Absolute value, keeping the input's type.",
+          "examples": [
+            {
+              "expr": "(-3).abs()",
+              "result": "3"
+            },
+            {
+              "expr": "abs(-2.5)",
+              "result": "2.5",
+              "note": "the same call, written as a function"
+            }
+          ]
+        },
+        {
+          "name": "min",
+          "signature": "min(a, b, ...)",
+          "summary": "The smallest of its arguments: an `i64` when every argument is one, else an `f64`.",
+          "examples": [
+            {
+              "expr": "min(200, 64)",
+              "result": "64"
+            },
+            {
+              "expr": "min(status, 500)",
+              "result": "404",
+              "given": ["status = 404"]
+            },
+            {
+              "expr": "min(200, 64, 128)",
+              "result": "64",
+              "note": "any number of arguments"
+            },
+            {
+              "expr": "min(3, 5.5)",
+              "result": "3.0",
+              "note": "one `f64` argument widens the result, so the answer is `3.0` and not `3`"
+            },
+            {
+              "expr": "status.min(500)",
+              "given": ["status = 404"],
+              "note": "the same call, written as a method",
+              "result": "404"
+            }
+          ]
+        },
+        {
+          "name": "max",
+          "signature": "max(a, b, ...)",
+          "summary": "The largest of its arguments: an `i64` when every argument is one, else an `f64`.",
+          "examples": [
+            {
+              "expr": "max(200, 64)",
+              "result": "200"
+            },
+            {
+              "expr": "max(64, 200, 128)",
+              "result": "200",
+              "note": "any number of arguments"
+            },
+            {
+              "expr": "max(3, 2.5)",
+              "result": "3.0",
+              "note": "the integer wins, and the answer is still `3.0` and not `3`"
+            },
+            {
+              "expr": "status.max(500)",
+              "given": ["status = 404"],
+              "note": "the same call as `max(status, 500)`, written as a method",
+              "result": "500"
+            }
+          ]
+        },
+        {
+          "name": "clamp",
+          "signature": "value.clamp(lo, hi)",
+          "summary": "The value pulled into `lo..hi`: `lo` when it is below, `hi` when it is above, itself in between. An `f64` if any argument is one.",
+          "examples": [
+            {
+              "expr": "width.clamp(0, 100)",
+              "given": ["width = 150"],
+              "result": "100"
+            },
+            {
+              "expr": "width.clamp(0, 100)",
+              "given": ["width = -20"],
+              "result": "0"
+            },
+            {
+              "expr": "width.clamp(0, 100)",
+              "given": ["width = 64"],
+              "result": "64"
+            },
+            {
+              "expr": "(1).clamp(0.5, 2)",
+              "result": "1.0",
+              "note": "one `f64` bound widens the result even when the value is kept, so the answer is `1.0` and not `1`"
+            },
+            {
+              "expr": "(1).clamp(10, 0)",
+              "note": "an inverted range satisfies nothing, so it is null rather than one of the ends",
+              "result": "null"
+            },
+            {
+              "expr": "clamp(width, 0, 100)",
+              "given": ["width = 150"],
+              "note": "the same call, written as a function",
+              "result": "100"
+            }
+          ]
+        },
+        {
+          "name": "round",
+          "signature": "value.round()",
+          "summary": "The nearest integer. A tie rounds away from zero, as `as i64` does.",
+          "examples": [
+            {
+              "expr": "2.4.round()",
+              "result": "2"
+            },
+            {
+              "expr": "2.5.round()",
+              "result": "3",
+              "note": "a tie rounds away from zero"
+            },
+            {
+              "expr": "-2.5.round()",
+              "result": "-3",
+              "note": "a literal binds the method before the minus: `-(2.5.round())`"
+            },
+            {
+              "expr": "(-2.5).round()",
+              "result": "-3",
+              "note": "parenthesized, the value itself rounds"
+            },
+            {
+              "expr": "round(2.5)",
+              "result": "3",
+              "note": "the same call, written as a function"
+            }
+          ]
+        },
+        {
+          "name": "floor",
+          "signature": "value.floor()",
+          "summary": "The largest integer no greater than the value.",
+          "examples": [
+            {
+              "expr": "2.9.floor()",
+              "result": "2"
+            },
+            {
+              "expr": "floor(-2.1)",
+              "result": "-3",
+              "note": "down, away from zero"
+            }
+          ]
+        },
+        {
+          "name": "ceil",
+          "signature": "value.ceil()",
+          "summary": "The smallest integer no less than the value.",
+          "examples": [
+            {
+              "expr": "2.1.ceil()",
+              "result": "3"
+            },
+            {
+              "expr": "ceil(-2.9)",
+              "result": "-2",
+              "note": "up, toward zero"
+            }
+          ]
+        },
+        {
+          "name": "trunc",
+          "signature": "value.trunc()",
+          "summary": "The fraction dropped, toward zero.",
+          "examples": [
+            {
+              "expr": "2.9.trunc()",
+              "result": "2"
+            },
+            {
+              "expr": "trunc(-2.9)",
+              "result": "-2",
+              "note": "toward zero, which is where it differs from `floor`"
+            }
+          ]
+        },
+        {
+          "name": "idiv",
+          "signature": "idiv(a, b)",
+          "summary": "Integer division, truncating toward zero: the pair of `%`.",
+          "examples": [
+            {
+              "expr": "idiv(7, 2)",
+              "result": "3"
+            },
+            {
+              "expr": "idiv(-7, 2)",
+              "result": "-3",
+              "note": "toward zero, so `idiv(a, b) * b + a % b` is `a`"
+            }
+          ]
+        },
+        {
+          "name": "sign",
+          "signature": "value.sign()",
+          "summary": "`-1`, `0` or `1`.",
+          "examples": [
+            {
+              "expr": "(-42).sign()",
+              "result": "-1"
+            },
+            {
+              "expr": "sign(0)",
+              "result": "0"
+            },
+            {
+              "expr": "sign(0.5)",
+              "result": "1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sequences",
+      "title": "Sequences",
+      "blurb": "A string and an array both have a length and positions, and the same functions reach into either. Positions count from zero and a negative one counts from the end; positions and lengths count Unicode characters, so a slice can never land mid-character.",
+      "rows": [
+        {
+          "symbol": "[]",
+          "gloss": "the element of an array at that position; negative counts from the end",
+          "examples": [
+            {
+              "expr": "fields[2]",
+              "result": "\"c\"",
+              "given": ["fields = \"a,b,c\".split(\",\")"]
+            },
+            {
+              "expr": "fields[-1]",
+              "result": "\"c\"",
+              "given": ["fields = \"a,b,c\".split(\",\")"],
+              "note": "the last element"
+            },
+            {
+              "expr": "fields[5]",
+              "result": "null",
+              "given": ["fields = \"a,b,c\".split(\",\")"],
+              "note": "past the end of an array is null",
+              "throws": ["IndexOutOfRange"]
+            }
+          ]
+        },
+        {
+          "symbol": "[]",
+          "gloss": "the character of a string at that position",
+          "examples": [
+            {
+              "expr": "method[0]",
+              "result": "\"G\"",
+              "given": ["method = \"GET\""]
+            },
+            {
+              "expr": "method[99]",
+              "result": "null",
+              "given": ["method = \"GET\""],
+              "throws": ["IndexOutOfRange"],
+              "note": "past the end of a string is null"
+            }
+          ]
+        },
+        {
+          "symbol": "[]",
+          "gloss": "the child of an object under that name",
+          "examples": [
+            {
+              "expr": "geo[\"city\"]",
+              "result": "\"Oslo\"",
+              "given": ["geo = {\"city\": \"Oslo\", \"lat\": 59}"],
+              "note": "a name, not a position"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        "For arrays and strings, `x[i]` is `at(x, i)`, including negative positions and out-of-range results.",
+        "A position past either end reads null and throws an `IndexOutOfRange` exception on the record.",
+        "On a named field, a fixed string key is part of the [field name](#names): `geo[\"city\"]` reads `geo.city`."
+      ],
+      "functions": [
+        {
+          "name": "length",
+          "signature": "value.length()",
+          "summary": "Characters in a string, bytes in a `bytes` value, or elements in an array.",
+          "examples": [
+            {
+              "expr": "line.length()",
+              "result": "9",
+              "given": ["line = \"disk full\""]
+            },
+            {
+              "expr": "\"🔥 alert\".length()",
+              "result": "7",
+              "note": "characters, not bytes and not UTF-16 units: an emoji counts once"
+            },
+            {
+              "expr": "line.split(\",\").length()",
+              "result": "3",
+              "given": ["line = \"a,b,c\""],
+              "note": "elements, for an array"
+            },
+            {
+              "expr": "length(line)",
+              "note": "the same call, written as a function",
+              "result": "9",
+              "given": ["line = \"disk full\""]
+            }
+          ]
+        },
+        {
+          "name": "slice",
+          "signature": "value.slice(start[, end])",
+          "summary": "The part of a string — or of an array — from `start` up to but not including `end`. A negative index counts from the end; `end` defaults to the length.",
+          "examples": [
+            {
+              "expr": "line.slice(7)",
+              "result": "\"disk full\"",
+              "given": ["line = \"error: disk full\""]
+            },
+            {
+              "expr": "\"1998-08-30\".slice(0, 4)",
+              "result": "\"1998\"",
+              "note": "`end` is exclusive"
+            },
+            {
+              "expr": "path.slice(-6)",
+              "result": "\"things\"",
+              "given": ["path = \"/api/v2/things\""],
+              "note": "a negative start counts from the end"
+            },
+            {
+              "expr": "\"a,b,c,d\".split(\",\").slice(1, 3)",
+              "result": "[\"b\",\"c\"]",
+              "note": "arrays slice the same way"
+            },
+            {
+              "expr": "slice(line, 7)",
+              "note": "the same call, written as a function",
+              "result": "\"disk full\"",
+              "given": ["line = \"error: disk full\""]
+            }
+          ]
+        },
+        {
+          "name": "at",
+          "signature": "value.at(index)",
+          "summary": "One element of an array, one character of a string, or one field of a declared object.",
+          "examples": [
+            {
+              "expr": "\"smeltr\".at(0)",
+              "result": "\"s\""
+            },
+            {
+              "expr": "\"smeltr\".at(-1)",
+              "result": "\"r\"",
+              "note": "a negative index counts from the end"
+            },
+            {
+              "expr": "\"smeltr\".at(99)",
+              "result": "null",
+              "throws": ["IndexOutOfRange"],
+              "note": "past either end of a string is null"
+            },
+            {
+              "expr": "line.split(\",\")[-1]",
+              "result": "\"c\"",
+              "given": ["line = \"a,b,c\""],
+              "note": "`[...]` is `at`, negative index included"
+            },
+            {
+              "expr": "at(\"smeltr\", 0)",
+              "note": "the same call, written as a function",
+              "result": "\"s\""
+            },
+            {
+              "given": ["payload.status = 200"],
+              "expr": "payload[\"status\"]",
+              "result": "200",
+              "note": "a fixed string key on a named field"
+            }
+          ],
+          "notes": [
+            "For arrays and strings, `value[index]` is the same as `value.at(index)`.",
+            "On a named field, `payload[\"status\"]` resolves as `payload.status`. A declared field a record lacks reads as null. This named-path form differs from calling `at` on an object value.",
+            "An object value passed to `at` needs a declared field set and a literal key. An unknown key does not compile. For a declared array of objects, `tags[0][\"name\"]` reads a field of one element."
+          ]
+        },
+        {
+          "name": "indexOf",
+          "signature": "value.indexOf(search)",
+          "summary": "Where `search` first occurs in a string, or which element of an array equals it. `-1` when it does not.",
+          "examples": [
+            {
+              "expr": "line.indexOf(\",\")",
+              "result": "1",
+              "given": ["line = \"a,b,c\""]
+            },
+            {
+              "expr": "\"GET /health\".indexOf(\"POST\")",
+              "result": "-1",
+              "note": "`-1`, not null"
+            },
+            {
+              "expr": "line.split(\",\").indexOf(\"c\")",
+              "result": "2",
+              "given": ["line = \"a,b,c\""]
+            },
+            {
+              "expr": "indexOf(line, \",\")",
+              "note": "the same call, written as a function",
+              "result": "1",
+              "given": ["line = \"a,b,c\""]
+            }
+          ]
+        },
+        {
+          "name": "includes",
+          "signature": "value.includes(search)",
+          "summary": "Whether a string contains `search`, or an array contains an element equal to it.",
+          "examples": [
+            {
+              "expr": "msg.includes(\"reset\")",
+              "result": "true",
+              "given": ["msg = \"connection reset by peer\""]
+            },
+            {
+              "expr": "\"GET,HEAD\".split(\",\").includes(\"HEAD\")",
+              "result": "true",
+              "note": "arrays too"
+            },
+            {
+              "expr": "includes(msg, \"reset\")",
+              "note": "the same call, written as a function",
+              "result": "true",
+              "given": ["msg = \"connection reset by peer\""]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "strings",
+      "title": "Strings",
+      "blurb": "A `str` is text, always valid UTF-8. `+` joins two. [length](#length), [slice](#slice), [at](#at), [indexOf](#indexOf) and [includes](#includes) take a string or an array.",
+      "rows": [
+        {
+          "symbol": "+",
+          "gloss": "join text",
+          "examples": [
+            {
+              "expr": "\"GET\" + \" /health\"",
+              "result": "\"GET /health\""
+            }
+          ]
+        }
+      ],
+      "rejected": [
+        {
+          "expr": "\"a\" + 1",
+          "why": "No implicit stringification. Write `\"a\" + (1).toString()`."
+        }
+      ],
+      "notes": [
+        "There is no implicit stringification: a number has to go through `toString()` before it can be joined to text."
+      ],
+      "functions": [
+        {
+          "name": "lastIndexOf",
+          "signature": "value.lastIndexOf(search)",
+          "summary": "Where `search` last occurs, or `-1`. Useful for splitting on the final separator.",
+          "examples": [
+            {
+              "expr": "\"/api/v2/things\".lastIndexOf(\"/\")",
+              "result": "7"
+            },
+            {
+              "expr": "\"a.b.c\".lastIndexOf(\".\")",
+              "result": "3"
+            },
+            {
+              "expr": "lastIndexOf(\"/api/v2/things\", \"/\")",
+              "note": "the same call, written as a function",
+              "result": "7"
+            }
+          ]
+        },
+        {
+          "name": "startsWith",
+          "signature": "value.startsWith(prefix)",
+          "summary": "Whether the string begins with `prefix`.",
+          "examples": [
+            {
+              "expr": "path.startsWith(\"/api/\")",
+              "result": "true",
+              "given": ["path = \"/api/v2/things\""]
+            },
+            {
+              "expr": "\"GET /health\".startsWith(\"POST\")",
+              "result": "false"
+            },
+            {
+              "expr": "startsWith(path, \"/api/\")",
+              "note": "the same call, written as a function",
+              "result": "true",
+              "given": ["path = \"/api/v2/things\""]
+            }
+          ]
+        },
+        {
+          "name": "endsWith",
+          "signature": "value.endsWith(suffix)",
+          "summary": "Whether the string ends with `suffix`.",
+          "examples": [
+            {
+              "expr": "\"app.log.gz\".endsWith(\".gz\")",
+              "result": "true"
+            },
+            {
+              "expr": "endsWith(\"app.log.gz\", \".gz\")",
+              "note": "the same call, written as a function",
+              "result": "true"
+            }
+          ]
+        },
+        {
+          "name": "toUpperCase",
+          "signature": "value.toUpperCase()",
+          "summary": "Uppercased. Unicode-aware, so a character can expand.",
+          "examples": [
+            {
+              "expr": "level.toUpperCase()",
+              "result": "\"WARN\"",
+              "given": ["level = \"warn\""]
+            },
+            {
+              "expr": "\"straße\".toUpperCase()",
+              "result": "\"STRASSE\"",
+              "note": "Unicode-aware, so one character can become two"
+            },
+            {
+              "expr": "toUpperCase(level)",
+              "note": "the same call, written as a function",
+              "result": "\"WARN\"",
+              "given": ["level = \"warn\""]
+            }
+          ]
+        },
+        {
+          "name": "toLowerCase",
+          "signature": "value.toLowerCase()",
+          "summary": "Lowercased, Unicode-aware. Lowercase both sides to compare them without regard to case.",
+          "examples": [
+            {
+              "expr": "\"WARN\".toLowerCase()",
+              "result": "\"warn\""
+            },
+            {
+              "expr": "\"Get\".toLowerCase() == \"get\"",
+              "result": "true"
+            },
+            {
+              "expr": "toLowerCase(\"WARN\")",
+              "note": "the same call, written as a function",
+              "result": "\"warn\""
+            }
+          ]
+        },
+        {
+          "name": "trim",
+          "signature": "value.trim()",
+          "summary": "Whitespace removed from both ends.",
+          "examples": [
+            {
+              "expr": "raw.trim()",
+              "result": "\"disk full\"",
+              "given": ["raw = \"  disk full  \""]
+            },
+            {
+              "expr": "\"\\ttabbed\\n\".trim()",
+              "result": "\"tabbed\"",
+              "note": "every kind of whitespace, not just spaces"
+            },
+            {
+              "expr": "trim(raw)",
+              "note": "the same call, written as a function",
+              "result": "\"disk full\"",
+              "given": ["raw = \"  disk full  \""]
+            }
+          ]
+        },
+        {
+          "name": "trimStart",
+          "signature": "value.trimStart()",
+          "summary": "Whitespace removed from the start only.",
+          "examples": [
+            {
+              "expr": "\"  indented\".trimStart()",
+              "result": "\"indented\""
+            },
+            {
+              "expr": "trimStart(\"  indented\")",
+              "note": "the same call, written as a function",
+              "result": "\"indented\""
+            }
+          ]
+        },
+        {
+          "name": "trimEnd",
+          "signature": "value.trimEnd()",
+          "summary": "Whitespace removed from the end only.",
+          "examples": [
+            {
+              "expr": "\"trailing   \".trimEnd()",
+              "result": "\"trailing\""
+            },
+            {
+              "expr": "trimEnd(\"trailing   \")",
+              "note": "the same call, written as a function",
+              "result": "\"trailing\""
+            }
+          ]
+        },
+        {
+          "name": "padStart",
+          "signature": "value.padStart(length, pad = \" \")",
+          "summary": "Pads the front with `pad` — a space by default — until the string is `length` characters. Already long enough is returned unchanged.",
+          "examples": [
+            {
+              "expr": "\"7\".padStart(3, \"0\")",
+              "result": "\"007\""
+            },
+            {
+              "expr": "\"5\".padStart(3)",
+              "result": "\"  5\"",
+              "note": "the default pad is a space"
+            },
+            {
+              "expr": "id.toString().padStart(5, \"0\")",
+              "result": "\"00042\"",
+              "given": ["id = 42"]
+            },
+            {
+              "expr": "\"toolong\".padStart(3, \"0\")",
+              "result": "\"toolong\"",
+              "note": "never truncates"
+            },
+            {
+              "expr": "\"x\".padStart(2000000000)",
+              "result": "null",
+              "note": "a result over 16 MiB is null and throws nothing"
+            },
+            {
+              "expr": "padStart(\"7\", 3, \"0\")",
+              "note": "the same call, written as a function",
+              "result": "\"007\""
+            }
+          ]
+        },
+        {
+          "name": "padEnd",
+          "signature": "value.padEnd(length, pad = \" \")",
+          "summary": "Pads the end with `pad`, a space by default, until the string is `length` characters. Already long enough is returned unchanged.",
+          "examples": [
+            {
+              "expr": "\"id\".padEnd(5, \".\")",
+              "result": "\"id...\""
+            },
+            {
+              "expr": "\"hi\".padEnd(4)",
+              "result": "\"hi  \"",
+              "note": "the default pad is a space"
+            },
+            {
+              "expr": "padEnd(\"id\", 5, \".\")",
+              "note": "the same call, written as a function",
+              "result": "\"id...\""
+            }
+          ]
+        },
+        {
+          "name": "repeat",
+          "signature": "value.repeat(count)",
+          "summary": "The string repeated `count` times.",
+          "examples": [
+            {
+              "expr": "\"ab\".repeat(3)",
+              "result": "\"ababab\""
+            },
+            {
+              "expr": "\"x\".repeat(0)",
+              "result": "\"\""
+            },
+            {
+              "expr": "\"x\".repeat(-1)",
+              "result": "null",
+              "note": "a negative count, or a result over 16 MiB, is null"
+            },
+            {
+              "expr": "repeat(\"ab\", 3)",
+              "note": "the same call, written as a function",
+              "result": "\"ababab\""
+            }
+          ]
+        },
+        {
+          "name": "md5",
+          "signature": "value.md5()",
+          "summary": "The MD5 digest of the bytes, or of a text's UTF-8 bytes, in lowercase hex. A fingerprint for spotting repeats, never a security check.",
+          "examples": [
+            {
+              "expr": "\"abc\".md5()",
+              "result": "\"900150983cd24fb0d6963f7d28e17f72\""
+            }
+          ]
+        },
+        {
+          "name": "sha1",
+          "signature": "value.sha1()",
+          "summary": "The SHA-1 digest of the bytes, or of a text's UTF-8 bytes, in lowercase hex.",
+          "examples": [
+            {
+              "expr": "\"abc\".sha1()",
+              "result": "\"a9993e364706816aba3e25717850c26c9cd0d89d\""
+            }
+          ]
+        },
+        {
+          "name": "sha256",
+          "signature": "value.sha256()",
+          "summary": "The SHA-256 digest of the bytes, or of a text's UTF-8 bytes, in lowercase hex.",
+          "examples": [
+            {
+              "expr": "\"abc\".sha256()",
+              "result": "\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\""
+            }
+          ]
+        },
+        {
+          "name": "sha512",
+          "signature": "value.sha512()",
+          "summary": "The SHA-512 digest of the bytes, or of a text's UTF-8 bytes, in lowercase hex.",
+          "examples": [
+            {
+              "expr": "\"abc\".sha512().slice(0, 16)",
+              "result": "\"ddaf35a193617aba\"",
+              "note": "the first 16 of 128 digits"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "regex",
+      "title": "Regular expressions",
+      "blurb": "A pattern is written as a literal, `/[0-9]+/`, and compiled once, when the pipeline is compiled, not per row. The flags are `i` to ignore case, `m` to let `^` and `$` match at each line, and `s` to let `.` match a newline.",
+      "functions": [
+        {
+          "name": "test",
+          "signature": "value.test(/pattern/)",
+          "summary": "Whether the pattern matches anywhere in the value, as a `bool`. Use it in a `Drop` condition or a route.",
+          "examples": [
+            {
+              "expr": "\"GET /health\".test(/^GET/)",
+              "result": "true"
+            },
+            {
+              "expr": "\"id=abc\".test(/^id=[0-9]+$/)",
+              "result": "false"
+            },
+            {
+              "expr": "\"Error: nope\".test(/error/i)",
+              "result": "true"
+            },
+            {
+              "expr": "test(\"GET /health\", /^GET/)",
+              "note": "the same call, written as a function",
+              "result": "true"
+            }
+          ]
+        },
+        {
+          "name": "match",
+          "signature": "value.match(/pattern/)",
+          "summary": "The whole match followed by each capture group, as an array — or null when nothing matches.",
+          "examples": [
+            {
+              "expr": "\"2026-08-30\".match(/([0-9]+)-([0-9]+)-([0-9]+)/)",
+              "result": "[\"2026-08-30\",\"2026\",\"08\",\"30\"]"
+            },
+            {
+              "expr": "\"v=17\".match(/v=([0-9]+)/).at(1)",
+              "result": "\"17\""
+            },
+            {
+              "expr": "\"nothing here\".match(/[0-9]+/)",
+              "result": "null"
+            },
+            {
+              "expr": "match(\"2026-08-30\", /([0-9]+)-([0-9]+)-([0-9]+)/)",
+              "note": "the same call, written as a function",
+              "result": "[\"2026-08-30\",\"2026\",\"08\",\"30\"]"
+            }
+          ],
+          "notes": ["Element 0 is the whole match, so a capture group is at 1."]
+        },
+        {
+          "name": "replaceFirst",
+          "signature": "value.replaceFirst(/pattern/, replacement)",
+          "summary": "The value with the first match replaced. `$1`, `$<name>` and `$&` in the replacement refer back to the match.",
+          "examples": [
+            {
+              "expr": "\"a1b2\".replaceFirst(/[0-9]/, \"#\")",
+              "result": "\"a#b2\"",
+              "note": "the first match only"
+            },
+            {
+              "expr": "\"2026-08-30\".replaceFirst(/([0-9]+)-([0-9]+)-([0-9]+)/, \"$3/$2/$1\")",
+              "result": "\"30/08/2026\"",
+              "note": "capture groups, reordered"
+            },
+            {
+              "expr": "replaceFirst(\"user=alice\", /user=(.+)/, \"user=***\")",
+              "result": "\"user=***\"",
+              "note": "the same call, written as a function"
+            }
+          ]
+        },
+        {
+          "name": "replaceAll",
+          "signature": "value.replaceAll(/pattern/, replacement)",
+          "summary": "The value with every match replaced.",
+          "examples": [
+            {
+              "expr": "\"a1b2\".replaceAll(/[0-9]/, \"#\")",
+              "result": "\"a#b#\"",
+              "note": "every match, where `replaceFirst` takes one"
+            },
+            {
+              "expr": "\"user=alice\".replaceAll(/user=(.+)/, \"user=***\")",
+              "result": "\"user=***\""
+            },
+            {
+              "expr": "replaceAll(\"a1b2\", /[0-9]/, \"#\")",
+              "result": "\"a#b#\"",
+              "note": "the same call, written as a function"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "arrays",
+      "title": "Arrays",
+      "blurb": "An `array<T>` holds elements of the one type `T`. `filter` keeps the elements whose condition is true and `map` computes a value for each element. [length](#length), [slice](#slice), [at](#at), [indexOf](#indexOf) and [includes](#includes) take an array or a string.",
+      "rows": [
+        {
+          "symbol": "+",
+          "gloss": "join two arrays",
+          "examples": [
+            {
+              "expr": "line.split(\",\") + more.split(\",\")",
+              "result": "[\"a\",\"b\",\"c\",\"d\"]",
+              "given": ["line = \"a,b\"", "more = \"c,d\""]
+            }
+          ]
+        }
+      ],
+      "notes": [
+        "`+` joins two arrays of the same element type. It never appends a single element, since `xs + y` would be ambiguous when `y` is itself an array; [push](#push) appends."
+      ],
+      "rejected": [
+        {
+          "expr": "[\"a\", \"b\"] + \"c\"",
+          "why": "`+` joins two arrays; use `push` to append an element."
+        }
+      ],
+      "functions": [
+        {
+          "name": "map",
+          "signature": "array.map(item => expression)",
+          "summary": "A new array with one computed value for each element. The source array is unchanged.",
+          "notes": [
+            "It compiles in an Eval or Code step. In a route condition, a delivery condition or a capture filter it does not compile.",
+            "The arrow takes one parameter. Its body is one expression, or a block whose last expression is the value. An arrow may call local functions and hold another arrow."
+          ],
+          "examples": [
+            {
+              "expr": "[1, 2, 3].map(x => x * 2)",
+              "result": "[2,4,6]"
+            },
+            {
+              "expr": "map([1, 2, 3], x => x * 2)",
+              "result": "[2,4,6]",
+              "note": "the same call in function form"
+            }
+          ]
+        },
+        {
+          "name": "filter",
+          "signature": "array.filter(item => condition)",
+          "summary": "A new array of the elements whose condition is true. It filters elements inside a record; a Drop step discards the whole record.",
+          "notes": [
+            "It compiles in an Eval or Code step. In a route condition, a delivery condition or a capture filter it does not compile.",
+            "The arrow takes one parameter. Its body is one expression, or a block whose last expression is the value. An arrow may call local functions and hold another arrow.",
+            "A null condition counts as false. When no element matches, the result is an empty array."
+          ],
+          "examples": [
+            {
+              "expr": "[1, 2, 3, 4].filter(x => x > 2)",
+              "result": "[3,4]"
+            },
+            {
+              "expr": "[1, 2].filter(x => x > 9)",
+              "result": "[]"
+            },
+            {
+              "expr": "filter([1, 2, 3], x => x > 1).map(x => x * 2)",
+              "result": "[4,6]",
+              "note": "filter and then transform the kept elements"
+            }
+          ]
+        },
+        {
+          "name": "split",
+          "signature": "value.split(delimiter)",
+          "summary": "Splits a string into an array on a literal delimiter or a regex. An empty delimiter splits into characters.",
+          "examples": [
+            {
+              "expr": "\"GET /health HTTP/1.1\".split(\" \")[2]",
+              "result": "\"HTTP/1.1\"",
+              "note": "index the array with `[...]` -- one field out of a delimited line"
+            },
+            {
+              "expr": "line.split(\",\")",
+              "result": "[\"a\",\"b\",\"c\"]",
+              "given": ["line = \"a,b,c\""]
+            },
+            {
+              "expr": "\"a1b22c\".split(/[0-9]+/)",
+              "result": "[\"a\",\"b\",\"c\"]",
+              "note": "a regex separator splits on runs"
+            },
+            {
+              "expr": "\"abc\".split(\"\")",
+              "result": "[\"a\",\"b\",\"c\"]"
+            },
+            {
+              "expr": "split(line, \" \")[2]",
+              "note": "the same call, written as a function",
+              "result": "\"HTTP/1.1\"",
+              "given": ["line = \"GET /health HTTP/1.1\""]
+            }
+          ]
+        },
+        {
+          "name": "join",
+          "signature": "array.join(separator)",
+          "summary": "The elements as one string, separated by `separator`.",
+          "examples": [
+            {
+              "expr": "line.split(\",\").join(\" | \")",
+              "result": "\"a | b | c\"",
+              "given": ["line = \"a,b,c\""]
+            },
+            {
+              "expr": "\"a,b\".split(\",\").join(\"\")",
+              "result": "\"ab\""
+            },
+            {
+              "expr": "join(line.split(\",\"), \" | \")",
+              "note": "the same call, written as a function",
+              "result": "\"a | b | c\"",
+              "given": ["line = \"a,b,c\""]
+            }
+          ]
+        },
+        {
+          "name": "push",
+          "signature": "array.push(value, ...)",
+          "summary": "The array with every value appended. A null value is a position, as it is in `[\"a\", null]`.",
+          "examples": [
+            {
+              "expr": "line.split(\",\").push(\"c\")",
+              "result": "[\"a\",\"b\",\"c\"]",
+              "given": ["line = \"a,b\""]
+            },
+            {
+              "expr": "x.push(\"a\")",
+              "result": "[\"a\"]",
+              "given": ["x = [] as array<str>"],
+              "note": "`[]` has no element type of its own, so the name that holds it declares one"
+            },
+            {
+              "expr": "line.split(\",\").push(\"c\", \"d\", \"e\")",
+              "result": "[\"a\",\"b\",\"c\",\"d\",\"e\"]",
+              "given": ["line = \"a,b\""],
+              "note": "every value in one call -- a loop that pushes rebuilds the whole array each time round"
+            },
+            {
+              "expr": "line.split(\",\").push(parseInt(\"x\").toString())",
+              "result": "[\"a\",\"b\",null]",
+              "given": ["line = \"a,b\""],
+              "note": "a null value is a position, so every value keeps its place",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "line.split(\",\").push(\"c\").join(\" | \")",
+              "result": "\"a | b | c\"",
+              "given": ["line = \"a,b\""],
+              "note": "the new array comes back, so it goes straight into the next call"
+            },
+            {
+              "expr": "push(line.split(\",\"), \"c\")",
+              "note": "the same call, written as a function",
+              "result": "[\"a\",\"b\",\"c\"]",
+              "given": ["line = \"a,b\""]
+            }
+          ]
+        },
+        {
+          "name": "insert",
+          "signature": "array.insert(index, value, ...)",
+          "summary": "The array with every value inserted before `index`. `push` is this with the position at the end.",
+          "examples": [
+            {
+              "expr": "line.split(\",\").insert(2, \"c\")",
+              "result": "[\"a\",\"b\",\"c\",\"d\"]",
+              "given": ["line = \"a,b,d\""]
+            },
+            {
+              "expr": "line.split(\",\").insert(-1, \"z\")",
+              "result": "[\"a\",\"z\",\"b\"]",
+              "given": ["line = \"a,b\""],
+              "note": "`-1` is the last element, so the value lands before it -- to append, use `push`"
+            },
+            {
+              "expr": "line.split(\",\").insert(1, \"x\", \"y\")",
+              "result": "[\"a\",\"x\",\"y\",\"b\"]",
+              "given": ["line = \"a,b\""]
+            },
+            {
+              "expr": "line.split(\",\").insert(1, parseInt(\"x\").toString())",
+              "result": "[\"a\",null,\"b\"]",
+              "given": ["line = \"a,b\""],
+              "note": "a null value is a position here too",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "insert(line.split(\",\"), 2, \"c\")",
+              "note": "the same call, written as a function",
+              "result": "[\"a\",\"b\",\"c\",\"d\"]",
+              "given": ["line = \"a,b,d\""]
+            }
+          ],
+          "notes": [
+            "An index past either end clamps. A null index makes the result null. A null value takes a position."
+          ]
+        },
+        {
+          "name": "remove",
+          "signature": "array.remove(index)",
+          "summary": "The array without the element at `index`. The elements after it move up one.",
+          "examples": [
+            {
+              "expr": "line.split(\",\").remove(1)",
+              "result": "[\"a\",\"c\"]",
+              "given": ["line = \"a,b,c\""]
+            },
+            {
+              "expr": "line.split(\",\").remove(-1)",
+              "result": "[\"a\",\"b\"]",
+              "given": ["line = \"a,b,c\""],
+              "note": "`-1` is the last element, as it is for `at`"
+            },
+            {
+              "expr": "line.split(\",\").remove(5)",
+              "result": "[\"a\",\"b\",\"c\"]",
+              "given": ["line = \"a,b,c\""],
+              "note": "an index outside the array removes nothing"
+            }
+          ],
+          "notes": ["A null array or index makes the result null."]
+        },
+        {
+          "name": "resize",
+          "signature": "array.resize(size)",
+          "summary": "The array with exactly `size` positions: its first `size`, or its own followed by positions that hold nothing.",
+          "examples": [
+            {
+              "expr": "line.split(\",\").resize(2)",
+              "result": "[\"a\",\"b\"]",
+              "given": ["line = \"a,b,c\""]
+            },
+            {
+              "expr": "line.split(\",\").resize(4)",
+              "result": "[\"a\",\"b\",\"c\",null]",
+              "given": ["line = \"a,b,c\""],
+              "note": "a new position holds nothing until a write fills it"
+            },
+            {
+              "expr": "resize([] as array<str>, 2)",
+              "result": "[null,null]",
+              "note": "sized before any data arrives; each position holds nothing until a write fills it"
+            }
+          ],
+          "notes": ["A negative or null size, or a null array, makes the result null."]
+        },
+        {
+          "name": "concat",
+          "signature": "array.concat(other, ...)",
+          "summary": "One array with every element of all of them, in order. `a + b` is the same call.",
+          "examples": [
+            {
+              "expr": "line.split(\",\").concat([\"c\", \"d\"])",
+              "result": "[\"a\",\"b\",\"c\",\"d\"]",
+              "given": ["line = \"a,b\""]
+            },
+            {
+              "expr": "line.split(\",\").concat([\"c\"], [\"d\", \"e\"])",
+              "result": "[\"a\",\"b\",\"c\",\"d\",\"e\"]",
+              "given": ["line = \"a,b\""],
+              "note": "any number of arrays, in one pass"
+            },
+            {
+              "expr": "concat(line.split(\",\"), [\"c\", \"d\"])",
+              "note": "the same call, written as a function",
+              "result": "[\"a\",\"b\",\"c\",\"d\"]",
+              "given": ["line = \"a,b\""]
+            }
+          ]
+        },
+        {
+          "name": "sort",
+          "signature": "array.sort(descending)",
+          "summary": "The elements in order: text by its bytes, numbers by value, `false` before `true`. `descending` is optional. Equal elements keep their order and nulls go last.",
+          "examples": [
+            {
+              "expr": "[\"b\", \"c\", \"a\"].sort()",
+              "result": "[\"a\",\"b\",\"c\"]"
+            },
+            {
+              "expr": "[3, 1, 2].sort(true)",
+              "result": "[3,2,1]",
+              "note": "descending"
+            },
+            {
+              "expr": "[2, null, 1].sort()",
+              "result": "[1,2,null]",
+              "note": "nulls last"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "datetime",
+      "title": "Dates and times",
+      "blurb": "A datetime is an instant in UTC, microsecond-resolution, and serializes as ISO 8601. `now()` is read once per record, so every route a record takes sees the same instant. There is no local time zone: a log line's own offset is read when it is parsed and kept nowhere else.",
+      "rows": [
+        {
+          "symbol": "+",
+          "gloss": "advance an instant",
+          "examples": [
+            {
+              "expr": "\"1998-08-30\".parseTime() + duration(90, \"s\")",
+              "result": "\"1998-08-30T00:01:30.000000Z\""
+            },
+            {
+              "expr": "now() + duration(1, \"h\") > now()",
+              "result": "true",
+              "note": "`now()` is read once per record, so both of these are the same instant"
+            }
+          ]
+        },
+        {
+          "symbol": "-",
+          "gloss": "wind an instant back",
+          "examples": [
+            {
+              "expr": "\"1998-08-30\".parseTime() - duration(1, \"d\")",
+              "result": "\"1998-08-29T00:00:00.000000Z\""
+            }
+          ]
+        },
+        {
+          "symbol": "-",
+          "gloss": "the span between two instants",
+          "examples": [
+            {
+              "expr": "\"1998-08-31\".parseTime() - \"1998-08-30\".parseTime() == duration(1, \"d\")",
+              "result": "true"
+            }
+          ]
+        }
+      ],
+      "rejected": [
+        {
+          "expr": "\"1998-08-30T12:00:00Z\".parseTime() + \"1998-08-30T12:00:00Z\".parseTime()",
+          "why": "Two instants have no sum. Subtract them for a span."
+        }
+      ],
+      "notes": [
+        "[Comparison](#tests) orders instants: `start < end` is true when `start` is earlier."
+      ],
+      "functions": [
+        {
+          "name": "now",
+          "signature": "now()",
+          "group": "The clock",
+          "summary": "The current instant. Captured once per record, so every route a record takes sees the same value.",
+          "examples": [
+            {
+              "expr": "now().year() >= 2026",
+              "result": "true"
+            }
+          ]
+        },
+        {
+          "name": "parseTime",
+          "signature": "value.parseTime([format][, reference = now()])",
+          "group": "Reading text",
+          "summary": "Parses text into a datetime. With no format, a run of digits is a compact date when it reads as one (`YYYYMMDD` or `YYYYMMDDHHMMSS`), else a Unix epoch whose unit comes from its magnitude — seconds below 10^11, then milliseconds, microseconds and nanoseconds at each further thousand — and other text is matched against the common shapes — ISO 8601, `YYYY-MM-DD HH:MM:SS`, `YYYY/MM/DD HH:MM:SS`, syslog's `Mon  D HH:MM:SS`, and Apache's `[D/Mon/YYYY:HH:MM:SS +ZZZZ]`. Give a `strftime` format to pin it, and a reference instant to fix the year a syslog stamp does not carry. A parser's declared `datetime` field is this call: the bare type detects, and `{\"type\":\"datetime\",\"format\":...}` pins.",
+          "examples": [
+            {
+              "expr": "\"1998-08-30T12:00:00Z\".parseTime()",
+              "result": "\"1998-08-30T12:00:00.000000Z\"",
+              "group": "Reading what it finds"
+            },
+            {
+              "expr": "\"1998-08-30 12:34:56\".parseTime().hour()",
+              "result": "12",
+              "group": "Reading what it finds"
+            },
+            {
+              "expr": "\"904478400\".parseTime()",
+              "note": "ten digits of seconds; the same instant in milliseconds, `904478400000`, reads the same",
+              "result": "\"1998-08-30T12:00:00.000000Z\"",
+              "group": "Reading what it finds"
+            },
+            {
+              "expr": "\"904478400000\".parseTime() == \"904478400\".parseTime()",
+              "result": "true",
+              "group": "Reading what it finds"
+            },
+            {
+              "expr": "\"19980830\".parseTime()",
+              "note": "eight digits that read as a date are that date, not a count of seconds",
+              "result": "\"1998-08-30T00:00:00.000000Z\"",
+              "group": "Reading what it finds"
+            },
+            {
+              "expr": "\"30/08/1998\".parseTime(\"%d/%m/%Y\")",
+              "result": "\"1998-08-30T00:00:00.000000Z\"",
+              "group": "Pinning the shape"
+            },
+            {
+              "expr": "\"2026-08-30 12:00:00 CEST\".parseTime(\"%Y-%m-%d %H:%M:%S %z\")",
+              "note": "a zone name outside the set `%z` takes is null, never a guess",
+              "result": "null",
+              "group": "Pinning the shape",
+              "throws": ["CoercionRefused"]
+            },
+            {
+              "expr": "\"2026-08-30 12:00:00 CEST\".replaceAll(/CEST/, \"+0200\").parseTime(\"%Y-%m-%d %H:%M:%S %z\")",
+              "note": "give the name the offset it means for this source, then parse",
+              "result": "\"2026-08-30T10:00:00.000000Z\"",
+              "group": "Pinning the shape"
+            },
+            {
+              "expr": "\"1000\".parseTime(\"%Q\")",
+              "note": "auto-detect reads four digits as seconds; `%Q` says milliseconds and `%s` says seconds",
+              "result": "\"1970-01-01T00:00:01.000000Z\"",
+              "group": "Pinning the shape"
+            },
+            {
+              "expr": "\"Feb  3 04:05:06\".parseTime() == \"Feb  3 04:05:06\".parseTime(now())",
+              "note": "no reference means `now()`, which is where a yearless stamp gets its year",
+              "result": "true",
+              "group": "Yearless stamps"
+            },
+            {
+              "expr": "\"02-03 04:05:06\".parseTime(\"%m-%d %H:%M:%S\")",
+              "note": "a shape auto-detect does not know; the year comes from `now()`",
+              "result": "\"2026-02-03T04:05:06.000000Z\"",
+              "group": "Yearless stamps"
+            },
+            {
+              "expr": "\"Dec 31 23:59:00\".parseTime(\"1999-01-01T00:05:00Z\".parseTime())",
+              "note": "a December line read five minutes into January is last year's, not next year's",
+              "result": "\"1998-12-31T23:59:00.000000Z\"",
+              "group": "Yearless stamps"
+            },
+            {
+              "expr": "parseTime(\"1998-08-30T12:00:00Z\")",
+              "note": "the same call, written as a function",
+              "result": "\"1998-08-30T12:00:00.000000Z\""
+            }
+          ],
+          "specifierBlurb": "`parseTime(value, format)` takes these, and only these. Every other byte of the format must match the text literally, and text left over when the format runs out makes the result null rather than a partial read. Auto-detect tries an ordered list of formats built from the same specifiers, so every rule below holds for `parseTime(value)` too.",
+          "specifiers": [
+            {
+              "specifier": "%Y",
+              "matches": "The year, exactly four digits. There is no two-digit year: every century pivot is wrong for someone.",
+              "examples": [
+                {
+                  "expr": "\"2026-08-30\".parseTime(\"%Y-%m-%d\")",
+                  "result": "\"2026-08-30T00:00:00.000000Z\""
+                }
+              ],
+              "group": "The date"
+            },
+            {
+              "specifier": "%m",
+              "matches": "Month number, `1`-`12`, with or without a leading zero.",
+              "examples": [
+                {
+                  "expr": "\"8/2026\".parseTime(\"%m/%Y\")",
+                  "result": "\"2026-08-01T00:00:00.000000Z\""
+                }
+              ],
+              "group": "The date"
+            },
+            {
+              "specifier": "%d",
+              "matches": "Day of month, `1`-`31`, with or without a leading zero. A day past the month's end is null.",
+              "examples": [
+                {
+                  "expr": "\"2026-02-30\".parseTime(\"%Y-%m-%d\")",
+                  "result": "null",
+                  "note": "February has no 30th",
+                  "throws": ["CoercionRefused"]
+                }
+              ],
+              "group": "The date"
+            },
+            {
+              "specifier": "%e",
+              "matches": "Day of month with an optional leading space, as in `Aug  3`.",
+              "examples": [
+                {
+                  "expr": "\"Aug  3 2026\".parseTime(\"%b %e %Y\")",
+                  "result": "\"2026-08-03T00:00:00.000000Z\""
+                }
+              ],
+              "group": "The date"
+            },
+            {
+              "specifier": "%H",
+              "matches": "Hour on a 24-hour clock, `0`-`23`. `24` is ISO 8601's end-of-day and is allowed only at a zero minute, second and fraction.",
+              "examples": [
+                {
+                  "expr": "\"2026-08-30 24:00:00\".parseTime(\"%Y-%m-%d %H:%M:%S\")",
+                  "result": "\"2026-08-31T00:00:00.000000Z\"",
+                  "note": "the midnight that closes the date"
+                }
+              ],
+              "group": "The time of day"
+            },
+            {
+              "specifier": "%I",
+              "matches": "Hour on a 12-hour clock, `1`-`12`. Pair it with `%p`.",
+              "examples": [
+                {
+                  "expr": "\"2026-08-30 02:00 PM\".parseTime(\"%Y-%m-%d %I:%M %p\")",
+                  "result": "\"2026-08-30T14:00:00.000000Z\""
+                }
+              ],
+              "group": "The time of day"
+            },
+            {
+              "specifier": "%M",
+              "matches": "Minute, `0`-`59`, two digits.",
+              "examples": [
+                {
+                  "expr": "\"2026-08-30 00:45\".parseTime(\"%Y-%m-%d %H:%M\")",
+                  "result": "\"2026-08-30T00:45:00.000000Z\""
+                }
+              ],
+              "group": "The time of day"
+            },
+            {
+              "specifier": "%S",
+              "matches": "Second, `0`-`60`, two digits. `60` is a leap second and lands on the following minute.",
+              "examples": [
+                {
+                  "expr": "\"2016-12-31 23:59:60\".parseTime(\"%Y-%m-%d %H:%M:%S\")",
+                  "result": "\"2017-01-01T00:00:00.000000Z\""
+                }
+              ],
+              "group": "The time of day"
+            },
+            {
+              "specifier": "%f",
+              "matches": "Fractional seconds. Every digit is read and the first six kept, so a nanosecond stamp is truncated rather than refused; a shorter run is a position, not a count.",
+              "examples": [
+                {
+                  "expr": "\"2026-08-30 00:00:00.123456789\".parseTime(\"%Y-%m-%d %H:%M:%S.%f\")",
+                  "result": "\"2026-08-30T00:00:00.123456Z\""
+                }
+              ],
+              "group": "The time of day"
+            },
+            {
+              "specifier": "%z",
+              "matches": "A UTC offset — `Z`, `+HH`, `+HHMM` or `+HH:MM` — or one of the named zones `UT`, `UTC`, `GMT`, `EST`, `EDT`, `CST`, `CDT`, `MST`, `MDT`, `PST`, `PDT`. Any other name is null. Without `%z` the text reads as UTC.",
+              "examples": [
+                {
+                  "expr": "\"2026-08-30T00:00:00+05\".parseTime(\"%Y-%m-%dT%H:%M:%S%z\")",
+                  "result": "\"2026-08-29T19:00:00.000000Z\"",
+                  "note": "A whole-hour offset without its minutes"
+                }
+              ],
+              "group": "The offset"
+            },
+            {
+              "specifier": "%b",
+              "matches": "An English month name, abbreviated or full. The same specifier as `%B`.",
+              "examples": [
+                {
+                  "expr": "\"30 August 2026\".parseTime(\"%d %b %Y\")",
+                  "result": "\"2026-08-30T00:00:00.000000Z\""
+                }
+              ],
+              "group": "Names and AM/PM"
+            },
+            {
+              "specifier": "%B",
+              "matches": "An English month name, abbreviated or full. The same specifier as `%b`.",
+              "examples": [
+                {
+                  "expr": "\"30 Aug 2026\".parseTime(\"%d %B %Y\")",
+                  "result": "\"2026-08-30T00:00:00.000000Z\""
+                }
+              ],
+              "group": "Names and AM/PM"
+            },
+            {
+              "specifier": "%a",
+              "matches": "An English weekday name, abbreviated or full. Consumed and discarded — it is never checked against the date.",
+              "examples": [
+                {
+                  "expr": "\"Sun, 30 Aug 2026\".parseTime(\"%a, %d %b %Y\")",
+                  "result": "\"2026-08-30T00:00:00.000000Z\""
+                }
+              ],
+              "group": "Names and AM/PM"
+            },
+            {
+              "specifier": "%A",
+              "matches": "An English weekday name, abbreviated or full. The same specifier as `%a`.",
+              "examples": [
+                {
+                  "expr": "\"Sunday 30 Aug 2026\".parseTime(\"%A %d %b %Y\")",
+                  "result": "\"2026-08-30T00:00:00.000000Z\""
+                }
+              ],
+              "group": "Names and AM/PM"
+            },
+            {
+              "specifier": "%p",
+              "matches": "`AM` or `PM`, either case. Reads `%I`; `12 AM` is midnight and `12 PM` is noon.",
+              "examples": [
+                {
+                  "expr": "\"2026-08-30 12:00 AM\".parseTime(\"%Y-%m-%d %I:%M %p\")",
+                  "result": "\"2026-08-30T00:00:00.000000Z\""
+                }
+              ],
+              "group": "Names and AM/PM"
+            },
+            {
+              "specifier": "%s",
+              "matches": "Seconds since the Unix epoch, with an optional sign and fraction. It names the whole instant, so the format holds no other specifier.",
+              "examples": [
+                {
+                  "expr": "\"1000.5\".parseTime(\"%s\")",
+                  "result": "\"1970-01-01T00:16:40.500000Z\"",
+                  "note": "auto-detect would read a count this small as seconds too; the specifier says so outright"
+                }
+              ]
+            },
+            {
+              "specifier": "%Q",
+              "matches": "Milliseconds since the Unix epoch, with an optional sign and fraction. It names the whole instant, so the format holds no other specifier.",
+              "examples": [
+                {
+                  "expr": "\"1000\".parseTime(\"%Q\")",
+                  "result": "\"1970-01-01T00:00:01.000000Z\"",
+                  "note": "auto-detect reads a count this small as seconds"
+                }
+              ]
+            },
+            {
+              "specifier": "%%",
+              "matches": "A literal percent sign.",
+              "examples": [
+                {
+                  "expr": "\"2026 100%\".parseTime(\"%Y 100%%\")",
+                  "result": "\"2026-01-01T00:00:00.000000Z\""
+                }
+              ]
+            }
+          ],
+          "notes": [
+            "The reference is a datetime, not a year — usually the field carrying when the record was collected. Pass none and it is `now()`, which is what makes the no-argument form right for a live stream.",
+            "A yearless stamp takes the reference's year, and rolls back a year rather than landing in the future: parsed against 1 January 1999, `Dec 31` is 1998. That also means an anchor *earlier* than the stamp reads as the year before it.",
+            "Text that does not parse is null on that row and throws a `CoercionRefused` exception on the record. An impossible date is such text, never a silently shifted one: `1998-02-30` does not become 2 March.",
+            "A zone name is not one offset: `CST` is six hours behind UTC in Chicago and eight ahead in Shanghai, and one pipeline reads both. `%z` takes the fixed set the table names. Replace any other name with the offset that source means — `replaceAll(/CEST/, \"+0200\")` — and the choice sits beside the source it belongs to."
+          ]
+        },
+        {
+          "name": "parseDuration",
+          "signature": "value.parseDuration()",
+          "group": "Reading text",
+          "summary": "Parses text into a duration: the count of microseconds `toString()` writes, whole or as a decimal rounded to the microsecond. Text that is no count is null.",
+          "examples": [
+            {
+              "expr": "\"90000000\".parseDuration().countIn(\"s\")",
+              "result": "90.0"
+            },
+            {
+              "expr": "duration(250, \"ms\").toString().parseDuration() == duration(250, \"ms\")",
+              "result": "true",
+              "note": "what `toString()` writes reads back as the same span"
+            },
+            {
+              "expr": "\"soon\".parseDuration()",
+              "result": "null",
+              "throws": ["CoercionRefused"]
+            }
+          ]
+        },
+        {
+          "name": "year",
+          "signature": "value.year()",
+          "group": "A part of the instant",
+          "summary": "The calendar year.",
+          "examples": [
+            {
+              "expr": "\"1998-08-30\".parseTime().year()",
+              "result": "1998"
+            }
+          ]
+        },
+        {
+          "name": "month",
+          "signature": "value.month()",
+          "group": "A part of the instant",
+          "summary": "The month, 1 to 12.",
+          "examples": [
+            {
+              "expr": "\"1998-08-30\".parseTime().month()",
+              "result": "8"
+            }
+          ]
+        },
+        {
+          "name": "day",
+          "signature": "value.day()",
+          "group": "A part of the instant",
+          "summary": "The day of the month.",
+          "examples": [
+            {
+              "expr": "\"1998-08-30\".parseTime().day()",
+              "result": "30"
+            }
+          ]
+        },
+        {
+          "name": "hour",
+          "signature": "value.hour()",
+          "group": "A part of the instant",
+          "summary": "The hour, 0 to 23, in UTC.",
+          "examples": [
+            {
+              "expr": "\"1998-08-30 12:34:56\".parseTime().hour()",
+              "result": "12"
+            }
+          ]
+        },
+        {
+          "name": "minute",
+          "signature": "value.minute()",
+          "group": "A part of the instant",
+          "summary": "The minute, 0 to 59.",
+          "examples": [
+            {
+              "expr": "\"1998-08-30 12:34:56\".parseTime().minute()",
+              "result": "34"
+            }
+          ]
+        },
+        {
+          "name": "second",
+          "signature": "value.second()",
+          "group": "A part of the instant",
+          "summary": "The second, 0 to 59.",
+          "examples": [
+            {
+              "expr": "\"1998-08-30 12:34:56\".parseTime().second()",
+              "result": "56"
+            }
+          ]
+        },
+        {
+          "name": "millisecond",
+          "signature": "value.millisecond()",
+          "group": "A part of the instant",
+          "summary": "The millisecond within the second, 0 to 999.",
+          "examples": [
+            {
+              "expr": "\"1998-08-30T12:00:00.250Z\".parseTime().millisecond()",
+              "result": "250"
+            }
+          ]
+        },
+        {
+          "name": "dayOfWeek",
+          "signature": "value.dayOfWeek()",
+          "group": "A part of the instant",
+          "summary": "The day of the week: 1 is Monday, 7 is Sunday.",
+          "examples": [
+            {
+              "expr": "\"1998-08-31\".parseTime().dayOfWeek()",
+              "result": "1"
+            }
+          ]
+        },
+        {
+          "name": "epochMillis",
+          "signature": "value.epochMillis()",
+          "group": "Epoch counts",
+          "summary": "Milliseconds since the Unix epoch.",
+          "examples": [
+            {
+              "expr": "\"1998-08-30 12:00:00\".parseTime().epochMillis()",
+              "result": "904478400000"
+            }
+          ]
+        },
+        {
+          "name": "epochSeconds",
+          "signature": "epochSeconds(value)",
+          "group": "Epoch counts",
+          "summary": "Whole seconds since the Unix epoch, flooring so a time before it counts backward rather than toward zero.",
+          "examples": [
+            {
+              "expr": "epochSeconds(parseTime(\"1998-08-30T12:00:00Z\"))",
+              "result": "904478400"
+            }
+          ]
+        },
+        {
+          "name": "fromEpochMillis",
+          "signature": "fromEpochMillis(millis)",
+          "group": "Epoch counts",
+          "summary": "A datetime from milliseconds since the Unix epoch, for a producer that already sends one.",
+          "examples": [
+            {
+              "expr": "fromEpochMillis(904478400000)",
+              "result": "\"1998-08-30T12:00:00.000000Z\""
+            }
+          ]
+        },
+        {
+          "name": "fromEpochSeconds",
+          "signature": "fromEpochSeconds(seconds)",
+          "group": "Epoch counts",
+          "summary": "A datetime from seconds since the Unix epoch. A count past the datetime range is null.",
+          "examples": [
+            {
+              "expr": "fromEpochSeconds(904478400)",
+              "result": "\"1998-08-30T12:00:00.000000Z\""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "durations",
+      "title": "Durations",
+      "blurb": "A duration is a signed span, microsecond-resolution. Subtracting two datetimes produces one. It serializes as a bare count of microseconds, `toString()` produces the same text, and `parseDuration()` reads it back.",
+      "rows": [
+        {
+          "symbol": "+",
+          "gloss": "add two spans",
+          "examples": [
+            {
+              "expr": "duration(30, \"m\") + duration(45, \"s\") == duration(1845, \"s\")",
+              "result": "true"
+            }
+          ]
+        },
+        {
+          "symbol": "-",
+          "gloss": "the difference of two spans",
+          "examples": [
+            {
+              "expr": "duration(1, \"h\") - duration(30, \"m\") == duration(30, \"m\")",
+              "result": "true"
+            }
+          ]
+        },
+        {
+          "symbol": "*",
+          "gloss": "scale a span",
+          "examples": [
+            {
+              "expr": "duration(90, \"s\") * 2 == duration(3, \"m\")",
+              "result": "true"
+            }
+          ]
+        },
+        {
+          "symbol": "/",
+          "gloss": "the ratio of two spans",
+          "examples": [
+            {
+              "expr": "duration(1, \"h\") / duration(1, \"m\")",
+              "result": "60.0"
+            }
+          ]
+        },
+        {
+          "symbol": "/",
+          "gloss": "divide a span",
+          "examples": [
+            {
+              "expr": "duration(1, \"h\") / 4 == duration(15, \"m\")",
+              "result": "true"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        "[Comparison](#tests) orders spans: `age > duration(5, \"m\")` is true when `age` is longer than five minutes."
+      ],
+      "functions": [
+        {
+          "name": "duration",
+          "signature": "duration(count, unit)",
+          "summary": "A span of `count` units. The unit is `\"ns\"`, `\"us\"`, `\"ms\"`, `\"s\"`, `\"m\"`, `\"h\"`, `\"d\"`, `\"w\"` or a long name, and the count may be fractional.",
+          "examples": [
+            {
+              "expr": "duration(90, \"s\").toString()",
+              "result": "\"90000000\""
+            },
+            {
+              "expr": "duration(250, \"ms\").toString()",
+              "result": "\"250000\""
+            },
+            {
+              "expr": "duration(1.5, \"d\").toString()",
+              "result": "\"129600000000\""
+            },
+            {
+              "expr": "duration(1000, \"ns\").toString()",
+              "result": "\"1\"",
+              "note": "a thousand nanoseconds is one microsecond, exactly"
+            },
+            {
+              "expr": "duration(2, \"w\") == duration(14, \"d\")",
+              "result": "true",
+              "note": "a week is exactly seven days"
+            },
+            {
+              "expr": "duration(90, \"s\") > duration(1, \"minute\")",
+              "result": "true"
+            }
+          ],
+          "notes": [
+            "A span is held to the microsecond, so anything finer truncates toward zero: `duration(1500, \"ns\")` is one microsecond and `duration(1, \"ns\")` is a zero span. A fractional count of any unit rounds the same way.",
+            "There is no month or year: how long either one is depends on which one, and a span is a count with no calendar attached to answer that. A week is seven days, so it is here.",
+            "A literal unit is checked when the pipeline compiles: `duration(1, \"y\")` does not compile. A unit computed per row that names no unit makes the result null. A span too large to hold is null."
+          ]
+        },
+        {
+          "name": "countIn",
+          "signature": "duration.countIn(unit)",
+          "summary": "The whole span counted in one unit, as an `f64`, not a remainder.",
+          "examples": [
+            {
+              "expr": "duration(90, \"s\").countIn(\"m\")",
+              "result": "1.5"
+            },
+            {
+              "expr": "duration(36, \"h\").countIn(\"d\")",
+              "result": "1.5"
+            },
+            {
+              "expr": "duration(1, \"d\").countIn(\"h\")",
+              "result": "24.0"
+            },
+            {
+              "expr": "duration(1, \"s\").countIn(\"us\")",
+              "result": "1000000.0",
+              "note": "the unit the wire form counts in"
+            },
+            {
+              "expr": "duration(14, \"d\").countIn(\"w\")",
+              "result": "2.0"
+            },
+            {
+              "expr": "(ended - started).countIn(\"m\")",
+              "result": "30.0",
+              "given": [
+                "started = \"1998-08-30 12:00:00\".parseTime()",
+                "ended = \"1998-08-30 12:30:00\".parseTime()"
+              ]
+            },
+            {
+              "expr": "countIn(duration(90, \"s\"), \"m\")",
+              "note": "the same call, written as a function",
+              "result": "1.5"
+            }
+          ]
+        }
+      ],
+      "rejected": [
+        {
+          "expr": "duration(1, \"y\")",
+          "why": "A year varies in length, so a span cannot be counted in one. Days are fixed: `duration(365, \"d\")`."
+        }
+      ]
+    },
+    {
+      "id": "network",
+      "title": "Addresses and networks",
+      "blurb": "An address is text. A function parses it and writes it back as text. Text that is not an address makes the result null and throws no exception. Space around an address is ignored. To match an address against a table of blocks, use a lookup.",
+      "functions": [
+        {
+          "name": "isIp",
+          "signature": "text.isIp()",
+          "summary": "The text is an address, v4 or v6. Text that is not one is `false`. Null stays null.",
+          "examples": [
+            {
+              "expr": "\"10.1.2.3\".isIp()",
+              "result": "true"
+            },
+            {
+              "expr": "\"fe80::1\".isIp()",
+              "result": "true"
+            },
+            {
+              "expr": "\"10.1.2\".isIp()",
+              "result": "false"
+            },
+            {
+              "expr": "isIp(\"10.1.2.3\")",
+              "result": "true",
+              "note": "the same call, written as a function"
+            }
+          ]
+        },
+        {
+          "name": "ipVersion",
+          "signature": "text.ipVersion()",
+          "summary": "`4` or `6`.",
+          "examples": [
+            {
+              "expr": "\"10.1.2.3\".ipVersion()",
+              "result": "4"
+            },
+            {
+              "expr": "\"::1\".ipVersion()",
+              "result": "6"
+            },
+            {
+              "expr": "\"example.com\".ipVersion()",
+              "result": "null"
+            }
+          ]
+        },
+        {
+          "name": "ipNormalize",
+          "signature": "text.ipNormalize()",
+          "summary": "The address in one spelling. Leading zeros go. IPv6 is lowercase and its longest run of zero groups is compressed. Two spellings of one address come out the same.",
+          "examples": [
+            {
+              "expr": "\"2001:0DB8:0000:0000:0000:0000:0000:0001\".ipNormalize()",
+              "result": "\"2001:db8::1\""
+            },
+            {
+              "expr": "\" 10.1.2.3 \".ipNormalize()",
+              "result": "\"10.1.2.3\""
+            },
+            {
+              "expr": "\"010.1.2.3\".ipNormalize()",
+              "result": "null",
+              "note": "a dotted quad takes no leading zero"
+            }
+          ]
+        },
+        {
+          "name": "ipScope",
+          "signature": "text.ipScope()",
+          "summary": "Where the address reaches: `unspecified`, `loopback`, `link-local`, `multicast`, `private` or `public`. Private is RFC 1918 and `fc00::/7`.",
+          "examples": [
+            {
+              "expr": "\"10.1.2.3\".ipScope()",
+              "result": "\"private\""
+            },
+            {
+              "expr": "\"8.8.8.8\".ipScope()",
+              "result": "\"public\""
+            },
+            {
+              "expr": "\"127.0.0.1\".ipScope()",
+              "result": "\"loopback\""
+            },
+            {
+              "expr": "\"fe80::1\".ipScope()",
+              "result": "\"link-local\""
+            },
+            {
+              "expr": "\"224.0.0.1\".ipScope()",
+              "result": "\"multicast\""
+            },
+            {
+              "expr": "\"::\".ipScope()",
+              "result": "\"unspecified\""
+            },
+            {
+              "expr": "\"fd12::1\".ipScope()",
+              "result": "\"private\""
+            }
+          ]
+        },
+        {
+          "name": "inCidr",
+          "signature": "address.inCidr(block, ...)",
+          "summary": "The address is in one of the blocks. A block of the other family holds nothing. A bare address is a block of one.",
+          "examples": [
+            {
+              "expr": "\"10.1.2.3\".inCidr(\"10.0.0.0/8\")",
+              "result": "true"
+            },
+            {
+              "expr": "\"10.1.2.3\".inCidr(\"192.168.0.0/16\", \"10.0.0.0/8\")",
+              "result": "true",
+              "note": "any number of blocks"
+            },
+            {
+              "expr": "\"10.1.2.3\".inCidr(\"::/0\")",
+              "result": "false",
+              "note": "the other family"
+            },
+            {
+              "expr": "\"10.1.2.3\".inCidr(\"10.1.2.3\")",
+              "result": "true",
+              "note": "a bare address is a block of one"
+            },
+            {
+              "expr": "\"10.1.2.3\".inCidr(\"10.0.0.0/33\")",
+              "result": "null",
+              "note": "a block that does not parse"
+            }
+          ]
+        },
+        {
+          "name": "cidrNetwork",
+          "signature": "address.cidrNetwork(prefix)",
+          "summary": "The address masked to `prefix` bits, written as a block. Group by it to count per subnet.",
+          "examples": [
+            {
+              "expr": "\"10.1.2.3\".cidrNetwork(24)",
+              "result": "\"10.1.2.0/24\""
+            },
+            {
+              "expr": "\"10.1.2.3\".cidrNetwork(12)",
+              "result": "\"10.0.0.0/12\""
+            },
+            {
+              "expr": "\"2001:db8:abcd::1\".cidrNetwork(32)",
+              "result": "\"2001:db8::/32\""
+            },
+            {
+              "expr": "\"10.1.2.3\".cidrNetwork(33)",
+              "result": "null",
+              "note": "past the width of the address"
+            }
+          ]
+        },
+        {
+          "name": "communityId",
+          "signature": "communityId(srcIp, srcPort, dstIp, dstPort, transport, seed)",
+          "summary": "The flow's [Community ID](https://github.com/corelight/community-id-spec), version 1. `transport` is an IANA protocol number, 0 to 255, as a number or as text, or one of these names in any case: `icmp`, `igmp`, `tcp`, `udp`, `gre`, `icmpv6` (or `ipv6-icmp`), `eigrp`, `ospf`, `pim`, `sctp`. Any other name is null. TCP, UDP and SCTP need both ports, 1 to 65535; for ICMP and ICMPv6 the ports are the type and the code; any other protocol has no ports. Both addresses must be IPv4 or both IPv6. `seed` is optional, 0 to 65535, 0 by default. Both directions of a flow give one ID.",
+          "examples": [
+            {
+              "expr": "communityId(\"128.232.110.120\", 34855, \"66.35.250.204\", 80, \"tcp\")",
+              "result": "\"1:LQU9qZlK+B5F3KDmev6m5PMibrg=\""
+            },
+            {
+              "expr": "communityId(\"66.35.250.204\", 80, \"128.232.110.120\", 34855, 6)",
+              "result": "\"1:LQU9qZlK+B5F3KDmev6m5PMibrg=\"",
+              "note": "the reply, with the protocol's number"
+            },
+            {
+              "expr": "communityId(\"128.232.110.120\", 34855, \"66.35.250.204\", 80, \"tcp\", 123)",
+              "result": "\"1:hTSGlFQnR58UCk+NfKRZzA32dPg=\"",
+              "note": "a seed"
+            },
+            {
+              "expr": "communityId(\"128.232.110.120\", 0, \"66.35.250.204\", 80, \"tcp\")",
+              "result": "null",
+              "note": "TCP needs both ports"
+            },
+            {
+              "expr": "communityId(\"10.0.0.1\", 5, \"10.0.0.2\", 6, \"quic\")",
+              "result": "null",
+              "note": "not a protocol name it knows"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "web",
+      "title": "URLs, domains and user agents",
+      "blurb": "Text that does not read is null and throws a `CoercionRefused` exception on the record; blank text is null and throws nothing.",
+      "functions": [
+        {
+          "name": "urlDecode",
+          "signature": "text.urlDecode()",
+          "summary": "`%XX` as the byte it names and `+` as a space, as a form field is encoded, and the bytes read as UTF-8; a byte that is not UTF-8 becomes U+FFFD. A `%` that two hex digits do not follow stays a `%`, so every text reads.",
+          "examples": [
+            {
+              "expr": "\"a%20b+c%C3%A9\".urlDecode()",
+              "result": "\"a b cé\""
+            },
+            {
+              "expr": "\"100%\".urlDecode()",
+              "result": "\"100%\"",
+              "note": "a bare % stays"
+            }
+          ]
+        },
+        {
+          "name": "htmlStrip",
+          "signature": "text.htmlStrip()",
+          "summary": "The text without its markup. A tag goes, in any case. A block-level tag, start or end, becomes a line break: `address`, `article`, `aside`, `blockquote`, `br`, `dd`, `div`, `dl`, `dt`, `fieldset`, `figcaption`, `figure`, `footer`, `form`, `h1` to `h6`, `header`, `hgroup`, `hr`, `li`, `nav`, `noscript`, `ol`, `output`, `p`, `pre`, `section`, `table`, `tbody`, `td`, `tfoot`, `th`, `thead`, `tr` and `ul`. A comment, a `<!...>` or `<?...>` declaration, and a `<script>` or `<style>` element go with what they hold; a `<![CDATA[...]]>` section leaves what it holds. A character reference becomes its character: a number, `&#233;` or `&#xE9;`, or any of HTML 4's names, such as `&amp;`, `&nbsp;` or `&ouml;`. A reference that does not read, and a `<` that starts no tag, stay as they are. Text without both `<` and `>` is returned as it is.",
+          "examples": [
+            {
+              "expr": "\"<b>bold</b> &amp; plain\".htmlStrip()",
+              "result": "\"bold & plain\""
+            },
+            {
+              "expr": "\"<p>caf&eacute; &#8212; ok</p>\".htmlStrip()",
+              "result": "\"\\ncafé — ok\\n\"",
+              "note": "named and numeric references"
+            },
+            {
+              "expr": "\"one<br>two\".htmlStrip()",
+              "result": "\"one\\ntwo\"",
+              "note": "a block-level tag breaks the line"
+            }
+          ]
+        },
+        {
+          "name": "parseUrl",
+          "signature": "text.parseUrl()",
+          "summary": "A URL's parts as an object: `domain`, `fragment`, `path`, `extension`, `port`, `query`, `scheme`, `user_info`, `username` and `password`. Text that reads as an RFC 3986 URI or relative reference, such as a bare path, has its path, query, fragment and user info decoded. An `http`, `https`, `ftp`, `file` or `jar` URL that does not, holding a space or a `|` say, is split as written, undecoded. `extension` is what follows the last `.` of the path's last segment. `username` is the user info up to its first `:`, all of it where there is none, and `password` what follows that `:`. A part the URL lacks is null.",
+          "examples": [
+            {
+              "expr": "\"https://www.example.com:8443/files/report.pdf?x=1#top\".parseUrl()",
+              "result": "{\"domain\":\"www.example.com\",\"fragment\":\"top\",\"path\":\"/files/report.pdf\",\"extension\":\"pdf\",\"port\":8443,\"query\":\"x=1\",\"scheme\":\"https\"}"
+            },
+            {
+              "expr": "\"http://user:pw@host/a%20b\".parseUrl().path",
+              "result": "\"/a b\"",
+              "note": "a part read on its own"
+            },
+            {
+              "expr": "\"/search/index.html?q=x\".parseUrl()",
+              "result": "{\"path\": \"/search/index.html\", \"extension\": \"html\", \"query\": \"q=x\"}",
+              "note": "a path alone"
+            },
+            {
+              "expr": "\"not a url\".parseUrl()",
+              "result": "null",
+              "throws": ["CoercionRefused"]
+            }
+          ]
+        },
+        {
+          "name": "registeredDomain",
+          "signature": "host.registeredDomain()",
+          "summary": "The host, the name registered under its public suffix, that suffix and what is left, as an object of `domain`, `registered_domain`, `top_level_domain` and `subdomain`. The suffixes are the ICANN section of the Public Suffix List, compiled in. A host with no known suffix does not read.",
+          "examples": [
+            {
+              "expr": "\"www.foo.example.co.uk\".registeredDomain()",
+              "result": "{\"domain\":\"www.foo.example.co.uk\",\"registered_domain\":\"example.co.uk\",\"top_level_domain\":\"co.uk\",\"subdomain\":\"www.foo\"}"
+            },
+            {
+              "expr": "\"co.uk\".registeredDomain()",
+              "result": "{\"domain\":\"co.uk\",\"top_level_domain\":\"co.uk\"}",
+              "note": "a suffix alone"
+            },
+            {
+              "expr": "\"intranet.local\".registeredDomain()",
+              "result": "null",
+              "note": "no known suffix",
+              "throws": ["CoercionRefused"]
+            }
+          ]
+        },
+        {
+          "name": "parseUserAgent",
+          "signature": "text.parseUserAgent()",
+          "summary": "The browser, operating system and device a User-Agent header names, as an object of `name`, `version`, `os.name`, `os.version`, `os.full` and `device.name`. The rules are uap-core's, compiled in. `name` and `device.name` are `Other` where no rule matches, and `os` is null where none names an operating system. `os.full` is `os.name`, then `os.version` where there is one.",
+          "examples": [
+            {
+              "expr": "\"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.109 Safari/537.36\".parseUserAgent()",
+              "result": "{\"name\":\"Chrome\",\"version\":\"120.0.6099.109\",\"os\":{\"name\":\"Windows\",\"version\":\"10\",\"full\":\"Windows 10\"},\"device\":{\"name\":\"Other\"}}"
+            },
+            {
+              "expr": "\"curl/8.4.0\".parseUserAgent().name",
+              "result": "\"curl\"",
+              "note": "one part"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "exceptions": [
+    {
+      "kind": "Unparsable",
+      "category": "parse",
+      "when": "A parser got nothing from the record: malformed JSON, an unterminated CSV quote, a Grok pattern that matched nothing."
+    },
+    {
+      "kind": "UnparsableField",
+      "category": "parse",
+      "when": "One declared field could not be read as its declared type while the rest of the record parsed. That field is null."
+    },
+    {
+      "kind": "KeyContradiction",
+      "category": "parse",
+      "when": "Two keys of a record contradict after flattening, such as the same key twice. One is kept."
+    },
+    {
+      "kind": "CoercionRefused",
+      "category": "parse",
+      "when": "A value could not convert to the type asked for, as in `parseInt(\"many\")`. The result is null."
+    },
+    {
+      "kind": "Overflow",
+      "category": "math",
+      "when": "`i64` arithmetic overflowed. The result is null."
+    },
+    {
+      "kind": "DivideByZero",
+      "category": "math",
+      "when": "A division by zero. The result is null, not Infinity."
+    },
+    {
+      "kind": "NaN",
+      "category": "math",
+      "when": "A parse met `NaN`, `Infinity` or a number past `f64`'s range. That key has no value."
+    },
+    {
+      "kind": "LoopBudgetExceeded",
+      "category": "limits",
+      "when": "A `while` loop hit its time budget with the record's condition still true."
+    },
+    {
+      "kind": "IndexOutOfRange",
+      "category": "limits",
+      "when": "An array read or write, or a string read, named a position the value does not have. The read is null and the write does nothing."
+    },
+    {
+      "kind": "InvalidUtf8",
+      "category": "encoding",
+      "when": "Bytes that did not decode under the source's encoding were replaced with U+FFFD."
+    },
+    {
+      "kind": "GuessedEncoding",
+      "category": "encoding",
+      "when": "A source set to `auto` recognized neither UTF-8 nor UTF-16 and guessed the encoding. The text may well be right."
+    },
+    {
+      "kind": "Unmatched",
+      "category": "delivery",
+      "when": "No route on the record's source took it."
+    },
+    {
+      "kind": "Unprocessable",
+      "category": "delivery",
+      "when": "No pipeline could finish the record: one crashed on its batch, or the record does not fit the memory budget alone."
+    },
+    {
+      "kind": "Refused",
+      "category": "delivery",
+      "when": "A destination refused the record."
+    }
+  ],
+  "recordFields": [
+    {
+      "name": "_raw",
+      "type": "str",
+      "setBy": "source",
+      "what": "The text the source received, decoded with the source's `encoding`. A parser reads it. The destination delivers it with the record unless a step sets it to `null`. A source whose `encoding` is `none` gives no `_raw`."
+    },
+    {
+      "name": "__source.name",
+      "type": "str",
+      "setBy": "source",
+      "what": "The name of the source that read the record."
+    },
+    {
+      "name": "__source.type",
+      "type": "str",
+      "setBy": "source",
+      "what": "The kind of source that read it, its `type`, such as `kafka`, `s3List`, `httpApi` or `hecReceiver`."
+    },
+    {
+      "name": "__source.topic",
+      "type": "str",
+      "setBy": "source",
+      "what": "The Kafka topic, or event hub, the record came from. A metrics record carries `__smeltr_metrics` and a logs record `__smeltr_logs`."
+    },
+    {
+      "name": "__source.partition",
+      "type": "i64",
+      "setBy": "source",
+      "what": "The Kafka or Event Hubs partition the record came from."
+    },
+    {
+      "name": "__source.offset",
+      "type": "i64",
+      "setBy": "source",
+      "what": "The record's offset in its Kafka or Event Hubs partition, or its record number in its object, from 0."
+    },
+    {
+      "name": "__source.bucket",
+      "type": "str",
+      "setBy": "source",
+      "what": "The bucket, or Azure container, the record's object is in."
+    },
+    {
+      "name": "__source.key",
+      "type": "str",
+      "setBy": "source",
+      "what": "The key, or Azure blob name, of the object the record was read from."
+    },
+    {
+      "name": "__source.url",
+      "type": "str",
+      "setBy": "source",
+      "what": "The address of the page an API source read the record from."
+    },
+    {
+      "name": "__source.database",
+      "type": "str",
+      "setBy": "source",
+      "what": "The database an SQL source read the record from, as `host:port/database`."
+    },
+    {
+      "name": "__source.remote",
+      "type": "str",
+      "setBy": "source",
+      "what": "The address of the sender that delivered the record to a receiver."
+    },
+    {
+      "name": "__source.host",
+      "type": "str",
+      "setBy": "source",
+      "what": "The host a HEC sender filed the event under, or null where it named none."
+    },
+    {
+      "name": "__source.source",
+      "type": "str",
+      "setBy": "source",
+      "what": "The source a HEC sender filed the event under, or null where it named none."
+    },
+    {
+      "name": "__source.sourcetype",
+      "type": "str",
+      "setBy": "source",
+      "what": "The sourcetype a HEC sender filed the event under, or null where it named none."
+    },
+    {
+      "name": "__source.index",
+      "type": "str",
+      "setBy": "source",
+      "what": "The index a HEC sender filed the event under, or an Elasticsearch client's bulk action named for its document; null where it named none."
+    },
+    {
+      "name": "__source.id",
+      "type": "str",
+      "setBy": "source",
+      "what": "The `_id` an Elasticsearch client's bulk action named for its document, or null where it named none."
+    },
+    {
+      "name": "__source.pipeline",
+      "type": "str",
+      "setBy": "source",
+      "what": "The ingest pipeline an Elasticsearch client's bulk action, or its request's `pipeline` query, named for its document, or null where neither named one."
+    },
+    {
+      "name": "__source.time",
+      "type": "datetime",
+      "setBy": "source",
+      "what": "The time a sender gave the event, null otherwise."
+    },
+    {
+      "name": "__source.fields",
+      "type": "variant",
+      "setBy": "source",
+      "what": "The indexed fields a HEC sender gave the event, or null where it gave none. Read one as text with `__source.fields.env as str`."
+    },
+    {
+      "name": "__source.resource",
+      "type": "variant",
+      "setBy": "source",
+      "what": "The resource an OTLP log record came under: its attributes, each keeping its own type, or null where the export named none. Read one as text with `__source.resource[\"service.name\"] as str`."
+    },
+    {
+      "name": "__source.scope.name",
+      "type": "str",
+      "setBy": "source",
+      "what": "The name of the instrumentation scope an OTLP log record came under, the library that wrote it, or null where the export named none."
+    },
+    {
+      "name": "__source.scope.version",
+      "type": "str",
+      "setBy": "source",
+      "what": "The version of that instrumentation scope, or null where the export named none."
+    },
+    {
+      "name": "__source.scope.attributes",
+      "type": "variant",
+      "setBy": "source",
+      "what": "That instrumentation scope's attributes, each keeping its own type, or null where the export named none."
+    },
+    {
+      "name": "__source.headers",
+      "type": "variant",
+      "setBy": "source",
+      "what": "The Kafka record's headers, each key to its value as text. A key the record repeats holds its last value, and a header with no value is not there. Read one as text with `__source.headers.trace as str`."
+    },
+    {
+      "name": "__source.bytes",
+      "type": "bytes",
+      "setBy": "source",
+      "what": "The record's payload as the source read it, before any decoding. The source decodes `_raw` from it. A `bytes` destination writes it unless the destination names another field. Text functions refuse it; `decode(__source.bytes, encoding)` reads it as text."
+    },
+    {
+      "name": "__destination.topic",
+      "type": "str",
+      "setBy": "pipeline",
+      "what": "The Kafka topic or Event Hub a destination writes the record to. Null means the default value for that destination."
+    },
+    {
+      "name": "__destination.index",
+      "type": "str",
+      "setBy": "pipeline",
+      "what": "The index an Elasticsearch or Splunk HEC destination files the record under. Null means the destination's default index. A Splunk HEC destination on the `raw` endpoint refuses a record naming an index other than its own."
+    },
+    {
+      "name": "__destination.prefix",
+      "type": "str",
+      "setBy": "pipeline",
+      "what": "What an S3, Google Cloud Storage or Azure Blob Storage destination's object key starts with, taken as it is. Null means the destination's own prefix, with its time placeholders filled in."
+    },
+    {
+      "name": "__destination.id",
+      "type": "str",
+      "setBy": "pipeline",
+      "what": "The Elasticsearch document ID, used when the destination's document ID setting is `dedupe` or `overwrite`. When it is null, the destination's id field names the field that gives it, and with neither the document is sent with no ID."
+    },
+    {
+      "name": "smeltr.exception",
+      "type": "struct",
+      "setBy": "Smeltr",
+      "what": "The exceptions of a record answered tag or deliver: `route`, `pipeline`, and `exceptions`, a list of each one's `step`, `kind` and `message`."
+    }
+  ],
+  "types": [
+    {
+      "name": "bool",
+      "holds": "`true` or `false`.",
+      "example": {
+        "expr": "true",
+        "result": "true"
+      }
+    },
+    {
+      "name": "i64",
+      "holds": "A 64-bit signed integer. A result that does not fit is null, with an `Overflow` exception.",
+      "example": {
+        "expr": "443",
+        "result": "443"
+      }
+    },
+    {
+      "name": "f64",
+      "holds": "A 64-bit floating-point number. `/` on two numbers always gives one.",
+      "example": {
+        "expr": "1.5",
+        "result": "1.5"
+      }
+    },
+    {
+      "name": "str",
+      "holds": "Text, always valid UTF-8. Positions and lengths count characters.",
+      "example": {
+        "expr": "\"GET\"",
+        "result": "\"GET\""
+      }
+    },
+    {
+      "name": "bytes",
+      "holds": "Bytes, not read as text. Text functions refuse them; `decode` reads them as text in a named encoding. They write as base64, and `toString` names another form."
+    },
+    {
+      "name": "datetime",
+      "holds": "An instant in UTC, to the microsecond, written as ISO 8601.",
+      "example": {
+        "expr": "\"2024-05-01T12:00:00Z\".parseTime()",
+        "result": "\"2024-05-01T12:00:00.000000Z\""
+      }
+    },
+    {
+      "name": "duration",
+      "holds": "A signed span, to the microsecond, written as its count of microseconds.",
+      "example": {
+        "expr": "duration(90, \"s\")",
+        "result": "90000000"
+      }
+    },
+    {
+      "name": "variant",
+      "holds": "A value whose type is known only per row, such as a field of an open object that no declaration names.",
+      "example": {
+        "given": ["p = json(\"{\\\"port\\\": 443}\")"],
+        "expr": "p.port",
+        "result": "443"
+      }
+    },
+    {
+      "name": "array<T>",
+      "declare": "array<i64>",
+      "holds": "Elements of one type, as many as each row has.",
+      "example": {
+        "expr": "[200, 404]",
+        "result": "[200,404]"
+      }
+    },
+    {
+      "name": "{name: T, ...}",
+      "declare": "{ip: str, port: i64}",
+      "holds": "Named fields. `{ip: str}` holds only the fields it names; `{ip: str, ...}` also keeps the others. See [Objects](#objects).",
+      "example": {
+        "expr": "{ip: \"10.0.0.1\", port: 443}",
+        "result": "{\"ip\":\"10.0.0.1\",\"port\":443}"
+      }
+    }
+  ],
+  "topics": [
+    {
+      "id": "calls",
+      "examples": [
+        {
+          "given": ["let host: str = \"web-01\""],
+          "expr": "host.length()",
+          "result": "6"
+        },
+        {
+          "given": ["let host: str = \"web-01\""],
+          "expr": "length(host)",
+          "result": "6"
+        }
+      ]
+    },
+    {
+      "id": "nulls",
+      "examples": [
+        {
+          "given": ["let host: str = null"],
+          "expr": "host.length()",
+          "result": "null"
+        },
+        {
+          "given": ["let host: str = null"],
+          "expr": "host ?? \"unknown\"",
+          "result": "\"unknown\""
+        },
+        {
+          "given": ["let message: str = null"],
+          "expr": "!message.startsWith(\"debug\")",
+          "result": "true",
+          "note": "a negated test is true when the field is null"
+        },
+        {
+          "given": ["let message: str = null"],
+          "expr": "message != null && !message.startsWith(\"debug\")",
+          "result": "false"
+        }
+      ]
+    },
+    {
+      "id": "exceptions",
+      "examples": [
+        {
+          "expr": "10 / 0",
+          "result": "null",
+          "throws": ["DivideByZero"]
+        },
+        {
+          "expr": "\"many\".parseInt()",
+          "result": "null",
+          "throws": ["CoercionRefused"]
+        },
+        {
+          "expr": "9223372036854775807 + 1",
+          "result": "null",
+          "throws": ["Overflow"]
+        }
+      ]
+    },
+    {
+      "id": "types",
+      "examples": [],
+      "rejected": [
+        {
+          "expr": "\"10\" * 2",
+          "why": "Text and a number have no common type. Convert first: `\"10\".parseInt() * 2`."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,518 @@
+{
+  "steps": {
+    "common": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "examples": ["parse-json", "drop-health-checks"],
+        "what": "The step's name, unique in its pipeline, counting the steps a Call inlines. Errors and exceptions name it."
+      }
+    ],
+    "shared": [
+      {
+        "name": "filter",
+        "type": "expression",
+        "absent": "every record",
+        "examples": [
+          "status >= 400",
+          "path.startsWith(\"/api/\")",
+          "source.ip.inCidr(\"10.0.0.0/8\") && action == \"deny\""
+        ],
+        "what": "A condition. The step runs only on records where it is true; every other record passes unchanged. Unroll refuses one. The GUI calls it filter."
+      },
+      {
+        "name": "disabled",
+        "type": "bool",
+        "absent": "`false`",
+        "examples": [true],
+        "what": "Skips the step, so every record passes it unchanged. The GUI's pause button sets it."
+      }
+    ],
+    "kinds": [
+      {
+        "type": "parser",
+        "name": "Parser",
+        "summary": "Reads a text field as JSON, CSV, Key/value or Regex/Grok into fields.",
+        "shared": true,
+        "settings": [
+          {
+            "name": "input",
+            "type": "field",
+            "required": true,
+            "examples": ["_raw", "payload"],
+            "what": "The text field to read. Defaults to `_raw`."
+          },
+          {
+            "name": "kind",
+            "type": "format",
+            "required": true,
+            "examples": [
+              {
+                "type": "json"
+              }
+            ],
+            "what": "The format and its own settings, such as `{\"type\": \"csv\", \"delimiter\": \",\"}`. See [Formats](#formats).",
+            "values": [
+              {
+                "value": {
+                  "type": "json"
+                },
+                "what": "Reads one JSON object. See [JSON](#json)."
+              },
+              {
+                "value": {
+                  "type": "csv",
+                  "delimiter": ","
+                },
+                "what": "Reads one line of delimited values into the declared columns. Takes `delimiter`. See [CSV](#csv)."
+              },
+              {
+                "value": {
+                  "type": "keyValue",
+                  "pairSep": " ",
+                  "kvSep": "="
+                },
+                "what": "Reads `key=value` pairs. Takes `pairSep` and `kvSep`. See [Key/value](#key-value)."
+              },
+              {
+                "value": {
+                  "type": "grok",
+                  "patterns": ["%{IP:client} %{WORD:method}"]
+                },
+                "what": "Matches the text against patterns and keeps the named captures. Takes `patterns`. See [Regex/Grok](#grok)."
+              }
+            ]
+          },
+          {
+            "name": "declared",
+            "type": "list of fields",
+            "absent": "none",
+            "examples": [
+              [
+                {
+                  "name": "status",
+                  "type": "i64"
+                }
+              ],
+              [
+                {
+                  "name": "time",
+                  "type": {
+                    "type": "datetime",
+                    "format": "%d/%b/%Y:%H:%M:%S %z"
+                  }
+                },
+                {
+                  "name": "bytes",
+                  "type": "i64"
+                }
+              ]
+            ],
+            "what": "Each field's `name` and `type`. For CSV these are the columns in order; for Regex/Grok, the pattern's captures. A `datetime` field can name its format."
+          }
+        ]
+      },
+      {
+        "type": "eval",
+        "name": "Eval",
+        "summary": "Sets fields to the values of expressions.",
+        "shared": true,
+        "settings": [
+          {
+            "name": "assignments",
+            "type": "list of assignments",
+            "required": true,
+            "examples": [
+              [
+                {
+                  "target": "event.dataset",
+                  "expr": "\"nginx.access\""
+                }
+              ],
+              [
+                {
+                  "target": "severity",
+                  "expr": "status >= 500 ? \"error\" : \"info\""
+                }
+              ]
+            ],
+            "what": "Each `target` field is set to its `expr`, in order. Dots in a target name a nested field."
+          }
+        ]
+      },
+      {
+        "type": "code",
+        "name": "Code",
+        "summary": "Runs a program on each record.",
+        "shared": true,
+        "settings": [
+          {
+            "name": "body",
+            "type": "program",
+            "required": true,
+            "examples": [
+              "status = status as i64;",
+              "if (status >= 500) {\n  severity = \"error\";\n} else {\n  severity = \"info\";\n}"
+            ],
+            "what": "The program run on each record the step processes."
+          }
+        ]
+      },
+      {
+        "type": "drop",
+        "name": "Drop",
+        "summary": "Removes each record where a condition is true.",
+        "shared": true,
+        "settings": [
+          {
+            "name": "condition",
+            "type": "expression",
+            "required": true,
+            "examples": [
+              "level == \"debug\"",
+              "path == \"/health\" || user_agent.startsWith(\"kube-probe\")",
+              "user.isNull()"
+            ],
+            "what": "Drops the record where it is true. A null condition keeps the record. The GUI's blank is `false`."
+          }
+        ]
+      },
+      {
+        "type": "rename",
+        "name": "Rename",
+        "summary": "Moves fields to new names.",
+        "shared": true,
+        "settings": [
+          {
+            "name": "pairs",
+            "type": "list of pairs",
+            "required": true,
+            "examples": [
+              [
+                {
+                  "from": "msg",
+                  "to": "message"
+                }
+              ],
+              [
+                {
+                  "from": "src",
+                  "to": "client.ip"
+                },
+                {
+                  "from": "dst",
+                  "to": "server.ip"
+                }
+              ]
+            ],
+            "what": "Each pair moves the field `from` to `to`, in order."
+          }
+        ]
+      },
+      {
+        "type": "lookup",
+        "name": "Lookup",
+        "summary": "Adds fields from the rows of a lookup table that match a value.",
+        "shared": true,
+        "settings": [
+          {
+            "name": "input",
+            "type": "field",
+            "required": true,
+            "examples": ["user", "source.ip"],
+            "what": "The record's value to look up. Dots name a nested field."
+          },
+          {
+            "name": "table",
+            "type": "lookup table",
+            "required": true,
+            "examples": ["users"],
+            "what": "The [lookup table](#lookup-tables) to match, by id."
+          },
+          {
+            "name": "matchKind",
+            "type": "string",
+            "required": true,
+            "examples": ["exact"],
+            "what": "How the table is compared with the input. An MMDB table takes `cidr`.",
+            "values": [
+              {
+                "value": "exact",
+                "what": "Finds the rows whose `keyColumn` equals the input."
+              },
+              {
+                "value": "cidr",
+                "what": "Finds the rows whose `keyColumn` holds a network that contains the input address."
+              },
+              {
+                "value": "regex",
+                "what": "Finds the rows whose `keyColumn` is a regular expression that matches somewhere in the input."
+              }
+            ]
+          },
+          {
+            "name": "multiplicity",
+            "type": "string",
+            "absent": "`best`",
+            "examples": ["all"],
+            "what": "Which matching rows it writes the outputs from. The editor names them Most exact, First match and All matches.",
+            "values": [
+              {
+                "value": "best",
+                "what": "Writes from the most exact matching row: the longest prefix for `cidr`, the longest pattern for `regex`, and the first matching row for `exact`."
+              },
+              {
+                "value": "first",
+                "what": "Writes from the first matching row in table order."
+              },
+              {
+                "value": "all",
+                "what": "Writes from every matching row, in table order, so each output is an array. An MMDB table refuses it."
+              }
+            ]
+          },
+          {
+            "name": "keyColumn",
+            "type": "string",
+            "absent": "none",
+            "examples": ["user"],
+            "what": "The table column compared with the input. An MMDB table has none."
+          },
+          {
+            "name": "outputs",
+            "type": "list of outputs",
+            "required": true,
+            "examples": [
+              [
+                {
+                  "source": "team",
+                  "field": "user_team",
+                  "default": "unknown"
+                }
+              ],
+              [
+                {
+                  "source": "risk_score",
+                  "field": "user_risk",
+                  "type": "i64",
+                  "default": "0"
+                }
+              ]
+            ],
+            "what": "Each output writes the table's `source` column, or an MMDB record's dotted path, to the record's `field`, with an optional `type` (`str` unless given) and `default` on a miss (null unless given)."
+          }
+        ]
+      },
+      {
+        "type": "unroll",
+        "name": "Unroll",
+        "summary": "Turns each item of an array field into its own record.",
+        "shared": true,
+        "settings": [
+          {
+            "name": "field",
+            "type": "field",
+            "required": true,
+            "examples": ["items", "order.lines"],
+            "what": "The field that holds the array."
+          },
+          {
+            "name": "keepParentFields",
+            "type": "bool",
+            "absent": "`false`",
+            "examples": [true],
+            "what": "Whether every new record also carries the original record's other fields."
+          }
+        ]
+      },
+      {
+        "type": "call",
+        "name": "Call",
+        "summary": "Runs another pipeline's steps in place.",
+        "shared": true,
+        "settings": [
+          {
+            "name": "pipeline",
+            "type": "pipeline",
+            "required": true,
+            "examples": ["normalize"],
+            "what": "The id of the pipeline whose steps run here."
+          }
+        ]
+      },
+      {
+        "type": "if",
+        "name": "If",
+        "summary": "Sends each record through one of two lists of steps.",
+        "settings": [
+          {
+            "name": "condition",
+            "type": "expression",
+            "required": true,
+            "examples": ["status >= 400", "status >= 500 || status == 429"],
+            "what": "A bool expression. A null condition reads false. Any other type is refused when you save."
+          },
+          {
+            "name": "then",
+            "type": "list of steps",
+            "absent": "none",
+            "examples": [
+              [
+                {
+                  "id": "mark",
+                  "type": "eval",
+                  "assignments": [
+                    {
+                      "target": "failed",
+                      "expr": "true"
+                    }
+                  ]
+                }
+              ]
+            ],
+            "what": "The steps for records where the condition is true."
+          },
+          {
+            "name": "else",
+            "type": "list of steps",
+            "absent": "none",
+            "examples": [
+              [
+                {
+                  "id": "quiet",
+                  "type": "drop",
+                  "condition": "true"
+                }
+              ]
+            ],
+            "what": "The steps for every other record."
+          }
+        ]
+      },
+      {
+        "type": "comment",
+        "name": "Comment",
+        "summary": "Holds a note. Records pass it unchanged.",
+        "settings": [
+          {
+            "name": "text",
+            "type": "string",
+            "required": true,
+            "examples": [
+              "Fields below come from the firewall's syslog header.",
+              "Drops load-balancer health checks before the lookup, so they cost nothing downstream."
+            ],
+            "what": "The note."
+          }
+        ]
+      }
+    ]
+  },
+  "parserFormats": {
+    "common": [
+      {
+        "name": "splitDots",
+        "type": "bool",
+        "absent": "`false` for JSON and CSV, `true` for Key/value and Regex/Grok",
+        "examples": [true],
+        "what": "Whether a dot in a field name nests the field."
+      }
+    ],
+    "kinds": [
+      {
+        "type": "json",
+        "name": "JSON",
+        "summary": "Reads a JSON object.",
+        "settings": []
+      },
+      {
+        "type": "csv",
+        "name": "CSV",
+        "summary": "Reads one line of delimited values into the declared columns.",
+        "settings": [
+          {
+            "name": "delimiter",
+            "type": "string",
+            "required": true,
+            "examples": [",", ";", "|"],
+            "what": "The one ASCII character between values. Defaults to `,`."
+          }
+        ]
+      },
+      {
+        "type": "keyValue",
+        "name": "Key/value",
+        "summary": "Reads `key=value` pairs.",
+        "settings": [
+          {
+            "name": "pairSep",
+            "type": "string",
+            "required": true,
+            "examples": [" ", ",", "&"],
+            "what": "What separates one pair from the next. Defaults to a space."
+          },
+          {
+            "name": "kvSep",
+            "type": "string",
+            "required": true,
+            "examples": ["=", ":"],
+            "what": "What separates a key from its value. Defaults to `=`."
+          },
+          {
+            "name": "quote",
+            "type": "string",
+            "absent": "none",
+            "examples": ["\"", "'"],
+            "what": "The character that quotes a value holding separators. Defaults to `\"`."
+          },
+          {
+            "name": "nextKey",
+            "type": "bool",
+            "absent": "`true`",
+            "examples": [false],
+            "what": "Whether an unquoted value runs to the `pairSep` before the next key: in `level=info debug x=1`, `level` is `info debug`. Off, `debug` is a bare key, `debug=true`."
+          }
+        ]
+      },
+      {
+        "type": "grok",
+        "name": "Regex/Grok",
+        "summary": "Matches the text against patterns and keeps the named captures.",
+        "settings": [
+          {
+            "name": "customPatterns",
+            "type": "list of patterns",
+            "absent": "none",
+            "examples": [
+              [
+                {
+                  "name": "METHOD",
+                  "pattern": "GET|POST"
+                }
+              ],
+              [
+                {
+                  "name": "HOSTPORT",
+                  "pattern": "%{IPORHOST}:%{POSINT}"
+                }
+              ]
+            ],
+            "what": "Each `name` stands for its `pattern` in `%{NAME:field}`, beside the [built-in patterns](#grok-patterns)."
+          },
+          {
+            "name": "patterns",
+            "type": "list of strings",
+            "required": true,
+            "examples": [
+              ["%{IP:client} %{WORD:method}"],
+              ["%{IP:client} %{WORD:method} %{URIPATHPARAM:path}", "%{GREEDYDATA:message}"],
+              ["\\[%{HTTPDATE:timestamp}\\] %{IP:source.ip}"]
+            ],
+            "what": "Patterns tried in order; the first that matches gives the fields."
+          }
+        ]
+      }
+    ]
+  }
+}

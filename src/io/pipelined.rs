@@ -1,0 +1,326 @@
+//! Turning a blocking one-shot delivery into a pipelined one: a destination implements one blocking
+//! [`Sender::send_one`] and [`Pool`] supplies `deliver`/`poll_completions` around it.
+//!
+//! A pool, not one background thread: a single thread makes the call non-blocking but still serializes the round trips,
+//! so throughput stays at `1/round-trip`. Overlapping round trips is what moves it.
+//!
+//! The concurrency is adaptive. A destination that answers 429 is asking to be sent less; the pool halves its limit and
+//! climbs back gradually. The configured figure is where it starts, and the sender count is where it stops -- a
+//! destination that never refuses is found out rather than guessed at. Not for Kafka: librdkafka pipelines on its own
+//! threads.
+
+use std::collections::VecDeque;
+use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use crate::io::{BatchCompletion, BatchId, IoError, Rejection};
+
+/// What one delivery attempt produced.
+pub struct Delivered {
+    /// Documents the destination examined and refused. Not an error: see `Destination::deliver`.
+    pub rejections: Vec<Rejection>,
+    /// The destination asked to be sent less (429, 503, a per-item `es_rejected_execution_exception`). Reported rather
+    /// than inferred from timing: a slow cluster and a throttled one call for opposite responses.
+    pub throttled: bool,
+}
+
+/// One blocking delivery. Implementors do a single round trip and say what the destination refused; retrying a
+/// *transient* failure inside this call is the implementor's business, since only it knows what is safe to repeat.
+pub trait Sender: Send + 'static {
+    /// Everything one batch needs to be delivered, owned -- it crosses a thread boundary.
+    type Job: Send + 'static;
+
+    fn send_one(&mut self, job: Self::Job) -> Result<Delivered, IoError>;
+}
+
+/// How long a sender waits for a job before handing its free pages back, so what the last request freed has had its
+/// chance to be reused.
+const IDLE: Duration = Duration::from_millis(100);
+
+/// Jobs waiting for a sender. A queue under a condvar rather than a channel, so every idle sender waits at once and each
+/// notices on its own that it has gone idle; a shared channel receiver lets one sender wait while the rest queue on its
+/// lock.
+struct Jobs<J> {
+    waiting: Mutex<(VecDeque<(BatchId, J)>, bool)>,
+    arrived: Condvar,
+}
+
+impl<J> Jobs<J> {
+    fn push(&self, job: (BatchId, J)) {
+        self.waiting.lock().unwrap().0.push_back(job);
+        self.arrived.notify_one();
+    }
+
+    fn close(&self) {
+        self.waiting.lock().unwrap().1 = true;
+        self.arrived.notify_all();
+    }
+
+    /// The next job, or `None` once closed. Hands this thread's free pages back once per idle stretch.
+    fn take(&self) -> Option<(BatchId, J)> {
+        let mut waiting = self.waiting.lock().unwrap();
+        let mut released = false;
+        loop {
+            if let Some(job) = waiting.0.pop_front() {
+                return Some(job);
+            }
+            if waiting.1 {
+                return None;
+            }
+            if released {
+                waiting = self.arrived.wait(waiting).unwrap();
+                continue;
+            }
+            let (held, timeout) = self.arrived.wait_timeout(waiting, IDLE).unwrap();
+            waiting = held;
+            if timeout.timed_out() && waiting.0.is_empty() {
+                drop(waiting);
+                crate::core::buffer::release_idle();
+                released = true;
+                waiting = self.waiting.lock().unwrap();
+            }
+        }
+    }
+}
+
+/// Runs several [`Sender`]s concurrently, keyed by batch.
+pub struct Pool<S: Sender> {
+    jobs: Arc<Jobs<S::Job>>,
+    done: Receiver<(BatchId, Result<Delivered, IoError>)>,
+    handles: Vec<JoinHandle<()>>,
+    outstanding: usize,
+    /// How many requests may be outstanding right now -- moved by AIMD, never above the number of senders.
+    limit: usize,
+    max_limit: usize,
+    /// Clean completions since the last increase. See `note_outcome`.
+    clean: usize,
+    /// Requests that were already outstanding when the limit was last halved. See `note_outcome`.
+    settling: usize,
+    /// Completions collected while `submit` was waiting for room, held for the next `poll`.
+    stashed: Vec<BatchCompletion>,
+    /// A failure `poll` took off the channel beside completions it returned first, held for the next call.
+    failed: Option<IoError>,
+}
+
+impl<S: Sender> Pool<S> {
+    /// One thread per sender; each owns its own connection. A sender idle for longer than `IDLE` hands back the pages
+    /// its last request freed.
+    ///
+    /// `start` is where the limit begins, clamped into the pool. Below the sender count it leaves room to climb: the
+    /// senders above it are parked until the loop earns them.
+    pub fn new(senders: Vec<S>, start: usize) -> Pool<S> {
+        assert!(!senders.is_empty(), "a pool needs at least one sender");
+        let jobs = Arc::new(Jobs {
+            waiting: Mutex::new((VecDeque::new(), false)),
+            arrived: Condvar::new(),
+        });
+        let (done_tx, done_rx) = sync_channel(senders.len() * 4);
+
+        let handles: Vec<JoinHandle<()>> = senders
+            .into_iter()
+            .map(|mut s| {
+                let jobs = jobs.clone();
+                let done_tx = done_tx.clone();
+                std::thread::Builder::new()
+                    .name("smeltr-destination-sender".into())
+                    .spawn(move || {
+                        while let Some((batch, job)) = jobs.take() {
+                            let outcome = s.send_one(job);
+                            if done_tx.send((batch, outcome)).is_err() {
+                                break;
+                            }
+                        }
+                    })
+                    .expect("spawn destination sender")
+            })
+            .collect();
+
+        let max_limit = handles.len();
+        Pool {
+            jobs,
+            done: done_rx,
+            handles,
+            outstanding: 0,
+            limit: start.clamp(1, max_limit),
+            max_limit,
+            clean: 0,
+            settling: 0,
+            stashed: Vec::new(),
+            failed: None,
+        }
+    }
+
+    /// The most requests this pool will ever allow outstanding: its sender count.
+    pub fn max_limit(&self) -> usize {
+        self.max_limit
+    }
+
+    /// AIMD on the concurrency limit: a throttle is a load signal, so back off fast and recover slowly -- halve, then
+    /// one more per `limit` clean completions, so sustained pressure settles rather than oscillates.
+    ///
+    /// One decrease per round. Requests already outstanding when the limit was halved were sent under the old limit
+    /// and met the same congestion, so their refusals are that same signal arriving again, already answered. Halving
+    /// on each of them instead collapses the limit to one on a single burst -- eight concurrent refusals would halve
+    /// it three times -- and the loop then has to climb back from the floor for pressure it had already responded to.
+    ///
+    /// The round ends once as many requests have answered as were outstanding at the decrease. Congestion that
+    /// outlasts it is new pressure, and halves the limit again.
+    fn note_outcome(&mut self, throttled: bool) {
+        let answered = self.settling > 0;
+        self.settling = self.settling.saturating_sub(1);
+        if throttled {
+            self.clean = 0;
+            if !answered {
+                self.limit = (self.limit / 2).max(1);
+                // Everything still in flight predates the decrease.
+                self.settling = self.outstanding;
+            }
+            return;
+        }
+        self.clean += 1;
+        if self.clean >= self.limit {
+            self.clean = 0;
+            self.limit = (self.limit + 1).min(self.max_limit);
+        }
+    }
+
+    /// A failed request answers too: it ends its place in a settling round. It says nothing about load, so it neither
+    /// lowers the limit nor counts toward raising it.
+    fn note_failure(&mut self) {
+        self.settling = self.settling.saturating_sub(1);
+    }
+
+    /// Requests currently allowed outstanding.
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Take one completion off the channel, blocking.
+    fn recv_one(&mut self) -> Result<(), IoError> {
+        match self.done.recv() {
+            Ok((batch, Ok(d))) => {
+                self.outstanding -= 1;
+                self.note_outcome(d.throttled);
+                self.stashed.push(BatchCompletion {
+                    batch,
+                    rejections: d.rejections,
+                });
+                Ok(())
+            }
+            Ok((_, Err(e))) => {
+                self.outstanding -= 1;
+                self.note_failure();
+                Err(e)
+            }
+            Err(_) => Err(IoError::transient("every destination sender thread has stopped")),
+        }
+    }
+
+    /// Hand `job` over as `batch`. Blocks while the limit is reached.
+    pub fn submit(&mut self, batch: BatchId, job: S::Job) -> Result<(), IoError> {
+        if let Some(e) = self.failed.take() {
+            return Err(e);
+        }
+        while self.outstanding >= self.limit {
+            self.recv_one()?;
+        }
+        // Senders that have all stopped are found out when their completions channel closes.
+        self.jobs.push((batch, job));
+        self.outstanding += 1;
+        Ok(())
+    }
+
+    /// Completions that have arrived, without waiting. A failure is returned as `Err` once the completions that arrived
+    /// before it have been returned: a batch that landed is reported whatever became of the others.
+    pub fn poll(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
+        if self.stashed.is_empty()
+            && let Some(e) = self.failed.take()
+        {
+            return Err(e);
+        }
+        let mut out = std::mem::take(&mut self.stashed);
+        loop {
+            match self.done.try_recv() {
+                Ok((batch, Ok(d))) => {
+                    self.outstanding -= 1;
+                    self.note_outcome(d.throttled);
+                    out.push(BatchCompletion {
+                        batch,
+                        rejections: d.rejections,
+                    });
+                }
+                Ok((_, Err(e))) => {
+                    self.outstanding -= 1;
+                    self.note_failure();
+                    // Keep reading: a batch that landed behind the failure is reported now too.
+                    self.failed.get_or_insert(e);
+                }
+                Err(TryRecvError::Empty) => {
+                    return match self.failed.take() {
+                        Some(e) if out.is_empty() => Err(e),
+                        held => {
+                            self.failed = held;
+                            Ok(out)
+                        }
+                    };
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.stashed = out;
+                    return Err(IoError::transient("every destination sender thread has stopped"));
+                }
+            }
+        }
+    }
+
+    /// Wait for everything outstanding: the barrier, for `Destination::flush`.
+    pub fn drain(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
+        let mut out = std::mem::take(&mut self.stashed);
+        let mut failure = self.failed.take();
+        while self.outstanding > 0 {
+            match self.done.recv() {
+                Ok((batch, Ok(d))) => {
+                    self.outstanding -= 1;
+                    self.note_outcome(d.throttled);
+                    out.push(BatchCompletion {
+                        batch,
+                        rejections: d.rejections,
+                    });
+                }
+                Ok((_, Err(e))) => {
+                    self.outstanding -= 1;
+                    self.note_failure();
+                    // Keep draining: results left in the channel would be reported against the next batch.
+                    failure.get_or_insert(e);
+                }
+                Err(_) => {
+                    self.stashed = out;
+                    return Err(IoError::transient("every destination sender thread has stopped"));
+                }
+            }
+        }
+        match failure {
+            // Kept for the next `poll`.
+            Some(e) => {
+                self.stashed = out;
+                Err(e)
+            }
+            None => Ok(out),
+        }
+    }
+
+    pub fn outstanding(&self) -> usize {
+        self.outstanding
+    }
+}
+
+impl<S: Sender> Drop for Pool<S> {
+    fn drop(&mut self) {
+        // Closing the job queue ends the sender loops.
+        self.jobs.close();
+        for h in self.handles.drain(..) {
+            let _ = h.join();
+        }
+    }
+}

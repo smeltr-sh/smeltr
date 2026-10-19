@@ -1,0 +1,76 @@
+{
+  "basic": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": { "type": "json" },
+        "declared": [{ "name": "status", "type": "i64" }]
+      },
+      { "id": "call", "type": "call", "pipeline": "stamp-ecs" }
+    ],
+    "pipelines": [
+      {
+        "id": "stamp-ecs",
+        "name": "stamp-ecs",
+        "steps": [
+          {
+            "id": "stamp",
+            "type": "eval",
+            "assignments": [{ "target": "ecs.version", "expr": "\"8.11\"" }]
+          }
+        ]
+      }
+    ],
+    "input": [
+      { "status": 503, "path": "/pay" },
+      { "status": 200, "path": "/home" }
+    ],
+    "output": [
+      { "status": 503, "path": "/pay", "ecs": { "version": "8.11" } },
+      { "status": 200, "path": "/home", "ecs": { "version": "8.11" } }
+    ]
+  },
+  "filtered": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": { "type": "json" },
+        "declared": [
+          { "name": "status", "type": "i64" },
+          { "name": "service", "type": "str" }
+        ]
+      },
+      {
+        "id": "call",
+        "type": "call",
+        "filter": "service == \"checkout\"",
+        "pipeline": "stamp-ecs"
+      }
+    ],
+    "pipelines": [
+      {
+        "id": "stamp-ecs",
+        "name": "stamp-ecs",
+        "steps": [
+          {
+            "id": "stamp",
+            "type": "eval",
+            "assignments": [{ "target": "ecs.version", "expr": "\"8.11\"" }]
+          }
+        ]
+      }
+    ],
+    "input": [
+      { "status": 503, "service": "checkout" },
+      { "status": 503, "service": "search" }
+    ],
+    "output": [
+      { "status": 503, "service": "checkout", "ecs": { "version": "8.11" } },
+      { "status": 503, "service": "search" }
+    ]
+  }
+}

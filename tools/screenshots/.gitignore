@@ -1,0 +1,8 @@
+# What a run writes, all of it rebuilt by the next one. state/ holds a leader's TLS key, its accounts' sessions and
+# the workers' credentials.
+state/
+shots/
+node_modules/
+__pycache__/
+.gen.pid
+gen.log

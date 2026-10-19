@@ -1,0 +1,29 @@
+[
+  {
+    "id": "errors",
+    "source": "kafka-main",
+    "condition": "__source.offset < 0",
+    "pipeline": "main",
+
+    "deliver": [
+      { "when": "smeltr.exception == null", "to": ["kafka-out"] },
+      { "when": "smeltr.exception != null", "to": ["kafka-dlq"] }
+    ]
+  },
+  {
+    "id": "catch-all",
+    "source": "kafka-main",
+    "condition": null,
+    "pipeline": "main",
+
+    "deliver": [{ "to": ["kafka-out"] }]
+  },
+  {
+    "id": "metrics-route",
+    "source": "self-metrics",
+    "condition": null,
+    "pipeline": "metrics-pipe",
+
+    "deliver": [{ "to": ["kafka-out"] }]
+  }
+]

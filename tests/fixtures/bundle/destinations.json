@@ -1,0 +1,14 @@
+[
+  {
+    "id": "kafka-out",
+    "type": "kafka",
+    "brokers": "b1:9092",
+    "defaultTopic": "logs-out"
+  },
+  {
+    "id": "kafka-dlq",
+    "type": "kafka",
+    "brokers": "b1:9092",
+    "defaultTopic": "logs-dlq"
+  }
+]

@@ -1,0 +1,167 @@
+# A pushed `v*` tag builds that commit's release archives and image, and puts them on a draft Release to
+# publish by hand. `just cut-release` makes the tag; nothing here records, commits or tags. A pre-release
+# tag (`v1.2.0-rc1`) is a trial: it needs no fixtures, drafts a pre-release, and pushes only its own image
+# tag.
+#
+# `just check` does not run here: it runs before every push. Actions are
+# pinned to commits, and the jobs that run the build hold no token that can publish.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          # The Dockerfile copies `.git` into its builder, which must not carry the token.
+          persist-credentials: false
+      - name: The tag is semver, on main and alone on its commit, and a release carries its fixtures
+        run: |
+          git merge-base --is-ancestor HEAD origin/main \
+            || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
+          # The build, dist and this workflow each read the release name off the commit; two tags make it ambiguous.
+          test "$(git tag --points-at HEAD --list 'v[0-9]*' | wc -l)" -eq 1 \
+            || { echo "::error::more than one v* tag on this commit: delete the stale one"; exit 1; }
+          name=${GITHUB_REF_NAME#v}
+          [[ "$name" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+            || { echo "::error::$GITHUB_REF_NAME is not v<major>.<minor>.<patch>[-<pre-release>]"; exit 1; }
+          case "$name" in *-*) exit 0 ;; esac
+          test -d "tests/fixtures/releases/$name" \
+            || { echo "::error::no tests/fixtures/releases/$name: cut a release with just cut-release"; exit 1; }
+
+  linux:
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          # The Dockerfile copies `.git` into its builder, which must not carry the token.
+          persist-credentials: false
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        with:
+          tool: just
+      - run: just dist
+      - name: Scan the image against the STIG
+        run: just stig && mv stig/report.html smeltr-stig.html
+      - name: Scan the image for known vulnerabilities
+        run: just cves && mv cves/report.txt smeltr-cves.txt
+      - name: List the image's packages as an SBOM
+        run: just sbom && mv sbom/sbom.cdx.json smeltr-sbom.cdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux
+          path: |
+            smeltr-stig.html
+            smeltr-cves.txt
+            smeltr-sbom.cdx.json
+            smeltr-linux.tar.gz
+            smeltr-image.tar.gz
+            SHA256SUMS
+
+  windows:
+    needs: guard
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          # The Dockerfile copies `.git` into its builder, which must not carry the token.
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        with:
+          # cargo-auditable: the same crate record the Dockerfile writes into the Linux binary.
+          tool: just,cargo-auditable@0.7.7
+      # AWS-LC's FIPS build wants NASM and Ninja on Windows; the runner has cmake, Go and perl.
+      - run: choco install nasm ninja --no-progress -y
+      - name: just dist
+        run: |
+          $env:PATH = "C:\Program Files\NASM;$env:PATH"
+          just dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows
+          path: |
+            smeltr-windows.zip
+            SHA256SUMS
+
+  # Nothing is published until every archive is built: the image and the draft go out together.
+  publish:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      # Keyless signing: Sigstore certifies this workflow's OIDC identity, so there is no key to keep.
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          path: repo
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the image to ghcr.io
+        id: push
+        run: |
+          name=${GITHUB_REF_NAME#v}
+          image=ghcr.io/${GITHUB_REPOSITORY,,}
+          docker load -i linux/smeltr-image.tar.gz
+          # `1.2`, `1` and `latest` move only to the newest release on main they cover, so a patch to an older
+          # line, or a stray tag off main, leaves them where they are.
+          newest() {
+            git -C repo tag --list "$1" --merged origin/main --sort=-version:refname | grep -v -- - | head -1
+          }
+          tags="$name"
+          case "$name" in
+            *-*) ;;
+            *)
+              if [ "$(newest "v${name%.*}.*")" = "$GITHUB_REF_NAME" ]; then tags="$tags ${name%.*}"; fi
+              if [ "$(newest "v${name%%.*}.*")" = "$GITHUB_REF_NAME" ]; then tags="$tags ${name%%.*}"; fi
+              if [ "$(newest 'v[0-9]*')" = "$GITHUB_REF_NAME" ]; then tags="$tags latest"; fi
+              ;;
+          esac
+          for t in $tags; do
+            docker tag "smeltr:$name" "$image:$t"
+            docker push "$image:$t"
+          done
+          # Every tag names one image, so signing its digest covers them all.
+          digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image:$name")
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest#*@}" >> "$GITHUB_OUTPUT"
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - name: Sign the image and attest its SBOM
+        env:
+          REF: ${{ steps.push.outputs.image }}@${{ steps.push.outputs.digest }}
+        run: |
+          cosign sign --yes "$REF"
+          cosign attest --yes --type cyclonedx --predicate linux/smeltr-sbom.cdx.json "$REF"
+      - name: Draft the Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat linux/SHA256SUMS windows/SHA256SUMS | tr -d '\r' > SHA256SUMS
+          prerelease=
+          case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag $prerelease \
+            --title "${GITHUB_REF_NAME#v}" --notes "" \
+            linux/smeltr-linux.tar.gz linux/smeltr-image.tar.gz linux/smeltr-stig.html linux/smeltr-cves.txt linux/smeltr-sbom.cdx.json \
+            windows/smeltr-windows.zip SHA256SUMS

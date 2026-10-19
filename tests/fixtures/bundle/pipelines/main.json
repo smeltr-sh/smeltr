@@ -1,0 +1,38 @@
+{
+  "id": "main",
+  "name": "Main pipeline",
+  "steps": [
+    {
+      "id": "parse",
+      "type": "parser",
+      "input": "_raw",
+      "kind": { "type": "json" },
+      "declared": [{ "name": "status", "type": "i64" }]
+    },
+    {
+      "id": "severity",
+      "type": "eval",
+      "assignments": [
+        { "target": "severity", "expr": "status >= 400 ? \"high\" : \"low\"" }
+      ]
+    },
+    {
+      "id": "declare-alert",
+      "type": "code",
+      "body": "alert: bool = null;"
+    },
+    {
+      "id": "high-only",
+      "type": "if",
+      "condition": "severity == \"high\"",
+      "then": [
+        {
+          "id": "tag-high",
+          "type": "eval",
+          "assignments": [{ "target": "alert", "expr": "true" }]
+        }
+      ],
+      "else": []
+    }
+  ]
+}

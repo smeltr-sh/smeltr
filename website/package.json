@@ -1,0 +1,41 @@
+{
+  "name": "smeltr-website",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "imports": {
+    "#lib/*": "./src/lib/*"
+  },
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build && pagefind --site build && node scripts/docs-markdown.js",
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --incremental",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@cloudflare/containers": "0.3.7",
+    "@sveltejs/adapter-static": "^4.0.0",
+    "@sveltejs/kit": "^3.0.0",
+    "@sveltejs/vite-plugin-svelte": "^7.3.0",
+    "happy-dom": "^20.14.6",
+    "pagefind": "^1.5.2",
+    "prettier": "^3.9.6",
+    "prettier-plugin-svelte": "^4.1.1",
+    "svelte": "^5.56.10",
+    "svelte-check": "^4.7.6",
+    "turndown": "^7.2.4",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.2",
+    "wrangler": "^4.15.2"
+  },
+  "allowScripts": {
+    "sharp@0.33.5": true,
+    "esbuild@0.28.1": true,
+    "workerd@1.20261006.1": true
+  },
+  "overrides": {
+    "sharp": "0.35.5"
+  }
+}

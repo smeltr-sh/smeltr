@@ -1,0 +1,28 @@
+{
+  "UserConfig": {
+    "NamespaceConfig": [
+      {
+        "Type": "EventHub",
+        "Name": "emulatorNs1",
+        "Entities": [
+          {
+            "Name": "smeltr-live",
+            "PartitionCount": 2,
+            "ConsumerGroups": [
+              { "Name": "smeltr" },
+              { "Name": "smeltr-fuzz" },
+              { "Name": "smeltr-reset" },
+              { "Name": "smeltr-avro-fuzz" }
+            ]
+          },
+          {
+            "Name": "smeltr-live-routed",
+            "PartitionCount": 1,
+            "ConsumerGroups": [{ "Name": "smeltr-fuzz" }, { "Name": "smeltr-avro-fuzz" }]
+          }
+        ]
+      }
+    ],
+    "LoggingConfig": { "Type": "File" }
+  }
+}

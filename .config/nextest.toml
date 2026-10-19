@@ -1,0 +1,8 @@
+# `StartPermit` in gate-tests and worker-tests bounds how many leaders bootstrap at once, but only within one
+# process, and nextest runs each test in a process of its own. This group is that bound across processes.
+[test-groups]
+leader-starts = { max-threads = 4 }
+
+[[profile.default.overrides]]
+filter = 'test(/^gate_tests::/) | test(/^worker_tests::/)'
+test-group = 'leader-starts'

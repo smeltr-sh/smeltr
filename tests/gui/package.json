@@ -1,0 +1,15 @@
+{
+  "name": "smeltr-gui-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "@types/node": "^24.13.3",
+    "prettier": "^3.9.6"
+  }
+}

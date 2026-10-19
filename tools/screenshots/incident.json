@@ -1,0 +1,11 @@
+[
+  { "name": "02-issues", "hash": "#/status/issues", "themes": ["light", "dark"], "delay": 3000 },
+  {
+    "name": "01b-status-needs-attention",
+    "site": "fleet-attention",
+    "hash": "#/status",
+    "themes": ["light", "dark"],
+    "delay": 2500,
+    "steps": [{ "delay": 2500 }, { "text": "Expand all" }, { "delay": 2000 }]
+  }
+]

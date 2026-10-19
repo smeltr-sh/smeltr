@@ -1,0 +1,55 @@
+{
+  "realm": "smeltr",
+  "enabled": true,
+  "sslRequired": "none",
+  "groups": [{ "name": "smeltr-admins" }],
+  "users": [
+    {
+      "username": "ada",
+      "enabled": true,
+      "email": "ada@example.com",
+      "emailVerified": true,
+      "firstName": "Ada",
+      "lastName": "Lovelace",
+      "credentials": [{ "type": "password", "value": "smeltr-live-1", "temporary": false }],
+      "groups": ["/smeltr-admins"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@example.com",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Outsider",
+      "credentials": [{ "type": "password", "value": "smeltr-live-1", "temporary": false }]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "smeltr",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "smeltr-live-1",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://127.0.0.1:*"],
+      "attributes": { "pkce.code.challenge.method": "S256" },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ]
+}

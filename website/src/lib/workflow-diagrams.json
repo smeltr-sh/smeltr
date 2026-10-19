@@ -1,0 +1,1002 @@
+{
+  "build": {
+    "title": "Keep useful data, then route it",
+    "description": "Source records enter filtering and transformation. Dropped rows stop here. Kept records can be delivered to each destination whose rule matches.",
+    "caption": "Remove unused fields from kept records. Drop unwanted rows entirely. Each matching delivery rule can send a kept record to a destination.",
+    "layouts": [
+      {
+        "width": 900,
+        "height": 350,
+        "nodes": [
+          {
+            "x": 20,
+            "y": 80,
+            "w": 200,
+            "title": "Source records",
+            "detail": ["Rows and fields"]
+          },
+          {
+            "x": 310,
+            "y": 80,
+            "w": 240,
+            "title": "Filter & transform",
+            "detail": ["Keep useful data"]
+          },
+          {
+            "x": 650,
+            "y": 20,
+            "w": 230,
+            "title": "Destination A",
+            "detail": ["Matching delivery rule"]
+          },
+          {
+            "x": 650,
+            "y": 150,
+            "w": 230,
+            "title": "Destination B",
+            "detail": ["Matching delivery rule"]
+          },
+          {
+            "x": 310,
+            "y": 250,
+            "w": 240,
+            "title": "Dropped rows",
+            "detail": ["No downstream delivery"]
+          }
+        ],
+        "paths": ["M220 120H300", "M550 120H600V60H640", "M600 120V190H640", "M430 160V240"],
+        "labels": []
+      },
+      {
+        "width": 360,
+        "height": 500,
+        "nodes": [
+          {
+            "x": 80,
+            "y": 10,
+            "w": 200,
+            "title": "Source records",
+            "detail": ["Rows and fields"]
+          },
+          {
+            "x": 80,
+            "y": 130,
+            "w": 200,
+            "title": "Filter & transform",
+            "detail": ["Keep useful data"]
+          },
+          {
+            "x": 80,
+            "y": 265,
+            "w": 200,
+            "title": "Dropped rows",
+            "detail": ["No delivery"]
+          },
+          {
+            "x": 10,
+            "y": 400,
+            "w": 160,
+            "title": "Destination A",
+            "detail": ["Matching rule"]
+          },
+          {
+            "x": 190,
+            "y": 400,
+            "w": 160,
+            "title": "Destination B",
+            "detail": ["Matching rule"]
+          }
+        ],
+        "paths": [
+          "M180 90V120",
+          "M180 210V255",
+          "M80 170H25V375H90V390",
+          "M280 170H335V375H270V390"
+        ],
+        "labels": []
+      }
+    ]
+  },
+  "review": {
+    "title": "From a draft to running workers",
+    "description": "Draft changes go to review. Review can send them back for revision. Approval and deployment publish a commit on main. Each worker fetches main and reports its running commit.",
+    "caption": "Review the diff and test results before approval. Each worker fetches main independently; check its running commit to confirm adoption.",
+    "layouts": [
+      {
+        "width": 900,
+        "height": 350,
+        "nodes": [
+          {
+            "x": 20,
+            "y": 50,
+            "w": 220,
+            "title": "Draft branch",
+            "detail": ["Save your edits"]
+          },
+          {
+            "x": 320,
+            "y": 50,
+            "w": 220,
+            "title": "Review",
+            "detail": ["Diff and test results"]
+          },
+          {
+            "x": 620,
+            "y": 50,
+            "w": 260,
+            "title": "Approve & deploy",
+            "detail": ["Publish to main"]
+          },
+          {
+            "x": 430,
+            "y": 250,
+            "w": 210,
+            "title": "Worker A",
+            "detail": ["Fetch main \u00b7 report commit"]
+          },
+          {
+            "x": 670,
+            "y": 250,
+            "w": 210,
+            "title": "Worker B",
+            "detail": ["Fetch main \u00b7 report commit"]
+          }
+        ],
+        "paths": [
+          "M240 90H310",
+          "M540 90H610",
+          "M430 130V185H130V140",
+          "M750 130V205H535V240",
+          "M750 205H775V240"
+        ],
+        "labels": [
+          {
+            "x": 280,
+            "y": 177,
+            "text": "Revise"
+          }
+        ]
+      },
+      {
+        "width": 360,
+        "height": 500,
+        "nodes": [
+          {
+            "x": 80,
+            "y": 10,
+            "w": 200,
+            "title": "Draft branch",
+            "detail": ["Save your edits"]
+          },
+          {
+            "x": 80,
+            "y": 130,
+            "w": 200,
+            "title": "Review",
+            "detail": ["Diff and test results"]
+          },
+          {
+            "x": 80,
+            "y": 250,
+            "w": 200,
+            "title": "Approve & deploy",
+            "detail": ["Publish to main"]
+          },
+          {
+            "x": 10,
+            "y": 400,
+            "w": 160,
+            "title": "Worker A",
+            "detail": ["Fetch main", "Report commit"]
+          },
+          {
+            "x": 190,
+            "y": 400,
+            "w": 160,
+            "title": "Worker B",
+            "detail": ["Fetch main", "Report commit"]
+          }
+        ],
+        "paths": [
+          "M180 90V120",
+          "M180 210V240",
+          "M80 170H35V50H70",
+          "M180 330V370H90V390",
+          "M180 370H270V390"
+        ],
+        "labels": [
+          {
+            "x": 61,
+            "y": 112,
+            "text": "Revise"
+          }
+        ]
+      }
+    ]
+  },
+  "delivery": {
+    "title": "Delivery and recovery",
+    "description": "When a destination accepts a record, that delivery is complete. If it is unreachable, Smeltr retries and pauses input when buffers fill. If it refuses a record, Smeltr follows your chosen action: hold and retry, send it elsewhere for investigation, or count and drop it.",
+    "caption": "Choose any normal Smeltr destination to receive refused records for investigation and later replay. Selecting it for this job makes it a dead-letter destination; it is not a separate destination type. Smeltr waits for every selected destination to confirm receipt. If one is unavailable, the input streams sending records to it can still be paused.",
+    "layouts": [
+      {
+        "width": 900,
+        "height": 510,
+        "nodes": [
+          {
+            "x": 320,
+            "y": 10,
+            "w": 260,
+            "title": "Destination response",
+            "detail": ["What happened to the record?"],
+            "role": "destination"
+          },
+          {
+            "x": 20,
+            "y": 150,
+            "w": 260,
+            "title": "Accepted",
+            "detail": ["This delivery is complete"]
+          },
+          {
+            "x": 320,
+            "y": 150,
+            "w": 260,
+            "title": "Unreachable",
+            "detail": ["Retry; pause when buffers fill"]
+          },
+          {
+            "x": 620,
+            "y": 150,
+            "w": 260,
+            "title": "Record refused",
+            "detail": ["Use the action you selected"]
+          },
+          {
+            "x": 20,
+            "y": 390,
+            "w": 260,
+            "title": "Hold and retry (default)",
+            "detail": ["Keep the record; pause input"]
+          },
+          {
+            "x": 320,
+            "y": 390,
+            "w": 260,
+            "title": "Send elsewhere",
+            "detail": ["Wait for each chosen", "destination to accept"]
+          },
+          {
+            "x": 620,
+            "y": 390,
+            "w": 260,
+            "title": "Drop",
+            "detail": ["Delete the record;", "count the drops"]
+          }
+        ],
+        "paths": [
+          "M450 90V120H150V140",
+          "M450 120V140",
+          "M450 120H750V140",
+          "M750 230V320H150V380",
+          "M450 320V380",
+          "M750 320V380"
+        ],
+        "labels": []
+      },
+      {
+        "width": 360,
+        "height": 870,
+        "nodes": [
+          {
+            "x": 80,
+            "y": 10,
+            "w": 260,
+            "title": "Destination response",
+            "detail": ["What happened?"],
+            "role": "destination"
+          },
+          {
+            "x": 80,
+            "y": 145,
+            "w": 260,
+            "title": "Accepted",
+            "detail": ["This delivery is complete"]
+          },
+          {
+            "x": 80,
+            "y": 280,
+            "w": 260,
+            "title": "Unreachable",
+            "detail": ["Retry; pause when buffers fill"]
+          },
+          {
+            "x": 80,
+            "y": 415,
+            "w": 260,
+            "title": "Record refused",
+            "detail": ["Use the action you selected"]
+          },
+          {
+            "x": 100,
+            "y": 545,
+            "w": 240,
+            "title": "Hold and retry (default)",
+            "detail": ["Keep the record; pause input"]
+          },
+          {
+            "x": 100,
+            "y": 655,
+            "w": 240,
+            "title": "Send elsewhere",
+            "detail": ["Wait for each chosen", "destination to accept"]
+          },
+          {
+            "x": 100,
+            "y": 765,
+            "w": 240,
+            "title": "Drop",
+            "detail": ["Delete the record;", "count the drops"]
+          }
+        ],
+        "paths": [
+          "M80 50H25V455H70",
+          "M25 185H70",
+          "M25 320H70",
+          "M210 495V515H60V805H90",
+          "M60 585H90",
+          "M60 695H90"
+        ],
+        "labels": []
+      }
+    ]
+  },
+  "system": {
+    "title": "How Smeltr fits together",
+    "description": "An administrator edits and reviews configuration on the leader. The leader stores it in Git. Workers fetch main and report their status to the leader. Source records flow through workers to destinations. The stacked worker cards represent one or more workers.",
+    "caption": "The leader provides the editing and review screens and stores configuration in Git. Workers fetch main and report their status. Workers also connect directly to sources and destinations, where they read, filter, and deliver records. Dashed arrows show workers fetching configuration and reporting status. The stack represents one or more workers.",
+    "layouts": [
+      {
+        "width": 900,
+        "height": 370,
+        "nodes": [
+          {
+            "x": 20,
+            "y": 30,
+            "w": 220,
+            "title": "Administrator",
+            "detail": ["Edit \u00b7 test \u00b7 review"],
+            "role": "administrator"
+          },
+          {
+            "x": 340,
+            "y": 30,
+            "w": 220,
+            "title": "Leader",
+            "detail": ["UI + Git repository"],
+            "role": "leader"
+          },
+          {
+            "x": 20,
+            "y": 260,
+            "w": 220,
+            "title": "Sources",
+            "detail": ["Input records"],
+            "role": "source"
+          },
+          {
+            "x": 340,
+            "y": 260,
+            "w": 220,
+            "title": "Workers",
+            "detail": ["Filter and deliver records"],
+            "role": "worker",
+            "stacked": true
+          },
+          {
+            "x": 660,
+            "y": 260,
+            "w": 220,
+            "title": "Destinations",
+            "detail": ["Kept records"],
+            "role": "destination"
+          }
+        ],
+        "paths": ["M240 70H330", "M240 300H330", "M560 300H650"],
+        "labels": [
+          {
+            "x": 540,
+            "y": 180,
+            "text": "Fetch main"
+          },
+          {
+            "x": 540,
+            "y": 201,
+            "text": "Report status"
+          }
+        ],
+        "controlPaths": ["M450 260V120"]
+      },
+      {
+        "width": 360,
+        "height": 640,
+        "nodes": [
+          {
+            "x": 60,
+            "y": 10,
+            "w": 240,
+            "title": "Administrator",
+            "detail": ["Edit \u00b7 test \u00b7 review"],
+            "role": "administrator"
+          },
+          {
+            "x": 60,
+            "y": 140,
+            "w": 240,
+            "title": "Leader",
+            "detail": ["UI + Git repository"],
+            "role": "leader"
+          },
+          {
+            "x": 60,
+            "y": 280,
+            "w": 240,
+            "title": "Sources",
+            "detail": ["Input records"],
+            "role": "source"
+          },
+          {
+            "x": 60,
+            "y": 410,
+            "w": 240,
+            "title": "Workers",
+            "detail": ["Filter and deliver records"],
+            "role": "worker",
+            "stacked": true
+          },
+          {
+            "x": 60,
+            "y": 540,
+            "w": 240,
+            "title": "Destinations",
+            "detail": ["Kept records"],
+            "role": "destination"
+          }
+        ],
+        "paths": ["M180 90V130", "M180 360V384", "M180 490V530"],
+        "labels": [],
+        "controlPaths": ["M300 450H335V180H310"]
+      }
+    ]
+  },
+  "single": {
+    "title": "Standalone: leader and worker in one process",
+    "description": "An administrator connects to the leader. One Smeltr binary runs the leader and one worker together in a single process, shown as joined cards. Sources send records through the worker to destinations.",
+    "caption": "One binary, one process: the leader and one worker run together. The administrator uses the leader; the worker reads from sources, filters records, and delivers them to destinations.",
+    "layouts": [
+      {
+        "width": 900,
+        "height": 380,
+        "nodes": [
+          {
+            "x": 340,
+            "y": 10,
+            "w": 220,
+            "title": "Administrator",
+            "role": "administrator",
+            "detail": ["Edit \u00b7 test \u00b7 review"]
+          },
+          {
+            "x": 340,
+            "y": 160,
+            "w": 220,
+            "title": "Leader",
+            "role": "leader",
+            "detail": ["UI + Git repository"]
+          },
+          {
+            "x": 340,
+            "y": 240,
+            "w": 220,
+            "title": "Worker",
+            "role": "worker",
+            "detail": ["Filter and deliver records"]
+          },
+          {
+            "x": 20,
+            "y": 240,
+            "w": 220,
+            "title": "Sources",
+            "role": "source",
+            "detail": ["Input records"]
+          },
+          {
+            "x": 660,
+            "y": 240,
+            "w": 220,
+            "title": "Destinations",
+            "role": "destination",
+            "detail": ["Kept records"]
+          }
+        ],
+        "paths": ["M450 90V150", "M240 280H330", "M560 280H650"],
+        "labels": [],
+        "boundaries": [
+          {
+            "x": 310,
+            "y": 110,
+            "w": 280,
+            "h": 240,
+            "label": "One process"
+          }
+        ]
+      },
+      {
+        "width": 360,
+        "height": 630,
+        "nodes": [
+          {
+            "x": 60,
+            "y": 10,
+            "w": 240,
+            "title": "Administrator",
+            "role": "administrator",
+            "detail": ["Edit \u00b7 test \u00b7 review"]
+          },
+          {
+            "x": 60,
+            "y": 140,
+            "w": 240,
+            "title": "Sources",
+            "role": "source",
+            "detail": ["Input records"]
+          },
+          {
+            "x": 60,
+            "y": 300,
+            "w": 240,
+            "title": "Leader",
+            "role": "leader",
+            "detail": ["UI + Git repository"]
+          },
+          {
+            "x": 60,
+            "y": 380,
+            "w": 240,
+            "title": "Worker",
+            "role": "worker",
+            "detail": ["Filter and deliver records"]
+          },
+          {
+            "x": 60,
+            "y": 530,
+            "w": 240,
+            "title": "Destinations",
+            "role": "destination",
+            "detail": ["Kept records"]
+          }
+        ],
+        "paths": ["M60 50H15V340H50", "M300 180H345V420H310", "M180 460V520"],
+        "labels": [],
+        "boundaries": [
+          {
+            "x": 30,
+            "y": 250,
+            "w": 300,
+            "h": 230,
+            "label": "One Smeltr process"
+          }
+        ]
+      }
+    ]
+  },
+  "kubernetes": {
+    "title": "Smeltr on Kubernetes",
+    "description": "An administrator reaches the ingress over HTTPS. The ingress forwards through a private ClusterIP Service to one leader pod. Workers fetch main and report status through the ingress and connect directly to sources and destinations. The leader and each worker have persistent storage.",
+    "caption": "Dashed arrows show workers fetching main and reporting status through the ingress HTTPS address. The ingress forwards to the leader through a private ClusterIP Service. Dotted lines connect processes to persistent volumes: keep leader data and its sealing key on separate volumes, and give each worker its own state volume. Back up the volumes. Sources and destinations may be inside or outside the cluster.",
+    "layouts": [
+      {
+        "width": 900,
+        "height": 550,
+        "nodes": [
+          {
+            "x": 20,
+            "y": 30,
+            "w": 220,
+            "title": "Administrator",
+            "detail": ["Browser \u00b7 HTTPS"],
+            "role": "administrator"
+          },
+          {
+            "x": 340,
+            "y": 30,
+            "w": 220,
+            "title": "Ingress",
+            "detail": ["HTTPS entry point"],
+            "role": "ingress"
+          },
+          {
+            "x": 660,
+            "y": 30,
+            "w": 220,
+            "title": "Leader",
+            "detail": ["One pod \u00b7 private Service"],
+            "role": "leader"
+          },
+          {
+            "x": 20,
+            "y": 310,
+            "w": 220,
+            "title": "Sources",
+            "detail": ["Input records"],
+            "role": "source"
+          },
+          {
+            "x": 340,
+            "y": 310,
+            "w": 220,
+            "title": "Workers",
+            "detail": ["One process per pod"],
+            "role": "worker"
+          },
+          {
+            "x": 660,
+            "y": 310,
+            "w": 220,
+            "title": "Destinations",
+            "detail": ["Kept records"],
+            "role": "destination"
+          },
+          {
+            "x": 340,
+            "y": 440,
+            "w": 220,
+            "title": "Worker storage",
+            "detail": ["One volume per worker"],
+            "role": "storage"
+          },
+          {
+            "x": 660,
+            "y": 160,
+            "w": 220,
+            "title": "Leader storage",
+            "detail": ["Data + certificates", "Separate secret-key volume"],
+            "role": "storage"
+          }
+        ],
+        "paths": ["M240 70H330", "M560 70H650", "M240 350H330", "M560 350H650"],
+        "controlPaths": ["M450 310V120"],
+        "boundaries": [],
+        "storagePaths": ["M450 390V440", "M770 110V160"],
+        "labels": [
+          {
+            "x": 540,
+            "y": 210,
+            "text": "Fetch main"
+          },
+          {
+            "x": 540,
+            "y": 231,
+            "text": "Report status"
+          },
+          {
+            "x": 610,
+            "y": 95,
+            "text": "Private HTTP"
+          }
+        ]
+      },
+      {
+        "width": 360,
+        "height": 1050,
+        "nodes": [
+          {
+            "x": 60,
+            "y": 10,
+            "w": 240,
+            "title": "Administrator",
+            "detail": ["Browser \u00b7 HTTPS"],
+            "role": "administrator"
+          },
+          {
+            "x": 60,
+            "y": 140,
+            "w": 240,
+            "title": "Ingress",
+            "detail": ["HTTPS entry point"],
+            "role": "ingress"
+          },
+          {
+            "x": 60,
+            "y": 270,
+            "w": 240,
+            "title": "Leader",
+            "detail": ["One pod \u00b7 private Service"],
+            "role": "leader"
+          },
+          {
+            "x": 60,
+            "y": 400,
+            "w": 240,
+            "title": "Leader storage",
+            "detail": ["Data + certificates", "Separate secret-key volume"],
+            "role": "storage"
+          },
+          {
+            "x": 60,
+            "y": 540,
+            "w": 240,
+            "title": "Sources",
+            "detail": ["Input records"],
+            "role": "source"
+          },
+          {
+            "x": 60,
+            "y": 670,
+            "w": 240,
+            "title": "Workers",
+            "detail": ["One process per pod"],
+            "role": "worker"
+          },
+          {
+            "x": 60,
+            "y": 800,
+            "w": 240,
+            "title": "Worker storage",
+            "detail": ["One volume per worker"],
+            "role": "storage"
+          },
+          {
+            "x": 60,
+            "y": 950,
+            "w": 240,
+            "title": "Destinations",
+            "detail": ["Kept records"],
+            "role": "destination"
+          }
+        ],
+        "paths": ["M180 90V130", "M180 220V260", "M180 620V660", "M60 710H15V990H50"],
+        "controlPaths": ["M300 710H345V180H310"],
+        "boundaries": [],
+        "storagePaths": ["M180 350V400", "M180 750V800"],
+        "labels": []
+      }
+    ]
+  },
+  "dataPath": {
+    "title": "From a source to its destinations, and back to the commit",
+    "description": "The reader polls a batch from the source and tracks its position. Transform routes the batch and runs its pipelines. Egress, one per destination, writes each destination's records and retries until they land. Each destination acknowledges its records, and once every destination the batch reached has acknowledged it, the reader commits the batch's position to the source.",
+    "caption": "A position is committed only after every destination the batch reached has acknowledged it, oldest batch first. After a restart or a retry a record can arrive twice, but it is not lost. Smeltr metrics and logs sources keep no position.",
+    "layouts": [
+      {
+        "width": 900,
+        "height": 420,
+        "nodes": [
+          {
+            "x": 20,
+            "y": 40,
+            "w": 180,
+            "title": "Source",
+            "detail": ["Kafka, metrics, logs"]
+          },
+          {
+            "x": 250,
+            "y": 40,
+            "w": 180,
+            "title": "Reader",
+            "detail": ["Polls a batch,", "tracks its position"]
+          },
+          {
+            "x": 480,
+            "y": 40,
+            "w": 190,
+            "title": "Transform",
+            "detail": ["Routes, runs pipelines,", "applies deliver rules"]
+          },
+          {
+            "x": 720,
+            "y": 40,
+            "w": 160,
+            "title": "Egress",
+            "detail": ["One per destination,", "retries until it lands"],
+            "stacked": true
+          },
+          {
+            "x": 720,
+            "y": 290,
+            "w": 160,
+            "title": "Destination",
+            "detail": ["Acknowledges", "or refuses"],
+            "stacked": true
+          },
+          {
+            "x": 250,
+            "y": 290,
+            "w": 180,
+            "title": "Commit",
+            "detail": ["Waits for every", "destination's ack"]
+          }
+        ],
+        "paths": ["M200 80H240", "M430 80H470", "M670 80H710", "M800 120V264"],
+        "controlPaths": ["M720 330H440", "M250 330H110V130"],
+        "labels": [
+          {
+            "x": 580,
+            "y": 318,
+            "text": "acknowledged"
+          },
+          {
+            "x": 160,
+            "y": 240,
+            "text": "commit"
+          }
+        ]
+      },
+      {
+        "width": 360,
+        "height": 600,
+        "nodes": [
+          {
+            "x": 10,
+            "y": 20,
+            "w": 170,
+            "title": "Source",
+            "detail": ["Kafka, metrics, logs"]
+          },
+          {
+            "x": 10,
+            "y": 140,
+            "w": 170,
+            "title": "Reader",
+            "detail": ["Polls a batch,", "tracks its position"]
+          },
+          {
+            "x": 10,
+            "y": 260,
+            "w": 170,
+            "title": "Transform",
+            "detail": ["Routes, runs", "pipelines"]
+          },
+          {
+            "x": 10,
+            "y": 380,
+            "w": 170,
+            "title": "Egress",
+            "detail": ["One per destination,", "retries"],
+            "stacked": true
+          },
+          {
+            "x": 10,
+            "y": 500,
+            "w": 170,
+            "title": "Destination",
+            "detail": ["Acknowledges", "or refuses"],
+            "stacked": true
+          },
+          {
+            "x": 200,
+            "y": 260,
+            "w": 150,
+            "title": "Commit",
+            "detail": ["Waits for every", "destination's ack"]
+          }
+        ],
+        "paths": ["M95 100V130", "M95 220V250", "M95 340V362", "M95 460V482"],
+        "controlPaths": ["M196 540H275V350", "M275 260V60H190"],
+        "labels": [
+          {
+            "x": 300,
+            "y": 445,
+            "text": "ack"
+          },
+          {
+            "x": 310,
+            "y": 160,
+            "text": "commit"
+          }
+        ]
+      }
+    ]
+  },
+  "remote": {
+    "title": "Follow a Git host",
+    "description": "A save in the Smeltr UI is a branch on the leader, which the leader pushes to the Git host. The host reviews and merges it to main. The leader fetches main, loads every worker group at it and deploys it only if all of them load. Workers fetch the deployed commit from the leader.",
+    "caption": "Branches go out to the host and main comes back. Workers only ever talk to the leader.",
+    "layouts": [
+      {
+        "width": 900,
+        "height": 290,
+        "nodes": [
+          {
+            "x": 300,
+            "y": 10,
+            "w": 200,
+            "title": "Git host",
+            "detail": ["Review, merge to main"]
+          },
+          {
+            "x": 10,
+            "y": 190,
+            "w": 170,
+            "title": "Smeltr UI",
+            "detail": ["Save to a branch"]
+          },
+          {
+            "x": 300,
+            "y": 190,
+            "w": 200,
+            "title": "Leader",
+            "detail": ["Loads every group,", "deploys if all load"]
+          },
+          {
+            "x": 620,
+            "y": 190,
+            "w": 260,
+            "title": "Workers",
+            "detail": ["Fetch the deployed commit"]
+          }
+        ],
+        "paths": ["M360 190V100", "M440 90V180", "M180 230H290", "M500 230H610"],
+        "labels": [
+          {
+            "x": 285,
+            "y": 145,
+            "text": "push branches"
+          },
+          {
+            "x": 515,
+            "y": 145,
+            "text": "fetch main"
+          }
+        ]
+      },
+      {
+        "width": 360,
+        "height": 390,
+        "nodes": [
+          {
+            "x": 80,
+            "y": 10,
+            "w": 200,
+            "title": "Git host",
+            "detail": ["Review, merge to main"]
+          },
+          {
+            "x": 80,
+            "y": 150,
+            "w": 200,
+            "title": "Leader",
+            "detail": ["Loads every group,", "deploys if all load"]
+          },
+          {
+            "x": 10,
+            "y": 300,
+            "w": 160,
+            "title": "Smeltr UI",
+            "detail": ["Save to a branch"]
+          },
+          {
+            "x": 190,
+            "y": 300,
+            "w": 160,
+            "title": "Workers",
+            "detail": ["Fetch the deployed", "commit"]
+          }
+        ],
+        "paths": ["M140 150V100", "M220 90V140", "M90 300V240", "M270 230V290"],
+        "labels": [
+          {
+            "x": 75,
+            "y": 125,
+            "text": "push"
+          },
+          {
+            "x": 282,
+            "y": 125,
+            "text": "fetch"
+          }
+        ]
+      }
+    ]
+  }
+}

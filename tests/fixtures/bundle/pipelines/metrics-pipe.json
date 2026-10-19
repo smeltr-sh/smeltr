@@ -1,0 +1,5 @@
+{
+  "id": "metrics-pipe",
+  "name": "Metrics passthrough",
+  "steps": []
+}

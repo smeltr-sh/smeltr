@@ -1,0 +1,14 @@
+[
+  {
+    "id": "kafka-main",
+    "type": "kafka",
+    "brokers": "b1:9092,b2:9092",
+    "topics": ["logs-raw"],
+    "groupId": "smeltr"
+  },
+  {
+    "id": "self-metrics",
+    "type": "metrics",
+    "bucketSeconds": 10
+  }
+]

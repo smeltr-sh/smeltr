@@ -1,0 +1,21 @@
+# A leader that browsers reach at
+# https://smeltr.example.com.
+log_level = "info"
+
+[leader]
+enabled = true
+
+[leader.http]
+port = 8443
+bind = "0.0.0.0"
+public_origin = "https://smeltr.example.com"
+
+[leader.tls]
+extra_san = ["leader.internal"]
+
+[leader.storage]
+data_dir = "/var/lib/smeltr/leader"
+
+[leader.secrets]
+key = "/etc/smeltr/sealing.key"
+versions = 10

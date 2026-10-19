@@ -1,0 +1,90 @@
+# What a new dependency has to satisfy. `cargo deny check` runs it, as part of
+# `just check`, so a crate that arrives by feature unification is a failing
+# check rather than a silent addition.
+
+[advisories]
+# RUSTSEC advisories are denied by default; list an id here, with the reason
+# and the date, only when the fix is not yet available.
+ignore = [
+    # 2026-10-09: the Marvin timing attack on `rsa`, through russh's RSA host and user keys for SFTP. No fixed
+    # release exists. Recovering a key needs many timed decryptions; an SSH client only signs, once per sign-in.
+    { id = "RUSTSEC-2023-0071", reason = "no fixed rsa release; SFTP's RSA keys need it" },
+    # 2026-10-14: rustls 0.23.46 fixes these, but rustls-ffi 0.15.4, which curl links for the Git transport, pins
+    # rustls to =0.23.45, and no rustls-ffi release takes 0.23.46 yet. Each leaves once one does.
+    { id = "RUSTSEC-2026-0346", reason = "smeltr keeps no ClientSessionStore of its own to log a session with" },
+    { id = "RUSTSEC-2026-0347", reason = "smeltr never enables ECH" },
+    { id = "RUSTSEC-2026-0348", reason = "smeltr does not enable rustls's brotli feature" },
+    { id = "RUSTSEC-2026-0349", reason = "a network attacker can make a later connection classical-only; no fix until rustls-ffi takes 0.23.46" },
+]
+
+[licenses]
+# Every license currently in the graph, and nothing else: a new one is a
+# deliberate decision, not a default.
+# MPL-2.0 is copyleft per *file*: modifying one obliges us to publish that
+# file, and §3.3 lets the larger work ship under its own terms. We link
+# `uluru` unmodified, so it reaches nothing we write.
+# OpenSSL is the OpenSSL/SSLeay pair, which arrives with the validated AWS-LC
+# module and not with the ordinary one. Both halves are permissive and ask for
+# a reproduced notice; SSLeay's clause 3 asks that an acknowledgment
+# accompany any advertising of the features it provides.
+allow = [
+    "0BSD", "Apache-2.0", "BSD-3-Clause", "BSL-1.0", "CC0-1.0", "CDLA-Permissive-2.0",
+    "ISC", "MIT", "MPL-2.0", "OpenSSL", "Unicode-3.0", "Unlicense", "Zlib",
+]
+confidence-threshold = 0.9
+# `smeltr` is not published, so it carries no `license` field to check.
+private = { ignore = true }
+
+[bans]
+# Two versions of one crate is normal in a large graph and not worth failing
+# a build over; it is worth seeing.
+multiple-versions = "warn"
+# The older half of each pair that only an upstream release can merge: the
+# crate named in the reason is already at its latest. A skip that stops
+# matching is itself a warning, so each one leaves once upstream moves.
+skip = [
+    { crate = "base64@0.22.1", reason = "gix-transport" },
+    { crate = "digest@0.10.7", reason = "crc-fast, through object_store" },
+    { crate = "crypto-common@0.1.7", reason = "digest 0.10, through crc-fast" },
+    { crate = "generic-array@0.14.7", reason = "crypto-common 0.1, through crc-fast" },
+    { crate = "block-buffer@0.10.4", reason = "digest 0.10, through crc-fast and mysql_common" },
+    { crate = "sha1@0.10.7", reason = "mysql_common 0.37, through mysql_async" },
+    { crate = "sha2@0.10.9", reason = "mysql_common 0.37, through mysql_async" },
+    { crate = "cpufeatures@0.2.17", reason = "sha1 and sha2 0.10, through mysql_async" },
+    { crate = "sha3@0.11.0", reason = "ml-kem, through russh" },
+    { crate = "getrandom@0.2.17", reason = "const-random-macro, through ahash in arrow" },
+    { crate = "getrandom@0.3.4", reason = "ahash, through arrow" },
+    { crate = "r-efi@5.3.0", reason = "getrandom 0.3, through ahash" },
+    { crate = "hashbrown@0.14.5", reason = "dashmap, through gix-tempfile" },
+    { crate = "hashbrown@0.16.1", reason = "clru through gix-pack, and rsqlite-vfs through rusqlite" },
+    { crate = "itertools@0.13.0", reason = "bindgen, building aws-lc-fips-sys" },
+    { crate = "prettyplease@0.2.37", reason = "bindgen, building aws-lc-fips-sys" },
+    { crate = "heck@0.4.1", reason = "ouroboros_macro, through apache-avro" },
+    { crate = "zstd@0.13.3", reason = "apache-avro's zstandard, in the tests" },
+    { crate = "zstd-safe@7.3.0", reason = "zstd 0.13, through apache-avro in the tests" },
+    { crate = "shlex@1.3.0", reason = "bindgen, building aws-lc-fips-sys" },
+    { crate = "syn@2.0.119", reason = "bindgen, gix-macros, tracing-attributes and other proc macros not yet on syn 3" },
+    { crate = "num-bigint@0.4.8", reason = "der-parser, through x509-parser" },
+    { crate = "spin@0.9.9", reason = "multer, through axum" },
+    { crate = "untrusted@0.7.1", reason = "aws-lc-rs" },
+    { crate = "const-oid@0.9.6", reason = "x509-cert 0.2, through tokio-postgres-rustls" },
+    { crate = "der@0.7.10", reason = "x509-cert 0.2, through tokio-postgres-rustls" },
+    { crate = "spki@0.7.3", reason = "x509-cert 0.2, through tokio-postgres-rustls" },
+    { crate = "fallible-iterator@0.2.0", reason = "postgres-protocol, through tokio-postgres" },
+    { crate = "wasi@0.11.1", reason = "getrandom 0.2, through ahash in arrow; whoami, through tokio-postgres, is on wasi 0.14" },
+]
+wildcards = "deny"
+# One cryptographic provider, and this is what holds it to one. `ring` is an
+# optional dependency of `rustls`, `rustls-webpki`, `rcgen`, `x509-parser` and
+# `ureq` alike, so a feature added anywhere -- in this file or in something
+# that depends on them -- reaches it without a line here changing. Denied
+# rather than asserted: a second provider is otherwise found by reading a
+# lockfile, and a lockfile lists what is optional beside what is built.
+deny = [{ crate = "ring", reason = "smeltr's one provider is AWS-LC; see the design document's Cryptography section" }]
+
+[sources]
+# crates.io only. A git dependency is how a supply chain acquires an
+# unreviewed, unversioned, force-pushable input.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

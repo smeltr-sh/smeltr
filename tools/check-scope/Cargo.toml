@@ -1,0 +1,7 @@
+# `just check`: picks the checks the files changed since origin/main can break, and runs them. It reads files and
+# git and nothing of smeltr, so it builds in seconds and runs where `just` does, Windows included.
+[package]
+name = "check-scope"
+version = "0.1.0"
+edition = "2024"
+publish = false

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>smeltr</title>
+    <!-- Applies the stored theme and palette before first paint, resolving
+         "system" here too: the palettes' CSS keys on `data-theme` alone.
+         Inline and blocking on purpose: deferring it shows one frame of
+         the wrong colors. `App.svelte` keeps both current after this. -->
+    <script>
+      {
+        let theme = null;
+        let palette = null;
+        try {
+          theme = localStorage.getItem('smeltr-theme');
+          palette = localStorage.getItem('smeltr-palette');
+        } catch {
+          // Storage can be unavailable (private mode, blocked cookies); the
+          // system's scheme and the Foundry default are correct answers.
+        }
+        const dark =
+          theme === 'dark' ||
+          (theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+        if (palette && palette !== 'foundry') {
+          document.documentElement.setAttribute('data-palette', palette);
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

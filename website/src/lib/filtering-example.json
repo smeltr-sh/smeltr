@@ -1,0 +1,48 @@
+{
+  "condition": "event_type == \"health_check\"",
+  "assignments": [
+    {
+      "target": "debug",
+      "expr": "null"
+    },
+    {
+      "target": "_raw",
+      "expr": "null"
+    }
+  ],
+  "rows": [
+    {
+      "input": {
+        "event_type": "order",
+        "message": "Order placed",
+        "debug": "trace-101"
+      },
+      "output": {
+        "event_type": "order",
+        "message": "Order placed"
+      },
+      "reason": "Keep the order event; remove the debug field."
+    },
+    {
+      "input": {
+        "event_type": "health_check",
+        "message": "Service is healthy",
+        "debug": "trace-102"
+      },
+      "output": null,
+      "reason": "Drop the whole record because event_type is health_check."
+    },
+    {
+      "input": {
+        "event_type": "error",
+        "message": "Payment timed out",
+        "debug": "trace-103"
+      },
+      "output": {
+        "event_type": "error",
+        "message": "Payment timed out"
+      },
+      "reason": "Keep the error event; remove the debug field."
+    }
+  ]
+}

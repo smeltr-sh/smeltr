@@ -1,0 +1,267 @@
+{
+  "statements": [
+    {
+      "form": "name = e;",
+      "rule": "Writes the value of `e` to `name`, a field of the record or a local. `e` must have `name`'s type, an `i64` widens to an `f64`, and `null` fits any type. Writing `null` to a field removes it."
+    },
+    {
+      "form": "name: T = e;",
+      "rule": "Gives `name` the type `T` and writes `e`. This also converts the type declaration to `T`."
+    },
+    {
+      "form": "name: T;",
+      "rule": "Declares the type of `name` in advance. Use before parse functions to coerce types and improve performance."
+    },
+    {
+      "form": "let name = e;",
+      "rule": "Binds a local variable scoped to this block. It never reaches the record, and it takes the type of `e`. `let name: T = e;` gives it a type."
+    },
+    {
+      "form": "$ = e;",
+      "rule": "Replaces the whole record with the [object](#objects) `e`."
+    },
+    {
+      "form": "Object.assign(o, e);",
+      "rule": "Writes each field of the object `e` into the object `o`, converting each value to the type of its field in `o`. `Object.assign($, e)` writes into the record."
+    },
+    {
+      "form": "if (c) { … } else { … }",
+      "rule": "Runs the first block where `c` is true, and the `else` block where it is false or null. `else if` chains."
+    },
+    {
+      "form": "switch (e) { case v: … default: … }",
+      "rule": "Compares `e` with each `case` value, in order, with `==`. Runs from the first that matches through every case after it, until a `break`. `default` matches when no case does, and comes last."
+    },
+    {
+      "form": "for (let x of a) { … }",
+      "rule": "Runs the block once per element of the array `a`, with `x` that element."
+    },
+    {
+      "form": "while (c) { … }",
+      "rule": "Runs the block while `c` is true. The code step has a time budget, 100 ms by default and configured by `SMELTR_LOOP_BUDGET_MS`, to prevent infinite loop stalls. When it runs out, a loop still running stops and marks each record whose condition is still true with a `LoopBudgetExceeded` exception."
+    },
+    {
+      "form": "break;",
+      "rule": "Leaves the innermost loop or `switch`."
+    },
+    {
+      "form": "continue;",
+      "rule": "Ends this trip of the innermost loop and starts the next."
+    },
+    {
+      "form": "function f(p: T): R { … }",
+      "rule": "A local function. A parameter or result with no type takes its value's type. The body's last expression, written without a semicolon, is its value."
+    },
+    {
+      "form": "return e;",
+      "rule": "Ends the function with the value `e`."
+    },
+    {
+      "form": "try { … } catch (e) { … } finally { … }",
+      "rule": "Runs the block until a record's first exception that loses a value. The write that failed keeps the name's old value. A `catch` then runs on that record, with the exception cleared; `e.kind` is its kind and `e.message` its text. `finally` runs on every record that entered the `try`. A `try` needs a `catch`, a `finally` or both."
+    },
+    {
+      "form": "catch (e: K1 | K2) { … }",
+      "rule": "Runs on the records holding one of the kinds it names, and clears only those. Several catches are tried in order; a catch with no type takes every kind left, and comes last."
+    },
+    {
+      "form": "throw e;",
+      "rule": "In a `catch`, puts the caught exception back on the record, for an outer `try` or its exception answer."
+    },
+    {
+      "form": "delete(a, b.c);",
+      "rule": "Removes each named field from the record. A field bound outside an `if`, loop or `try` cannot be deleted inside one; write `a = null` there."
+    },
+    {
+      "form": "move(from, to);",
+      "rule": "Renames the field `from` to `to`, and removes `from`."
+    },
+    {
+      "form": "drop();",
+      "rule": "Discards the record."
+    },
+    {
+      "form": "unroll(a);",
+      "rule": "Replaces the record with one record per element of the array field `a`, each holding its element at `a`. `unroll(a, true)` keeps the record's other fields on each. It stands outside every `if`, loop and `try`."
+    }
+  ],
+  "parseFunctions": [
+    {
+      "name": "json",
+      "signature": "json(text, {splitDots, formats})",
+      "summary": "The object the JSON `text` holds. It reads lenient JSON too, such as a trailing comma, raw control characters and `\\xHH` escapes.",
+      "options": [
+        {
+          "name": "splitDots",
+          "holds": "Whether a key holding dots is split into a nested path: `a.b` becomes `{a: {b}}`.",
+          "default": "`false`"
+        },
+        {
+          "name": "formats",
+          "holds": "The text format of each `datetime` field, by name: `{ts: \"%d/%m/%Y\"}`. The specifiers are `parseTime`'s.",
+          "default": "any format the parser recognizes"
+        }
+      ]
+    },
+    {
+      "name": "kv",
+      "signature": "kv(text, {pairSep, kvSep, quote, escapes, nextKey, splitDots, formats})",
+      "summary": "An object of the `key=value` pairs in `text`. Every value is a `str`.",
+      "options": [
+        {
+          "name": "pairSep",
+          "holds": "The character between one pair and the next.",
+          "default": "a space"
+        },
+        {
+          "name": "kvSep",
+          "holds": "The character between a key and its value.",
+          "default": "`=`"
+        },
+        {
+          "name": "quote",
+          "holds": "The character around a value that holds `pairSep`; `null` for none.",
+          "default": "`\"`"
+        },
+        {
+          "name": "escapes",
+          "holds": "Whether a backslash escapes any character in any value, quoted or not: `\\n`, `\\r` and `\\t` are control characters and any other `\\x` is `x`. Without it, only `\\\"` and `\\\\` inside quotes are escapes.",
+          "default": "`false`"
+        },
+        {
+          "name": "nextKey",
+          "holds": "Whether an unquoted value runs to the `pairSep` before the next key: in `level=info debug x=1`, `level` is `info debug`. Off, a value ends at the first `pairSep` and `debug` is a bare key, `debug=true`.",
+          "default": "`true`"
+        },
+        {
+          "name": "splitDots",
+          "holds": "Whether a key holding dots is split into a nested path: `a.b` becomes `{a: {b}}`.",
+          "default": "`true`"
+        },
+        {
+          "name": "formats",
+          "holds": "The text format of each `datetime` field, by name: `{ts: \"%d/%m/%Y\"}`. The specifiers are `parseTime`'s.",
+          "default": "any format the parser recognizes"
+        }
+      ]
+    },
+    {
+      "name": "cef",
+      "signature": "cef(text, {splitDots, formats})",
+      "summary": "An object of the ArcSight CEF record in `text`: the seven header fields as `version`, `deviceVendor`, `deviceProduct`, `deviceVersion`, `deviceEventClassId`, `name` and `severity`, and each extension key as written. Text before `CEF:` is skipped. Every value is a `str`.",
+      "options": [
+        {
+          "name": "splitDots",
+          "holds": "Whether a key holding dots is split into a nested path: `a.b` becomes `{a: {b}}`.",
+          "default": "`false`"
+        },
+        {
+          "name": "formats",
+          "holds": "The text format of each `datetime` field, by name: `{rt: \"%b %d %Y %H:%M:%S\"}`. The specifiers are `parseTime`'s.",
+          "default": "any format the parser recognizes"
+        }
+      ]
+    },
+    {
+      "name": "csv",
+      "signature": "csv(text, [headers], {delimiter, quote, escape, squeeze, trim, splitDots, formats})",
+      "summary": "An object of one CSV line's columns, named by `headers` in order. A `null` header skips its column. Every value is a `str`.",
+      "options": [
+        {
+          "name": "delimiter",
+          "holds": "The character between columns.",
+          "default": "`,`"
+        },
+        {
+          "name": "quote",
+          "holds": "The character that quotes a column, which may then hold the delimiter.",
+          "default": "`\"`"
+        },
+        {
+          "name": "escape",
+          "holds": "The character that escapes a quote, or itself, inside a quoted column. `null` reads a doubled quote as one.",
+          "default": "`null`"
+        },
+        {
+          "name": "squeeze",
+          "holds": "Whether a run of delimiters is one, as aligned columns write.",
+          "default": "`false`"
+        },
+        {
+          "name": "trim",
+          "holds": "Whether spaces around each unquoted column are dropped.",
+          "default": "`false`"
+        },
+        {
+          "name": "splitDots",
+          "holds": "Whether a key holding dots is split into a nested path: `a.b` becomes `{a: {b}}`.",
+          "default": "`false`"
+        },
+        {
+          "name": "formats",
+          "holds": "The text format of each `datetime` field, by name: `{ts: \"%d/%m/%Y\"}`. The specifiers are `parseTime`'s.",
+          "default": "any format the parser recognizes"
+        }
+      ]
+    },
+    {
+      "name": "grok",
+      "signature": "grok(text, [patterns], {patterns, splitDots, formats})",
+      "summary": "An object of the fields the first matching pattern captures. Each `%{NAME:field}` captures `field`. Every value is a `str`.",
+      "options": [
+        {
+          "name": "patterns",
+          "holds": "Your own patterns by name, `{NAME: \"regex\"}`, which the patterns may use as `%{NAME}`.",
+          "default": "none"
+        },
+        {
+          "name": "splitDots",
+          "holds": "Whether a key holding dots is split into a nested path: `a.b` becomes `{a: {b}}`.",
+          "default": "`true`"
+        },
+        {
+          "name": "formats",
+          "holds": "The text format of each `datetime` field, by name: `{ts: \"%d/%m/%Y\"}`. The specifiers are `parseTime`'s.",
+          "default": "any format the parser recognizes"
+        }
+      ]
+    },
+    {
+      "name": "lookup",
+      "signature": "lookup(table, key, {match, column, first, all, fields, formats})",
+      "summary": "An object of the `fields` read from the row of the lookup table `table` that `key` matches. A field with no match and no default is left out.",
+      "options": [
+        {
+          "name": "match",
+          "holds": "How `key` matches the key column: `\"exact\"`, `\"cidr\"` or `\"regex\"`.",
+          "default": "`\"exact\"`"
+        },
+        {
+          "name": "column",
+          "holds": "The key column. A MaxMind database has none.",
+          "default": "required, except for a MaxMind database"
+        },
+        {
+          "name": "first",
+          "holds": "`true`: the first matching row, in table order.",
+          "default": "`false`: the most exact match"
+        },
+        {
+          "name": "all",
+          "holds": "`true`: every matching row; each field is an array.",
+          "default": "`false`"
+        },
+        {
+          "name": "fields",
+          "holds": "Each output named for its column, `\"column\"`, or for its column and its default, `[\"column\", \"default\"]`.",
+          "default": "required"
+        },
+        {
+          "name": "formats",
+          "holds": "The text format of each `datetime` field, by name: `{ts: \"%d/%m/%Y\"}`. The specifiers are `parseTime`'s.",
+          "default": "any format the parser recognizes"
+        }
+      ]
+    }
+  ]
+}

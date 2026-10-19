@@ -1,0 +1,247 @@
+//! What every table format reads the same way: a partition column's value in a row, and a written file's column
+//! statistics from its Parquet footer. Each format names its own types and writes these values its own way.
+
+use arrow_array::cast::AsArray;
+use arrow_array::types::{Date32Type, Int32Type, Int64Type, TimestampMicrosecondType};
+use arrow_array::{Array, ArrayRef};
+use arrow_schema::{DataType as Arrow, TimeUnit};
+use parquet::basic::{LogicalType, TimeUnit as ParquetTimeUnit};
+use parquet::file::metadata::ParquetMetaData;
+use parquet::file::statistics::Statistics;
+use std::fmt;
+
+use crate::core::column::DataType;
+use crate::ops::civil::civil_from_days;
+use crate::plan::topology::Records;
+
+/// A primitive column type, as both formats have it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Kind {
+    Boolean,
+    Int,
+    Long,
+    Float,
+    Double,
+    Date,
+    /// Microseconds, without a time zone.
+    Timestamp,
+    /// Microseconds since 1970-01-01T00:00:00Z.
+    Timestamptz,
+    String,
+    Binary,
+}
+
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Kind::Boolean => "boolean",
+            Kind::Int => "int",
+            Kind::Long => "long",
+            Kind::Float => "float",
+            Kind::Double => "double",
+            Kind::Date => "date",
+            Kind::Timestamp => "timestamp",
+            Kind::Timestamptz => "timestamptz",
+            Kind::String => "string",
+            Kind::Binary => "binary",
+        })
+    }
+}
+
+/// One value of a primitive type, as a partition holds it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Literal {
+    Boolean(bool),
+    Int(i32),
+    Long(i64),
+    Double(f64),
+    /// Days since 1970-01-01.
+    Date(i32),
+    /// Microseconds since 1970-01-01T00:00:00Z.
+    Timestamptz(i64),
+    String(String),
+    Binary(Vec<u8>),
+}
+
+/// The one record every route writing here writes. A table has one schema.
+pub fn one_record(records: Option<&Records>) -> Result<&DataType, String> {
+    let mut found: Option<&DataType> = None;
+    for record in records.into_iter().flatten().map(|(_, record)| record) {
+        match found {
+            Some(first) if first != record => {
+                return Err("the routes writing here write different records, and a table has one schema".into());
+            }
+            _ => found = Some(record),
+        }
+    }
+    found.ok_or_else(|| "no route writes here, so there is no record to write".into())
+}
+
+/// The column at `names` in `batch`, or None when the record does not write it, or a struct on the way to it is null
+/// on row `at`: a column the table keeps and the record does not write is null in its files.
+pub fn column_at(batch: &arrow_array::RecordBatch, names: &[String], at: usize) -> Result<Option<ArrayRef>, String> {
+    let Some(mut column) = batch.column_by_name(&names[0]).cloned() else {
+        return Ok(None);
+    };
+    for name in &names[1..] {
+        if column.is_null(at) {
+            return Ok(None);
+        }
+        let Some(parent) = column.as_struct_opt() else {
+            return Err(format!(
+                "the row's {} is no struct, and the table's partition reads {} in it",
+                names[..names.len() - 1].join("."),
+                names.join(".")
+            ));
+        };
+        match parent.column_by_name(name) {
+            Some(child) => column = child.clone(),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(column))
+}
+
+/// Row `at` of `column` as a value of the table's `kind`; None when null.
+pub fn read(column: &ArrayRef, at: usize, kind: &Kind, names: &[String]) -> Result<Option<Literal>, String> {
+    // A field that never holds a value is a null column, which keeps no null buffer.
+    if column.data_type() == &Arrow::Null || column.is_null(at) {
+        return Ok(None);
+    }
+    let value = match (kind, column.data_type()) {
+        (Kind::Boolean, Arrow::Boolean) => Literal::Boolean(column.as_boolean().value(at)),
+        (Kind::Long, Arrow::Int64) => Literal::Long(column.as_primitive::<Int64Type>().value(at)),
+        (Kind::Int, Arrow::Int32) => Literal::Int(column.as_primitive::<Int32Type>().value(at)),
+        (Kind::Double, Arrow::Float64) => {
+            Literal::Double(column.as_primitive::<arrow_array::types::Float64Type>().value(at))
+        }
+        (Kind::Date, Arrow::Date32) => Literal::Date(column.as_primitive::<Date32Type>().value(at)),
+        (Kind::Timestamptz, Arrow::Timestamp(TimeUnit::Microsecond, Some(_))) => {
+            Literal::Timestamptz(column.as_primitive::<TimestampMicrosecondType>().value(at))
+        }
+        (Kind::String, Arrow::Utf8) => Literal::String(column.as_string::<i32>().value(at).to_string()),
+        (Kind::Binary, Arrow::Binary) => Literal::Binary(column.as_binary::<i32>().value(at).to_vec()),
+        (_, arrow) => {
+            return Err(format!(
+                "the column {} is {arrow} in the row, and the table's partition reads it as {kind}",
+                names.join(".")
+            ));
+        }
+    };
+    Ok(Some(value))
+}
+
+/// Escapes `s` as Java's `URLEncoder` does: letters, digits and `.-*_` as they are, a space as `+`, every other byte
+/// of its UTF-8 as `%XX`.
+pub fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' | b'*' | b'_' => out.push(b as char),
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// A date as Java's LocalDate writes it: four digits of year, more with a `+` past 9999.
+pub fn iso_date(days: i64) -> String {
+    let (y, m, d) = civil_from_days(days);
+    let year = match y {
+        10_000.. => format!("+{y}"),
+        0..10_000 => format!("{y:04}"),
+        _ => format!("-{:04}", -y),
+    };
+    format!("{year}-{m:02}-{d:02}")
+}
+
+/// A row group's min or max as the footer holds it. Two bounds compare only within one variant.
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
+pub enum Bound {
+    Boolean(bool),
+    Int(i32),
+    Long(i64),
+    Float(f32),
+    Double(f64),
+    Bytes(Vec<u8>),
+}
+
+/// One leaf column's statistics across a file's row groups.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColumnStats {
+    /// Compressed bytes.
+    pub size: i64,
+    /// Values, nulls included.
+    pub values: i64,
+    /// `None` when a row group does not count them.
+    pub nulls: Option<i64>,
+    /// The least and the greatest value. `None` when the column takes no bounds or a row group with values lacks them.
+    pub bounds: Option<(Bound, Bound)>,
+}
+
+/// The statistics of leaf `column` of the file `metadata` describes. `kind` is its type when the format keeps bounds
+/// for it; a leaf inside a list or a map, and a timestamp not in microseconds, has none.
+pub fn column_stats(metadata: &ParquetMetaData, column: usize, kind: Option<&Kind>) -> ColumnStats {
+    let descr = metadata.file_metadata().schema_descr().column(column);
+    let micros = match descr.logical_type_ref() {
+        Some(LogicalType::Timestamp(t)) => matches!(t.unit, ParquetTimeUnit::MICROS),
+        _ => true,
+    };
+    let bound_kind = kind.filter(|_| descr.max_rep_level() == 0 && micros);
+
+    let (mut size, mut values, mut nulls) = (0i64, 0i64, Some(0i64));
+    // `None` once a row group with values has no min or max: then the file has no bounds for the column.
+    let mut bounds: Option<Option<(Bound, Bound)>> = bound_kind.map(|_| None);
+    for row_group in metadata.row_groups() {
+        let chunk = row_group.column(column);
+        size += chunk.compressed_size();
+        values += chunk.num_values();
+        let statistics = chunk.statistics();
+        let null_count = statistics.and_then(|s| s.null_count_opt());
+        nulls = nulls.zip(null_count).map(|(n, more)| n + more as i64);
+        let (Some(kind), Some(so_far)) = (bound_kind, bounds.take()) else {
+            continue;
+        };
+        bounds = match (statistics.and_then(|s| min_max(s, kind)), so_far) {
+            (Some(here), None) => Some(Some(here)),
+            (Some((lo, hi)), Some((low, high))) => Some(Some((
+                if lo < low { lo } else { low },
+                if hi > high { hi } else { high },
+            ))),
+            (None, so_far) if null_count == Some(chunk.num_values() as u64) => Some(so_far),
+            (None, _) => None,
+        };
+    }
+    ColumnStats {
+        size,
+        values,
+        nulls,
+        bounds: bounds.flatten(),
+    }
+}
+
+fn min_max(statistics: &Statistics, kind: &Kind) -> Option<(Bound, Bound)> {
+    use Kind as K;
+    match (kind, statistics) {
+        (K::Boolean, Statistics::Boolean(s)) => Some((Bound::Boolean(*s.min_opt()?), Bound::Boolean(*s.max_opt()?))),
+        (K::Int | K::Date, Statistics::Int32(s)) => Some((Bound::Int(*s.min_opt()?), Bound::Int(*s.max_opt()?))),
+        (K::Long | K::Timestamp | K::Timestamptz, Statistics::Int64(s)) => {
+            Some((Bound::Long(*s.min_opt()?), Bound::Long(*s.max_opt()?)))
+        }
+        (K::Float, Statistics::Float(s)) => {
+            let (min, max) = (*s.min_opt()?, *s.max_opt()?);
+            (!min.is_nan() && !max.is_nan()).then_some((Bound::Float(min), Bound::Float(max)))
+        }
+        (K::Double, Statistics::Double(s)) => {
+            let (min, max) = (*s.min_opt()?, *s.max_opt()?);
+            (!min.is_nan() && !max.is_nan()).then_some((Bound::Double(min), Bound::Double(max)))
+        }
+        // A deprecated min/max was ordered as signed bytes, which is not the order of a string or a binary.
+        (K::String | K::Binary, Statistics::ByteArray(s)) if !statistics.is_min_max_deprecated() => Some((
+            Bound::Bytes(s.min_opt()?.data().to_vec()),
+            Bound::Bytes(s.max_opt()?.data().to_vec()),
+        )),
+        _ => None,
+    }
+}

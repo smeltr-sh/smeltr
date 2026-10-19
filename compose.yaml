@@ -1,0 +1,41 @@
+# A single node, for Docker without Kubernetes. One process runs the leader and a worker that enrolls itself, so
+# there is no enrollment code to mint. The Kubernetes guide
+# (`website/src/routes/docs/install-leader/kubernetes`) carries the multi-node shape.
+#
+#     docker compose up -d
+#     docker compose logs
+#
+# A new leader prints its administrator username and a one-time password to stderr. Read it from those logs and
+# change it.
+
+services:
+  smeltr:
+    # Built by `Dockerfile`, or the handoff folder's own. Pin a digest for anything but a trial.
+    image: ${SMELTR_IMAGE:-smeltr:latest}
+    restart: unless-stopped
+    # Smeltr writes only to its volume, so the rest of the container is read-only and holds no privileges.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports:
+      # The process is not root and cannot bind 443, so it listens high and the host publishes the real port.
+      - "443:8443"
+      # Publish each receiver's port the same way.
+      # - "8088:8088"
+    environment:
+      SMELTR_LEADER_ENABLED: "1"
+      SMELTR_WORKER_ENABLED: "1"
+      SMELTR_WORKER_GROUP: standalone
+      SMELTR_GUI_PORT: "8443"
+      # The bind defaults to loopback, which the published port cannot reach.
+      SMELTR_GUI_BIND: 0.0.0.0
+      # The leader signs its own certificate. This names the origin it is reached by, and goes in that
+      # certificate: set it to the host's real name before anything but a laptop trial.
+      SMELTR_PUBLIC_ORIGIN: ${SMELTR_PUBLIC_ORIGIN:-https://localhost}
+    volumes:
+      # Every state path is relative to the working directory, so one volume holds the leader's data, its
+      # sealing key and the worker's state. Back it up whole.
+      - smeltr-state:/var/lib/smeltr
+
+volumes:
+  smeltr-state:

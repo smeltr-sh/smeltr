@@ -1,0 +1,98 @@
+{
+  "parts": [
+    {
+      "id": "transform",
+      "part": "Columnar budget",
+      "bytes": "1 GiB",
+      "each": "worker running any source",
+      "what": "Memory every transform thread shares while it runs a batch. `SMELTR_MEMORY_BUDGET_BYTES` changes it. A batch that needs more is split and run in parts, which costs time."
+    },
+    {
+      "id": "lanes",
+      "part": "Lanes",
+      "bytes": "4 MiB",
+      "each": "source, and again per transform thread",
+      "what": "One batch per slot: about 20 MiB for one source on four threads, about 80 MiB for ten sources on sixteen."
+    },
+    {
+      "id": "kafka",
+      "part": "Fetch queue",
+      "kinds": ["kafka", "eventHubs"],
+      "bytes": "64 MiB",
+      "each": "source, plus half of it per broker in the cluster",
+      "what": "`fetchBytes`. A fetch already asked of each broker still lands once the queue is full. The warning counts only the brokers named in `brokers`."
+    },
+    {
+      "id": "receiver",
+      "part": "Request bodies",
+      "kinds": [
+        "httpReceiver",
+        "hecReceiver",
+        "otlpReceiver",
+        "s2sReceiver",
+        "syslogReceiver",
+        "prometheusReceiver",
+        "elasticReceiver"
+      ],
+      "bytes": "128 MiB",
+      "each": "source",
+      "what": "Twice the receiver's inbox: bodies being read, and bodies admitted."
+    },
+    {
+      "id": "objectRecord",
+      "part": "Record",
+      "kinds": [
+        "s3Sqs",
+        "s3List",
+        "gcsList",
+        "azureBlobList",
+        "sftp",
+        "azureBlobQueue",
+        "gcsPubSub"
+      ],
+      "bytes": "64 MiB",
+      "each": "source",
+      "what": "The largest record it reads from an object."
+    },
+    {
+      "id": "apiAnswer",
+      "part": "Answer",
+      "kinds": ["httpApi", "oktaLogs"],
+      "bytes": "256 MiB",
+      "each": "source",
+      "what": "The largest answer it takes. A whole answer is held while it is cut into records."
+    },
+    {
+      "id": "sqlResult",
+      "part": "Result",
+      "kinds": ["postgres", "mysql"],
+      "bytes": "256 MiB",
+      "each": "source",
+      "what": "The largest result one poll takes. A whole result is held while it is handed out; a larger one fails the poll."
+    },
+    {
+      "id": "buffer",
+      "part": "Buffer",
+      "kinds": [
+        "kafka",
+        "eventHubs",
+        "elasticsearch",
+        "splunkHec",
+        "http",
+        "logAnalytics",
+        "prometheus"
+      ],
+      "bytes": "64 MiB",
+      "each": "destination",
+      "what": "`bufferBytes`. Elasticsearch, Splunk HEC, HTTP, Log Analytics workspace and Prometheus take one request's size instead when that is larger. A Kafka destination's covers its client's own queue too."
+    },
+    {
+      "id": "objectBuffer",
+      "part": "Buffer and open files",
+      "kinds": ["s3", "gcs", "azureBlob", "sftp", "iceberg", "delta"],
+      "bytes": "512 MiB",
+      "each": "destination",
+      "what": "`bufferBytes` for rows not yet in the bucket, and as much again for the open files encoding and uploading them."
+    }
+  ]
+}

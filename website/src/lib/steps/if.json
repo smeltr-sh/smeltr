@@ -1,0 +1,78 @@
+{
+  "basic": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": { "type": "json" },
+        "declared": [
+          { "name": "status", "type": "i64" },
+          { "name": "path", "type": "str" }
+        ]
+      },
+      {
+        "id": "branch",
+        "type": "if",
+        "condition": "status >= 500",
+        "then": [
+          {
+            "id": "severity-error",
+            "type": "eval",
+            "assignments": [{ "target": "severity", "expr": "\"error\"" }]
+          },
+          { "id": "page", "type": "eval", "assignments": [{ "target": "page", "expr": "true" }] }
+        ],
+        "else": [
+          {
+            "id": "severity-normal",
+            "type": "eval",
+            "assignments": [{ "target": "severity", "expr": "\"normal\"" }]
+          },
+          { "id": "drop-health", "type": "drop", "condition": "path == \"/health\"" }
+        ]
+      }
+    ],
+    "input": [
+      { "status": 503, "path": "/pay" },
+      { "status": 200, "path": "/home" },
+      { "status": 200, "path": "/health" }
+    ],
+    "output": [
+      { "status": 503, "path": "/pay", "severity": "error", "page": true },
+      { "status": 200, "path": "/home", "severity": "normal" }
+    ]
+  },
+  "missing": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "kind": { "type": "json" },
+        "declared": [{ "name": "status", "type": "i64" }]
+      },
+      {
+        "id": "branch",
+        "type": "if",
+        "condition": "status >= 500",
+        "then": [
+          {
+            "id": "severity-error",
+            "type": "eval",
+            "assignments": [{ "target": "severity", "expr": "\"error\"" }]
+          }
+        ],
+        "else": [
+          {
+            "id": "severity-normal",
+            "type": "eval",
+            "assignments": [{ "target": "severity", "expr": "\"normal\"" }]
+          }
+        ]
+      }
+    ],
+    "input": [{ "path": "/pay" }],
+    "output": [{ "path": "/pay", "severity": "normal" }]
+  }
+}

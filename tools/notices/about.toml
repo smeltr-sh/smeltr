@@ -1,0 +1,33 @@
+# What `cargo about` may accept when it resolves each crate's license. The
+# same set as `deny.toml`'s allow list: one place decides what is permitted,
+# this one decides what gets reproduced.
+accepted = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "OpenSSL",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+# The platforms a release is built for. A crate that only ever compiles on
+# one of them still ships on that one, so both are resolved.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+
+# Smeltr itself is under `LICENSE`, not a third party's notice.
+private = { ignore = true }
+
+# Build dependencies do not ship in the binary; everything else does.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+ignore-transitive-dependencies = false

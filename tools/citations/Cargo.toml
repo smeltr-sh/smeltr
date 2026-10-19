@@ -1,0 +1,8 @@
+# The citation, merge-conflict and hot-path checks read files and nothing of smeltr, so they build in seconds on their own
+# rather than waiting on the `integration` binary, which links all of it. `just check` runs them alone for a change
+# that touches only documents.
+[package]
+name = "citations"
+version = "0.1.0"
+edition = "2024"
+publish = false

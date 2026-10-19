@@ -1,0 +1,72 @@
+# Example startup config. Copy to `smeltr.toml` next to the binary (or point
+# SMELTR_CONFIG_FILE at it) and uncomment what you change. A set env var
+# always wins over the file.
+
+[leader]
+# enabled = false                    # SMELTR_LEADER_ENABLED
+#
+# Resets the admin password on this start to a new random password.
+# Unset it once you are signed in again.
+# recover_admin = false              # SMELTR_RECOVER_ADMIN, boolean true/false
+
+[leader.http]
+# port = 443                         # SMELTR_GUI_PORT, the GUI and API port
+# bind = "127.0.0.1"                 # SMELTR_GUI_BIND, the address the GUI and API listen on; 0.0.0.0 for all
+#
+# The origin a browser reaches the leader at. Comma-separate more than one. A leader
+# serving its own TLS also answers to https://localhost and https://127.0.0.1 on its port.
+# public_origin = "https://leader.example.com"   # SMELTR_PUBLIC_ORIGIN
+
+[leader.tls]
+# enabled = true                     # SMELTR_LEADER_TLS, boolean true/false
+#
+# Extra SANs added to the leader's certificate, such as an internal name workers reach it by
+# extra_san = ["leader.internal"]    # comma-joined into SMELTR_LEADER_TLS_EXTRA_SAN
+# ca_validity = "3650d"              # SMELTR_LEADER_CA_VALIDITY, expiration when creating leader CA
+#
+# The port a certificate authority connects to for an HTTP-01 challenge while the leader orders a
+# certificate. Authorities connect to 80; set another only when something forwards 80 to it.
+# acme_http_port = 80                # SMELTR_ACME_HTTP_PORT
+
+[leader.storage]
+# data_dir = "smeltr-leader-data"    # SMELTR_LEADER_DATA_DIR
+
+[leader.secrets]
+# key = "smeltr-leader-secrets/sealing.key"  # SMELTR_LEADER_SECRET_KEY, the key that encrypts stored secrets; keep it out of data_dir backups
+# versions = 5                       # SMELTR_LEADER_SECRET_VERSIONS; -1 keeps every version
+
+[leader.lookups]
+# versions = 5                       # SMELTR_LEADER_LOOKUP_VERSIONS; -1 keeps every version
+
+[worker]
+# enabled = false                              # SMELTR_WORKER_ENABLED
+# group = "default"                            # SMELTR_WORKER_GROUP
+# zone = "eu-west-1a"                          # SMELTR_WORKER_ZONE, this host's availability zone
+# listen_address = "::"                        # SMELTR_WORKER_LISTEN_ADDRESS, the address receivers listen on; :: for all IPv4 and IPv6
+# enrollment_code = "smeltrenroll-1-..."       # SMELTR_WORKER_ENROLLMENT_CODE, produced by a leader
+
+[worker.leader]
+# url = "https://leader.internal"       # SMELTR_LEADER_URL
+#
+# Setting the CA is only necessary if the leader has a TLS-terminating proxy in front of it.
+# If the leader manages its own TLS then the worker picks up the CA during enrollment.
+# ca = "/etc/smeltr/leader-ca.pem"      # SMELTR_LEADER_CA
+
+[worker.storage]
+# state_dir = "smeltr-worker-data"   # SMELTR_WORKER_STATE_DIR
+
+[worker.runtime]
+# thread_limit = 0                   # SMELTR_WORKER_THREAD_LIMIT, threads running pipelines; 0 is the core count
+
+[worker.heartbeat]
+# interval_ms = 1500                 # SMELTR_WORKER_HEARTBEAT_INTERVAL_MS
+# stop_after_unreachable_secs = -1   # SMELTR_WORKER_STOP_AFTER_UNREACHABLE_SECS, stop pipelines after this long without the leader; -1 never stops
+
+[worker.metrics_endpoint]
+# enabled = false                      # SMELTR_WORKER_METRICS_ENDPOINT_ENABLED, open a port serving /metrics for Prometheus
+# port = 9464                          # SMELTR_WORKER_METRICS_ENDPOINT_PORT
+# tls_cert = "/etc/smeltr/metrics.pem"      # SMELTR_WORKER_METRICS_ENDPOINT_TLS_CERT
+# tls_key = "/etc/smeltr/metrics-key.pem"   # SMELTR_WORKER_METRICS_ENDPOINT_TLS_KEY
+# client_ca = "/etc/smeltr/scraper-ca.pem"  # SMELTR_WORKER_METRICS_ENDPOINT_CLIENT_CA
+# user = "prometheus"                  # SMELTR_WORKER_METRICS_ENDPOINT_USER
+# password = "..."                     # SMELTR_WORKER_METRICS_ENDPOINT_PASSWORD

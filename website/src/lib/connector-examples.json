@@ -1,0 +1,342 @@
+{
+  "kafkaSource": {
+    "id": "events-in",
+    "type": "kafka",
+    "brokers": "localhost:9092",
+    "topics": ["smeltr-events-in"],
+    "encoding": "utf-8"
+  },
+  "eventHubsSource": {
+    "id": "entra-logs",
+    "type": "eventHubs",
+    "namespace": "acme-logs",
+    "eventHubs": ["insights-logs-signinlogs"],
+    "consumerGroup": "smeltr",
+    "connectionString": "EVENT_HUBS_CONNECTION_STRING"
+  },
+  "metricsSource": {
+    "id": "worker-metrics",
+    "type": "metrics",
+    "bucketSeconds": 10
+  },
+  "logsSource": {
+    "id": "worker-logs",
+    "type": "logs",
+    "minLevel": "info"
+  },
+  "s3SqsSource": {
+    "id": "bucket-logs",
+    "type": "s3Sqs",
+    "queueUrl": "https://sqs.us-east-2.amazonaws.com/111122223333/smeltr-logs",
+    "framing": "lines"
+  },
+  "azureBlobQueueSource": {
+    "id": "blob-logs",
+    "type": "azureBlobQueue",
+    "queueUrl": "https://acmelogs.queue.core.windows.net/blob-events",
+    "account": "acmelogs",
+    "framing": "lines"
+  },
+  "s3ListSource": {
+    "id": "bucket-export",
+    "type": "s3List",
+    "bucket": "acme-logs",
+    "prefix": "app/",
+    "region": "us-east-2",
+    "framing": "lines",
+    "afterCommit": "move",
+    "movePrefix": "done/"
+  },
+  "gcsListSource": {
+    "id": "bucket-export",
+    "type": "gcsList",
+    "bucket": "acme-logs",
+    "prefix": "app/",
+    "framing": "lines",
+    "afterCommit": "move",
+    "movePrefix": "done/"
+  },
+  "azureBlobListSource": {
+    "id": "container-export",
+    "type": "azureBlobList",
+    "account": "acmelogs",
+    "container": "logs",
+    "prefix": "app/",
+    "framing": "lines",
+    "afterCommit": "move",
+    "movePrefix": "done/"
+  },
+  "sftpSource": {
+    "id": "partner-drop",
+    "type": "sftp",
+    "host": "sftp.example.com",
+    "username": "smeltr",
+    "privateKey": "SFTP_PRIVATE_KEY",
+    "hostKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID3o82ivVxzYDbjz/HQTXSvCvoEb7fBpGzXPVbqK+q63",
+    "directory": "/srv/export",
+    "prefix": "incoming/",
+    "framing": "lines",
+    "afterCommit": "move",
+    "movePrefix": "done/"
+  },
+  "gcsPubSubSource": {
+    "id": "bucket-logs",
+    "type": "gcsPubSub",
+    "subscription": "projects/acme/subscriptions/gcs-events",
+    "serviceAccountKey": "GCS_SERVICE_ACCOUNT_KEY",
+    "framing": "lines"
+  },
+  "httpApiSource": {
+    "id": "events",
+    "type": "httpApi",
+    "url": "https://api.example.com/v1/events?limit=500",
+    "credentials": { "Authorization": "API_TOKEN" },
+    "records": "array",
+    "recordsAt": "/data",
+    "followLinks": true,
+    "sinceParam": "since"
+  },
+  "httpReceiverSource": {
+    "id": "ci-hooks",
+    "type": "httpReceiver",
+    "port": 8088,
+    "path": "/hooks/ci",
+    "tokens": { "ci": "HOOK_TOKEN" },
+    "identity": "receiver-tls",
+    "records": "lines"
+  },
+  "hecReceiverSource": {
+    "id": "otel-logs",
+    "type": "hecReceiver",
+    "port": 8088,
+    "tokens": { "otel": { "token": "HEC_TOKEN" } },
+    "identity": "receiver-tls"
+  },
+  "s2sReceiverSource": {
+    "id": "forwarders",
+    "type": "s2sReceiver",
+    "port": 9997,
+    "tokens": { "uf-fleet": "S2S_TOKEN" },
+    "identity": "s2s-tls",
+    "sourcetypes": {
+      "java:app": { "lineBreaker": "([\\r\\n]+)\\d{4}-\\d{2}-\\d{2}" },
+      "access_combined": { "lineBreaker": "([\\r\\n]+)" }
+    }
+  },
+  "otlpReceiverSource": {
+    "id": "otel-logs",
+    "type": "otlpReceiver",
+    "port": 4318,
+    "tokens": { "collectors": "OTEL_TOKEN" },
+    "identity": "receiver-tls"
+  },
+  "otlpTracesSource": {
+    "id": "otel-traces",
+    "type": "otlpReceiver",
+    "port": 4318,
+    "signal": "traces",
+    "tokens": { "collectors": "OTEL_TOKEN" },
+    "identity": "receiver-tls"
+  },
+  "syslogReceiverSource": {
+    "id": "network-syslog",
+    "type": "syslogReceiver",
+    "port": 6514,
+    "allowFrom": ["10.20.0.0/16", "192.168.1.20"],
+    "identity": "syslog-tls"
+  },
+  "prometheusReceiverSource": {
+    "id": "prometheus",
+    "type": "prometheusReceiver",
+    "port": 9090,
+    "tokens": { "prometheus": "PROM_TOKEN" },
+    "identity": "receiver-tls"
+  },
+  "elasticReceiverSource": {
+    "id": "beats",
+    "type": "elasticReceiver",
+    "port": 9200,
+    "tokens": { "beats": "ES_TOKEN" },
+    "identity": "receiver-tls"
+  },
+  "oktaLogsSource": {
+    "id": "okta-audit",
+    "type": "oktaLogs",
+    "org": "https://acme.okta.com",
+    "clientId": "0oa1b2c3d4e5f6g7h8i9",
+    "privateKey": "OKTA_PRIVATE_KEY"
+  },
+  "oktaTokenSource": {
+    "id": "okta-audit",
+    "type": "oktaLogs",
+    "org": "https://acme.okta.com",
+    "token": "OKTA_TOKEN"
+  },
+  "postgresSource": {
+    "id": "auth-events",
+    "type": "postgres",
+    "host": "db.internal",
+    "database": "auth",
+    "user": "smeltr_reader",
+    "password": "PG_PASSWORD",
+    "query": "SELECT event_id, occurred_at, user_name FROM auth.events",
+    "mode": { "type": "incrementing", "position": ["event_id"] },
+    "fields": [
+      { "name": "event_id", "type": "i64" },
+      { "name": "occurred_at", "type": "datetime" },
+      { "name": "user_name", "type": "str" }
+    ]
+  },
+  "mysqlSource": {
+    "id": "auth-events",
+    "type": "mysql",
+    "host": "db.internal",
+    "database": "auth",
+    "user": "smeltr_reader",
+    "password": "MYSQL_PASSWORD",
+    "query": "SELECT event_id, occurred_at, user_name FROM events",
+    "mode": { "type": "incrementing", "position": ["event_id"] },
+    "fields": [
+      { "name": "event_id", "type": "i64" },
+      { "name": "occurred_at", "type": "datetime" },
+      { "name": "user_name", "type": "str" }
+    ]
+  },
+  "kafkaDestination": {
+    "id": "events-out",
+    "type": "kafka",
+    "brokers": "localhost:9092",
+    "defaultTopic": "smeltr-events-out"
+  },
+  "eventHubsDestination": {
+    "id": "alerts-out",
+    "type": "eventHubs",
+    "namespace": "acme-logs",
+    "defaultEventHub": "alerts",
+    "connectionString": "EVENT_HUBS_CONNECTION_STRING"
+  },
+  "logAnalyticsDestination": {
+    "id": "events-out",
+    "type": "logAnalytics",
+    "endpoint": "https://acme-logs-a1b2.eastus-1.ingest.monitor.azure.com",
+    "ruleId": "dcr-0123456789abcdef0123456789abcdef",
+    "stream": "Custom-Events_CL"
+  },
+  "elasticDestination": {
+    "id": "search-out",
+    "type": "elasticsearch",
+    "url": "https://elasticsearch.example.com:9200",
+    "defaultIndex": "smeltr-events",
+    "auth": "ELASTIC_AUTH"
+  },
+  "httpDestination": {
+    "id": "intake",
+    "type": "http",
+    "url": "https://intake.example.com/v1/logs",
+    "body": "jsonArray",
+    "headers": {
+      "X-Source": "smeltr"
+    },
+    "credentials": {
+      "DD-API-KEY": "INTAKE_API_KEY"
+    }
+  },
+  "prometheusDestination": {
+    "id": "metrics-out",
+    "type": "prometheus",
+    "url": "https://mimir.example.com/api/v1/push",
+    "headers": { "X-Scope-OrgID": "tenant-1" },
+    "credentials": { "Authorization": "PROMETHEUS_TOKEN" }
+  },
+  "splunkDestination": {
+    "id": "splunk-out",
+    "type": "splunkHec",
+    "url": "https://splunk.example.com:8088",
+    "token": "SPLUNK_HEC_TOKEN",
+    "index": "smeltr_events",
+    "sourcetype": "_json"
+  },
+  "s3Destination": {
+    "id": "archive",
+    "type": "s3",
+    "bucket": "acme-logs",
+    "region": "us-east-2"
+  },
+  "gcsDestination": {
+    "id": "archive",
+    "type": "gcs",
+    "bucket": "acme-logs",
+    "serviceAccountKey": "GCS_SERVICE_ACCOUNT_KEY"
+  },
+  "azureDestination": {
+    "id": "archive",
+    "type": "azureBlob",
+    "account": "acmelogs",
+    "container": "events"
+  },
+  "sftpDestination": {
+    "id": "partner-inbox",
+    "type": "sftp",
+    "host": "sftp.example.com",
+    "username": "smeltr",
+    "privateKey": "SFTP_PRIVATE_KEY",
+    "hostKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID3o82ivVxzYDbjz/HQTXSvCvoEb7fBpGzXPVbqK+q63",
+    "directory": "/srv/inbox"
+  },
+  "icebergDestination": {
+    "id": "access-log",
+    "type": "iceberg",
+    "catalog": "https://polaris.example.com/api/catalog",
+    "warehouse": "analytics",
+    "namespace": "analytics.web",
+    "table": "access_log",
+    "partitionBy": ["day(ts)", "bucket(16, user.id)"],
+    "clientId": "smeltr",
+    "clientSecret": "CATALOG_CLIENT_SECRET",
+    "scope": "PRINCIPAL_ROLE:ALL"
+  },
+  "icebergGlueDestination": {
+    "id": "access-log",
+    "type": "iceberg",
+    "catalog": "https://glue.us-east-2.amazonaws.com/iceberg",
+    "warehouse": "111122223333",
+    "namespace": "web",
+    "table": "access_log",
+    "signingName": "glue"
+  },
+  "deltaDestination": {
+    "id": "lake-access",
+    "type": "delta",
+    "location": "s3://lake/tables/access_log",
+    "partitionBy": ["host"]
+  },
+  "deltaMinioDestination": {
+    "id": "lake-access",
+    "type": "delta",
+    "location": "s3://lake/tables/access_log",
+    "endpoint": "https://minio.example.com:9000",
+    "accessKeyId": "MINIO_ACCESS_KEY",
+    "secretAccessKey": "MINIO_SECRET_KEY"
+  },
+  "deltaUnityCatalogDestination": {
+    "id": "lake-web",
+    "type": "delta",
+    "unityCatalog": {
+      "workspace": "https://dbc-1234abcd-5678.cloud.databricks.com",
+      "table": "main.logs.web",
+      "clientId": "6f1c2a3b-0d4e-4f5a-9b8c-7d6e5f4a3b2c",
+      "clientSecret": "DATABRICKS_CLIENT_SECRET"
+    },
+    "region": "us-west-2"
+  },
+  "kafkaSecurity": {
+    "properties": {
+      "security.protocol": "SASL_SSL",
+      "sasl.mechanism": "SCRAM-SHA-512",
+      "sasl.username": "smeltr"
+    },
+    "credentials": {
+      "sasl.password": "KAFKA_PASSWORD"
+    }
+  }
+}
