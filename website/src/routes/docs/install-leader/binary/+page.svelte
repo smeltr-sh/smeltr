@@ -15,13 +15,12 @@
 >
   <h1>Install the binary</h1>
   <p>
-    <a href="/get#download">Download</a> the Linux archive, or the Windows zip, and the release's
-    <code>SHA256SUMS</code>.
+    <a href="/get#download">Download</a> the Linux archive or the Windows zip.
   </p>
   <h2 id="verify">Verify the executable</h2>
   <p>
-    Compare the archive's SHA-256 checksum with its line in <code>SHA256SUMS</code>, and stop if it
-    differs:
+    Compare the archive's SHA-256 checksum with the one shown beside it on the release page, and
+    stop if it differs:
   </p>
   <pre><code>sha256sum smeltr-linux.tar.gz</code></pre>
   <p>
