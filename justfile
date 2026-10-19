@@ -560,7 +560,15 @@ fmt: deps-gui deps-website
     npm --prefix website run format
 
 # Frontend, then an optimized binary, started.
+[unix]
 run: gui
+    cargo run --release --bin smeltr
+
+# Windows loads the AWS-LC FIPS module from a DLL beside the binary (`tools/fips-dll.ps1`).
+[windows]
+run: gui
+    cargo build --release --bin smeltr
+    powershell -NoProfile -ExecutionPolicy Bypass -File tools/fips-dll.ps1 "{{ env('CARGO_TARGET_DIR', 'target') }}/release"
     cargo run --release --bin smeltr
 
 # Each test starts its own leader and workers from empty data directories, so
