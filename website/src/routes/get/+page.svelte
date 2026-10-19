@@ -48,7 +48,7 @@
               <a href={latestFile('smeltr-extras.zip')}>Extras</a>: image archive, SBOM, STIG and
               CVE report
             </td>
-            <td><a href="/docs/install-leader/container#archive">Run the container image</a></td>
+            <td></td>
           </tr>
           <tr>
             <td><a href={source}>Source code</a></td>
