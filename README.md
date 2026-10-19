@@ -46,4 +46,4 @@ just --list       # everything else
 
 ## License
 
-[Business Source License 1.1](LICENSE). Production use is free for individuals and for organizations with fewer than 250 employees; larger organizations [buy a license](https://smeltr.sh/plans). Evaluation, development and testing are free for everyone. Each release becomes Apache 2.0 four years after it ships.
+[Business Source License 1.1](LICENSE). Production use is free for individuals and for organizations with fewer than 250 employees; larger organizations [buy a license](https://smeltr.sh/get). Evaluation, development and testing are free for everyone. Each release becomes Apache 2.0 four years after it ships.
