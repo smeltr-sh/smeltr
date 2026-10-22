@@ -903,6 +903,10 @@ async fn setup_leader(
     let data_dir =
         smeltr::paths::canonicalize_portable(&data_dir).expect("resolve leader data directory to an absolute path");
 
+    // Before the first sync: gix's curl reads the roots its fetch from the remote trusts only from this file.
+    smeltr::io::trust::write_pem_file(None, &smeltr::leader::remote::roots_path(&data_dir))
+        .expect("write the roots the remote's fetch trusts");
+
     let hosts = origin_hosts(&auth.origin);
     let tls = leader_tls_config(&data_dir, &hosts).await;
     let state = smeltr::leader::AppState {

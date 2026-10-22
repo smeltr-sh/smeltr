@@ -3082,6 +3082,45 @@ fn git_runs(program: &str) -> Result<(), String> {
 //
 // `gix` cannot push, so a push runs the `git` binary, which the leader already needs to serve workers.
 
+/// What a failed gix call says, down to its cause. gix's own text is its outermost step alone ("Transport handshake
+/// failed"), while what an admin can act on, a refused certificate or a host that answered 403, is the innermost,
+/// so that is what follows it. The source locations gix appends are left out.
+pub fn gix_said(e: &(dyn std::error::Error + 'static)) -> String {
+    let unlocated = |e: &dyn std::error::Error| {
+        e.to_string()
+            .split(", at ")
+            .filter(|part| !is_source_location(part))
+            .collect::<Vec<_>>()
+            .join(", at ")
+    };
+    let outer = unlocated(e);
+    let mut innermost = e;
+    while let Some(source) = innermost.source() {
+        innermost = source;
+    }
+    let cause = unlocated(innermost);
+    if cause == outer {
+        outer
+    } else {
+        format!("{outer}: {cause}")
+    }
+}
+
+/// The HTTP status a failed gix call stopped at, when it stopped at one: gix says it only in its text.
+pub fn gix_status(e: &(dyn std::error::Error + 'static)) -> Option<u16> {
+    std::iter::successors(Some(e), |e| e.source()).find_map(|e| {
+        let said = e.to_string();
+        let digits = said.strip_prefix("Received HTTP status ")?;
+        digits.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+    })
+}
+
+/// Whether `part` is a `file.rs:line` gix appended, rather than the message's own text.
+fn is_source_location(part: &str) -> bool {
+    part.rsplit_once(".rs:")
+        .is_some_and(|(file, line)| !file.contains(' ') && !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// What the host made of a push.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Pushed {
