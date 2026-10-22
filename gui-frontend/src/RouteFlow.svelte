@@ -1359,8 +1359,9 @@
   .flowwrap {
     overflow-x: auto;
   }
-  /* A field's suggestions hang below the card, so the card stops clipping while one is being typed in. */
-  .flowwrap:focus-within {
+  /* A field's suggestions hang below the card, so the card stops clipping while one is being typed in. Only a
+     field: a pressed button takes focus too, and the card scrolled back under the pointer moves the release off it. */
+  .flowwrap:has(:global(:is(input, textarea):focus)) {
     overflow: visible;
   }
   .flow {

@@ -24,7 +24,6 @@
 <svelte:head>
   <title>{title} — smeltr</title>
   <meta name="robots" content="noindex" />
-  <link rel="canonical" href={destination} />
 </svelte:head>
 
 <DocsLayout sections={[]} searchable={false}>
