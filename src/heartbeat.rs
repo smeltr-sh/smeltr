@@ -1277,6 +1277,17 @@ mod client {
         lookup_agent: ureq::Agent,
     }
 
+    /// The handshake's refusal of the leader's certificate, if that is what `e` is. rustls reports it from inside
+    /// the stream, so it arrives wrapped as an I/O error as often as on its own.
+    fn certificate_refused(e: &ureq::Error) -> Option<&rustls::Error> {
+        let rustls = match e {
+            ureq::Error::Rustls(e) => Some(e),
+            ureq::Error::Io(e) => e.get_ref().and_then(|inner| inner.downcast_ref::<rustls::Error>()),
+            _ => None,
+        };
+        rustls.filter(|e| matches!(e, rustls::Error::InvalidCertificate(_)))
+    }
+
     /// A failed attempt, and whether the connection failed rather than the leader answered.
     struct SendFailure {
         retryable: bool,
@@ -1462,14 +1473,17 @@ mod client {
                         e,
                         ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::Protocol(_)
                     ),
-                    error: HeartbeatError(
-                        e.to_string(),
-                        match e {
-                            ureq::Error::StatusCode(status) => Some(status),
-                            _ => None,
-                        },
-                        matches!(e, ureq::Error::Rustls(rustls::Error::InvalidCertificate(_))),
-                    ),
+                    error: match certificate_refused(&e) {
+                        Some(refused) => HeartbeatError(refused.to_string(), None, true),
+                        None => HeartbeatError(
+                            e.to_string(),
+                            match e {
+                                ureq::Error::StatusCode(status) => Some(status),
+                                _ => None,
+                            },
+                            false,
+                        ),
+                    },
                 })?;
             response
                 .body_mut()

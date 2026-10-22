@@ -560,6 +560,7 @@ fn heartbeat_client_without_the_authority_rejects_the_leader() {
     });
     let refused = result.expect_err("a client holding no authority must not trust a leader that runs its own");
     assert!(refused.certificate_untrusted(), "{refused}");
+    assert_eq!(refused.reason(), "invalid peer certificate: UnknownIssuer");
 }
 
 /// What a worker is running is the worker's own answer. The leader knows where `main` is, but a worker that
