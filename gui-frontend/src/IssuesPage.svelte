@@ -87,7 +87,9 @@
       info: rows.filter((r) => r.severity === 'info').length,
       rows: rows.toSorted((a, b) => RANK[a.severity] - RANK[b.severity]),
     }));
-    return groups.toSorted((a, b) => worst(a.rows) - worst(b.rows) || b.rows.length - a.rows.length);
+    return groups.toSorted(
+      (a, b) => worst(a.rows) - worst(b.rows) || b.rows.length - a.rows.length,
+    );
   });
 
   $effect(() => {

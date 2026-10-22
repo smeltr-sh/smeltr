@@ -1194,8 +1194,7 @@ async fn list_warnings(
         true => catalog(&state).await,
         false => warnings_snapshot(&state).await,
     };
-    all
-        .map(|all| Json(all.into_iter().filter(|w| w.visible_to(&access)).collect()))
+    all.map(|all| Json(all.into_iter().filter(|w| w.visible_to(&access)).collect()))
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
@@ -4079,13 +4078,17 @@ mod warnings_endpoint_tests {
         let served = |access: access::Access| {
             let state = state.clone();
             async move {
-                list_warnings(State(state), axum::Extension(access), Query(WarningsQuery { info: false }))
-                    .await
-                    .unwrap()
-                    .0
-                    .into_iter()
-                    .map(|w| w.subject_id)
-                    .collect::<Vec<_>>()
+                list_warnings(
+                    State(state),
+                    axum::Extension(access),
+                    Query(WarningsQuery { info: false }),
+                )
+                .await
+                .unwrap()
+                .0
+                .into_iter()
+                .map(|w| w.subject_id)
+                .collect::<Vec<_>>()
             }
         };
 
