@@ -9835,8 +9835,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [webpki-root-certs 1.0.9](https://github.com/rustls/webpki-roots)
-- [webpki-roots 1.0.9](https://github.com/rustls/webpki-roots)
+- [webpki-root-certs 1.0.10](https://github.com/rustls/webpki-roots)
+- [webpki-roots 1.0.10](https://github.com/rustls/webpki-roots)
 
 ```
 # Community Data License Agreement - Permissive - Version 2.0
@@ -10397,7 +10397,7 @@ Used by:
 
 Used by:
 
-- [rustls-webpki 0.103.15](https://github.com/rustls/webpki)
+- [rustls-webpki 0.103.16](https://github.com/rustls/webpki)
 
 ```
 Except as otherwise noted, this project is licensed under the following
