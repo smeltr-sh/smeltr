@@ -183,13 +183,7 @@ pub fn sync(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>
 
 /// Fetch the remote's `main` into [`git::FETCHED_MAIN_REF`], and answer the commit it names, `None` when it has none.
 fn fetch(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>, String> {
-    let unreachable = |e: &(dyn std::error::Error + 'static)| {
-        let why = match git::gix_status(e) {
-            Some(status) => status_text(status),
-            None => git::gix_said(e),
-        };
-        format!("fetching {} did not work: {why}", remote.url)
-    };
+    let unreachable = |e: &dyn std::fmt::Display| format!("fetching {} did not work: {e}", remote.url);
     let git = gix::open(repo).map_err(|e| unreachable(&e))?;
     let refspec = format!("+refs/heads/{}:{}", git::MAIN_BRANCH, git::FETCHED_MAIN_REF);
     let host = git
@@ -225,15 +219,11 @@ fn fetch(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>, S
         .prepare_fetch(gix::progress::Discard, Default::default())
         .map_err(|e| {
             let check = match (asked.get(), remote.token.is_some()) {
-                (false, _) => return unreachable(&e),
+                (false, _) => return unreachable(&with_cause(&e)),
                 (true, false) => "Set a token that can read this repository",
                 (true, true) => "Check that the token can read this repository",
             };
-            format!(
-                "fetching {} did not work: {}. {check}, and check the URL",
-                remote.url,
-                status_text(401)
-            )
+            unreachable(&format!("401 Unauthorized. {check}, and check the URL"))
         })?;
     // A repository nobody has pushed `main` to yet: a state, not a failure.
     if prepare.ref_map().is_missing_required_mapping() {
@@ -241,7 +231,7 @@ fn fetch(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>, S
     }
     let outcome = prepare
         .receive(gix::progress::Discard, &AtomicBool::new(false))
-        .map_err(|e| unreachable(&e))?;
+        .map_err(|e| unreachable(&with_cause(&e)))?;
     Ok(outcome
         .ref_map
         .mappings
@@ -250,14 +240,14 @@ fn fetch(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>, S
         .map(|id| id.to_string()))
 }
 
-/// `status` with its reason, `401 Unauthorized`, as an admin reads it.
-fn status_text(status: u16) -> String {
-    let reason = ureq::http::StatusCode::from_u16(status)
-        .ok()
-        .and_then(|code| code.canonical_reason());
-    match reason {
-        Some(reason) => format!("{status} {reason}"),
-        None => status.to_string(),
+/// What a failed gix step says, and the cause gix picks for it. gix's own text is its step alone ("Transport handshake
+/// failed"), while what an admin can act on, a refused certificate say, is the cause.
+fn with_cause(e: &gix::Error) -> String {
+    let (step, cause) = (e.error().to_string(), e.probable_cause().to_string());
+    if step == cause {
+        step
+    } else {
+        format!("{step}: {cause}")
     }
 }
 
@@ -2025,7 +2015,7 @@ mod tests {
             ..Host::start("forbidden-host").remote()
         };
         let (_, why) = sync(&leader("forbidden"), roots(), &remote).unwrap_err();
-        assert!(why.ends_with("did not work: 403 Forbidden"), "{why}");
+        assert!(why.ends_with("403"), "{why}");
     }
 
     /// The certificate is checked against the roots, so a host no root signed is refused for its certificate, and the
