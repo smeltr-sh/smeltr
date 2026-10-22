@@ -22,4 +22,6 @@
     // paths. The default would return a bare 404 with no page.
     "not_found_handling": "404-page",
   },
+  // `wrangler preview`, the dashboard's preview command, refuses to run without this block; empty keeps the above.
+  "previews": {},
 }

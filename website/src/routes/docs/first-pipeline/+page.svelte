@@ -101,8 +101,7 @@ PY`;
   </p>
   <p>
     In Smeltr, select your test worker group and open <strong>Build</strong>. It opens on Routes.
-    Choose <strong>+ Add route</strong>. The new route shows three pickers:
-    <strong>from source</strong>,
+    Choose <strong>+ Add route</strong>. The new route shows <strong>from source</strong>,
     <strong>pipeline</strong> and <strong>destination</strong>.
   </p>
 
@@ -183,8 +182,10 @@ PY`;
 
   <h2 id="destination">6. Add the destination</h2>
   <p>
-    In <strong>destination</strong>, choose <strong>+ New destination…</strong>, then Kafka. Fill in
-    the settings below and choose <strong>Add</strong>.
+    Under <strong>destination</strong>, choose <strong>+ destination</strong>, then
+    <strong>+ New destination…</strong>, then Kafka. Fill in the settings below and choose
+    <strong>Add</strong>. If the route already sends to another destination, choose its ✕ to stop
+    sending there.
   </p>
   <div class="table-scroll">
     <table>
