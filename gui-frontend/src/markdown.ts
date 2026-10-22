@@ -11,11 +11,12 @@ md.renderer.rules.image = (tokens, idx, options, env, self) =>
   md.utils.escapeHtml(self.renderInlineAsText(tokens[idx].children ?? [], options, env));
 
 const linkOpen =
-  md.renderer.rules.link_open ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+  md.renderer.rules.link_open ??
+  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
 // A link out of the GUI opens beside it, so the conversation stays where it was.
 md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   const link = tokens[idx];
-  if (!link.attrGet('href')?.startsWith('#')) {
+  if (!String(link.attrGet('href')).startsWith('#')) {
     link.attrSet('target', '_blank');
     link.attrSet('rel', 'noopener noreferrer');
   }

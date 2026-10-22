@@ -19,6 +19,7 @@
 <script lang="ts">
   import ConversationEntry from './ConversationEntry.svelte';
   import ConversationEvent from './ConversationEvent.svelte';
+  import Markdown from './Markdown.svelte';
   import Collapsible from './Collapsible.svelte';
   import ModelPicker from './ModelPicker.svelte';
   import ContextGauge from './ContextGauge.svelte';
@@ -237,15 +238,22 @@
       {#if compact && (item.kind === 'message' || item.kind === 'answer')}
         <!-- A terminal's shape: what was said is the line after the prompt, and the answer the lines under it. -->
         <div class="line" class:said={item.kind === 'message'}>
-          {#if item.kind === 'message'}<span class="prompt" aria-label={me}>›</span>{/if}<span
-            class="text">{item.text}</span
-          >
+          {#if item.kind === 'message'}<span class="prompt" aria-label={me}>›</span><span
+              class="text">{item.text}</span
+            >{:else}<Markdown text={item.text} />{/if}
         </div>
       {:else if item.kind === 'message' || item.kind === 'answer'}
         {@const who = item.kind === 'message' ? me : 'Agent'}
-        <ConversationEntry author={who} text={item.text}>
-          {#snippet head()}<span class="who">{who}</span>{/snippet}
-        </ConversationEntry>
+        {#if item.kind === 'message'}
+          <ConversationEntry author={who} text={item.text}>
+            {#snippet head()}<span class="who">{who}</span>{/snippet}
+          </ConversationEntry>
+        {:else}
+          <ConversationEntry author={who}>
+            {#snippet head()}<span class="who">{who}</span>{/snippet}
+            <Markdown text={item.text} />
+          </ConversationEntry>
+        {/if}
       {:else if item.kind === 'call'}
         {@const answered = item.result ? split(item.result.output) : null}
         <div class="call">
@@ -278,7 +286,7 @@
             <Collapsible variant="row">
               {#snippet summary()}Summarized. Your agent reads this summary in place of what is
                 above.{/snippet}
-              <p class="summary">{item.summary}</p>
+              <div class="summary"><Markdown text={item.summary} /></div>
             </Collapsible>
           {/if}
         </ConversationEvent>
@@ -447,7 +455,6 @@
     color: var(--dim);
   }
   .summary {
-    white-space: pre-wrap;
     margin: 0.4rem 0 0;
   }
   .mono {

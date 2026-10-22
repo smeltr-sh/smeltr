@@ -11,8 +11,10 @@
 <div class="markdown">{@html renderMarkdown(text)}</div>
 
 <style>
+  /* Its own white space, wherever it sits: the HTML's line breaks are not the text's. */
   .markdown {
     min-width: 0;
+    white-space: normal;
     overflow-wrap: anywhere;
     color: var(--ink);
     line-height: 1.5;
