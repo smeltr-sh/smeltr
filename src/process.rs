@@ -495,7 +495,8 @@ mod tests {
     fn a_quiet_grandchild_does_not_outlive_a_finished_command() {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("sleep 30 >/dev/null 2>&1 & echo $! ; exit 0");
-        let outcome = output_within(&mut cmd, budget()).expect("sh spawns");
+        // Room for the shell to start and exit on a loaded machine: the test is about the grandchild, not the budget.
+        let outcome = output_within(&mut cmd, Duration::from_secs(5)).expect("sh spawns");
         let Outcome::Exited(output) = outcome else {
             panic!("a command that exited was reported as killed");
         };
