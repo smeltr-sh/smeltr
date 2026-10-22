@@ -24,6 +24,11 @@
   }
 </script>
 
+<svelte:head>
+  <!-- One address per page for search engines, whichever host, scheme or slash a link used. -->
+  <link rel="canonical" href={`https://smeltr.sh${page.url.pathname}`} />
+</svelte:head>
+
 <a class="skip-link" href="#main">Skip to content</a>
 
 <header use:measureHeader>
