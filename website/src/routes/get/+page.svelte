@@ -5,7 +5,7 @@
 <svelte:head
   ><title>Get smeltr</title><meta
     name="description"
-    content="Smeltr is free under 250 employees. Above that, it is $10,000 a year per production leader."
+    content="Smeltr is free for individuals and for organizations with fewer than 250 employees. Above that, it is $10,000 a year per production leader."
   /></svelte:head
 >
 
@@ -15,9 +15,9 @@
   </section>
   <article>
     <p>
-      Smeltr is free for production use by organizations with fewer than 250 employees.
-      Organizations with 250 or more employees pay $10,000 per year for each leader they run in
-      production; workers are not counted. Evaluation, development, and testing are free for
+      Smeltr is free for production use by individuals, and by organizations with fewer than 250
+      employees. Organizations with 250 or more employees pay $10,000 per year for each leader they
+      run in production; workers are not counted. Evaluation, development, and testing are free for
       everyone.
     </p>
     <p>
