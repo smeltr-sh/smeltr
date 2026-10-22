@@ -2,6 +2,7 @@
 # A rule replaces the whole Content-Type, so each names its type. HTML declares its own charset.
 /*.md
   Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex
 
 /*.txt
   Content-Type: text/plain; charset=utf-8
