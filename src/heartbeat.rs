@@ -1283,29 +1283,31 @@ mod client {
     /// waits forever on an address that accepts and never answers is a first boot that never reports why.
     pub fn agent_without_verification(budget: std::time::Duration) -> ureq::Agent {
         let tls_config = ureq::tls::TlsConfig::builder().disable_verification(true).build();
-        agent_with(Some(tls_config), budget)
+        agent_with(tls_config, budget)
     }
 
-    /// An agent that accepts a leader whose certificate chains to something in `leader_ca_pem`, and no other, and
-    /// gives up after `budget`.
+    /// An agent that accepts a leader whose certificate chains to a root of [`leader_roots`], and gives up after
+    /// `budget`.
     ///
-    /// `None` leaves the platform's own roots in place, which is what a leader behind a proxy holding a publicly
-    /// issued certificate needs, and what a leader on plain HTTP does not use at all.
+    /// `None` is the public roots, which is what a leader behind a proxy holding a publicly issued certificate needs,
+    /// and what a leader on plain HTTP does not use at all.
     ///
     /// `leader_ca_pem` may hold more than one authority. That is what lets an authority be replaced without
     /// stopping the fleet: a worker given the old and the new accepts a leader that has moved and one that has not.
-    pub fn agent_trusting(leader_ca_pem: Option<&[u8]>, budget: std::time::Duration) -> Result<ureq::Agent, String> {
-        Ok(agent_with(tls_trusting(leader_ca_pem)?, budget))
+    pub fn agent_trusting(
+        leader_ca_pem: Option<&[u8]>,
+        trust_public: bool,
+        budget: std::time::Duration,
+    ) -> Result<ureq::Agent, String> {
+        Ok(agent_with(tls_trusting(leader_ca_pem, trust_public)?, budget))
     }
 
-    /// An agent that gives up after `budget`, trusting what `tls` trusts, or the public roots (`io::trust`) when it
-    /// is `None`.
+    /// An agent that gives up after `budget`, trusting what `tls` trusts.
     ///
     /// Every agent that talks to the leader is built here. `ureq` bounds no part of a request on its own, so an
     /// agent built anywhere else waits on a leader that accepts and never answers for as long as the socket stays
     /// open.
-    fn agent_with(tls: Option<ureq::tls::TlsConfig>, budget: std::time::Duration) -> ureq::Agent {
-        let tls = tls.unwrap_or_else(crate::io::trust::public_tls);
+    fn agent_with(tls: ureq::tls::TlsConfig, budget: std::time::Duration) -> ureq::Agent {
         ureq::Agent::new_with_config(
             ureq::Agent::config_builder()
                 .timeout_global(Some(budget))
@@ -1315,16 +1317,34 @@ mod client {
     }
 
     /// What [`agent_trusting`] trusts, as a configuration rather than an agent, for a caller that builds more than
-    /// one agent from it. `None` is the platform's own roots left in place.
-    fn tls_trusting(leader_ca_pem: Option<&[u8]>) -> Result<Option<ureq::tls::TlsConfig>, String> {
+    /// one agent from it.
+    fn tls_trusting(leader_ca_pem: Option<&[u8]>, trust_public: bool) -> Result<ureq::tls::TlsConfig, String> {
+        let roots = leader_roots(leader_ca_pem, trust_public)?
+            .iter()
+            .map(|der| ureq::tls::Certificate::from_der(der.as_ref()).to_owned())
+            .collect();
+        Ok(ureq::tls::TlsConfig::builder()
+            .root_certs(ureq::tls::RootCerts::Specific(std::sync::Arc::new(roots)))
+            .build())
+    }
+
+    /// Every root a worker verifies its leader by: the authorities in `leader_ca_pem`, and the public roots too when
+    /// `trust_public` (`io::trust::trusting`), as an identity trusts. The heartbeat and git's fetch both trust this,
+    /// so the two never disagree about a leader.
+    pub fn leader_roots(
+        leader_ca_pem: Option<&[u8]>,
+        trust_public: bool,
+    ) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, String> {
         let Some(pem) = leader_ca_pem else {
-            return Ok(None);
+            return Ok(crate::io::trust::trusting(Vec::new(), trust_public));
         };
 
-        let mut roots = Vec::new();
+        let mut authorities = Vec::new();
         for item in ureq::tls::parse_pem(pem) {
             match item.map_err(|e| e.to_string())? {
-                ureq::tls::PemItem::Certificate(cert) => roots.push(cert),
+                ureq::tls::PemItem::Certificate(cert) => {
+                    authorities.push(rustls::pki_types::CertificateDer::from(cert.der().to_vec()))
+                }
                 // An operator who reached for the combined file their tooling calls the CA has named the wrong
                 // one, and a worker copies this into its state directory for git to use as well. Skipping the key
                 // says nothing about a mistake worth hearing about; a trust store is certificates.
@@ -1334,29 +1354,26 @@ mod client {
                 _ => return Err("holds something that is not a certificate".to_string()),
             }
         }
-        // A file holding none would leave an empty root store, and every request would fail at the handshake with
-        // a message about the leader rather than about the file.
-        if roots.is_empty() {
+        // A file holding none would leave only the public roots, or an empty root store, and every request would
+        // fail at the handshake with a message about the leader rather than about the file.
+        if authorities.is_empty() {
             return Err("holds no certificate".to_string());
         }
-
-        Ok(Some(
-            ureq::tls::TlsConfig::builder()
-                .root_certs(ureq::tls::RootCerts::Specific(std::sync::Arc::new(roots)))
-                .build(),
-        ))
+        Ok(crate::io::trust::trusting(authorities, trust_public))
     }
 
     impl HeartbeatClient {
-        /// `leader_ca_pem` is the authority the leader's certificate must chain to; see [`agent_trusting`].
+        /// `leader_ca_pem` and `trust_public` are what the leader's certificate must chain to; see
+        /// [`agent_trusting`].
         pub fn new(
             leader_url: impl AsRef<str>,
             token: impl Into<String>,
             leader_ca_pem: Option<&[u8]>,
+            trust_public: bool,
         ) -> Result<HeartbeatClient, HeartbeatError> {
             // One authority, parsed once, trusted by both agents: what a leader is judged by does not depend on
             // which call is being made.
-            let tls_config = tls_trusting(leader_ca_pem)
+            let tls_config = tls_trusting(leader_ca_pem, trust_public)
                 .map_err(|e| HeartbeatError(format!("the leader's certificate authority: {e}"), None))?;
             let base = leader_url.as_ref().trim_end_matches('/');
             Ok(HeartbeatClient {
@@ -1454,20 +1471,38 @@ mod client {
     }
 }
 
-pub use client::{HeartbeatClient, HeartbeatError, agent_trusting, agent_without_verification};
+pub use client::{HeartbeatClient, HeartbeatError, agent_trusting, agent_without_verification, leader_roots};
 
 #[cfg(test)]
 mod trust_tests {
-    use super::{REQUEST_BUDGET, agent_trusting};
+    use super::{REQUEST_BUDGET, agent_trusting, leader_roots};
+
+    /// As an identity trusts: the authority, and the public roots unless the worker says not to.
+    #[test]
+    fn a_worker_trusts_its_leaders_authority_and_the_public_roots_unless_told_not_to() {
+        let authority = rcgen::generate_simple_self_signed(vec!["leader.test".to_string()])
+            .unwrap()
+            .cert;
+        let pem = authority.pem();
+        let public = crate::io::trust::public();
+
+        let alone = leader_roots(Some(pem.as_bytes()), false).unwrap();
+        assert_eq!(alone, vec![authority.der().clone()]);
+        let with_public = leader_roots(Some(pem.as_bytes()), true).unwrap();
+        assert_eq!(with_public.len(), public.len() + 1);
+        assert!(with_public.contains(authority.der()));
+        assert_eq!(leader_roots(None, true).unwrap(), public);
+        assert!(leader_roots(None, false).unwrap().is_empty());
+    }
 
     #[test]
     fn a_worker_given_no_authority_falls_back_to_the_platforms_own_roots() {
-        assert!(agent_trusting(None, REQUEST_BUDGET).is_ok());
+        assert!(agent_trusting(None, true, REQUEST_BUDGET).is_ok());
     }
 
     #[test]
     fn a_file_holding_no_certificate_is_refused_by_name() {
-        let refused = agent_trusting(Some(b"not a certificate"), REQUEST_BUDGET).expect_err("nothing to trust");
+        let refused = agent_trusting(Some(b"not a certificate"), true, REQUEST_BUDGET).expect_err("nothing to trust");
         assert!(refused.contains("holds no certificate"), "{refused}");
     }
 
@@ -1476,7 +1511,8 @@ mod trust_tests {
     #[test]
     fn a_file_holding_only_a_key_is_refused_too() {
         let key = rcgen::KeyPair::generate().unwrap().serialize_pem();
-        let refused = agent_trusting(Some(key.as_bytes()), REQUEST_BUDGET).expect_err("a key is not an authority");
+        let refused =
+            agent_trusting(Some(key.as_bytes()), true, REQUEST_BUDGET).expect_err("a key is not an authority");
         assert!(refused.contains("holds a private key"), "{refused}");
     }
 
@@ -1491,7 +1527,7 @@ mod trust_tests {
             .unwrap();
         let both = format!("{}{}", cert.pem(), key.serialize_pem());
 
-        let refused = agent_trusting(Some(both.as_bytes()), REQUEST_BUDGET).expect_err("a key came with it");
+        let refused = agent_trusting(Some(both.as_bytes()), true, REQUEST_BUDGET).expect_err("a key came with it");
         assert!(refused.contains("holds a private key"), "{refused}");
     }
 }
