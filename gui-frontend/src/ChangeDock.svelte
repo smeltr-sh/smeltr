@@ -128,7 +128,8 @@
     position: fixed;
     left: 0;
     right: 0;
-    bottom: 0;
+    /* Above the agent panel while it is open. */
+    bottom: var(--agent-panel, 0);
     z-index: 15;
     background: var(--panel);
     border-top: 1px solid var(--border);

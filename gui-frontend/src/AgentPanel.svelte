@@ -12,9 +12,9 @@
 
   const OPEN_KEY = 'smeltr-agent-panel-conversation';
   const HEIGHT_KEY = 'smeltr-agent-panel-height';
-  /** The share of the window the panel takes, and the least and most it may be dragged to. A phone gives it
-   * more, since a third of a phone holds little more than the message box. */
-  const HEIGHT = matchMedia('(max-width: 48rem)').matches ? 0.55 : 0.3;
+  /** The share of the window the panel takes, and the least and most it may be dragged to. A phone gives it a
+   * little more, since a third of a phone holds little more than the message box, and leaves the page the rest. */
+  const HEIGHT = matchMedia('(max-width: 48rem)').matches ? 0.35 : 0.3;
   const LEAST = 0.15;
   const MOST = 0.8;
 
@@ -51,10 +51,17 @@
     return () => grew.disconnect();
   });
 
-  // The page underneath scrolls past the panel, so nothing is hidden behind it.
+  // The page underneath scrolls past the panel, so nothing is hidden behind it, and whatever is scrolled into view
+  // (a focused field, a link followed to its place) stops above it rather than under it. The page's bottom bars
+  // ride on it through `--agent-panel`.
   $effect(() => {
-    document.body.style.paddingBottom = `${height * 100}vh`;
-    return () => (document.body.style.paddingBottom = '');
+    const root = document.documentElement;
+    root.style.setProperty('--agent-panel', `${height * 100}vh`);
+    document.body.style.paddingBottom = root.style.scrollPaddingBottom = 'var(--agent-panel)';
+    return () => {
+      root.style.removeProperty('--agent-panel');
+      document.body.style.paddingBottom = root.style.scrollPaddingBottom = '';
+    };
   });
 
   function drag(e: PointerEvent) {
