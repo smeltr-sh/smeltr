@@ -278,6 +278,12 @@ heartbeat mentions. A warning is derived on every heartbeat, never stored, and
 clears when its fact stops. The catalog is fixed: each entry names a subject,
 the fact it reads and the sentence that says what to do.
 
+An entry is a failure, a warning or a notice. A notice is a fact worth knowing
+that asks nothing of anyone, such as a worker on another release of the
+leader's major. The leader gives notices only to a reader that asks for them,
+which is the Issues page alone, so no view that judges health can count one as
+trouble.
+
 A blocked source warns by what holds it, because each releases differently:
 rows only a new config lets through, rows a destination refused, or a
 destination not taking records. The last releases on its own once the

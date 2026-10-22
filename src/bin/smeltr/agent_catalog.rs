@@ -399,7 +399,8 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/warnings",
-        what: "The warning catalog, filtered to what the caller sees. No query.",
+        what: "The warning catalog, filtered to what the caller sees. `info=true` adds its info entries: facts that \
+               ask nothing of anyone.",
         body: "",
     },
     Route {

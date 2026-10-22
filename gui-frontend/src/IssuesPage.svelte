@@ -17,6 +17,7 @@
     conditionLabel,
     type WarningCondition,
     type WarningDto,
+    type WarningSeverity,
   } from './api';
   import { ago } from './time';
 
@@ -25,7 +26,7 @@
   let warnings: WarningDto[] = $state([]);
   let loading = $state(true);
   let loadFailed = $state(false);
-  let severityFilter: 'all' | 'failed' | 'warning' = $state('all');
+  let severityFilter: 'all' | WarningSeverity = $state('all');
   // A condition seen for the first time opens by default -- a fleet with a
   // handful of them should show all of them; one that grows past a screen
   // can be folded by hand, and stays folded across polls since this only
@@ -33,7 +34,7 @@
   let expanded: Partial<Record<WarningCondition, boolean>> = $state({});
 
   function refresh() {
-    listWarnings()
+    listWarnings({ info: true })
       .then((w) => {
         warnings = w;
         loadFailed = false;
@@ -53,12 +54,23 @@
   });
 
   let failedCount = $derived(warnings.filter((w) => w.severity === 'failed').length);
-  let warningCount = $derived(warnings.length - failedCount);
+  let warningCount = $derived(warnings.filter((w) => w.severity === 'warning').length);
+  let infoCount = $derived(warnings.filter((w) => w.severity === 'info').length);
+
+  /** Failed, then warning, then info: a notice never sits above trouble. */
+  const RANK: Record<WarningSeverity, number> = { failed: 0, warning: 1, info: 2 };
+  const worst = (rows: WarningDto[]) => Math.min(...rows.map((r) => RANK[r.severity]));
   let filtered = $derived(
     severityFilter === 'all' ? warnings : warnings.filter((w) => w.severity === severityFilter),
   );
 
-  type Group = { condition: WarningCondition; failed: number; warning: number; rows: WarningDto[] };
+  type Group = {
+    condition: WarningCondition;
+    failed: number;
+    warning: number;
+    info: number;
+    rows: WarningDto[];
+  };
 
   /** One group per condition, worst-hit first: any failure beats none, then
    * the larger group. A condition with only warnings never buries one that
@@ -72,14 +84,10 @@
       condition,
       failed: rows.filter((r) => r.severity === 'failed').length,
       warning: rows.filter((r) => r.severity === 'warning').length,
-      rows: rows.toSorted(
-        (a, b) => Number(b.severity === 'failed') - Number(a.severity === 'failed'),
-      ),
+      info: rows.filter((r) => r.severity === 'info').length,
+      rows: rows.toSorted((a, b) => RANK[a.severity] - RANK[b.severity]),
     }));
-    return groups.toSorted((a, b) => {
-      if (a.failed > 0 !== b.failed > 0) return a.failed > 0 ? -1 : 1;
-      return b.rows.length - a.rows.length;
-    });
+    return groups.toSorted((a, b) => worst(a.rows) - worst(b.rows) || b.rows.length - a.rows.length);
   });
 
   $effect(() => {
@@ -101,6 +109,7 @@
         {#if warningCount > 0}<span class="total warning"
             >&#9650; <b>{warningCount}</b> warning</span
           >{/if}
+        {#if infoCount > 0}<span class="total info">&#9679; <b>{infoCount}</b> info</span>{/if}
       </span>
     {/if}
   </PageHeader>
@@ -122,6 +131,11 @@
       <button class:on={severityFilter === 'warning'} onclick={() => (severityFilter = 'warning')}
         >Warning ({warningCount})</button
       >
+      {#if infoCount > 0}
+        <button class:on={severityFilter === 'info'} onclick={() => (severityFilter = 'info')}
+          >Info ({infoCount})</button
+        >
+      {/if}
     </div>
 
     {#each groups as group (group.condition)}
@@ -133,6 +147,7 @@
         {#snippet actions()}
           {#if group.failed > 0}<span class="count failed">&#9650; {group.failed}</span>{/if}
           {#if group.warning > 0}<span class="count warning">&#9650; {group.warning}</span>{/if}
+          {#if group.info > 0}<span class="count info">&#9679; {group.info}</span>{/if}
         {/snippet}
         <div class="issues" role="list" aria-label={conditionLabel(group.condition)}>
           {#each group.rows as warning (`${warning.subjectKind}|${warning.subjectId}|${warning.group ?? ''}|${warning.site ?? ''}`)}
@@ -199,6 +214,9 @@
   .total.warning {
     color: var(--warn);
   }
+  .total.info {
+    color: var(--dim);
+  }
 
   .filters {
     display: flex;
@@ -242,6 +260,9 @@
   .count.warning {
     color: var(--warn);
   }
+  .count.info {
+    color: var(--dim);
+  }
 
   /* The list names a condition's rows; Collapsible's body spaces them. */
   .issues {
@@ -267,6 +288,9 @@
   }
   .sev-dot.warning {
     background: var(--warn);
+  }
+  .sev-dot.info {
+    background: var(--dim);
   }
   .issue-subject {
     min-width: 0;
