@@ -18,7 +18,6 @@
   import CertificatesSettings from './CertificatesSettings.svelte';
   import GitRemoteSettings from './GitRemoteSettings.svelte';
   import LicenseSettings from './LicenseSettings.svelte';
-  import OidcSettings from './OidcSettings.svelte';
   import AgentSettings from './AgentSettings.svelte';
   import SecondaryTabs from './SecondaryTabs.svelte';
   import { SYSTEM_SECTIONS, type SystemSection } from './nav';
@@ -256,8 +255,6 @@
           {/if}
         </Panel>
       {/if}
-    {:else if section === 'oidc'}
-      <OidcSettings />
     {:else if section === 'certificates'}
       <CertificatesSettings />
     {:else if section === 'git'}

@@ -103,6 +103,10 @@ export type World = {
   restarted: string[];
   /** Single sign-on is on, through the journey's provider. */
   sso: boolean;
+  /** The provider's person has signed in, so the leader knows their groups. */
+  ssoSignedIn: boolean;
+  /** An administrator has found the provider's person's refused sign-in in the logs. */
+  refusalSeen: boolean;
   /** The idle timeout the Sessions form last saved, in seconds. */
   idle: number | null;
   /** An uploaded certificate is in force, in place of the leader's own. */
@@ -132,6 +136,8 @@ export function newWorld(): World {
     conversations: [],
     restarted: [],
     sso: false,
+    ssoSignedIn: false,
+    refusalSeen: false,
     idle: null,
     supplied: false,
     acme: false,
@@ -1591,6 +1597,7 @@ type Account = {
   enabled: boolean;
   authSource: string;
   roles: string[];
+  groups: string[];
 };
 
 const addAccount: Move = {
@@ -1665,6 +1672,8 @@ const disableAccount: Move = {
 
 /** The group the journey's provider puts the one person it signs in into. */
 export const PROVIDER_GROUP = 'journey-people';
+/** Their other group, which no role names until an administrator makes one from it on the roster. */
+export const REVIEW_GROUP = 'journey-reviewers';
 
 const LEVELS = ['viewer', 'editor', 'deployer'] as const;
 
@@ -1711,10 +1720,7 @@ const turnOnAgents: Move = {
     await expect(page.getByRole('textbox', { name: /^Model\b/ })).toHaveValue('claude-opus-5-5');
     await page.getByLabel('API key', { exact: true }).fill(MODEL_KEY);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(page.getByLabel('API key', { exact: true })).toHaveAttribute(
-      'placeholder',
-      'stored',
-    );
+    await expect(page.getByRole('button', { name: 'replace the API key' })).toBeVisible();
     world.agentsOn = true;
     const truth = await j.truth();
     expect((await truth.get('/api/settings/agents')).settings).toEqual({
@@ -1891,23 +1897,19 @@ const deleteConversation: Move = {
 
 const setUpSso: Move = {
   name: 'set-up-sso',
-  leadsTo: ['sso-sign-in'],
+  leadsTo: ['sso-sign-in', 'refused-sign-in'],
   weight: (w) => (w.password && !w.sso ? 1 : 0),
   run: async (j) => {
     const { page, leader, provider, world } = j;
-    await goto(page, leader, '#/admin/system/oidc');
+    await goto(page, leader, '#/admin/accounts/oidc');
     await page.getByRole('switch', { name: 'single sign-on enabled' }).check();
     await page.getByRole('textbox', { name: /^Issuer URL\b/ }).fill(provider.base);
     await page.getByRole('textbox', { name: /^Client ID\b/ }).fill(CLIENT_ID);
     await page.getByLabel('client secret', { exact: true }).fill(CLIENT_SECRET);
-    await page.getByRole('textbox', { name: /^Required group\b/ }).fill(PROVIDER_GROUP);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    // Saved, the secret is kept and never shown again; the button alone disables while the save is in flight.
-    await expect(page.getByLabel('client secret', { exact: true })).toHaveAttribute(
-      'placeholder',
-      'stored',
-    );
-    await expect(page.getByLabel('client secret', { exact: true })).toHaveValue('');
+    // Saved, the secret is held and offers no input to type over, only Replace.
+    await expect(page.getByRole('button', { name: 'replace the client secret' })).toBeVisible();
+    await expect(page.getByLabel('client secret', { exact: true })).toHaveCount(0);
     world.sso = true;
     const { settings } = await (await j.truth()).get('/api/settings/oidc');
     expect(settings).toMatchObject({
@@ -1915,7 +1917,6 @@ const setUpSso: Move = {
       issuer: provider.base,
       clientId: CLIENT_ID,
       clientSecretSet: true,
-      requiredGroup: PROVIDER_GROUP,
     });
     expect(JSON.stringify(settings)).not.toContain(CLIENT_SECRET);
     return 'set up single sign-on';
@@ -1924,9 +1925,10 @@ const setUpSso: Move = {
 
 const ssoSignIn: Move = {
   name: 'sso-sign-in',
+  leadsTo: ['role-from-group'],
   weight: (w) => (w.sso && w.roles.has(PROVIDER_GROUP) ? 1 : 0),
   run: async (j) => {
-    const { leader, browser, provider } = j;
+    const { leader, browser, provider, world } = j;
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
     try {
       const theirs = await context.newPage();
@@ -1938,12 +1940,78 @@ const ssoSignIn: Move = {
     } finally {
       await context.close();
     }
+    world.ssoSignedIn = true;
     const users: Account[] = await (await j.truth()).get('/api/users');
-    expect(users.find((u) => u.authSource === 'oidc')).toMatchObject({
+    const person = users.find((u) => u.authSource === 'oidc');
+    expect(person).toMatchObject({
       displayName: provider.person.name,
-      roles: [PROVIDER_GROUP],
+      groups: [PROVIDER_GROUP, REVIEW_GROUP],
     });
+    expect([...person!.roles].sort()).toEqual(
+      [PROVIDER_GROUP, REVIEW_GROUP].filter((g) => world.roles.has(g)),
+    );
     return `${provider.person.name} signs in through the provider`;
+  },
+};
+
+/** The provider's person is turned away while no role names their groups, and an administrator reads why. */
+const refusedSignIn: Move = {
+  name: 'refused-sign-in',
+  weight: (w) => (w.sso && !w.refusalSeen && !w.roles.has(PROVIDER_GROUP) ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, browser, provider, world } = j;
+    const context = await browser.newContext({ ignoreHTTPSErrors: true });
+    try {
+      const theirs = await context.newPage();
+      await theirs.goto(leader.url);
+      await theirs.getByRole('link', { name: 'Sign in with SSO' }).click();
+      await expect(theirs.getByText('single sign-on refused that account')).toBeVisible();
+    } finally {
+      await context.close();
+    }
+    await openAdmin(page, 'Accounts');
+    await page.getByRole('link', { name: 'Roles', exact: true }).click();
+    await page.getByRole('button', { name: 'Refused sign-ins' }).click();
+    const row = page.getByRole('row').filter({ hasText: 'leader.sign_in_refused' }).first();
+    // The leader's own logs reach the page on its next pass, so the page is read again until they do.
+    await expect(async () => {
+      await page.reload();
+      await expect(row).toBeVisible({ timeout: 1000 });
+    }).toPass();
+    await row.getByRole('button', { name: /^\d+ fields?$/ }).click();
+    await expect(row).toContainText(`${PROVIDER_GROUP}, ${REVIEW_GROUP}`);
+    world.refusalSeen = true;
+    return `${provider.person.name} is refused, and the logs name their groups`;
+  },
+};
+
+/** A role made from a group the roster shows the person holds and no role names yet. */
+const roleFromGroup: Move = {
+  name: 'role-from-group',
+  leadsTo: ['sso-sign-in'],
+  weight: (w) => (w.ssoSignedIn && !w.roles.has(REVIEW_GROUP) ? 1 : 0),
+  run: async (j) => {
+    const { page, rng, world } = j;
+    const level = rng.pick(LEVELS);
+    await openAdmin(page, 'Accounts');
+    await page.getByRole('link', { name: 'Users', exact: true }).click();
+    await page.getByRole('button', { name: `+ ${REVIEW_GROUP}` }).click();
+    await expect(page.getByRole('link', { name: 'Roles', exact: true })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    await page.getByRole('combobox', { name: 'shared level' }).selectOption(level);
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByRole('combobox', { name: 'shared level' })).toHaveCount(0);
+    world.roles.add(REVIEW_GROUP);
+    const roles: { name: string; administrator: boolean; areas: Record<string, string> }[] = await (
+      await j.truth()
+    ).get('/api/roles');
+    expect(roles.find((r) => r.name === REVIEW_GROUP)).toMatchObject({
+      administrator: false,
+      areas: { shared: level },
+    });
+    return `make the role ${REVIEW_GROUP} from the roster, ${level} in shared`;
   },
 };
 
@@ -2294,6 +2362,8 @@ export const MOVES: readonly Move[] = [
   deleteConversation,
   setUpSso,
   ssoSignIn,
+  refusedSignIn,
+  roleFromGroup,
   sessions,
   reissueCertificate,
   uploadCertificate,

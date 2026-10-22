@@ -64,7 +64,7 @@ for (const extra of [
   '#/admin/accounts/roles',
   '#/admin/system/general',
   '#/admin/system/sessions',
-  '#/admin/system/oidc',
+  '#/admin/accounts/oidc',
   '#/admin/system/certificates',
   '#/admin/system/git',
   '#/admin/system/license',

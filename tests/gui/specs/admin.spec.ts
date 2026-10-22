@@ -396,10 +396,7 @@ test('AI agents turned on under System offer the agent screens', async ({ admin 
 
     await admin.getByLabel('API key', { exact: true }).fill(MODEL_KEY);
     await admin.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(admin.getByLabel('API key', { exact: true })).toHaveAttribute(
-      'placeholder',
-      'stored',
-    );
+    await expect(admin.getByRole('button', { name: 'replace the API key' })).toBeVisible();
 
     await admin.getByRole('button', { name: /^signed in as / }).click();
     await expect(admin.getByRole('button', { name: 'Agent permissions' })).toBeVisible();

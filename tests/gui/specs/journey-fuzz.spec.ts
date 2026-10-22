@@ -17,6 +17,7 @@ import {
   AVRO_OBJECTS,
   JOURNEY_SEEDS,
   PROVIDER_GROUP,
+  REVIEW_GROUP,
   newWorld,
   nextMove,
   type Journey,
@@ -74,7 +75,7 @@ for (const seed of seeds(JOURNEY_SEEDS)) {
       subject: 'journey-person',
       name: 'Journey Person',
       email: 'journey.person@example.com',
-      groups: [PROVIDER_GROUP],
+      groups: [PROVIDER_GROUP, REVIEW_GROUP],
     });
     const model = await FakeModel.start();
     const authority = await Authority.start({

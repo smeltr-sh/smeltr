@@ -80,7 +80,7 @@
   import Panel from './Panel.svelte';
   import Field from './Field.svelte';
   import UnitInput from './UnitInput.svelte';
-  import PasswordField from './PasswordField.svelte';
+  import LeaderSecretField from './LeaderSecretField.svelte';
   import Toggle from './Toggle.svelte';
 
   let settings = $state<AgentSettingsDto | null>(null);
@@ -92,6 +92,7 @@
   let endpoint = $state('');
   let model = $state('');
   let apiKey = $state('');
+  let replacingKey = $state(false);
   let keepDays = $state(90);
   let contextTokens = $state(200000);
 
@@ -103,6 +104,7 @@
     endpoint = next.endpoint || defaults.endpoint;
     model = next.model || defaults.model;
     apiKey = '';
+    replacingKey = false;
     keepDays = next.keepDays;
     contextTokens = next.contextTokens;
   }
@@ -230,15 +232,15 @@
           {/snippet}
           <UnitInput bind:value={contextTokens} unit="tokens" min={4096} max={10000000} required />
         </Field>
-        <Field label="API key">
+        <Field label="API key" group>
           {#snippet help()}
-            Stored encrypted and never shown again. Left empty, the stored one is kept while the
-            provider and endpoint stay the same.
+            Stored encrypted and never shown again.
           {/snippet}
-          <PasswordField
+          <LeaderSecretField
             bind:value={apiKey}
+            bind:replacing={replacingKey}
+            stored={keyKept}
             ariaLabel="API key"
-            placeholder={keyKept ? 'stored' : ''}
           />
         </Field>
       </div>

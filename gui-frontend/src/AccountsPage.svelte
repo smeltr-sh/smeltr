@@ -1,6 +1,7 @@
 <!--
   Who can use this leader, and what an administrator does to them: the roster
-  under Users, and under Roles what each of the provider's groups gives.
+  under Users, under Roles what each of the provider's groups gives, and under
+  Single sign-on the provider itself.
 
   A local account is always an administrator. An SSO account holds what the
   roles named for its provider groups give it, so the roster shows those roles
@@ -11,6 +12,8 @@
   import InlineError from './InlineError.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
+  import OidcSettings from './OidcSettings.svelte';
+  import { toHash } from './logs';
   import Help from './Help.svelte';
   import Field from './Field.svelte';
   import Dialog from './Dialog.svelte';
@@ -325,6 +328,14 @@
     naming = true;
   }
 
+  /** A group the provider names that no role does yet, opened on the Roles tab as a new role. */
+  async function roleFor(group: string) {
+    if (!(await dropUnsaved())) return;
+    location.hash = '#/admin/accounts/roles';
+    newRole = group;
+    named();
+  }
+
   function named() {
     const name = newRole.trim();
     if (name === '' || nameTaken) return;
@@ -381,8 +392,15 @@
 <SectionShell>
   <PageHeader title="Accounts">
     {#snippet beside()}
-      {#if section === 'roles'}
+      {#if section === 'oidc'}
+        <!-- The form saves itself. -->
+      {:else if section === 'roles'}
         <button class="primary" type="button" onclick={startNaming}>+ Add role</button>
+        <button
+          type="button"
+          onclick={() => (location.hash = toHash({ levels: [], site: 'leader.sign_in_refused' }))}
+          >Refused sign-ins</button
+        >
       {:else}
         <button
           class="primary"
@@ -408,7 +426,7 @@
 
   <SecondaryTabs
     tabs={ACCOUNTS_TABS}
-    active={section === 'roles' ? '#/admin/accounts/roles' : '#/admin/accounts'}
+    active={section === 'users' ? '#/admin/accounts' : `#/admin/accounts/${section}`}
     ariaLabel="Accounts"
   />
 
@@ -464,7 +482,9 @@
     {/snippet}
   </Dialog>
 
-  {#if section === 'roles'}
+  {#if section === 'oidc'}
+    <OidcSettings />
+  {:else if section === 'roles'}
     {#if rolesLoading}
       <p>Reading the roles…</p>
     {:else if shownRoles.length === 0}
@@ -610,6 +630,11 @@
                   {#each rolesOf(person) as role (role)}
                     <span class="pill" class:mono={person.authSource !== 'local'}>{role}</span>
                   {/each}
+                  {#each person.groups.filter((g) => !person.roles.includes(g)) as group (group)}
+                    <button type="button" class="pill ghost mono" onclick={() => roleFor(group)}
+                      >+ {group}</button
+                    >
+                  {/each}
                 </div>
               </td>
               <td class="right">
@@ -744,6 +769,19 @@
     border: 1px solid var(--border);
     border-radius: 999px;
     padding: 0.1rem 0.5rem;
+  }
+
+  /* A group with no role yet: an offer to make one, drawn apart from the roles held. */
+  .pill.ghost {
+    border-style: dashed;
+    color: var(--dim);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .pill.ghost:hover {
+    color: var(--text);
+    border-color: var(--accent);
   }
 
   .pill.off {

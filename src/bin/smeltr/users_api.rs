@@ -36,6 +36,9 @@ pub struct UserDto {
     /// The roles this account holds: those of its provider groups, as of its last sign-in, that a role is named
     /// for. Empty for a local account, which holds everything without one.
     pub roles: Vec<String>,
+    /// Every group the provider named at this account's last sign-in or refresh, a role's or not, exactly as it
+    /// named them: what a new role must be called to reach this person. Empty for a local account.
+    pub groups: Vec<String>,
     pub access: AccessDto,
     pub created_at: i64,
     pub updated_at: i64,
@@ -65,6 +68,7 @@ impl UserDto {
             auth_source: user.auth_source.as_str().to_string(),
             provider_login: identity.and_then(|identity| identity.login),
             roles: held,
+            groups,
             access: AccessDto::from(&access),
             created_at: user.created_at,
             updated_at: user.updated_at,

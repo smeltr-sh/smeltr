@@ -18,12 +18,11 @@ export type Tab = 'status' | 'map' | 'build' | 'changes' | 'admin' | 'me';
 /** The tabs of Admin -> System. Logging is named in the design and has no
  * leader-side settings yet, so it is not offered. */
 export type SystemSection =
-  'general' | 'sessions' | 'oidc' | 'certificates' | 'git' | 'agents' | 'license';
+  'general' | 'sessions' | 'certificates' | 'git' | 'agents' | 'license';
 
 export const SYSTEM_SECTIONS: { section: SystemSection; label: string }[] = [
   { section: 'general', label: 'General' },
   { section: 'sessions', label: 'Sessions' },
-  { section: 'oidc', label: 'Single sign-on' },
   { section: 'certificates', label: 'Certificates' },
   { section: 'git', label: 'Git remote' },
   { section: 'agents', label: 'AI agents' },
@@ -33,8 +32,8 @@ export const SYSTEM_SECTIONS: { section: SystemSection; label: string }[] = [
 /** The tabs of Admin -> Workers: the fleet's workers, and the enrollment codes that bring them in. */
 export type WorkersSection = 'workers' | 'enrollment';
 
-/** The tabs of Admin -> Accounts: the people, and the roles their provider's groups give them. */
-export type AccountsSection = 'users' | 'roles';
+/** The tabs of Admin -> Accounts: the people, the roles their provider's groups give them, and the provider. */
+export type AccountsSection = 'users' | 'roles' | 'oidc';
 
 export type Route =
   // `deploying` is the commit a deploy just pointed the fleet at, whose
@@ -295,6 +294,7 @@ export const WORKERS_TABS: SectionItem[] = [
 export const ACCOUNTS_TABS: SectionItem[] = [
   { label: 'Users', hash: '#/admin/accounts' },
   { label: 'Roles', hash: '#/admin/accounts/roles' },
+  { label: 'Single sign-on', hash: '#/admin/accounts/oidc' },
 ];
 
 /** Which entry of its section a page marks. A page opened from a list --
@@ -374,20 +374,21 @@ const MOVED: Record<string, string> = {
   samples: '#/build',
   'map/sources': '#/build/sources',
   'map/destinations': '#/build/destinations',
+  'admin/system/oidc': '#/admin/accounts/oidc',
 };
 
 /** The hash a moved route should be rewritten to, or null when it is already
  * a current one. Whatever followed the section is carried over, so
  * `#/sources/json` and `#/pipelines/orders` both keep what they named.
  *
- * Longest key first, since a key can be two segments: `#/map/sources` is a
+ * Longest key first, since a key can be several segments: `#/map/sources` is a
  * moved route while `#/map` is a current one. */
 export function movedTo(hash: string): string | null {
   const parts = hash
     .replace(/^#\/?/, '')
     .split('/')
     .filter((p) => p.length > 0);
-  for (let take = Math.min(2, parts.length); take > 0; take--) {
+  for (let take = Math.min(3, parts.length); take > 0; take--) {
     const to = MOVED[parts.slice(0, take).join('/')];
     if (to) return [to, ...parts.slice(take)].join('/');
   }
@@ -578,7 +579,7 @@ export function parseRoute(hash: string): Route {
         return {
           tab: 'admin',
           page: 'accounts',
-          section: parts[2] === 'roles' ? 'roles' : 'users',
+          section: parts[2] === 'roles' || parts[2] === 'oidc' ? parts[2] : 'users',
         };
       }
       if (parts[1] === 'system') {
