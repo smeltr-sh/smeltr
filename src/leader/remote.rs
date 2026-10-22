@@ -32,6 +32,12 @@ pub const TOKEN_KEY: &str = "git.remote.token";
 pub const POLL_KEY: &str = "git.remote.poll_seconds";
 pub const APPROVE_KEY: &str = "git.remote.approve_pushes";
 
+/// Where the leader keeps the roots its fetch from the remote trusts, as a PEM file: gix's curl takes them only by
+/// path. Written at every start (`io::trust::write_pem_file`), from the public roots, as the LFS client trusts.
+pub fn roots_path(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("public-roots.pem")
+}
+
 /// How often the remote is fetched where nobody has said.
 pub const DEFAULT_POLL: Duration = Duration::from_secs(60);
 
@@ -136,11 +142,12 @@ pub struct SyncState {
     pub failure: Option<Failure>,
 }
 
-/// One sync: fetch the remote's `main`, then follow it. Answers the remote's head, `None` when it has no `main`.
+/// One sync: fetch the remote's `main`, trusting the PEM file at `roots`, then follow it. Answers the remote's head,
+/// `None` when it has no `main`.
 ///
 /// `Err` carries the head when the fetch reached it: a fetch that failed says nothing about the remote's `main`.
-pub fn sync(repo: &Path, remote: &Remote) -> Result<Option<String>, (Option<String>, String)> {
-    let head = fetch(repo, remote).map_err(|e| (None, e))?;
+pub fn sync(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>, (Option<String>, String)> {
+    let head = fetch(repo, roots, remote).map_err(|e| (None, e))?;
     let Some(head) = head else {
         // An empty host is given the leader's `main`, and owns it from then on.
         let main = git::main_head(repo).ok_or((None, "this leader has no main to give the remote".to_string()))?;
@@ -175,7 +182,7 @@ pub fn sync(repo: &Path, remote: &Remote) -> Result<Option<String>, (Option<Stri
 }
 
 /// Fetch the remote's `main` into [`git::FETCHED_MAIN_REF`], and answer the commit it names, `None` when it has none.
-fn fetch(repo: &Path, remote: &Remote) -> Result<Option<String>, String> {
+fn fetch(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>, String> {
     let unreachable = |e: &dyn std::fmt::Display| format!("fetching {} did not work: {e}", remote.url);
     let git = gix::open(repo).map_err(|e| unreachable(&e))?;
     let refspec = format!("+refs/heads/{}:{}", git::MAIN_BRANCH, git::FETCHED_MAIN_REF);
@@ -193,6 +200,7 @@ fn fetch(repo: &Path, remote: &Remote) -> Result<Option<String>, String> {
             .map(|auth| format!("Authorization: {auth}"))
             .into_iter()
             .collect(),
+        ssl_ca_info: Some(roots.to_path_buf()),
         connect_timeout: Some(FETCH_BUDGET),
         low_speed_limit_bytes_per_second: MIN_BYTES_PER_SECOND,
         low_speed_time_seconds: FETCH_BUDGET.as_secs(),
@@ -200,24 +208,47 @@ fn fetch(repo: &Path, remote: &Remote) -> Result<Option<String>, String> {
     }));
     // The token above is the one credential, so a refusal is reported rather than answered from whatever credential
     // helper this host's gitconfig names -- the worker's fetch refuses the same cascade for the same reason.
+    // Asked for one is the host answering 401, which gix reports as a credential helper that returned nothing.
+    let asked = std::cell::Cell::new(false);
     #[allow(clippy::result_large_err)]
-    connection.set_credentials(|_action| Ok(None));
+    connection.set_credentials(|_action| {
+        asked.set(true);
+        Ok(None)
+    });
     let prepare = connection
         .prepare_fetch(gix::progress::Discard, Default::default())
-        .map_err(|e| unreachable(&e))?;
+        .map_err(|e| {
+            let check = match (asked.get(), remote.token.is_some()) {
+                (false, _) => return unreachable(&with_cause(&e)),
+                (true, false) => "Set a token that can read this repository",
+                (true, true) => "Check that the token can read this repository",
+            };
+            unreachable(&format!("401 Unauthorized. {check}, and check the URL"))
+        })?;
     // A repository nobody has pushed `main` to yet: a state, not a failure.
     if prepare.ref_map().is_missing_required_mapping() {
         return Ok(None);
     }
     let outcome = prepare
         .receive(gix::progress::Discard, &AtomicBool::new(false))
-        .map_err(|e| unreachable(&e))?;
+        .map_err(|e| unreachable(&with_cause(&e)))?;
     Ok(outcome
         .ref_map
         .mappings
         .iter()
         .find_map(|m| m.remote.peeled_id())
         .map(|id| id.to_string()))
+}
+
+/// What a failed gix step says, and the cause gix picks for it. gix's own text is its step alone ("Transport handshake
+/// failed"), while what an admin can act on, a refused certificate say, is the cause.
+fn with_cause(e: &gix::Error) -> String {
+    let (step, cause) = (e.error().to_string(), e.probable_cause().to_string());
+    if step == cause {
+        step
+    } else {
+        format!("{step}: {cause}")
+    }
 }
 
 /// How long a fetch, or a request to the LFS server, may take to connect or answer, or run slower than
@@ -621,7 +652,8 @@ pub async fn sync_now(state: &AppState) -> Result<SyncState, String> {
         return Err("no remote is set".to_string());
     };
     let repo = git::repo_path(&state.data_dir);
-    let synced = tokio::task::spawn_blocking(move || sync(&repo, &remote))
+    let roots = roots_path(&state.data_dir);
+    let synced = tokio::task::spawn_blocking(move || sync(&repo, &roots, &remote))
         .await
         .unwrap_or_else(|e| Err((None, format!("internal error: {e}"))));
     if synced.is_ok() {
@@ -1322,6 +1354,16 @@ mod tests {
         ),
     ];
 
+    /// The roots a leader's fetch trusts, written once for every test.
+    fn roots() -> &'static Path {
+        static ROOTS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        ROOTS.get_or_init(|| {
+            let path = roots_path(&temp_dir("roots"));
+            crate::io::trust::write_pem_file(None, &path).unwrap();
+            path
+        })
+    }
+
     /// A leader repository of its own history, following nothing yet.
     fn leader(name: &str) -> PathBuf {
         let repo = git::repo_path(&temp_dir(name));
@@ -1335,7 +1377,7 @@ mod tests {
         let host = Host::start("follows-host");
         let commit = host.commit(&LOADS, "orders");
         let repo = leader("follows");
-        assert_eq!(sync(&repo, &host.remote()), Ok(Some(commit.clone())));
+        assert_eq!(sync(&repo, roots(), &host.remote()), Ok(Some(commit.clone())));
         assert_eq!(git::main_head(&repo).as_deref(), Some(commit.as_str()));
         assert_eq!(git::deployed(&repo).as_deref(), Some(commit.as_str()));
         let followed = git::log(&repo, git::MAIN_BRANCH, 1).unwrap().remove(0);
@@ -1351,17 +1393,17 @@ mod tests {
         let host = Host::start("refused-host");
         let good = host.commit(&LOADS, "orders");
         let repo = leader("refused");
-        sync(&repo, &host.remote()).unwrap();
+        sync(&repo, roots(), &host.remote()).unwrap();
         let bad = host.commit(&[("groups/standalone/sources.json", b"[{")], "break it");
         for _ in 0..2 {
-            let (commit, why) = sync(&repo, &host.remote()).unwrap_err();
+            let (commit, why) = sync(&repo, roots(), &host.remote()).unwrap_err();
             assert_eq!(commit.as_deref(), Some(bad.as_str()));
             assert!(why.contains("\"standalone\""), "{why}");
             assert_eq!(git::main_head(&repo).as_deref(), Some(bad.as_str()));
             assert_eq!(git::deployed(&repo).as_deref(), Some(good.as_str()));
         }
         let mended = host.commit(&LOADS, "mend it");
-        assert_eq!(sync(&repo, &host.remote()), Ok(Some(mended.clone())));
+        assert_eq!(sync(&repo, roots(), &host.remote()), Ok(Some(mended.clone())));
         assert_eq!(git::deployed(&repo).as_deref(), Some(mended.as_str()));
     }
 
@@ -1372,7 +1414,7 @@ mod tests {
         host.commit(&LOADS, "orders");
         let broken = host.commit(&[("groups/other/system.json", b"not json")], "a broken group");
         let repo = leader("beside");
-        sync(&repo, &host.remote()).unwrap_err();
+        sync(&repo, roots(), &host.remote()).unwrap_err();
         git::deploy_commit(data_dir(&repo), &broken, &Actor::system()).unwrap();
 
         let fix = host.commit(
@@ -1382,7 +1424,7 @@ mod tests {
             )],
             "fix standalone",
         );
-        assert_eq!(sync(&repo, &host.remote()), Ok(Some(fix.clone())));
+        assert_eq!(sync(&repo, roots(), &host.remote()), Ok(Some(fix.clone())));
         assert_eq!(git::deployed(&repo).as_deref(), Some(fix.as_str()));
     }
 
@@ -1391,7 +1433,7 @@ mod tests {
         let host = Host::start("force-host");
         let first = host.commit(&LOADS, "orders");
         let repo = leader("force");
-        sync(&repo, &host.remote()).unwrap();
+        sync(&repo, roots(), &host.remote()).unwrap();
         host.commit(
             &[(
                 "groups/standalone/pipelines/more.json",
@@ -1399,7 +1441,7 @@ mod tests {
             )],
             "more",
         );
-        sync(&repo, &host.remote()).unwrap();
+        sync(&repo, roots(), &host.remote()).unwrap();
         // The host's `main` goes back to `first`.
         let host_git = gix::open(&host.repo).unwrap();
         let id = host_git.rev_parse_single(first.as_str()).unwrap().detach();
@@ -1412,7 +1454,7 @@ mod tests {
             )
             .unwrap();
         git::forget_advertisement();
-        assert_eq!(sync(&repo, &host.remote()), Ok(Some(first.clone())));
+        assert_eq!(sync(&repo, roots(), &host.remote()), Ok(Some(first.clone())));
         assert_eq!(git::main_head(&repo).as_deref(), Some(first.as_str()));
     }
 
@@ -1421,7 +1463,7 @@ mod tests {
         let host = Host::start("held-host");
         let first = host.commit(&LOADS, "orders");
         let repo = leader("held");
-        sync(&repo, &host.remote()).unwrap();
+        sync(&repo, roots(), &host.remote()).unwrap();
         let second = host.commit(
             &[(
                 "groups/standalone/pipelines/more.json",
@@ -1429,7 +1471,7 @@ mod tests {
             )],
             "more",
         );
-        sync(&repo, &host.remote()).unwrap();
+        sync(&repo, roots(), &host.remote()).unwrap();
         git::deploy_commit(repo.parent().unwrap().parent().unwrap(), &first, &Actor::system()).unwrap();
 
         let third = host.commit(
@@ -1440,7 +1482,7 @@ mod tests {
             "again",
         );
         assert_ne!(second, third);
-        sync(&repo, &host.remote()).unwrap();
+        sync(&repo, roots(), &host.remote()).unwrap();
         assert_eq!(git::main_head(&repo).as_deref(), Some(third.as_str()));
         assert_eq!(git::deployed(&repo).as_deref(), Some(first.as_str()), "the hold stays");
         assert_eq!(git::hold(&repo).unwrap().unwrap().behind, 2);
@@ -1478,18 +1520,18 @@ mod tests {
         let repo = leader("lfs");
 
         // Not on the host's LFS server: refused, and the next sync tries again.
-        let (_, why) = sync(&repo, &host.remote()).unwrap_err();
+        let (_, why) = sync(&repo, roots(), &host.remote()).unwrap_err();
         assert!(why.contains(&oid) && why.contains("not found"), "{why}");
         assert_ne!(git::main_head(&repo).as_deref(), Some(commit.as_str()));
 
         // Bytes that are not the pointer's: refused, and not kept.
         host.lfs.lock().unwrap().insert(oid.clone(), b"ip,city\n".to_vec());
-        let (_, why) = sync(&repo, &host.remote()).unwrap_err();
+        let (_, why) = sync(&repo, roots(), &host.remote()).unwrap_err();
         assert!(why.contains(&oid), "{why}");
         assert!(!store::path_of(&repo, &oid).exists());
 
         host.lfs.lock().unwrap().insert(oid.clone(), bytes.clone());
-        assert_eq!(sync(&repo, &host.remote()), Ok(Some(commit.clone())));
+        assert_eq!(sync(&repo, roots(), &host.remote()), Ok(Some(commit.clone())));
         assert_eq!(std::fs::read(store::path_of(&repo, &oid)).unwrap(), bytes);
         assert!(
             store::path_of(&repo, &format!("{oid}.name")).exists(),
@@ -1506,7 +1548,7 @@ mod tests {
         let (commit, oid) = commit_cities(&host, &[(".lfsconfig", lfsconfig.as_bytes())]);
         host.lfs.lock().unwrap().insert(oid.clone(), CITIES.to_vec());
         let repo = leader("lfsconfig");
-        assert_eq!(sync(&repo, &host.remote()), Ok(Some(commit)));
+        assert_eq!(sync(&repo, roots(), &host.remote()), Ok(Some(commit)));
         assert_eq!(std::fs::read(store::path_of(&repo, &oid)).unwrap(), CITIES);
         assert_eq!(host.moved.load(Ordering::SeqCst), 1, "asked where .lfsconfig says");
     }
@@ -1518,7 +1560,7 @@ mod tests {
         host.lfs.lock().unwrap().insert(oid.clone(), CITIES.to_vec());
         host.hop.store(true, Ordering::SeqCst);
         let repo = leader("hop");
-        assert_eq!(sync(&repo, &host.remote()), Ok(Some(commit)));
+        assert_eq!(sync(&repo, roots(), &host.remote()), Ok(Some(commit)));
         assert_eq!(std::fs::read(store::path_of(&repo, &oid)).unwrap(), CITIES);
     }
 
@@ -1547,11 +1589,11 @@ mod tests {
         let host = Host::serve("empty-host", false);
         let repo = leader("empty");
         let main = git::main_head(&repo).unwrap();
-        assert_eq!(sync(&repo, &host.remote()), Ok(Some(main.clone())));
+        assert_eq!(sync(&repo, roots(), &host.remote()), Ok(Some(main.clone())));
         assert_eq!(git::main_head(&host.repo), Some(main.clone()));
         assert_eq!(git::main_head(&repo), Some(main.clone()));
         // The next sync finds the remote's main where the leader's is, and has nothing to do.
-        assert_eq!(sync(&repo, &host.remote()), Ok(Some(main)));
+        assert_eq!(sync(&repo, roots(), &host.remote()), Ok(Some(main)));
     }
 
     /// Commit `files` on the leader's `branch`, from `main` the first time, and answer the commit.
@@ -1584,7 +1626,7 @@ mod tests {
     fn following(host: &Host, name: &str) -> PathBuf {
         let repo = leader(name);
         host.commit(&LOADS, "orders");
-        sync(&repo, &host.remote()).unwrap();
+        sync(&repo, roots(), &host.remote()).unwrap();
         repo
     }
 
@@ -1661,7 +1703,7 @@ mod tests {
             )],
             "again",
         );
-        sync(&repo, &remote).unwrap();
+        sync(&repo, roots(), &remote).unwrap();
         assert!(matches!(
             git::bring_current(data_dir(&repo), "al/more", &Actor::system(), None).unwrap(),
             git::BringCurrent::Done(_)
@@ -1675,7 +1717,7 @@ mod tests {
         assert_eq!(git::host_branches(&repo).unwrap().get(git::MAIN_BRANCH), Some(&merged));
         assert!(!git::branch_exists(&repo, "al/more").unwrap());
         // The next sync finds the host where the approval left it.
-        assert_eq!(sync(&repo, &remote), Ok(Some(merged)));
+        assert_eq!(sync(&repo, roots(), &remote), Ok(Some(merged)));
     }
 
     #[test]
@@ -1772,7 +1814,7 @@ mod tests {
         ));
         files.push(("groups/standalone/lookups/cities.csv", b"ip,city\n"));
         let bad = host.commit(&files, "plain");
-        sync(&repo, &remote).unwrap_err();
+        sync(&repo, roots(), &remote).unwrap_err();
         // The lease is on `bad`, so a squash onto `head` would pass it and drop `bad` from the host.
         let refused = approve(data_dir(&repo), &remote, "al/more", &Actor::system()).unwrap_err();
         assert!(refused.contains("not the one this leader runs"), "{refused}");
@@ -1931,7 +1973,7 @@ mod tests {
         host.commit(&files, "plain");
         let repo = leader("plain");
         let before = git::main_head(&repo);
-        let (_, why) = sync(&repo, &host.remote()).unwrap_err();
+        let (_, why) = sync(&repo, roots(), &host.remote()).unwrap_err();
         assert!(why.contains("git-lfs"), "{why}");
         assert_eq!(git::main_head(&repo), before);
     }
@@ -1943,9 +1985,70 @@ mod tests {
         let repo = leader("token");
         let mut remote = host.remote();
         remote.token = Some("wrong".to_string());
-        let (commit, why) = sync(&repo, &remote).unwrap_err();
+        let (commit, why) = sync(&repo, roots(), &remote).unwrap_err();
         assert_eq!(commit, None);
-        assert!(why.contains(&host.url), "{why}");
+        assert!(
+            why.contains(&host.url)
+                && why.ends_with("401 Unauthorized. Check that the token can read this repository, and check the URL"),
+            "{why}"
+        );
+        remote.token = None;
+        let (_, why) = sync(&repo, roots(), &remote).unwrap_err();
+        assert!(
+            why.ends_with("401 Unauthorized. Set a token that can read this repository, and check the URL"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_names_the_status_the_host_answered() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/host.git", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let _ = std::io::Read::read(&mut stream, &mut [0; 4096]);
+                let _ = std::io::Write::write_all(&mut stream, b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+            }
+        });
+        let remote = Remote {
+            url,
+            ..Host::start("forbidden-host").remote()
+        };
+        let (_, why) = sync(&leader("forbidden"), roots(), &remote).unwrap_err();
+        assert!(why.ends_with("403"), "{why}");
+    }
+
+    /// The certificate is checked against the roots, so a host no root signed is refused for its certificate, and the
+    /// message says so rather than only that the handshake failed.
+    #[test]
+    fn an_https_host_is_checked_against_the_roots() {
+        let signed = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let config = Arc::new(
+            rustls::ServerConfig::builder_with_provider(crate::crypto::in_use())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![signed.cert.der().clone()],
+                    rustls::pki_types::PrivateKeyDer::Pkcs8(signed.signing_key.serialize_der().into()),
+                )
+                .unwrap(),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut tls = rustls::StreamOwned::new(rustls::ServerConnection::new(config.clone()).unwrap(), stream);
+                let _ = std::io::Read::read(&mut tls, &mut [0; 1]);
+            }
+        });
+        let repo = leader("https");
+        let remote = Remote {
+            url: format!("https://localhost:{port}/host.git"),
+            ..Host::start("https-host").remote()
+        };
+        let (_, why) = sync(&repo, roots(), &remote).unwrap_err();
+        assert!(why.contains("certificate") && !why.contains("verifier"), "{why}");
     }
 
     fn state(name: &str) -> AppState {

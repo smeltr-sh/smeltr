@@ -98,6 +98,13 @@ pub fn pem(identity: Option<&Identity>) -> Result<String, IoError> {
     Ok(out)
 }
 
+/// `roots(identity)` as a PEM file at `path`, for a client that names its roots only by a file: curl, under gix.
+/// Written beside and renamed over, so a fetch reading it on another thread never sees half of it.
+pub fn write_pem_file(identity: Option<&Identity>, path: &std::path::Path) -> Result<(), String> {
+    let pem = pem(identity).map_err(|e| e.to_string())?;
+    crate::leader::tls::write_durably(path, pem.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// The certificate an identity presents, and the key it signs with.
 pub struct Presented {
     /// Leaf first, with any intermediates after it.
