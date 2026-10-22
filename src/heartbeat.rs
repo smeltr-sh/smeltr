@@ -1290,9 +1290,19 @@ mod client {
         lookup_agent: ureq::Agent,
     }
 
+    /// What a worker says when its roots refuse the leader's certificate, whichever request it was making: one
+    /// mistake, one wording.
+    pub fn untrusted_certificate(leader_url: &str, reason: &dyn std::fmt::Display) -> String {
+        format!(
+            "{leader_url} presented a certificate this worker does not trust ({reason}). The leader's certificate \
+             must chain to the worker's CA, or to the public roots when worker.leader.trust_public is on, and carry \
+             the name in the address"
+        )
+    }
+
     /// The handshake's refusal of the leader's certificate, if that is what `e` is. rustls reports it from inside
     /// the stream, so it arrives wrapped as an I/O error as often as on its own.
-    fn certificate_refused(e: &ureq::Error) -> Option<&rustls::Error> {
+    pub fn certificate_refused(e: &ureq::Error) -> Option<&rustls::Error> {
         let rustls = match e {
             ureq::Error::Rustls(e) => Some(e),
             ureq::Error::Io(e) => e.get_ref().and_then(|inner| inner.downcast_ref::<rustls::Error>()),
@@ -1506,7 +1516,10 @@ mod client {
     }
 }
 
-pub use client::{HeartbeatClient, HeartbeatError, agent_trusting, agent_without_verification, leader_roots};
+pub use client::{
+    HeartbeatClient, HeartbeatError, agent_trusting, agent_without_verification, certificate_refused, leader_roots,
+    untrusted_certificate,
+};
 
 #[cfg(test)]
 mod trust_tests {
