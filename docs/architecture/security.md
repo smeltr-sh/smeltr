@@ -33,9 +33,10 @@ is its identity, and the leader keeps only hashes. An enrollment code names
 the root to accept as well as the secret, so the two cannot be copied apart --
 and cannot be re-pointed either, which is why replacing that root withdraws
 every enrollment code naming it. A worker accepts the leader's certificate
-when it chains to a root the worker trusts and carries the leader's name; the
-root is the system's, or one the worker was given out of band, which may be an
-authority the leader created for itself. Naming that root by fingerprint is
+when it chains to a root the worker trusts and carries the leader's name. The
+roots are the system's, and any the worker was given out of band, which may be an
+authority the leader created for itself; a worker told not to trust the system's
+roots trusts only those it was given (`trust_public`, as an identity). Naming that root by fingerprint is
 being given it out of band: the worker fetches the certificate, keeps the one
 that matches and refuses the rest. Such a leader signs the certificate it
 serves rather than being it, so replacing that certificate reaches no worker

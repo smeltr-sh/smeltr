@@ -1712,6 +1712,7 @@ fn every_startup_example_is_read() {
         ("worker.listen_address", || c::worker_listen_address().to_string()),
         ("worker.leader.url", || format!("{:?}", c::leader_url())),
         ("worker.leader.ca", || format!("{:?}", c::leader_ca_path())),
+        ("worker.leader.trust_public", || c::leader_trust_public().to_string()),
         ("worker.storage.state_dir", || {
             c::worker_state_dir().display().to_string()
         }),
@@ -1870,6 +1871,7 @@ fn the_startup_settings_match_the_engine() {
         ("worker.listen_address", some(c::worker_listen_address().to_string())),
         ("worker.leader.url", c::leader_url()),
         ("worker.leader.ca", c::leader_ca_path()),
+        ("worker.leader.trust_public", some(c::leader_trust_public().to_string())),
         ("worker.storage.state_dir", path(c::worker_state_dir())),
         // The table words it as the available cores.
         (

@@ -215,7 +215,7 @@ fn finished(dir: &std::path::Path, within: Duration) -> bool {
 }
 
 fn mint(base: &str, ca_pem: &[u8], body: serde_json::Value) -> serde_json::Value {
-    let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let minted: serde_json::Value = agent
         .post(format!("{base}/api/enrollment-codes"))
         .send_json(body)
@@ -253,7 +253,7 @@ fn spawn_worker(base: &str, code: &str, state_dir: &std::path::Path) -> std::pro
 /// enrolled, heartbeating or not, so it reads as success for a worker whose every heartbeat is failing the
 /// handshake -- which is exactly the bug that shipped past an earlier version of this helper.
 fn heartbeating(base: &str, ca_pem: &[u8], within: Duration) -> bool {
-    let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let deadline = Instant::now() + within;
     while Instant::now() < deadline {
         let health = agent
@@ -354,7 +354,7 @@ fn heard_from(agent: &ureq::Agent, base: &str) -> Vec<serde_json::Value> {
 fn a_worker_that_says_it_is_stopping_is_not_reported_silent() {
     let _alone = alone();
     let (base, ca_pem) = start_leader_tls();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let code = mint(&base, &ca_pem, serde_json::json!({ "maxUses": 2 }));
     let value = code["value"].as_str().unwrap();
     let (told_dir, killed_dir) = (temp_dir("stops-saying-so"), temp_dir("killed-outright"));
@@ -457,7 +457,7 @@ fn exit_code(child: &mut std::process::Child, within: Duration) -> Result<Option
 fn a_forgotten_ephemeral_worker_enrolls_again_as_a_new_one() {
     let _alone = alone();
     let (base, ca_pem) = start_leader_tls();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let code = mint(&base, &ca_pem, serde_json::json!({ "kind": "ephemeral" }));
     let value = code["value"].as_str().unwrap();
     let state = temp_dir("pod-state");
@@ -561,7 +561,7 @@ fn an_ephemeral_enrollment_code_ends_with_the_authority_it_pins_to() {
 fn an_enrollment_code_naming_an_undeployed_group_is_refused() {
     let _alone = alone();
     let (base, ca_pem) = start_leader_tls();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let response: serde_json::Value = agent
         .post(format!("{base}/api/enrollment-codes"))
         .send_json(serde_json::json!({ "groupId": "west" }))
@@ -841,7 +841,7 @@ fn the_worker_whose_beat_ends_a_rotation_is_handed_the_authority_first() {
 fn the_authority_is_served_to_a_caller_with_no_credential() {
     let _alone = alone();
     let (base, ca_pem) = start_leader_tls();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let served = agent
         .get(format!("{base}/api/authority"))
         .call()
@@ -859,7 +859,7 @@ fn the_authority_is_served_to_a_caller_with_no_credential() {
 fn the_authority_is_withheld_while_the_socket_has_not_taken_what_is_on_disk() {
     let _alone = alone();
     let (base, ca_pem, data_dir) = start_leader_tls_in();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
 
     // A real reissue: the disk moves and this leader's socket, which nothing here reloads, keeps what it had.
     smeltr::leader::tls::ensure_own(
@@ -889,7 +889,7 @@ fn the_authority_is_withheld_while_the_socket_has_not_taken_what_is_on_disk() {
 fn an_enrollment_code_says_it_names_an_authority_that_was_replaced_under_it() {
     let _alone = alone();
     let (base, ca_pem, data_dir) = start_leader_tls_in();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let pinned = mint(&base, &ca_pem, serde_json::json!({}));
 
     let outstanding = |agent: &ureq::Agent| -> serde_json::Value {
@@ -1147,7 +1147,7 @@ fn what_is_in_force_is_refused_whole_while_the_socket_has_not_taken_it() {
 fn a_cutover_withdraws_the_enrollment_codes_that_named_the_authority_it_retired() {
     let _alone = alone();
     let (base, ca_pem, data_dir) = start_leader_tls_in();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let doomed = mint(&base, &ca_pem, serde_json::json!({}));
     let doomed_id = doomed["id"].as_str().unwrap().to_string();
 

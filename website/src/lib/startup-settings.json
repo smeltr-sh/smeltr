@@ -137,6 +137,13 @@
       "what": "A CA file the worker trusts for the leader. An enrollment code sets up trust without one."
     },
     {
+      "key": "worker.leader.trust_public",
+      "env": "SMELTR_LEADER_TRUST_PUBLIC",
+      "default": "`true`",
+      "examples": ["false"],
+      "what": "Whether the worker also trusts the public roots, Mozilla's and the host's own. If off, then the worker will not trust the public roots and the leader's certificate must chain to the given CA."
+    },
+    {
       "key": "worker.storage.state_dir",
       "env": "SMELTR_WORKER_STATE_DIR",
       "default": "`smeltr-worker-data`",

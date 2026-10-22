@@ -118,10 +118,11 @@ state_dir = "/var/lib/smeltr-worker"</code
     destination.
   </p>
   <p>
-    Leave <code>worker.leader.ca</code> unset for normal enrollment. An enrollment code either verifies
-    the leader’s CA fingerprint and saves the matching certificate, or uses the operating system’s trusted
-    certificates. If you set a CA file yourself, you must maintain it when the authority changes; automatic
-    updates no longer apply. Keep certificate verification enabled.
+    Leave <code>worker.leader.ca</code> unset for normal enrollment. An enrollment code can verify
+    the leader’s CA fingerprint and save the matching certificate. The worker also trusts the public
+    roots, Mozilla’s and the host’s own, unless <code>worker.leader.trust_public</code> is false. If you
+    set a CA file yourself, you must maintain it when the authority changes; automatic updates no longer
+    apply. Keep certificate verification enabled.
   </p>
   <p>
     After enrollment, the state directory contains worker_id, credential.token, the configuration

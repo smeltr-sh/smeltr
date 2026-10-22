@@ -44,6 +44,8 @@ pub struct WorkerConfig {
     /// `None` for a leader running plain HTTP (`SMELTR_LEADER_TLS` false) or one behind a proxy holding a
     /// publicly issued certificate.
     pub leader_ca_pem: Option<Vec<u8>>,
+    /// Whether the public roots verify the leader too, beside `leader_ca_pem` (`heartbeat::leader_roots`).
+    pub leader_trust_public: bool,
     /// Where the leader keeps what it serves TLS with, for a worker running inside that leader's own process.
     ///
     /// Such a leader can replace its certificate without restarting, and a client built once from bytes handed
@@ -211,9 +213,15 @@ fn pinned_path(state_dir: &Path) -> PathBuf {
     state_dir.join("pinned-ca.pem")
 }
 
-/// Where the authority in force is written for git, which wants a path rather than bytes.
-fn git_authority_path(state_dir: &Path) -> PathBuf {
+/// Where what git's fetch trusts of the leader is written ([`write_git_roots`]), since git wants a path rather than
+/// bytes.
+fn git_roots_path(state_dir: &Path) -> PathBuf {
     state_dir.join("leader-ca.pem")
+}
+
+/// Write to `path` what git's fetch trusts of the leader: [`heartbeat::leader_roots`], as the heartbeat trusts.
+fn write_git_roots(path: &Path, leader_ca_pem: Option<&[u8]>, trust_public: bool) -> Result<(), String> {
+    crate::io::trust::write_pem_file(&heartbeat::leader_roots(leader_ca_pem, trust_public)?, path)
 }
 
 /// Why a worker got no answer it could use, from the two exchanges it makes before it holds anything: fetching the
@@ -477,9 +485,15 @@ fn certificate_blocks(pem: &str) -> Vec<String> {
 
 /// `POST /api/enroll`: an enrollment code for a persistent Bearer token. Enrollment happens before a `HeartbeatClient`
 /// exists, so it builds its own agent over the same trust and the same budget.
-fn enroll(leader_url: &str, code: &str, worker_id: &str, leader_ca_pem: Option<&[u8]>) -> Result<String, Unresolved> {
-    let agent =
-        heartbeat::agent_trusting(leader_ca_pem, crate::heartbeat::REQUEST_BUDGET).map_err(Unresolved::Refused)?;
+fn enroll(
+    leader_url: &str,
+    code: &str,
+    worker_id: &str,
+    leader_ca_pem: Option<&[u8]>,
+    trust_public: bool,
+) -> Result<String, Unresolved> {
+    let agent = heartbeat::agent_trusting(leader_ca_pem, trust_public, crate::heartbeat::REQUEST_BUDGET)
+        .map_err(Unresolved::Refused)?;
     let mut response = agent
         .post(format!("{}/api/enroll", leader_url.trim_end_matches('/')))
         .send_json(serde_json::json!({ "code": code, "workerId": worker_id }))
@@ -522,12 +536,12 @@ const GIT_BUDGET: Duration = Duration::from_secs(120);
 const GIT_CLONE_BUDGET: Duration = Duration::from_secs(600);
 
 /// Transport options for one request to the leader's git server: the worker's bearer token as a header, and the
-/// pinned certificate authority, the same two things `-c http.extraHeader` and `-c http.sslCAInfo` carried for the
+/// roots the leader is verified by (`git_roots`, [`write_git_roots`]), the same two things `-c http.extraHeader` and `-c http.sslCAInfo` carried for the
 /// git binary. Nothing else reaches the leader without one; the `Authorization` header is git's own convention for
 /// `http.extraHeader`, and the leader's smart-HTTP route on `leader/mod.rs` reads it the same way of a real client.
 fn git_http_options(
     token: &str,
-    leader_ca_path: Option<&Path>,
+    git_roots: &Path,
     budget: Duration,
 ) -> gix::protocol::transport::client::blocking_io::http::Options {
     gix::protocol::transport::client::blocking_io::http::Options {
@@ -538,7 +552,7 @@ fn git_http_options(
         .into_iter()
         .chain(crate::version::RELEASE.map(|release| format!("{}: {release}", crate::leader::RELEASE_HEADER)))
         .collect(),
-        ssl_ca_info: leader_ca_path.map(Path::to_path_buf),
+        ssl_ca_info: Some(git_roots.to_path_buf()),
         connect_timeout: Some(budget),
         low_speed_limit_bytes_per_second: 1,
         // 0 is curl's own "disabled" -- never what a caller here means by a budget, so a sub-second one still
@@ -576,18 +590,13 @@ fn set_ref(repo: &gix::Repository, name: &str, commit: &str) -> Result<(), Strin
 ///
 /// The clone is the leader's whole repository. The cluster is the security boundary, so an enrolled worker is trusted
 /// with all of it (design doc, Security).
-fn fetch_deployed(
-    repo_dir: &Path,
-    leader_url: &str,
-    token: &str,
-    leader_ca_path: Option<&Path>,
-) -> Result<String, String> {
+fn fetch_deployed(repo_dir: &Path, leader_url: &str, token: &str, git_roots: &Path) -> Result<String, String> {
     let budget = if is_bare_clone(repo_dir) {
         GIT_BUDGET
     } else {
         GIT_CLONE_BUDGET
     };
-    fetch_deployed_with_budget(repo_dir, leader_url, token, leader_ca_path, budget)
+    fetch_deployed_with_budget(repo_dir, leader_url, token, git_roots, budget)
 }
 
 /// [`fetch_deployed`], with the stall budget exposed rather than chosen from [`GIT_BUDGET`]/[`GIT_CLONE_BUDGET`] --
@@ -596,7 +605,7 @@ fn fetch_deployed_with_budget(
     repo_dir: &Path,
     leader_url: &str,
     token: &str,
-    leader_ca_path: Option<&Path>,
+    git_roots: &Path,
     budget: Duration,
 ) -> Result<String, String> {
     use crate::leader::git::DEPLOYED_REF;
@@ -626,7 +635,7 @@ fn fetch_deployed_with_budget(
     let mut connection = remote
         .connect(gix::remote::Direction::Fetch)
         .map_err(|e| format!("connecting to {leader_url}: {e}"))?;
-    connection.set_transport_options(Box::new(git_http_options(token, leader_ca_path, budget)));
+    connection.set_transport_options(Box::new(git_http_options(token, git_roots, budget)));
     // The bearer token above is this worker's only credential, so a 401 is not answered by trying harder: without
     // this, gix's default is the same cascade `git credential` runs -- helpers from whatever gitconfig this host
     // has, ending in a terminal prompt -- and nothing here reads a worker's console. `GIT_TERMINAL_PROMPT=0` was
@@ -1999,7 +2008,13 @@ pub fn run_worker(mut config: WorkerConfig) {
             // A first-boot worker whose leader is not up yet is a startup race, not a misconfiguration.
             let mut backoff = ENROLL_RETRY_MIN;
             let t = loop {
-                match enroll(&config.leader_url, code, &worker_id, leader_ca_pem.as_deref()) {
+                match enroll(
+                    &config.leader_url,
+                    code,
+                    &worker_id,
+                    leader_ca_pem.as_deref(),
+                    config.leader_trust_public,
+                ) {
                     Ok(t) => break t,
                     Err(refused @ Unresolved::Refused(_)) => {
                         tracing::error!(
@@ -2045,11 +2060,9 @@ pub fn run_worker(mut config: WorkerConfig) {
     };
 
     // Git's TLS trust config wants a path, not bytes.
-    let leader_ca_path = leader_ca_pem.as_ref().map(|pem| {
-        let path = git_authority_path(&config.state_dir);
-        std::fs::write(&path, pem).expect("write the leader's authority for git's own TLS trust");
-        path
-    });
+    let git_roots = git_roots_path(&config.state_dir);
+    write_git_roots(&git_roots, leader_ca_pem.as_deref(), config.leader_trust_public)
+        .expect("write what git's fetch trusts of the leader");
 
     let repo_dir = repo_dir(&config.state_dir);
 
@@ -2067,7 +2080,13 @@ pub fn run_worker(mut config: WorkerConfig) {
         // enrollment code pins one of its own, and a worker inside a leader's process follows what that leader serves
         // under.
         client: Mutex::new(Arc::new(
-            HeartbeatClient::new(&config.leader_url, &token, leader_ca_pem.as_deref()).expect("build heartbeat client"),
+            HeartbeatClient::new(
+                &config.leader_url,
+                &token,
+                leader_ca_pem.as_deref(),
+                config.leader_trust_public,
+            )
+            .expect("build heartbeat client"),
         )),
         // What the leader would say about its own copy is not what stops this worker: the copy this worker holds
         // is what its verification uses. A leader still serving under a root that is itself running out is the
@@ -2076,7 +2095,7 @@ pub fn run_worker(mut config: WorkerConfig) {
         trusting: Mutex::new(leader_ca_pem),
         worker_id,
         token,
-        leader_ca_path,
+        git_roots,
         repo_dir,
         captures,
         registry,
@@ -2290,7 +2309,7 @@ struct Supervisor {
     worker_id: String,
     token: String,
     /// Git's TLS trust wants a path, not bytes.
-    leader_ca_path: Option<PathBuf>,
+    git_roots: PathBuf,
     repo_dir: PathBuf,
     /// Replaced when the leader this worker lives inside serves TLS under a new authority, so it is read out and
     /// cloned rather than borrowed: an upload holding the client for a whole capture must not be what a heartbeat
@@ -2673,7 +2692,12 @@ impl Supervisor {
             return;
         }
 
-        let rebuilt = match HeartbeatClient::new(&self.config.leader_url, &self.token, Some(&materials.ca_pem)) {
+        let rebuilt = match HeartbeatClient::new(
+            &self.config.leader_url,
+            &self.token,
+            Some(&materials.ca_pem),
+            self.config.leader_trust_public,
+        ) {
             Ok(rebuilt) => rebuilt,
             Err(e) => {
                 tracing::warn!(
@@ -2689,13 +2713,15 @@ impl Supervisor {
         // the failure with nothing to show for it. Beside and renamed rather than in place, because `git fetch`
         // reads this file from another thread and a truncating write is a window holding no usable authority.
         // Nothing is kept here: what replaced the authority is already on disk, and a start reads it back.
-        if let Some(path) = self.leader_ca_path.as_deref()
-            && let Err(e) = crate::leader::tls::write_durably(path, &materials.ca_pem)
-        {
+        if let Err(e) = write_git_roots(
+            &self.git_roots,
+            Some(&materials.ca_pem),
+            self.config.leader_trust_public,
+        ) {
             tracing::warn!(
                 target: "worker.authority_not_written",
                 error = %e,
-                path = %path.display(),
+                path = %self.git_roots.display(),
                 "the leader replaced its authority and git's copy could not be written, so the old one is kept \
                  until it can be"
             );
@@ -2724,7 +2750,12 @@ impl Supervisor {
         if self.trusting.lock().unwrap().as_deref() == Some(pem.as_slice()) {
             return;
         }
-        let rebuilt = match HeartbeatClient::new(&self.config.leader_url, &self.token, Some(&pem)) {
+        let rebuilt = match HeartbeatClient::new(
+            &self.config.leader_url,
+            &self.token,
+            Some(&pem),
+            self.config.leader_trust_public,
+        ) {
             Ok(rebuilt) => rebuilt,
             Err(e) => {
                 tracing::warn!(
@@ -2752,13 +2783,11 @@ impl Supervisor {
         // Written beside and renamed over, never in place: the discovery thread runs `git fetch` against this
         // same file, and a truncating write hands it an empty or half-written trust store that refuses a leader
         // it should accept.
-        if let Some(path) = self.leader_ca_path.as_deref()
-            && let Err(e) = crate::leader::tls::write_durably(path, &pem)
-        {
+        if let Err(e) = write_git_roots(&self.git_roots, Some(&pem), self.config.leader_trust_public) {
             tracing::warn!(
                 target: "worker.authority_not_written",
                 error = %e,
-                path = %path.display(),
+                path = %self.git_roots.display(),
                 "the leader is rotating its authority and git's copy could not be written. The next start writes \
                  it from the copy this worker kept"
             );
@@ -3254,7 +3283,13 @@ impl Supervisor {
         }
         let worker_id = generate_worker_id();
         let trusting = self.trusting.lock().unwrap().clone();
-        let token = match enroll(&self.config.leader_url, code, &worker_id, trusting.as_deref()) {
+        let token = match enroll(
+            &self.config.leader_url,
+            code,
+            &worker_id,
+            trusting.as_deref(),
+            self.config.leader_trust_public,
+        ) {
             Ok(token) => token,
             Err(refused) => {
                 tracing::warn!(
@@ -3367,12 +3402,7 @@ impl Supervisor {
             // a heartbeat that fails cancels no discovery, where before they were the same turn of one loop.
             if self.contacted() {
                 self.supervising.lock().unwrap().attempted_ms = Some(now_ms());
-                match fetch_deployed(
-                    &self.repo_dir,
-                    &self.config.leader_url,
-                    &self.token,
-                    self.leader_ca_path.as_deref(),
-                ) {
+                match fetch_deployed(&self.repo_dir, &self.config.leader_url, &self.token, &self.git_roots) {
                     Ok(head) => {
                         if failing.take().is_some() {
                             tracing::info!(
@@ -4737,7 +4767,7 @@ mod tests {
             &dir,
             &format!("http://127.0.0.1:{port}"),
             "token",
-            None,
+            public_roots(),
             Duration::from_secs(1),
         )
         .expect_err("a fetch that is never answered cannot succeed");
@@ -4758,7 +4788,7 @@ mod tests {
             &dir,
             &format!("http://127.0.0.1:{port}"),
             token,
-            None,
+            public_roots(),
             Duration::from_secs(1),
         )
         .expect_err("a fetch that is never answered cannot succeed");
@@ -4920,14 +4950,14 @@ mod tests {
         crate::leader::git::deploy_commit(&data_dir, &deployed, &crate::leader::store::Actor::system()).unwrap();
 
         let clone_dir = temp_dir("fetch-e2e-clone");
-        let head = fetch_deployed(&clone_dir, &base, token, None).expect("the fetch succeeds");
+        let head = fetch_deployed(&clone_dir, &base, token, public_roots()).expect("the fetch succeeds");
         assert_eq!(
             head, deployed,
             "the worker's fetch lands the commit the leader deployed"
         );
 
         // A second fetch against an unmoved pointer is the common case: answered from the ref advertisement alone.
-        let unchanged = fetch_deployed(&clone_dir, &base, token, None).expect("the fetch succeeds again");
+        let unchanged = fetch_deployed(&clone_dir, &base, token, public_roots()).expect("the fetch succeeds again");
         assert_eq!(unchanged, deployed);
 
         // A worker built from another commit, or one that does not say, is handed nothing.
@@ -4947,7 +4977,7 @@ mod tests {
         let mut incoming = crate::lookup::store::Incoming::new(&repo).unwrap();
         std::io::Write::write_all(&mut incoming, b"ip,city\n10.0.0.0/8,lan\n").unwrap();
         let pointer = incoming.finish(None).unwrap();
-        let client = HeartbeatClient::new(&base, token, None).unwrap();
+        let client = HeartbeatClient::new(&base, token, None, true).unwrap();
         let mut arriving = crate::lookup::store::Incoming::new(&clone_dir).unwrap();
         std::io::copy(&mut client.lookup_file(&pointer.oid).unwrap(), &mut arriving).unwrap();
         arriving.finish(Some(&pointer)).expect("the file arrives whole");
@@ -4955,7 +4985,7 @@ mod tests {
             client.lookup_file(&"0".repeat(64)).is_err(),
             "a file the store lacks is not found"
         );
-        let stranger = HeartbeatClient::new(&base, "not-a-token", None).unwrap();
+        let stranger = HeartbeatClient::new(&base, "not-a-token", None, true).unwrap();
         assert!(
             stranger.lookup_file(&pointer.oid).is_err(),
             "only an enrolled worker is served"
@@ -5028,7 +5058,7 @@ mod tests {
         let port = rx.recv().expect("leader thread reports its bound port");
         let base = format!("https://127.0.0.1:{port}");
 
-        let agent = crate::heartbeat::agent_trusting(Some(&ca_pem), crate::heartbeat::REQUEST_BUDGET).unwrap();
+        let agent = crate::heartbeat::agent_trusting(Some(&ca_pem), true, crate::heartbeat::REQUEST_BUDGET).unwrap();
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if agent.get(format!("{base}/api/health")).call().is_ok() {
@@ -5067,12 +5097,12 @@ mod tests {
         std::fs::write(&ca_path, &ca_pem).unwrap();
 
         let clone_dir = temp_dir("fetch-tls-e2e-clone");
-        fetch_deployed(&clone_dir, &base, token, Some(&ca_path)).expect("the fetch succeeds with the right authority");
+        fetch_deployed(&clone_dir, &base, token, &ca_path).expect("the fetch succeeds with the right authority");
 
         // Without the authority the leader's certificate is verified against, the same self-signed leader is
         // refused rather than trusted anyway: `ssl_verify` is not silently off.
         let untrusted = temp_dir("fetch-tls-e2e-clone-untrusted");
-        let refused = fetch_deployed(&untrusted, &base, token, None)
+        let refused = fetch_deployed(&untrusted, &base, token, public_roots())
             .expect_err("a self-signed leader is refused without its authority");
         assert!(
             !refused.to_lowercase().contains("did not advertise"),
@@ -5087,11 +5117,12 @@ mod tests {
     fn every_agent_that_talks_to_the_leader_gives_up_on_a_silent_one() {
         install_crypto_provider();
         let budget = Duration::from_millis(200);
-        let platform = heartbeat::agent_trusting(None, budget).expect("an agent trusting the platform's own roots");
+        let platform =
+            heartbeat::agent_trusting(None, true, budget).expect("an agent trusting the platform's own roots");
         let rcgen::CertifiedKey { cert, .. } =
             rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("a self-signed certificate");
-        let authority =
-            heartbeat::agent_trusting(Some(cert.pem().as_bytes()), budget).expect("an agent trusting an authority");
+        let authority = heartbeat::agent_trusting(Some(cert.pem().as_bytes()), true, budget)
+            .expect("an agent trusting an authority");
         // The one that verifies nothing included: it is a worker's very first request, made before it holds an
         // authority at all, and the address it goes to is the one nothing has vouched for yet.
         let unverified = heartbeat::agent_without_verification(budget);
@@ -5715,13 +5746,13 @@ mod tests {
     fn supervisor_for(state_dir: PathBuf) -> Supervisor {
         Supervisor {
             client: Mutex::new(Arc::new(
-                HeartbeatClient::new("http://127.0.0.1:1", "t", None).expect("a client that talks to nothing"),
+                HeartbeatClient::new("http://127.0.0.1:1", "t", None, true).expect("a client that talks to nothing"),
             )),
             trusting: Mutex::new(None),
             authority_expires_millis: Mutex::new(None),
             worker_id: "w1".to_string(),
             token: "t".to_string(),
-            leader_ca_path: None,
+            git_roots: PathBuf::new(),
             repo_dir: repo_dir(&state_dir),
             captures: Arc::new(capture::Captures::default()),
             registry: Arc::new(Metrics::new()),
@@ -5749,6 +5780,7 @@ mod tests {
             config: WorkerConfig {
                 leader_url: "http://127.0.0.1:1".to_string(),
                 leader_ca_pem: None,
+                leader_trust_public: true,
                 leader_authority_dir: None,
                 group_id: "g".to_string(),
                 thread_limit: 1,
@@ -7124,7 +7156,7 @@ mod tests {
         let mut handle = recording_runtime(&file, &inbox);
         let supervisor = supervisor_for(temp_dir("runtime-restart-holds-supervisor"));
         *supervisor.client.lock().unwrap() =
-            Arc::new(HeartbeatClient::new(format!("http://127.0.0.1:{port}"), "t", None).unwrap());
+            Arc::new(HeartbeatClient::new(format!("http://127.0.0.1:{port}"), "t", None, true).unwrap());
 
         supervisor.follow_holds(vec![hold_of("a", "c1")]);
         let frames = routed_until(&supervisor, &mut handle, &file, 1);
@@ -7254,7 +7286,7 @@ mod tests {
             &Default::default(),
         );
         assert_eq!(req.progress, vec![progress_of("a", 2, "a1")]);
-        let client = HeartbeatClient::new(format!("http://127.0.0.1:{port}"), "t", None).unwrap();
+        let client = HeartbeatClient::new(format!("http://127.0.0.1:{port}"), "t", None, true).unwrap();
         assert!(client.send(&req).is_err(), "a 503 was taken for an answer");
 
         *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
@@ -7356,6 +7388,18 @@ mod tests {
             runtime.as_ref().is_some_and(|r| !r.metrics.is_empty()),
             "what the runtime counted was thrown away with the threads that counted it"
         );
+    }
+
+    /// What git's fetch trusts of a leader nobody pinned, written once for every test.
+    fn public_roots() -> &'static Path {
+        static ROOTS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        ROOTS.get_or_init(|| {
+            let dir = temp_dir("public-roots");
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = git_roots_path(&dir);
+            write_git_roots(&path, None, true).unwrap();
+            path
+        })
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -7610,6 +7654,7 @@ mod tests {
         WorkerConfig {
             leader_url: "http://127.0.0.1:0".into(),
             leader_ca_pem: None,
+            leader_trust_public: true,
             leader_authority_dir: None,
             group_id: group.to_string(),
             thread_limit: 1,
