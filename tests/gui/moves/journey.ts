@@ -1677,33 +1677,39 @@ export const REVIEW_GROUP = 'journey-reviewers';
 
 const LEVELS = ['viewer', 'editor', 'deployer'] as const;
 
+/** Gives the role whose row is open a level in shared, saves it, and checks the leader holds it. Answers the level. */
+async function saveRole(j: Journey, name: string): Promise<string> {
+  const { page, rng, world } = j;
+  const level = rng.pick(LEVELS);
+  await page.getByRole('combobox', { name: 'shared level' }).selectOption(level);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: 'shared level' })).toHaveCount(0);
+  world.roles.add(name);
+  const roles: { name: string; administrator: boolean; areas: Record<string, string> }[] = await (
+    await j.truth()
+  ).get('/api/roles');
+  expect(roles.find((r) => r.name === name)).toMatchObject({
+    administrator: false,
+    areas: { shared: level },
+  });
+  return level;
+}
+
 const addRole: Move = {
   name: 'add-role',
   leadsTo: ['sso-sign-in'],
   weight: (w) => (w.password && w.roles.size < 2 ? 1 : 0),
   run: async (j) => {
-    const { page, rng, world } = j;
+    const { page, world } = j;
     // The first names the provider's group, so the person it signs in holds it.
     const name = world.roles.size ? `role-${world.made++}` : PROVIDER_GROUP;
-    const level = rng.pick(LEVELS);
     await openAdmin(page, 'Accounts');
     await page.getByRole('link', { name: 'Roles', exact: true }).click();
     await page.getByRole('button', { name: '+ Add role' }).click();
     const dialog = page.getByRole('dialog', { name: 'new role' });
     await dialog.getByRole('textbox', { name: /^Role\b/ }).fill(name);
     await dialog.getByRole('button', { name: 'Add' }).click();
-    await page.getByRole('combobox', { name: 'shared level' }).selectOption(level);
-    await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(page.getByRole('combobox', { name: 'shared level' })).toHaveCount(0);
-    world.roles.add(name);
-    const roles: { name: string; administrator: boolean; areas: Record<string, string> }[] = await (
-      await j.truth()
-    ).get('/api/roles');
-    expect(roles.find((r) => r.name === name)).toMatchObject({
-      administrator: false,
-      areas: { shared: level },
-    });
-    return `add role ${name}, ${level} in shared`;
+    return `add role ${name}, ${await saveRole(j, name)} in shared`;
   },
 };
 
@@ -1991,8 +1997,7 @@ const roleFromGroup: Move = {
   leadsTo: ['sso-sign-in'],
   weight: (w) => (w.ssoSignedIn && !w.roles.has(REVIEW_GROUP) ? 1 : 0),
   run: async (j) => {
-    const { page, rng, world } = j;
-    const level = rng.pick(LEVELS);
+    const { page } = j;
     await openAdmin(page, 'Accounts');
     await page.getByRole('link', { name: 'Users', exact: true }).click();
     await page.getByRole('button', { name: `+ ${REVIEW_GROUP}` }).click();
@@ -2000,17 +2005,7 @@ const roleFromGroup: Move = {
       'aria-current',
       'page',
     );
-    await page.getByRole('combobox', { name: 'shared level' }).selectOption(level);
-    await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(page.getByRole('combobox', { name: 'shared level' })).toHaveCount(0);
-    world.roles.add(REVIEW_GROUP);
-    const roles: { name: string; administrator: boolean; areas: Record<string, string> }[] = await (
-      await j.truth()
-    ).get('/api/roles');
-    expect(roles.find((r) => r.name === REVIEW_GROUP)).toMatchObject({
-      administrator: false,
-      areas: { shared: level },
-    });
+    const level = await saveRole(j, REVIEW_GROUP);
     return `make the role ${REVIEW_GROUP} from the roster, ${level} in shared`;
   },
 };
