@@ -567,7 +567,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
             subject = %bounded(&claims.subject),
             login = %fit_login(&claims).unwrap_or_default(),
             groups = %bounded(&claims.groups.join(", ")),
-            "an OIDC sign-in names no group any role names"
+            "an OIDC sign-in is in no group that has a role"
         );
         return refused(&claims.subject);
     }
@@ -731,7 +731,7 @@ async fn refreshed_one(
         }
     };
     if !admitted(roles, &claims.groups) {
-        return end_session(auth, &d, "it no longer names a group any role names");
+        return end_session(auth, &d, "it is no longer in any group that has a role");
     }
     let store = auth.store.clone();
     let user_id = d.user_id.clone();
