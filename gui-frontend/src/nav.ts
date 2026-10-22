@@ -17,8 +17,7 @@ export type Tab = 'status' | 'map' | 'build' | 'changes' | 'admin' | 'me';
 
 /** The tabs of Admin -> System. Logging is named in the design and has no
  * leader-side settings yet, so it is not offered. */
-export type SystemSection =
-  'general' | 'sessions' | 'certificates' | 'git' | 'agents' | 'license';
+export type SystemSection = 'general' | 'sessions' | 'certificates' | 'git' | 'agents' | 'license';
 
 export const SYSTEM_SECTIONS: { section: SystemSection; label: string }[] = [
   { section: 'general', label: 'General' },

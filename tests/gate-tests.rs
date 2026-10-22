@@ -2733,7 +2733,11 @@ fn live_keycloak_signs_in_only_a_role_s_group() {
         }),
     );
     assert_eq!((status, body["ok"].clone()), (200, serde_json::json!(true)), "{body}");
-    let (status, role) = leader.put_as(&op, "/api/roles/smeltr-admins", serde_json::json!({ "administrator": true }));
+    let (status, role) = leader.put_as(
+        &op,
+        "/api/roles/smeltr-admins",
+        serde_json::json!({ "administrator": true }),
+    );
     assert_eq!(status, 200, "{role}");
 
     let (ended, cookie) = keycloak_sign_in(&leader, "ada");
@@ -2829,7 +2833,11 @@ fn live_keycloak_refreshes_and_ends_sessions() {
         }),
     );
     assert_eq!((status, body["ok"].clone()), (200, serde_json::json!(true)), "{body}");
-    let (status, role) = leader.put_as(&op, "/api/roles/smeltr-admins", serde_json::json!({ "administrator": true }));
+    let (status, role) = leader.put_as(
+        &op,
+        "/api/roles/smeltr-admins",
+        serde_json::json!({ "administrator": true }),
+    );
     assert_eq!(status, 200, "{role}");
     let (bearer, admin) = keycloak_admin(&issuer);
     let cleo = KeycloakUser::make(&bearer, &admin, "cleo");
