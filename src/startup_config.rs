@@ -420,6 +420,12 @@ pub fn leader_ca_path() -> Option<String> {
     env("SMELTR_LEADER_CA")
 }
 
+/// Whether a worker trusts the public roots as well as its leader's authority, as an identity's `trustPublic` does.
+/// On by default; off, the leader's certificate must chain to an authority the worker holds.
+pub fn leader_trust_public() -> bool {
+    flag("SMELTR_LEADER_TRUST_PUBLIC", true)
+}
+
 /// The group a worker serves when its own configuration names none. A fleet needs somewhere to put a worker, and a
 /// first install has exactly one place to put it; an operator who wants more names them. The leader seeds this one
 /// into `main`'s first commit (`leader::git::seed_first_commit`), so a worker that names nothing still runs a group

@@ -42,16 +42,21 @@ pub fn public() -> &'static [CertificateDer<'static>] {
 
 /// Every root a client under `identity` trusts. Without an identity, the public roots.
 pub fn roots(identity: Option<&Identity>) -> Result<Vec<CertificateDer<'static>>, IoError> {
-    let mut out = match identity {
-        Some(i) if !i.trust_public => Vec::new(),
-        _ => public().to_vec(),
+    let Some(identity) = identity else {
+        return Ok(public().to_vec());
     };
-    if let Some(identity) = identity
-        && let Some(pem) = &identity.authorities
-    {
-        out.extend(certificates(identity, pem, "what it trusts")?);
-    }
-    Ok(out)
+    let authorities = match &identity.authorities {
+        Some(pem) => certificates(identity, pem, "what it trusts")?,
+        None => Vec::new(),
+    };
+    Ok(trusting(authorities, identity.trust_public))
+}
+
+/// What a client given `authorities` trusts: those, and the public roots too when `trust_public`. An identity's rule,
+/// for a client that holds its authorities without one: a worker's, for its leader.
+pub fn trusting(authorities: Vec<CertificateDer<'static>>, trust_public: bool) -> Vec<CertificateDer<'static>> {
+    let public = if trust_public { public() } else { &[] };
+    public.iter().cloned().chain(authorities).collect()
 }
 
 /// `roots` as a ureq client takes them.
@@ -84,9 +89,14 @@ pub fn store(identity: Option<&Identity>) -> Result<Arc<rustls::RootCertStore>, 
 
 /// `roots`, as PEM, for a client that reads its roots from a string (librdkafka's `ssl.ca.pem`).
 pub fn pem(identity: Option<&Identity>) -> Result<String, IoError> {
+    Ok(pem_of(&roots(identity)?))
+}
+
+/// `roots` as PEM, one block each, in order.
+pub fn pem_of(roots: &[CertificateDer<'static>]) -> String {
     use base64::Engine as _;
     let mut out = String::new();
-    for root in roots(identity)? {
+    for root in roots {
         let body = base64::engine::general_purpose::STANDARD.encode(root.as_ref());
         out.push_str("-----BEGIN CERTIFICATE-----\n");
         for line in body.as_bytes().chunks(64) {
@@ -95,14 +105,13 @@ pub fn pem(identity: Option<&Identity>) -> Result<String, IoError> {
         }
         out.push_str("-----END CERTIFICATE-----\n");
     }
-    Ok(out)
+    out
 }
 
-/// `roots(identity)` as a PEM file at `path`, for a client that names its roots only by a file: curl, under gix.
-/// Written beside and renamed over, so a fetch reading it on another thread never sees half of it.
-pub fn write_pem_file(identity: Option<&Identity>, path: &std::path::Path) -> Result<(), String> {
-    let pem = pem(identity).map_err(|e| e.to_string())?;
-    crate::leader::tls::write_durably(path, pem.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+/// `roots` as a PEM file at `path`, for a client that names its roots only by a file: curl, under gix. Written
+/// beside and renamed over, so a fetch reading it on another thread never sees half of it.
+pub fn write_pem_file(roots: &[CertificateDer<'static>], path: &std::path::Path) -> Result<(), String> {
+    crate::leader::tls::write_durably(path, pem_of(roots).as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The certificate an identity presents, and the key it signs with.
@@ -217,6 +226,14 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(back, roots(Some(&id)).unwrap());
+    }
+
+    #[test]
+    fn the_pem_file_reads_back_as_the_same_roots() {
+        let path = std::env::temp_dir().join(format!("smeltr-trust-pem-file-{}.pem", std::process::id()));
+        write_pem_file(public(), &path).unwrap();
+        assert_eq!(certificates_file(&path).unwrap(), public());
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

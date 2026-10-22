@@ -855,6 +855,7 @@ fn start_worker(
     let memory = smeltr::worker::memory_to_fit(in_leader);
     let heartbeat_interval = cfg::worker_heartbeat_interval();
     let stop_after_unreachable_secs = cfg::worker_stop_after_unreachable_secs();
+    let leader_trust_public = cfg::leader_trust_public();
     let metrics_endpoint = smeltr::worker::metrics_endpoint::open().unwrap_or_else(|e| {
         eprintln!("smeltr: refusing to start -- {e}");
         std::process::exit(1);
@@ -865,6 +866,7 @@ fn start_worker(
     smeltr::worker::run_worker(smeltr::worker::WorkerConfig {
         leader_url,
         leader_ca_pem,
+        leader_trust_public,
         leader_authority_dir,
         group_id,
         thread_limit,
@@ -904,8 +906,11 @@ async fn setup_leader(
         smeltr::paths::canonicalize_portable(&data_dir).expect("resolve leader data directory to an absolute path");
 
     // Before the first sync: gix's curl reads the roots its fetch from the remote trusts only from this file.
-    smeltr::io::trust::write_pem_file(None, &smeltr::leader::remote::roots_path(&data_dir))
-        .expect("write the roots the remote's fetch trusts");
+    smeltr::io::trust::write_pem_file(
+        smeltr::io::trust::public(),
+        &smeltr::leader::remote::roots_path(&data_dir),
+    )
+    .expect("write the roots the remote's fetch trusts");
 
     let hosts = origin_hosts(&auth.origin);
     let tls = leader_tls_config(&data_dir, &hosts).await;
@@ -1063,6 +1068,7 @@ struct WorkerFileConfig {
 struct WorkerLeaderFileConfig {
     url: Option<String>,
     ca: Option<String>,
+    trust_public: Option<bool>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -1471,6 +1477,7 @@ fn load_and_apply_config_file() {
     backfill_env("SMELTR_WORKER_LISTEN_ADDRESS", file.worker.listen_address);
     backfill_env("SMELTR_LEADER_URL", file.worker.leader.url);
     backfill_env("SMELTR_LEADER_CA", file.worker.leader.ca);
+    backfill_env("SMELTR_LEADER_TRUST_PUBLIC", file.worker.leader.trust_public);
     backfill_env("SMELTR_WORKER_STATE_DIR", file.worker.storage.state_dir);
     backfill_env("SMELTR_WORKER_THREAD_LIMIT", file.worker.runtime.thread_limit);
     backfill_env("SMELTR_WORKER_MEMORY", file.worker.runtime.memory);

@@ -113,7 +113,7 @@ fn a_closed_pooled_connection_is_retried() {
     // heartbeat reuses the dead connection, fails, and must retry on a
     // fresh one rather than surfacing the error.
     let (url, served) = flaky_leader(1);
-    let client = HeartbeatClient::new(&url, "token", None).expect("client");
+    let client = HeartbeatClient::new(&url, "token", None, true).expect("client");
 
     client.send(&beat()).expect("first heartbeat");
     client
@@ -140,7 +140,7 @@ fn a_leader_that_is_simply_down_still_fails() {
         drop(l);
         format!("http://{a}")
     };
-    let client = HeartbeatClient::new(&dead, "token", None).expect("client");
+    let client = HeartbeatClient::new(&dead, "token", None, true).expect("client");
     assert!(
         client.send(&beat()).is_err(),
         "an unreachable leader is still an error after the retry"

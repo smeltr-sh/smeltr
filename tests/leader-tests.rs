@@ -198,7 +198,7 @@ fn start_leader_tls() -> (String, Vec<u8>) {
 
 /// Poll until the leader answers over TLS, or panic with how long it was given.
 fn wait_until_serving(base: &str, ca_pem: &[u8]) {
-    let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
@@ -301,7 +301,7 @@ fn heartbeat_one_thread_with_policy(
     stop_after_unreachable_secs: Option<u64>,
     commit: Option<&str>,
 ) -> smeltr::heartbeat::HeartbeatResponse {
-    let client = HeartbeatClient::new(base, token, None).expect("no authority needed over plain HTTP");
+    let client = HeartbeatClient::new(base, token, None, true).expect("no authority needed over plain HTTP");
     client
         .send(&HeartbeatRequest {
             heartbeat_interval_ms: None,
@@ -404,7 +404,7 @@ fn commit_for_group(data_dir: &std::path::Path, group_id: &str, source_id: Optio
 #[test]
 fn a_worker_trusting_the_authority_reaches_the_leader_it_signed_for() {
     let (base, ca_pem) = start_leader_tls();
-    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
 
     let code = mint_code_with(&agent, &base, serde_json::json!({}));
     let enrolled: EnrollResult = agent
@@ -416,8 +416,8 @@ fn a_worker_trusting_the_authority_reaches_the_leader_it_signed_for() {
         .unwrap();
     let token = enrolled.token.unwrap();
 
-    let client =
-        HeartbeatClient::new(&base, &token, Some(&ca_pem)).expect("HeartbeatClient accepts the leader's authority");
+    let client = HeartbeatClient::new(&base, &token, Some(&ca_pem), true)
+        .expect("HeartbeatClient accepts the leader's authority");
     client
         .send(&HeartbeatRequest {
             heartbeat_interval_ms: None,
@@ -469,13 +469,14 @@ fn a_worker_holding_two_authorities_reaches_a_leader_that_runs_either() {
 
     let mut both = elsewhere.ca_pem.clone();
     both.extend_from_slice(&ca_pem);
-    let agent = smeltr::heartbeat::agent_trusting(Some(&both), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let agent = smeltr::heartbeat::agent_trusting(Some(&both), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     agent
         .get(format!("{base}/api/health"))
         .call()
         .expect("a worker holding both authorities reaches the leader signed for by one of them");
 
-    let wrong = smeltr::heartbeat::agent_trusting(Some(&elsewhere.ca_pem), smeltr::heartbeat::REQUEST_BUDGET).unwrap();
+    let wrong =
+        smeltr::heartbeat::agent_trusting(Some(&elsewhere.ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     assert!(
         wrong.get(format!("{base}/api/health")).call().is_err(),
         "holding only the other authority must not be enough"
@@ -504,7 +505,7 @@ fn a_capture_report_over_tls_trusts_the_same_pinned_cert() {
         .read_json()
         .unwrap();
 
-    let client = HeartbeatClient::new(&base, enrolled.token.unwrap(), Some(&cert_pem))
+    let client = HeartbeatClient::new(&base, enrolled.token.unwrap(), Some(&cert_pem), true)
         .expect("HeartbeatClient accepts the pinned cert");
     client
         .report_capture(&smeltr::heartbeat::CaptureReport {
@@ -531,7 +532,7 @@ fn a_capture_report_over_tls_trusts_the_same_pinned_cert() {
 #[test]
 fn heartbeat_client_without_the_authority_rejects_the_leader() {
     let (base, _ca_pem) = start_leader_tls();
-    let client = HeartbeatClient::new(&base, "some-token", None).unwrap();
+    let client = HeartbeatClient::new(&base, "some-token", None, true).unwrap();
     let result = client.send(&HeartbeatRequest {
         heartbeat_interval_ms: None,
         single_worker: Vec::new(),

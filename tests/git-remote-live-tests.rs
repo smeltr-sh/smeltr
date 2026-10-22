@@ -157,7 +157,7 @@ fn leader(bytes: &[u8]) -> (PathBuf, PathBuf, Pointer) {
     let repo = git::repo_path(&data);
     git::init_bare_repo(&repo).unwrap();
     let roots = remote::roots_path(&data);
-    smeltr::io::trust::write_pem_file(None, &roots).unwrap();
+    smeltr::io::trust::write_pem_file(smeltr::io::trust::public(), &roots).unwrap();
     git::ensure_main_commit(&repo).unwrap();
     let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, bytes);
     let pointer = Pointer {

@@ -1359,7 +1359,7 @@ mod tests {
         static ROOTS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
         ROOTS.get_or_init(|| {
             let path = roots_path(&temp_dir("roots"));
-            crate::io::trust::write_pem_file(None, &path).unwrap();
+            crate::io::trust::write_pem_file(crate::io::trust::public(), &path).unwrap();
             path
         })
     }
