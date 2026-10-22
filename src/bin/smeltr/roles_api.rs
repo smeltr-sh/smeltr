@@ -81,7 +81,8 @@ pub async fn put_role(
     }
 }
 
-/// `DELETE /api/roles/:name`. Whoever held only this role holds nothing from their next request.
+/// `DELETE /api/roles/:name`. Whoever held only this role holds nothing from their next request, and is signed out
+/// at their next refresh.
 pub async fn delete_role(
     State(auth): State<Auth>,
     actor: axum::Extension<Actor>,

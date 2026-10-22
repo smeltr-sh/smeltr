@@ -34,6 +34,7 @@ use smeltr::leader::envelope::{ApiError, Envelope};
 use smeltr::leader::oidc::{self, Jwks, Provider, RefreshFailure, Refusal};
 use smeltr::leader::sessions::{Due, Grant};
 use smeltr::leader::store::{Actor, OidcSignIn, Store, StoreError};
+use smeltr::leader::access::Role;
 use smeltr::leader::{accounts, blocking};
 
 use crate::gate::{Auth, refuse};
@@ -43,7 +44,6 @@ pub const ISSUER_KEY: &str = "oidc.issuer";
 pub const CLIENT_ID_KEY: &str = "oidc.client_id";
 pub const SECRET_KEY: &str = "oidc.client_secret";
 pub const GROUPS_CLAIM_KEY: &str = "oidc.groups_claim";
-pub const REQUIRED_GROUP_KEY: &str = "oidc.required_group";
 
 /// The claim groups are read from where nobody has said. What Okta, Keycloak and Entra ID send by that name.
 pub const DEFAULT_GROUPS_CLAIM: &str = "groups";
@@ -77,9 +77,6 @@ pub struct Settings {
     pub client_id: String,
     pub client_secret: Option<String>,
     pub groups_claim: String,
-    /// The group a person must hold to sign in. Required: a provider anyone can sign up to would otherwise let
-    /// every one of its accounts in here.
-    pub required_group: String,
 }
 
 impl Settings {
@@ -93,7 +90,6 @@ impl Settings {
                 .setting(GROUPS_CLAIM_KEY)?
                 .filter(|claim| !claim.is_empty())
                 .unwrap_or_else(|| DEFAULT_GROUPS_CLAIM.to_string()),
-            required_group: store.setting(REQUIRED_GROUP_KEY)?.unwrap_or_default(),
         })
     }
 }
@@ -381,8 +377,7 @@ async fn usable(auth: &Auth) -> Result<Option<Settings>, StoreError> {
         let complete = settings.enabled
             && !settings.issuer.is_empty()
             && !settings.client_id.is_empty()
-            && settings.client_secret.is_some()
-            && !settings.required_group.is_empty();
+            && settings.client_secret.is_some();
         Ok(complete.then_some(settings))
     })
     .await
@@ -556,8 +551,24 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
             return refused(&settings.issuer);
         }
     };
-    if !admitted(&settings, &claims.groups) {
-        tracing::warn!(target: "leader.sign_in_refused", subject = %bounded(&claims.subject), "an OIDC sign-in lacks the required group");
+    let store = auth.store.clone();
+    let roles = match blocking(move || store.list_roles()).await {
+        Ok(roles) => roles,
+        Err(e) => {
+            tracing::error!(target: "leader.identity_unavailable", error = %e, "the roles could not be read");
+            return back_to_gui(&auth, Ended::Unavailable, Some(state));
+        }
+    };
+    if !admitted(&roles, &claims.groups) {
+        // The groups as the provider sent them: the one place an administrator sees the names a role must match
+        // before anybody has been let in.
+        tracing::warn!(
+            target: "leader.sign_in_refused",
+            subject = %bounded(&claims.subject),
+            login = %fit_login(&claims).unwrap_or_default(),
+            groups = %bounded(&claims.groups.join(", ")),
+            "an OIDC sign-in names no group any role names"
+        );
         return refused(&claims.subject);
     }
 
@@ -652,6 +663,14 @@ pub async fn refresh_due(auth: &Auth, every: Duration) {
             return retry_all(due);
         }
     };
+    let store = auth.store.clone();
+    let roles = match blocking(move || store.list_roles()).await {
+        Ok(roles) => roles,
+        Err(e) => {
+            tracing::error!(target: "leader.identity_unavailable", error = %e, "the roles could not be read");
+            return retry_all(due);
+        }
+    };
     let mut due = due.into_iter();
     while let Some(d) = due.next() {
         // A grant from a provider no longer configured is one this leader cannot spend.
@@ -668,7 +687,7 @@ pub async fn refresh_due(auth: &Auth, every: Duration) {
         )
         .await;
         match refreshed {
-            Ok(refreshed) => refreshed_one(auth, &settings, &known, d, refreshed).await,
+            Ok(refreshed) => refreshed_one(auth, &settings, &roles, &known, d, refreshed).await,
             Err(RefreshFailure::Refused(why)) => end_session(auth, &d, &why),
             Err(RefreshFailure::Unavailable(why)) => {
                 // Every grant goes to the same provider, so the rest would wait out the same failure in turn.
@@ -681,7 +700,14 @@ pub async fn refresh_due(auth: &Auth, every: Duration) {
 }
 
 /// Believe what a refresh answered for `d`'s session, or end it.
-async fn refreshed_one(auth: &Auth, settings: &Settings, known: &Known, d: Due, refreshed: oidc::Refreshed) {
+async fn refreshed_one(
+    auth: &Auth,
+    settings: &Settings,
+    roles: &[Role],
+    known: &Known,
+    d: Due,
+    refreshed: oidc::Refreshed,
+) {
     let Some(token) = refreshed.id_token else {
         // Nothing new said of the person; the grant still stands.
         auth.sessions.renewed(&d.key, refreshed.refresh_token, Instant::now());
@@ -704,8 +730,8 @@ async fn refreshed_one(auth: &Auth, settings: &Settings, known: &Known, d: Due, 
             return auth.sessions.renewed(&d.key, refreshed.refresh_token, Instant::now());
         }
     };
-    if !admitted(settings, &claims.groups) {
-        return end_session(auth, &d, "it no longer holds the required group");
+    if !admitted(roles, &claims.groups) {
+        return end_session(auth, &d, "it no longer names a group any role names");
     }
     let store = auth.store.clone();
     let user_id = d.user_id.clone();
@@ -740,9 +766,10 @@ fn end_session(auth: &Auth, d: &Due, why: &str) {
     }
 }
 
-/// Whether `groups` lets a person in under `settings`. An empty required group admits nobody.
-fn admitted(settings: &Settings, groups: &[String]) -> bool {
-    !settings.required_group.is_empty() && groups.contains(&settings.required_group)
+/// Whether `groups` lets a person in: one of them is a role's. A person no role names would hold nothing, and a
+/// provider anyone can sign up to would otherwise let every one of its accounts in.
+fn admitted(roles: &[Role], groups: &[String]) -> bool {
+    roles.iter().any(|role| groups.contains(&role.name))
 }
 
 /// A name the provider sent, made one a git author line can hold: what git cannot hold becomes a space, as
@@ -822,7 +849,6 @@ pub struct SettingsDto {
     /// Whether a client secret is stored. The secret itself is never sent back.
     client_secret_set: bool,
     groups_claim: String,
-    required_group: String,
     /// What to register with the provider as the sign-in redirect.
     redirect_uri: String,
 }
@@ -842,8 +868,6 @@ pub struct PutSettings {
     client_secret: Option<String>,
     #[serde(default)]
     groups_claim: String,
-    #[serde(default)]
-    required_group: String,
 }
 
 async fn answer(auth: &Auth, error: Option<String>) -> Json<Envelope<OidcSettings>> {
@@ -860,7 +884,6 @@ async fn answer(auth: &Auth, error: Option<String>) -> Json<Envelope<OidcSetting
                     client_id: settings.client_id,
                     client_secret_set: settings.client_secret.is_some(),
                     groups_claim: settings.groups_claim,
-                    required_group: settings.required_group,
                     redirect_uri: redirect_uri(auth),
                 }),
             },
@@ -875,7 +898,7 @@ pub async fn get_settings(State(auth): State<Auth>) -> Json<Envelope<OidcSetting
     answer(&auth, None).await
 }
 
-/// The most a client id, claim name or group name may be. Far beyond any provider's, and short enough to show.
+/// The most a client id or claim name may be. Far beyond any provider's, and short enough to show.
 const MOST_TEXT: usize = 256;
 
 /// `PUT /api/settings/oidc`. Recorded with who set it and what changed, in the transaction that sets it; the client
@@ -895,21 +918,13 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Json
     let issuer = request.issuer.trim().to_string();
     let client_id = request.client_id.trim().to_string();
     let groups_claim = request.groups_claim.trim().to_string();
-    let required_group = request.required_group.trim().to_string();
     if !issuer.is_empty()
         && let Err(e) = oidc::check_issuer(&issuer)
     {
         return answer(auth, Some(e)).await;
     }
-    if [&client_id, &groups_claim, &required_group]
-        .iter()
-        .any(|text| text.len() > MOST_TEXT)
-    {
-        return answer(
-            auth,
-            Some(format!("a client id, claim or group is at most {MOST_TEXT} bytes")),
-        )
-        .await;
+    if [&client_id, &groups_claim].iter().any(|text| text.len() > MOST_TEXT) {
+        return answer(auth, Some(format!("a client id or claim is at most {MOST_TEXT} bytes"))).await;
     }
     if request.client_secret.as_ref().is_some_and(|s| s.len() > 4096) {
         return answer(auth, Some("a client secret is at most 4096 bytes".to_string())).await;
@@ -931,10 +946,10 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Json
         None => was.client_secret.is_some(),
     };
     if request.enabled {
-        if issuer.is_empty() || client_id.is_empty() || !will_hold_secret || required_group.is_empty() {
+        if issuer.is_empty() || client_id.is_empty() || !will_hold_secret {
             return answer(
                 auth,
-                Some("OIDC needs an issuer, a client id, a client secret and a required group".to_string()),
+                Some("OIDC needs an issuer, a client id and a client secret".to_string()),
             )
             .await;
         }
@@ -959,7 +974,6 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Json
         (client_id != was.client_id, "client id"),
         (secret_moved, "client secret"),
         (claim_now != was.groups_claim, "groups claim"),
-        (required_group != was.required_group, "required group"),
     ]
     .into_iter()
     .filter_map(|(moved, name)| moved.then_some(name))
@@ -976,7 +990,6 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Json
             (ISSUER_KEY, issuer),
             (CLIENT_ID_KEY, client_id),
             (GROUPS_CLAIM_KEY, groups_claim),
-            (REQUIRED_GROUP_KEY, required_group),
         ];
         if let Some(secret) = secret {
             let stored = if secret.is_empty() {
@@ -999,29 +1012,27 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Json
 mod tests {
     use super::*;
 
-    fn settings(required_group: &str) -> Settings {
-        Settings {
-            enabled: true,
-            issuer: "https://id.example.com".to_string(),
-            client_id: "smeltr".to_string(),
-            client_secret: Some("s".to_string()),
-            groups_claim: DEFAULT_GROUPS_CLAIM.to_string(),
-            required_group: required_group.to_string(),
+    fn role(name: &str) -> Role {
+        Role {
+            name: name.to_string(),
+            administrator: false,
+            areas: Default::default(),
         }
     }
 
     #[test]
-    fn no_required_group_admits_nobody() {
-        assert!(!admitted(&settings(""), &[]));
-        assert!(!admitted(&settings(""), &[String::new()]));
+    fn no_role_admits_nobody() {
+        assert!(!admitted(&[], &[]));
+        assert!(!admitted(&[], &["smeltr-admins".to_string()]));
     }
 
     #[test]
-    fn a_required_group_must_be_held_exactly() {
-        let held = vec!["smeltr-admins".to_string()];
-        assert!(admitted(&settings("smeltr-admins"), &held));
-        assert!(!admitted(&settings("smeltr-admin"), &held));
-        assert!(!admitted(&settings("smeltr-admins"), &[]));
+    fn a_role_admits_whoever_holds_its_group_exactly() {
+        let roles = [role("/smeltr-admins"), role("smeltr-apps")];
+        assert!(admitted(&roles, &["/smeltr-admins".to_string()]));
+        assert!(admitted(&roles, &["other".to_string(), "smeltr-apps".to_string()]));
+        assert!(!admitted(&roles, &["smeltr-admins".to_string()]));
+        assert!(!admitted(&roles, &[]));
     }
 
     /// A newline would end a commit's author line, and angle brackets would end its name. Both become a space, so

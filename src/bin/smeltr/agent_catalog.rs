@@ -606,7 +606,7 @@ pub const CATALOG: &[Route] = &[
         method: "PUT",
         path: "/api/settings/oidc",
         what: "Set OIDC sign-in; turning it on checks the provider first. No query.",
-        body: "{ enabled: boolean, issuer: string, clientId: string, clientSecret?: string (absent keeps, '' removes), groupsClaim?: string, requiredGroup?: string }",
+        body: "{ enabled: boolean, issuer: string, clientId: string, clientSecret?: string (absent keeps, '' removes), groupsClaim?: string }",
     },
     Route {
         method: "GET",
