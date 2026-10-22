@@ -52,8 +52,8 @@ pub const CAPACITY: usize = 4096;
 /// stalled -- in which case its own logs matter more than the ones it was carrying.
 pub const LOGS_CAPACITY: usize = 1024;
 
-/// Events held for the leader while it is out of contact, on a worker: a leader keeps its own logs local,
-/// so it queues none. A worker that cannot reach one keeps the oldest and
+/// Events held for the leader while it is out of contact, on a worker, or until a leader writes its own into its
+/// store. A worker that cannot reach one keeps the oldest and
 /// refuses the rest, the same way the buffer in front of it refuses rather than evicts: the start of an outage is
 /// what explains it, and the symptoms after are the part that repeats.
 pub const PENDING_CAPACITY: usize = 4096;
@@ -132,6 +132,9 @@ static FLUSHED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
 static MAX_LEVEL: AtomicUsize = AtomicUsize::new(level_ord(Level::INFO));
 /// This process's worker id, once it has one. `start` runs before either role begins, so early events have none.
 static WORKER: OnceLock<String> = OnceLock::new();
+/// Whether this process's leader writes its own logs into its store: set by a leader running no worker, whose logs
+/// would otherwise reach nobody but its console.
+static LEADER_KEEPS: AtomicBool = AtomicBool::new(false);
 /// What the drain thread has written, by site. Whoever holds a registry publishes it; `logs` stays underneath
 /// `metrics` rather than depending on it. This is what says whether one site is drowning the rest.
 static WRITTEN: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Default::default);
@@ -411,6 +414,12 @@ fn worker() -> Option<&'static str> {
     WORKER.get().map(String::as_str)
 }
 
+/// Queue this process's logs for its own leader to write into its store, as a worker queues them for its
+/// heartbeat. Called once, by a leader running no worker of its own; one that runs one has them ride its beat.
+pub fn keep_for_leader() {
+    LEADER_KEEPS.store(true, Ordering::Relaxed);
+}
+
 /// Hand an event to the drain thread, or write it here where there is no thread to hand it to: before [`start`]
 /// -- a test, or anything before startup finished -- and after [`stop`], when the channel has no reader left. A
 /// log raised while shutting down is the last one to swallow.
@@ -548,10 +557,10 @@ fn take(event: Event) {
     // Every open reader. Taken first because a reader is the consumer that can be told to stop.
     offer(LOGS.lock().unwrap_or_else(|e| e.into_inner()).iter_mut(), &event);
 
-    // Only a worker queues for the leader: the heartbeat is the one path to one, and a process with no worker
-    // identity has none. A process running both roles queues its leader's logs too -- they ride its own
-    // worker's beat into the store on the same machine, which is still local.
-    if worker().is_none() {
+    // A worker queues for the leader, whose heartbeat is the one path to one, and a leader with no worker queues
+    // for its own store. A process running both roles queues its leader's logs with its worker's -- they ride its
+    // own worker's beat into the store on the same machine, which is still local.
+    if worker().is_none() && !LEADER_KEEPS.load(Ordering::Relaxed) {
         return;
     }
     let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
