@@ -2926,7 +2926,7 @@
     {
       "kind": "Unmatched",
       "category": "delivery",
-      "when": "No route on the record's source took it."
+      "when": "No route or delivery condition took it."
     },
     {
       "kind": "Unprocessable",
