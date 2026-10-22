@@ -51,10 +51,12 @@
     return () => grew.disconnect();
   });
 
-  // The page underneath scrolls past the panel, so nothing is hidden behind it.
+  // The page underneath scrolls past the panel, so nothing is hidden behind it, and whatever is scrolled into view
+  // (a focused field, a link followed to its place) stops above it rather than under it.
   $effect(() => {
     document.body.style.paddingBottom = `${height * 100}vh`;
-    return () => (document.body.style.paddingBottom = '');
+    document.documentElement.style.scrollPaddingBottom = `${height * 100}vh`;
+    return () => (document.body.style.paddingBottom = document.documentElement.style.scrollPaddingBottom = '');
   });
 
   function drag(e: PointerEvent) {
