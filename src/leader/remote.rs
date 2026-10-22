@@ -223,18 +223,17 @@ fn fetch(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>, S
     });
     let prepare = connection
         .prepare_fetch(gix::progress::Discard, Default::default())
-        .map_err(|e| match (asked.get(), remote.token.is_some()) {
-            (true, false) => format!(
-                "fetching {} did not work: {}. Set a token that can read this repository, and check the URL",
+        .map_err(|e| {
+            let check = match (asked.get(), remote.token.is_some()) {
+                (false, _) => return unreachable(&e),
+                (true, false) => "Set a token that can read this repository",
+                (true, true) => "Check that the token can read this repository",
+            };
+            format!(
+                "fetching {} did not work: {}. {check}, and check the URL",
                 remote.url,
                 status_text(401)
-            ),
-            (true, true) => format!(
-                "fetching {} did not work: {}. Check that the token can read this repository, and check the URL",
-                remote.url,
-                status_text(401)
-            ),
-            (false, _) => unreachable(&e),
+            )
         })?;
     // A repository nobody has pushed `main` to yet: a state, not a failure.
     if prepare.ref_map().is_missing_required_mapping() {

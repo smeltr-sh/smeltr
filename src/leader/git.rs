@@ -3078,13 +3078,9 @@ fn git_runs(program: &str) -> Result<(), String> {
     }
 }
 
-// -- pushing to the host ----------------------------------------------------
-//
-// `gix` cannot push, so a push runs the `git` binary, which the leader already needs to serve workers.
-
 /// What a failed gix call says, down to its cause. gix's own text is its outermost step alone ("Transport handshake
-/// failed"), while what an admin can act on, a refused certificate or a host that answered 403, is the innermost,
-/// so that is what follows it. The source locations gix appends are left out.
+/// failed"), while what an admin can act on, a refused certificate say, is the innermost, so that is what
+/// follows it. The source locations gix appends are left out.
 pub fn gix_said(e: &(dyn std::error::Error + 'static)) -> String {
     let unlocated = |e: &dyn std::error::Error| {
         e.to_string()
@@ -3120,6 +3116,10 @@ fn is_source_location(part: &str) -> bool {
     part.rsplit_once(".rs:")
         .is_some_and(|(file, line)| !file.contains(' ') && !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit()))
 }
+
+// -- pushing to the host ----------------------------------------------------
+//
+// `gix` cannot push, so a push runs the `git` binary, which the leader already needs to serve workers.
 
 /// What the host made of a push.
 #[derive(Debug, PartialEq, Eq)]
