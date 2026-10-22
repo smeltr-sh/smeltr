@@ -443,7 +443,7 @@ test('a person asks their agent, sees what it asked the leader, and deletes the 
     await agentsOn(api, model);
     model.answer(
       [request('GET', '/api/pipelines', { scope: 'shared' })],
-      [say('You have no pipelines yet.')],
+      [say('You have **no pipelines** yet.')],
     );
     await admin.reload();
     await openAgent(admin);
@@ -452,6 +452,8 @@ test('a person asks their agent, sees what it asked the leader, and deletes the 
     await admin.getByRole('textbox', { name: 'Message' }).fill('What pipelines do I have?');
     await admin.getByRole('button', { name: 'Send', exact: true }).click();
     await expect(admin.getByText('You have no pipelines yet.')).toBeVisible();
+    // The answer's Markdown is rendered, not shown as typed.
+    await expect(admin.locator('strong', { hasText: 'no pipelines' })).toBeVisible();
     await expect(conversationLink(admin, 'What pipelines do I have')).toBeVisible();
 
     const call = admin.getByRole('button', { name: /GET \/api\/pipelines\?scope=shared/ });
