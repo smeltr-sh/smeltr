@@ -71,15 +71,30 @@ impl Updates {
     /// A look that read the list. A newer release seen before keeps the time it was first seen.
     fn found(&self, newest: Option<(String, String)>, now: i64) {
         let mut held = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let since = |release: &str| held.0.as_ref().filter(|n| n.release == release).map_or(now, |n| n.since);
-        held.0 = newest.map(|(release, url)| Newer { since: since(&release), release, url });
-        held.1 = Some(Looked { checked_at: now, failure: None });
+        let since = |release: &str| {
+            held.0
+                .as_ref()
+                .filter(|n| n.release == release)
+                .map_or(now, |n| n.since)
+        };
+        held.0 = newest.map(|(release, url)| Newer {
+            since: since(&release),
+            release,
+            url,
+        });
+        held.1 = Some(Looked {
+            checked_at: now,
+            failure: None,
+        });
     }
 
     /// A look that did not read the list. What an earlier look found stands: the release is out whether or not
     /// GitHub answered this time.
     fn failed(&self, why: String, now: i64) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).1 = Some(Looked { checked_at: now, failure: Some(why) });
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).1 = Some(Looked {
+            checked_at: now,
+            failure: Some(why),
+        });
     }
 
     /// Turned off: nothing found stays, since nothing keeps it current.
@@ -194,7 +209,9 @@ pub struct UpdateSettings {
 impl UpdateSettings {
     fn answer(check: Result<bool, String>) -> Json<Envelope<UpdateSettings>> {
         Json(match check {
-            Ok(check) => Envelope::ok(UpdateSettings { settings: Some(UpdateSettingsDto { check }) }),
+            Ok(check) => Envelope::ok(UpdateSettings {
+                settings: Some(UpdateSettingsDto { check }),
+            }),
             Err(e) => Envelope::failed_one(e),
         })
     }
@@ -245,13 +262,24 @@ mod tests {
 
     #[test]
     fn the_newest_is_the_highest_version_not_the_last_published() {
-        let published = list(&[("v1.2.4", false, false), ("v2.0.0", false, false), ("v1.3.0", false, false)]);
+        let published = list(&[
+            ("v1.2.4", false, false),
+            ("v2.0.0", false, false),
+            ("v1.3.0", false, false),
+        ]);
         assert_eq!(
             newest(&published, "1.2.0").unwrap(),
-            Some(("2.0.0".into(), "https://github.com/smeltr-sh/smeltr/releases/tag/v2.0.0".into()))
+            Some((
+                "2.0.0".into(),
+                "https://github.com/smeltr-sh/smeltr/releases/tag/v2.0.0".into()
+            ))
         );
         assert_eq!(newest(&published, "2.0.0").unwrap(), None, "nothing newer than its own");
-        assert_eq!(newest(&published, "2.1.0").unwrap(), None, "nor than a release GitHub no longer lists");
+        assert_eq!(
+            newest(&published, "2.1.0").unwrap(),
+            None,
+            "nor than a release GitHub no longer lists"
+        );
     }
 
     #[test]
@@ -264,13 +292,19 @@ mod tests {
             ("v1.6", false, false),
             ("v1.2.1", false, false),
         ]);
-        assert_eq!(newest(&published, "1.2.0").unwrap().map(|n| n.0).as_deref(), Some("1.2.1"));
+        assert_eq!(
+            newest(&published, "1.2.0").unwrap().map(|n| n.0).as_deref(),
+            Some("1.2.1")
+        );
     }
 
     #[test]
     fn a_release_is_newer_than_its_own_pre_releases() {
         let published = list(&[("v1.0.0", false, false)]);
-        assert_eq!(newest(&published, "1.0.0-rc3").unwrap().map(|n| n.0).as_deref(), Some("1.0.0"));
+        assert_eq!(
+            newest(&published, "1.0.0-rc3").unwrap().map(|n| n.0).as_deref(),
+            Some("1.0.0")
+        );
         assert_eq!(newest(&published, "1.0.1-rc1").unwrap(), None);
     }
 
@@ -288,7 +322,13 @@ mod tests {
         assert_eq!(updates.newer().unwrap().since, 10);
         updates.failed("down".into(), 30);
         assert_eq!(updates.newer().unwrap().release, "1.3.0", "the release is still out");
-        assert_eq!(updates.looked().unwrap(), Looked { checked_at: 30, failure: Some("down".into()) });
+        assert_eq!(
+            updates.looked().unwrap(),
+            Looked {
+                checked_at: 30,
+                failure: Some("down".into())
+            }
+        );
         updates.found(v("1.4.0"), 40);
         assert_eq!(updates.newer().unwrap().since, 40, "another release is news again");
         updates.found(None, 50);

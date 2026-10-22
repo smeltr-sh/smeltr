@@ -298,7 +298,8 @@
         {#if checkDirty}
           <div class="savebar">
             <div class="buttons">
-              <button type="button" onclick={() => updates && adoptUpdates(updates)}>Discard</button>
+              <button type="button" onclick={() => updates && adoptUpdates(updates)}>Discard</button
+              >
               <button class="primary" type="submit" disabled={updatesBusy}>Save updates</button>
             </div>
           </div>
