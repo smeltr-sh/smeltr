@@ -99,7 +99,9 @@
     }
   }
 
+  // Read each time Users opens, so someone who signed in since shows without a reload.
   $effect(() => {
+    if (section !== 'users') return;
     void refresh();
   });
 
