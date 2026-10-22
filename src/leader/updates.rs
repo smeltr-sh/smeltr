@@ -16,6 +16,9 @@ use super::{AppState, run_store};
 /// published in, so a patch to an older line published after a newer major would take it.
 const RELEASES: &str = "https://api.github.com/repos/smeltr-sh/smeltr/releases?per_page=100";
 
+/// The service [`RELEASES`] is on, which is what the client is made for: a URL with a query is not one.
+const GITHUB: &str = "https://api.github.com";
+
 /// How often the leader looks.
 const EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -133,7 +136,7 @@ pub async fn poll(state: AppState) {
 
 /// The newest published release newer than `own`, with its page.
 async fn fetch(own: &str) -> Result<Option<(String, String)>, String> {
-    let client = super::outbound::client(RELEASES, "GitHub", TIMEOUT, reqwest::redirect::Policy::limited(3))?;
+    let client = super::outbound::client(GITHUB, "GitHub", TIMEOUT, reqwest::redirect::Policy::limited(3))?;
     let response = client
         .get(RELEASES)
         .header(reqwest::header::USER_AGENT, format!("smeltr/{own}"))
