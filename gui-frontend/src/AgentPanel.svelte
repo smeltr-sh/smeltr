@@ -52,11 +52,16 @@
   });
 
   // The page underneath scrolls past the panel, so nothing is hidden behind it, and whatever is scrolled into view
-  // (a focused field, a link followed to its place) stops above it rather than under it.
+  // (a focused field, a link followed to its place) stops above it rather than under it. The page's bottom bars
+  // ride on it through `--agent-panel`.
   $effect(() => {
-    document.body.style.paddingBottom = `${height * 100}vh`;
-    document.documentElement.style.scrollPaddingBottom = `${height * 100}vh`;
-    return () => (document.body.style.paddingBottom = document.documentElement.style.scrollPaddingBottom = '');
+    const root = document.documentElement;
+    root.style.setProperty('--agent-panel', `${height * 100}vh`);
+    document.body.style.paddingBottom = root.style.scrollPaddingBottom = 'var(--agent-panel)';
+    return () => {
+      root.style.removeProperty('--agent-panel');
+      document.body.style.paddingBottom = root.style.scrollPaddingBottom = '';
+    };
   });
 
   function drag(e: PointerEvent) {
