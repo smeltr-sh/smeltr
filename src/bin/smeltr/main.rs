@@ -926,10 +926,12 @@ async fn setup_leader(
         deploy_checks: Default::default(),
         origin_hosts: hosts,
         remote: Default::default(),
+        updates: Default::default(),
         directives: Default::default(),
     };
     state.deploy_checks.set_runner(Arc::new(test_api::failing_at));
     tokio::spawn(smeltr::leader::remote::poll(state.clone()));
+    tokio::spawn(smeltr::leader::updates::poll(state.clone()));
     tokio::spawn(smeltr::leader::remote::push_saves(state.clone()));
 
     // A cutover changes the files and then withdraws the enrollment codes that named the root it retired. A process
@@ -3394,6 +3396,7 @@ mod tests {
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
             remote: Default::default(),
+            updates: Default::default(),
             directives: Default::default(),
         };
         let query: super::StatsQuery =

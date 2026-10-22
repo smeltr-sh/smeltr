@@ -4888,6 +4888,7 @@ mod tests {
                     deploy_checks: Default::default(),
                     origin_hosts: Vec::new(),
                     remote: Default::default(),
+                    updates: Default::default(),
                     directives: Default::default(),
                     data_dir: data_dir_for_leader,
                 };
@@ -5038,6 +5039,7 @@ mod tests {
                     deploy_checks: Default::default(),
                     origin_hosts: Vec::new(),
                     remote: Default::default(),
+                    updates: Default::default(),
                     directives: Default::default(),
                     data_dir: data_dir_for_leader,
                 };

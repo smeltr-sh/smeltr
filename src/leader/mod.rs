@@ -57,6 +57,7 @@ pub mod throttle;
 pub mod throughput;
 pub mod tls;
 pub mod tree;
+pub mod updates;
 pub mod warnings;
 
 use std::path::PathBuf;
@@ -99,6 +100,8 @@ pub struct AppState {
     pub origin_hosts: Vec<String>,
     /// Syncs with the git remote this leader follows, when one is set.
     pub remote: Arc<remote::Syncing>,
+    /// The look for a newer release (`updates`), and what the last one found.
+    pub updates: Arc<updates::Updates>,
     /// What operators have asked of workers and the workers have not yet taken.
     pub directives: Arc<directives::Directives>,
 }
@@ -912,6 +915,12 @@ pub struct SystemInfo {
     /// The release this build is (`version::RELEASE`); absent on any other build.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release: Option<&'static str>,
+    /// The newest published release, when it is newer than this one (`updates`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newer_release: Option<updates::Newer>,
+    /// The last look for one: when, and why it failed if it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_check: Option<updates::Looked>,
     /// The SASL mechanisms a Kafka client here can select. GSSAPI is in it only where a provider was linked, and a
     /// form that offered one this build does not carry would be offering a save that is refused.
     pub sasl_mechanisms: Vec<&'static str>,
@@ -922,10 +931,12 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(health_snapshot(&state))
 }
 
-async fn system_info() -> Json<SystemInfo> {
+async fn system_info(State(state): State<AppState>) -> Json<SystemInfo> {
     Json(SystemInfo {
         smeltr_version: crate::version::VERSION,
         release: crate::version::RELEASE,
+        newer_release: state.updates.newer(),
+        release_check: state.updates.looked(),
         sasl_mechanisms: crate::io::kafka::available_sasl_mechanisms(),
     })
 }
@@ -1009,6 +1020,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     // that handler already makes this same trip through `spawn_blocking` rather than block the runtime on it.
     let registry = state.registry.clone();
     let remote_failure = state.remote.state().failure;
+    let newer_release = state.updates.newer();
     let deploy_warnings = warnings::deploy_checked(&findings, &starts);
     let mut out = tokio::task::spawn_blocking(move || {
         warnings::derive(
@@ -1026,6 +1038,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
             &certificates,
             held.as_ref(),
             remote_failure.as_ref(),
+            newer_release.as_ref(),
         )
     })
     .await
@@ -2975,6 +2988,10 @@ pub fn admin_router() -> Router<AppState> {
             get(throughput::get_settings).put(throughput::put_settings),
         )
         .route(
+            "/api/settings/updates",
+            get(updates::get_settings).put(updates::put_settings),
+        )
+        .route(
             "/api/settings/git-remote",
             get(remote::get_settings).put(remote::put_settings),
         )
@@ -3473,6 +3490,7 @@ mod secrets_delivery_tests {
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
             remote: Default::default(),
+            updates: Default::default(),
             directives: Default::default(),
             data_dir,
         }
@@ -3958,6 +3976,7 @@ mod warnings_endpoint_tests {
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
             remote: Default::default(),
+            updates: Default::default(),
             directives: Default::default(),
             data_dir,
         }
@@ -4174,6 +4193,7 @@ mod logs_endpoint_tests {
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
             remote: Default::default(),
+            updates: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         }
@@ -4398,6 +4418,7 @@ mod flow_endpoint_tests {
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
             remote: Default::default(),
+            updates: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         }
@@ -4425,6 +4446,7 @@ mod flow_endpoint_tests {
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
             remote: Default::default(),
+            updates: Default::default(),
             directives: Default::default(),
             data_dir: std::env::temp_dir(),
         };
@@ -4787,6 +4809,7 @@ mod authority_delivery_tests {
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
             remote: Default::default(),
+            updates: Default::default(),
             directives: Default::default(),
             data_dir,
         };

@@ -418,7 +418,8 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/system/info",
-        what: "Version, release and the Kafka SASL mechanisms this build offers. No query.",
+        what: "Version, release, a newer published release and the last look for one, and the Kafka SASL mechanisms \
+               this build offers. No query.",
         body: "",
     },
     Route {
@@ -596,6 +597,18 @@ pub const CATALOG: &[Route] = &[
         path: "/api/settings/warnings",
         what: "Set the percent of a source's past windows its expected throughput holds. No query.",
         body: "{ sourceRowsBandPercent: number }",
+    },
+    Route {
+        method: "GET",
+        path: "/api/settings/updates",
+        what: "Whether this leader looks for a newer smeltr release once a day. No query.",
+        body: "",
+    },
+    Route {
+        method: "PUT",
+        path: "/api/settings/updates",
+        what: "Turn the daily look for a newer smeltr release on or off. No query.",
+        body: "{ check: boolean }",
     },
     Route {
         method: "GET",

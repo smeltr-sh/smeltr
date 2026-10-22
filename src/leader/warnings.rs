@@ -82,6 +82,7 @@ pub enum Condition {
     WorkerLoggedWarnings,
     DeployHeld,
     RemoteNotFollowed,
+    NewerRelease,
     DeployDoesNotLoad,
     DeployFailsTests,
     DeclaredFieldFailing,
@@ -116,6 +117,7 @@ impl Condition {
         Condition::WorkerLoggedWarnings,
         Condition::DeployHeld,
         Condition::RemoteNotFollowed,
+        Condition::NewerRelease,
         Condition::DeployDoesNotLoad,
         Condition::DeployFailsTests,
         Condition::DeclaredFieldFailing,
@@ -149,6 +151,7 @@ impl Condition {
             Condition::WorkerLoggedWarnings => "workerLoggedWarnings",
             Condition::DeployHeld => "deployHeld",
             Condition::RemoteNotFollowed => "remoteNotFollowed",
+            Condition::NewerRelease => "newerRelease",
             Condition::DeployDoesNotLoad => "deployDoesNotLoad",
             Condition::DeployFailsTests => "deployFailsTests",
             Condition::DeclaredFieldFailing => "declaredFieldFailing",
@@ -2211,6 +2214,7 @@ pub fn derive(
     deployed_certificates: &[DeployedCertificate],
     held: Option<&crate::leader::git::Hold>,
     remote: Option<&crate::leader::remote::Failure>,
+    newer: Option<&crate::leader::updates::Newer>,
 ) -> Vec<Warning> {
     let mut out = worker_silent(snapshot, credentials, now_ms, heartbeat_interval);
     out.extend(enrolled_never_heartbeating(snapshot, credentials));
@@ -2240,6 +2244,7 @@ pub fn derive(
     out.extend(identity_expiring(deployed_certificates, now_ms));
     out.extend(held.map(deploy_held));
     out.extend(remote.map(remote_not_followed));
+    out.extend(newer.and_then(|n| newer_release(n, crate::version::RELEASE?)));
     out.extend(declared_fields_drifted(series_store, now_ms));
     out.extend(streams_unrouted(series_store, now_ms));
     fold_logged_details(&mut out, &logged);
@@ -2285,6 +2290,21 @@ fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning {
         since_millis: Some(failure.since),
         message: format!("{}. The fleet keeps running what it runs", failure.message),
     }
+}
+
+/// A published release newer than this leader's own (`leader::updates`). Info: running an older release is no fault.
+fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Option<Warning> {
+    Some(Warning {
+        scope: None,
+        condition: Condition::NewerRelease,
+        subject_kind: SubjectKind::Leader,
+        site: None,
+        subject_id: "leader".to_string(),
+        group: None,
+        severity: Severity::Info,
+        since_millis: Some(newer.since),
+        message: format!("smeltr {} is out, and this leader runs {own}", newer.release),
+    })
 }
 
 /// What is wrong with the deployed commit, as warnings: [`derive`]'s catalog takes these beside its own.
@@ -2740,7 +2760,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert!(
             !warnings
@@ -2775,7 +2795,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         let raised = warnings
             .iter()
@@ -2816,7 +2836,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             )
             .iter()
             .any(|w| w.condition == Condition::WorkerNotDeployingItsTarget),
@@ -2840,7 +2860,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             )
             .iter()
             .all(|w| w.condition != Condition::WorkerNotDeployingItsTarget),
@@ -2873,7 +2893,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         let raised = warnings
             .iter()
@@ -2910,7 +2930,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert!(
             !warnings
@@ -3907,7 +3927,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         )
     }
 
@@ -4149,7 +4169,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
 
         assert!(
@@ -4434,7 +4454,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert!(warnings.is_empty());
     }
@@ -4456,7 +4476,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Worker);
@@ -4481,7 +4501,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             )
             .is_empty(),
             "within the threshold, silence is absent -- this is the point of derived, never stored"
@@ -4505,7 +4525,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert!(warnings.is_empty(), "revocation is deliberate, not a failure");
     }
@@ -4678,7 +4698,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             )
         };
 
@@ -4718,7 +4738,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Worker);
@@ -4745,7 +4765,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             )
             .is_empty(),
             "absent the moment a thread shows up, even an empty bootstrap one"
@@ -4768,7 +4788,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert!(warnings.is_empty());
     }
@@ -4798,7 +4818,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
@@ -4824,7 +4844,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             )
             .is_empty(),
             "the fact clears the moment the reader stops reporting a reason"
@@ -4858,7 +4878,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         let got: Vec<_> = w.iter().map(|w| (w.condition, w.message.as_str())).collect();
         assert_eq!(got.len(), 2, "{w:?}");
@@ -4898,7 +4918,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             );
             assert_eq!(w.len(), 1, "{w:?}");
             (w[0].condition, w[0].severity)
@@ -4932,7 +4952,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings[0].since_millis, Some(NOW - 240_000));
 
@@ -4951,7 +4971,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings[0].since_millis, None);
     }
@@ -4984,7 +5004,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
@@ -5013,7 +5033,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             )
             .is_empty(),
             "the fact clears the moment the reader stops reporting a reason"
@@ -5106,7 +5126,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             )
             .is_empty()
         );
@@ -5136,7 +5156,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings[0].since_millis, Some(NOW - 60_000));
 
@@ -5154,7 +5174,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings[0].since_millis, None);
     }
@@ -5183,7 +5203,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings.len(), 2);
         assert!(warnings.iter().any(|w| w.condition == Condition::SourceBlocked));
@@ -5214,7 +5234,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
@@ -5247,7 +5267,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             )
             .is_empty(),
             "the fact clears the moment the gauge reports healthy again"
@@ -5284,7 +5304,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             )
             .iter()
             .any(|w| w.condition == Condition::DestinationUnreachable),
@@ -5315,7 +5335,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             )
             .iter()
             .any(|w| w.condition == Condition::DestinationUnreachable),
@@ -5350,7 +5370,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings[0].since_millis, Some(NOW - 90_000));
 
@@ -5368,7 +5388,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings[0].since_millis, None);
     }
@@ -5395,7 +5415,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         let w = warnings
             .iter()
@@ -5428,7 +5448,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         let w = warnings
             .iter()
@@ -5464,7 +5484,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings.len(), 2);
         assert!(warnings.iter().any(|w| w.condition == Condition::DestinationRefusing));
@@ -5497,7 +5517,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Destination);
@@ -5527,7 +5547,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             )
             .is_empty(),
             "the ring keeps history; a warning is not a log of what once happened"
@@ -5559,7 +5579,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(
             warnings.len(),
@@ -5772,7 +5792,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].condition, Condition::LagClimbing);
@@ -5795,7 +5815,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
@@ -5829,7 +5849,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             )
             .is_empty(),
             "the worker is fine -- the group it reports is what main lacks"
@@ -5855,7 +5875,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         assert_eq!(warnings[0].since_millis, Some(NOW - 60_000));
     }
@@ -5927,7 +5947,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         let held: Vec<&Warning> = warnings
             .iter()
@@ -5968,7 +5988,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         let held: Vec<&Warning> = warnings
             .iter()
@@ -6009,7 +6029,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         let w = warnings
             .iter()
@@ -6040,7 +6060,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
         let w = warnings
             .iter()
@@ -6078,7 +6098,7 @@ mod tests {
             &settled(),
             &[],
             None,
-            None,
+            None, None,
         );
 
         assert!(
@@ -6109,7 +6129,7 @@ mod tests {
                 &settled(),
                 &[],
                 None,
-                None,
+                None, None,
             )
             .is_empty(),
             "the harness raises when the name is one the catalog reads"
