@@ -77,7 +77,7 @@ export function described(detail: Locator, term: string): Locator {
 
 /** Opens the row menu `name` names. Scrolled to first, and drawn once there: a row menu closes on any scroll,
  * and the scroll that brings it into view lands a frame after it. */
-export async function openRowMenu(page: Page, name: string) {
+export async function openRowMenu(page: Page, name: string | RegExp) {
   const trigger = page.getByRole('button', { name, exact: true });
   await trigger.scrollIntoViewIfNeeded();
   await page.evaluate(
