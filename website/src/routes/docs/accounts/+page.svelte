@@ -107,8 +107,8 @@
     <li>
       Back in Smeltr, turn on <strong>Enabled</strong> and enter the provider's
       <strong>Issuer URL</strong>, the <strong>Client ID</strong> and the
-      <strong>Client secret</strong>. If your provider
-      names groups in another claim, set it under Advanced.
+      <strong>Client secret</strong>. If your provider names groups in another claim, set it under
+      Advanced.
     </li>
     <li>Select <strong>Save</strong>.</li>
   </ol>
@@ -122,12 +122,11 @@
   </p>
   <p>
     The sign-in screen then offers <strong>Sign in with SSO</strong>, with
-    <strong>Sign in with username</strong> beside it for local accounts. The first time somebody signs
-    in through the provider, Smeltr creates their account. To sign in, a person must belong to at least one
-    group that has a role. <strong>Refused sign-ins</strong> on the Roles tab lists everyone turned
-    away, with the groups the provider sent.
-    Accounts lists them with SSO as their sign-in, and the email or username the provider gives them under
-    their name.
+    <strong>Sign in with username</strong> beside it for local accounts. The first time somebody
+    signs in through the provider, Smeltr creates their account. Accounts lists them with SSO as
+    their sign-in, and the email or username the provider gives them under their name. To sign in, a
+    person must belong to at least one group that has a role. <strong>Refused sign-ins</strong> on the
+    Roles tab lists everyone turned away, with the groups the provider sent.
   </p>
   <p>
     The provider owns an SSO account's password, so it has no Reset password. To stop somebody
@@ -169,8 +168,8 @@
     A change to a role applies on each holder's next request. A change to somebody's groups at the
     provider applies within a few minutes, while they stay signed in, when the provider issues
     refresh tokens and its refreshes carry an ID token; otherwise at their next sign-in. A refresh
-    the provider refuses, or one that leaves them in no group with a role, signs them out. To shut somebody out
-    at once, disable their account in Users, or remove them from those groups at the provider
-    and then revoke their sessions. Users lists each person's roles beside their name.
+    the provider refuses, or one that leaves them in no group with a role, signs them out. To shut
+    somebody out at once, disable their account in Users, or remove them from those groups at the
+    provider and then revoke their sessions. Users lists each person's roles beside their name.
   </p>
 </GuideLayout>
