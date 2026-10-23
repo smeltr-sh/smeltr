@@ -6,6 +6,7 @@
 <script lang="ts">
   import Conversation from './Conversation.svelte';
   import { reported } from './errors.svelte';
+  import { firstLineText } from './markdown';
   import { listConversations, refused, type ConversationSummaryDto } from './api';
 
   let { onclose }: { onclose: () => void } = $props();
@@ -90,7 +91,7 @@
   <div class="bar">
     <select aria-label="Conversation" bind:value={open}>
       <option value="">New conversation</option>
-      {#each conversations as c (c.id)}<option value={c.id}>{c.title}</option>{/each}
+      {#each conversations as c (c.id)}<option value={c.id}>{firstLineText(c.title)}</option>{/each}
     </select>
     <span class="spacer"></span>
     <a href={open ? `#/me/agent/${open}` : '#/me/agent'} onclick={onclose}>Open on the Agent page</a
