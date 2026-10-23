@@ -1859,7 +1859,7 @@ const restartConversation: Move = {
     const summary = `Summary ${world.made++}`;
     if (summarize) model.answer([say(summary)]);
     const before = model.asked.length;
-    await page.getByRole('button', { name: /^Context \d+% full$/ }).click();
+    await openRowMenu(page, /^Context \d+% full$/);
     await page
       .getByRole('button', { name: summarize ? 'Summarize now' : 'Clear', exact: true })
       .click();
