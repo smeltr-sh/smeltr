@@ -85,6 +85,33 @@
     const d = new Date(millis - new Date(millis).getTimezoneOffset() * 60_000);
     return d.toISOString().slice(0, 16);
   }
+  /** Whether the pasted authority is other than the one in force, which is when serving the upload waits for
+   * the fleet and the deadline means anything. False until there is something to tell by. */
+  let newAuthority = $state(false);
+  $effect(() => {
+    const pasted = authority;
+    const current = certificates?.authority?.fingerprint;
+    if (!current) return;
+    fingerprints(pasted).then((each) => {
+      if (pasted === authority) newAuthority = each.length > 0 && !each.includes(current);
+    });
+  });
+  /** SHA-256 over each PEM certificate's DER, as the leader names a certificate. Unreadable blocks are skipped. */
+  async function fingerprints(pem: string): Promise<string[]> {
+    const blocks = pem.match(/-----BEGIN CERTIFICATE-----[^-]+-----END CERTIFICATE-----/g) ?? [];
+    const each: string[] = [];
+    for (const block of blocks) {
+      try {
+        const body = block.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
+        const der = Uint8Array.from(atob(body), (c) => c.charCodeAt(0));
+        const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', der));
+        each.push(Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join(''));
+      } catch {
+        // Not base64: the leader says what is wrong with it on upload.
+      }
+    }
+    return each;
+  }
   /** Ticks while a rotation is open, for the countdown. */
   let now = $state(Date.now());
 
@@ -704,17 +731,19 @@
           <Field label="Authority" note="PEM, the authority that signed the certificate">
             <textarea bind:value={authority} rows="4" spellcheck="false"></textarea>
           </Field>
-          <Field
-            label="Cut over by"
-            note="When the authority is new to the fleet: this leader serves the certificate as soon as every worker holds the authority, and at this time at the latest."
-          >
-            <input
-              class="when"
-              type="datetime-local"
-              bind:value={cutOverBy}
-              max={latestCutOver === null ? undefined : local(latestCutOver)}
-            />
-          </Field>
+          {#if newAuthority}
+            <Field
+              label="Cut over by"
+              note="Workers get the new authority first. This leader switches once they all have it, or at this time, whichever comes first."
+            >
+              <input
+                class="when"
+                type="datetime-local"
+                bind:value={cutOverBy}
+                max={latestCutOver === null ? undefined : local(latestCutOver)}
+              />
+            </Field>
+          {/if}
           {#if switching}
             <p class="dim">
               A switch to {switchingTo} is open. When it cuts over, it replaces this certificate.
@@ -733,7 +762,7 @@
                       certificate,
                       privateKey,
                       authority,
-                      cutOverBy ? new Date(cutOverBy).getTime() : null,
+                      newAuthority && cutOverBy ? new Date(cutOverBy).getTime() : null,
                     ),
                   switched('this leader is serving the certificate you supplied'),
                 )}
