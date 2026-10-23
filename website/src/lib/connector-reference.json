@@ -4001,6 +4001,26 @@
             "what": "The [credential](/docs/secrets) holding the API key."
           },
           {
+            "name": "username",
+            "type": "string",
+            "absent": "none",
+            "examples": ["smeltr_writer"],
+            "what": "The user it signs in as, in place of an API key. Set with `password`."
+          },
+          {
+            "name": "password",
+            "type": "credential",
+            "absent": "none",
+            "examples": [
+              "ELASTIC_PASSWORD",
+              {
+                "secret": "elastic-password",
+                "version": 1
+              }
+            ],
+            "what": "The [credential](/docs/secrets) holding the user's password."
+          },
+          {
             "name": "docId",
             "type": "string",
             "default": "auto",
@@ -4074,7 +4094,7 @@
         "reads": ["__destination.index", "__destination.id"],
         "form": [
           {
-            "settings": ["url", "defaultIndex", "identity", "auth", "docId", "idField"]
+            "settings": ["url", "defaultIndex", "identity", "auth", "username", "password", "docId", "idField"]
           },
           {
             "section": "Advanced",

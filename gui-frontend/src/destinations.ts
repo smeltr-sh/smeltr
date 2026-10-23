@@ -69,7 +69,7 @@ export function logAnalyticsModified(
 /** Whether `d` sends a credential besides one in its URL, as `UrlField` and `ZoneUrls` take it: Elasticsearch's
  * auth, Splunk's token, or an HTTP or Prometheus credential header. */
 export function sendsCredential(d: DestinationDto): boolean {
-  if (d.type === 'elasticsearch') return d.auth !== undefined;
+  if (d.type === 'elasticsearch') return d.auth !== undefined || d.password !== undefined;
   if (d.type === 'splunkHec') return true;
   if (d.type === 'http' || d.type === 'prometheus')
     return Object.keys(d.credentials ?? {}).length > 0;
