@@ -4750,6 +4750,8 @@ export interface RotationDto {
   /** When this leader signs under `incoming` on its own, whether or not the
    * fleet has taken it by then. */
   deadlineMillis: number;
+  /** The latest `deadlineMillis` can move to. */
+  latestDeadlineMillis: number;
   /** What the cutover puts in force: another authority of the leader's own,
    * an uploaded certificate, or the leader's own again. */
   installs: 'nextKey' | 'supplied' | 'own';

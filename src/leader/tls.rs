@@ -1106,8 +1106,13 @@ fn switch_deadline(
 }
 
 /// The latest an open rotation can wait: short of every expiry it depends on by [`CUTOVER_MARGIN`], the same
-/// bound each kind of rotation began under.
-fn latest_deadline(dir: &Path, state: &Rotation) -> Result<i64, String> {
+/// bound each kind of rotation began under. [`deadline_may_move`] refuses a deadline past it.
+pub fn latest_deadline(dir: &Path, state: &Rotation) -> Result<i64, String> {
+    let _reading = changing();
+    latest_deadline_held(dir, state)
+}
+
+fn latest_deadline_held(dir: &Path, state: &Rotation) -> Result<i64, String> {
     let (materials, served) = in_force_held(dir)?;
     let incoming = describe(state.incoming_pem.as_bytes(), "the incoming authority")?;
     match state.installs {
@@ -1143,7 +1148,7 @@ pub fn deadline_may_move(dir: &Path, deadline_millis: i64, now_ms: i64) -> Resul
             "that time has passed. Pick a later one, or cut over now.".to_string(),
         ));
     }
-    if deadline_millis > latest_deadline(dir, &state).map_err(Refused::Unavailable)? {
+    if deadline_millis > latest_deadline_held(dir, &state).map_err(Refused::Unavailable)? {
         return Err(Refused::Conflict(
             "that is later than this rotation can wait: 10 minutes before a certificate it depends on expires."
                 .to_string(),

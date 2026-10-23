@@ -103,6 +103,8 @@ struct RotationDto {
     started_millis: i64,
     /// When this leader signs under it whatever the fleet holds.
     deadline_millis: i64,
+    /// The latest the deadline can move to.
+    latest_deadline_millis: i64,
     /// What the cutover puts in force.
     installs: tls::Installs,
     /// Where that comes from.
@@ -161,6 +163,7 @@ async fn read(tls: Option<&Arc<Tls>>) -> Result<CertificatesDto, String> {
                     incoming: tls::describe(state.incoming_pem.as_bytes(), "the incoming authority")?,
                     started_millis: state.started_millis,
                     deadline_millis: state.deadline_millis,
+                    latest_deadline_millis: tls::latest_deadline(&serving.dir, &state)?,
                     installs: state.installs,
                     source: acme::incoming(&serving.dir, &state)?,
                     not_following: serving.leader.registry.not_taking_authority(),

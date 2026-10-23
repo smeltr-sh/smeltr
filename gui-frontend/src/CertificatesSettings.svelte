@@ -73,18 +73,12 @@
   let privateKey = $state('');
   /** The deadline as the switch's picker holds it, local time, while somebody is changing it. */
   let cutOverBy = $state('');
-  const CUTOVER_MARGIN_MS = 10 * 60 * 1000;
   // Follows the deadline in force when it moves, and only then: the page re-reads it every few seconds, which
   // must not undo a change somebody is making.
   const deadlineInForce = $derived(certificates?.rotation?.deadlineMillis ?? null);
   $effect(() => {
     if (deadlineInForce !== null) cutOverBy = local(deadlineInForce);
   });
-  /** The latest a switch can wait: short of either certificate's expiry by the leader's margin. */
-  function latest(rotation: RotationDto): number {
-    const served = certificates?.served?.notAfterMillis ?? Infinity;
-    return Math.min(served, rotation.incoming.notAfterMillis) - CUTOVER_MARGIN_MS;
-  }
   function deadlineDirty(rotation: RotationDto): boolean {
     return cutOverBy !== local(rotation.deadlineMillis);
   }
@@ -93,8 +87,8 @@
     if (!deadlineDirty(rotation) || cutOverBy === '') return '';
     const picked = new Date(cutOverBy).getTime();
     if (picked <= now) return 'That time has passed. To cut over now, use Cut over now.';
-    if (picked > latest(rotation))
-      return `The latest it can wait is ${at(latest(rotation))}, 10 minutes before a certificate expires.`;
+    if (picked > rotation.latestDeadlineMillis)
+      return `The latest it can wait is ${at(rotation.latestDeadlineMillis)}, 10 minutes before a certificate expires.`;
     return '';
   }
   /** `millis` as a datetime-local input holds it. */
@@ -404,7 +398,7 @@
         aria-label="Cut over by"
         bind:value={cutOverBy}
         min={local(now)}
-        max={local(latest(rotation))}
+        max={local(rotation.latestDeadlineMillis)}
       />, whichever comes first.
     </p>
     <p class="countdown">

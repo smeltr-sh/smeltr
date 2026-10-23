@@ -37,6 +37,7 @@ const CERTIFICATES = {
     incoming: described('smeltr authority 2'),
     startedMillis: Date.now(),
     deadlineMillis: Date.now() + YEAR,
+    latestDeadlineMillis: Date.now() + 2 * YEAR,
     installs: 'nextKey',
     source: 'own',
     notFollowing: [],
