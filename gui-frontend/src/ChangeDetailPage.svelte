@@ -342,8 +342,9 @@
     if (!loaded || deployDisabledReason !== '') return;
     const ok = await ask({
       title: heldAt ? 'approve' : 'approve & deploy',
-      body:
-        `Approve ${heldAt ? '' : 'and deploy '}"${loaded.change.title}". This squash-merges the change onto main` +
+      body: `Approve ${heldAt ? '' : 'and deploy '}"${loaded.change.title}".`,
+      help:
+        'This squash-merges the change onto main' +
         (remote ? `, pushes it to the remote's main ` : ' ') +
         `and deletes the branch ${branch}` +
         (heldAt

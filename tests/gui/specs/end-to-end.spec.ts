@@ -94,7 +94,7 @@ test('W12: a fresh leader is set up, changed, reviewed and deployed from the GUI
   await expect(page.getByText('Every worker reports itself into search.')).toBeVisible();
   await page.getByRole('button', { name: 'Approve & deploy' }).click();
   const confirm = page.getByRole('dialog', { name: 'approve & deploy' });
-  await confirm.getByRole('button', { name: 'Approve & deploy' }).click();
+  await confirm.getByRole('button', { name: 'Approve & deploy', exact: true }).click();
   await expect(page).not.toHaveURL(/#\/changes\/review/);
 
   // A worker joins the group, and rows reach the destination.
