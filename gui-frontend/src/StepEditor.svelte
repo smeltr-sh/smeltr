@@ -1480,10 +1480,10 @@
 
   /* The step driving the diff view: a tint, per the flat-surfaces rule. */
   .diff-selected {
-    background: color-mix(in oklch, var(--ink) 6%, var(--field));
+    background: color-mix(in oklab, var(--ink) 6%, var(--field));
   }
   .comment-card.diff-selected {
-    background: color-mix(in oklch, var(--ink) 6%, var(--comment-bg));
+    background: color-mix(in oklab, var(--ink) 6%, var(--comment-bg));
   }
 
   .card-head {
@@ -1684,7 +1684,7 @@
     gap: 0.4rem;
     margin: 0 0.7rem 0.7rem;
     padding: 0.55rem 0.7rem;
-    background: color-mix(in oklch, var(--error) 12%, var(--panel));
+    background: color-mix(in oklab, var(--error) 12%, var(--panel));
     border-radius: var(--radius);
   }
 
@@ -1909,7 +1909,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
-    background: color-mix(in oklch, var(--accent) 4%, var(--field));
+    background: color-mix(in oklab, var(--accent) 4%, var(--field));
   }
 
   .suggestions-head {
