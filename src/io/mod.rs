@@ -121,14 +121,21 @@ pub fn build_destination(
         DestinationKind::Kafka(c) => Ok(Box::new(kafka::KafkaDestination::new(c, id, metrics, secrets)?)),
         DestinationKind::Elasticsearch(c) => {
             // A credential this worker cannot obtain is an error, never a silent unauthenticated connection.
-            let auth = match &c.auth {
-                None => None,
-                Some(reference) => Some(elastic::authorization(http::credential(
+            let auth = match (&c.auth, &c.basic) {
+                (Some(reference), _) => Some(elastic::authorization(http::credential(
                     "elasticsearch destination",
                     "auth",
                     reference,
                     secrets,
                 )?)),
+                (None, Some((user, password))) => Some(http::basic(
+                    "elasticsearch destination",
+                    "password",
+                    user,
+                    password,
+                    secrets,
+                )?),
+                (None, None) => None,
             };
             // What this destination presents and trusts, resolved once: every transport below shares it, so an
             // identity's certificate is parsed once rather than once per sender.

@@ -72,7 +72,9 @@ const OPTIONS: &[&str] = &[
     "auth.leaderStored",
     "auth.workerLocal",
     "auth.apiKey",
+    "auth.bareKey",
     "auth.basic",
+    "auth.userPassword",
     "auth.lineBreak",
     "identity.authorities",
     "identity.certificate",
@@ -118,6 +120,8 @@ const OPTIONS: &[&str] = &[
     "broken.bufferBytes.request",
     "broken.stallAfterSecs",
     "broken.auth",
+    "broken.username",
+    "broken.password",
     "broken.docId",
     "mangled",
 ];
@@ -169,8 +173,10 @@ struct Draw {
     zone: Option<&'static str>,
     /// Whether the destination sniffs, and if so whether the cluster lists its nodes.
     sniff: Option<bool>,
-    /// The `Authorization` value the leader holds for `auth`.
+    /// The `Authorization` value the cluster is sent.
     auth: Option<String>,
+    /// What the leader holds for the credential the destination names: `auth`'s, or `password`'s.
+    held: Option<String>,
     /// A pipeline step setting `__destination.id`, for a policy that wants an id from a row with no `idField`.
     sets_id: bool,
     /// The setting broken, if one was. `Some(None)` is a break the save refuses on no one field.
@@ -215,7 +221,10 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, index: &str) -> Draw {
     });
     d.insert("defaultIndex".into(), json!(index));
 
-    let mut auth = None;
+    const API_KEY: &str = "VnVhQ2ZHY0JDZGJrUW0tZTVhT3g6dWkybHAyYXhUTm1zeWFrdzl0dk5udw==";
+    // `elastic:changeme`, as Basic auth sends it.
+    const BASIC: &str = "Basic ZWxhc3RpYzpjaGFuZ2VtZQ==";
+    let (mut auth, mut held) = (None, None);
     match rng.below(4) {
         0 => cov.reach("auth.none"),
         3 if !matches!(target, Target::Live(_)) => {
@@ -224,20 +233,33 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, index: &str) -> Draw {
         }
         _ => {
             cov.reach("auth.leaderStored");
-            let value = if rng.chance(2) {
-                cov.reach("auth.apiKey");
-                "ApiKey VnVhQ2ZHY0JDZGJrUW0tZTVhT3g6dWkybHAyYXhUTm1zeWFrdzl0dk5udw=="
-            } else {
-                cov.reach("auth.basic");
-                "Basic ZWxhc3RpYzpjaGFuZ2VtZQ=="
+            let (field, value, sent) = match rng.below(4) {
+                0 => {
+                    cov.reach("auth.apiKey");
+                    ("auth", format!("ApiKey {API_KEY}"), format!("ApiKey {API_KEY}"))
+                }
+                1 => {
+                    cov.reach("auth.bareKey");
+                    ("auth", API_KEY.to_string(), format!("ApiKey {API_KEY}"))
+                }
+                2 => {
+                    cov.reach("auth.basic");
+                    ("auth", BASIC.to_string(), BASIC.to_string())
+                }
+                _ => {
+                    cov.reach("auth.userPassword");
+                    d.insert("username".into(), json!("elastic"));
+                    ("password", "changeme".to_string(), BASIC.to_string())
+                }
             };
             // A value pasted with its trailing newline, which no header can carry.
             let pasted = !matches!(target, Target::Live(_)) && rng.chance(12);
             if pasted {
                 cov.reach("auth.lineBreak");
             }
-            auth = Some(format!("{value}{}", if pasted { "\n" } else { "" }));
-            d.insert("auth".into(), json!({"secret": "es-auth", "version": 1 + rng.below(3)}));
+            held = Some(format!("{value}{}", if pasted { "\n" } else { "" }));
+            auth = Some(sent);
+            d.insert(field.into(), json!({"secret": "es-auth", "version": 1 + rng.below(3)}));
         }
     }
 
@@ -273,6 +295,7 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, index: &str) -> Draw {
         zone,
         sniff,
         auth,
+        held,
         sets_id,
         broken: None,
     };
@@ -404,6 +427,8 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
         "bufferBytes.request",
         "stallAfterSecs",
         "auth",
+        "username",
+        "password",
         "docId",
     ]);
     cov.reach(format!("broken.{what}"));
@@ -483,6 +508,31 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
             d.insert("auth".into(), blank);
             Some("auth")
         }
+        "username" => {
+            // A password with no one to sign in as: no username, or a blank one.
+            d.remove("auth");
+            d.insert("password".into(), json!({"secret": "es-auth", "version": 1}));
+            if rng.chance(2) {
+                d.insert("username".into(), json!(rng.pick(&["", " "])));
+            } else {
+                d.remove("username");
+            }
+            Some("username")
+        }
+        "password" => {
+            d.insert("username".into(), json!("elastic"));
+            if rng.chance(2) {
+                // A user with no password.
+                d.remove("auth");
+                d.remove("password");
+                Some("password")
+            } else {
+                // A password beside an API key.
+                d.insert("auth".into(), json!({"secret": "es-auth", "version": 1}));
+                d.insert("password".into(), json!({"secret": "es-password", "version": 1}));
+                Some("auth")
+            }
+        }
         "docId" => {
             // A policy that wants an id, and nothing that gives one: no field, and no pipeline setting it.
             d.insert("docId".into(), json!(rng.pick(&["dedupe", "overwrite"])));
@@ -528,11 +578,11 @@ fn bundle(draw: &Draw, pki: &Pki) -> Value {
 fn secrets_held(draw: &Draw, pki: &Pki) -> (HeldSecrets, bool) {
     let mut stored = vec![("client-key".to_string(), 1, pki.client.key.clone())];
     let mut unheld = false;
-    match draw.destination.get("auth") {
+    match draw.destination.get("auth").or(draw.destination.get("password")) {
         Some(Value::Object(o)) => stored.push((
             o["secret"].as_str().unwrap().to_string(),
             o["version"].as_i64().unwrap(),
-            draw.auth.clone().unwrap(),
+            draw.held.clone().unwrap(),
         )),
         Some(Value::String(_)) => unheld = true,
         _ => {}
@@ -601,14 +651,18 @@ fn check_loaded(draw: &Draw, c: &ElasticDestinationConfig, named: &[SecretRef]) 
     });
     expect("sniff", format!("{sniff:?}"), format!("{:?}", c.sniff));
     expect("defaultIndex", s("defaultIndex").unwrap(), c.default_index.clone());
-    let auth = d.get("auth").map(|v| match v {
+    let reference = |v: &Value| match v {
         Value::String(var) => SecretRef::WorkerLocal(var.clone()),
         v => SecretRef::LeaderStored {
             name: v["secret"].as_str().unwrap().to_string(),
             version: v["version"].as_i64().unwrap(),
         },
-    });
+    };
+    let auth = d.get("auth").map(reference);
     expect("auth", format!("{auth:?}"), format!("{:?}", c.auth));
+    let password = d.get("password").map(reference);
+    let basic = s("username").zip(password.clone());
+    expect("basic", format!("{basic:?}"), format!("{:?}", c.basic));
     let identity = c.identity.as_ref().map(|i| match i.certificate {
         Some(_) => Identity::Presents,
         None => Identity::Trusts,
@@ -632,7 +686,7 @@ fn check_loaded(draw: &Draw, c: &ElasticDestinationConfig, named: &[SecretRef]) 
     let stall = d.get("stallAfterSecs").map_or(30, |v| v.as_u64().unwrap());
     expect("stallAfterSecs", stall.to_string(), c.stall_after.as_secs().to_string());
     let credentials: Vec<String> = named.iter().map(|r| format!("{r:?}")).collect();
-    let drawn: Vec<String> = auth.iter().map(|r| format!("{r:?}")).collect();
+    let drawn: Vec<String> = auth.iter().chain(&password).map(|r| format!("{r:?}")).collect();
     expect("credentials", format!("{drawn:?}"), format!("{credentials:?}"));
     if wrong.is_empty() {
         Ok(())
@@ -1297,7 +1351,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let metrics = smeltr::metrics::MetricsHandle::new(registry.clone(), "fuzz");
     let built = smeltr::io::build_destination(&DestinationKind::Elasticsearch(c.clone()), 0, metrics, &secrets, None);
-    if let Some(value) = draw.auth.as_ref().filter(|v| v.ends_with('\n')) {
+    if let Some(value) = draw.held.as_ref().filter(|v| v.ends_with('\n')) {
         // Refused where it is built, naming the reference and never the value.
         let why = match built {
             Ok(_) => return Err(format!("built with an `auth` value holding a line break\n{json}")),
@@ -1798,7 +1852,9 @@ fn live_options() -> Vec<&'static str> {
                     "auth.workerLocal",
                     // Security is off on the live cluster, so it reads no `Authorization` header.
                     "auth.apiKey",
+                    "auth.bareKey",
                     "auth.basic",
+                    "auth.userPassword",
                     "auth.lineBreak",
                     "defaultIndex",
                     "defaultIndex.escaped",

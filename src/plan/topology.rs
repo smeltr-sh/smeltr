@@ -1691,8 +1691,10 @@ pub struct ElasticDestinationConfig {
     /// Used when a row has no live `__destination.index`.
     pub default_index: String,
     /// The credential holding the API key, or a complete `Authorization` header value (`io::elastic::authorization`).
-    /// `None` for a cluster with security disabled.
+    /// `None` for a cluster with security disabled, or one signed in to as `basic`.
     pub auth: Option<SecretRef>,
+    /// Basic auth: the user, and where the password lives. Never beside `auth`.
+    pub basic: Option<(String, SecretRef)>,
     /// What this client connects under. `None` is no certificate and the platform's own roots -- which an
     /// internally-issued server certificate will not be under.
     pub identity: Option<std::sync::Arc<Identity>>,
