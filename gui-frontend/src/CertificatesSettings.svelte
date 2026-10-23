@@ -314,7 +314,6 @@
       certificates = c;
       certificate = '';
       privateKey = '';
-      authority = '';
       return typeof done === 'string' ? done : done(c);
     });
   }
