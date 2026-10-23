@@ -11,6 +11,7 @@
 <script lang="ts">
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
+  import InlineSaveBar from './InlineSaveBar.svelte';
   import {
     abandonRotation,
     AUTHORITY_URL,
@@ -389,7 +390,13 @@
 
 {#snippet progress(rotation: RotationDto)}
   {@const holding = rotation.workers.filter((w) => w.holdsIncoming).length}
-  <div class="setting">
+  <form
+    class="setting"
+    onsubmit={(e) => {
+      e.preventDefault();
+      rotationAct(() => setRotationDeadline(new Date(cutOverBy).getTime()), '');
+    }}
+  >
     <p class="deadline">
       Cuts over as soon as every worker holds the incoming authority, or at
       <input
@@ -405,24 +412,16 @@
       Cutover in <strong>{countdown(rotation.deadlineMillis)}</strong>
       <span class="dim">· started {at(rotation.startedMillis)}</span>
     </p>
-    {#if deadlineDirty(rotation)}
-      {#if deadlineProblem(rotation)}
-        <InlineError>{deadlineProblem(rotation)}</InlineError>
-      {/if}
-      <div class="buttons">
-        <button type="button" onclick={() => (cutOverBy = local(rotation.deadlineMillis))}
-          >Discard</button
-        >
-        <button
-          class="primary"
-          type="button"
-          disabled={rotationBusy || !!deadlineProblem(rotation)}
-          onclick={() => rotationAct(() => setRotationDeadline(new Date(cutOverBy).getTime()), '')}
-          >Save</button
-        >
-      </div>
+    {#if deadlineProblem(rotation)}
+      <InlineError>{deadlineProblem(rotation)}</InlineError>
     {/if}
-  </div>
+    <InlineSaveBar
+      dirty={deadlineDirty(rotation)}
+      label="Save"
+      disabled={rotationBusy || !!deadlineProblem(rotation)}
+      ondiscard={() => (cutOverBy = local(rotation.deadlineMillis))}
+    />
+  </form>
 
   <div class="setting">
     <h3>Workers <span class="dim">· {holding} of {rotation.workers.length} hold it</span></h3>
