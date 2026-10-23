@@ -65,11 +65,6 @@ const SERVER_SUBJECT: &str = "smeltr leader";
 /// is a leader with a larger problem than the wait.
 const CUTOVER_MARGIN: Duration = Duration::from_secs(10 * 60);
 
-/// The longest a rotation of the leader's own authority waits for the fleet, counted from its start. A rotation
-/// held open indefinitely is one an operator forgets, and every hour of it is an hour this leader's certificate is
-/// bounded by an authority it is trying to leave.
-pub const MOST_WAIT: Duration = Duration::from_secs(14 * 24 * 60 * 60);
-
 /// How far a certificate is backdated, against a client whose clock trails the leader's. Without it a certificate
 /// minted a second ago can be one that is not valid yet.
 const BACKDATE: Duration = Duration::from_secs(60 * 60);
@@ -1119,9 +1114,7 @@ fn latest_deadline(dir: &Path, state: &Rotation) -> Result<i64, String> {
         Installs::NextKey => {
             let margin = CUTOVER_MARGIN.as_millis() as i64;
             let outgoing = signing_root(&materials.ca_pem, &served)?;
-            Ok((outgoing.not_after_millis - margin)
-                .min(incoming.not_after_millis - margin)
-                .min(state.started_millis + MOST_WAIT.as_millis() as i64))
+            Ok((outgoing.not_after_millis - margin).min(incoming.not_after_millis - margin))
         }
         Installs::Supplied => {
             let chain = incoming_certificate(dir)?
@@ -1152,7 +1145,8 @@ pub fn deadline_may_move(dir: &Path, deadline_millis: i64, now_ms: i64) -> Resul
     }
     if deadline_millis > latest_deadline(dir, &state).map_err(Refused::Unavailable)? {
         return Err(Refused::Conflict(
-            "that is later than this rotation can wait.".to_string(),
+            "that is later than this rotation can wait: 10 minutes before a certificate it depends on expires."
+                .to_string(),
         ));
     }
     Ok(state)
@@ -3933,17 +3927,6 @@ mod tests {
         assert!(!cut_over_if_due(&dir, names(), A_YEAR, Some(&behind), sooner - 1).unwrap());
         assert!(cut_over_if_due(&dir, names(), A_YEAR, Some(&behind), sooner).unwrap());
         assert!(matches!(set_deadline(&dir, sooner + 1, NOW), Err(Refused::Conflict(_))), "nothing is open");
-    }
-
-    /// The leader's own rotation can wait no longer than it could have been asked to at its start, however long its
-    /// authorities last.
-    #[test]
-    fn an_own_rotation_deadline_moves_no_further_than_a_fortnight() {
-        let dir = rotating("own-moves");
-        begin_rotation(&dir, A_YEAR, A_WEEK_OUT, NOW).expect("a rotation");
-        let most = NOW + MOST_WAIT.as_millis() as i64;
-        assert!(matches!(set_deadline(&dir, most + 1, NOW), Err(Refused::Conflict(_))));
-        assert_eq!(set_deadline(&dir, most, NOW).expect("moved").deadline_millis, most);
     }
 
     /// One field takes the whole chain: a root at its end is the authority and is not served, and a chain under a

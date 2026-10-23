@@ -54,11 +54,7 @@ leader can hand it nothing: the operator gives it the incoming root, and the
 leader names it as theirs to see to. An operator
 rotating the leader's own authority sets the wait; a change of source waits
 until the certificate being served, or the one it is switching to, is about to
-run out, since nothing is lost by waiting until then. An operator can move
-either wait while it runs, to any time short of that bound and, for the
-leader's own authority, no more than a fortnight from its start. An upload is
-one chain, ending with its root unless the system's roots hold it, and the
-root is what a worker is given. An uploaded certificate under the root already in force
+run out, since nothing is lost by waiting until then. An uploaded certificate under the root already in force
 is a renewal, and is served at once, whatever rotation is open; an upload that
 would change the root waits for the open rotation to finish or be abandoned. A
 certificate the leader orders for itself from a certificate authority over

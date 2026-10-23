@@ -4813,7 +4813,7 @@ export function reissueCertificate(): Promise<CertificatesDto | AccountRefusal> 
 }
 
 /** How long a rotation may wait for the fleet, mirroring
- * `tls::MOST_WAIT`. The leader is the authority; this
+ * `certificates_api::MOST_WAIT_HOURS`. The leader is the authority; this
  * keeps the input from offering an hour count it would refuse anyway. */
 export const ROTATION_WAIT_HOURS = { min: 1, max: 14 * 24 };
 
