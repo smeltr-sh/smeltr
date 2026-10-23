@@ -99,7 +99,7 @@
       "env": "SMELTR_WORKER_ENABLED",
       "default": "`false`",
       "examples": ["true"],
-      "what": "Whether this process runs a worker. With `leader.enabled`, one process runs both."
+      "what": "Whether this install runs a worker. With `leader.enabled`, one service runs both."
     },
     {
       "key": "worker.group",
