@@ -10,17 +10,14 @@ md.validateLink = (url) => /^(https?:|mailto:|#\/)/i.test(url.trim());
 md.renderer.rules.image = (tokens, idx, options, env, self) =>
   md.utils.escapeHtml(self.renderInlineAsText(tokens[idx].children ?? [], options, env));
 
-const linkOpen =
-  md.renderer.rules.link_open ??
-  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
 // A link out of the GUI opens beside it, so the conversation stays where it was.
-md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+md.renderer.rules.link_open = (tokens, idx, options, _env, self) => {
   const link = tokens[idx];
   if (!String(link.attrGet('href')).startsWith('#')) {
     link.attrSet('target', '_blank');
     link.attrSet('rel', 'noopener noreferrer');
   }
-  return linkOpen(tokens, idx, options, env, self);
+  return self.renderToken(tokens, idx, options);
 };
 
 /** The HTML for `text`. Half-written Markdown renders too: an open code fence runs to the end. */
