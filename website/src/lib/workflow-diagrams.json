@@ -470,9 +470,9 @@
     ]
   },
   "single": {
-    "title": "Standalone: leader and worker in one process",
-    "description": "An administrator connects to the leader. One Smeltr binary runs the leader and one worker together in a single process, shown as joined cards. Sources send records through the worker to destinations.",
-    "caption": "One binary, one process: the leader and one worker run together. The administrator uses the leader; the worker reads from sources, filters records, and delivers them to destinations.",
+    "title": "Standalone: leader and worker on one host",
+    "description": "An administrator connects to the leader. One Smeltr service runs the leader and one worker together, shown as joined cards. Sources send records through the worker to destinations.",
+    "caption": "One binary, one service: the leader and one worker run together. The administrator uses the leader; the worker reads from sources, filters records, and delivers them to destinations.",
     "layouts": [
       {
         "width": 900,
@@ -527,7 +527,7 @@
             "y": 110,
             "w": 280,
             "h": 240,
-            "label": "One process"
+            "label": "One service"
           }
         ]
       },
