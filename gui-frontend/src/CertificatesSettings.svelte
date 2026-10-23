@@ -11,6 +11,7 @@
 <script lang="ts">
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
+  import InlineSaveBar from './InlineSaveBar.svelte';
   import {
     abandonRotation,
     AUTHORITY_URL,
@@ -19,6 +20,7 @@
     getCertificates,
     putCertificate,
     reissueCertificate,
+    setRotationDeadline,
     refused,
     withdrawCertificate,
     ROTATION_WAIT_HOURS,
@@ -34,6 +36,7 @@
     type CertificateSource,
     type CertificatesDto,
     type DescribedCertificate,
+    type RotationDto,
   } from './api';
   import { ask } from './Confirm.svelte';
   import Help from './Help.svelte';
@@ -44,7 +47,7 @@
   import Advanced from './Advanced.svelte';
   import PasswordField from './PasswordField.svelte';
   import TokenListInput from './TokenListInput.svelte';
-  import { expiry } from './time';
+  import { countdown, expiry, fromLocalInput, localDateTime, toLocalInput } from './time';
   import { NOT_IN_DEMO } from './access';
 
   let certificates = $state<CertificatesDto | null>(null);
@@ -68,7 +71,28 @@
   });
   let certificate = $state('');
   let privateKey = $state('');
-  let authority = $state('');
+  /** The deadline as the switch's picker holds it, local time, while somebody is changing it. */
+  let cutOverBy = $state('');
+  // Follows the deadline in force when it moves, and only then: the page re-reads it every few seconds, which
+  // must not undo a change somebody is making.
+  const deadlineInForce = $derived(certificates?.rotation?.deadlineMillis ?? null);
+  $effect(() => {
+    if (deadlineInForce !== null) cutOverBy = toLocalInput(deadlineInForce);
+  });
+  function deadlineDirty(rotation: RotationDto): boolean {
+    return cutOverBy !== toLocalInput(rotation.deadlineMillis);
+  }
+  /** Why the picked deadline cannot be saved, or ''. */
+  function deadlineProblem(rotation: RotationDto): string {
+    const picked = fromLocalInput(cutOverBy);
+    if (!deadlineDirty(rotation) || picked === undefined) return '';
+    if (picked <= now) return 'That time has passed. To cut over now, use Cut over now.';
+    if (picked > rotation.latestDeadlineMillis)
+      return `The latest it can wait is ${localDateTime(rotation.latestDeadlineMillis)}, 10 minutes before a certificate expires.`;
+    return '';
+  }
+  /** Ticks while a rotation is open, for the countdown. */
+  let now = $state(Date.now());
 
   /** The ACME settings as the leader holds them, and the form over them. */
   let acme = $state<AcmeDto | null>(null);
@@ -187,6 +211,11 @@
     }, ROTATION_POLL_MS);
     return () => clearInterval(id);
   });
+  $effect(() => {
+    if (!rotationOpen) return;
+    const id = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(id);
+  });
 
   const DAY = 24 * 60 * 60 * 1000;
 
@@ -254,7 +283,6 @@
       certificates = c;
       certificate = '';
       privateKey = '';
-      authority = '';
       return typeof done === 'string' ? done : done(c);
     });
   }
@@ -325,6 +353,67 @@
       <span class:soon={expiringSoon(cert)}>{expiry(cert.notAfterMillis)}</span>
       · {tail}
     </p>
+  </div>
+{/snippet}
+
+{#snippet progress(rotation: RotationDto)}
+  {@const holding = rotation.workers.filter((w) => w.holdsIncoming).length}
+  {@const problem = deadlineProblem(rotation)}
+  <form
+    class="setting"
+    onsubmit={(e) => {
+      e.preventDefault();
+      const picked = fromLocalInput(cutOverBy);
+      if (picked !== undefined) rotationAct(() => setRotationDeadline(picked), '');
+    }}
+  >
+    <p class="deadline">
+      Cuts over as soon as every worker holds the incoming authority, or at
+      <input
+        class="when"
+        type="datetime-local"
+        aria-label="Cut over by"
+        bind:value={cutOverBy}
+        min={toLocalInput(now)}
+        max={toLocalInput(rotation.latestDeadlineMillis)}
+      />, whichever comes first.
+    </p>
+    <p class="countdown">
+      Cutover in <strong>{countdown(rotation.deadlineMillis, now)}</strong>
+      <span class="dim">· started {localDateTime(rotation.startedMillis)}</span>
+    </p>
+    {#if problem}
+      <InlineError>{problem}</InlineError>
+    {/if}
+    <InlineSaveBar
+      dirty={deadlineDirty(rotation)}
+      label="Save"
+      disabled={rotationBusy || !!problem}
+      ondiscard={() => (cutOverBy = toLocalInput(rotation.deadlineMillis))}
+    />
+  </form>
+
+  <div class="setting">
+    <h3>Workers <span class="dim">· {holding} of {rotation.workers.length} hold it</span></h3>
+    <ul class="workers">
+      {#each rotation.workers as worker (worker.id)}
+        <li>
+          <span class="mono">{worker.id}</span>
+          {#if worker.holdsIncoming}
+            <span class="holds">✓ holds it</span>
+          {:else}
+            <span class="dim">waiting</span>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+    {#if rotation.notFollowing.length > 0}
+      <p class="dim">
+        Not waited for: {rotation.notFollowing.join(', ')}. These workers verify this leader by an
+        authority their operator gave them and take none from here, so the operator gives them the
+        incoming one.
+      </p>
+    {/if}
   </div>
 {/snippet}
 
@@ -431,18 +520,7 @@
           {@render who(switching.incoming, `expires ${on(switching.incoming.notAfterMillis)}`)}
         </div>
 
-        <div class="setting">
-          <p>
-            Started {on(switching.startedMillis)} · automatic cutover {on(switching.deadlineMillis)}
-          </p>
-          {#if switching.notFollowing.length > 0}
-            <p class="dim">
-              Not waited for: {switching.notFollowing.join(', ')}. These workers verify this leader
-              by an authority their operator gave them and take none from here, so the operator
-              gives them the incoming one.
-            </p>
-          {/if}
-        </div>
+        {@render progress(switching)}
 
         <div class="setting actions">
           <p class="critical">
@@ -537,13 +615,7 @@
             )}
           </div>
 
-          <div class="setting">
-            <p>
-              Started {on(certificates.rotation.startedMillis)} · automatic cutover {on(
-                certificates.rotation.deadlineMillis,
-              )}
-            </p>
-          </div>
+          {@render progress(certificates.rotation)}
 
           <div class="setting actions">
             <p class="critical">
@@ -631,14 +703,16 @@
         {/if}
       {:else if source === 'upload'}
         <div class="setting">
-          <Field label="Certificate" note="PEM, carrying {certificates.served.names.join(' and ')}">
+          <Field
+            label="Certificate"
+            note="PEM, the full chain, carrying {certificates.served.names.join(
+              ' and ',
+            )}. For a private authority, end it with the root."
+          >
             <textarea bind:value={certificate} rows="4" spellcheck="false"></textarea>
           </Field>
           <Field label="Private key" note="PEM">
             <textarea bind:value={privateKey} rows="4" spellcheck="false"></textarea>
-          </Field>
-          <Field label="Authority" note="PEM, the authority that signed the certificate">
-            <textarea bind:value={authority} rows="4" spellcheck="false"></textarea>
           </Field>
           {#if switching}
             <p class="dim">
@@ -650,10 +724,10 @@
             <button
               class="primary"
               type="button"
-              disabled={busy || !certificate || !privateKey || !authority}
+              disabled={busy || !certificate || !privateKey}
               onclick={() =>
                 act(
-                  () => putCertificate(certificate, privateKey, authority),
+                  () => putCertificate(certificate, privateKey),
                   switched('this leader is serving the certificate you supplied'),
                 )}
             >
@@ -849,6 +923,33 @@
 
   .dim {
     color: var(--dim);
+  }
+
+  .when {
+    width: auto;
+    margin: 0 0.25rem;
+  }
+
+  .countdown strong {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .workers {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.3rem;
+  }
+
+  .workers li {
+    display: flex;
+    justify-content: space-between;
+    max-width: 32rem;
+  }
+
+  .holds {
+    color: var(--added);
   }
 
   .soon {

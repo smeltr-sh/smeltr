@@ -329,7 +329,8 @@ pub async fn order(
     };
     let key = key.serialize_pem().into_bytes();
 
-    let ca = root_of(&chain, &settings.authority)?.into_bytes();
+    let (chain, ca) = root_of(&chain, &settings.authority)?;
+    let ca = ca.into_bytes();
     tls::check_supplied(&chain, &key, &ca, names, required)?;
     let rotates = tls::supplying_changes_root(tls_dir, &chain, &ca)?;
     // Under another root, it would begin a rotation while one is open: refused here, before a caller records one
@@ -347,22 +348,14 @@ pub async fn order(
     })
 }
 
-/// The root that signed `chain`, PEM: from `authority` where it holds one, else from the platform's roots. A
-/// worker is given this one certificate, as it would be given an uploaded authority.
-fn root_of(chain: &[u8], authority: &str) -> Result<String, String> {
-    if !authority.trim().is_empty()
-        && let Ok((_, pem)) = tls::signing_root_pem(authority.as_bytes(), chain)
-    {
-        return Ok(pem);
-    }
-    let public = crate::io::trust::pem(None).map_err(|e| e.to_string())?;
-    tls::signing_root_pem(public.as_bytes(), chain)
-        .map(|(_, pem)| pem)
-        .map_err(|_| {
-            "the authority issued a certificate under a root neither the platform nor the authority setting \
-             trusts. Add the root to the authority setting."
-                .to_string()
-        })
+/// `chain` as it is served, and the root that signed it, PEM: as [`tls::split_root`] finds it, from `authority`
+/// or else the platform's roots. A worker is given this one certificate, as it would be given an uploaded one.
+fn root_of(chain: &[u8], authority: &str) -> Result<(Vec<u8>, String), String> {
+    tls::split_root(chain, authority.as_bytes())?.ok_or_else(|| {
+        "the authority issued a certificate under a root neither the platform nor the authority setting \
+         trusts. Add the root to the authority setting."
+            .to_string()
+    })
 }
 
 /// Serves `issued`: at once under the root in force, else as the rotation an upload under another root begins.
