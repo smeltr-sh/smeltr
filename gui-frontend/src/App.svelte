@@ -1181,7 +1181,7 @@
      behind the menu, which reads as a hole rather than as emphasis. */
   .pick:hover,
   .pick:focus-visible {
-    background: color-mix(in oklch, var(--ink) 10%, var(--panel));
+    background: color-mix(in oklab, var(--ink) 10%, var(--panel));
   }
 
   /* The ring sits inside the row: the panel clips at its own rounded edge,

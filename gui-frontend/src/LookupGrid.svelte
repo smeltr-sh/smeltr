@@ -221,7 +221,7 @@
   }
 
   tr.focus td {
-    background-color: color-mix(in oklch, var(--ink) 8%, var(--field));
+    background-color: color-mix(in oklab, var(--ink) 8%, var(--field));
   }
 
   /* Remove controls appear on hover; a touch screen has none, so it shows them. */

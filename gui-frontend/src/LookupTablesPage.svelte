@@ -639,11 +639,11 @@
   }
 
   button.item:hover {
-    background: color-mix(in oklch, var(--ink) 6%, var(--panel));
+    background: color-mix(in oklab, var(--ink) 6%, var(--panel));
   }
 
   .item.on {
-    background: color-mix(in oklch, var(--ink) 10%, var(--panel));
+    background: color-mix(in oklab, var(--ink) 10%, var(--panel));
     border-left-color: var(--ink);
   }
 

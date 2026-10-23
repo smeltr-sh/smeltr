@@ -205,7 +205,7 @@ test('System and Cluster show the build each machine runs', async ({
   expect(shown).toBeTruthy();
 
   await openAdmin(admin, 'System');
-  const general = admin.getByRole('region', { name: 'General' });
+  const general = admin.getByRole('form', { name: 'General' });
   await expect(general.getByRole('heading', { name: 'Version' })).toBeVisible();
   await expect(general.getByText(shown, { exact: true })).toBeVisible();
 
