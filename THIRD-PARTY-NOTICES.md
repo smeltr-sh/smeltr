@@ -726,7 +726,7 @@ Used by:
 - [arrow-schema 60.0.0](https://github.com/apache/arrow-rs)
 - [arrow-select 60.0.0](https://github.com/apache/arrow-rs)
 - [cmov 0.5.4](https://github.com/RustCrypto/utils)
-- [ctutils 0.4.3](https://github.com/RustCrypto/utils)
+- [ctutils 0.4.4](https://github.com/RustCrypto/utils)
 - [encoding_rs 0.8.42](https://github.com/hsivonen/encoding_rs)
 - [flagset 0.4.7](https://github.com/enarx/flagset)
 - [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op)
@@ -11789,7 +11789,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 Used by:
 
 - [tokio-util 0.7.19](https://github.com/tokio-rs/tokio)
-- [tokio 1.53.2](https://github.com/tokio-rs/tokio)
+- [tokio 1.53.3](https://github.com/tokio-rs/tokio)
 
 ```
 MIT License
