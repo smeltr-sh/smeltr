@@ -97,19 +97,18 @@
   </p>
   <ol>
     <li>
-      Open Admin → System → Single sign-on and copy the <strong>Redirect URI</strong>. It is the
+      Open Admin → Accounts → Single sign-on and copy the <strong>Redirect URI</strong>. It is the
       leader's own address followed by <code>/api/auth/oidc/callback</code>.
     </li>
     <li>
       At your provider, register a web application (a confidential client) with that redirect URI.
-      Have the provider name each person's groups in a <code>groups</code> claim of the ID token, and
-      create a group for the people who may sign in to Smeltr.
+      Have the provider name each person's groups in a <code>groups</code> claim of the ID token.
     </li>
     <li>
       Back in Smeltr, turn on <strong>Enabled</strong> and enter the provider's
-      <strong>Issuer URL</strong>, the <strong>Client ID</strong> and
-      <strong>Client secret</strong>, and the <strong>Required group</strong>. If your provider
-      names groups in another claim, set it under Advanced.
+      <strong>Issuer URL</strong>, the <strong>Client ID</strong> and the
+      <strong>Client secret</strong>. If your provider names groups in another claim, set it under
+      Advanced.
     </li>
     <li>Select <strong>Save</strong>.</li>
   </ol>
@@ -123,14 +122,15 @@
   </p>
   <p>
     The sign-in screen then offers <strong>Sign in with SSO</strong>, with
-    <strong>Sign in with username</strong> beside it for local accounts. The first time somebody signs
-    in through the provider, Smeltr creates their account. Somebody outside the required group is refused.
-    Accounts lists them with SSO as their sign-in, and the email or username the provider gives them under
-    their name.
+    <strong>Sign in with username</strong> beside it for local accounts. The first time somebody
+    signs in through the provider, Smeltr creates their account. Accounts lists them with SSO as
+    their sign-in, and the email or username the provider gives them under their name. To sign in, a
+    person must belong to at least one group that has a role. <strong>Refused sign-ins</strong> on the
+    Roles tab lists everyone turned away, with the groups the provider sent.
   </p>
   <p>
     The provider owns an SSO account's password, so it has no Reset password. To stop somebody
-    signing in, remove them from the required group, or disable their account in Smeltr.
+    signing in, remove them from every group that has a role, or disable their account in Smeltr.
   </p>
   <p>
     Account, role and session actions take effect immediately; they are not pipeline changes waiting
@@ -168,8 +168,8 @@
     A change to a role applies on each holder's next request. A change to somebody's groups at the
     provider applies within a few minutes, while they stay signed in, when the provider issues
     refresh tokens and its refreshes carry an ID token; otherwise at their next sign-in. A refresh
-    the provider refuses, or one that drops the required group, signs them out. To shut somebody out
-    at once, disable their account in Users, or remove them from the required group at the provider
-    and then revoke their sessions. Users lists each person's roles beside their name.
+    the provider refuses, or one that leaves them in no group with a role, signs them out. To shut
+    somebody out at once, disable their account in Users, or remove them from those groups at the
+    provider and then revoke their sessions. Users lists each person's roles beside their name.
   </p>
 </GuideLayout>

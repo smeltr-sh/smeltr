@@ -11,7 +11,6 @@ describe('missingForSignIn', () => {
     issuer: 'https://example.okta.com',
     clientId: 'smeltr',
     secretHeld: true,
-    requiredGroup: 'smeltr-admins',
   };
 
   it('lacks nothing when every part is there', () => {
@@ -19,13 +18,11 @@ describe('missingForSignIn', () => {
   });
 
   it('names each missing part, in the order the form shows them', () => {
-    expect(
-      missingForSignIn({ issuer: ' ', clientId: '', secretHeld: false, requiredGroup: '' }),
-    ).toEqual(['issuer URL', 'client ID', 'client secret', 'required group']);
-  });
-
-  it('needs a required group', () => {
-    expect(missingForSignIn({ ...complete, requiredGroup: '  ' })).toEqual(['required group']);
+    expect(missingForSignIn({ issuer: ' ', clientId: '', secretHeld: false })).toEqual([
+      'issuer URL',
+      'client ID',
+      'client secret',
+    ]);
   });
 
   it('needs a secret, new or stored', () => {

@@ -85,9 +85,9 @@ describe('parseRoute', () => {
     });
     expect(parseRoute('#/me/agent')).toEqual({ tab: 'me', page: 'agent' });
     expect(parseRoute('#/me/agent/c1')).toEqual({ tab: 'me', page: 'agent', conversation: 'c1' });
-    expect(parseRoute('#/admin/system/oidc')).toEqual({
+    expect(parseRoute('#/admin/accounts/oidc')).toEqual({
       tab: 'admin',
-      page: 'system',
+      page: 'accounts',
       section: 'oidc',
     });
   });
@@ -307,6 +307,7 @@ describe('movedTo', () => {
     expect(movedTo('#/routes')).toBe('#/build/routes');
     expect(movedTo('#/lookup-tables')).toBe('#/build/lookups');
     expect(movedTo('#/samples')).toBe('#/build');
+    expect(movedTo('#/admin/system/oidc')).toBe('#/admin/accounts/oidc');
   });
 
   it('carries over whatever followed the section', () => {

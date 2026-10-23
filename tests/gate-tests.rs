@@ -2178,7 +2178,7 @@ fn oidc_sign_in(leader: &Leader) -> (String, Option<String>) {
     (location(&returned), set_cookie(&returned, "smeltr_session"))
 }
 
-fn configure_oidc(leader: &Leader, op: &Operator, provider: &Provider, required_group: &str) -> serde_json::Value {
+fn configure_oidc(leader: &Leader, op: &Operator, provider: &Provider, admin_group: &str) -> serde_json::Value {
     let (status, body) = leader.put_as(
         op,
         "/api/settings/oidc",
@@ -2187,14 +2187,13 @@ fn configure_oidc(leader: &Leader, op: &Operator, provider: &Provider, required_
             "issuer": provider.base,
             "clientId": CLIENT_ID,
             "clientSecret": CLIENT_SECRET,
-            "requiredGroup": required_group,
         }),
     );
     assert_eq!(status, 200);
-    // The required group is also the administrators' role, so a sign-in through it holds the fleet.
+    // The administrators' role, which is also what lets a person holding its group in.
     let (status, role) = leader.put_as(
         op,
-        &format!("/api/roles/{required_group}"),
+        &format!("/api/roles/{admin_group}"),
         serde_json::json!({ "administrator": true }),
     );
     assert_eq!(status, 200, "{role}");
@@ -2276,7 +2275,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
     assert_eq!(oidc[0]["providerLogin"], "ada@example.com", "{users}");
     let id = oidc[0]["id"].as_str().unwrap().to_string();
 
-    // Out of the required group, the provider's word is not enough.
+    // In no group a role names, the provider's word is not enough.
     provider.becomes(Person {
         groups: vec![],
         ..ada()
@@ -2315,7 +2314,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
         .find(|e| e["action"] == "oidc-change")
         .expect("an oidc-change row");
     assert_eq!(
-        change["target"], "turned on, issuer, client id, client secret, required group",
+        change["target"], "turned on, issuer, client id, client secret",
         "{events}"
     );
 
@@ -2409,7 +2408,6 @@ fn turning_oidc_off_ends_a_sign_in_under_way() {
         "/api/settings/oidc",
         serde_json::json!({
             "enabled": false, "issuer": provider.base, "clientId": CLIENT_ID,
-            "requiredGroup": "smeltr-admins",
         }),
     );
     assert_eq!(body["ok"], true, "{body}");
@@ -2446,23 +2444,12 @@ fn a_sign_in_started_at_an_alias_moves_to_the_configured_origin() {
 fn a_provider_that_cannot_be_read_is_refused_when_saved() {
     let leader = start("oidc-refused");
     let op = operator(&leader);
-    // A provider anyone can sign up to would otherwise make every one of its accounts an administrator.
-    let provider = Provider::start(ada());
-    let (_, body) = leader.put_as(
-        &op,
-        "/api/settings/oidc",
-        serde_json::json!({
-            "enabled": true, "issuer": provider.base, "clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET,
-        }),
-    );
-    assert_eq!(body["ok"], false, "saved with no required group: {body}");
     for issuer in ["http://127.0.0.1:1", "http://id.example.com"] {
         let (_, body) = leader.put_as(
             &op,
             "/api/settings/oidc",
             serde_json::json!({
                 "enabled": true, "issuer": issuer, "clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET,
-                "requiredGroup": "smeltr-admins",
             }),
         );
         assert_eq!(body["ok"], false, "{issuer}: {body}");
@@ -2477,7 +2464,7 @@ fn a_provider_that_cannot_be_read_is_refused_when_saved() {
 
 // -- what an area-restricted account may do -----------------------------------
 
-/// The group every provider account here signs in with. It lets a person in and gives them nothing: what they may
+/// The group every provider account here holds. Its role gives nothing, so it only lets a person in: what they may
 /// do comes from the other groups they hold.
 const SIGN_IN_GROUP: &str = "smeltr-users";
 
@@ -2494,7 +2481,7 @@ fn with_west_roles_and(label: &str, extra: &[(&str, &str)]) -> (Leader, Operator
     deploy_something(&leader, &op);
     let provider = Provider::start(ada());
     configure_oidc(&leader, &op, &provider, SIGN_IN_GROUP);
-    // `configure_oidc` makes its group the administrators' role; here it is only the way in.
+    // `configure_oidc` makes its group the administrators' role; here it gives nothing.
     let roles = [
         (SIGN_IN_GROUP, serde_json::json!({})),
         ("smeltr-west-view", serde_json::json!({ "areas": { "west": "viewer" } })),
@@ -2639,19 +2626,28 @@ fn a_refused_refresh_ends_the_session() {
     eventually("the session ending", || !signed_in(&leader, &dana_now.session));
 }
 
-/// Leaving the group the leader requires at sign-in ends a session as surely as never holding it.
+/// Leaving every group a role names ends a session as surely as never holding one, and leaving only some does not.
 #[test]
-fn losing_the_required_group_ends_the_session() {
-    let (leader, _op, provider) = with_west_roles_and("oidc-refresh-required", &[QUICK_REFRESH]);
+fn losing_every_group_a_role_names_ends_the_session() {
+    let (leader, _op, provider) = with_west_roles_and("oidc-refresh-roles", &[QUICK_REFRESH]);
     let dana_now = provider_account(&leader, &provider, &["smeltr-west-view"]);
 
-    let mut outside = dana(&["smeltr-west-view"]);
-    outside.groups.retain(|g| g != SIGN_IN_GROUP);
+    let mut fewer = dana(&["smeltr-west-view"]);
+    fewer.groups.retain(|g| g != SIGN_IN_GROUP);
+    provider.becomes(fewer);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert!(
+        signed_in(&leader, &dana_now.session),
+        "a role's group was still held and the session ended"
+    );
+
+    let mut outside = dana(&[]);
+    outside.groups = vec!["everyone".to_string()];
     provider.becomes(outside);
     eventually("the session ending", || !signed_in(&leader, &dana_now.session));
 }
 
-/// The way in is not a role: a person whose groups no role names signs in and is refused every operator route.
+/// A role that gives nothing lets a person in and nothing more: they are refused every operator route.
 #[test]
 fn an_account_holding_no_role_reaches_no_operator_route() {
     let (leader, _op, provider) = with_west_roles("oidc-no-role");
@@ -2721,10 +2717,10 @@ fn keycloak_sign_in(leader: &Leader, username: &str) -> (String, Option<String>)
 }
 
 /// The contract with a real provider: Keycloak's discovery, keys, login and token endpoint, and the groups claim its
-/// group membership mapper writes. A member of the required group signs in; somebody outside it does not.
+/// group membership mapper writes. A member of a role's group signs in; somebody outside it does not.
 #[test]
-fn live_keycloak_signs_in_only_the_required_group() {
-    let Some(issuer) = crate::live::keycloak("live_keycloak_signs_in_only_the_required_group") else {
+fn live_keycloak_signs_in_only_a_role_s_group() {
+    let Some(issuer) = crate::live::keycloak("live_keycloak_signs_in_only_a_role_s_group") else {
         return;
     };
     let leader = start("oidc-keycloak");
@@ -2734,10 +2730,15 @@ fn live_keycloak_signs_in_only_the_required_group() {
         "/api/settings/oidc",
         serde_json::json!({
             "enabled": true, "issuer": issuer, "clientId": "smeltr", "clientSecret": KEYCLOAK_SECRET,
-            "requiredGroup": "smeltr-admins",
         }),
     );
     assert_eq!((status, body["ok"].clone()), (200, serde_json::json!(true)), "{body}");
+    let (status, role) = leader.put_as(
+        &op,
+        "/api/roles/smeltr-admins",
+        serde_json::json!({ "administrator": true }),
+    );
+    assert_eq!(status, 200, "{role}");
 
     let (ended, cookie) = keycloak_sign_in(&leader, "ada");
     assert_eq!(ended, "/");
@@ -2829,10 +2830,15 @@ fn live_keycloak_refreshes_and_ends_sessions() {
         "/api/settings/oidc",
         serde_json::json!({
             "enabled": true, "issuer": issuer, "clientId": "smeltr", "clientSecret": KEYCLOAK_SECRET,
-            "requiredGroup": "smeltr-admins",
         }),
     );
     assert_eq!((status, body["ok"].clone()), (200, serde_json::json!(true)), "{body}");
+    let (status, role) = leader.put_as(
+        &op,
+        "/api/roles/smeltr-admins",
+        serde_json::json!({ "administrator": true }),
+    );
+    assert_eq!(status, 200, "{role}");
     let (bearer, admin) = keycloak_admin(&issuer);
     let cleo = KeycloakUser::make(&bearer, &admin, "cleo");
     let group = keycloak_id(&bearer, &format!("{admin}/groups?search=smeltr-admins&exact=true"));
@@ -2857,7 +2863,7 @@ fn live_keycloak_refreshes_and_ends_sessions() {
         .call()
         .unwrap();
     assert_eq!(removed.status(), 204);
-    eventually("leaving the required group ending the session", || {
+    eventually("leaving the role's group ending the session", || {
         !signed_in(&leader, &first)
     });
     let added = ureq::put(&membership)

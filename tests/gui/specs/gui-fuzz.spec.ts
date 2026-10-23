@@ -90,7 +90,6 @@ async function offerSso(api: Api, provider: Provider, level: string) {
     issuer: provider.base,
     clientId: CLIENT_ID,
     clientSecret: CLIENT_SECRET,
-    requiredGroup: PROVIDER_GROUP,
   });
   await api.put(`/api/roles/${PROVIDER_GROUP}`, { administrator: false, areas: { shared: level } });
 }
