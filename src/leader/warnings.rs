@@ -82,6 +82,7 @@ pub enum Condition {
     WorkerLoggedWarnings,
     DeployHeld,
     RemoteNotFollowed,
+    NewerRelease,
     DeployDoesNotLoad,
     DeployFailsTests,
     DeclaredFieldFailing,
@@ -116,6 +117,7 @@ impl Condition {
         Condition::WorkerLoggedWarnings,
         Condition::DeployHeld,
         Condition::RemoteNotFollowed,
+        Condition::NewerRelease,
         Condition::DeployDoesNotLoad,
         Condition::DeployFailsTests,
         Condition::DeclaredFieldFailing,
@@ -149,6 +151,7 @@ impl Condition {
             Condition::WorkerLoggedWarnings => "workerLoggedWarnings",
             Condition::DeployHeld => "deployHeld",
             Condition::RemoteNotFollowed => "remoteNotFollowed",
+            Condition::NewerRelease => "newerRelease",
             Condition::DeployDoesNotLoad => "deployDoesNotLoad",
             Condition::DeployFailsTests => "deployFailsTests",
             Condition::DeclaredFieldFailing => "declaredFieldFailing",
@@ -2211,6 +2214,7 @@ pub fn derive(
     deployed_certificates: &[DeployedCertificate],
     held: Option<&crate::leader::git::Hold>,
     remote: Option<&crate::leader::remote::Failure>,
+    newer: Option<&crate::leader::updates::Newer>,
 ) -> Vec<Warning> {
     let mut out = worker_silent(snapshot, credentials, now_ms, heartbeat_interval);
     out.extend(enrolled_never_heartbeating(snapshot, credentials));
@@ -2240,6 +2244,7 @@ pub fn derive(
     out.extend(identity_expiring(deployed_certificates, now_ms));
     out.extend(held.map(deploy_held));
     out.extend(remote.map(remote_not_followed));
+    out.extend(newer.zip(crate::version::RELEASE).map(|(n, own)| newer_release(n, own)));
     out.extend(declared_fields_drifted(series_store, now_ms));
     out.extend(streams_unrouted(series_store, now_ms));
     fold_logged_details(&mut out, &logged);
@@ -2284,6 +2289,21 @@ fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning {
         severity: Severity::Warning,
         since_millis: Some(failure.since),
         message: format!("{}. The fleet keeps running what it runs", failure.message),
+    }
+}
+
+/// A published release newer than this leader's own (`leader::updates`). Info: running an older release is no fault.
+fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
+    Warning {
+        scope: None,
+        condition: Condition::NewerRelease,
+        subject_kind: SubjectKind::Leader,
+        site: None,
+        subject_id: "leader".to_string(),
+        group: None,
+        severity: Severity::Info,
+        since_millis: Some(newer.since),
+        message: format!("smeltr {} is out, and this leader runs {own}", newer.release),
     }
 }
 
@@ -2741,6 +2761,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert!(
             !warnings
@@ -2774,6 +2795,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -2817,6 +2839,7 @@ mod tests {
                 &[],
                 None,
                 None,
+                None,
             )
             .iter()
             .any(|w| w.condition == Condition::WorkerNotDeployingItsTarget),
@@ -2839,6 +2862,7 @@ mod tests {
                 &[],
                 &settled(),
                 &[],
+                None,
                 None,
                 None,
             )
@@ -2872,6 +2896,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -2909,6 +2934,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -3908,6 +3934,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         )
     }
 
@@ -4148,6 +4175,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -4435,6 +4463,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert!(warnings.is_empty());
     }
@@ -4455,6 +4484,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -4482,6 +4512,7 @@ mod tests {
                 &[],
                 None,
                 None,
+                None,
             )
             .is_empty(),
             "within the threshold, silence is absent -- this is the point of derived, never stored"
@@ -4504,6 +4535,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -4602,6 +4634,22 @@ mod tests {
     }
 
     #[test]
+    fn a_newer_release_is_info_about_this_leader_since_it_was_first_seen() {
+        let newer = crate::leader::updates::Newer {
+            release: "1.3.0".into(),
+            url: "https://github.com/smeltr-sh/smeltr/releases/tag/v1.3.0".into(),
+            since: 42,
+        };
+        let w = newer_release(&newer, "1.2.0");
+        assert_eq!(
+            (w.severity, w.subject_kind, w.since_millis),
+            (Severity::Info, SubjectKind::Leader, Some(42))
+        );
+        assert_eq!(w.group, None, "for administrators only");
+        assert_eq!(w.message, "smeltr 1.3.0 is out, and this leader runs 1.2.0");
+    }
+
+    #[test]
     fn a_worker_near_its_memory_limit_is_raised() {
         let using = |worker_id: &str, used: u64, limit: Option<u64>| {
             let mut t = thread_health(worker_id, "reader-0", 0, vec![]);
@@ -4679,6 +4727,7 @@ mod tests {
                 &[],
                 None,
                 None,
+                None,
             )
         };
 
@@ -4719,6 +4768,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Worker);
@@ -4746,6 +4796,7 @@ mod tests {
                 &[],
                 None,
                 None,
+                None,
             )
             .is_empty(),
             "absent the moment a thread shows up, even an empty bootstrap one"
@@ -4767,6 +4818,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -4799,6 +4851,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
@@ -4823,6 +4876,7 @@ mod tests {
                 &[],
                 &settled(),
                 &[],
+                None,
                 None,
                 None,
             )
@@ -4857,6 +4911,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -4899,6 +4954,7 @@ mod tests {
                 &[],
                 None,
                 None,
+                None,
             );
             assert_eq!(w.len(), 1, "{w:?}");
             (w[0].condition, w[0].severity)
@@ -4933,6 +4989,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert_eq!(warnings[0].since_millis, Some(NOW - 240_000));
 
@@ -4950,6 +5007,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -4985,6 +5043,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
@@ -5012,6 +5071,7 @@ mod tests {
                 &[],
                 &settled(),
                 &[],
+                None,
                 None,
                 None,
             )
@@ -5107,6 +5167,7 @@ mod tests {
                 &[],
                 None,
                 None,
+                None,
             )
             .is_empty()
         );
@@ -5137,6 +5198,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert_eq!(warnings[0].since_millis, Some(NOW - 60_000));
 
@@ -5153,6 +5215,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -5182,6 +5245,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -5215,6 +5279,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
@@ -5246,6 +5311,7 @@ mod tests {
                 &[],
                 &settled(),
                 &[],
+                None,
                 None,
                 None,
             )
@@ -5285,6 +5351,7 @@ mod tests {
                 &[],
                 None,
                 None,
+                None,
             )
             .iter()
             .any(|w| w.condition == Condition::DestinationUnreachable),
@@ -5314,6 +5381,7 @@ mod tests {
                 &[],
                 &settled(),
                 &[],
+                None,
                 None,
                 None,
             )
@@ -5351,6 +5419,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert_eq!(warnings[0].since_millis, Some(NOW - 90_000));
 
@@ -5367,6 +5436,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -5394,6 +5464,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -5427,6 +5498,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -5465,6 +5537,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert_eq!(warnings.len(), 2);
         assert!(warnings.iter().any(|w| w.condition == Condition::DestinationRefusing));
@@ -5498,6 +5571,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Destination);
@@ -5526,6 +5600,7 @@ mod tests {
                 &[],
                 &settled(),
                 &[],
+                None,
                 None,
                 None,
             )
@@ -5558,6 +5633,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -5773,6 +5849,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].condition, Condition::LagClimbing);
@@ -5794,6 +5871,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -5830,6 +5908,7 @@ mod tests {
                 &[],
                 None,
                 None,
+                None,
             )
             .is_empty(),
             "the worker is fine -- the group it reports is what main lacks"
@@ -5854,6 +5933,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -5928,6 +6008,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         let held: Vec<&Warning> = warnings
             .iter()
@@ -5967,6 +6048,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -6010,6 +6092,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         let w = warnings
             .iter()
@@ -6039,6 +6122,7 @@ mod tests {
             &[],
             &settled(),
             &[],
+            None,
             None,
             None,
         );
@@ -6079,6 +6163,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
 
         assert!(
@@ -6108,6 +6193,7 @@ mod tests {
                 &[],
                 &settled(),
                 &[],
+                None,
                 None,
                 None,
             )

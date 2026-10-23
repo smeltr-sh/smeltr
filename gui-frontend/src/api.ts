@@ -2383,6 +2383,7 @@ export type WarningCondition =
   | 'declaredFieldFailing'
   | 'declaredFieldGone'
   | 'streamUnrouted'
+  | 'newerRelease'
   | 'workerOnAnotherRelease';
 
 /** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. *Info*: a fact worth
@@ -2477,6 +2478,8 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Field no longer arriving';
     case 'streamUnrouted':
       return 'Stream unrouted';
+    case 'newerRelease':
+      return 'Newer release';
     case 'workerOnAnotherRelease':
       return 'On another release';
   }
@@ -3164,6 +3167,25 @@ export function putWarningSettings(sourceRowsBandPercent: number): Promise<Warni
     method: 'PUT',
     body: JSON.stringify({ sourceRowsBandPercent }),
   });
+}
+
+/** Whether this leader looks for a newer release. */
+export interface UpdateSettingsDto {
+  check: boolean;
+}
+
+export type UpdateSettingsResult = {
+  ok: boolean;
+  errors: ApiError[];
+  settings: UpdateSettingsDto | null;
+};
+
+export function getUpdateSettings(): Promise<UpdateSettingsResult> {
+  return apiJson('/api/settings/updates');
+}
+
+export function putUpdateSettings(check: boolean): Promise<UpdateSettingsResult> {
+  return apiJson('/api/settings/updates', { method: 'PUT', body: JSON.stringify({ check }) });
 }
 
 /** Why the last sync did not leave `main` at the remote's head. */
@@ -4579,6 +4601,11 @@ export interface SystemInfoDto {
   smeltrVersion: string;
   /** The release this build is, `1.2.0`; absent on any other build. */
   release?: string;
+  /** The newest published release, when it is newer than this one. */
+  newerRelease?: { release: string; url: string };
+  /** The last look for a newer release: when, and why it failed if it did. Absent until the first, and on a build
+   * that is no release. */
+  releaseCheck?: { checkedAt: number; failure?: string };
   /** The SASL mechanisms this leader's build can select. A form offering
    * one that is not here would be offering a save the leader refuses. */
   saslMechanisms?: string[];

@@ -926,10 +926,12 @@ async fn setup_leader(
         deploy_checks: Default::default(),
         origin_hosts: hosts,
         remote: Default::default(),
+        updates: Default::default(),
         directives: Default::default(),
     };
     state.deploy_checks.set_runner(Arc::new(test_api::failing_at));
     tokio::spawn(smeltr::leader::remote::poll(state.clone()));
+    tokio::spawn(smeltr::leader::updates::poll(state.clone()));
     tokio::spawn(smeltr::leader::remote::push_saves(state.clone()));
     // A worker in this process carries the leader's logs on its beat; without one, the leader keeps them itself.
     if !smeltr::startup_config::worker_enabled() {
@@ -3399,6 +3401,7 @@ mod tests {
             deploy_checks: Default::default(),
             origin_hosts: Vec::new(),
             remote: Default::default(),
+            updates: Default::default(),
             directives: Default::default(),
         };
         let query: super::StatsQuery =

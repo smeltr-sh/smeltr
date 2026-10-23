@@ -43,6 +43,7 @@ fn app_state(store: SqliteStore, data_dir: std::path::PathBuf) -> AppState {
         deploy_checks: Default::default(),
         origin_hosts: Vec::new(),
         remote: Default::default(),
+        updates: Default::default(),
         data_dir,
         directives: Default::default(),
     }

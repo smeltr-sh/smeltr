@@ -203,6 +203,7 @@ fn start_leader_tls() -> (
                 data_dir,
                 origin_hosts: Vec::new(),
                 remote: Default::default(),
+                updates: Default::default(),
                 directives: Default::default(),
             };
             let tls = axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem)
