@@ -40,6 +40,7 @@ const CERTIFICATES = {
     installs: 'nextKey',
     source: 'own',
     notFollowing: [],
+    workers: [],
   },
 };
 
@@ -195,6 +196,29 @@ describe('the source', () => {
     expect(target.textContent).toContain('Switch to Uploaded in progress');
     // A certificate under the root in force is a renewal, served at once whatever is open.
     expect(button('Serve this certificate')).toBeDefined();
+  });
+
+  it('lists each worker a switch waits for, and whether it holds the incoming authority', async () => {
+    const switching = {
+      ...CERTIFICATES,
+      supplied: true,
+      source: 'upload',
+      rotation: {
+        ...CERTIFICATES.rotation,
+        installs: 'own',
+        workers: [
+          { id: 'w-1', holdsIncoming: true },
+          { id: 'w-2', holdsIncoming: false },
+        ],
+      },
+    };
+    await show(switching, 'Abandon switch');
+    expect(target.textContent).toContain('1 of 2 hold it');
+    const rows = [...target.querySelectorAll('.workers li')].map((li) => li.textContent);
+    expect(rows[0]).toContain('w-1');
+    expect(rows[0]).toContain('holds it');
+    expect(rows[1]).toContain('w-2');
+    expect(rows[1]).toContain('waiting');
   });
 
   it('names the workers a switch does not wait for', async () => {

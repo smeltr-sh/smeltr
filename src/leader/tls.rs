@@ -3919,14 +3919,21 @@ mod tests {
 
         assert!(matches!(set_deadline(&dir, NOW, NOW), Err(Refused::Conflict(_))));
         assert!(matches!(set_deadline(&dir, latest + 1, NOW), Err(Refused::Conflict(_))));
-        assert_eq!(rotation(&dir).unwrap().unwrap().deadline_millis, latest, "a refusal moved it");
+        assert_eq!(
+            rotation(&dir).unwrap().unwrap().deadline_millis,
+            latest,
+            "a refusal moved it"
+        );
 
         let sooner = NOW + 60 * 60 * 1000;
         assert_eq!(set_deadline(&dir, sooner, NOW).expect("moved").deadline_millis, sooner);
         let behind = vec![vec![state.outgoing.clone()]];
         assert!(!cut_over_if_due(&dir, names(), A_YEAR, Some(&behind), sooner - 1).unwrap());
         assert!(cut_over_if_due(&dir, names(), A_YEAR, Some(&behind), sooner).unwrap());
-        assert!(matches!(set_deadline(&dir, sooner + 1, NOW), Err(Refused::Conflict(_))), "nothing is open");
+        assert!(
+            matches!(set_deadline(&dir, sooner + 1, NOW), Err(Refused::Conflict(_))),
+            "nothing is open"
+        );
     }
 
     /// One field takes the whole chain: a root at its end is the authority and is not served, and a chain under a
@@ -3937,16 +3944,26 @@ mod tests {
         let mut whole = chain.clone();
         whole.extend_from_slice(&ca);
         let (served, root) = split_root(&whole, b"").unwrap().expect("its own root");
-        assert_eq!(describe_each(&served, SERVER_CERT).unwrap().len(), 1, "the root was served");
+        assert_eq!(
+            describe_each(&served, SERVER_CERT).unwrap().len(),
+            1,
+            "the root was served"
+        );
         assert_eq!(
             describe(root.as_bytes(), CA_CERT).unwrap().fingerprint,
             describe(&ca, CA_CERT).unwrap().fingerprint
         );
-        assert!(split_root(&chain, b"").unwrap().is_none(), "no root was found and none was refused");
+        assert!(
+            split_root(&chain, b"").unwrap().is_none(),
+            "no root was found and none was refused"
+        );
         let (_, _, stranger) = elsewhere("split-stranger", names());
         let mut wrong = chain.clone();
         wrong.extend_from_slice(&stranger);
-        assert!(split_root(&wrong, b"").is_err(), "a root that signed nothing here was taken");
+        assert!(
+            split_root(&wrong, b"").is_err(),
+            "a root that signed nothing here was taken"
+        );
     }
 
     /// Abandoning a switch is the same as abandoning a rotation: the incoming root leaves the bundle, what was
