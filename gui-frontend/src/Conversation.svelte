@@ -20,6 +20,7 @@
   import ConversationEntry from './ConversationEntry.svelte';
   import ConversationEvent from './ConversationEvent.svelte';
   import Markdown from './Markdown.svelte';
+  import { firstLineText } from './markdown';
   import Collapsible from './Collapsible.svelte';
   import ModelPicker from './ModelPicker.svelte';
   import ContextGauge from './ContextGauge.svelte';
@@ -148,7 +149,7 @@
     if (!open || !shown) return;
     const sure = await ask({
       title: 'Delete this conversation?',
-      body: `“${shown.title}” and everything said in it are deleted for good.`,
+      body: `“${firstLineText(shown.title)}” and everything said in it are deleted for good.`,
       action: 'Delete',
       danger: true,
     });
@@ -230,7 +231,7 @@
   {#if open && shown}
     {#if !compact}
       <div class="head">
-        <h2>{shown.title}</h2>
+        <h2>{firstLineText(shown.title)}</h2>
         <button type="button" class="compact" onclick={remove}>Delete conversation</button>
       </div>
     {/if}
@@ -238,22 +239,16 @@
       {#if compact && (item.kind === 'message' || item.kind === 'answer')}
         <!-- A terminal's shape: what was said is the line after the prompt, and the answer the lines under it. -->
         <div class="line" class:said={item.kind === 'message'}>
-          {#if item.kind === 'message'}<span class="prompt" aria-label={me}>›</span><span
-              class="text">{item.text}</span
-            >{:else}<Markdown text={item.text} />{/if}
+          {#if item.kind === 'message'}<span class="prompt" aria-label={me}>›</span>{/if}<Markdown
+            text={item.text}
+          />
         </div>
       {:else if item.kind === 'message' || item.kind === 'answer'}
         {@const who = item.kind === 'message' ? me : 'Agent'}
-        {#if item.kind === 'message'}
-          <ConversationEntry author={who} text={item.text}>
-            {#snippet head()}<span class="who">{who}</span>{/snippet}
-          </ConversationEntry>
-        {:else}
-          <ConversationEntry author={who}>
-            {#snippet head()}<span class="who">{who}</span>{/snippet}
-            <Markdown text={item.text} />
-          </ConversationEntry>
-        {/if}
+        <ConversationEntry author={who}>
+          {#snippet head()}<span class="who">{who}</span>{/snippet}
+          <Markdown text={item.text} />
+        </ConversationEntry>
       {:else if item.kind === 'call'}
         {@const answered = item.result ? split(item.result.output) : null}
         <div class="call">
@@ -394,11 +389,6 @@
   .line {
     display: flex;
     gap: 0.5rem;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-  .line .text {
-    min-width: 0;
   }
   .line.said {
     color: var(--ink);
