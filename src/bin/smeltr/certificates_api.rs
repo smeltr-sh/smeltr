@@ -113,7 +113,7 @@ struct RotationDto {
     /// cutover does not wait for them, and they keep working only while what they hold vouches for what is
     /// served.
     not_following: Vec<String>,
-    /// Each worker the cutover waits for. Empty where the roster could not be read.
+    /// Each worker the cutover waits for.
     workers: Vec<RotationWorkerDto>,
 }
 
@@ -140,8 +140,7 @@ async fn read(tls: Option<&Arc<Tls>>) -> Result<CertificatesDto, String> {
     let rotation = tls::rotation(&serving.dir)?;
     let workers = match &rotation {
         Some(state) => smeltr::leader::rotation_workers(&serving.leader, &state.incoming)
-            .await
-            .unwrap_or_default()
+            .await?
             .into_iter()
             .map(|(id, holds_incoming)| RotationWorkerDto { id, holds_incoming })
             .collect(),

@@ -2856,7 +2856,7 @@ fn authority_to_hand(data_dir: &std::path::Path, held: &[String], takes_authorit
 }
 
 /// Every worker an open rotation waits for, or `None` where the roster could not be read.
-async fn expected_workers(state: &AppState) -> Option<std::collections::HashSet<String>> {
+async fn expected_workers(state: &AppState) -> Result<std::collections::HashSet<String>, String> {
     // Every worker enrolled, which is the roster rather than whoever has spoken: one that enrolled and has never
     // reported a thread, or has not beaten since this leader started, is exactly the worker a rotation must not
     // sign away from. Read here rather than kept, because an enrollment or a revocation during a rotation counts.
@@ -2868,7 +2868,7 @@ async fn expected_workers(state: &AppState) -> Option<std::collections::HashSet<
     // only readiness: a store that stays unreadable would otherwise hold the rotation open past the deadline an
     // operator set for the case where waiting is not working, while the outgoing authority runs down.
     let credentials = match run_store(state.store.clone(), |s| s.list_worker_credentials()).await {
-        Ok(credentials) => Some(credentials),
+        Ok(credentials) => Ok(credentials),
         Err(e) => {
             tracing::warn!(
                 target: "leader.rotation_roster_unreadable",
@@ -2876,7 +2876,7 @@ async fn expected_workers(state: &AppState) -> Option<std::collections::HashSet<
                 "could not read which workers are enrolled, so this leader cannot tell whether its fleet holds the \
                  authority it is rotating to. The deadline still decides"
             );
-            None
+            Err(format!("could not read which workers are enrolled: {e}"))
         }
     };
     credentials.map(|credentials| {
@@ -2902,18 +2902,16 @@ async fn expected_workers(state: &AppState) -> Option<std::collections::HashSet<
     })
 }
 
-/// Each worker an open rotation waits for, by id, and whether it holds `incoming` yet. `None` where the roster
+/// Each worker an open rotation waits for, by id, and whether it holds `incoming` yet. An error where the roster
 /// could not be read, which is not a fleet with nobody in it.
-pub async fn rotation_workers(state: &AppState, incoming: &str) -> Option<Vec<(String, bool)>> {
+pub async fn rotation_workers(state: &AppState, incoming: &str) -> Result<Vec<(String, bool)>, String> {
     let expected = expected_workers(state).await?;
-    Some(
-        state
-            .registry
-            .holders(&expected)
-            .into_iter()
-            .map(|(worker, held)| (worker, held.iter().any(|root| root == incoming)))
-            .collect(),
-    )
+    Ok(state
+        .registry
+        .holders(&expected)
+        .into_iter()
+        .map(|(worker, held)| (worker, held.iter().any(|root| root == incoming)))
+        .collect())
 }
 
 /// Signs under the incoming root once the fleet holds it, or once the operator's deadline says to stop waiting.
@@ -2930,6 +2928,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
     };
     let holders = expected_workers(state)
         .await
+        .ok()
         .map(|expected| state.registry.authorities_held(&expected));
     let cut_over = match tls::cut_over_if_due(
         &dir,
@@ -4026,6 +4025,29 @@ mod warnings_endpoint_tests {
             directives: Default::default(),
             data_dir,
         }
+    }
+
+    /// A roster the store cannot read is an error, never a fleet with nobody in it: that would show an operator
+    /// a rotation with nothing left to wait for.
+    #[tokio::test]
+    async fn an_unreadable_roster_is_an_error_not_an_empty_fleet() {
+        let dir = temp_dir("roster-unreadable");
+        let db = dir.join("leader.db");
+        let store = SqliteStore::open(&db, &dir.join("sealing.key")).unwrap();
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch("DROP TABLE worker_credentials")
+            .unwrap();
+        let state = AppState {
+            store: Arc::new(store),
+            ..state("roster-unreadable")
+        };
+        let read = rotation_workers(&state, "incoming").await;
+        assert!(
+            read.as_ref()
+                .is_err_and(|e| e.starts_with("could not read which workers are enrolled: ")),
+            "{read:?}"
+        );
     }
 
     #[tokio::test]
