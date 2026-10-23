@@ -36,8 +36,9 @@ use smeltr::config_file;
 use smeltr::leader::blocking;
 use smeltr::leader::envelope::{ApiError, Envelope};
 use smeltr::leader::preview::{
-    GrokCaptures, GrokCapturesRequest, LineBreakerRequest, Preview, PreviewRequest, RoutePreview, RoutePreviewRequest,
-    captures_of, line_breaker_verdict, run_preview, run_route_preview, single_origin_declared_at,
+    FormatRequest, Formatted, GrokCaptures, GrokCapturesRequest, LineBreakerRequest, Preview, PreviewRequest,
+    RoutePreview, RoutePreviewRequest, captures_of, format_code, line_breaker_verdict, run_preview, run_route_preview,
+    single_origin_declared_at,
 };
 use smeltr::leader::sessions;
 
@@ -412,6 +413,11 @@ pub struct OnboardRequest {
 /// (`leader::onboard`). The records are the caller's own, so nothing here reads a branch.
 async fn onboard_propose(Json(req): Json<OnboardRequest>) -> Json<smeltr::leader::onboard::Proposal> {
     Json(smeltr::leader::onboard::propose(&req.records, req.filed.as_deref()))
+}
+
+/// Pipeline code laid out in the style, asked when the editor leaves a code field.
+async fn format(Json(req): Json<FormatRequest>) -> Json<Envelope<Formatted>> {
+    Json(format_code(req))
 }
 
 /// Whether a save would take a line breaker, asked as it is typed: the save's own check, with no bundle around it.
@@ -1919,6 +1925,7 @@ async fn run_leader() {
         .route("/api/grok-captures", post(grok_captures))
         .route("/api/onboard/propose", post(onboard_propose))
         .route("/api/line-breaker", post(line_breaker))
+        .route("/api/format", post(format))
         .route("/api/route-preview", post(route_preview))
         .route("/api/lookup/file", get(config_api::get_lookup_file))
         .route("/api/lookup/mmdb", get(config_api::get_lookup_mmdb))
@@ -2195,7 +2202,10 @@ fn bind_listener(addr: std::net::SocketAddr) -> std::net::TcpListener {
 
 #[cfg(test)]
 mod tests {
-    use super::{GrokCapturesRequest, LineBreakerRequest, captures_of, line_breaker_verdict};
+    use super::{
+        FormatRequest, GrokCapturesRequest, LineBreakerRequest, captures_of, format_code, line_breaker_verdict,
+    };
+    use smeltr::expr::pretty::Kind;
 
     fn column(name: &str, ty: &str) -> smeltr::heartbeat::CaptureColumn {
         smeltr::heartbeat::CaptureColumn {
@@ -2639,6 +2649,22 @@ mod tests {
         );
         assert!(verdict("(").unwrap().contains("which is not a pattern"));
         assert!(verdict(r"(\n*)").unwrap().contains("can match no bytes at all"));
+    }
+
+    /// Code is laid out as the leader's formatter lays it out, and code that does not parse yet is not touched.
+    #[test]
+    fn typed_code_is_formatted() {
+        let format = |code: &str, kind| {
+            format_code(FormatRequest {
+                code: code.into(),
+                kind,
+            })
+            .body
+            .code
+        };
+        assert_eq!(format("a&&b", Kind::Expr).as_deref(), Some("a && b"));
+        assert_eq!(format("x=1", Kind::Block).as_deref(), Some("x = 1;"));
+        assert_eq!(format("x = (", Kind::Block), None);
     }
 
     /// An unnamed capture declares nothing, so it is not offered.

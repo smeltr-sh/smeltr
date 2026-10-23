@@ -23,8 +23,8 @@ use axum::routing::{get, post};
 use smeltr::config_file::{self, BundleAt, DeclaredAt, FileConfig, RawBundle, SampleDto, TestDto, TestSummary};
 use smeltr::leader::envelope::{ApiError, Empty, Envelope};
 use smeltr::leader::preview::{
-    GrokCaptures, GrokCapturesRequest, LineBreakerRequest, Preview, PreviewRequest, RoutePreview, TestResult,
-    captures_of, line_breaker_verdict, run_preview, run_route_preview, run_test,
+    FormatRequest, Formatted, GrokCaptures, GrokCapturesRequest, LineBreakerRequest, Preview, PreviewRequest,
+    RoutePreview, TestResult, captures_of, format_code, line_breaker_verdict, run_preview, run_route_preview, run_test,
 };
 use tokio::sync::Semaphore;
 
@@ -268,6 +268,10 @@ async fn line_breaker(State(service): State<Service>, Json(req): Json<LineBreake
             .run(Envelope::failed_one, move || line_breaker_verdict(req))
             .await,
     )
+}
+
+async fn format(State(service): State<Service>, Json(req): Json<FormatRequest>) -> Json<Envelope<Formatted>> {
+    Json(service.run(Envelope::failed_one, move || format_code(req)).await)
 }
 
 #[derive(serde::Deserialize)]
@@ -523,6 +527,7 @@ fn app(service: Service) -> Router {
         .route("/validate", post(validate))
         .route("/grok-captures", post(grok_captures))
         .route("/line-breaker", post(line_breaker))
+        .route("/format", post(format))
         .route("/capture-filter", post(capture_filter))
         .route("/map", post(map))
         .route("/connections", post(connections))

@@ -17,8 +17,8 @@
   in place. Set only where an expression or pattern is typed, never on a
   plain field-name input.
 
-  A field that suggests functions is code, so it is colored as it is typed, and so is
-  any field given its own `paint`: the text is drawn by a highlighted copy
+  A field that suggests functions is code, so it is laid out in the style when it is left. It is colored as it is
+  typed, and so is any field given its own `paint`: the text is drawn by a highlighted copy
   behind the input, whose own text is transparent. The copy matches the input's box and follows its scroll.
 -->
 <script lang="ts">
@@ -39,6 +39,8 @@
   } from './autocomplete';
   import { highlight } from '../../website/src/lib/highlight/highlight';
   import { fieldError, holdsName, markRuns, quotedTokens } from './errorMarks';
+  import { formatCode } from './api';
+  import { beginReconcile, endReconcile } from './grokFields';
 
   let {
     value = $bindable(''),
@@ -164,6 +166,28 @@
     highlighted = 0;
   }
 
+  /** Lays code out in the style when the field is left (`expr::pretty`). Text that does not parse yet stays as typed,
+   * and so does text changed while the leader answered. A one-line field takes only a one-line layout. */
+  async function onBlur() {
+    open = false;
+    // Focus leaving the window is not leaving the field.
+    if (!functions || !document.hasFocus()) return;
+    const sent = value;
+    // A Save pressed straight from the field waits for this answer, or it would send the text before its layout.
+    beginReconcile();
+    try {
+      const answer = await formatCode(sent, autocomplete === 'code' ? 'block' : 'expr').catch(
+        () => null,
+      );
+      const code = answer?.code;
+      if (code == null || value !== sent || code === sent) return;
+      if (!multiline && code.includes('\n')) return;
+      value = code;
+    } finally {
+      endReconcile();
+    }
+  }
+
   function toggleBrowse() {
     open = !open;
     highlighted = 0;
@@ -250,7 +274,7 @@
       onscroll={syncScroll}
       onkeyup={syncScroll}
       onpointerup={syncScroll}
-      onblur={() => (open = false)}
+      onblur={onBlur}
       spellcheck="false"
       autocomplete="off"></textarea>
   {:else}
@@ -269,7 +293,7 @@
       onscroll={syncScroll}
       onkeyup={syncScroll}
       onpointerup={syncScroll}
-      onblur={() => (open = false)}
+      onblur={onBlur}
       spellcheck="false"
       autocomplete="off"
     />

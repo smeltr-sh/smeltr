@@ -153,6 +153,12 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "POST",
+        path: "/api/format",
+        what: "Lay pipeline code out in the house style; code is null where it does not parse. No query.",
+        body: "{ code: string, kind: 'expr'|'block' }",
+    },
+    Route {
+        method: "POST",
         path: "/api/onboard/propose",
         what: "Propose first steps and a route condition for captured records. No query.",
         body: "{ records: object[], filed?: object[] (each record's __source) }",

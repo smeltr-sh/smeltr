@@ -647,6 +647,7 @@ export class DemoLeader {
       if (path === '/api/route-preview') return this.routePreview(name, scope, json());
       if (path === '/api/grok-captures') return this.ask('/grok-captures', json());
       if (path === '/api/line-breaker') return this.ask('/line-breaker', json());
+      if (path === '/api/format') return this.ask('/format', json());
       if (path === '/api/onboard/propose') return this.ask('/onboard/propose', json());
       if (path === '/api/captures') return this.startCapture(json());
       const capture = path.match(/^\/api\/captures\/([^/]+)\/(stop|save|discard)$/);
