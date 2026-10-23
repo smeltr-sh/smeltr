@@ -82,7 +82,8 @@
         >
         <tr
           ><th>Uploaded</th><td
-            >An administrator pastes Certificate, Private key and Authority, all PEM, and selects
+            >An administrator pastes the full certificate chain and its private key, both PEM, and
+            selects
             <strong>Serve this certificate</strong>. The certificate must cover every name the page
             lists.</td
           ></tr
@@ -99,7 +100,9 @@
   <p>A new certificate from the same authority is served at once.</p>
   <p>
     A new authority has to reach the workers first. The page shows the switch in progress while the
-    leader hands the authority to them. The leader then serves the new certificate.
+    leader hands the authority to them, and which workers have it. The leader serves the new
+    certificate as soon as every worker has it, or at the cutover time the page shows, which you can
+    change.
   </p>
   <ul>
     <li><strong>Cut over now</strong> serves it without waiting.</li>

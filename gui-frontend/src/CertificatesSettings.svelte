@@ -80,10 +80,14 @@
   $effect(() => {
     if (deadlineInForce !== null) cutOverBy = local(deadlineInForce);
   });
-  /** The latest a switch can wait: short of either certificate's expiry by the leader's margin. */
+  /** The latest a rotation can wait: short of either certificate's expiry by the leader's margin, and for one of
+   * the leader's own authority, no longer than it may wait at all. */
   function latest(rotation: RotationDto): number {
     const served = certificates?.served?.notAfterMillis ?? Infinity;
-    return Math.min(served, rotation.incoming.notAfterMillis) - CUTOVER_MARGIN_MS;
+    const expiring = Math.min(served, rotation.incoming.notAfterMillis) - CUTOVER_MARGIN_MS;
+    return rotation.installs === 'nextKey'
+      ? Math.min(expiring, rotation.startedMillis + ROTATION_WAIT_HOURS.max * 60 * 60 * 1000)
+      : expiring;
   }
   function deadlineDirty(rotation: RotationDto): boolean {
     return cutOverBy !== local(rotation.deadlineMillis);
@@ -93,8 +97,7 @@
     if (!deadlineDirty(rotation) || cutOverBy === '') return '';
     const picked = new Date(cutOverBy).getTime();
     if (picked <= now) return 'That time has passed. To cut over now, use Cut over now.';
-    if (picked > latest(rotation))
-      return `The latest it can wait is ${at(latest(rotation))}, 10 minutes before a certificate expires.`;
+    if (picked > latest(rotation)) return `The latest it can wait is ${at(latest(rotation))}.`;
     return '';
   }
   /** `millis` as a datetime-local input holds it. */

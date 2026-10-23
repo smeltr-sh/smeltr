@@ -264,7 +264,7 @@ async fn install(
         Ok(None) => {
             return refuse(
                 StatusCode::BAD_REQUEST,
-                "nothing this leader trusts signed the certificate. End the chain with the root that issued it.",
+                "the certificate's root is missing. End the chain with the root that issued it.",
             );
         }
         Err(e) => return refuse(StatusCode::BAD_REQUEST, &e),
@@ -468,9 +468,8 @@ struct RotateRequest {
     authority_validity_days: Option<i64>,
 }
 
-/// At most a fortnight. A rotation held open indefinitely is one an operator forgets, and every hour of it is an
-/// hour this leader's certificate is bounded by an authority it is trying to leave.
-const MOST_WAIT_HOURS: i64 = 14 * 24;
+/// [`tls::MOST_WAIT`], in the hours the request is in.
+const MOST_WAIT_HOURS: i64 = tls::MOST_WAIT.as_secs() as i64 / 3600;
 
 /// The same guardrails as `startup_config::leader_ca_validity`, expressed in
 /// the API's whole-day unit. A CA shorter than a day cannot be usefully
