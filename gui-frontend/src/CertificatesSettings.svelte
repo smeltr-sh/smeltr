@@ -69,48 +69,21 @@
   });
   let certificate = $state('');
   let privateKey = $state('');
-  let authority = $state('');
-  /** When a switch this upload opens cuts over at the latest, as the picker holds it: local time. */
+  /** The deadline as the switch's picker holds it, local time, while somebody is changing it. */
   let cutOverBy = $state('');
   const CUTOVER_MARGIN_MS = 10 * 60 * 1000;
-  /** The latest a switch can wait: short of the served certificate's expiry by the leader's margin. */
-  const latestCutOver = $derived(
-    certificates?.served ? certificates.served.notAfterMillis - CUTOVER_MARGIN_MS : null,
-  );
   $effect(() => {
-    if (cutOverBy === '' && latestCutOver !== null) cutOverBy = local(latestCutOver);
+    if (certificates?.rotation) cutOverBy = local(certificates.rotation.deadlineMillis);
   });
+  /** The latest a switch can wait: short of either certificate's expiry by the leader's margin. */
+  function latest(rotation: RotationDto): number {
+    const served = certificates?.served?.notAfterMillis ?? Infinity;
+    return Math.min(served, rotation.incoming.notAfterMillis) - CUTOVER_MARGIN_MS;
+  }
   /** `millis` as a datetime-local input holds it. */
   function local(millis: number): string {
     const d = new Date(millis - new Date(millis).getTimezoneOffset() * 60_000);
     return d.toISOString().slice(0, 16);
-  }
-  /** Whether the pasted authority is other than the one in force, which is when serving the upload waits for
-   * the fleet and the deadline means anything. False until there is something to tell by. */
-  let newAuthority = $state(false);
-  $effect(() => {
-    const pasted = authority;
-    const current = certificates?.authority?.fingerprint;
-    if (!current) return;
-    fingerprints(pasted).then((each) => {
-      if (pasted === authority) newAuthority = each.length > 0 && !each.includes(current);
-    });
-  });
-  /** SHA-256 over each PEM certificate's DER, as the leader names a certificate. Unreadable blocks are skipped. */
-  async function fingerprints(pem: string): Promise<string[]> {
-    const blocks = pem.match(/-----BEGIN CERTIFICATE-----[^-]+-----END CERTIFICATE-----/g) ?? [];
-    const each: string[] = [];
-    for (const block of blocks) {
-      try {
-        const body = block.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
-        const der = Uint8Array.from(atob(body), (c) => c.charCodeAt(0));
-        const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', der));
-        each.push(Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join(''));
-      } catch {
-        // Not base64: the leader says what is wrong with it on upload.
-      }
-    }
-    return each;
   }
   /** Ticks while a rotation is open, for the countdown. */
   let now = $state(Date.now());
@@ -401,10 +374,15 @@
 {#snippet progress(rotation: RotationDto)}
   {@const holding = rotation.workers.filter((w) => w.holdsIncoming).length}
   <div class="setting">
-    <p>
-      Cuts over as soon as every worker holds the incoming authority, or at {at(
-        rotation.deadlineMillis,
-      )}, whichever comes first.
+    <p class="deadline">
+      Cuts over as soon as every worker holds the incoming authority, or at
+      <input
+        class="when"
+        type="datetime-local"
+        aria-label="Cut over by"
+        bind:value={cutOverBy}
+        max={local(latest(rotation))}
+      />, whichever comes first.
     </p>
     <p class="countdown">
       Cutover in <strong>{countdown(rotation.deadlineMillis)}</strong>
@@ -722,28 +700,17 @@
         {/if}
       {:else if source === 'upload'}
         <div class="setting">
-          <Field label="Certificate" note="PEM, carrying {certificates.served.names.join(' and ')}">
+          <Field
+            label="Certificate"
+            note="PEM, the full chain, carrying {certificates.served.names.join(
+              ' and ',
+            )}. For a private authority, end it with the root."
+          >
             <textarea bind:value={certificate} rows="4" spellcheck="false"></textarea>
           </Field>
           <Field label="Private key" note="PEM">
             <textarea bind:value={privateKey} rows="4" spellcheck="false"></textarea>
           </Field>
-          <Field label="Authority" note="PEM, the authority that signed the certificate">
-            <textarea bind:value={authority} rows="4" spellcheck="false"></textarea>
-          </Field>
-          {#if newAuthority}
-            <Field
-              label="Cut over by"
-              note="Workers get the new authority first. This leader switches once they all have it, or at this time, whichever comes first."
-            >
-              <input
-                class="when"
-                type="datetime-local"
-                bind:value={cutOverBy}
-                max={latestCutOver === null ? undefined : local(latestCutOver)}
-              />
-            </Field>
-          {/if}
           {#if switching}
             <p class="dim">
               A switch to {switchingTo} is open. When it cuts over, it replaces this certificate.
@@ -754,16 +721,10 @@
             <button
               class="primary"
               type="button"
-              disabled={busy || !certificate || !privateKey || !authority}
+              disabled={busy || !certificate || !privateKey}
               onclick={() =>
                 act(
-                  () =>
-                    putCertificate(
-                      certificate,
-                      privateKey,
-                      authority,
-                      newAuthority && cutOverBy ? new Date(cutOverBy).getTime() : null,
-                    ),
+                  () => putCertificate(certificate, privateKey),
                   switched('this leader is serving the certificate you supplied'),
                 )}
             >
@@ -962,7 +923,8 @@
   }
 
   .when {
-    max-width: 16rem;
+    width: auto;
+    margin: 0 0.25rem;
   }
 
   .countdown strong {

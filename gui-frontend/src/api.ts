@@ -4766,12 +4766,10 @@ export const AUTHORITY_URL = '/api/authority';
 export function putCertificate(
   certificate: string,
   privateKey: string,
-  authority: string,
-  cutOverByMillis: number | null = null,
 ): Promise<CertificatesDto | AccountRefusal> {
   return accountCall('/api/settings/certificates', {
     method: 'PUT',
-    body: JSON.stringify({ certificate, privateKey, authority, cutOverByMillis }),
+    body: JSON.stringify({ certificate, privateKey }),
   });
 }
 
