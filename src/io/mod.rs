@@ -123,12 +123,12 @@ pub fn build_destination(
             // A credential this worker cannot obtain is an error, never a silent unauthenticated connection.
             let auth = match &c.auth {
                 None => None,
-                Some(reference) => Some(http::credential(
+                Some(reference) => Some(elastic::authorization(http::credential(
                     "elasticsearch destination",
                     "auth",
                     reference,
                     secrets,
-                )?),
+                )?)),
             };
             // What this destination presents and trusts, resolved once: every transport below shares it, so an
             // identity's certificate is parsed once rather than once per sender.
