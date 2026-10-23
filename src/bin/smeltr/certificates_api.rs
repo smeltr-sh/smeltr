@@ -264,7 +264,7 @@ async fn install(
         Ok(None) => {
             return refuse(
                 StatusCode::BAD_REQUEST,
-                "nothing this leader trusts signed the certificate. End the chain with the root that issued it.",
+                "the certificate's root is missing. End the chain with the root that issued it.",
             );
         }
         Err(e) => return refuse(StatusCode::BAD_REQUEST, &e),
