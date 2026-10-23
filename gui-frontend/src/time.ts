@@ -32,6 +32,16 @@ export function expiry(unixMillis: number, now: number = Date.now()): string {
   return `expires in ${count(Math.round(days / 365), 'year')}`;
 }
 
+/** Time left until `unixMillis`, to the second, such as `1 day 06:22:51`: for a moment somebody is
+ * watching arrive, where the page ticks it each second. */
+export function countdown(unixMillis: number, now: number = Date.now()): string {
+  const left = Math.max(0, Math.floor((unixMillis - now) / 1000));
+  const days = Math.floor(left / 86_400);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const clock = `${pad(Math.floor(left / 3600) % 24)}:${pad(Math.floor(left / 60) % 60)}:${pad(left % 60)}`;
+  return days > 0 ? `${count(days, 'day')} ${clock}` : clock;
+}
+
 /** Wall-clock `HH:MM`, local time -- the axis under a chart spanning real time, where "how
  * long ago" is the wrong question because both ends are on screen at once. */
 export function clockTime(unixMillis: number): string {

@@ -47,7 +47,7 @@
   import Advanced from './Advanced.svelte';
   import PasswordField from './PasswordField.svelte';
   import TokenListInput from './TokenListInput.svelte';
-  import { count, expiry } from './time';
+  import { countdown, expiry } from './time';
   import { NOT_IN_DEMO } from './access';
 
   let certificates = $state<CertificatesDto | null>(null);
@@ -222,15 +222,6 @@
     return () => clearInterval(id);
   });
 
-  /** Time left until `millis`, to the second. */
-  function countdown(millis: number): string {
-    const left = Math.max(0, Math.floor((millis - now) / 1000));
-    const days = Math.floor(left / 86_400);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const clock = `${pad(Math.floor(left / 3600) % 24)}:${pad(Math.floor(left / 60) % 60)}:${pad(left % 60)}`;
-    return days > 0 ? `${count(days, 'day')} ${clock}` : clock;
-  }
-
   /** A date with its time of day, for a moment somebody is waiting on. */
   function at(millis: number): string {
     return new Date(millis).toLocaleString(undefined, {
@@ -402,7 +393,7 @@
       />, whichever comes first.
     </p>
     <p class="countdown">
-      Cutover in <strong>{countdown(rotation.deadlineMillis)}</strong>
+      Cutover in <strong>{countdown(rotation.deadlineMillis, now)}</strong>
       <span class="dim">· started {at(rotation.startedMillis)}</span>
     </p>
     {#if deadlineProblem(rotation)}
