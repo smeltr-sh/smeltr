@@ -238,22 +238,16 @@
       {#if compact && (item.kind === 'message' || item.kind === 'answer')}
         <!-- A terminal's shape: what was said is the line after the prompt, and the answer the lines under it. -->
         <div class="line" class:said={item.kind === 'message'}>
-          {#if item.kind === 'message'}<span class="prompt" aria-label={me}>›</span><span
-              class="text">{item.text}</span
-            >{:else}<Markdown text={item.text} />{/if}
+          {#if item.kind === 'message'}<span class="prompt" aria-label={me}>›</span>{/if}<Markdown
+            text={item.text}
+          />
         </div>
       {:else if item.kind === 'message' || item.kind === 'answer'}
         {@const who = item.kind === 'message' ? me : 'Agent'}
-        {#if item.kind === 'message'}
-          <ConversationEntry author={who} text={item.text}>
-            {#snippet head()}<span class="who">{who}</span>{/snippet}
-          </ConversationEntry>
-        {:else}
-          <ConversationEntry author={who}>
-            {#snippet head()}<span class="who">{who}</span>{/snippet}
-            <Markdown text={item.text} />
-          </ConversationEntry>
-        {/if}
+        <ConversationEntry author={who}>
+          {#snippet head()}<span class="who">{who}</span>{/snippet}
+          <Markdown text={item.text} />
+        </ConversationEntry>
       {:else if item.kind === 'call'}
         {@const answered = item.result ? split(item.result.output) : null}
         <div class="call">
@@ -394,11 +388,6 @@
   .line {
     display: flex;
     gap: 0.5rem;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-  .line .text {
-    min-width: 0;
   }
   .line.said {
     color: var(--ink);
