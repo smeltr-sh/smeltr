@@ -61,19 +61,23 @@ pub struct Updates {
 }
 
 impl Updates {
+    fn held(&self) -> std::sync::MutexGuard<'_, (Option<Newer>, Option<Looked>)> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// The newer release, if the last look that reached GitHub found one.
     pub fn newer(&self) -> Option<Newer> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).0.clone()
+        self.held().0.clone()
     }
 
     /// When the last look was, and why it failed if it did.
     pub fn looked(&self) -> Option<Looked> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).1.clone()
+        self.held().1.clone()
     }
 
     /// A look that read the list. A newer release seen before keeps the time it was first seen.
     fn found(&self, newest: Option<(String, String)>, now: i64) {
-        let mut held = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.held();
         let since = |release: &str| {
             held.0
                 .as_ref()
@@ -94,7 +98,7 @@ impl Updates {
     /// A look that did not read the list. What an earlier look found stands: the release is out whether or not
     /// GitHub answered this time.
     fn failed(&self, why: String, now: i64) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).1 = Some(Looked {
+        self.held().1 = Some(Looked {
             checked_at: now,
             failure: Some(why),
         });
@@ -102,7 +106,7 @@ impl Updates {
 
     /// Turned off: nothing found stays, since nothing keeps it current.
     fn forget(&self) {
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = (None, None);
+        *self.held() = (None, None);
     }
 }
 
