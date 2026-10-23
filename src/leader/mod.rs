@@ -932,15 +932,24 @@ async fn system_info() -> Json<SystemInfo> {
 
 // -- warnings ---------------------------------------------------------------
 
-/// What `GET /api/warnings` serves: the fixed catalog (design doc, Control plane), derived fresh from the registry
-/// and the worker roster on every call -- there is no warning table, so this is the only place the answer lives.
+/// The fixed catalog (design doc, Control plane) without its info entries: what every view that judges health reads,
+/// so none of them can count a fact that asks nothing as trouble. [`catalog`] is the whole of it.
+pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
+    let mut out = catalog(state).await?;
+    out.retain(|w| w.severity != warnings::Severity::Info);
+    Ok(out)
+}
+
+/// What `GET /api/warnings?info=true` serves: the fixed catalog (design doc, Control plane), info entries and all,
+/// derived fresh from the registry and the worker roster on every call -- there is no warning table, so this is the
+/// only place the answer lives.
 ///
 /// A route of its own rather than a field on [`HealthResponse`]: the "enrolled, never heartbeating" entry needs the
 /// worker roster, which lives in `Store` and so must be read on the blocking pool ([`run_store`]) -- and
 /// [`health_snapshot`] is also called synchronously from the in-process Cluster page, which a store read would
 /// block. The GUI pages that show warnings already poll `/api/health` on a timer; this rides the same timer as a
 /// second, independently-cheap fetch rather than reshaping the first.
-pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
+pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
     let now_ms = warnings::now_millis();
     // What the page polls, and so one of the reads a look for gone ephemeral workers rides: a fleet that has
     // scaled to nothing sends no heartbeat to carry it.
@@ -1167,15 +1176,25 @@ fn deployed_shared_pipelines(data_dir: &std::path::Path) -> std::collections::Ha
         .collect()
 }
 
+/// `GET /api/warnings`'s query: whether the catalog's info entries come too.
+#[derive(serde::Deserialize)]
+struct WarningsQuery {
+    #[serde(default)]
+    info: bool,
+}
+
 /// The catalog narrowed to what the caller may see ([`warnings::Warning::visible_to`]): the gate let in anyone
 /// viewing somewhere, and the catalog is the whole fleet's.
 async fn list_warnings(
     State(state): State<AppState>,
     axum::Extension(access): axum::Extension<access::Access>,
+    Query(query): Query<WarningsQuery>,
 ) -> Result<Json<Vec<warnings::Warning>>, (axum::http::StatusCode, String)> {
-    warnings_snapshot(&state)
-        .await
-        .map(|all| Json(all.into_iter().filter(|w| w.visible_to(&access)).collect()))
+    let all = match query.info {
+        true => catalog(&state).await,
+        false => warnings_snapshot(&state).await,
+    };
+    all.map(|all| Json(all.into_iter().filter(|w| w.visible_to(&access)).collect()))
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
@@ -1447,6 +1466,31 @@ fn stream_conditions(data_dir: &std::path::Path, unmatched: &mut [series::Stored
 
 // -- logs ---------------------------------------------------------------------
 
+/// The worker id a leader's own logs are kept under, where no worker of its own carries them.
+pub const LEADER_LOGS: &str = "leader";
+
+/// How often a leader running no worker writes what it has logged into its store.
+const LEADER_LOGS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Write what this leader logs into its own store, where `GET /api/logs` reads the fleet's, for a leader running no
+/// worker of its own. Runs for the life of the process; [`crate::logs::keep_for_leader`] is what queues them.
+pub async fn keep_own_logs(state: AppState) {
+    loop {
+        tokio::time::sleep(LEADER_LOGS_EVERY).await;
+        let registry = state.registry.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let events = crate::logs::pending_map(crate::heartbeat::LOGS_PER_HEARTBEAT, |event| {
+                crate::heartbeat::LogDto::from(event)
+            });
+            // Best-effort like a heartbeat's: a store that refuses them says so, and they are not held for a retry
+            // that would refuse them again.
+            registry.record_logs(LEADER_LOGS, crate::logs::boot_id(), None, &events);
+            crate::logs::delivered(events.len());
+        })
+        .await;
+    }
+}
+
 /// `GET /api/logs`'s query. Every filter is optional and absent means "any", so the bare path asks for the newest
 /// of everything.
 #[derive(serde::Deserialize, Default)]
@@ -1495,10 +1539,10 @@ pub struct LogRow {
     pub fields: serde_json::Value,
 }
 
-/// What `GET /api/logs` serves: what the fleet's workers have said, newest first.
+/// What `GET /api/logs` serves: what the fleet's workers and this leader have said, newest first.
 ///
-/// A leader keeps its own logs on its console, so nothing here is the leader's own -- except where one
-/// process runs both roles, whose worker carries them (design doc, Observability).
+/// A leader running no worker writes its own under [`LEADER_LOGS`]; where one process runs both roles, its worker
+/// carries them (design doc, Observability).
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogsResponse {
@@ -4059,13 +4103,17 @@ mod warnings_endpoint_tests {
         let served = |access: access::Access| {
             let state = state.clone();
             async move {
-                list_warnings(State(state), axum::Extension(access))
-                    .await
-                    .unwrap()
-                    .0
-                    .into_iter()
-                    .map(|w| w.subject_id)
-                    .collect::<Vec<_>>()
+                list_warnings(
+                    State(state),
+                    axum::Extension(access),
+                    Query(WarningsQuery { info: false }),
+                )
+                .await
+                .unwrap()
+                .0
+                .into_iter()
+                .map(|w| w.subject_id)
+                .collect::<Vec<_>>()
             }
         };
 

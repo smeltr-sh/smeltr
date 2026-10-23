@@ -240,6 +240,12 @@ enum Unresolved {
 /// A status code is an answer, so the address reaches something that is running. Only the handful that mean "not
 /// yet" are worth waiting on; the rest name the address or the route, which waiting does not fix.
 fn unresolved(e: &ureq::Error, leader_url: &str) -> Unresolved {
+    if let Some(refused) = heartbeat::certificate_refused(e) {
+        return Unresolved::Unreachable(format!(
+            "enrolling failed: {}",
+            heartbeat::untrusted_certificate(leader_url, refused)
+        ));
+    }
     match e {
         ureq::Error::StatusCode(408 | 429 | 500 | 502 | 503 | 504) => {
             Unresolved::Unreachable(format!("{leader_url} is not answering yet: {e}"))
@@ -599,6 +605,18 @@ fn fetch_deployed(repo_dir: &Path, leader_url: &str, token: &str, git_roots: &Pa
     fetch_deployed_with_budget(repo_dir, leader_url, token, git_roots, budget)
 }
 
+/// What a failed fetch of what the fleet runs says. curl's refusal of the leader's certificate says what the
+/// worker trusts; anything else is gix's own account.
+fn fetch_failed(e: &gix::Error, leader_url: &str) -> String {
+    match e.downcast_any_ref::<curl::Error>() {
+        Some(curl) if curl.is_peer_failed_verification() => format!(
+            "fetching what the fleet runs failed: {}",
+            heartbeat::untrusted_certificate(leader_url, curl)
+        ),
+        _ => format!("fetching what the fleet runs from {leader_url}: {e}"),
+    }
+}
+
 /// [`fetch_deployed`], with the stall budget exposed rather than chosen from [`GIT_BUDGET`]/[`GIT_CLONE_BUDGET`] --
 /// what a test shortens to keep a stalled-fetch test fast.
 fn fetch_deployed_with_budget(
@@ -647,9 +665,9 @@ fn fetch_deployed_with_budget(
     connection.set_credentials(|_action| Ok(None));
     connection
         .prepare_fetch(gix::progress::Discard, Default::default())
-        .map_err(|e| format!("fetching what the fleet runs from {leader_url}: {e}"))?
+        .map_err(|e| fetch_failed(&e, leader_url))?
         .receive(gix::progress::Discard, &AtomicBool::new(false))
-        .map_err(|e| format!("fetching what the fleet runs from {leader_url}: {e}"))?;
+        .map_err(|e| fetch_failed(&e, leader_url))?;
 
     let head = repo
         .find_reference(FETCHED_REF)
@@ -2934,11 +2952,8 @@ impl Supervisor {
                 Err(e) if e.certificate_untrusted() => {
                     tracing::warn!(
                         target: "worker.heartbeat_failed",
-                        "the heartbeat failed: {} presented a certificate this worker does not trust ({}). The \
-                         leader's certificate must chain to the worker's CA, or to the public roots when \
-                         worker.leader.trust_public is on, and carry the name in the address",
-                        self.config.leader_url,
-                        e.reason(),
+                        "the heartbeat failed: {}",
+                        heartbeat::untrusted_certificate(&self.config.leader_url, &e.reason()),
                     );
                     self.consider_offline_stop();
                     self.unanswered(sent);
@@ -5117,8 +5132,23 @@ mod tests {
         let refused = fetch_deployed(&untrusted, &base, token, public_roots())
             .expect_err("a self-signed leader is refused without its authority");
         assert!(
-            !refused.to_lowercase().contains("did not advertise"),
-            "the fetch should fail on the TLS handshake, not read past it: {refused}"
+            refused.starts_with(&format!(
+                "fetching what the fleet runs failed: {base} presented a certificate this worker does not trust ([60] "
+            )),
+            "the fetch should fail on the TLS handshake and say so: {refused}"
+        );
+
+        // Enrolling against the same leader without its authority says the same, not that the leader is not there.
+        let refused = match enroll(&base, code, "w2", None, true) {
+            Err(e) => e.message().to_string(),
+            Ok(_) => panic!("enrolled with a leader it does not trust"),
+        };
+        assert_eq!(
+            refused,
+            format!(
+                "enrolling failed: {}",
+                heartbeat::untrusted_certificate(&base, &"invalid peer certificate: UnknownIssuer")
+            )
         );
     }
 
