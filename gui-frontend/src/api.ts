@@ -2382,10 +2382,12 @@ export type WarningCondition =
   | 'deployFailsTests'
   | 'declaredFieldFailing'
   | 'declaredFieldGone'
-  | 'streamUnrouted';
+  | 'streamUnrouted'
+  | 'workerOnAnotherRelease';
 
-/** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. */
-export type WarningSeverity = 'failed' | 'warning';
+/** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. *Info*: a fact worth
+ * knowing that asks nothing; the leader sends it only to a caller that asks (`listWarnings({ info: true })`). */
+export type WarningSeverity = 'failed' | 'warning' | 'info';
 
 /** A named condition about one object, derived fresh by the leader on every poll. Nothing
  * stores it and nothing acknowledges it: it is gone when its fact is. */
@@ -2475,11 +2477,15 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Field no longer arriving';
     case 'streamUnrouted':
       return 'Stream unrouted';
+    case 'workerOnAnotherRelease':
+      return 'On another release';
   }
 }
 
-export function listWarnings(): Promise<WarningDto[]> {
-  return apiJson('/api/warnings');
+/** The catalog the caller sees. Info entries come only with `info`: every view that judges health reads without
+ * it, so a notice can never make anything look unhealthy. */
+export function listWarnings(opts: { info?: boolean } = {}): Promise<WarningDto[]> {
+  return apiJson(opts.info ? '/api/warnings?info=true' : '/api/warnings');
 }
 
 /** One column of a captured batch, as sent. A column with `value` is constant: every row

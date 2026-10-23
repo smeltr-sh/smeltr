@@ -932,15 +932,24 @@ async fn system_info() -> Json<SystemInfo> {
 
 // -- warnings ---------------------------------------------------------------
 
-/// What `GET /api/warnings` serves: the fixed catalog (design doc, Control plane), derived fresh from the registry
-/// and the worker roster on every call -- there is no warning table, so this is the only place the answer lives.
+/// The fixed catalog (design doc, Control plane) without its info entries: what every view that judges health reads,
+/// so none of them can count a fact that asks nothing as trouble. [`catalog`] is the whole of it.
+pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
+    let mut out = catalog(state).await?;
+    out.retain(|w| w.severity != warnings::Severity::Info);
+    Ok(out)
+}
+
+/// What `GET /api/warnings?info=true` serves: the fixed catalog (design doc, Control plane), info entries and all,
+/// derived fresh from the registry and the worker roster on every call -- there is no warning table, so this is the
+/// only place the answer lives.
 ///
 /// A route of its own rather than a field on [`HealthResponse`]: the "enrolled, never heartbeating" entry needs the
 /// worker roster, which lives in `Store` and so must be read on the blocking pool ([`run_store`]) -- and
 /// [`health_snapshot`] is also called synchronously from the in-process Cluster page, which a store read would
 /// block. The GUI pages that show warnings already poll `/api/health` on a timer; this rides the same timer as a
 /// second, independently-cheap fetch rather than reshaping the first.
-pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
+pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
     let now_ms = warnings::now_millis();
     // What the page polls, and so one of the reads a look for gone ephemeral workers rides: a fleet that has
     // scaled to nothing sends no heartbeat to carry it.
@@ -1167,15 +1176,25 @@ fn deployed_shared_pipelines(data_dir: &std::path::Path) -> std::collections::Ha
         .collect()
 }
 
+/// `GET /api/warnings`'s query: whether the catalog's info entries come too.
+#[derive(serde::Deserialize)]
+struct WarningsQuery {
+    #[serde(default)]
+    info: bool,
+}
+
 /// The catalog narrowed to what the caller may see ([`warnings::Warning::visible_to`]): the gate let in anyone
 /// viewing somewhere, and the catalog is the whole fleet's.
 async fn list_warnings(
     State(state): State<AppState>,
     axum::Extension(access): axum::Extension<access::Access>,
+    Query(query): Query<WarningsQuery>,
 ) -> Result<Json<Vec<warnings::Warning>>, (axum::http::StatusCode, String)> {
-    warnings_snapshot(&state)
-        .await
-        .map(|all| Json(all.into_iter().filter(|w| w.visible_to(&access)).collect()))
+    let all = match query.info {
+        true => catalog(&state).await,
+        false => warnings_snapshot(&state).await,
+    };
+    all.map(|all| Json(all.into_iter().filter(|w| w.visible_to(&access)).collect()))
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
@@ -4084,13 +4103,17 @@ mod warnings_endpoint_tests {
         let served = |access: access::Access| {
             let state = state.clone();
             async move {
-                list_warnings(State(state), axum::Extension(access))
-                    .await
-                    .unwrap()
-                    .0
-                    .into_iter()
-                    .map(|w| w.subject_id)
-                    .collect::<Vec<_>>()
+                list_warnings(
+                    State(state),
+                    axum::Extension(access),
+                    Query(WarningsQuery { info: false }),
+                )
+                .await
+                .unwrap()
+                .0
+                .into_iter()
+                .map(|w| w.subject_id)
+                .collect::<Vec<_>>()
             }
         };
 

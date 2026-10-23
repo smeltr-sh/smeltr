@@ -23,12 +23,14 @@ use crate::leader::store::WorkerCredentialRecord;
 use crate::leader::throughput;
 
 /// *Failed*: the thing is not doing its job. *Warning*: it is working and something is off. (design doc, Control
-/// plane).
+/// plane). *Info*: a fact worth knowing that asks nothing of anyone, which only a caller that asks for it is given
+/// (`leader::catalog`), so no view that judges health can count one as trouble.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Severity {
     Failed,
     Warning,
+    Info,
 }
 
 /// The kind of object a warning's subject is (design doc, Control plane: "this source, this destination, this
@@ -71,6 +73,7 @@ pub enum Condition {
     GroupNotDeployed,
     WorkerNotDeployingItsTarget,
     WorkerOnAnotherBuild,
+    WorkerOnAnotherRelease,
     WorkerMemoryHigh,
     AuthorityExpiring,
     AuthorityAging,
@@ -104,6 +107,7 @@ impl Condition {
         Condition::GroupNotDeployed,
         Condition::WorkerNotDeployingItsTarget,
         Condition::WorkerOnAnotherBuild,
+        Condition::WorkerOnAnotherRelease,
         Condition::WorkerMemoryHigh,
         Condition::AuthorityExpiring,
         Condition::AuthorityAging,
@@ -136,6 +140,7 @@ impl Condition {
             Condition::GroupNotDeployed => "groupNotDeployed",
             Condition::WorkerNotDeployingItsTarget => "workerNotDeployingItsTarget",
             Condition::WorkerOnAnotherBuild => "workerOnAnotherBuild",
+            Condition::WorkerOnAnotherRelease => "workerOnAnotherRelease",
             Condition::WorkerMemoryHigh => "workerMemoryHigh",
             Condition::AuthorityExpiring => "authorityExpiring",
             Condition::AuthorityAging => "authorityAging",
@@ -1107,6 +1112,40 @@ fn workers_on_another_build(
                 crate::leader::build_name(crate::version::commit_of(&t.smeltr_version), t.release.as_deref()),
                 crate::leader::build_name(leader_commit, leader_release),
             ),
+        })
+        .collect();
+    out.sort_by(|a, b| a.subject_id.cmp(&b.subject_id));
+    out
+}
+
+/// Every worker on another release than the leader's that it is still compatible with: it takes deployments, and is
+/// one upgrade from matching. Info, since nothing is wrong; [`workers_on_another_build`] covers the pairs that are not
+/// compatible.
+fn workers_on_another_release(
+    snapshot: &[ThreadHealth],
+    leader_commit: &str,
+    leader_release: Option<&str>,
+) -> Vec<Warning> {
+    let Some(leader_release) = leader_release else {
+        return Vec::new();
+    };
+    let mut out: Vec<Warning> = freshest_per_worker(snapshot)
+        .into_iter()
+        .filter(|(_, t)| t.stopped_at_millis.is_none())
+        .filter_map(|(worker_id, t)| {
+            let release = t.release.as_deref().filter(|r| *r != leader_release)?;
+            let commit = crate::version::commit_of(&t.smeltr_version);
+            crate::version::compatible(leader_commit, Some(leader_release), commit, Some(release)).then(|| Warning {
+                scope: None,
+                condition: Condition::WorkerOnAnotherRelease,
+                subject_kind: SubjectKind::Worker,
+                site: None,
+                subject_id: worker_id.to_string(),
+                group: Some(t.report.group_id.clone()),
+                severity: Severity::Info,
+                since_millis: None,
+                message: format!("worker {worker_id} is on {release}, and this leader on {leader_release}"),
+            })
         })
         .collect();
     out.sort_by(|a, b| a.subject_id.cmp(&b.subject_id));
@@ -2185,6 +2224,11 @@ pub fn derive(
     out.extend(group_not_deployed(snapshot, deployed_groups, starts));
     out.extend(worker_not_deploying_its_target(snapshot, starts, now_ms));
     out.extend(workers_on_another_build(
+        snapshot,
+        crate::version::commit(),
+        crate::version::RELEASE,
+    ));
+    out.extend(workers_on_another_release(
         snapshot,
         crate::version::commit(),
         crate::version::RELEASE,
@@ -4517,6 +4561,43 @@ mod tests {
         assert!(
             workers_on_another_build(&[stopped], "1a2b3c4", None).is_empty(),
             "a stopped worker is not deploying"
+        );
+    }
+
+    #[test]
+    fn a_worker_on_another_release_it_is_compatible_with_is_info() {
+        let on = |worker_id: &str, commit: &str, release: Option<&str>| {
+            let mut t = thread_health(worker_id, "reader-0", 0, vec![]);
+            t.smeltr_version = format!("2026.1.1+main.{commit}");
+            t.release = release.map(str::to_string);
+            t
+        };
+        let fleet = [
+            on("w1", "1111111", Some("1.2.0")),
+            on("w2", "2222222", Some("1.3.1")),
+            on("w3", "3333333", Some("2.0.0")),
+            on("w4", "4444444", None),
+            on("w5", "5555555", Some("1.4.0-rc1")),
+            on("w6", "6666666", Some("1.4.0")),
+        ];
+        let raised = workers_on_another_release(&fleet, "2222222", Some("1.3.1"));
+        assert_eq!(
+            raised.iter().map(|w| w.subject_id.as_str()).collect::<Vec<_>>(),
+            ["w1", "w6"],
+            "older or newer within the major; not the leader's own, another major, a dev build or a pre-release"
+        );
+        assert!(raised.iter().all(|w| w.severity == Severity::Info), "{raised:?}");
+        assert_eq!(raised[0].message, "worker w1 is on 1.2.0, and this leader on 1.3.1");
+
+        assert!(
+            workers_on_another_release(&fleet, "2222222", None).is_empty(),
+            "a leader that is no release has none to compare"
+        );
+        let mut stopped = on("w1", "1111111", Some("1.2.0"));
+        stopped.stopped_at_millis = Some(NOW);
+        assert!(
+            workers_on_another_release(&[stopped], "2222222", Some("1.3.1")).is_empty(),
+            "a stopped worker runs nothing"
         );
     }
 
