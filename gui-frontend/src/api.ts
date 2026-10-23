@@ -4813,6 +4813,16 @@ export function cutOverRotation(): Promise<CertificatesDto | AccountRefusal> {
   });
 }
 
+/** Moves when the open rotation cuts over without the fleet. */
+export function setRotationDeadline(
+  deadlineMillis: number,
+): Promise<CertificatesDto | AccountRefusal> {
+  return accountCall('/api/settings/certificates/rotation/deadline', {
+    method: 'PUT',
+    body: JSON.stringify({ deadlineMillis }),
+  });
+}
+
 /** Drops the incoming authority. This leader keeps serving what it serves today. */
 export function abandonRotation(): Promise<CertificatesDto | AccountRefusal> {
   return accountCall('/api/settings/certificates/rotation', {

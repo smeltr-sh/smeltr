@@ -2842,18 +2842,8 @@ fn authority_to_hand(data_dir: &std::path::Path, held: &[String], takes_authorit
     String::from_utf8(materials.ca_pem).ok()
 }
 
-/// Signs under the incoming root once the fleet holds it, or once the operator's deadline says to stop waiting.
-///
-/// Called wherever the leader has a reason to look: the heartbeat that carries the evidence, and the page an
-/// operator watches it on -- a leader with no workers left has no beats and would otherwise wait out a deadline
-/// nobody is coming to satisfy.
-pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
-    let dir = tls::dir_of(&state.data_dir);
-    // Asked first, and cheaply: no rotation is the ordinary state, and everything below -- a roster read included
-    // -- is worth doing only while one is open.
-    let Ok(Some(rotation)) = tls::rotation(&dir) else {
-        return;
-    };
+/// Every worker an open rotation waits for, or `None` where the roster could not be read.
+async fn expected_workers(state: &AppState) -> Option<std::collections::HashSet<String>> {
     // Every worker enrolled, which is the roster rather than whoever has spoken: one that enrolled and has never
     // reported a thread, or has not beaten since this leader started, is exactly the worker a rotation must not
     // sign away from. Read here rather than kept, because an enrollment or a revocation during a rotation counts.
@@ -2876,7 +2866,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
             None
         }
     };
-    let holders = credentials.map(|credentials| {
+    credentials.map(|credentials| {
         let gone: std::collections::HashSet<&str> = credentials
             .iter()
             .filter(|c| c.revoked)
@@ -2895,8 +2885,39 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
                 .into_iter()
                 .filter(|worker| !gone.contains(worker.as_str())),
         );
-        state.registry.authorities_held(&expected)
-    });
+        expected
+    })
+}
+
+/// Each worker an open rotation waits for, by id, and whether it holds `incoming` yet. `None` where the roster
+/// could not be read, which is not a fleet with nobody in it.
+pub async fn rotation_workers(state: &AppState, incoming: &str) -> Option<Vec<(String, bool)>> {
+    let expected = expected_workers(state).await?;
+    Some(
+        state
+            .registry
+            .holders(&expected)
+            .into_iter()
+            .map(|(worker, held)| (worker, held.iter().any(|root| root == incoming)))
+            .collect(),
+    )
+}
+
+/// Signs under the incoming root once the fleet holds it, or once the operator's deadline says to stop waiting.
+///
+/// Called wherever the leader has a reason to look: the heartbeat that carries the evidence, and the page an
+/// operator watches it on -- a leader with no workers left has no beats and would otherwise wait out a deadline
+/// nobody is coming to satisfy.
+pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
+    let dir = tls::dir_of(&state.data_dir);
+    // Asked first, and cheaply: no rotation is the ordinary state, and everything below -- a roster read included
+    // -- is worth doing only while one is open.
+    let Ok(Some(rotation)) = tls::rotation(&dir) else {
+        return;
+    };
+    let holders = expected_workers(state)
+        .await
+        .map(|expected| state.registry.authorities_held(&expected));
     let cut_over = match tls::cut_over_if_due(
         &dir,
         crate::startup_config::leader_certificate_names(&state.origin_hosts),

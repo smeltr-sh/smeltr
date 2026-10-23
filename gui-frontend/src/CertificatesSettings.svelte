@@ -19,6 +19,7 @@
     getCertificates,
     putCertificate,
     reissueCertificate,
+    setRotationDeadline,
     refused,
     withdrawCertificate,
     ROTATION_WAIT_HOURS,
@@ -412,7 +413,13 @@
         <button type="button" onclick={() => (cutOverBy = local(rotation.deadlineMillis))}
           >Discard</button
         >
-        <button class="primary" type="button" disabled={!!deadlineProblem(rotation)}>Save</button>
+        <button
+          class="primary"
+          type="button"
+          disabled={rotationBusy || !!deadlineProblem(rotation)}
+          onclick={() => rotationAct(() => setRotationDeadline(new Date(cutOverBy).getTime()), '')}
+          >Save</button
+        >
       </div>
     {/if}
   </div>

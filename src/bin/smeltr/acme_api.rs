@@ -266,7 +266,7 @@ async fn order(State(state): State<Acme>, actor: axum::Extension<Actor>, headers
     }
     let required = certificates_api::must_serve(&serving, &headers);
     match run(&state.auth, &serving, &settings, &actor, &required).await {
-        Ok(()) => certificates_api::answer_in_force(&serving),
+        Ok(()) => certificates_api::answer_in_force(&serving).await,
         Err(e) => refuse(StatusCode::BAD_REQUEST, &e),
     }
 }
