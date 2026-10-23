@@ -289,12 +289,22 @@ export const WORKERS_TABS: SectionItem[] = [
   { label: 'Enrollment codes', hash: '#/admin/enrollment' },
 ];
 
-/** Admin -> Accounts' tabs, in the same strip. */
-export const ACCOUNTS_TABS: SectionItem[] = [
-  { label: 'Users', hash: '#/admin/accounts' },
-  { label: 'Roles', hash: '#/admin/accounts/roles' },
-  { label: 'Single sign-on', hash: '#/admin/accounts/oidc' },
+/** The tabs of Admin -> Accounts. The first is where the bare `#/admin/accounts` lands. */
+export const ACCOUNTS_SECTIONS: { section: AccountsSection; label: string }[] = [
+  { section: 'users', label: 'Users' },
+  { section: 'roles', label: 'Roles' },
+  { section: 'oidc', label: 'Single sign-on' },
 ];
+
+export function accountsHash(section: AccountsSection): string {
+  return section === 'users' ? '#/admin/accounts' : `#/admin/accounts/${section}`;
+}
+
+/** Admin -> Accounts' tabs, in the same strip. */
+export const ACCOUNTS_TABS: SectionItem[] = ACCOUNTS_SECTIONS.map((s) => ({
+  label: s.label,
+  hash: accountsHash(s.section),
+}));
 
 /** Which entry of its section a page marks. A page opened from a list --
  * a pipeline, a preview, a locked test, a branch under review -- marks
@@ -575,11 +585,8 @@ export function parseRoute(hash: string): Route {
       if (parts[1] === 'groups') return { tab: 'admin', page: 'groups' };
       if (parts[1] === 'secrets') return { tab: 'admin', page: 'secrets' };
       if (parts[1] === 'accounts') {
-        return {
-          tab: 'admin',
-          page: 'accounts',
-          section: parts[2] === 'roles' || parts[2] === 'oidc' ? parts[2] : 'users',
-        };
+        const named = ACCOUNTS_SECTIONS.find((s) => s.section === parts[2]);
+        return { tab: 'admin', page: 'accounts', section: named?.section ?? 'users' };
       }
       if (parts[1] === 'system') {
         const named = SYSTEM_SECTIONS.find((s) => s.section === parts[2]);

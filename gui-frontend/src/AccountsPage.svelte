@@ -21,7 +21,7 @@
   import SecondaryTabs from './SecondaryTabs.svelte';
   import { ask, type Question } from './Confirm.svelte';
   import { TableSort } from './sort.svelte';
-  import { ACCOUNTS_TABS, type AccountsSection } from './nav';
+  import { ACCOUNTS_TABS, accountsHash, type AccountsSection } from './nav';
   import { LEVELS } from './access';
   import { scopeHue } from './scope';
   import {
@@ -426,11 +426,7 @@
     {/snippet}
   </PageHeader>
 
-  <SecondaryTabs
-    tabs={ACCOUNTS_TABS}
-    active={section === 'users' ? '#/admin/accounts' : `#/admin/accounts/${section}`}
-    ariaLabel="Accounts"
-  />
+  <SecondaryTabs tabs={ACCOUNTS_TABS} active={accountsHash(section)} ariaLabel="Accounts" />
 
   {#each handovers as pending (pending.userId)}
     <section class="handover">
