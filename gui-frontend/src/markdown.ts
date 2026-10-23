@@ -24,3 +24,17 @@ md.renderer.rules.link_open = (tokens, idx, options, _env, self) => {
 export function renderMarkdown(text: string): string {
   return md.render(text);
 }
+
+/** The text of `text`'s first paragraph, heading or code block, without its markup: a title in one line. */
+export function firstLineText(text: string): string {
+  for (const token of md.parse(text, {})) {
+    if (token.type === 'inline')
+      return md.renderer
+        .renderInlineAsText(token.children ?? [], md.options, {})
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (token.type === 'fence' || token.type === 'code_block')
+      return token.content.trim().split('\n')[0];
+  }
+  return text.trim();
+}

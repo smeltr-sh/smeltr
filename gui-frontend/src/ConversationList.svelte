@@ -4,6 +4,7 @@
 <script lang="ts">
   import { ago } from './time';
   import { reported } from './errors.svelte';
+  import { firstLineText } from './markdown';
   import { listConversations, refused, type ConversationSummaryDto } from './api';
 
   let { open }: { open?: string } = $props();
@@ -29,7 +30,7 @@
   <a class="new" class:here={!open} href="#/me/agent">New conversation</a>
   {#each conversations as c (c.id)}
     <a class="item" class:here={c.id === open} href="#/me/agent/{c.id}">
-      <span class="title">{c.title}</span>
+      <span class="title">{firstLineText(c.title)}</span>
       <span class="dim">{c.running ? 'working…' : ago(c.updatedAt / 1000)}</span>
     </a>
   {:else}

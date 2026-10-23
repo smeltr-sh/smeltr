@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderMarkdown } from './markdown';
+import { firstLineText, renderMarkdown } from './markdown';
 
 describe('renderMarkdown', () => {
   it('renders what an agent writes', () => {
@@ -48,5 +48,18 @@ describe('renderMarkdown', () => {
 
   it('renders a half-written code block to its end', () => {
     expect(renderMarkdown('Here:\n\n```\nlet a')).toContain('<pre><code>let a</code></pre>');
+  });
+});
+
+describe('firstLineText', () => {
+  it("is the first block's text, without its markup", () => {
+    expect(firstLineText('Why does **this** `route` drop\nevery record?\n\n```json\n{}\n```')).toBe(
+      'Why does this route drop every record?',
+    );
+    expect(firstLineText('# A [heading](https://x.dev)')).toBe('A heading');
+  });
+
+  it('is the first line of a message that opens with code', () => {
+    expect(firstLineText('```\nlet a = 1\nlet b\n```')).toBe('let a = 1');
   });
 });

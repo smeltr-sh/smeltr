@@ -20,6 +20,7 @@
   import ConversationEntry from './ConversationEntry.svelte';
   import ConversationEvent from './ConversationEvent.svelte';
   import Markdown from './Markdown.svelte';
+  import { firstLineText } from './markdown';
   import Collapsible from './Collapsible.svelte';
   import ModelPicker from './ModelPicker.svelte';
   import ContextGauge from './ContextGauge.svelte';
@@ -148,7 +149,7 @@
     if (!open || !shown) return;
     const sure = await ask({
       title: 'Delete this conversation?',
-      body: `“${shown.title}” and everything said in it are deleted for good.`,
+      body: `“${firstLineText(shown.title)}” and everything said in it are deleted for good.`,
       action: 'Delete',
       danger: true,
     });
@@ -230,7 +231,7 @@
   {#if open && shown}
     {#if !compact}
       <div class="head">
-        <h2>{shown.title}</h2>
+        <h2>{firstLineText(shown.title)}</h2>
         <button type="button" class="compact" onclick={remove}>Delete conversation</button>
       </div>
     {/if}
