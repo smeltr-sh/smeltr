@@ -1482,23 +1482,23 @@ fn stream_conditions(data_dir: &std::path::Path, unmatched: &mut [series::Stored
 /// The worker id a leader's own logs are kept under, where no worker of its own carries them.
 pub const LEADER_LOGS: &str = "leader";
 
-/// How often a leader running no worker writes what it has logged into its store.
+/// How often a leader writes what it has logged into its store.
 const LEADER_LOGS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Write what this leader logs into its own store, where `GET /api/logs` reads the fleet's, for a leader running no
-/// worker of its own. Runs for the life of the process; [`crate::logs::keep_for_leader`] is what queues them.
+/// Write what this leader logs into its own store, where `GET /api/logs` reads the fleet's. Runs for the life of the
+/// process; [`crate::logs::mark_leader_thread`] is what queues them.
 pub async fn keep_own_logs(state: AppState) {
     loop {
         tokio::time::sleep(LEADER_LOGS_EVERY).await;
         let registry = state.registry.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            let events = crate::logs::pending_map(crate::heartbeat::LOGS_PER_HEARTBEAT, |event| {
+            let events = crate::logs::leader_pending_map(crate::heartbeat::LOGS_PER_HEARTBEAT, |event| {
                 crate::heartbeat::LogDto::from(event)
             });
             // Best-effort like a heartbeat's: a store that refuses them says so, and they are not held for a retry
             // that would refuse them again.
             registry.record_logs(LEADER_LOGS, crate::logs::boot_id(), None, &events);
-            crate::logs::delivered(events.len());
+            crate::logs::leader_delivered(events.len());
         })
         .await;
     }
@@ -1554,8 +1554,8 @@ pub struct LogRow {
 
 /// What `GET /api/logs` serves: what the fleet's workers and this leader have said, newest first.
 ///
-/// A leader running no worker writes its own under [`LEADER_LOGS`]; where one process runs both roles, its worker
-/// carries them (design doc, Observability).
+/// A leader writes its own under [`LEADER_LOGS`], whether or not a worker runs in the same process (design doc,
+/// Observability).
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogsResponse {
