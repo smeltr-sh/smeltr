@@ -209,7 +209,7 @@ test('approving deploys the change as one commit on main and deletes its branch'
   await admin.getByRole('button', { name: 'Approve & deploy' }).click();
   const confirm = admin.getByRole('dialog', { name: 'approve & deploy' });
   await expect(confirm).toContainText('deletes the branch ship-it');
-  await confirm.getByRole('button', { name: 'Approve & deploy' }).click();
+  await confirm.getByRole('button', { name: 'Approve & deploy', exact: true }).click();
 
   await expect(admin).not.toHaveURL(/#\/changes\/review/);
   expect(await branchNames(api)).toEqual([]);
