@@ -4731,6 +4731,8 @@ export interface RotationDto {
   /** Workers that verify this leader by an authority their operator gave
    * them, and so take none from it. The cutover does not wait for them. */
   notFollowing: string[];
+  /** Each worker the cutover waits for, and whether it holds `incoming` yet. */
+  workers: { id: string; holdsIncoming: boolean }[];
 }
 
 export interface CertificatesDto {
@@ -4765,10 +4767,11 @@ export function putCertificate(
   certificate: string,
   privateKey: string,
   authority: string,
+  cutOverByMillis: number | null = null,
 ): Promise<CertificatesDto | AccountRefusal> {
   return accountCall('/api/settings/certificates', {
     method: 'PUT',
-    body: JSON.stringify({ certificate, privateKey, authority }),
+    body: JSON.stringify({ certificate, privateKey, authority, cutOverByMillis }),
   });
 }
 

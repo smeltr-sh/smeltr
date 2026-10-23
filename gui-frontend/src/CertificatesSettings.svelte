@@ -34,6 +34,7 @@
     type CertificateSource,
     type CertificatesDto,
     type DescribedCertificate,
+    type RotationDto,
   } from './api';
   import { ask } from './Confirm.svelte';
   import Help from './Help.svelte';
@@ -44,7 +45,7 @@
   import Advanced from './Advanced.svelte';
   import PasswordField from './PasswordField.svelte';
   import TokenListInput from './TokenListInput.svelte';
-  import { expiry } from './time';
+  import { count, expiry } from './time';
   import { NOT_IN_DEMO } from './access';
 
   let certificates = $state<CertificatesDto | null>(null);
@@ -69,6 +70,23 @@
   let certificate = $state('');
   let privateKey = $state('');
   let authority = $state('');
+  /** When a switch this upload opens cuts over at the latest, as the picker holds it: local time. */
+  let cutOverBy = $state('');
+  const CUTOVER_MARGIN_MS = 10 * 60 * 1000;
+  /** The latest a switch can wait: short of the served certificate's expiry by the leader's margin. */
+  const latestCutOver = $derived(
+    certificates?.served ? certificates.served.notAfterMillis - CUTOVER_MARGIN_MS : null,
+  );
+  $effect(() => {
+    if (cutOverBy === '' && latestCutOver !== null) cutOverBy = local(latestCutOver);
+  });
+  /** `millis` as a datetime-local input holds it. */
+  function local(millis: number): string {
+    const d = new Date(millis - new Date(millis).getTimezoneOffset() * 60_000);
+    return d.toISOString().slice(0, 16);
+  }
+  /** Ticks while a rotation is open, for the countdown. */
+  let now = $state(Date.now());
 
   /** The ACME settings as the leader holds them, and the form over them. */
   let acme = $state<AcmeDto | null>(null);
@@ -187,6 +205,31 @@
     }, ROTATION_POLL_MS);
     return () => clearInterval(id);
   });
+  $effect(() => {
+    if (!rotationOpen) return;
+    const id = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(id);
+  });
+
+  /** Time left until `millis`, to the second. */
+  function countdown(millis: number): string {
+    const left = Math.max(0, Math.floor((millis - now) / 1000));
+    const days = Math.floor(left / 86_400);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const clock = `${pad(Math.floor(left / 3600) % 24)}:${pad(Math.floor(left / 60) % 60)}:${pad(left % 60)}`;
+    return days > 0 ? `${count(days, 'day')} ${clock}` : clock;
+  }
+
+  /** A date with its time of day, for a moment somebody is waiting on. */
+  function at(millis: number): string {
+    return new Date(millis).toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  }
 
   const DAY = 24 * 60 * 60 * 1000;
 
@@ -328,6 +371,44 @@
   </div>
 {/snippet}
 
+{#snippet progress(rotation: RotationDto)}
+  {@const holding = rotation.workers.filter((w) => w.holdsIncoming).length}
+  <div class="setting">
+    <p>
+      Cuts over as soon as every worker holds the incoming authority, or at {at(
+        rotation.deadlineMillis,
+      )}, whichever comes first.
+    </p>
+    <p class="countdown">
+      Cutover in <strong>{countdown(rotation.deadlineMillis)}</strong>
+      <span class="dim">· started {at(rotation.startedMillis)}</span>
+    </p>
+  </div>
+
+  <div class="setting">
+    <h3>Workers <span class="dim">· {holding} of {rotation.workers.length} hold it</span></h3>
+    <ul class="workers">
+      {#each rotation.workers as worker (worker.id)}
+        <li>
+          <span class="mono">{worker.id}</span>
+          {#if worker.holdsIncoming}
+            <span class="holds">✓ holds it</span>
+          {:else}
+            <span class="dim">waiting</span>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+    {#if rotation.notFollowing.length > 0}
+      <p class="dim">
+        Not waited for: {rotation.notFollowing.join(', ')}. These workers verify this leader by an
+        authority their operator gave them and take none from here, so the operator gives them the
+        incoming one.
+      </p>
+    {/if}
+  </div>
+{/snippet}
+
 {#snippet status(error: string, done: string)}
   {#if error}
     <!-- The error bar says why. -->
@@ -431,18 +512,7 @@
           {@render who(switching.incoming, `expires ${on(switching.incoming.notAfterMillis)}`)}
         </div>
 
-        <div class="setting">
-          <p>
-            Started {on(switching.startedMillis)} · automatic cutover {on(switching.deadlineMillis)}
-          </p>
-          {#if switching.notFollowing.length > 0}
-            <p class="dim">
-              Not waited for: {switching.notFollowing.join(', ')}. These workers verify this leader
-              by an authority their operator gave them and take none from here, so the operator
-              gives them the incoming one.
-            </p>
-          {/if}
-        </div>
+        {@render progress(switching)}
 
         <div class="setting actions">
           <p class="critical">
@@ -537,13 +607,7 @@
             )}
           </div>
 
-          <div class="setting">
-            <p>
-              Started {on(certificates.rotation.startedMillis)} · automatic cutover {on(
-                certificates.rotation.deadlineMillis,
-              )}
-            </p>
-          </div>
+          {@render progress(certificates.rotation)}
 
           <div class="setting actions">
             <p class="critical">
@@ -640,6 +704,17 @@
           <Field label="Authority" note="PEM, the authority that signed the certificate">
             <textarea bind:value={authority} rows="4" spellcheck="false"></textarea>
           </Field>
+          <Field
+            label="Cut over by"
+            note="When the authority is new to the fleet: this leader serves the certificate as soon as every worker holds the authority, and at this time at the latest."
+          >
+            <input
+              class="when"
+              type="datetime-local"
+              bind:value={cutOverBy}
+              max={latestCutOver === null ? undefined : local(latestCutOver)}
+            />
+          </Field>
           {#if switching}
             <p class="dim">
               A switch to {switchingTo} is open. When it cuts over, it replaces this certificate.
@@ -653,7 +728,13 @@
               disabled={busy || !certificate || !privateKey || !authority}
               onclick={() =>
                 act(
-                  () => putCertificate(certificate, privateKey, authority),
+                  () =>
+                    putCertificate(
+                      certificate,
+                      privateKey,
+                      authority,
+                      cutOverBy ? new Date(cutOverBy).getTime() : null,
+                    ),
                   switched('this leader is serving the certificate you supplied'),
                 )}
             >
@@ -849,6 +930,32 @@
 
   .dim {
     color: var(--dim);
+  }
+
+  .when {
+    max-width: 16rem;
+  }
+
+  .countdown strong {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .workers {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.3rem;
+  }
+
+  .workers li {
+    display: flex;
+    justify-content: space-between;
+    max-width: 32rem;
+  }
+
+  .holds {
+    color: var(--added);
   }
 
   .soon {
