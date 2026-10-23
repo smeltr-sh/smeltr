@@ -234,10 +234,9 @@ tier's window goes with that tier's points, and a worker the leader forgets
 takes its window with it. An undeclared field whose type changes keeps both
 counts; the newest suggestion is the one served.
 
-A leader running no worker writes its own logs into the same table, under the
+A leader writes its own logs into the same table, under the
 name `leader`, so an administrator reads them where they read the fleet's, and
-they count against the same cap. Where one process runs both roles the
-leader's logs ride the worker's paths.
+they count against the same cap.
 
 ## Seams
 
