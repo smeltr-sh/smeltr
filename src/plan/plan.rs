@@ -14,7 +14,7 @@ use crate::core::error::ExceptionKind;
 use crate::core::id::{FunctionId, SlotId};
 use crate::expr::ast::{Catch, Expr, ExprKind, Region, Site, Span, Stmt, Value};
 use crate::expr::ir::{Ir, IrKind, Layer, flatten};
-use crate::expr::parse::parse_block;
+use crate::expr::parse::parse_block_shaped;
 use crate::ops::BinOp;
 use crate::plan::binding::{self, Source};
 use crate::plan::config::{
@@ -612,8 +612,137 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
             .clone()
     });
     plan.instrs = instrs;
+    let unread = unread_writes(&plan, &c.syms.local_slots);
+    plan.warnings.extend(unread);
+    // A case that runs on into the next has the next one's statements copied into its branch, so a warning about
+    // them comes twice.
+    let mut seen = HashSet::new();
+    plan.warnings.retain(|w| seen.insert((w.function, w.message.clone())));
     liveness(&mut plan);
     Ok(plan)
+}
+
+/// What a `while`'s condition is called where it is not a `bool`.
+const WHILE_CONDITION: &str = "a `while` condition";
+
+/// Whether a condition holds on every row, or on none, whatever the row: a `bool` literal, or a comparison of a side
+/// with itself. A side that calls a function is never the same twice, nor is one that may hold an `f64`, which NaN
+/// keeps from equalling itself.
+fn always(ir: &Ir) -> Option<bool> {
+    match &ir.kind {
+        IrKind::Literal(Value::Bool(b)) => Some(*b),
+        IrKind::Binary { op, lhs, rhs } if same(lhs, rhs) && !may_hold_nan(&lhs.ty) => match op {
+            // An ordering with a null side is false, so `x <= x` is not always true.
+            BinOp::Eq => Some(true),
+            BinOp::Ne | BinOp::Lt | BinOp::Gt => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn may_hold_nan(ty: &DataType) -> bool {
+    !matches!(
+        ty,
+        DataType::Bool | DataType::I64 | DataType::Str | DataType::Bytes | DataType::DateTime | DataType::Duration
+    )
+}
+
+/// A condition as a message quotes it: a comparison by its sides and operator.
+fn condition_text(e: &Expr) -> String {
+    match &e.kind {
+        ExprKind::Binary { op, lhs, rhs } => {
+            format!("{} {} {}", describe_expr(lhs), op.symbol(), describe_expr(rhs))
+        }
+        _ => describe_expr(e),
+    }
+}
+
+/// Whether `a` and `b` read the same value on every row: the same fields and literals, put together the same way.
+fn same(a: &Ir, b: &Ir) -> bool {
+    match (&a.kind, &b.kind) {
+        (IrKind::Field(x), IrKind::Field(y)) => x == y,
+        (IrKind::Literal(x), IrKind::Literal(y)) => x == y,
+        (IrKind::Binary { op, lhs, rhs }, IrKind::Binary { op: o, lhs: l, rhs: r }) => {
+            op == o && same(lhs, l) && same(rhs, r)
+        }
+        (IrKind::Unary { op, operand }, IrKind::Unary { op: o, operand: x }) => op == o && same(operand, x),
+        (IrKind::Index { base, index }, IrKind::Index { base: b, index: i }) => same(base, b) && same(index, i),
+        _ => false,
+    }
+}
+
+/// A warning for each value a statement writes that nothing reads: no instruction reads it and the record does not
+/// hold it at the end. A local is never read; a field is written again, or deleted, first. Only an expression's own
+/// write counts, under a name code can spell, so a parse's outputs and the engine's own slots are never named.
+fn unread_writes(plan: &Plan, locals: &HashSet<SlotId>) -> Vec<CompileError> {
+    let mut read = HashSet::new();
+    every_read(&plan.instrs, &mut |s| {
+        read.insert(s);
+    });
+    let held: HashSet<SlotId> = plan
+        .tree
+        .leaves()
+        .into_iter()
+        .chain(plan.tree.unclaimed_slots())
+        .map(|(_, s)| s)
+        .collect();
+    let mut written = Vec::new();
+    every_eval(&plan.instrs, &mut |s| written.push(s));
+    let mut out: Vec<CompileError> = Vec::new();
+    for slot in written {
+        let o = &plan.provenance[slot];
+        let Origin::Function(f) = o.origin else { continue };
+        let spelled = !o.name.is_empty()
+            && !o.name.starts_with(['<', '#'])
+            && !tree::is_internal(&o.name)
+            && !o.name.contains('*');
+        if !spelled || read.contains(&slot) || held.contains(&slot) {
+            continue;
+        }
+        let message = if locals.contains(&slot) {
+            format!("the local `{}` is never read", o.name)
+        } else if plan.provenance[slot + 1..].iter().any(|later| later.name == o.name) {
+            format!("`{}` is written again before anything reads it", o.name)
+        } else {
+            format!("`{}` is deleted before anything reads it", o.name)
+        };
+        out.push(CompileError::new(Some(f), message));
+    }
+    out
+}
+
+/// Every slot `instrs` read, those inside a loop's body and those a loop reads back between its trips included.
+fn every_read(instrs: &[Instr], f: &mut impl FnMut(SlotId)) {
+    for instr in instrs {
+        instr.reads(f);
+        match &instr.op {
+            Op::Loop(l) => {
+                every_read(&l.body, f);
+                l.accumulators.iter().for_each(|&(_, written)| f(written));
+                l.stay.iter().copied().for_each(&mut *f);
+            }
+            Op::ArrayFold(l) => {
+                every_read(&l.body, f);
+                for fold in &l.folds {
+                    f(fold.value);
+                    fold.ran.iter().copied().for_each(&mut *f);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The slot each expression in `instrs` writes, inside loops too.
+fn every_eval(instrs: &[Instr], f: &mut impl FnMut(SlotId)) {
+    for instr in instrs {
+        match &instr.op {
+            Op::Eval { .. } => f(instr.out),
+            Op::Loop(Loop { body, .. }) | Op::ArrayFold(ArrayFold { body, .. }) => every_eval(body, f),
+            _ => {}
+        }
+    }
 }
 
 /// How a field of type `ty` reads time text: a `datetime` reads any format the automatic reading knows.
@@ -1661,6 +1790,14 @@ impl Compiler<'_> {
         let slot = self.syms.temp(ty.clone(), Origin::Temp);
         self.emit_under(guard, Op::Eval { ir }, slot, ty.clone(), id);
         Ir::new(ty, span, IrKind::Field(slot))
+    }
+
+    /// Warns of a condition, written `text`, that holds on every row or on none.
+    fn note_constant(&mut self, ir: &Ir, text: &str, id: FunctionId) {
+        if let Some(holds) = always(ir) {
+            let warning = format!("`{}` is always {holds}", text.trim());
+            self.syms.warnings.push(CompileError::new(Some(id), warning));
+        }
     }
 
     /// `ir` as a condition: `bool`, or null, which reads false. Anything else is a compile error naming `what`.
@@ -2828,7 +2965,7 @@ impl Compiler<'_> {
                 to: Region::Loop,
                 span: cond.span,
             }];
-            self.if_stmt(cond, [&[], &leave], "a `while` condition", Some(stay), id);
+            self.if_stmt(cond, [&[], &leave], WHILE_CONDITION, Some(stay), id);
         }
         self.end(stay, id);
         Some(stay)
@@ -3487,6 +3624,10 @@ impl Compiler<'_> {
         let mut scopes: Vec<Scope> = Vec::new();
         for stmt in stmts {
             if let Stmt::Let { name, .. } = stmt {
+                if !self.syms.is_local(name) && self.syms.node(name).is_some() {
+                    let warning = format!("the local `{name}` hides the field `{name}`");
+                    self.syms.warnings.push(CompileError::new(Some(id), warning));
+                }
                 scopes.push(self.syms.open_scope(name));
             }
             self.statement(stmt, guard, id);
@@ -3717,7 +3858,7 @@ impl Compiler<'_> {
                 let Some(cond_ir) = self.expr_ast(cond, id) else {
                     return;
                 };
-                let Some(cond_ir) = self.condition(cond_ir, "a `while` condition", id) else {
+                let Some(cond_ir) = self.condition(cond_ir, WHILE_CONDITION, id) else {
                     return;
                 };
                 self.branches(guard, cond_ir, [true, false], id, |c, _, mask| {
@@ -4036,6 +4177,10 @@ impl Compiler<'_> {
         let Some(cond_ir) = self.condition(cond_ir, what, id) else {
             return;
         };
+        // `while (true)` is a loop that ends at a `break`.
+        if what != WHILE_CONDITION || !matches!(cond_ir.kind, IrKind::Literal(Value::Bool(true))) {
+            self.note_constant(&cond_ir, &condition_text(cond), id);
+        }
         let present = [!arms[0].is_empty() || arms[1].is_empty(), !arms[1].is_empty()];
         self.branches(guard, cond_ir, present, id, |c, arm, mask| {
             c.code_block(arms[arm], Some(mask), id)
@@ -4052,6 +4197,7 @@ impl Compiler<'_> {
                     let Some(cond_ir) = self.condition(cond_ir, "an `if` condition", *id) else {
                         continue;
                     };
+                    self.note_constant(&cond_ir, cond, *id);
                     let arms = [then, else_];
                     self.construct(guard, *id, |c| {
                         c.branches(
@@ -4070,7 +4216,13 @@ impl Compiler<'_> {
                     let effective = match &f.filter {
                         None => guard,
                         Some(src) => match self.expr(src, f.id).and_then(|ir| self.condition(ir, "a filter", f.id)) {
-                            Some(ir) => Some(self.and_guard(guard, ir, f.id)),
+                            Some(ir) => {
+                                // A filter of `true` is the field's own placeholder: every row.
+                                if !matches!(ir.kind, IrKind::Literal(Value::Bool(true))) {
+                                    self.note_constant(&ir, src, f.id);
+                                }
+                                Some(self.and_guard(guard, ir, f.id))
+                            }
                             None => guard,
                         },
                     };
@@ -4114,8 +4266,19 @@ impl Compiler<'_> {
                 return;
             }
             FunctionKind::Code { body } => {
-                match parse_block(body) {
-                    Ok(stmts) => self.code(&stmts, guard, id),
+                match parse_block_shaped(body) {
+                    Ok((stmts, shape)) => {
+                        for ender in shape.unreachable {
+                            let warning = format!("nothing after `{ender}` in this block runs");
+                            self.syms.warnings.push(CompileError::new(Some(id), warning));
+                        }
+                        for label in shape.fall_throughs {
+                            let label = label.slice(body).trim();
+                            let warning = format!("{label} has no `break`, so the next case runs too");
+                            self.syms.warnings.push(CompileError::new(Some(id), warning));
+                        }
+                        self.code(&stmts, guard, id)
+                    }
                     Err(e) => self.err(Some(id), format!("parse error in code block: {}", e.message)),
                 }
                 return;
@@ -4394,6 +4557,100 @@ mod tests {
             FunctionKind::Code { body: body.into() },
         ))];
         p
+    }
+
+    fn warnings(body: &str) -> Vec<String> {
+        let plan = compile(&code_pipeline(body), &SourceMeta::KAFKA).unwrap_or_else(|e| panic!("{body}: {e:?}"));
+        plan.warnings.into_iter().map(|w| w.message).collect()
+    }
+
+    /// What compiles but is likely a mistake is a warning; what is read, or what the record holds at the end, is not.
+    #[test]
+    fn an_unread_write_is_a_warning() {
+        assert_eq!(warnings("let n = 1; x = 2"), ["the local `n` is never read"]);
+        assert_eq!(
+            warnings("x = 1; x = 2"),
+            ["`x` is written again before anything reads it"]
+        );
+        assert_eq!(
+            warnings("x = 1; delete(x)"),
+            ["`x` is deleted before anything reads it"]
+        );
+        for body in [
+            "let n = 1; x = n",
+            "x = 1; x = x + 1",
+            "x = 1; if (_raw == \"a\") { x = 2 }",
+            "let n = 0; for (let v of [1, 2]) { n = n + v } x = n",
+            "x = [1, 2].map(v => v * 2)",
+            "_raw = \"a\"",
+        ] {
+            assert_eq!(warnings(body), Vec::<String>::new(), "{body}");
+        }
+    }
+
+    /// What follows `drop()`, `return`, `break` or `continue` in its block never runs.
+    #[test]
+    fn code_that_never_runs_is_a_warning() {
+        assert_eq!(warnings("drop(); x = 1"), ["nothing after `drop()` in this block runs"]);
+        assert_eq!(
+            warnings("for (let v of [1]) { continue; x = v }"),
+            ["nothing after `continue` in this block runs"]
+        );
+        assert_eq!(warnings("if (_raw == \"a\") { drop() } x = 1"), Vec::<String>::new());
+    }
+
+    /// A condition that holds on every row, or on none, is a warning; one a row decides is not.
+    #[test]
+    fn a_condition_always_the_same_is_a_warning() {
+        let n = "let n = parseInt(_raw);";
+        assert_eq!(
+            warnings(&format!("{n} if (n == n) {{ x = 1 }}")),
+            ["`n == n` is always true"]
+        );
+        assert_eq!(
+            warnings(&format!("{n} if (n < n) {{ x = 1 }}")),
+            ["`n < n` is always false"]
+        );
+        assert_eq!(warnings("if (true) { x = 1 }"), ["`true` is always true"]);
+        let fine =
+            format!("{n} if (n <= n) {{ x = 1 }} let i = 0; while (true) {{ i += 1; if (i > 2) {{ break }} }} y = i");
+        assert_eq!(warnings(&fine), Vec::<String>::new());
+        let continued = "for (let v of [1]) { switch (v) { case 1: y = 1; continue; default: y = 2 } }";
+        assert_eq!(warnings(continued), Vec::<String>::new());
+        for body in [
+            "let f = 0.5; if (f == f) { x = 1 }",
+            "if (_raw == \"a\") { x = 1 }",
+            "if (now() == now()) { x = 1 }",
+        ] {
+            assert_eq!(warnings(body), Vec::<String>::new(), "{body}");
+        }
+    }
+
+    /// A local named as a field hides it from the code after it.
+    #[test]
+    fn a_local_hiding_a_field_is_a_warning() {
+        assert_eq!(
+            warnings("x = 1; let x = 2; y = x + 1"),
+            ["the local `x` hides the field `x`"]
+        );
+        assert_eq!(warnings("let x = 2; y = x + 1"), Vec::<String>::new());
+    }
+
+    /// A case with statements of its own and no `break` runs the next case too; labels that share a body do not.
+    #[test]
+    fn a_case_running_on_is_a_warning() {
+        let body = |cases: &str| format!("let c = _raw; switch (c) {{ {cases} }}");
+        assert_eq!(
+            warnings(&body(r#"case "a": x = 1; case "b": x = 2; break; default: x = 3;"#)),
+            [r#"case "a" has no `break`, so the next case runs too"#]
+        );
+        for cases in [
+            r#"case "a": case "b": x = 2; break; default: x = 3;"#,
+            r#"case "a": x = 1; break; default: x = 3;"#,
+            r#"case "a": drop(); default: x = 3;"#,
+        ] {
+            assert_eq!(warnings(&body(cases)), Vec::<String>::new(), "{cases}");
+        }
     }
 
     /// The runtime reads each reserved slot back at its layout's type, so a pipeline that ends with one removed or

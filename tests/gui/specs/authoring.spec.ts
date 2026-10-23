@@ -1002,8 +1002,12 @@ test('A4: after a refused save, a new compile error is still shown', async ({
   ).toBeVisible();
 });
 
-// A4. Leaving a code field lays its code out.
-test('A4: a code field is laid out when it is left', async ({ admin, leader, api }) => {
+// A4. Leaving a code field lays its code out, and what compiles but is likely a mistake is said on its step.
+test('A4: a code field is laid out when it is left, and a warning is written on its step', async ({
+  admin,
+  leader,
+  api,
+}) => {
   await api.put(`/api/pipelines/orders${ON}`, {
     id: 'orders',
     name: 'orders',
@@ -1023,6 +1027,7 @@ test('A4: a code field is laid out when it is left', async ({ admin, leader, api
   await body.blur();
 
   await expect(body).toHaveValue('let n = 1;\nif (_raw != "") {\n  x = 1;\n} else {\n  x = 2;\n}');
+  await expect(admin.getByText('the local `n` is never read', { exact: true })).toBeVisible();
 });
 
 // A4, the whole trip. Save pressed straight from a code field saves the field as it is laid out, however slowly the

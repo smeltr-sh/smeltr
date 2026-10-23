@@ -128,26 +128,51 @@ pub struct Shape {
     pub ternary_colons: Vec<u32>,
     /// Each `switch` label's `case` or `default`.
     pub case_labels: Vec<u32>,
+    /// The label of each case with statements of its own that runs on into the next case: no `break`, `return`,
+    /// `throw`, `continue` or `drop()` ends it.
+    pub fall_throughs: Vec<Span>,
+    /// What ends a block before statements that therefore never run: `drop()`, `return`, `throw`, `break` or
+    /// `continue`.
+    pub unreachable: Vec<&'static str>,
 }
 
 impl Shape {
-    fn mark(&self) -> [usize; 5] {
+    fn mark(&self) -> [usize; 7] {
         [
             self.blocks.len(),
             self.statements.len(),
             self.types.len(),
             self.ternary_colons.len(),
             self.case_labels.len(),
+            self.fall_throughs.len(),
+            self.unreachable.len(),
         ]
     }
 
     /// Forgets what a parse that was rolled back recorded.
-    fn truncate(&mut self, [b, s, t, c, l]: [usize; 5]) {
+    fn truncate(&mut self, [b, s, t, c, l, f, u]: [usize; 7]) {
         self.blocks.truncate(b);
         self.statements.truncate(s);
         self.types.truncate(t);
         self.ternary_colons.truncate(c);
         self.case_labels.truncate(l);
+        self.fall_throughs.truncate(f);
+        self.unreachable.truncate(u);
+    }
+
+    /// Notes a statement read after the one that ends its block, the statements before it `body[..from]`.
+    fn after(&mut self, body: &[Stmt], from: usize) {
+        let ender = match body[..from].last() {
+            Some(Stmt::Drop(_)) => "drop()",
+            Some(Stmt::Return(_)) => "return",
+            Some(Stmt::Throw(_)) => "throw",
+            Some(Stmt::Leave { to: Region::Loop, .. }) => "break",
+            Some(Stmt::Leave { to: Region::Trip, .. }) => "continue",
+            _ => return,
+        };
+        if from < body.len() {
+            self.unreachable.push(ender);
+        }
     }
 }
 
@@ -271,7 +296,9 @@ pub fn parse_block_shaped(src: &str) -> Result<(Vec<Stmt>, Shape), ParseError> {
     let mut p = Parser::new(src)?;
     let mut out = Vec::new();
     while !p.at_eof() {
+        let from = out.len();
         p.stmt(&mut out)?;
+        p.shape.after(&out, from);
         while p.eat_punct(Punct::Semi) {}
     }
     if let Some((span, Some(message))) = p.open_tails.iter().find(|(_, refusal)| refusal.is_some()) {
@@ -959,12 +986,15 @@ impl<'s> Parser<'s> {
         // Labels with no statements of their own, waiting for the case they share.
         let mut pending: Vec<Expr> = Vec::new();
         let mut seen_default = false;
+        // The label of the case before, where it runs on into the one being read.
+        let mut running_on: Option<Span> = None;
         while !self.eat_punct(Punct::RBrace) {
             if self.at_eof() {
                 return Err(self.error("unterminated `switch`, expected `}`"));
             }
             let label_span = self.peek_span();
             self.shape.case_labels.push(label_span.start);
+            self.shape.fall_throughs.extend(running_on.take());
             if seen_default {
                 return Err(ParseError {
                     span: label_span,
@@ -988,6 +1018,13 @@ impl<'s> Parser<'s> {
             // A label ends like a statement does, without a `;`.
             self.shape.statements.push((colon.end, false));
             let (body, breaks) = self.case_body()?;
+            let ends = matches!(
+                body.last(),
+                Some(Stmt::Return(_) | Stmt::Throw(_) | Stmt::Drop(_) | Stmt::Leave { to: Region::Trip, .. })
+            );
+            if !body.is_empty() && !breaks && !ends {
+                running_on = Some(Span::new(label_span.start as usize, colon.start as usize));
+            }
             match label {
                 // `default` takes every row no case before it took, a waiting label's among them.
                 None => {
@@ -1098,6 +1135,7 @@ impl<'s> Parser<'s> {
             }
             let from = body.len();
             self.stmt(&mut body)?;
+            self.shape.after(&body, from);
             let not_a_loop = |s: &Stmt| !matches!(s, Stmt::For { .. } | Stmt::While { .. } | Stmt::Function { .. });
             if let Some(span) = Stmt::find_map(&body[from..], &not_a_loop, &mut |s| match s {
                 Stmt::Leave { to: Region::Loop, span } => Some(*span),
@@ -1443,7 +1481,9 @@ impl<'s> Parser<'s> {
             if self.at_eof() {
                 return Err(self.error("unterminated block, expected `}`"));
             }
+            let from = out.len();
             self.stmt(&mut out)?;
+            self.shape.after(&out, from);
             while self.eat_punct(Punct::Semi) {}
         }
         let close = self.advance().span; // `}`

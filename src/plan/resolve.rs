@@ -72,6 +72,8 @@ pub struct SymbolTable {
     pub layout: Vec<DataType>,
     pub origins: Vec<SlotOrigin>,
     pub warnings: Vec<CompileError>,
+    /// The slots bound to a local, rather than to the record's field.
+    pub local_slots: HashSet<SlotId>,
     /// Each open local, innermost last.
     open: Vec<Scope>,
     /// How many locals have been opened: the next one's serial.
@@ -149,6 +151,7 @@ impl SymbolTable {
                 })
                 .collect(),
             warnings: Vec::new(),
+            local_slots: HashSet::new(),
             open: Vec::new(),
             opened: 0,
             nulls: HashSet::new(),
@@ -161,6 +164,7 @@ impl SymbolTable {
             layout: Vec::new(),
             origins: Vec::new(),
             warnings: Vec::new(),
+            local_slots: HashSet::new(),
             open: Vec::new(),
             opened: 0,
             nulls: HashSet::new(),
@@ -439,6 +443,9 @@ impl SymbolTable {
     /// a hand-audited one. Whatever was at `name` goes: a leaf replaces an object whole.
     pub fn bind(&mut self, name: &str, ty: DataType, origin: Origin) -> SlotId {
         let slot = self.alloc(name.to_string(), ty, origin);
+        if self.is_local(name) {
+            self.local_slots.insert(slot);
+        }
         self.root.put(name, Node::Leaf(slot));
         slot
     }

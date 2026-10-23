@@ -19,6 +19,7 @@
   let {
     steps,
     errorsByStep = new Map(),
+    warningsByStep = new Map(),
     pipelineIds = [],
     pipelineNames = {},
     lookupTables = [],
@@ -31,6 +32,8 @@
   }: {
     steps: Step[];
     errorsByStep?: Map<Step, PreviewError[]>;
+    /** What compiles but is likely a mistake, by step, as `errorsByStep` places errors. */
+    warningsByStep?: Map<Step, PreviewError[]>;
     pipelineIds?: string[];
     pipelineNames?: Record<string, string>;
     lookupTables?: LookupTableDto[];
@@ -86,6 +89,7 @@
       {steps}
       index={i}
       {errorsByStep}
+      {warningsByStep}
       {pipelineIds}
       {pipelineNames}
       {lookupTables}

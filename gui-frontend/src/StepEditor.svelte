@@ -75,6 +75,7 @@
     steps,
     index,
     errorsByStep = new Map(),
+    warningsByStep = new Map(),
     pipelineIds = [],
     pipelineNames = {},
     lookupTables = [],
@@ -88,6 +89,8 @@
     steps: Step[];
     index: number;
     errorsByStep?: Map<Step, PreviewError[]>;
+    /** What compiles but is likely a mistake, by step, as `errorsByStep` places errors. */
+    warningsByStep?: Map<Step, PreviewError[]>;
     pipelineIds?: string[];
     pipelineNames?: Record<string, string>;
     lookupTables?: LookupTableDto[];
@@ -110,6 +113,9 @@
    * heuristic's fallback, kept for every error `assignmentIndex` cannot
    * place any more precisely than "somewhere in this step". */
   let stepErrorMessages = $derived(stepErrors.map((e) => e.message));
+  let stepWarningMessages = $derived([
+    ...new Set((warningsByStep.get(step) ?? []).map((e) => e.message)),
+  ]);
   /** Where an error naming an assignment by row number points after rows
    * above it were removed; null once its own row is gone. */
   const moved = new SvelteMap<PreviewError, number | null>();
@@ -428,20 +434,27 @@
 </script>
 
 {#snippet stepErrorList()}
-  {#if listedErrors.length > 0}
-    <div class="step-errors">
+  {#if listedErrors.length > 0 || stepWarningMessages.length > 0}
+    <div class="step-errors" class:warn={listedErrors.length === 0}>
       {#each listedErrors as message}
-        <div class="step-error-msg">
-          <svg class="error-glyph" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M12 3.5 L22 20.5 H2 Z" fill="currentColor" />
-            <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
-            <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
-          </svg>
-          <span>{message}</span>
-        </div>
+        {@render stepMessage(message, false)}
+      {/each}
+      {#each stepWarningMessages as message}
+        {@render stepMessage(message, true)}
       {/each}
     </div>
   {/if}
+{/snippet}
+
+{#snippet stepMessage(message: string, warn: boolean)}
+  <div class="step-error-msg" class:warn>
+    <svg class="error-glyph" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 3.5 L22 20.5 H2 Z" fill="currentColor" />
+      <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
+      <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
+    </svg>
+    <span>{message}</span>
+  </div>
 {/snippet}
 
 {#snippet more()}
@@ -599,6 +612,7 @@
             placeholder="condition, e.g. status >= 400"
             bind:value={step.condition}
             errors={stepErrorMessages}
+            warnings={stepWarningMessages}
             autocomplete="condition"
           />
         </Locked>
@@ -612,6 +626,7 @@
         <StepList
           steps={step.then}
           {errorsByStep}
+          {warningsByStep}
           {pipelineIds}
           {pipelineNames}
           {lookupTables}
@@ -628,6 +643,7 @@
         <StepList
           steps={step.else}
           {errorsByStep}
+          {warningsByStep}
           {pipelineIds}
           {pipelineNames}
           {lookupTables}
@@ -672,8 +688,14 @@
           <span class="type-name">{STEP_LABELS[step.type]}</span>
         </span>
         <span class="summary">{stepSummary(step)}</span>
-        {#if stepErrors.length > 0}
-          <svg class="error-glyph" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        {#if stepErrors.length > 0 || stepWarningMessages.length > 0}
+          <svg
+            class="error-glyph"
+            class:warn={stepErrors.length === 0}
+            viewBox="0 0 24 24"
+            fill="none"
+            aria-hidden="true"
+          >
             <path d="M12 3.5 L22 20.5 H2 Z" fill="currentColor" />
             <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
             <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
@@ -698,6 +720,7 @@
                 placeholder="true"
                 bind:value={step.filter}
                 errors={stepErrorMessages}
+                warnings={stepWarningMessages}
                 autocomplete="condition"
               />
             </Field>
@@ -722,6 +745,7 @@
                         placeholder="target field"
                         bind:value={step.assignments[i].target}
                         errors={stepErrorMessages}
+                        warnings={stepWarningMessages}
                         forced={nameError(step.assignments[i].target) ??
                           targetError?.message ??
                           null}
@@ -734,6 +758,7 @@
                       placeholder="expression"
                       bind:value={step.assignments[i].expr}
                       errors={stepErrorMessages}
+                      warnings={stepWarningMessages}
                       forced={assignmentError?.message ?? null}
                       autocomplete="assignment"
                     />
@@ -766,6 +791,7 @@
                 placeholder={'let n = status; n += 1; msg = `status=${n}`;'}
                 bind:value={step.body}
                 errors={stepErrorMessages}
+                warnings={stepWarningMessages}
                 autocomplete="code"
               />
             </Field>
@@ -775,6 +801,7 @@
                 placeholder="e.g. status == 500"
                 bind:value={step.condition}
                 errors={stepErrorMessages}
+                warnings={stepWarningMessages}
                 autocomplete="condition"
               />
             </Field>
@@ -788,6 +815,7 @@
                       placeholder="from"
                       bind:value={step.pairs[i].from}
                       errors={stepErrorMessages}
+                      warnings={stepWarningMessages}
                       forced={nameError(step.pairs[i].from)}
                     />
                   </Locked>
@@ -797,6 +825,7 @@
                       placeholder="to"
                       bind:value={step.pairs[i].to}
                       errors={stepErrorMessages}
+                      warnings={stepWarningMessages}
                       forced={nameError(step.pairs[i].to)}
                     />
                   </Locked>
@@ -1018,6 +1047,7 @@
                           placeholder="name"
                           bind:value={ps.declared[i].name}
                           errors={stepErrorMessages}
+                          warnings={stepWarningMessages}
                           forced={isCsv ? null : nameError(ps.declared[i].name)}
                         />
                       </Locked>
@@ -1056,6 +1086,7 @@
                 <ValidatedField
                   bind:value={ps.input}
                   errors={stepErrorMessages}
+                  warnings={stepWarningMessages}
                   forced={nameError(ps.input)}
                 />
               </Field>
@@ -1064,6 +1095,7 @@
                   placeholder="true"
                   bind:value={ps.filter}
                   errors={stepErrorMessages}
+                  warnings={stepWarningMessages}
                   autocomplete="condition"
                 />
               </Field>
@@ -1190,6 +1222,7 @@
               <ValidatedField
                 bind:value={step.input}
                 errors={stepErrorMessages}
+                warnings={stepWarningMessages}
                 forced={nameError(step.input)}
               />
             </Field>
@@ -1283,6 +1316,7 @@
                           placeholder="output field name"
                           bind:value={existing.field}
                           errors={stepErrorMessages}
+                          warnings={stepWarningMessages}
                           forced={nameError(existing.field)}
                         />
                       </Locked>
@@ -1345,6 +1379,7 @@
                         placeholder="field name"
                         bind:value={step.outputs[i].field}
                         errors={stepErrorMessages}
+                        warnings={stepWarningMessages}
                         forced={nameError(step.outputs[i].field)}
                       />
                     </Locked>
@@ -1699,6 +1734,16 @@
 
   .step-error-msg .error-glyph {
     margin-top: 0.1rem;
+  }
+
+  .step-errors.warn {
+    background: color-mix(in oklab, var(--warn) 12%, var(--panel));
+  }
+
+  .step-error-msg.warn,
+  .error-glyph.warn,
+  .step-error-msg.warn .error-glyph {
+    color: var(--warn);
   }
 
   .body {
