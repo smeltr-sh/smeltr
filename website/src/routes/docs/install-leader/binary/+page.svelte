@@ -56,7 +56,7 @@ sudo install -d -o smeltr -g smeltr -m 0700 /var/lib/smeltr /etc/smeltr/secrets<
   <h2 id="first-start">Standalone: first local start</h2>
   <p>
     Save this complete configuration as <code>smeltr.toml</code> in your current directory. It runs the
-    leader and one worker in the same process, with the browser interface restricted to this machine.
+    leader and one worker as one service, with the browser interface restricted to this machine.
   </p>
   <pre><code
       >[leader]

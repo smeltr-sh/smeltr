@@ -41,7 +41,7 @@
       <code>{image}</code>, with its version and checksum or digest.
     </li>
     <li>
-      One host for a standalone process, or a leader host and separate worker hosts for a
+      One host for a standalone install, or a leader host and separate worker hosts for a
       distributed deployment.
     </li>
     <li>Each separate worker can reach the leader over the network.</li>
@@ -83,11 +83,11 @@
 
   <h2 id="topology">Choose where to run Smeltr</h2>
 
-  <h3>Standalone: one process</h3>
+  <h3>Standalone: one host</h3>
   <p>
-    Run the leader and one worker together in a single Smeltr process for evaluation or a small
-    deployment. Enable both <code>leader.enabled</code> and <code>worker.enabled</code> in the same
-    configuration file. For a local test, bind to <code>127.0.0.1</code> so only that machine can connect.
+    Run the leader and one worker as one Smeltr service, from one configuration file. Enable both
+    <code>leader.enabled</code> and <code>worker.enabled</code>. For a local test, bind to
+    <code>127.0.0.1</code> so only that machine can connect.
   </p>
   <TopologyDiagrams />
 
