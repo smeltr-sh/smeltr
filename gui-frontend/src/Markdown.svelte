@@ -11,8 +11,10 @@
 <div class="markdown">{@html renderMarkdown(text)}</div>
 
 <style>
-  /* Its own white space, wherever it sits: the HTML's line breaks are not the text's. */
+  /* Wherever it sits, it fills the room it is given, and keeps its own white space: the HTML's line breaks are
+     not the text's. */
   .markdown {
+    flex: 1 1 auto;
     min-width: 0;
     white-space: normal;
     overflow-wrap: anywhere;
