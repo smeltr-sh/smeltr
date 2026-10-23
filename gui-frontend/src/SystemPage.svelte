@@ -8,6 +8,7 @@
 <script lang="ts">
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
+  import InlineSaveBar from './InlineSaveBar.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import Help from './Help.svelte';
@@ -295,15 +296,12 @@
         {#if updatesMessage}
           <p class="message" role="status">{updatesMessage}</p>
         {/if}
-        {#if checkDirty}
-          <div class="savebar">
-            <div class="buttons">
-              <button type="button" onclick={() => updates && adoptUpdates(updates)}>Discard</button
-              >
-              <button class="primary" type="submit" disabled={updatesBusy}>Save updates</button>
-            </div>
-          </div>
-        {/if}
+        <InlineSaveBar
+          dirty={checkDirty}
+          label="Save updates"
+          disabled={updatesBusy}
+          ondiscard={() => updates && adoptUpdates(updates)}
+        />
       </Panel>
       {#if warnings}
         <Panel title="Warnings" onsubmit={saveWarnings}>
@@ -328,16 +326,12 @@
           {#if warningsMessage}
             <p class="message" role="status">{warningsMessage}</p>
           {/if}
-          {#if bandDirty}
-            <div class="savebar">
-              <div class="buttons">
-                <button type="button" onclick={() => warnings && adoptWarnings(warnings)}
-                  >Discard</button
-                >
-                <button class="primary" type="submit" disabled={warningsBusy}>Save warnings</button>
-              </div>
-            </div>
-          {/if}
+          <InlineSaveBar
+            dirty={bandDirty}
+            label="Save warnings"
+            disabled={warningsBusy}
+            ondiscard={() => warnings && adoptWarnings(warnings)}
+          />
         </Panel>
       {/if}
     {:else if section === 'oidc'}
@@ -398,19 +392,16 @@
           <p class="message" role="status">{message}</p>
         {/if}
 
-        {#if dirty}
-          <div class="savebar">
-            <p class="critical">
-              Shortening either deadline signs out every session already past it.
-            </p>
-            <div class="buttons">
-              <button type="button" onclick={discard}>Discard</button>
-              <button class="primary" type="submit" disabled={busy || impossible}
-                >Save sessions</button
-              >
-            </div>
-          </div>
-        {/if}
+        <InlineSaveBar
+          {dirty}
+          label="Save sessions"
+          disabled={busy || impossible}
+          ondiscard={discard}
+        >
+          <p class="critical">
+            Shortening either deadline signs out every session already past it.
+          </p>
+        </InlineSaveBar>
       </Panel>
     {/if}
   </div>
@@ -462,25 +453,6 @@
 
   p {
     margin: 0;
-  }
-
-  .savebar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.8rem;
-    border-top: 1px solid var(--border);
-    padding-top: 0.9rem;
-  }
-
-  .savebar p {
-    font-size: var(--text-note);
-  }
-
-  .buttons {
-    display: flex;
-    gap: 0.5rem;
   }
 
   @media (max-width: 720px) {
