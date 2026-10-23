@@ -132,6 +132,12 @@ website, which copies them. Each kind takes its own hue, so no two kinds
 blur together; numbers and the literals `true`, `false`, `null` share the
 orange family at two hues.
 
+A tint over a surface mixes in oklab:
+`color-mix(in oklab, var(--error) 12%, var(--panel))`. A surface is a
+near-gray whose hue is the palette's base, and oklch blends hue on its
+own, so a mix in it carries the base's hue into the tint: an error band
+over Foundry's steel panel reads blue.
+
 `--accent` lightens in dark mode to stay vivid; `--on-accent` exists
 because a fixed white label would then lose contrast.
 
@@ -424,7 +430,7 @@ the page from that control's own corner. The chip stays where it was: what
 was pressed has to remain visible, or the list belongs to nothing.
 
 **Hover means the row responds.** It tints toward `--ink` over the panel
-it sits on -- `color-mix(in oklch, var(--ink) 10%, var(--panel))`. Tinting
+it sits on -- `color-mix(in oklab, var(--ink) 10%, var(--panel))`. Tinting
 toward `--bg` takes the color of the page *behind* the menu, which reads as
 a hole rather than as emphasis.
 

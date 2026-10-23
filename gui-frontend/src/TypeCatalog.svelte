@@ -360,7 +360,7 @@
   }
 
   .categories button.on {
-    background: color-mix(in oklch, var(--ink) 8%, var(--panel));
+    background: color-mix(in oklab, var(--ink) 8%, var(--panel));
     color: var(--ink);
     font-weight: 600;
   }

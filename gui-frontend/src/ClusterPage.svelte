@@ -1204,13 +1204,13 @@
     align-items: center;
     gap: 1rem;
     color: var(--error);
-    background: color-mix(in oklch, var(--error) 8%, var(--panel));
-    border: 1px solid color-mix(in oklch, var(--error) 18%, var(--border));
+    background: color-mix(in oklab, var(--error) 8%, var(--panel));
+    border: 1px solid color-mix(in oklab, var(--error) 18%, var(--border));
     font-size: var(--text-note);
     text-decoration: none;
   }
   .issue-ribbon:hover {
-    background: color-mix(in oklch, var(--error) 14%, var(--panel));
+    background: color-mix(in oklab, var(--error) 14%, var(--panel));
   }
   .issue-ribbon strong {
     flex: none;
@@ -1321,7 +1321,7 @@
     min-width: 0;
     border-left: 1px solid var(--border);
     padding: 1.15rem 1.25rem;
-    background: color-mix(in oklch, var(--panel) 94%, var(--bg));
+    background: color-mix(in oklab, var(--panel) 94%, var(--bg));
   }
   .matrix-tools {
     display: flex;
@@ -1396,7 +1396,7 @@
     align-items: center;
     gap: 0;
     padding: 0;
-    background: color-mix(in oklch, var(--bg) 55%, var(--panel));
+    background: color-mix(in oklab, var(--bg) 55%, var(--panel));
     border-bottom: 1px solid var(--border);
     font-size: var(--text-note);
     font-family: inherit;
@@ -1407,7 +1407,7 @@
   }
   .group-row:hover,
   .group-row.selected {
-    background: color-mix(in oklch, var(--ink) 10%, var(--panel));
+    background: color-mix(in oklab, var(--ink) 10%, var(--panel));
   }
   .group-toggle,
   .group-select {
@@ -1461,13 +1461,13 @@
   }
   .worker-row:hover,
   .worker-row.selected {
-    background: color-mix(in oklch, var(--ink) 7%, var(--panel));
+    background: color-mix(in oklab, var(--ink) 7%, var(--panel));
   }
   .worker-row.attention {
-    background: color-mix(in oklch, var(--warn) 8%, var(--panel));
+    background: color-mix(in oklab, var(--warn) 8%, var(--panel));
   }
   .worker-row.attention.selected {
-    background: color-mix(in oklch, var(--warn) 15%, var(--panel));
+    background: color-mix(in oklab, var(--warn) 15%, var(--panel));
   }
   .worker-name {
     min-width: 0;

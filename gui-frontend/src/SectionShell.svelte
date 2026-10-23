@@ -179,7 +179,7 @@
 
   .fold:hover {
     color: var(--ink);
-    background: color-mix(in oklch, var(--ink) 8%, var(--bg));
+    background: color-mix(in oklab, var(--ink) 8%, var(--bg));
   }
 
   .fold:focus-visible {
@@ -212,7 +212,7 @@
      the color of the page behind it. */
   .rail a:hover {
     color: var(--ink);
-    background: color-mix(in oklch, var(--ink) 8%, var(--bg));
+    background: color-mix(in oklab, var(--ink) 8%, var(--bg));
   }
 
   /* The row already chosen carries a left bar in the accent, not a filled
@@ -221,7 +221,7 @@
      than like a button. It does not respond to hover beyond that: its own
      colors already are the hover colors. */
   .rail a.on {
-    background: color-mix(in oklch, var(--ink) 10%, var(--bg));
+    background: color-mix(in oklab, var(--ink) 10%, var(--bg));
     border-left-color: var(--accent);
     color: var(--ink);
     font-weight: 600;
