@@ -698,7 +698,7 @@ pub const CATALOG: &[Route] = &[
         method: "PUT",
         path: "/api/settings/certificates",
         what: "Serve a certificate an operator supplies. No query.",
-        body: "{ certificate: pem, privateKey: pem, authority: pem }",
+        body: "{ certificate: pem (the full chain, ending with its root unless the platform holds it), privateKey: pem }",
     },
     Route {
         method: "POST",
@@ -729,6 +729,12 @@ pub const CATALOG: &[Route] = &[
         path: "/api/settings/certificates/rotation/cutover",
         what: "Sign under the incoming authority now; workers without it stop verifying. No query.",
         body: "",
+    },
+    Route {
+        method: "PUT",
+        path: "/api/settings/certificates/rotation/deadline",
+        what: "Move when an open rotation cuts over without waiting for the fleet. No query.",
+        body: "{ deadlineMillis: number (after now, no later than the rotation can wait) }",
     },
     // -- secrets --
     Route {
