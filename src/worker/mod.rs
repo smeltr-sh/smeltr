@@ -2931,6 +2931,18 @@ impl Supervisor {
                         self.follow_directive(directive);
                     }
                 }
+                Err(e) if e.certificate_untrusted() => {
+                    tracing::warn!(
+                        target: "worker.heartbeat_failed",
+                        "the heartbeat failed: {} presented a certificate this worker does not trust ({}). The \
+                         leader's certificate must chain to the worker's CA, or to the public roots when \
+                         worker.leader.trust_public is on, and carry the name in the address",
+                        self.config.leader_url,
+                        e.reason(),
+                    );
+                    self.consider_offline_stop();
+                    self.unanswered(sent);
+                }
                 Err(e) => {
                     tracing::warn!(
                         target: "worker.heartbeat_failed",

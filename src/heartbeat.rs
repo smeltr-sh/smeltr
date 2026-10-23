@@ -1225,16 +1225,40 @@ impl TryFrom<WireBatch> for CaptureBatch {
 mod client {
     use super::{CAPTURE_BUDGET, HeartbeatRequest, HeartbeatResponse, LOOKUP_FILE_BUDGET, REQUEST_BUDGET};
 
-    /// The POST failed or its response did not parse. Never fatal: the caller tries again next interval. Carries
-    /// the status the leader answered with, where it answered.
+    /// The POST failed or its response did not parse. Never fatal: the caller tries again next interval.
     #[derive(Debug)]
-    pub struct HeartbeatError(String, Option<u16>);
+    pub struct HeartbeatError(String, Failure);
+
+    /// What kind of failure a [`HeartbeatError`] is.
+    #[derive(Debug, PartialEq)]
+    enum Failure {
+        /// The leader answered with this status.
+        Status(u16),
+        /// This worker's roots do not accept the leader's certificate.
+        CertificateRefused,
+        Other,
+    }
 
     impl HeartbeatError {
+        fn other(reason: impl Into<String>) -> Self {
+            HeartbeatError(reason.into(), Failure::Other)
+        }
+
         /// Whether the leader answered that it does not know this worker's credential: never issued, or its worker
         /// forgotten. A revoked one is answered otherwise.
         pub fn credential_unknown(&self) -> bool {
-            self.1 == Some(401)
+            self.1 == Failure::Status(401)
+        }
+
+        /// Whether the leader's certificate is one this worker's roots do not accept. Retrying changes nothing until
+        /// the roots or the certificate do.
+        pub fn certificate_untrusted(&self) -> bool {
+            self.1 == Failure::CertificateRefused
+        }
+
+        /// What went wrong, without the "heartbeat failed" the display puts in front.
+        pub fn reason(&self) -> &str {
+            &self.0
         }
     }
 
@@ -1264,6 +1288,17 @@ mod client {
         ledger_url: String,
         /// The same configuration again, on a budget sized to a lookup file.
         lookup_agent: ureq::Agent,
+    }
+
+    /// The handshake's refusal of the leader's certificate, if that is what `e` is. rustls reports it from inside
+    /// the stream, so it arrives wrapped as an I/O error as often as on its own.
+    fn certificate_refused(e: &ureq::Error) -> Option<&rustls::Error> {
+        let rustls = match e {
+            ureq::Error::Rustls(e) => Some(e),
+            ureq::Error::Io(e) => e.get_ref().and_then(|inner| inner.downcast_ref::<rustls::Error>()),
+            _ => None,
+        };
+        rustls.filter(|e| matches!(e, rustls::Error::InvalidCertificate(_)))
     }
 
     /// A failed attempt, and whether the connection failed rather than the leader answered.
@@ -1374,7 +1409,7 @@ mod client {
             // One authority, parsed once, trusted by both agents: what a leader is judged by does not depend on
             // which call is being made.
             let tls_config = tls_trusting(leader_ca_pem, trust_public)
-                .map_err(|e| HeartbeatError(format!("the leader's certificate authority: {e}"), None))?;
+                .map_err(|e| HeartbeatError::other(format!("the leader's certificate authority: {e}")))?;
             let base = leader_url.as_ref().trim_end_matches('/');
             Ok(HeartbeatClient {
                 heartbeat_url: format!("{base}/api/heartbeat"),
@@ -1396,7 +1431,7 @@ mod client {
                 .header("Authorization", &format!("Bearer {}", self.token))
                 .call()
                 .map(|response| response.into_body().into_reader())
-                .map_err(|e| HeartbeatError(e.to_string(), None))
+                .map_err(|e| HeartbeatError::other(e.to_string()))
         }
 
         /// The ledger the leader keeps for a source it holds for this worker, as it arrives: one
@@ -1409,7 +1444,7 @@ mod client {
                 .header("Authorization", &format!("Bearer {}", self.token))
                 .call()
                 .map(|response| response.into_body().into_reader())
-                .map_err(|e| HeartbeatError(e.to_string(), None))
+                .map_err(|e| HeartbeatError::other(e.to_string()))
         }
 
         /// Hand one finished capture to the leader.
@@ -1423,7 +1458,7 @@ mod client {
                 .header("Authorization", &format!("Bearer {}", self.token))
                 .send_json(report)
                 .map(|_| ())
-                .map_err(|e| HeartbeatError(e.to_string(), None))
+                .map_err(|e| HeartbeatError::other(e.to_string()))
         }
 
         /// One heartbeat, retried once if the connection failed: a server may close a pooled idle connection as the
@@ -1451,13 +1486,13 @@ mod client {
                         e,
                         ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::Protocol(_)
                     ),
-                    error: HeartbeatError(
-                        e.to_string(),
-                        match e {
-                            ureq::Error::StatusCode(status) => Some(status),
-                            _ => None,
-                        },
-                    ),
+                    error: match (certificate_refused(&e), &e) {
+                        (Some(refused), _) => HeartbeatError(refused.to_string(), Failure::CertificateRefused),
+                        (None, ureq::Error::StatusCode(status)) => {
+                            HeartbeatError(e.to_string(), Failure::Status(*status))
+                        }
+                        (None, _) => HeartbeatError::other(e.to_string()),
+                    },
                 })?;
             response
                 .body_mut()
@@ -1465,7 +1500,7 @@ mod client {
                 .map_err(|e| SendFailure {
                     // Served; re-sending would be a second heartbeat.
                     retryable: false,
-                    error: HeartbeatError(e.to_string(), None),
+                    error: HeartbeatError::other(e.to_string()),
                 })
         }
     }
