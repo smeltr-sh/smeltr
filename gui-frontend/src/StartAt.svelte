@@ -6,7 +6,8 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import Field from './Field.svelte';
-  import { fromLocalInput, toLocalInput, type StartPosition } from './kafka';
+  import type { StartPosition } from './kafka';
+  import { fromLocalInput, toLocalInput } from './time';
 
   let {
     start = $bindable(),

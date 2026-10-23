@@ -47,7 +47,7 @@
   import Advanced from './Advanced.svelte';
   import PasswordField from './PasswordField.svelte';
   import TokenListInput from './TokenListInput.svelte';
-  import { countdown, expiry } from './time';
+  import { countdown, expiry, fromLocalInput, localDateTime, toLocalInput } from './time';
   import { NOT_IN_DEMO } from './access';
 
   let certificates = $state<CertificatesDto | null>(null);
@@ -77,24 +77,19 @@
   // must not undo a change somebody is making.
   const deadlineInForce = $derived(certificates?.rotation?.deadlineMillis ?? null);
   $effect(() => {
-    if (deadlineInForce !== null) cutOverBy = local(deadlineInForce);
+    if (deadlineInForce !== null) cutOverBy = toLocalInput(deadlineInForce);
   });
   function deadlineDirty(rotation: RotationDto): boolean {
-    return cutOverBy !== local(rotation.deadlineMillis);
+    return cutOverBy !== toLocalInput(rotation.deadlineMillis);
   }
   /** Why the picked deadline cannot be saved, or ''. */
   function deadlineProblem(rotation: RotationDto): string {
-    if (!deadlineDirty(rotation) || cutOverBy === '') return '';
-    const picked = new Date(cutOverBy).getTime();
+    const picked = fromLocalInput(cutOverBy);
+    if (!deadlineDirty(rotation) || picked === undefined) return '';
     if (picked <= now) return 'That time has passed. To cut over now, use Cut over now.';
     if (picked > rotation.latestDeadlineMillis)
-      return `The latest it can wait is ${at(rotation.latestDeadlineMillis)}, 10 minutes before a certificate expires.`;
+      return `The latest it can wait is ${localDateTime(rotation.latestDeadlineMillis)}, 10 minutes before a certificate expires.`;
     return '';
-  }
-  /** `millis` as a datetime-local input holds it. */
-  function local(millis: number): string {
-    const d = new Date(millis - new Date(millis).getTimezoneOffset() * 60_000);
-    return d.toISOString().slice(0, 16);
   }
   /** Ticks while a rotation is open, for the countdown. */
   let now = $state(Date.now());
@@ -221,17 +216,6 @@
     const id = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(id);
   });
-
-  /** A date with its time of day, for a moment somebody is waiting on. */
-  function at(millis: number): string {
-    return new Date(millis).toLocaleString(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
-  }
 
   const DAY = 24 * 60 * 60 * 1000;
 
@@ -374,11 +358,13 @@
 
 {#snippet progress(rotation: RotationDto)}
   {@const holding = rotation.workers.filter((w) => w.holdsIncoming).length}
+  {@const problem = deadlineProblem(rotation)}
   <form
     class="setting"
     onsubmit={(e) => {
       e.preventDefault();
-      rotationAct(() => setRotationDeadline(new Date(cutOverBy).getTime()), '');
+      const picked = fromLocalInput(cutOverBy);
+      if (picked !== undefined) rotationAct(() => setRotationDeadline(picked), '');
     }}
   >
     <p class="deadline">
@@ -388,22 +374,22 @@
         type="datetime-local"
         aria-label="Cut over by"
         bind:value={cutOverBy}
-        min={local(now)}
-        max={local(rotation.latestDeadlineMillis)}
+        min={toLocalInput(now)}
+        max={toLocalInput(rotation.latestDeadlineMillis)}
       />, whichever comes first.
     </p>
     <p class="countdown">
       Cutover in <strong>{countdown(rotation.deadlineMillis, now)}</strong>
-      <span class="dim">· started {at(rotation.startedMillis)}</span>
+      <span class="dim">· started {localDateTime(rotation.startedMillis)}</span>
     </p>
-    {#if deadlineProblem(rotation)}
-      <InlineError>{deadlineProblem(rotation)}</InlineError>
+    {#if problem}
+      <InlineError>{problem}</InlineError>
     {/if}
     <InlineSaveBar
       dirty={deadlineDirty(rotation)}
       label="Save"
-      disabled={rotationBusy || !!deadlineProblem(rotation)}
-      ondiscard={() => (cutOverBy = local(rotation.deadlineMillis))}
+      disabled={rotationBusy || !!problem}
+      ondiscard={() => (cutOverBy = toLocalInput(rotation.deadlineMillis))}
     />
   </form>
 
