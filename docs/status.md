@@ -146,7 +146,7 @@ catalog's volume entry both wait on it.
 
 ### Worker recovery
 
-- **A non-worker leader has no path to offload its own logs.** Options: structured console output through a host agent, a syslog emitter, or making the leader always an implicit worker. Undecided.
+- **A non-worker leader keeps its own logs only in its own store.** Nothing ships them anywhere else: no syslog emitter, and no worker to run a smeltr logs source.
 - **A tree confirmed dead by its pipe's end-of-file assumes every member still holds that pipe.** A descendant that closed its copy before wedging is not waited on, so `kill_and_confirm` can report a tree gone while it remains. No runtime spawns a descendant today.
 - **A capture invitation can be routed to a runtime about to be replaced.** `route_invitations` acts before the same beat's redeploy decision, so a capture racing a redeploy can be lost.
 - **A heartbeat that times out after the leader persists it can inflate a durable counter.** Closing it needs an idempotency key across the heartbeat protocol.

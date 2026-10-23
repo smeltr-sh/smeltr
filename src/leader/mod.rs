@@ -1466,6 +1466,31 @@ fn stream_conditions(data_dir: &std::path::Path, unmatched: &mut [series::Stored
 
 // -- logs ---------------------------------------------------------------------
 
+/// The worker id a leader's own logs are kept under, where no worker of its own carries them.
+pub const LEADER_LOGS: &str = "leader";
+
+/// How often a leader running no worker writes what it has logged into its store.
+const LEADER_LOGS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Write what this leader logs into its own store, where `GET /api/logs` reads the fleet's, for a leader running no
+/// worker of its own. Runs for the life of the process; [`crate::logs::keep_for_leader`] is what queues them.
+pub async fn keep_own_logs(state: AppState) {
+    loop {
+        tokio::time::sleep(LEADER_LOGS_EVERY).await;
+        let registry = state.registry.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let events = crate::logs::pending_map(crate::heartbeat::LOGS_PER_HEARTBEAT, |event| {
+                crate::heartbeat::LogDto::from(event)
+            });
+            // Best-effort like a heartbeat's: a store that refuses them says so, and they are not held for a retry
+            // that would refuse them again.
+            registry.record_logs(LEADER_LOGS, crate::logs::boot_id(), None, &events);
+            crate::logs::delivered(events.len());
+        })
+        .await;
+    }
+}
+
 /// `GET /api/logs`'s query. Every filter is optional and absent means "any", so the bare path asks for the newest
 /// of everything.
 #[derive(serde::Deserialize, Default)]
@@ -1514,10 +1539,10 @@ pub struct LogRow {
     pub fields: serde_json::Value,
 }
 
-/// What `GET /api/logs` serves: what the fleet's workers have said, newest first.
+/// What `GET /api/logs` serves: what the fleet's workers and this leader have said, newest first.
 ///
-/// A leader keeps its own logs on its console, so nothing here is the leader's own -- except where one
-/// process runs both roles, whose worker carries them (design doc, Observability).
+/// A leader running no worker writes its own under [`LEADER_LOGS`]; where one process runs both roles, its worker
+/// carries them (design doc, Observability).
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogsResponse {

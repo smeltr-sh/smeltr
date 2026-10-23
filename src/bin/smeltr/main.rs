@@ -931,6 +931,11 @@ async fn setup_leader(
     state.deploy_checks.set_runner(Arc::new(test_api::failing_at));
     tokio::spawn(smeltr::leader::remote::poll(state.clone()));
     tokio::spawn(smeltr::leader::remote::push_saves(state.clone()));
+    // A worker in this process carries the leader's logs on its beat; without one, the leader keeps them itself.
+    if !smeltr::startup_config::worker_enabled() {
+        smeltr::logs::keep_for_leader();
+        tokio::spawn(smeltr::leader::keep_own_logs(state.clone()));
+    }
 
     // A cutover changes the files and then withdraws the enrollment codes that named the root it retired. A process
     // that stopped between the two came back to a finished cutover with no rotation left to notice it, so the same
