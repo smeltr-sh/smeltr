@@ -96,9 +96,11 @@ first time the provider vouches for the person, and records the groups the
 provider names at each sign-in and at each refresh. While a session lives the
 leader refreshes it at the provider every few minutes with the refresh token
 the sign-in gave, held in memory with the session: a provider that refuses the
-refresh, or whose fresh ID token no longer holds the required group, ends the
-session. Only a person holding the one group the leader requires is let in; without it, anyone who can sign up at the provider would
-reach whatever the leader's roles give. The sign-in is the authorization code
+refresh, or whose fresh ID token no longer names a group any role names, ends
+the session. Only a person holding a group some role names is let in; anyone
+else who can sign up at the provider would otherwise hold a session that gives
+nothing. A refused sign-in is logged with the groups the provider sent, since
+those are the names a role must match before anybody has been let in. The sign-in is the authorization code
 flow with PKCE, bound to the browser that started it, and the ID token's
 signature is checked in the module that performs all the leader's other
 cryptography.

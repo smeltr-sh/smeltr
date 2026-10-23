@@ -4412,6 +4412,8 @@ export interface UserDto {
   updatedAt: number;
   /** The roles this account holds: its provider groups a role exists for. Empty for a local account. */
   roles: string[];
+  /** Every group the provider named at the last sign-in or refresh, exactly as named. Empty for a local account. */
+  groups: string[];
   access: AccessDto;
 }
 
@@ -4623,7 +4625,7 @@ export function putSessionSettings(
   });
 }
 
-/** The Single sign-on tab of Admin -> System (`oidc_api.rs`). The client
+/** The Single sign-on tab of Admin -> Accounts (`oidc_api.rs`). The client
  * secret is never sent back, only whether one is stored. */
 export interface OidcSettingsDto {
   enabled: boolean;
@@ -4631,7 +4633,6 @@ export interface OidcSettingsDto {
   clientId: string;
   clientSecretSet: boolean;
   groupsClaim: string;
-  requiredGroup: string;
   /** What the administrator registers at the provider as the sign-in redirect. */
   redirectUri: string;
 }
@@ -4654,7 +4655,6 @@ export function putOidcSettings(req: {
   clientId: string;
   clientSecret?: string;
   groupsClaim: string;
-  requiredGroup: string;
 }): Promise<OidcSettingsResult | AccountRefusal> {
   return accountCall('/api/settings/oidc', { method: 'PUT', body: JSON.stringify(req) });
 }

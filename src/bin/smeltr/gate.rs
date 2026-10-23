@@ -725,7 +725,7 @@ mod tests {
             assert_eq!(status, 403);
         }
 
-        /// The required group lets a person sign in; it gives them nothing to do.
+        /// An account whose groups no role names holds nothing, whatever session it still has.
         #[tokio::test]
         async fn an_oidc_account_with_no_role_is_refused_config() {
             let store = store();

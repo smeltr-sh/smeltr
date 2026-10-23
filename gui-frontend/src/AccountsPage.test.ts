@@ -34,6 +34,7 @@ const USERS = [
     createdAt: 0,
     updatedAt: 0,
     roles: [],
+    groups: [],
     access: {},
   },
   {
@@ -46,6 +47,7 @@ const USERS = [
     createdAt: 0,
     updatedAt: 0,
     roles: ['smeltr-payments', 'smeltr-search'],
+    groups: ['everyone', 'smeltr-payments', 'smeltr-search'],
     access: {},
   },
 ];
@@ -165,9 +167,20 @@ describe('the Users tab', () => {
   it('shows each account its roles, a local one as administrator', async () => {
     await usersTab();
     const pills = (name: string) =>
-      [...row(name).querySelectorAll('td:nth-child(4) .pill')].map((p) => p.textContent?.trim());
+      [...row(name).querySelectorAll('td:nth-child(4) span.pill')].map((p) =>
+        p.textContent?.trim(),
+      );
     expect(pills('Ada')).toEqual(['administrator']);
     expect(pills('Bo')).toEqual(['smeltr-payments', 'smeltr-search']);
+  });
+
+  it('offers a role for each group an account holds that no role names', async () => {
+    history.replaceState(null, '', '/#/admin/accounts');
+    await usersTab();
+    expect(button('+ smeltr-payments', row('Bo'))).toBeUndefined();
+    button('+ everyone', row('Bo'))!.click();
+    await settle();
+    expect(location.hash).toBe('#/admin/accounts/roles');
   });
 
   it('resets a password only once it is confirmed', async () => {
