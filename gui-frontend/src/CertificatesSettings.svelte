@@ -404,21 +404,17 @@
       Cutover in <strong>{countdown(rotation.deadlineMillis)}</strong>
       <span class="dim">· started {at(rotation.startedMillis)}</span>
     </p>
-    {#if deadlineProblem(rotation)}
-      <InlineError>{deadlineProblem(rotation)}</InlineError>
+    {#if deadlineDirty(rotation)}
+      {#if deadlineProblem(rotation)}
+        <InlineError>{deadlineProblem(rotation)}</InlineError>
+      {/if}
+      <div class="buttons">
+        <button type="button" onclick={() => (cutOverBy = local(rotation.deadlineMillis))}
+          >Discard</button
+        >
+        <button class="primary" type="button" disabled={!!deadlineProblem(rotation)}>Save</button>
+      </div>
     {/if}
-    <div class="buttons">
-      <button
-        type="button"
-        disabled={!deadlineDirty(rotation)}
-        onclick={() => (cutOverBy = local(rotation.deadlineMillis))}>Discard</button
-      >
-      <button
-        class="primary"
-        type="button"
-        disabled={!deadlineDirty(rotation) || !!deadlineProblem(rotation)}>Save</button
-      >
-    </div>
   </div>
 
   <div class="setting">
