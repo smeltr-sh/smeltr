@@ -2400,11 +2400,52 @@ pub fn newest_certificate(store: &dyn Store, name: &str) -> Result<Option<(Strin
     Ok(opened.into_iter().next().map(|(_, _, key)| (chain, key)))
 }
 
-/// The fingerprint of the newest leaf of the certificate `name`, `None` where it has none this leader can open.
-fn newest_fingerprint(store: &dyn Store, name: &str) -> Result<Option<String>, StoreError> {
-    Ok(newest_chain(store, name)?
-        .and_then(|(_, chain)| tls::describe(chain.as_bytes(), "the certificate").ok())
-        .map(|leaf| leaf.fingerprint))
+/// Which list entry each copy in `tls/` was taken from, by the copy's leaf fingerprint, as `acme` records which
+/// copies are its own. A replaced entry stays the one served until it is chosen again, so a name is never read off a
+/// fingerprint the list now holds.
+const FROM_THE_LIST: &str = "from-the-list.json";
+
+/// The names of the list entries the leader serves, or is rotating to.
+pub fn served_names(tls_dir: &std::path::Path) -> Result<Vec<String>, String> {
+    let copies = copies_from_the_list(tls_dir)?;
+    Ok(fingerprints_in_use(tls_dir)?
+        .iter()
+        .filter_map(|fingerprint| copies.get(fingerprint).cloned())
+        .collect())
+}
+
+/// Records that the copy whose leaf is `fingerprint` was taken from the entry `name`. Before the copy is served, so
+/// one the leader serves always has its name; the record forgets copies no longer in use.
+pub fn record_copy(tls_dir: &std::path::Path, fingerprint: &str, name: &str) -> Result<(), String> {
+    let in_use = fingerprints_in_use(tls_dir)?;
+    let mut copies = copies_from_the_list(tls_dir)?;
+    copies.retain(|fingerprint, _| in_use.contains(fingerprint));
+    copies.insert(fingerprint.to_string(), name.to_string());
+    let path = tls_dir.join(FROM_THE_LIST);
+    let json = serde_json::to_vec_pretty(&copies).map_err(|e| e.to_string())?;
+    tls::write_durably(&path, &json).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn copies_from_the_list(tls_dir: &std::path::Path) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let path = tls_dir.join(FROM_THE_LIST);
+    match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(std::collections::BTreeMap::new()),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// The leaf fingerprints of the supplied certificate in force and of the one an open rotation puts in force.
+fn fingerprints_in_use(tls_dir: &std::path::Path) -> Result<Vec<String>, String> {
+    let mut in_use = Vec::new();
+    let (materials, served) = tls::in_force(tls_dir)?;
+    if materials.supplied {
+        in_use.push(tls::describe(&served, "the certificate")?.fingerprint);
+    }
+    if let Some(incoming) = tls::incoming_certificate(tls_dir)? {
+        in_use.push(tls::describe(&incoming, "the incoming certificate")?.fingerprint);
+    }
+    Ok(in_use)
 }
 
 /// The name a certificate uploaded before the list existed is listed under.
@@ -2412,22 +2453,15 @@ pub const UPLOADED_BEFORE_THE_LIST: &str = "leader";
 
 /// Lists the certificate an operator uploaded for the leader before certificates were kept in a list, so the
 /// Certificates page shows what the leader serves and it can be chosen again. Run at start; does nothing once the
-/// list holds it, or where the leader serves its own or an ordered certificate.
+/// copy in force has its name, or where the leader serves its own or an ordered certificate.
 pub fn list_uploaded_certificate(store: &dyn Store, tls_dir: &std::path::Path) -> Result<(), String> {
     if acme::source(tls_dir)? != acme::Source::Upload {
         return Ok(());
     }
     let (materials, served) = tls::in_force(tls_dir)?;
     let fingerprint = tls::describe(&served, "the certificate")?.fingerprint;
-    for r in store
-        .list_secrets()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter(|r| r.certificate)
-    {
-        if newest_fingerprint(store, &r.name).map_err(|e| e.to_string())? == Some(fingerprint.clone()) {
-            return Ok(());
-        }
+    if copies_from_the_list(tls_dir)?.contains_key(&fingerprint) {
+        return Ok(());
     }
     let key_path = &materials.server_key_path;
     let key = std::fs::read_to_string(key_path).map_err(|e| format!("{}: {e}", key_path.display()))?;
@@ -2435,17 +2469,8 @@ pub fn list_uploaded_certificate(store: &dyn Store, tls_dir: &std::path::Path) -
     let chain = format!("{}\n{root}", String::from_utf8_lossy(&served).trim_end());
     store
         .create_certificate(UPLOADED_BEFORE_THE_LIST, "", &chain, &key)
-        .map_err(|e| e.to_string())
-}
-
-/// The fingerprint of the certificate the leader serves, where an operator chose it from the list rather than the
-/// leader's own authority signing it.
-fn served_from_list(data_dir: &std::path::Path) -> Option<String> {
-    let (materials, served) = tls::in_force(&data_dir.join("tls")).ok()?;
-    materials.supplied.then_some(())?;
-    tls::describe(&served, "the certificate")
-        .ok()
-        .map(|served| served.fingerprint)
+        .map_err(|e| e.to_string())?;
+    record_copy(tls_dir, &fingerprint, UPLOADED_BEFORE_THE_LIST)
 }
 
 async fn list_certificates(
@@ -2453,7 +2478,8 @@ async fn list_certificates(
 ) -> Result<Json<Vec<CertificateOut>>, (axum::http::StatusCode, String)> {
     let data_dir = state.data_dir.clone();
     run_store(state.store, move |s| {
-        let served = served_from_list(&data_dir);
+        // None where the leader serves no TLS of its own.
+        let served = served_names(&data_dir.join("tls")).unwrap_or_default();
         let mut out = Vec::new();
         for r in s.list_secrets()?.into_iter().filter(|r| r.certificate) {
             let chain = newest_chain(s, &r.name)?
@@ -2465,7 +2491,7 @@ async fn list_certificates(
                 versions,
                 ..
             } = SecretOut::from(r);
-            let served = served.is_some() && chain.first().map(|leaf| &leaf.fingerprint) == served.as_ref();
+            let served = served.contains(&name);
             out.push(CertificateOut {
                 name,
                 description,
@@ -2517,21 +2543,13 @@ async fn replace_certificate(
 /// certificate the leader serves is refused too, whichever route asks: the leader would serve one the list no longer
 /// shows.
 async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) -> Json<Envelope> {
-    let data_dir = state.data_dir.clone();
-    let wanted = name.clone();
-    let served = run_store(state.store.clone(), move |s| {
-        let leaf = newest_fingerprint(s, &wanted)?;
-        Ok(leaf.is_some() && leaf == served_from_list(&data_dir))
-    })
-    .await;
-    match served {
-        Ok(false) => {}
-        Ok(true) => {
-            return Json(Envelope::failed_one(format!(
-                "the leader serves {name:?}; choose another certificate for it first"
-            )));
-        }
-        Err(e) => return Json(Envelope::failed_one(e)),
+    if served_names(&state.data_dir.join("tls"))
+        .unwrap_or_default()
+        .contains(&name)
+    {
+        return Json(Envelope::failed_one(format!(
+            "the leader serves {name:?}; choose another certificate for it first"
+        )));
     }
     let data_dir = state.data_dir.clone();
     let entitlements = state.entitlements.clone();
@@ -5561,6 +5579,25 @@ mod certificate_list_tests {
             .expect("the chain ends at its root");
         assert_eq!(served, chain);
         assert_eq!(root.as_bytes(), theirs.ca_pem);
+        assert_eq!(served_names(&dir).unwrap(), [UPLOADED_BEFORE_THE_LIST]);
+    }
+
+    /// The entry served is the one chosen, though another holds the same certificate, and none once the leader
+    /// goes back to its own.
+    #[test]
+    fn the_leader_serves_the_entry_chosen_by_name() {
+        let dir = own("chosen");
+        let theirs = tls::ensure(&own("chosen-theirs"), names(), A_YEAR, &[]).unwrap();
+        let chain = std::fs::read(&theirs.server_cert_path).unwrap();
+        let key = std::fs::read(&theirs.server_key_path).unwrap();
+        let fingerprint = tls::describe(&chain, "the certificate").unwrap().fingerprint;
+
+        record_copy(&dir, &fingerprint, "receiver").unwrap();
+        tls::install(&dir, &chain, &key, &theirs.ca_pem, &names(), &[]).unwrap();
+        assert_eq!(served_names(&dir).unwrap(), ["receiver"]);
+
+        tls::uninstall(&dir).unwrap();
+        assert!(served_names(&dir).unwrap().is_empty());
     }
 
     #[test]

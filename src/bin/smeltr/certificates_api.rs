@@ -314,9 +314,12 @@ async fn install(
             Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
         }
     } else {
-        ("certificate-supplied", fingerprint)
+        ("certificate-supplied", fingerprint.clone())
     };
     if let Err(e) = record(&state.auth, &actor, subject.0, &subject.1).await {
+        return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
+    }
+    if let Err(e) = smeltr::leader::record_copy(&serving.dir, &fingerprint, &request.certificate) {
         return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
     }
 
