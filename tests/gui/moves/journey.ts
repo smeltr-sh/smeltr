@@ -1124,9 +1124,32 @@ const keyFile = (leader: Leader) =>
 const regenerateKey: Move = {
   name: 'regenerate-key',
   leadsTo: ['rotate-secret'],
-  weight: (w) => (w.password && w.secrets.size && !w.sso && !w.agentsOn ? 3 : 0),
+  weight: (w) => (w.password && w.secrets.size ? 3 : 0),
   run: async (j) => {
     const { page, leader, world } = j;
+    // The settings it encrypts, each entered again from the link beside it, so a later move finds them working.
+    const settings = [
+      ...(world.sso
+        ? [
+            {
+              key: 'oidc.client_secret',
+              label: 'Single sign-on client secret',
+              field: 'client secret',
+              value: CLIENT_SECRET,
+            },
+          ]
+        : []),
+      ...(world.agentsOn
+        ? [
+            {
+              key: 'agents.api_key',
+              label: 'AI agents API key',
+              field: 'API key',
+              value: MODEL_KEY,
+            },
+          ]
+        : []),
+    ];
     fs.rmSync(keyFile(leader));
     await openAdmin(page, 'Secrets');
     await expect(page.getByText(/^The key file is missing/)).toBeVisible();
@@ -1143,12 +1166,36 @@ const regenerateKey: Move = {
     for (const name of world.secrets.keys())
       await expect(page.getByText(name, { exact: true })).toBeVisible();
     expect(fs.existsSync(keyFile(leader))).toBe(true);
-    const key: { state: string; unopenable: { name: string }[] } = await (
-      await j.truth()
-    ).get('/api/encryption-key');
-    expect(key.state).toBe('held');
-    expect(key.unopenable.map((u) => u.name).sort()).toEqual([...world.secrets.keys()].sort());
-    return `regenerate the key, ${world.secrets.size} to enter again`;
+    const unopenable = async () => {
+      const key: { state: string; unopenable: { name: string }[] } = await (
+        await j.truth()
+      ).get('/api/encryption-key');
+      expect(key.state).toBe('held');
+      return key.unopenable.map((u) => u.name).sort();
+    };
+    expect(await unopenable()).toEqual(
+      [...world.secrets.keys(), ...settings.map((s) => s.key)].sort(),
+    );
+    for (const setting of settings) {
+      await page.getByRole('listitem').filter({ hasText: setting.label }).getByRole('link').click();
+      // A value the key cannot open reads as none stored, so the page offers an empty input, not Replace.
+      await page.getByLabel(setting.field, { exact: true }).fill(setting.value);
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(
+        page.getByRole('button', { name: `replace the ${setting.field}` }),
+      ).toBeVisible();
+      await openAdmin(page, 'Secrets');
+      await page
+        .getByRole('navigation', { name: 'Secrets' })
+        .getByRole('link', { name: 'Encryption key', exact: true })
+        .click();
+      await expect(page.getByText(setting.label, { exact: true })).toHaveCount(0);
+    }
+    expect(await unopenable()).toEqual([...world.secrets.keys()].sort());
+    const entered = settings.length
+      ? `, ${settings.map((s) => s.label).join(' and ')} entered again`
+      : '';
+    return `regenerate the key, ${world.secrets.size} to enter again${entered}`;
   },
 };
 
