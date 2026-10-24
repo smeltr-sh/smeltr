@@ -12,7 +12,7 @@ import { RUN_DIR, recordPid } from '../run';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const TARGET = path.resolve(REPO, process.env.CARGO_TARGET_DIR ?? 'target');
-const SERVICE = path.join(TARGET, 'release', 'smeltr-demo');
+const SERVICE = path.join(TARGET, 'debug', 'smeltr-demo');
 const SITE = path.join(REPO, 'gui-frontend', 'dist-demo');
 const TYPES: Record<string, string> = {
   '.html': 'text/html',
@@ -119,7 +119,7 @@ test('a visitor captures a sample, saves it on a branch and previews a pipeline 
     .locator("label:has(> .name:text-is('Capture target')) select")
     .selectOption('panw-firewalls');
   await dialog
-    .locator("label:has(> .name:text-is('Keep records where')) input")
+    .locator("label:has(> .name:text-is('Keep records where')) textarea")
     .fill('_raw.includes("TRAFFIC")');
   await dialog.locator("input[aria-label='records']").fill('50');
   await dialog.locator('button[type=submit]', { hasText: 'Start' }).click();
