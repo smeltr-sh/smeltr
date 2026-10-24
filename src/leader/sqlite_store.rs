@@ -1,8 +1,8 @@
 //! `Store` on one SQLite file, one connection behind a `Mutex`. Every write is an operator action, never a
 //! per-heartbeat one, but a single-worker source's hold and progress: those are what its holder's heartbeat says.
 //!
-//! The secrets encryption key is not in this file and not in the leader's data directory (`secrets`). It is read per operation
-//! rather than held: operator actions are rare, and a key that is not resident is not in a core dump.
+//! The secrets encryption key is not in this file and not in the leader's data directory (`secrets`). It is read per
+//! operation rather than held: operator actions are rare, and a key that is not resident is not in a core dump.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -96,7 +96,8 @@ fn set_mode_if_looser(path: &Path, wanted: u32) -> std::io::Result<()> {
 /// `std::fs::set_permissions` cannot close this: on Windows it toggles the read-only flag and says nothing about
 /// who may read. Doing it properly means writing a DACL that grants the owner and the SYSTEM account only, which needs the
 /// Win32 API rather than `std::fs`. Until that exists this is a no-op that returns `Ok`, and saying so is the
-/// point -- the secrets encryption key has the same hole (`secrets.rs`), and neither should read as though it were handled.
+/// point -- the secrets encryption key has the same hole (`secrets.rs`), and neither should read as though it were
+/// handled.
 #[cfg(not(unix))]
 fn make_private(_path: &Path) -> Result<(), StoreError> {
     Ok(())
@@ -1161,12 +1162,13 @@ impl Store for SqliteStore {
 
     fn key_standing(&self) -> Result<KeyStanding, StoreError> {
         let key = self.key_if_any()?;
+        // Only the newest copy of each value counts. An older version under a key since replaced is history: a leader
+        // that lost its key before regeneration existed, and entered every secret again, is not broken.
         let sealed = self.sealed_by()?;
-        let mut ids = self.every_key_id()?;
-        ids.extend(sealed.iter().map(|(_, id)| id.clone()));
+        let ids: std::collections::BTreeSet<&String> = sealed.iter().map(|(_, id)| id).collect();
         let retired = self.retired_key_ids()?;
         let held = key.as_ref().map(|k| k.key_id().to_string());
-        let foreign = ids.iter().any(|id| Some(id) != held.as_ref() && !retired.contains(id));
+        let foreign = ids.iter().any(|&id| Some(id) != held.as_ref() && !retired.contains(id));
         let state = match held {
             None if ids.is_empty() => KeyState::Absent,
             None => KeyState::Missing,
@@ -3018,6 +3020,26 @@ mod tests {
             1,
             "the regeneration is audited"
         );
+    }
+
+    #[test]
+    fn an_older_version_under_a_lost_key_does_not_break_the_key() {
+        let key = temp_key();
+        let s = store_with_key(&key);
+        leader_stored(&s, "kafka-west-sasl", "hunter2");
+        s.add_secret_version("kafka-west-sasl", "hunter3").unwrap();
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE secret_versions SET key_id = '0000000000000000' WHERE version = 1",
+                (),
+            )
+            .unwrap();
+
+        let standing = s.key_standing().unwrap();
+        assert!(matches!(standing.key, KeyState::Held { .. }), "{:?}", standing.key);
+        assert!(standing.unopenable.is_empty());
     }
 
     /// A key file that is there but wrong may yet be the right key for something, so it is kept beside the new one.
