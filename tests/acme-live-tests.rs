@@ -3,6 +3,9 @@
 //! Pebble validates by connecting back to the host these tests run on, as `host.docker.internal`, on the ports its
 //! config names: 5001 for TLS-ALPN-01, which is where the leader under test serves, and 5002 for HTTP-01. One
 //! leader at a time, since the ports are fixed: `just check-live` runs this suite on one thread.
+//!
+//! DNS-01 is ordered from a second Pebble that asks challtestsrv for every name. The order is placed through the
+//! library rather than a leader process, against a stand-in for Cloudflare's API that publishes into challtestsrv.
 
 use std::io::BufRead;
 use std::process::{Child, Command, Stdio};
@@ -188,10 +191,12 @@ impl Leader {
 /// The roots the leader is told to trust: minica's, which signs Pebble's own certificate, and the one Pebble issues
 /// under, which is new at every start and read off its management port.
 fn roots(directory: &str) -> String {
-    let management = directory
-        .replace(":14000/dir", ":15000")
-        .trim_end_matches('/')
-        .to_string();
+    // The management port is the directory's plus a thousand, as `compose.live.yaml` publishes both Pebbles.
+    let (host, port) = directory
+        .trim_end_matches("/dir")
+        .rsplit_once(':')
+        .expect("a directory URL with a port");
+    let management = format!("{host}:{}", port.parse::<u16>().unwrap() + 1000);
     let tls = ureq::tls::TlsConfig::builder().disable_verification(true).build();
     let agent: ureq::Agent = ureq::Agent::config_builder().tls_config(tls).build().into();
     let issuing = agent
@@ -295,4 +300,170 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
         certificates["served"]["fingerprint"], renewed["served"]["fingerprint"],
         "still serving the renewal"
     );
+}
+
+/// Cloudflare's API as a DNS-01 order calls it, on loopback, publishing into challtestsrv: every name is in the one
+/// zone `example.test`.
+/// Also every record it added, by name and value.
+async fn cloudflare_into(management: String) -> (String, Arc<Mutex<Vec<(String, String)>>>) {
+    use axum::extract::Path;
+    use axum::routing::{delete, get, post};
+
+    async fn challtestsrv(management: &str, what: &str, body: serde_json::Value) {
+        let response = reqwest::Client::new()
+            .post(format!("{management}/{what}"))
+            .body(body.to_string())
+            .send()
+            .await
+            .expect("challtestsrv answers");
+        assert!(response.status().is_success(), "challtestsrv refused {what}");
+    }
+    let ok =
+        |result: serde_json::Value| serde_json::json!({ "success": true, "errors": [], "result": result }).to_string();
+    // Record id to its name: challtestsrv clears a name, not a value.
+    let records: Arc<Mutex<std::collections::HashMap<String, String>>> = Default::default();
+    let added: Arc<Mutex<Vec<(String, String)>>> = Default::default();
+    let (adding, removing, every) = (records.clone(), records, added.clone());
+    let (add_at, remove_at) = (management.clone(), management);
+    let app = axum::Router::new()
+        .route(
+            "/zones",
+            get(
+                move |axum::extract::RawQuery(query): axum::extract::RawQuery| async move {
+                    let zone = query.unwrap_or_default() == "name=example.test";
+                    ok(serde_json::json!(if zone {
+                        vec![serde_json::json!({ "id": "z1", "name": "example.test" })]
+                    } else {
+                        vec![]
+                    }))
+                },
+            ),
+        )
+        .route(
+            "/zones/z1/dns_records",
+            post(move |body: String| async move {
+                let asked: serde_json::Value = serde_json::from_str(&body).unwrap();
+                let name = asked["name"].as_str().unwrap().to_string();
+                challtestsrv(
+                    &add_at,
+                    "set-txt",
+                    serde_json::json!({ "host": format!("{name}."), "value": asked["content"] }),
+                )
+                .await;
+                every
+                    .lock()
+                    .unwrap()
+                    .push((name.clone(), asked["content"].as_str().unwrap().to_string()));
+                let mut held = adding.lock().unwrap();
+                let id = format!("r{}", held.len() + 1);
+                held.insert(id.clone(), name);
+                ok(serde_json::json!({ "id": id }))
+            }),
+        )
+        .route(
+            "/zones/z1/dns_records/:id",
+            delete(move |Path(id): Path<String>| async move {
+                let name = removing
+                    .lock()
+                    .unwrap()
+                    .remove(&id)
+                    .expect("a record this stand-in added");
+                challtestsrv(
+                    &remove_at,
+                    "clear-txt",
+                    serde_json::json!({ "host": format!("{name}.") }),
+                )
+                .await;
+                ok(serde_json::json!({ "id": id }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    (api, added)
+}
+
+/// challtestsrv as the zone's one nameserver.
+struct Challtestsrv(std::net::SocketAddr);
+
+#[async_trait::async_trait]
+impl smeltr::leader::acme_dns::Nameservers for Challtestsrv {
+    async fn all_answer(&self, record: &smeltr::leader::acme_dns::Record) -> Result<bool, String> {
+        smeltr::leader::acme_dns::answers(self.0, record).await
+    }
+}
+
+#[test]
+fn pebble_issues_over_dns_01_and_every_record_is_removed() {
+    use smeltr::leader::{acme, acme_dns, tls};
+
+    let Some(pebble) = live::pebble_dns("pebble_issues_over_dns_01_and_every_record_is_removed") else {
+        return;
+    };
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let tls_dir = scratch("pebble-dns").join("tls");
+    // A wildcard too: only DNS-01 can prove one, and it is proved at the name beneath it.
+    let names = vec!["leader.example.test".to_string(), "*.example.test".to_string()];
+    tls::ensure(
+        &tls_dir,
+        names.clone(),
+        std::time::Duration::from_secs(365 * 24 * 60 * 60),
+        &[],
+    )
+    .unwrap();
+    // No socket here: what is on disk is taken as served, as a leader's socket would have taken it.
+    tls::socket_took(&tls_dir, tls::disk_generation(&tls_dir));
+    let settings = acme::Settings {
+        enabled: true,
+        directory: pebble.directory.clone(),
+        contact: String::new(),
+        names: names.clone(),
+        challenge: acme::Challenge::Dns01,
+        authority: roots(&pebble.directory),
+        eab_key_id: String::new(),
+        eab_hmac: None,
+        dns_provider: acme_dns::Kind::Cloudflare,
+        cloudflare_token: Some("a token".to_string()),
+    };
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let (api, added) = cloudflare_into(pebble.management.clone()).await;
+        let publishing = acme_dns::Publishing::new(
+            Box::new(acme_dns::Cloudflare::new(&api, "a token").unwrap()),
+            Box::new(Challtestsrv(pebble.dns)),
+        );
+        let issuer = acme::Directory::new(settings.clone(), &tls_dir);
+        let issued = acme::order(&tls_dir, &settings, &issuer, &publishing, &names, &[])
+            .await
+            .expect("Pebble issues over DNS-01");
+        let pem = String::from_utf8(issued.chain.clone()).unwrap();
+        let carried = tls::describe(pem.as_bytes(), "the certificate").unwrap().names;
+        for name in &names {
+            assert!(carried.contains(name), "{name} is not among {carried:?}");
+        }
+        // One record for each name, at the name the authority asks, and none left once the order is over.
+        let added = added.lock().unwrap().clone();
+        let mut asked: Vec<String> = added.iter().map(|(name, _)| name.clone()).collect();
+        asked.sort();
+        assert_eq!(
+            asked,
+            ["_acme-challenge.example.test", "_acme-challenge.leader.example.test"]
+        );
+        for (name, value) in added {
+            let record = acme_dns::Record {
+                zone: "example.test".to_string(),
+                zone_id: String::new(),
+                name,
+                value,
+                id: String::new(),
+            };
+            assert_eq!(
+                acme_dns::answers(pebble.dns, &record).await,
+                Ok(false),
+                "{} is still published",
+                record.name
+            );
+        }
+    });
 }
