@@ -39,6 +39,9 @@
   import { pipelineNamesAt, type PipelineNames } from './pipelineNames';
   import { bytes } from './bytes';
   import SortButton from './SortButton.svelte';
+  import FoldAllButton from './FoldAllButton.svelte';
+  import Chips from './Chips.svelte';
+  import Segmented from './Segmented.svelte';
   import { TableSort } from './sort.svelte';
   import {
     errorText,
@@ -558,7 +561,8 @@
   }
 
   let workerQuery = $state('');
-  let workerStatusFilter = $state<WorkerStatus | 'attention' | 'all'>('all');
+  // Null is All.
+  let workerStatusFilter = $state<'attention' | 'online' | null>(null);
   let workerCounts = $derived.by(() => countWorkers(workerRows));
   let healthOf = $derived.by(
     () =>
@@ -568,7 +572,7 @@
   let filteredWorkers = $derived.by(() =>
     workerStatusFilter === 'attention'
       ? filterWorkers(needsAttention, workerQuery, 'all')
-      : filterWorkers(workerRows, workerQuery, workerStatusFilter),
+      : filterWorkers(workerRows, workerQuery, workerStatusFilter ?? 'all'),
   );
   let selectedWorker = $derived.by(
     () => workerRows.find((w) => w.workerId === selectedWorkerId) ?? null,
@@ -582,6 +586,9 @@
     }
     return [...groups.entries()];
   });
+  let allGroupsOpen = $derived(
+    displayedGroups.length > 0 && displayedGroups.every(([group]) => isExpanded(group)),
+  );
   // Sorts workers within their group only: the group row is the band they fold under.
   const workerSort = new TableSort<'worker' | 'running' | 'cpu' | 'memory' | 'lastSeen'>();
   let sortedGroups = $derived(
@@ -717,25 +724,21 @@
     <section class="fleet-shell" class:has-detail={selectedWorker !== null}>
       <div class="fleet-matrix">
         <div class="matrix-tools">
-          <div class="status-pills" role="group" aria-label="Filter workers by status">
-            <button
-              class:on={workerStatusFilter === 'all'}
-              onclick={() => (workerStatusFilter = 'all')}>All ({workerRows.length})</button
-            >
-            <button
-              class:on={workerStatusFilter === 'attention'}
-              onclick={() => (workerStatusFilter = 'attention')}
-              >Needs attention ({needsAttention.length})</button
-            >
-            <button
-              class:on={workerStatusFilter === 'online'}
-              onclick={() => (workerStatusFilter = 'online')}>Online ({workerCounts.online})</button
-            >
-          </div>
-          <div class="fold-controls" role="group" aria-label="Fold worker groups">
-            <button onclick={() => setAllGroups(true)}>Expand all</button>
-            <button onclick={() => setAllGroups(false)}>Collapse all</button>
-          </div>
+          <Chips
+            label="Filter workers by status"
+            allCount={workerRows.length}
+            items={[
+              { key: 'attention', label: 'Needs attention', count: needsAttention.length },
+              { key: 'online', label: 'Online', count: workerCounts.online },
+            ]}
+            bind:value={workerStatusFilter}
+          />
+          <FoldAllButton
+            allOpen={allGroupsOpen}
+            what="worker groups"
+            disabled={displayedGroups.length === 0}
+            onclick={() => setAllGroups(!allGroupsOpen)}
+          />
           <label class="matrix-search"
             ><span aria-hidden="true">⌕</span><input
               type="search"
@@ -744,12 +747,7 @@
               aria-label="Search workers"
             /></label
           >
-          <button
-            class="icon-refresh"
-            title="Refresh now"
-            aria-label="Refresh now"
-            onclick={refreshNow}>↻</button
-          >
+          <button title="Refresh now" aria-label="Refresh now" onclick={refreshNow}>↻</button>
         </div>
         <div class="matrix-columns">
           <div>
@@ -1027,16 +1025,11 @@
             >
           </h2>
         </div>
-        <div class="filters" role="group" aria-label="Chart window">
-          {#each FLOW_WINDOWS as w (w.minutes)}
-            <button
-              type="button"
-              class="filter"
-              class:on={windowMinutes === w.minutes}
-              onclick={() => chooseWindow(w.minutes)}>{w.label}</button
-            >
-          {/each}
-        </div>
+        <Segmented
+          label="Chart window"
+          options={FLOW_WINDOWS.map((w) => ({ value: String(w.minutes), label: w.label }))}
+          bind:value={() => String(windowMinutes), (v) => chooseWindow(Number(v))}
+        />
       </div>
       {#if flow === null}
         <p class="empty">Loading…</p>
@@ -1329,30 +1322,6 @@
     padding: 0.7rem;
     border-bottom: 1px solid var(--border);
   }
-  .status-pills {
-    display: flex;
-    gap: 0.45rem;
-  }
-  .status-pills button,
-  .icon-refresh {
-    border: 1px solid var(--border);
-    background: var(--bg);
-    color: var(--ink);
-    border-radius: var(--radius);
-    padding: 0.45rem 0.75rem;
-    font: inherit;
-    font-size: var(--text-note);
-    cursor: pointer;
-  }
-  .fold-controls {
-    display: flex;
-    gap: 0.25rem;
-  }
-  .status-pills button.on {
-    background: var(--ink);
-    color: var(--bg);
-    border-color: var(--ink);
-  }
   .matrix-search {
     display: flex;
     align-items: center;
@@ -1372,10 +1341,6 @@
     font: inherit;
     /* The browser's own, which set this box's height before the shared field padding. */
     padding: 1px 2px;
-  }
-  .icon-refresh {
-    padding: 0.35rem 0.65rem;
-    font-size: 1.1rem;
   }
   .matrix-columns,
   .worker-row {
@@ -1697,16 +1662,11 @@
     color: var(--warn);
   }
   .live-controls,
-  .worker-controls,
-  .filters {
+  .worker-controls {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 0.5rem;
-  }
-  .filter {
-    font: inherit;
-    font-size: var(--text-note);
   }
   .panel {
     border: 1px solid var(--border);
@@ -1818,28 +1778,6 @@
     font-size: var(--text-micro);
     line-height: 1.35;
   }
-  .flow .filters {
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-    gap: 0;
-  }
-  .filter {
-    padding: 0.3rem 0.6rem;
-    color: var(--dim);
-    background: transparent;
-    border: 0;
-    border-right: 1px solid var(--border);
-    cursor: pointer;
-  }
-  .filter:last-child {
-    border-right: 0;
-  }
-  /* The accent belongs to the page's primary action; the chosen window is ink and bold. */
-  .filter.on {
-    color: var(--ink);
-    font-weight: 600;
-  }
   .table-wrap {
     margin-top: 0.8rem;
     overflow-x: auto;
@@ -1920,13 +1858,6 @@
     .matrix-tools {
       align-items: stretch;
       flex-direction: column;
-    }
-    .status-pills,
-    .fold-controls {
-      overflow-x: auto;
-    }
-    .status-pills button {
-      white-space: nowrap;
     }
     .matrix-columns {
       display: none;

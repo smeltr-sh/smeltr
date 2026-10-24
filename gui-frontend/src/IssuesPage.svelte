@@ -11,6 +11,7 @@
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import Collapsible from './Collapsible.svelte';
+  import Chips from './Chips.svelte';
   import {
     listWarnings,
     setScope,
@@ -26,7 +27,8 @@
   let warnings: WarningDto[] = $state([]);
   let loading = $state(true);
   let loadFailed = $state(false);
-  let severityFilter: 'all' | WarningSeverity = $state('all');
+  // Null is All.
+  let severityFilter: WarningSeverity | null = $state(null);
   // A condition seen for the first time opens by default -- a fleet with a
   // handful of them should show all of them; one that grows past a screen
   // can be folded by hand, and stays folded across polls since this only
@@ -61,7 +63,7 @@
   const RANK: Record<WarningSeverity, number> = { failed: 0, warning: 1, info: 2 };
   const worst = (rows: WarningDto[]) => Math.min(...rows.map((r) => RANK[r.severity]));
   let filtered = $derived(
-    severityFilter === 'all' ? warnings : warnings.filter((w) => w.severity === severityFilter),
+    severityFilter === null ? warnings : warnings.filter((w) => w.severity === severityFilter),
   );
 
   type Group = {
@@ -123,21 +125,17 @@
   {:else if warnings.length === 0}
     <p class="empty">No active issues.</p>
   {:else}
-    <div class="filters" role="group" aria-label="Filter by severity">
-      <button class:on={severityFilter === 'all'} onclick={() => (severityFilter = 'all')}
-        >All ({warnings.length})</button
-      >
-      <button class:on={severityFilter === 'failed'} onclick={() => (severityFilter = 'failed')}
-        >Failed ({failedCount})</button
-      >
-      <button class:on={severityFilter === 'warning'} onclick={() => (severityFilter = 'warning')}
-        >Warning ({warningCount})</button
-      >
-      {#if infoCount > 0}
-        <button class:on={severityFilter === 'info'} onclick={() => (severityFilter = 'info')}
-          >Info ({infoCount})</button
-        >
-      {/if}
+    <div class="filters">
+      <Chips
+        label="Filter by severity"
+        allCount={warnings.length}
+        items={[
+          { key: 'failed', label: 'Failed', count: failedCount },
+          { key: 'warning', label: 'Warning', count: warningCount },
+          ...(infoCount > 0 ? [{ key: 'info' as const, label: 'Info', count: infoCount }] : []),
+        ]}
+        bind:value={severityFilter}
+      />
     </div>
 
     {#each groups as group (group.condition)}
@@ -221,25 +219,7 @@
   }
 
   .filters {
-    display: flex;
-    gap: 0.4rem;
-    flex-wrap: wrap;
     margin-bottom: 0.9rem;
-  }
-  .filters button {
-    border: 1px solid var(--border);
-    background: var(--bg);
-    color: var(--ink);
-    border-radius: var(--radius);
-    padding: 0.35rem 0.7rem;
-    font: inherit;
-    font-size: var(--text-note);
-    cursor: pointer;
-  }
-  .filters button.on {
-    background: var(--ink);
-    color: var(--bg);
-    border-color: var(--ink);
   }
 
   .group-title {

@@ -137,20 +137,20 @@ test('the Status page shows every worker of every group, and one that stops repo
   await expect(admin.getByRole('button', { name: /^west\s*1 worker/ })).toBeVisible();
   for (const w of ['east-1', 'east-2', 'west-1'])
     await expect(admin.getByRole('button', { name: new RegExp(`^${w}\\b`) })).toBeVisible();
-  await expect(admin.getByRole('button', { name: 'Needs attention (0)' })).toBeVisible();
+  await expect(admin.getByRole('button', { name: /^Needs attention\s*0$/ })).toBeVisible();
 
   // Frozen, the worker sends nothing: it is silent, not stopped.
   stalled.child.kill('SIGSTOP');
   try {
     await expect(totals).toContainText('1 silent', { timeout: 20_000 });
-    await admin.getByRole('button', { name: 'Needs attention (1)' }).click();
+    await admin.getByRole('button', { name: /^Needs attention\s*1$/ }).click();
     await expect(admin.getByRole('button', { name: /^east-2\b/ })).toBeVisible();
     await expect(admin.getByRole('button', { name: /^east-1\b/ })).toHaveCount(0);
     await expect(admin.getByRole('link', { name: 'Active fleet issues' })).toContainText('east-2');
 
     await admin.getByRole('link', { name: 'Active fleet issues' }).click();
     await expect(admin.getByRole('heading', { name: 'Issues' })).toBeVisible();
-    await expect(admin.getByRole('button', { name: 'Failed (1)' })).toBeVisible();
+    await expect(admin.getByRole('button', { name: /^Failed\s*1$/ })).toBeVisible();
     await expect(issue(admin, 'Worker silent', 'east-2', 'east')).toContainText(
       'stopped sending heartbeats',
     );
@@ -214,13 +214,13 @@ test('a worker whose source is blocked needs attention, though it heartbeats', a
 
   await goto(admin, leader, '#/status');
   await expect(admin.getByLabel('Fleet totals')).toContainText('2 online', { timeout: 30_000 });
-  await admin.getByRole('button', { name: 'Needs attention (1)' }).click({ timeout: 30_000 });
+  await admin.getByRole('button', { name: /^Needs attention\s*1$/ }).click({ timeout: 30_000 });
   const blocked = admin.getByRole('button', { name: /^west-1\b/ });
   await expect(blocked).toHaveClass(/\battention\b/);
   await expect(blocked.locator('.state-dot')).toHaveClass(/\bfailed\b/);
   await expect(admin.getByRole('button', { name: /^east-1\b/ })).toHaveCount(0);
 
-  await admin.getByRole('button', { name: /^All \(/ }).click();
+  await admin.getByRole('button', { name: /^All\s*\d/ }).click();
   const fine = admin.getByRole('button', { name: /^east-1\b/ });
   await expect(fine).not.toHaveClass(/\battention\b/);
   await expect(fine.locator('.state-dot')).toHaveClass(/\bonline\b/);
@@ -250,11 +250,11 @@ test("the Issues page filters by severity, and tells a stalled destination's log
   await expect(unreachable).toContainText('Last reported by worker north-1', { timeout: 30_000 });
   await expect(admin.getByText(/egress\.destination_stalled/)).toHaveCount(0);
 
-  await admin.getByRole('button', { name: 'Failed (1)' }).click();
+  await admin.getByRole('button', { name: /^Failed\s*1$/ }).click();
   await expect(admin.getByText('Destination unreachable', { exact: true })).toBeVisible();
   await expect(admin.getByText('Logged a warning', { exact: true })).toHaveCount(0);
 
-  await admin.getByRole('button', { name: /^Warning \(/ }).click();
+  await admin.getByRole('button', { name: /^Warning\s*\d/ }).click();
   await expect(admin.getByText('Destination unreachable', { exact: true })).toHaveCount(0);
   await expect(admin.getByText('east-1')).toHaveCount(0);
 });

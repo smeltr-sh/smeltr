@@ -110,6 +110,7 @@
   import { ago, count } from './time';
   import { editable, mayCapture } from './access';
   import SortButton from './SortButton.svelte';
+  import FoldAllButton from './FoldAllButton.svelte';
   import { TableSort } from './sort.svelte';
 
   let {
@@ -1539,13 +1540,11 @@
                 </div>
               {/if}
               <div class="output-actions">
-                <button
-                  type="button"
-                  onclick={toggleAll}
+                <FoldAllButton
+                  {allOpen}
                   disabled={!lastGoodResult || lastGoodResult.rows.length === 0}
-                >
-                  {allOpen ? 'Fold all' : 'Unfold all'}
-                </button>
+                  onclick={toggleAll}
+                />
                 <button
                   type="button"
                   class="toggle"
