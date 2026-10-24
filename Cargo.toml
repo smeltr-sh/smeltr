@@ -118,6 +118,9 @@ axum-server = { version = "0.8.0", default-features = false, features = ["tls-ru
 # through the same AWS-LC module as everything else; its HTTP goes through the reqwest below rather than its own
 # hyper, so what it trusts is what every other client of this process trusts.
 instant-acme = { version = "0.8.5", default-features = false, features = ["fips"] }
+# Asks a zone's own nameservers whether a DNS-01 record is there yet (`leader::acme_dns`), before the authority is
+# told to look. The system's resolver finds those nameservers; nothing else here speaks DNS.
+hickory-resolver = { version = "0.26.3", default-features = false, features = ["system-config", "tokio"] }
 bytes = "1"
 # Named for the timer the leader's listener hands hyper: without one, hyper's header-read timeout is no timeout.
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "server-auto"] }

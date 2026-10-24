@@ -14,7 +14,7 @@ use axum::response::Response;
 use axum::routing::{get, post};
 
 use smeltr::leader::store::Actor;
-use smeltr::leader::{accounts, acme, blocking, tls};
+use smeltr::leader::{accounts, acme, acme_dns, blocking, tls};
 
 use crate::certificates_api::{self, Tls};
 use crate::gate::{Auth, refuse};
@@ -54,6 +54,9 @@ struct AcmeDto {
     eab_key_id: String,
     /// Whether an external account HMAC key is stored. The key itself is never sent back.
     eab_hmac_set: bool,
+    dns_provider: acme_dns::Kind,
+    /// Whether a Cloudflare API token is stored. The token itself is never sent back.
+    cloudflare_token_set: bool,
     /// Where an authority's HTTP-01 challenge is answered, for a page saying what has to reach this leader.
     http_port: u16,
     /// The certificate the last order installed, by fingerprint, and its dates.
@@ -86,6 +89,8 @@ async fn read(state: &Acme) -> Result<AcmeDto, String> {
         authority: settings.authority,
         eab_key_id: settings.eab_key_id,
         eab_hmac_set: settings.eab_hmac.is_some(),
+        dns_provider: settings.dns_provider,
+        cloudflare_token_set: settings.cloudflare_token.is_some(),
         http_port: smeltr::startup_config::acme_http_port(),
         issued: issued.fingerprint,
         not_after_millis: issued.not_after_millis,
@@ -123,6 +128,12 @@ struct PutSettings {
     eab_key_id: String,
     /// `None` keeps the stored key; empty removes it.
     eab_hmac: Option<String>,
+    /// `None` keeps the stored provider.
+    #[serde(default)]
+    dns_provider: Option<acme_dns::Kind>,
+    /// `None` keeps the stored token; empty removes it.
+    #[serde(default)]
+    cloudflare_token: Option<String>,
 }
 
 /// The most a directory URL, a contact or a name may be; an authority bundle is bounded apart.
@@ -165,6 +176,17 @@ async fn put_settings(
     if request.eab_hmac.as_ref().is_some_and(|k| k.len() > MOST_TEXT) {
         return refuse(StatusCode::BAD_REQUEST, "an external account key is at most 1024 bytes");
     }
+    if request.cloudflare_token.as_ref().is_some_and(|k| k.len() > MOST_TEXT) {
+        return refuse(StatusCode::BAD_REQUEST, "an API token is at most 1024 bytes");
+    }
+    if request.challenge == acme::Challenge::Dns01
+        && let Some(ip) = names.iter().find(|name| name.parse::<std::net::IpAddr>().is_ok())
+    {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            &format!("DNS-01 cannot prove an IP address: {ip}"),
+        );
+    }
     if !directory.is_empty() && !directory.starts_with("https://") {
         return refuse(StatusCode::BAD_REQUEST, "the directory is an https:// URL");
     }
@@ -190,11 +212,25 @@ async fn put_settings(
         Ok(was) => was,
         Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
     };
-    let key_moved = match request.eab_hmac.as_deref() {
+    let moved = |new: Option<&str>, was: Option<&str>| match new {
         None => false,
-        Some("") => was.eab_hmac.is_some(),
-        Some(new) => was.eab_hmac.as_deref() != Some(new),
+        Some("") => was.is_some(),
+        Some(new) => was != Some(new),
     };
+    let key_moved = moved(request.eab_hmac.as_deref(), was.eab_hmac.as_deref());
+    let token_moved = moved(request.cloudflare_token.as_deref(), was.cloudflare_token.as_deref());
+    let dns_provider = request.dns_provider.unwrap_or(was.dns_provider);
+    let token_held = match request.cloudflare_token.as_deref() {
+        None => was.cloudflare_token.is_some(),
+        Some(token) => !token.is_empty(),
+    };
+    if request.enabled
+        && request.challenge == acme::Challenge::Dns01
+        && dns_provider == acme_dns::Kind::Cloudflare
+        && !token_held
+    {
+        return refuse(StatusCode::BAD_REQUEST, "DNS-01 through Cloudflare needs an API token");
+    }
     let changed: Vec<&str> = [
         (request.enabled && !was.enabled, "turned on"),
         (!request.enabled && was.enabled, "turned off"),
@@ -205,6 +241,8 @@ async fn put_settings(
         (authority != was.authority, "authority"),
         (eab_key_id != was.eab_key_id, "external account key id"),
         (key_moved, "external account key"),
+        (dns_provider != was.dns_provider, "DNS provider"),
+        (token_moved, "Cloudflare API token"),
     ]
     .into_iter()
     .filter_map(|(moved, name)| moved.then_some(name))
@@ -226,14 +264,20 @@ async fn put_settings(
             (acme::CHALLENGE_KEY, challenge.as_str().to_string()),
             (acme::AUTHORITY_KEY, authority),
             (acme::EAB_KEY_ID_KEY, eab_key_id),
+            (acme::DNS_PROVIDER_KEY, dns_provider.as_str().to_string()),
         ];
-        if let Some(key) = request.eab_hmac {
-            let stored = if key.is_empty() {
-                key
-            } else {
-                store.sealed_setting(acme::EAB_HMAC_KEY, &key)?
-            };
-            entries.push((acme::EAB_HMAC_KEY, stored));
+        for (key, value) in [
+            (acme::EAB_HMAC_KEY, request.eab_hmac),
+            (acme::CLOUDFLARE_TOKEN_KEY, request.cloudflare_token),
+        ] {
+            if let Some(value) = value {
+                let stored = if value.is_empty() {
+                    value
+                } else {
+                    store.sealed_setting(key, &value)?
+                };
+                entries.push((key, stored));
+            }
         }
         store.put_settings(&entries, Some(&event))
     })
@@ -298,15 +342,15 @@ async fn order_once(
     now_ms: i64,
 ) -> Result<(), String> {
     let issuer = acme::Directory::new(settings.clone(), &serving.dir);
-    let issued = acme::order(
-        &serving.dir,
-        settings,
-        &issuer,
-        serving.proving.as_ref(),
-        &serving.names,
-        required,
-    )
-    .await?;
+    let publishing;
+    let prover: &dyn acme::Prover = match settings.challenge {
+        acme::Challenge::Dns01 => {
+            publishing = acme_dns::publishing(settings)?;
+            &publishing
+        }
+        acme::Challenge::TlsAlpn01 | acme::Challenge::Http01 => serving.proving.as_ref(),
+    };
+    let issued = acme::order(&serving.dir, settings, &issuer, prover, &serving.names, required).await?;
     // Recorded before anything is served, as an upload is: a switch of root as the rotation it begins, against
     // the root being left; a certificate served at once against itself.
     let (what, subject) = if issued.rotates {

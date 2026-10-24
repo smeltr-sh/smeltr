@@ -1542,7 +1542,11 @@ export type ConfigSection =
   | 'identities'
   | 'pipelines';
 
-/** Undo changes: put one object back the way it was where `onBranch` left
+/** What Undo changes puts back: one object, or one file no section owns by
+ * its path in the scope's bundle. */
+export type UndoTarget = { section: ConfigSection; id: string } | { path: string };
+
+/** Undo changes: put `what` back the way it was where `onBranch` left
  * `main`, as a new save on that branch. Names the branch and scope itself,
  * since a review can act on a branch the editor is not on. `base` is the
  * commit the caller read the branch at; the leader refuses the save if the
@@ -1550,8 +1554,7 @@ export type ConfigSection =
 export async function undoChanges(
   onBranch: string,
   inScope: string,
-  section: ConfigSection,
-  id: string,
+  what: UndoTarget,
   base: string,
 ): Promise<MutationResult> {
   const q = new URLSearchParams({ branch: onBranch, scope: inScope });
@@ -1561,7 +1564,7 @@ export async function undoChanges(
     {
       method: 'POST',
       headers: { 'x-smeltr-base-commit': base },
-      body: JSON.stringify({ section, id }),
+      body: JSON.stringify(what),
     },
     'quiet',
   );
@@ -4886,6 +4889,9 @@ export interface AcmeDto {
   eabKeyId: string;
   /** Whether an external account HMAC key is stored. The key itself is never sent back. */
   eabHmacSet: boolean;
+  dnsProvider: AcmeDnsProvider;
+  /** Whether a Cloudflare API token is stored. The token itself is never sent back. */
+  cloudflareTokenSet: boolean;
   /** Where this leader answers an authority's HTTP-01 challenge. */
   httpPort: number;
   /** The certificate the last order installed, by fingerprint, and its dates. `null` before any. */
@@ -4896,7 +4902,10 @@ export interface AcmeDto {
   lastError: string | null;
 }
 
-export type AcmeChallenge = 'tls-alpn-01' | 'http-01';
+export type AcmeChallenge = 'tls-alpn-01' | 'http-01' | 'dns-01';
+
+/** Who publishes a DNS-01 record. */
+export type AcmeDnsProvider = 'cloudflare';
 
 export interface AcmeSettings {
   enabled: boolean;
@@ -4908,6 +4917,9 @@ export interface AcmeSettings {
   eabKeyId: string;
   /** `null` keeps the stored key; empty removes it. */
   eabHmac: string | null;
+  dnsProvider: AcmeDnsProvider;
+  /** `null` keeps the stored token; empty removes it. */
+  cloudflareToken: string | null;
 }
 
 /** The directories the page offers by name. Any other is typed as a URL. */

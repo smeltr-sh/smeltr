@@ -20,6 +20,7 @@
 pub mod access;
 pub mod accounts;
 pub mod acme;
+pub mod acme_dns;
 pub mod agent;
 pub mod auth;
 pub mod capture;
