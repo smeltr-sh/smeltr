@@ -176,6 +176,16 @@ impl Shape {
     }
 }
 
+/// Whether no row runs past the end of `body`: it ends in `return`, `throw`, `drop()` or `continue`, or in an
+/// `if` whose branches both end so.
+fn ends_the_row(body: &[Stmt]) -> bool {
+    match body.last() {
+        Some(Stmt::Return(_) | Stmt::Throw(_) | Stmt::Drop(_) | Stmt::Leave { to: Region::Trip, .. }) => true,
+        Some(Stmt::If { then, else_, .. }) => ends_the_row(then) && ends_the_row(else_),
+        _ => false,
+    }
+}
+
 pub struct Parser<'s> {
     /// The text the tokens came from, so an error can quote what it refuses.
     src: &'s str,
@@ -1018,11 +1028,7 @@ impl<'s> Parser<'s> {
             // A label ends like a statement does, without a `;`.
             self.shape.statements.push((colon.end, false));
             let (body, breaks) = self.case_body()?;
-            let ends = matches!(
-                body.last(),
-                Some(Stmt::Return(_) | Stmt::Throw(_) | Stmt::Drop(_) | Stmt::Leave { to: Region::Trip, .. })
-            );
-            if !body.is_empty() && !breaks && !ends {
+            if !body.is_empty() && !breaks && !ends_the_row(&body) {
                 running_on = Some(Span::new(label_span.start as usize, colon.start as usize));
             }
             match label {

@@ -4644,10 +4644,16 @@ mod tests {
             warnings(&body(r#"case "a": x = 1; case "b": x = 2; break; default: x = 3;"#)),
             [r#"case "a" has no `break`, so the next case runs too"#]
         );
+        // A branch that drops does not end the case while the other runs on.
+        assert_eq!(
+            warnings(&body(r#"case "a": if (c == "z") { drop(); } default: x = 3;"#)),
+            [r#"case "a" has no `break`, so the next case runs too"#]
+        );
         for cases in [
             r#"case "a": case "b": x = 2; break; default: x = 3;"#,
             r#"case "a": x = 1; break; default: x = 3;"#,
             r#"case "a": drop(); default: x = 3;"#,
+            r#"case "a": if (c == "z") { drop(); } else { drop(); } default: x = 3;"#,
         ] {
             assert_eq!(warnings(&body(cases)), Vec::<String>::new(), "{cases}");
         }
