@@ -49,6 +49,7 @@ export interface MutationResult {
 }
 
 import { funnyBranchName } from './branchNames';
+import { store, stored } from './stored';
 import { csrf, recheck, signedOut, type AccessDto, type AccessLevel } from './session';
 import { bareError, errors, Reported, type Call, type Weight } from './errors.svelte';
 
@@ -1250,8 +1251,7 @@ const BRANCH_KEY = 'smeltr-branch';
  * was on screen. A browser that remembers none opens on `main`, what the fleet
  * runs, so its first edit asks where to go (W1). */
 function loadBranch(): string {
-  if (typeof window === 'undefined') return MAIN_BRANCH;
-  return window.localStorage.getItem(BRANCH_KEY) || MAIN_BRANCH;
+  return stored(BRANCH_KEY) || MAIN_BRANCH;
 }
 
 let branch = loadBranch();
@@ -1287,7 +1287,7 @@ function startBranch(chosen: string): void {
 export function setBranch(name: string): void {
   branch = name;
   baseCommit = null;
-  if (typeof window !== 'undefined') window.localStorage.setItem(BRANCH_KEY, name);
+  store(BRANCH_KEY, name);
 }
 
 /** Where a call against `current` must land. `main` is what deploys move
@@ -1338,8 +1338,7 @@ export const SHARED_SCOPE = 'shared';
 const SCOPE_KEY = 'smeltr-scope';
 
 function loadScope(): string {
-  if (typeof window === 'undefined') return SHARED_SCOPE;
-  return window.localStorage.getItem(SCOPE_KEY) || SHARED_SCOPE;
+  return stored(SCOPE_KEY) || SHARED_SCOPE;
 }
 
 let scope = loadScope();
@@ -1355,8 +1354,8 @@ export function currentScope(): string {
 export function setScope(name: string, hash?: string): void {
   scope = name;
   baseCommit = null;
+  store(SCOPE_KEY, name);
   if (typeof window !== 'undefined') {
-    window.localStorage.setItem(SCOPE_KEY, name);
     // The shell draws the scope -- the chip, the rail's hue and the page
     // itself -- from its own copy. A scope switched from anywhere else has to
     // reach it, or the page says one group while the writes go to another.

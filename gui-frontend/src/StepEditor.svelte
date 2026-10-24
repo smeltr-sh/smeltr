@@ -1,21 +1,15 @@
 <script module lang="ts">
+  import { store, stored } from './stored';
+
   const STEP_EXPANDED_KEY_PREFIX = 'step-expanded:';
 
   function loadExpanded(id: string): boolean {
-    try {
-      return localStorage.getItem(STEP_EXPANDED_KEY_PREFIX + id) === '1';
-    } catch {
-      return false;
-    }
+    return stored(STEP_EXPANDED_KEY_PREFIX + id) === '1';
   }
 
   /** Remembers whether step `id` is open, so it opens that way when it mounts. */
   export function saveExpanded(id: string, value: boolean) {
-    try {
-      localStorage.setItem(STEP_EXPANDED_KEY_PREFIX + id, value ? '1' : '0');
-    } catch {
-      // Best-effort: a blocked or full localStorage just forgets across reloads.
-    }
+    store(STEP_EXPANDED_KEY_PREFIX + id, value ? '1' : '0');
   }
 </script>
 
