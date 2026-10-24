@@ -695,7 +695,6 @@
         {#if stepErrors.length > 0 || stepWarningMessages.length > 0}
           {@render glyph(stepErrors.length === 0)}
         {/if}
-        <span class="chevron">{expanded ? '▾︎' : '▸︎'}</span>
       </button>
       {@render controls()}
     </div>
@@ -1468,7 +1467,9 @@
   .card {
     border: 1px solid transparent;
     border-radius: var(--radius-card);
-    background: var(--field);
+    /* The card's surface, which the head's floating controls fade in from. */
+    --card-surface: var(--field);
+    background: var(--card-surface);
     container: step / inline-size;
     --control-width: 1.6rem;
     --control-height: 1.4rem;
@@ -1484,7 +1485,7 @@
   /* An if step holds steps, so it is their panel. */
   .if-card {
     border-color: var(--border);
-    background: var(--panel);
+    --card-surface: var(--panel);
   }
 
   /* An error turns the card's leading edge --error. This rule comes after
@@ -1494,7 +1495,7 @@
   }
 
   .comment-card {
-    background: var(--comment-bg);
+    --card-surface: var(--comment-bg);
     border-style: dashed;
     border-color: var(--comment-border);
   }
@@ -1509,10 +1510,10 @@
 
   /* The step driving the diff view: a tint, per the flat-surfaces rule. */
   .diff-selected {
-    background: color-mix(in oklab, var(--ink) 6%, var(--field));
+    --card-surface: color-mix(in oklab, var(--ink) 6%, var(--field));
   }
   .comment-card.diff-selected {
-    background: color-mix(in oklab, var(--ink) 6%, var(--comment-bg));
+    --card-surface: color-mix(in oklab, var(--ink) 6%, var(--comment-bg));
   }
 
   .card-head {
@@ -1643,11 +1644,6 @@
     white-space: nowrap;
   }
 
-  .chevron {
-    font-size: var(--text-micro);
-    color: var(--dim);
-  }
-
   .controls {
     display: flex;
     gap: 0.35rem;
@@ -1658,13 +1654,27 @@
      step is open, and while one of them is on or has its menu open. On the
      head, not the card, so a step nested in an if does not wake the if's.
      Where nothing hovers they stay, since the More menu only takes their
-     place when the card is narrow. Hidden by opacity, so the head keeps its
-     layout. */
+     place when the card is narrow. A closed step's summary runs the head's
+     whole width, and its controls arrive over the summary's end, fading in
+     from the card's surface, so they cost the summary nothing while they are
+     away. An if's head keeps them in line, since its condition is a field. */
   @media (hover: hover) {
     .card:not(.open)
       > .card-head:not(:hover, :focus-within, :has(.active, [aria-expanded='true']))
       > .controls {
       opacity: 0;
+      pointer-events: none;
+    }
+
+    .card:not(.open, .if-card) > .card-head {
+      position: relative;
+    }
+
+    .card:not(.open, .if-card) > .card-head > .controls {
+      position: absolute;
+      right: 0.7rem;
+      padding-left: 1.5rem;
+      background: linear-gradient(to right, transparent, var(--card-surface) 1.2rem);
     }
   }
 

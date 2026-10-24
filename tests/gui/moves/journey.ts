@@ -1120,17 +1120,28 @@ const addStep: Move = {
     const field = `journey_${world.made++}`;
     await goto(page, leader, '#/build/pipelines');
     await page.getByRole('link', { name: pipeline, exact: true }).click();
-    await page.getByRole('button', { name: 'Add step' }).click();
+    // At the end, or above a step the pipeline has.
+    const above = page.getByRole('button', { name: 'Insert step' });
+    await expect(page.getByRole('button', { name: 'Add step' })).toBeVisible();
+    const at = rng.below((await above.count()) + 1);
+    const end = at === (await above.count());
+    await (end ? page.getByRole('button', { name: 'Add step' }) : above.nth(at)).click();
     await page
       .getByRole('dialog', { name: 'add step' })
       .getByRole('button', { name: 'Eval', exact: true })
       .click();
-    await page.getByPlaceholder('target field').last().fill(field);
-    await page.getByPlaceholder('expression').last().fill(`"${field}"`);
+    // The new step is the open one with nothing in it yet. Held by its id, since filling it ends that.
+    const id = await page
+      .locator('.card.open')
+      .filter({ has: page.locator('input[placeholder="target field"]:placeholder-shown') })
+      .getAttribute('id');
+    const step = page.locator(`[id="${id}"]`);
+    await step.getByPlaceholder('target field').fill(field);
+    await step.getByPlaceholder('expression').fill(`"${field}"`);
     await save(j, () => expect(page.getByText('Saved.')).toBeVisible());
     world.editing.steps.push(`${pipeline}:${field}`);
     await editingIsSaved(j);
-    return `add a step to "${pipeline}" that sets ${field}`;
+    return `add a step to "${pipeline}" ${end ? 'at the end' : `above step ${at + 1}`} that sets ${field}`;
   },
 };
 
