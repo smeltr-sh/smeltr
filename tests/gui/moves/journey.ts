@@ -1124,7 +1124,7 @@ const keyFile = (leader: Leader) =>
 const regenerateKey: Move = {
   name: 'regenerate-key',
   leadsTo: ['rotate-secret'],
-  weight: (w) => (w.password && w.secrets.size && !w.sso && !w.agentsOn && !w.acme ? 1 : 0),
+  weight: (w) => (w.password && w.secrets.size && !w.sso && !w.agentsOn ? 3 : 0),
   run: async (j) => {
     const { page, leader, world } = j;
     fs.rmSync(keyFile(leader));
