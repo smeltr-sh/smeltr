@@ -813,7 +813,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "PUT",
         path: "/api/certificates/:name",
-        what: "Store a new version of a certificate and its private key. No query.",
+        what: "Store a new version of a certificate and its private key; where the leader serves it, the version must be one the leader can serve, and it serves it. No query.",
         body: "{ certificate: pem, privateKey: pem }",
     },
     Route {

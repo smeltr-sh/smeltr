@@ -3468,7 +3468,7 @@ export function createCertificate(
   });
 }
 
-/** Stores a new version. The leader's own copy changes only when it is chosen again. */
+/** Stores a new version, which the leader serves too where it serves this certificate. */
 export function replaceCertificate(
   name: string,
   certificate: string,

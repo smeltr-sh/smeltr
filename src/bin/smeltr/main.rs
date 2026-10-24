@@ -2080,6 +2080,8 @@ async fn run_leader() {
     {
         tracing::warn!(target: "leader.certificates", "the uploaded certificate the leader serves was not listed: {e}");
     }
+    // Before `leader` goes into the certificate state, which a leader serving plain HTTP has none of.
+    let list = leader.clone();
     let certificates = tls.as_ref().map(|(resolver, _)| {
         std::sync::Arc::new(certificates_api::Tls {
             // Spelled as the leader spells it, from the one absolute data directory. The certificate layer keeps
@@ -2129,7 +2131,7 @@ async fn run_leader() {
 
     let app = app
         .merge(routes)
-        .merge(certificates_api::router(auth.clone(), certificates.clone()))
+        .merge(certificates_api::router(auth.clone(), certificates.clone(), list))
         .merge(acme_api::router(auth.clone(), certificates.clone()))
         .merge(auth_router(auth.clone()))
         // Before the SPA fallback, so an API path nobody serves answers as an API. Without it a mistyped route

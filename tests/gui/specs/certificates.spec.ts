@@ -21,6 +21,7 @@ import {
   inForce,
   openCertificates,
   renewAcme,
+  replaceServed,
   source,
   switchToAcme,
   switchToLeaderIssued,
@@ -147,6 +148,11 @@ test('a renewal is served while the switch back to Leader issued waits for a wor
 
   await served.getByRole('button', { name: 'Abandon switch' }).click();
   await inForce(served, 'Uploaded');
+
+  // Replacing the entry the leader serves serves the new version.
+  await replaceServed(page, pki);
+  const replaced = await api.get('/api/settings/certificates');
+  expect(replaced.served.fingerprint).toBe(before.served.fingerprint);
   await api.ctx.dispose();
 });
 

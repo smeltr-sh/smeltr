@@ -74,6 +74,18 @@ export async function switchToUploaded(page: Page, pki: Pki) {
   await inForce(served, 'Uploaded');
 }
 
+/** Replaces the certificate the leader serves with `pki`, on the Certificates page, which serves it too. */
+export async function replaceServed(page: Page, pki: Pki) {
+  await openAdmin(page, 'Certificates');
+  const row = page.getByRole('row').filter({ has: page.getByText('leader', { exact: true }) });
+  await row.getByRole('button', { name: 'Replace' }).click();
+  const dialog = page.getByRole('dialog', { name: /^replace / });
+  await dialog.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
+  await dialog.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
+  await dialog.getByRole('button', { name: 'Replace', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+}
+
 /** Goes back to the leader's own certificate, and waits until it is in force. */
 export async function switchToLeaderIssued(page: Page) {
   const served = await openCertificates(page);
