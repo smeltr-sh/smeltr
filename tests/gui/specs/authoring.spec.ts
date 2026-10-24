@@ -851,13 +851,14 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
   // The locked sample first, though `other` sorts before it by name.
   await expect(picker.getByRole('row').nth(1)).toContainText('orders');
   await expect(picker.getByTitle('Locked by the test orders parse')).toBeVisible();
-  // No sample, but the steps compiled: the dictionary is there.
-  await admin.getByRole('tab', { name: /Data dictionary/ }).click();
-  await expect(admin.getByRole('cell', { name: 'total', exact: true })).toBeVisible();
-  await admin.getByRole('tab', { name: /Output/ }).click();
+  // No sample, but the steps compiled: the Fields menu lists what they declare.
+  await admin.getByRole('button', { name: 'Choose fields' }).click();
+  const fields = admin.getByRole('group', { name: 'Fields' });
+  await expect(fields.getByText('total', { exact: true })).toBeVisible();
+  await admin.keyboard.press('Escape');
 
   await picker.getByRole('button', { name: 'orders', exact: true }).click();
-  await expect(admin.getByRole('tab', { name: /Output/ })).toContainText('3');
+  await expect(admin.getByText('3 rows', { exact: true })).toBeVisible();
   const search = admin.getByRole('searchbox', { name: 'Search the output' });
   await search.fill('SPRING');
   await expect(admin.getByText('2 of 3 rows')).toBeVisible();
@@ -872,7 +873,7 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
 
   await admin.getByRole('button', { name: '← Back' }).click();
   await expect(picker).toBeVisible();
-  await expect(admin.getByRole('tab', { name: /Output/ })).not.toContainText('3');
+  await expect(admin.getByText('3 rows', { exact: true })).toHaveCount(0);
 });
 
 /** A source, destinations and a `web` pipeline routed from one to them: every record to `es-web`, a server error
