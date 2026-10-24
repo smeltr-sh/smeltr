@@ -91,13 +91,19 @@ describe('leaving a code field', () => {
 describe('a name box a warning names', () => {
   it('marks all of its text', () => {
     bound.value = 'x';
-    const input = show({ autocomplete: null, warnings: ['`x` is written again before it is read'] });
+    const input = show({
+      autocomplete: null,
+      warnings: ['`x` is written again before it is read'],
+    });
     expect(input.classList.contains('whole-warn')).toBe(true);
   });
 
   it('is left alone by a warning about another name', () => {
     bound.value = 'y';
-    const input = show({ autocomplete: null, warnings: ['`x` is written again before it is read'] });
+    const input = show({
+      autocomplete: null,
+      warnings: ['`x` is written again before it is read'],
+    });
     expect(input.classList.contains('whole-warn')).toBe(false);
   });
 
