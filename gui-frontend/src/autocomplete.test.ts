@@ -29,8 +29,12 @@ describe('rankedSuggestions', () => {
   it('ranks the whole list the same way for an empty word', () => {
     const names = rankedSuggestions(CONDITION_FUNCTIONS, '').map((f) => f.name);
     expect(names).toHaveLength(CONDITION_FUNCTIONS.length);
-    expect(names.map((n) => n.length)).toEqual([...names.map((n) => n.length)].sort((a, b) => a - b));
-    const used = rankedSuggestions(CONDITION_FUNCTIONS, '', { usage: new Map([[names.at(-1)!, 50]]) });
+    expect(names.map((n) => n.length)).toEqual(
+      [...names.map((n) => n.length)].sort((a, b) => a - b),
+    );
+    const used = rankedSuggestions(CONDITION_FUNCTIONS, '', {
+      usage: new Map([[names.at(-1)!, 50]]),
+    });
     expect(used[0].name).toBe(names.at(-1));
   });
 
