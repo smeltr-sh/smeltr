@@ -27,6 +27,9 @@
     orderedStepErrors,
     unknownLookupTables,
     truncateSteps,
+    flatSteps,
+    STEP_LABELS,
+    stepsRun,
     parseInputFor,
     stepSummary,
     diffSteps,
@@ -92,6 +95,7 @@
     sampleSource,
   } from './api';
   import FieldsMenu from './FieldsMenu.svelte';
+  import ChipPicker from './ChipPicker.svelte';
   import JumpLinks from './JumpLinks.svelte';
   import { setFunctionUsage } from './usage.svelte';
   import { ask } from './Confirm.svelte';
@@ -859,12 +863,13 @@
     stepsWidth = (stepsWidth ?? half) > (half + STEPS_NARROW) / 2 ? STEPS_NARROW : null;
   }
 
-  // -- per-step diff --------------------------------------------------------
+  // -- the pause ----------------------------------------------------------------
   //
-  // No step selected: before is the record as it arrived, after is the whole
-  // pipeline's output. A step selected: before/after are the pipeline
-  // truncated to either side of that step (`truncateSteps`), each a real
-  // preview run, so the diff shows what that one step did.
+  // The records stop at a step. ◎ on a step pauses them after it; a compile error pauses them
+  // before the first broken step, where the pipeline still compiles. Paused, the grid shows the
+  // pipeline truncated after that step and each record's fold shows what that one step did, each
+  // side a real preview run (`truncateSteps`). Unpaused, it shows the whole pipeline against the
+  // records as they arrived.
 
   // Every field, or only the ones this step touched. A mapping step rewrites
   // most of a record, so the filter is what makes a later step's handful of
@@ -872,65 +877,112 @@
   let changedOnly = $state(false);
   let showTypes = $state(true);
 
+  /** The step ◎ paused at. */
   let selectedStep: Step | null = $state(null);
-  let selectedDiff: {
+  /** The first step the preview's compile errors name. */
+  let brokenStep = $derived(orderedStepErrors(steps, compileErrorsByStep)[0]?.step ?? null);
+
+  type Pause = {
+    /** The step the records stand after; null for the records as they arrived. */
+    step: Step | null;
+    /** Its place in the step list, from 1; 0 for the records as they arrived. */
+    number: number;
+    /** The steps that have run by then, which the step list leaves undimmed. */
+    run: Set<Step>;
+    /** The pipeline right before and right after `step`. */
+    before: Step[];
+    after: Step[];
+    /** ◎ chose it, so ✕ clears it. A compile error's lasts as long as the error. */
+    chosen: boolean;
+  };
+
+  /** ◎'s pause, unless the steps it runs do not compile: then the compile error's. */
+  let pause = $derived.by((): Pause | null => {
+    const flat = flatSteps(steps);
+    const run = selectedStep && stepsRun(steps, selectedStep, true);
+    if (selectedStep && run && !(brokenStep && run.has(brokenStep)))
+      return {
+        step: selectedStep,
+        number: flat.indexOf(selectedStep) + 1,
+        run,
+        before: truncateSteps(steps, selectedStep, false)!,
+        after: truncateSteps(steps, selectedStep, true)!,
+        chosen: true,
+      };
+    if (!brokenStep) return null;
+    const ran = stepsRun(steps, brokenStep, false)!;
+    // The last step that ran: an `if` holding the broken step, rather than a branch skipped.
+    let at: Step | null = null;
+    for (const s of flat.slice(0, flat.indexOf(brokenStep))) if (ran.has(s)) at = s;
+    return {
+      step: at,
+      number: at ? flat.indexOf(at) + 1 : 0,
+      run: ran,
+      before: at ? truncateSteps(steps, at, false)! : [],
+      after: truncateSteps(steps, brokenStep, false)!,
+      chosen: false,
+    };
+  });
+
+  let pauseRun = $state<{
     before: PreviewRow[];
     after: PreviewRow[];
     declared: { before: Declared | null; after: Declared | null };
-  } | null = $state(null);
-  let selectedDiffLoading = $state(false);
-  let selectedDiffError = $state('');
+  } | null>(null);
+  let pauseLoading = $state(false);
+  let errorsOpen = $state(false);
+  /** A failed stage as the error chip names it. */
+  const stageName = (stage: string | null) =>
+    stage ? stage[0].toUpperCase() + stage.slice(1) : 'Preview';
+  let pauseError = $state('');
 
   function onSelectStep(step: Step | null) {
     selectedStep = step;
   }
 
-  async function loadSelectedDiff() {
-    selectedDiffError = '';
-    if (!selectedStep || !lastSample) {
-      selectedDiff = null;
+  let pauseAsked = 0;
+  async function loadPause() {
+    pauseError = '';
+    const asked = ++pauseAsked;
+    if (!pause || !lastSample) {
+      pauseRun = null;
       return;
     }
-    const beforeSteps = truncateSteps(steps, selectedStep, false);
-    const afterSteps = truncateSteps(steps, selectedStep, true);
-    if (beforeSteps === null || afterSteps === null) {
-      // The step is no longer in the tree: a stale selection.
-      selectedStep = null;
-      selectedDiff = null;
-      return;
-    }
-    selectedDiffLoading = true;
+    const { before, after } = pause;
+    pauseLoading = true;
     try {
       // One instant for both sides, so the only difference between them is
       // the step.
       const at = Date.now() * 1000;
       const [beforeRes, afterRes] = await Promise.all([
-        fetchPreview(beforeSteps, lastSample, at),
-        fetchPreview(afterSteps, lastSample, at),
+        fetchPreview(before, lastSample, at),
+        fetchPreview(after, lastSample, at),
       ]);
+      // A later pause answers for the screen.
+      if (asked !== pauseAsked) return;
       const failed = !beforeRes.ok ? beforeRes : !afterRes.ok ? afterRes : null;
       if (failed) {
-        selectedDiffError = previewFailure(failed);
-        selectedDiff = null;
+        pauseError = previewFailure(failed);
+        pauseRun = null;
         return;
       }
-      selectedDiff = {
+      pauseRun = {
         before: beforeRes.rows,
         after: afterRes.rows,
         declared: { before: declaredOf(beforeRes), after: declaredOf(afterRes) },
       };
     } catch (e) {
-      selectedDiffError = unreported(e);
-      selectedDiff = null;
+      if (asked !== pauseAsked) return;
+      pauseError = unreported(e);
+      pauseRun = null;
     } finally {
-      selectedDiffLoading = false;
+      if (asked === pauseAsked) pauseLoading = false;
     }
   }
 
-  // Tracks `selectedStep`, `steps` and `lastSample`: all read before the
-  // first `await`.
+  // Tracks `pause` and `lastSample`: both read before the first `await`.
   $effect(() => {
-    loadSelectedDiff();
+    loadPause();
   });
 
   // -- a pipeline for a route being made ---------------------------------------
@@ -1004,7 +1056,7 @@
   //
   // What a parser step would declare, read off a fresh preview truncated to
   // just that step (`truncateSteps(..., true)`) -- the same request
-  // `loadSelectedDiff` makes for the "after" side of a per-step diff. One
+  // `loadPause` makes for the "after" side of a pause. One
   // proposal open at a time; asking for a different step replaces it.
 
   let proposalStep: Step | null = $state(null);
@@ -1093,9 +1145,12 @@
 
   let runDeclared = $derived(declaredOf(lastGoodResult));
 
-  // The selected step's runs by row, so a row finds its sides without a search.
-  let selectedByRow = $derived.by(() => {
-    const d = selectedStep ? selectedDiff : null;
+  /** The rows the grid shows: the pause's, once run, or else the whole pipeline's. */
+  let gridRows = $derived(pause && pauseRun ? pauseRun.after : (lastGoodResult?.rows ?? null));
+
+  // The pause's runs by row, so a row finds its sides without a search.
+  let pausedByRow = $derived.by(() => {
+    const d = pause ? pauseRun : null;
     if (!d) return null;
     const byRow = (rows: PreviewRow[]) => new Map(rows.map((r) => [r.row, r]));
     return { before: byRow(d.before), after: byRow(d.after) };
@@ -1108,11 +1163,11 @@
     after: unknown;
     declared: { before: Declared | null; after: Declared | null };
   } {
-    if (selectedByRow && selectedDiff) {
+    if (pausedByRow && pauseRun) {
       return {
-        before: withSource(selectedByRow.before.get(row.row)?.json ?? null, row.row),
-        after: withSource(selectedByRow.after.get(row.row)?.json ?? null, row.row),
-        declared: selectedDiff.declared,
+        before: withSource(pausedByRow.before.get(row.row)?.json ?? null, row.row),
+        after: withSource(pausedByRow.after.get(row.row)?.json ?? null, row.row),
+        declared: pauseRun.declared,
       };
     }
     return {
@@ -1128,8 +1183,8 @@
   let sampleMaps = $derived(sampleRows.map((r, i) => leafMap(withSource(r, i))));
   type RowMaps = { before: Map<string, unknown>; after: Map<string, unknown> };
   let rowsMaps: RowMaps[] = $derived(
-    (lastGoodResult?.rows ?? []).map((row) => {
-      if (selectedByRow) {
+    (gridRows ?? []).map((row) => {
+      if (pausedByRow) {
         const sides = rowSides(row);
         return { before: leafMap(sides.before), after: leafMap(sides.after) };
       }
@@ -1254,14 +1309,12 @@
   // author opened across a re-preview, so after a smaller sample its size can
   // exceed the rows on screen and a count would leave `Fold all` unreachable.
   let allOpen = $derived(
-    lastGoodResult !== null &&
-      lastGoodResult.rows.length > 0 &&
-      lastGoodResult.rows.every((r) => expanded.has(r.row)),
+    gridRows !== null && gridRows.length > 0 && gridRows.every((r) => expanded.has(r.row)),
   );
 
   function toggleAll() {
     if (allOpen) expanded.clear();
-    else for (const row of lastGoodResult?.rows ?? []) expanded.add(row.row);
+    else for (const row of gridRows ?? []) expanded.add(row.row);
   }
 
   // A sample opens on a record rather than a wall of lines: the first that
@@ -1269,11 +1322,11 @@
   // so a re-run as the steps are typed leaves the reader's choice alone.
   let openedFor = '';
   $effect(() => {
-    const res = lastGoodResult;
+    const rows = gridRows;
     const sample = lastSample;
-    if (!res || !sample || sample === openedFor) return;
+    if (!rows || !sample || sample === openedFor) return;
     openedFor = sample;
-    const first = res.rows.find((r) => r.exceptions.length > 0) ?? res.rows[0];
+    const first = rows.find((r) => r.exceptions.length > 0) ?? rows[0];
     if (first) untrack(() => expanded.add(first.row));
   });
 
@@ -1325,7 +1378,7 @@
   });
 
   let drawn = $derived.by(() => {
-    const rows = lastGoodResult?.rows ?? [];
+    const rows = gridRows ?? [];
     const n = gridOrder.length;
     const tops = new Array<number>(n + 1);
     tops[0] = 0;
@@ -1361,7 +1414,7 @@
     });
   });
   /** The row number, with room for a failing row's mark. */
-  let indexWidth = $derived(String(lastGoodResult?.rows.length ?? 0).length + 2);
+  let indexWidth = $derived(String(gridRows?.length ?? 0).length + 2);
   let gridWidth = $derived(
     `max(100%, calc(${columnWidths.reduce((a, b) => a + b, 2 + indexWidth)}ch + ${columns.length + 2}rem))`,
   );
@@ -1414,15 +1467,13 @@
 
   function chipKeeps(c: FindChip, i: number): boolean {
     if (c.kind === 'has') return rowsMaps[i].after.has(c.path);
-    const row = lastGoodResult!.rows[i];
+    const row = gridRows![i];
     if (c.kind === 'failing') return row.exceptions.length > 0;
     if (c.kind === 'dropped') return row.json === null;
     return rowChanged(i);
   }
 
-  let failingCount = $derived(
-    (lastGoodResult?.rows ?? []).filter((r) => r.exceptions.length > 0).length,
-  );
+  let failingCount = $derived((gridRows ?? []).filter((r) => r.exceptions.length > 0).length);
 
   let outputQuery = $state('');
   /** The row numbers the expression kept, or null while the search is a keyword. */
@@ -1432,6 +1483,8 @@
   $effect(() => {
     const [q, sample] = [outputQuery.trim(), lastSample];
     void signature;
+    // Paused, the expression reads the records where they stand.
+    const cut = pause?.after;
     if (!q || !sample || !looksLikeExpression(q)) {
       expressionRows = null;
       return;
@@ -1439,12 +1492,7 @@
     let current = true;
     const timer = setTimeout(async () => {
       try {
-        const res = await fetchPreview(
-          untrack(() => steps),
-          sample,
-          undefined,
-          q,
-        );
+        const res = await fetchPreview(cut ?? untrack(() => steps), sample, undefined, q);
         if (current) expressionRows = res.ok ? new Set(res.rows.map((r) => r.row)) : null;
       } catch {
         if (current) expressionRows = null;
@@ -1457,7 +1505,7 @@
   });
 
   function matches(i: number): boolean {
-    const row = lastGoodResult?.rows[i];
+    const row = gridRows?.[i];
     if (!row) return false;
     if (!chips.every((c) => chipKeeps(c, i))) return false;
     const q = outputQuery.trim().toLowerCase();
@@ -1473,7 +1521,7 @@
 
   // Indices, not rows: `rowsMaps` is position-parallel to the run's rows.
   let gridOrder = $derived.by(() => {
-    const rows = lastGoodResult?.rows ?? [];
+    const rows = gridRows ?? [];
     const by: Record<string, (i: number) => number | string | undefined> = {
       [ROW_KEY]: (i) => rows[i].row,
     };
@@ -1487,6 +1535,64 @@
     return gridSort.apply(rows.map((_, i) => i).filter(matches), by);
   });
 </script>
+
+{#snippet stageChips()}
+  {#if (result && !result.ok) || (pause && selectedSample)}
+    <!-- Above the grid, not instead of it: a pipeline that does not compile still shows the
+         records as far as it does. A step's errors are written on the step; here they are listed
+         to jump to. -->
+    <div class="stage">
+      {#if result && !result.ok}
+        {@const failed = result}
+        <ChipPicker kind="error" align="left" bind:open={errorsOpen}>
+          {#snippet face()}⚠ {stageName(failed.stage)} failed · {failed.errors.length} ▾{/snippet}
+          {#snippet children()}
+            <div class="stage-errors">
+              {#if unplacedErrors.length > 0}
+                <ul>
+                  {#each unplacedErrors as e}
+                    <li>{e.message}</li>
+                  {/each}
+                </ul>
+              {/if}
+              {#if brokenSteps.length > 0}
+                <JumpLinks
+                  links={brokenSteps.flatMap(({ step, messages }) =>
+                    messages.map((label) => ({
+                      label,
+                      onClick: () => {
+                        errorsOpen = false;
+                        jumpToStepId = step.id;
+                      },
+                    })),
+                  )}
+                />
+              {/if}
+            </div>
+          {/snippet}
+        </ChipPicker>
+      {/if}
+      {#if pause && selectedSample}
+        <span class="pause-chip" aria-label="Paused">
+          ◉ {pause.step
+            ? `After step ${pause.number} · ${STEP_LABELS[pause.step.type].toUpperCase()}`
+            : 'Input records'}
+          {#if pause.chosen}<button
+              type="button"
+              aria-label="Show the whole pipeline"
+              title="Show the whole pipeline"
+              onclick={() => onSelectStep(null)}>✕</button
+            >{/if}
+        </span>
+        {#if pauseLoading}<span class="dim">loading…</span>{/if}
+      {/if}
+      {#if result && !result.ok && !pause && lastGoodResult && selectedSample}
+        <span class="dim">Showing the sample from before this.</span>
+      {/if}
+    </div>
+    <InlineError message={pauseError} />
+  {/if}
+{/snippet}
 
 {#if loading}
   <SectionShell><p class="dim">Loading…</p></SectionShell>
@@ -1578,7 +1684,8 @@
             {lookupTables}
             {grokPatterns}
             parseInput={parseInputFor(sampleRows[0])}
-            {selectedStep}
+            selectedStep={pause?.step ?? null}
+            ran={pause?.run ?? null}
             {onSelectStep}
             onPropose={readOnly ? undefined : proposeFields}
             proposal={openProposal}
@@ -1636,32 +1743,7 @@
             onsaved={captured}
           />
 
-          {#if result && !result.ok}
-            <!-- Above the grid, not instead of it: a syntax slip mid-edit
-                 should not take the sample away from whoever is fixing it. -->
-            <!-- A step's errors are written on the step; here it is only named. -->
-            <div class="stage-error">
-              <strong>{result.stage} failed</strong>
-              {#if unplacedErrors.length > 0}
-                <ul>
-                  {#each unplacedErrors as e}
-                    <li>{e.message}</li>
-                  {/each}
-                </ul>
-              {/if}
-              {#if brokenSteps.length > 0}
-                <JumpLinks
-                  links={brokenSteps.map(({ step }) => ({
-                    label: stepSummary(step),
-                    onClick: () => (jumpToStepId = step.id),
-                  }))}
-                />
-              {/if}
-            </div>
-            {#if lastGoodResult && selectedSample}
-              <p class="dim stale-note">Showing the sample from before this.</p>
-            {/if}
-          {/if}
+          {#if !selectedSample}{@render stageChips()}{/if}
 
           <div>
             {#if !selectedSample}
@@ -1694,18 +1776,6 @@
                 </SamplePicker>
               {/if}
             {:else}
-              {#if selectedStep}
-                <div class="diff-scope">
-                  <span class="dim">Diffing:</span>
-                  <strong>{stepSummary(selectedStep)}</strong>
-                  {#if selectedDiffLoading}<span class="dim">loading…</span>{/if}
-                  <button type="button" class="compact" onclick={() => onSelectStep(null)}>
-                    show whole pipeline
-                  </button>
-                </div>
-                <InlineError message={selectedDiffError} />
-              {/if}
-
               <div class="output-search">
                 <SampleMenu
                   {samples}
@@ -1724,7 +1794,7 @@
                     capturing = true;
                   }}
                 />
-                {#if lastGoodResult && lastGoodResult.rows.length > 0}
+                {#if gridRows && gridRows.length > 0}
                   <label class="search"
                     ><span aria-hidden="true">⌕</span>{#each chips as c (chipKey(c))}<span
                         class="find-chip"
@@ -1752,9 +1822,7 @@
                       >{/if}</label
                   >
                   {#if outputQuery.trim() || chips.length > 0}
-                    <span class="dim count"
-                      >{gridOrder.length} of {lastGoodResult.rows.length} rows</span
-                    >
+                    <span class="dim count">{gridOrder.length} of {gridRows.length} rows</span>
                   {/if}
                   {#if failingCount > 0}
                     <button
@@ -1767,7 +1835,7 @@
                   {/if}
                   <FieldsMenu
                     fields={menuFields}
-                    records={lastGoodResult.rows.length}
+                    records={gridRows.length}
                     shown={isShown}
                     {dictionary}
                     onshow={showFields}
@@ -1779,6 +1847,7 @@
                   />
                 {/if}
               </div>
+              {@render stageChips()}
               <div class="output-actions">
                 <button
                   type="button"
@@ -1808,11 +1877,11 @@
               </div>
 
               <div class="results">
-                {#if !lastGoodResult}
+                {#if !gridRows}
                   {#if !result}
                     <p class="dim">Run the pipeline to see output rows here.</p>
                   {/if}
-                {:else if lastGoodResult.rows.length === 0}
+                {:else if gridRows.length === 0}
                   <p class="dim">No sample rows.</p>
                 {:else}
                   <!-- Fixed widths, so a column holds still as rows scroll past
@@ -1853,8 +1922,8 @@
                             ><td colspan={columns.length + 2}></td></tr
                           >
                         {/if}
-                        {#each gridOrder.slice(drawn.start, drawn.end) as i (lastGoodResult.rows[i].row)}
-                          {@const row = lastGoodResult.rows[i]}
+                        {#each gridOrder.slice(drawn.start, drawn.end) as i (gridRows[i].row)}
+                          {@const row = gridRows[i]}
                           {@const m = rowsMaps[i]}
                           {@const open = expanded.has(row.row)}
                           {@const failing = row.exceptions.length > 0}
@@ -2091,16 +2160,46 @@
     margin-bottom: 0.9rem;
   }
 
-  .diff-scope {
+  .stage {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    font-size: var(--text-label);
     margin: 0.6rem 0 0.4rem;
+    font-size: var(--text-label);
   }
 
-  .diff-scope button {
-    margin-left: auto;
+  .stage-errors {
+    width: min(32rem, 80vw);
+    padding: 0.5rem;
+    color: var(--error);
+    font-size: var(--text-label);
+  }
+
+  .stage-errors ul {
+    margin: 0;
+    padding-left: 1.2rem;
+  }
+
+  /* Where the records stand. The step it names wears the same accent. */
+  .pause-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.3rem 0.6rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    color: var(--accent);
+    white-space: nowrap;
+  }
+
+  .pause-chip button {
+    border: none;
+    background: none;
+    padding: 0 0.1rem;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
   }
 
   /* The steps sit on the panel, so a step at rest is drawn by its own
@@ -2280,23 +2379,6 @@
   .results {
     margin-top: 1rem;
     min-height: 200px;
-  }
-
-  .stage-error {
-    border: 1px solid var(--error);
-    border-radius: var(--radius);
-    padding: 0.8rem 1rem;
-    color: var(--error);
-  }
-
-  .stage-error ul {
-    margin: 0.4rem 0 0;
-    padding-left: 1.2rem;
-  }
-
-  .stale-note {
-    margin: 0.6rem 0 0;
-    font-size: var(--text-note);
   }
 
   .row {

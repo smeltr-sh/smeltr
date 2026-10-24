@@ -37,7 +37,7 @@
   }: {
     open?: boolean;
     /** Which chip this is. Styles the face, nothing else. */
-    kind: 'branch' | 'identity' | 'scope' | 'columns' | 'row' | 'step' | 'model';
+    kind: 'branch' | 'identity' | 'scope' | 'columns' | 'row' | 'step' | 'model' | 'error';
     /** The edge the panel hangs from. `left` where the chip sits in a column narrower than the
      * panel, which would otherwise open off the side of the window. */
     align?: 'left' | 'right';
@@ -226,6 +226,17 @@
     padding: 0.3rem 0.7rem;
     color: var(--ink);
     font-size: var(--text-label);
+  }
+
+  /* What failed, in a row of ordinary buttons: their shape, in the error's color. */
+  .chip.error {
+    border-radius: var(--radius);
+    padding: 0.3rem 0.7rem;
+    border-color: color-mix(in srgb, var(--error) 50%, var(--border));
+    background: color-mix(in srgb, var(--error) 10%, transparent);
+    color: var(--error);
+    font-size: var(--text-label);
+    font-weight: 600;
   }
 
   /* A table row's own actions. An icon control, not a pill. It carries no

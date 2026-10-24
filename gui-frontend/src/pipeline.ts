@@ -578,6 +578,33 @@ export function truncateSteps(steps: Step[], target: Step, includeTarget: boolea
   return null;
 }
 
+/** Every step in the order an author reads them: an `if` before its branches, `then` before `else`. */
+export function flatSteps(steps: Step[]): Step[] {
+  return steps.flatMap((s) =>
+    s.type === 'if' ? [s, ...flatSteps(s.then), ...flatSteps(s.else)] : [s],
+  );
+}
+
+/** The steps `truncateSteps` keeps, as `steps` holds them: those that have run
+ * at that point. An ancestor `if` of `target` is among them. */
+export function stepsRun(steps: Step[], target: Step, includeTarget: boolean): Set<Step> | null {
+  const cut = truncateSteps(steps, target, includeTarget);
+  if (cut === null) return null;
+  const run = new Set<Step>();
+  // Each list `truncateSteps` keeps is a prefix of the one it came from.
+  const pair = (whole: Step[], kept: Step[]) =>
+    kept.forEach((k, i) => {
+      const s = whole[i];
+      run.add(s);
+      if (s.type === 'if' && k.type === 'if') {
+        pair(s.then, k.then);
+        pair(s.else, k.else);
+      }
+    });
+  pair(steps, cut);
+  return run;
+}
+
 export function stepSummary(step: Step): string {
   switch (step.type) {
     case 'if':

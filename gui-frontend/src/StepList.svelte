@@ -26,6 +26,7 @@
     grokPatterns = [],
     parseInput = '_raw',
     selectedStep = null,
+    ran = null,
     onSelectStep = () => {},
     onPropose = () => {},
     proposal = null,
@@ -44,6 +45,8 @@
     /** The step driving the diff view, threaded down so a nested step can
      * be selected. */
     selectedStep?: Step | null;
+    /** The steps the records have been through, while they are paused; the rest are dimmed. */
+    ran?: Set<Step> | null;
     onSelectStep?: (step: Step | null) => void;
     /** Ask a parser step to propose its declared fields from the sample. */
     onPropose?: (step: Step) => void;
@@ -103,6 +106,7 @@
       {grokPatterns}
       {parseInput}
       {selectedStep}
+      {ran}
       {onSelectStep}
       {onPropose}
       {proposal}
