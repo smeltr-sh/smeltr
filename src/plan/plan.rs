@@ -4662,6 +4662,7 @@ mod tests {
             "x = [1, 2].map(v => v * 2)",
             "_raw = \"a\"",
             "x: str; x = \"a\"",
+            "x = null; x = 2",
             // Replaced with the record, not deleted.
             "x = 1; $ = {y: 2}",
         ] {
