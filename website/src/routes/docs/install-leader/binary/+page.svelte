@@ -48,9 +48,11 @@ sudo install -d -o smeltr -g smeltr -m 0700 /var/lib/smeltr /etc/smeltr/secrets<
     Git client. The executable includes the browser UI.
   </p>
   <p>
-    The <strong>sealing key</strong> encrypts secrets the leader stores. On a fresh installation,
-    leave <code>/etc/smeltr/secrets/sealing.key</code> absent so Smeltr creates it. Back it up separately
-    from the leader data and keep the matching copies for recovery.
+    The <strong>secrets encryption key</strong> encrypts secrets the leader stores. On a fresh
+    installation, leave <code>/etc/smeltr/secrets/sealing.key</code> absent so Smeltr creates it.
+    Back it up and keep the matching copies for recovery;
+    <a href="/docs/secrets#encryption-key">Encryption key</a>
+    says where to keep that backup.
   </p>
 
   <h2 id="first-start">Standalone: first local start</h2>

@@ -66,9 +66,9 @@
       <tbody
         ><tr
           ><td>Permission error</td><td>Service account and configured paths</td><td
-            >Grant access to data, sealing key and certificate files. The leader must own its data
-            directory and the sealing key's directory; on Kubernetes, point both inside their
-            volumes.</td
+            >Grant access to data, secrets encryption key and certificate files. The leader must own
+            its data directory and the secrets encryption key's directory; on Kubernetes, point both
+            inside their volumes.</td
           ></tr
         >
         <tr
