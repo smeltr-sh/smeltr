@@ -1673,7 +1673,7 @@
                 {samples}
                 selected={selectedSample}
                 {lastUsed}
-                records={lastGoodResult && lastSample === selectedSample
+                records={selectedSample && lastGoodResult && lastSample === selectedSample
                   ? lastGoodResult.rows.length
                   : null}
                 {lockedBy}
