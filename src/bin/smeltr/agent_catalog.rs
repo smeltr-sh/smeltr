@@ -807,7 +807,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "DELETE",
         path: "/api/certificates/:name",
-        what: "Delete a certificate; refused while the deployed bundle or main's head names it. No query.",
+        what: "Delete a certificate; refused while the leader serves it, or the deployed bundle or main's head names it. No query.",
         body: "",
     },
 ];
