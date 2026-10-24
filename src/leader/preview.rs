@@ -55,6 +55,9 @@ pub struct Preview {
     /// The record the pipeline writes (`plan::dictionary`). Absent when it did not compile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dictionary: Option<DictionaryOut>,
+    /// What compiles but is likely a mistake (`Plan::warnings`), each placed at its step as an error is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<ApiError>,
 }
 
 /// The record by its compiled types alone, and with the sample's output filling what only a row knows. `sampled` is
@@ -653,6 +656,12 @@ pub fn run_preview(
         }
     };
 
+    let warnings: Vec<ApiError> = plan
+        .warnings
+        .iter()
+        .map(|e| ApiError::from_compile(e, system.step_id_for(Some(pipeline_cfg.id), e.function)))
+        .collect();
+
     // A pipeline has no answers of its own: it is previewed under the group's.
     let on_exception = &system.topology.on_exception;
     let record = plan::dictionary::record_type(&plan, &on_exception.tag_field);
@@ -676,6 +685,7 @@ pub fn run_preview(
                 compiled: Dictionary::of(&record),
                 sampled: None,
             }),
+            warnings,
         });
     }
 
@@ -783,6 +793,7 @@ pub fn run_preview(
         rows,
         unfiltered,
         parsers,
+        warnings,
     })
 }
 

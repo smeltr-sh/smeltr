@@ -105,6 +105,22 @@ unmatched and unprocessable rows, or a DLQ chain, and does not declare that
 field as `bytes`. The error names the source, the destination and the field
 (`check_bytes_fields`).
 
+## Compile warnings
+
+A compile warning is code that compiles but is likely a mistake. It never refuses a
+pipeline. Each names its step, as an error does, and the preview returns them
+with its rows (`Plan::warnings`):
+
+- a value nothing reads: a local's, and a field's written again or deleted
+  before anything reads it. A copy shares its value, so the name given is the
+  last one to let it go;
+- statements after `drop()`, `return`, `throw`, `break` or `continue` in one
+  block;
+- a `switch` case with statements of its own that runs on into the next;
+- a condition that holds on every row or on none: `true`, or a side compared
+  with itself;
+- a local named as a field, which hides the field from the code after it.
+
 ## Formatting
 
 The formatter (`expr::pretty`) lays code out in one style. It changes only the

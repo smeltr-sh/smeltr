@@ -37,7 +37,7 @@
     rankedSuggestions,
     inGrokMacroName,
   } from './autocomplete';
-  import { highlight } from '../../website/src/lib/highlight/highlight';
+  import { highlight, KEYWORDS, LITERALS } from '../../website/src/lib/highlight/highlight';
   import { fieldError, holdsName, markRuns, quotedTokens } from './errorMarks';
   import { formatCode } from './api';
   import { beginReconcile, endReconcile } from './grokFields';
@@ -45,6 +45,7 @@
   let {
     value = $bindable(''),
     errors = [],
+    warnings = [],
     forced = null,
     placeholder = '',
     ariaLabel = '',
@@ -56,6 +57,10 @@
   }: {
     value: string;
     errors?: string[];
+    /** Every warning attributed to the enclosing step (`Plan::warnings`), marked in the warning color where no error
+     * is: a colored field marks the names one quotes, any other field all of its text when it holds one. A keyword or
+     * literal it quotes (`break`, `true`) is no name. */
+    warnings?: string[];
     /** An error already known to belong to this exact field -- an eval
      * assignment's own error, say (`CompileError::assignment_index`) --
      * marked regardless of whether its text happens to quote an identifier
@@ -108,8 +113,23 @@
           .filter((t) => holdsName(value, t))
       : [],
   );
-  let runs = $derived(named.length > 0 ? markRuns(value + '\n', named) : []);
+  let warned = $derived(
+    matched
+      ? []
+      : warnings
+          .flatMap(quotedTokens)
+          .filter((t) => !KEYWORDS.has(t) && !LITERALS.has(t) && holdsName(value, t)),
+  );
+  let runs = $derived(
+    named.length > 0
+      ? markRuns(value + '\n', named)
+      : colored && warned.length > 0
+        ? markRuns(value + '\n', warned)
+        : [],
+  );
   let whole = $derived(!!matched && runs.length === 0);
+  // A name box has no painted copy to mark a run in, so a warning that names it marks all of it, as an error does.
+  let wholeWarn = $derived(!colored && warned.length > 0);
 
   function syncScroll() {
     if (!inputEl) return;
@@ -255,7 +275,8 @@
       bind:this={marksEl}
       class="paint marks"
       class:has-fn-toggle={functions !== null}
-      aria-hidden="true">{#each runs as r}{#if r.mark}<span class="squiggle">{r.text}</span
+      aria-hidden="true">{#each runs as r}{#if r.mark}<span class="squiggle" class:warn={!matched}
+            >{r.text}</span
           >{:else}{r.text}{/if}{/each}</pre>
   {/if}
   {#if multiline}
@@ -268,6 +289,7 @@
       class:field-error={!!matched}
       aria-invalid={!!matched}
       class:whole
+      class:whole-warn={wholeWarn}
       class:has-fn-toggle={functions !== null}
       oninput={onInput}
       onkeydown={onKeydown}
@@ -287,6 +309,7 @@
       class:field-error={!!matched}
       aria-invalid={!!matched}
       class:whole
+      class:whole-warn={wholeWarn}
       class:has-fn-toggle={functions !== null}
       oninput={onInput}
       onkeydown={onKeydown}
@@ -503,6 +526,13 @@
   .whole .paint,
   .squiggle {
     text-decoration: underline wavy var(--error);
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 2px;
+  }
+
+  input.whole-warn,
+  .squiggle.warn {
+    text-decoration: underline wavy var(--warn);
     text-decoration-thickness: 1.5px;
     text-underline-offset: 2px;
   }

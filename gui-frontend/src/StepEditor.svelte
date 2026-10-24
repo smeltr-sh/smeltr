@@ -75,6 +75,7 @@
     steps,
     index,
     errorsByStep = new Map(),
+    warningsByStep = new Map(),
     pipelineIds = [],
     pipelineNames = {},
     lookupTables = [],
@@ -88,6 +89,8 @@
     steps: Step[];
     index: number;
     errorsByStep?: Map<Step, PreviewError[]>;
+    /** What compiles but is likely a mistake, by step, as `errorsByStep` places errors. */
+    warningsByStep?: Map<Step, PreviewError[]>;
     pipelineIds?: string[];
     pipelineNames?: Record<string, string>;
     lookupTables?: LookupTableDto[];
@@ -110,6 +113,9 @@
    * heuristic's fallback, kept for every error `assignmentIndex` cannot
    * place any more precisely than "somewhere in this step". */
   let stepErrorMessages = $derived(stepErrors.map((e) => e.message));
+  let stepWarningMessages = $derived([
+    ...new Set((warningsByStep.get(step) ?? []).map((e) => e.message)),
+  ]);
   /** Where an error naming an assignment by row number points after rows
    * above it were removed; null once its own row is gone. */
   const moved = new SvelteMap<PreviewError, number | null>();
@@ -428,20 +434,31 @@
 </script>
 
 {#snippet stepErrorList()}
-  {#if listedErrors.length > 0}
-    <div class="step-errors">
+  {#if listedErrors.length > 0 || stepWarningMessages.length > 0}
+    <div class="step-errors" class:warn={listedErrors.length === 0}>
       {#each listedErrors as message}
-        <div class="step-error-msg">
-          <svg class="error-glyph" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M12 3.5 L22 20.5 H2 Z" fill="currentColor" />
-            <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
-            <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
-          </svg>
-          <span>{message}</span>
-        </div>
+        {@render stepMessage(message, false)}
+      {/each}
+      {#each stepWarningMessages as message}
+        {@render stepMessage(message, true)}
       {/each}
     </div>
   {/if}
+{/snippet}
+
+{#snippet stepMessage(message: string, warn: boolean)}
+  <div class="step-error-msg" class:warn>
+    {@render glyph(warn)}
+    <span>{message}</span>
+  </div>
+{/snippet}
+
+{#snippet glyph(warn: boolean)}
+  <svg class="error-glyph" class:warn viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M12 3.5 L22 20.5 H2 Z" fill="currentColor" />
+    <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
+    <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
+  </svg>
 {/snippet}
 
 {#snippet more()}
@@ -599,6 +616,7 @@
             placeholder="condition, e.g. status >= 400"
             bind:value={step.condition}
             errors={stepErrorMessages}
+            warnings={stepWarningMessages}
             autocomplete="condition"
           />
         </Locked>
@@ -612,6 +630,7 @@
         <StepList
           steps={step.then}
           {errorsByStep}
+          {warningsByStep}
           {pipelineIds}
           {pipelineNames}
           {lookupTables}
@@ -628,6 +647,7 @@
         <StepList
           steps={step.else}
           {errorsByStep}
+          {warningsByStep}
           {pipelineIds}
           {pipelineNames}
           {lookupTables}
@@ -672,14 +692,9 @@
           <span class="type-name">{STEP_LABELS[step.type]}</span>
         </span>
         <span class="summary">{stepSummary(step)}</span>
-        {#if stepErrors.length > 0}
-          <svg class="error-glyph" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M12 3.5 L22 20.5 H2 Z" fill="currentColor" />
-            <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
-            <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
-          </svg>
+        {#if stepErrors.length > 0 || stepWarningMessages.length > 0}
+          {@render glyph(stepErrors.length === 0)}
         {/if}
-        <span class="chevron">{expanded ? '▾︎' : '▸︎'}</span>
       </button>
       {@render controls()}
     </div>
@@ -698,6 +713,7 @@
                 placeholder="true"
                 bind:value={step.filter}
                 errors={stepErrorMessages}
+                warnings={stepWarningMessages}
                 autocomplete="condition"
               />
             </Field>
@@ -722,6 +738,7 @@
                         placeholder="target field"
                         bind:value={step.assignments[i].target}
                         errors={stepErrorMessages}
+                        warnings={stepWarningMessages}
                         forced={nameError(step.assignments[i].target) ??
                           targetError?.message ??
                           null}
@@ -734,6 +751,7 @@
                       placeholder="expression"
                       bind:value={step.assignments[i].expr}
                       errors={stepErrorMessages}
+                      warnings={stepWarningMessages}
                       forced={assignmentError?.message ?? null}
                       autocomplete="assignment"
                     />
@@ -766,6 +784,7 @@
                 placeholder={'let n = status; n += 1; msg = `status=${n}`;'}
                 bind:value={step.body}
                 errors={stepErrorMessages}
+                warnings={stepWarningMessages}
                 autocomplete="code"
               />
             </Field>
@@ -775,6 +794,7 @@
                 placeholder="e.g. status == 500"
                 bind:value={step.condition}
                 errors={stepErrorMessages}
+                warnings={stepWarningMessages}
                 autocomplete="condition"
               />
             </Field>
@@ -788,6 +808,7 @@
                       placeholder="from"
                       bind:value={step.pairs[i].from}
                       errors={stepErrorMessages}
+                      warnings={stepWarningMessages}
                       forced={nameError(step.pairs[i].from)}
                     />
                   </Locked>
@@ -797,6 +818,7 @@
                       placeholder="to"
                       bind:value={step.pairs[i].to}
                       errors={stepErrorMessages}
+                      warnings={stepWarningMessages}
                       forced={nameError(step.pairs[i].to)}
                     />
                   </Locked>
@@ -1018,6 +1040,7 @@
                           placeholder="name"
                           bind:value={ps.declared[i].name}
                           errors={stepErrorMessages}
+                          warnings={stepWarningMessages}
                           forced={isCsv ? null : nameError(ps.declared[i].name)}
                         />
                       </Locked>
@@ -1056,6 +1079,7 @@
                 <ValidatedField
                   bind:value={ps.input}
                   errors={stepErrorMessages}
+                  warnings={stepWarningMessages}
                   forced={nameError(ps.input)}
                 />
               </Field>
@@ -1064,6 +1088,7 @@
                   placeholder="true"
                   bind:value={ps.filter}
                   errors={stepErrorMessages}
+                  warnings={stepWarningMessages}
                   autocomplete="condition"
                 />
               </Field>
@@ -1190,6 +1215,7 @@
               <ValidatedField
                 bind:value={step.input}
                 errors={stepErrorMessages}
+                warnings={stepWarningMessages}
                 forced={nameError(step.input)}
               />
             </Field>
@@ -1283,6 +1309,7 @@
                           placeholder="output field name"
                           bind:value={existing.field}
                           errors={stepErrorMessages}
+                          warnings={stepWarningMessages}
                           forced={nameError(existing.field)}
                         />
                       </Locked>
@@ -1345,6 +1372,7 @@
                         placeholder="field name"
                         bind:value={step.outputs[i].field}
                         errors={stepErrorMessages}
+                        warnings={stepWarningMessages}
                         forced={nameError(step.outputs[i].field)}
                       />
                     </Locked>
@@ -1439,7 +1467,9 @@
   .card {
     border: 1px solid transparent;
     border-radius: var(--radius-card);
-    background: var(--field);
+    /* The card's surface, which the head's floating controls fade in from. */
+    --card-surface: var(--field);
+    background: var(--card-surface);
     container: step / inline-size;
     --control-width: 1.6rem;
     --control-height: 1.4rem;
@@ -1455,7 +1485,7 @@
   /* An if step holds steps, so it is their panel. */
   .if-card {
     border-color: var(--border);
-    background: var(--panel);
+    --card-surface: var(--panel);
   }
 
   /* An error turns the card's leading edge --error. This rule comes after
@@ -1465,7 +1495,7 @@
   }
 
   .comment-card {
-    background: var(--comment-bg);
+    --card-surface: var(--comment-bg);
     border-style: dashed;
     border-color: var(--comment-border);
   }
@@ -1480,10 +1510,10 @@
 
   /* The step driving the diff view: a tint, per the flat-surfaces rule. */
   .diff-selected {
-    background: color-mix(in oklab, var(--ink) 6%, var(--field));
+    --card-surface: color-mix(in oklab, var(--ink) 6%, var(--field));
   }
   .comment-card.diff-selected {
-    background: color-mix(in oklab, var(--ink) 6%, var(--comment-bg));
+    --card-surface: color-mix(in oklab, var(--ink) 6%, var(--comment-bg));
   }
 
   .card-head {
@@ -1614,11 +1644,6 @@
     white-space: nowrap;
   }
 
-  .chevron {
-    font-size: var(--text-micro);
-    color: var(--dim);
-  }
-
   .controls {
     display: flex;
     gap: 0.35rem;
@@ -1629,13 +1654,27 @@
      step is open, and while one of them is on or has its menu open. On the
      head, not the card, so a step nested in an if does not wake the if's.
      Where nothing hovers they stay, since the More menu only takes their
-     place when the card is narrow. Hidden by opacity, so the head keeps its
-     layout. */
+     place when the card is narrow. A closed step's summary runs the head's
+     whole width, and its controls arrive over the summary's end, fading in
+     from the card's surface, so they cost the summary nothing while they are
+     away. An if's head keeps them in line, since its condition is a field. */
   @media (hover: hover) {
     .card:not(.open)
       > .card-head:not(:hover, :focus-within, :has(.active, [aria-expanded='true']))
       > .controls {
       opacity: 0;
+      pointer-events: none;
+    }
+
+    .card:not(.open, .if-card) > .card-head {
+      position: relative;
+    }
+
+    .card:not(.open, .if-card) > .card-head > .controls {
+      position: absolute;
+      right: 0.7rem;
+      padding-left: 1.5rem;
+      background: linear-gradient(to right, transparent, var(--card-surface) 1.2rem);
     }
   }
 
@@ -1699,6 +1738,15 @@
 
   .step-error-msg .error-glyph {
     margin-top: 0.1rem;
+  }
+
+  .step-errors.warn {
+    background: color-mix(in oklab, var(--warn) 12%, var(--panel));
+  }
+
+  .step-error-msg.warn,
+  .error-glyph.warn {
+    color: var(--warn);
   }
 
   .body {

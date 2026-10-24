@@ -19,6 +19,7 @@
   import Dialog from './Dialog.svelte';
   import CaptureDialog from './CaptureDialog.svelte';
   import Field from './Field.svelte';
+  import ValidatedField from './ValidatedField.svelte';
   import Advanced from './Advanced.svelte';
   import StartAt from './StartAt.svelte';
   import type { StartPosition } from './kafka';
@@ -314,7 +315,11 @@
           {#each filterHelp(at) as part, i (i)}{#if part.code}<code>{part.text}</code
               >{:else}{part.text}{/if}{/each}
         {/snippet}
-        <input class="mono" bind:value={filter} placeholder={filterPlaceholder(at)} />
+        <ValidatedField
+          bind:value={filter}
+          placeholder={filterPlaceholder(at)}
+          autocomplete="condition"
+        />
       </Field>
       <Field label="At most" group>
         <div class="limits">
@@ -391,9 +396,6 @@
   }
   input.narrow {
     width: 5rem;
-  }
-  .mono {
-    font-family: var(--mono);
   }
   .dim {
     color: var(--dim);

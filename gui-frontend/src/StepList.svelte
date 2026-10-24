@@ -19,6 +19,7 @@
   let {
     steps,
     errorsByStep = new Map(),
+    warningsByStep = new Map(),
     pipelineIds = [],
     pipelineNames = {},
     lookupTables = [],
@@ -31,6 +32,8 @@
   }: {
     steps: Step[];
     errorsByStep?: Map<Step, PreviewError[]>;
+    /** What compiles but is likely a mistake, by step, as `errorsByStep` places errors. */
+    warningsByStep?: Map<Step, PreviewError[]>;
     pipelineIds?: string[];
     pipelineNames?: Record<string, string>;
     lookupTables?: LookupTableDto[];
@@ -70,22 +73,30 @@
     help: STEP_SUMMARIES[type],
   }));
 
-  let adding = $state(false);
+  /** Where the step the catalog adds goes, as an index into `steps`; null while it is shut. */
+  let addingAt = $state<number | null>(null);
 
   function add(type: StepType) {
     const step = newStep(type, parseInput);
     saveExpanded(step.id, true);
-    steps.push(step);
-    adding = false;
+    steps.splice(addingAt ?? steps.length, 0, step);
+    addingAt = null;
   }
 </script>
 
 <div class="step-list">
   {#each steps as step, i (step)}
+    {#if editable()}
+      <div class="insert">
+        <button type="button" onclick={() => (addingAt = i)} aria-label="Insert step">+ step</button
+        >
+      </div>
+    {/if}
     <StepEditor
       {steps}
       index={i}
       {errorsByStep}
+      {warningsByStep}
       {pipelineIds}
       {pipelineNames}
       {lookupTables}
@@ -100,15 +111,17 @@
 
   {#if editable()}
     <div class="add-row">
-      <button type="button" onclick={() => (adding = true)} aria-label="Add step">+ step</button>
+      <button type="button" onclick={() => (addingAt = steps.length)} aria-label="Add step"
+        >+ step</button
+      >
     </div>
   {/if}
 </div>
 
-<Dialog open={adding} title="add step" wide oncancel={() => (adding = false)}>
+<Dialog open={addingAt !== null} title="add step" wide oncancel={() => (addingAt = null)}>
   <TypeCatalog types={TYPES} cards onpick={add} />
   {#snippet actions()}
-    <button type="button" onclick={() => (adding = false)}>Cancel</button>
+    <button type="button" onclick={() => (addingAt = null)}>Cancel</button>
   {/snippet}
 </Dialog>
 
@@ -125,7 +138,39 @@
     align-items: center;
   }
 
-  .add-row button {
+  /* The gap above a step, where a step can go in. It takes none of the list's height: its negative margins give
+     back what it fills, so it lies over the gap the list leaves, and above the first step, over the list's edge.
+     It shows on hover or focus. Where nothing hovers it would be an invisible target, so it is not there at all,
+     and + step at the end still adds. */
+  .insert {
+    position: relative;
+    height: 0.6rem;
+    margin: -0.6rem 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1;
+    opacity: 0;
+  }
+  .insert:hover,
+  .insert:focus-within {
+    opacity: 1;
+  }
+  .insert::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    border-top: 1px dashed var(--accent);
+  }
+  @media (hover: none) {
+    .insert {
+      display: none;
+    }
+  }
+
+  .add-row button,
+  .insert button {
     background: transparent;
     color: var(--ink);
     border: 1px dashed var(--dim);
@@ -135,5 +180,12 @@
     cursor: pointer;
     flex: none;
     white-space: nowrap;
+  }
+
+  /* Opaque, so the dashed rule stops at its edges. */
+  .insert button {
+    position: relative;
+    background: var(--field);
+    padding: 0 0.7rem;
   }
 </style>

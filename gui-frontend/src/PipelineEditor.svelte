@@ -718,6 +718,9 @@
       ? errorsByStep(steps, result.errors)
       : new Map(),
   );
+  let warningsByStep = $derived(
+    result?.ok && result.warnings ? errorsByStep(steps, result.warnings) : new Map(),
+  );
   // A refused save's errors stay on the steps until the next save, over the preview's.
   let stepListErrors = $derived(saveErrors.length > 0 ? saveErrorsByStep : compileErrorsByStep);
   /** The steps showing the preview's errors, which the box above the sample jumps to. */
@@ -1317,6 +1320,7 @@
           <StepList
             {steps}
             errorsByStep={stepListErrors}
+            {warningsByStep}
             {pipelineIds}
             {pipelineNames}
             {lookupTables}
