@@ -231,7 +231,10 @@ impl Nameservers for ZoneNameservers {
     async fn all_answer(&self, record: &Record) -> Result<bool, String> {
         for (host, addresses) in ZoneNameservers::of(&record.zone).await? {
             for ip in addresses {
-                if !answers(SocketAddr::new(ip, 53), record).await.map_err(|e| format!("{host}: {e}"))? {
+                if !answers(SocketAddr::new(ip, 53), record)
+                    .await
+                    .map_err(|e| format!("{host}: {e}"))?
+                {
                     return Ok(false);
                 }
             }
@@ -435,7 +438,10 @@ mod tests {
                 (status, body.to_string())
             }
             fn ok(result: serde_json::Value) -> (StatusCode, String) {
-                (StatusCode::OK, serde_json::json!({ "success": true, "errors": [], "result": result }).to_string())
+                (
+                    StatusCode::OK,
+                    serde_json::json!({ "success": true, "errors": [], "result": result }).to_string(),
+                )
             }
             fn authorized(held: &Held, headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
                 let bearer = headers.get("authorization").and_then(|v| v.to_str().ok());
@@ -621,7 +627,14 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         run(0..64, |seed| {
             let mut rng = Rng::seeded(seed);
-            let fails = *rng.pick(&[Fails::Never, Fails::Never, Fails::Never, Fails::Token, Fails::Adding, Fails::Removing]);
+            let fails = *rng.pick(&[
+                Fails::Never,
+                Fails::Never,
+                Fails::Never,
+                Fails::Token,
+                Fails::Adding,
+                Fails::Removing,
+            ]);
             let lag = *rng.pick(&[Some(0), Some(0), Some(3), None]);
             let pool = [
                 ("example.com", "apex"),
@@ -678,7 +691,11 @@ mod tests {
                 }
                 if outcome.is_ok() {
                     coverage.reach("proved");
-                    coverage.reach(if lag == Some(0) { "visible-at-once" } else { "visible-late" });
+                    coverage.reach(if lag == Some(0) {
+                        "visible-at-once"
+                    } else {
+                        "visible-late"
+                    });
                 }
                 publishing.done().await;
                 let left = cloudflare.records();
@@ -711,7 +728,10 @@ mod tests {
             let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let at = socket.local_addr().unwrap();
             let held: HashMap<&str, Vec<Vec<&str>>> = HashMap::from([
-                ("_acme-challenge.a.example.com.", vec![vec!["other"], vec!["the-", "value"]]),
+                (
+                    "_acme-challenge.a.example.com.",
+                    vec![vec!["other"], vec!["the-", "value"]],
+                ),
                 ("_acme-challenge.b.example.com.", vec![vec!["other"]]),
                 ("_acme-challenge.c.example.com.", vec![]),
             ]);
@@ -731,7 +751,11 @@ mod tests {
                         Some(texts) => {
                             for text in texts {
                                 let data = TXT::from_bytes(text.iter().map(|t| t.as_bytes()).collect());
-                                answer.add_answer(Answer::from_rdata(Name::from_ascii(&name).unwrap(), 60, RData::TXT(data)));
+                                answer.add_answer(Answer::from_rdata(
+                                    Name::from_ascii(&name).unwrap(),
+                                    60,
+                                    RData::TXT(data),
+                                ));
                             }
                         }
                         None => answer.metadata.response_code = ResponseCode::NXDomain,
