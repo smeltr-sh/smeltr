@@ -57,8 +57,9 @@
   }: {
     value: string;
     errors?: string[];
-    /** Every warning attributed to the enclosing step (`Plan::warnings`). A colored field marks the names one quotes
-     * in the warning color, where no error is marked; a keyword or literal it quotes (`break`, `true`) is no name. */
+    /** Every warning attributed to the enclosing step (`Plan::warnings`), marked in the warning color where no error
+     * is: a colored field marks the names one quotes, any other field all of its text when it holds one. A keyword or
+     * literal it quotes (`break`, `true`) is no name. */
     warnings?: string[];
     /** An error already known to belong to this exact field -- an eval
      * assignment's own error, say (`CompileError::assignment_index`) --
@@ -113,20 +114,22 @@
       : [],
   );
   let warned = $derived(
-    colored && !matched
-      ? warnings
+    matched
+      ? []
+      : warnings
           .flatMap(quotedTokens)
-          .filter((t) => !KEYWORDS.has(t) && !LITERALS.has(t) && holdsName(value, t))
-      : [],
+          .filter((t) => !KEYWORDS.has(t) && !LITERALS.has(t) && holdsName(value, t)),
   );
   let runs = $derived(
     named.length > 0
       ? markRuns(value + '\n', named)
-      : warned.length > 0
+      : colored && warned.length > 0
         ? markRuns(value + '\n', warned)
         : [],
   );
   let whole = $derived(!!matched && runs.length === 0);
+  // A name box has no painted copy to mark a run in, so a warning that names it marks all of it, as an error does.
+  let wholeWarn = $derived(!colored && warned.length > 0);
 
   function syncScroll() {
     if (!inputEl) return;
@@ -286,6 +289,7 @@
       class:field-error={!!matched}
       aria-invalid={!!matched}
       class:whole
+      class:whole-warn={wholeWarn}
       class:has-fn-toggle={functions !== null}
       oninput={onInput}
       onkeydown={onKeydown}
@@ -305,6 +309,7 @@
       class:field-error={!!matched}
       aria-invalid={!!matched}
       class:whole
+      class:whole-warn={wholeWarn}
       class:has-fn-toggle={functions !== null}
       oninput={onInput}
       onkeydown={onKeydown}
@@ -525,8 +530,11 @@
     text-underline-offset: 2px;
   }
 
+  input.whole-warn,
   .squiggle.warn {
-    text-decoration-color: var(--warn);
+    text-decoration: underline wavy var(--warn);
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 2px;
   }
 
   .marks {
