@@ -189,7 +189,7 @@ fn create(path: &Path) -> Result<EncryptionKey, KeyError> {
     file.write_all(material.as_bytes())
         .and_then(|()| file.sync_all())
         .map_err(|e| KeyError(format!("{}: {e}", path.display())))?;
-    tracing::warn!(
+    tracing::info!(
         target: "secrets.key_created",
         path = %path.display(),
         "wrote a new secrets encryption key. Back it up: without it, a restored leader cannot open the stored secrets."
