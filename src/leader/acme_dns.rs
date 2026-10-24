@@ -342,6 +342,7 @@ impl Cloudflare {
                 return Ok((zone.to_string(), id.to_string()));
             }
         }
+        let name = name.strip_prefix("_acme-challenge.").unwrap_or(name);
         Err(format!(
             "Cloudflare holds no zone for {name} that this token can read. The token needs Zone · Zone · Read and \
              Zone · DNS · Edit on it."
@@ -652,7 +653,7 @@ mod tests {
                     let expected = match (*case, fails, lag) {
                         ("ip-refused", _, _) => "cannot prove an IP address",
                         (_, Fails::Token, _) => "Authentication error",
-                        ("no-zone", _, _) => "holds no zone for _acme-challenge.leader.example.org",
+                        ("no-zone", _, _) => "holds no zone for leader.example.org that",
                         (_, Fails::Adding, _) => "DNS Validation Error",
                         (_, _, None) => "ns1.test: timed out",
                         _ => return Err(format!("{name} failed: {e}")),

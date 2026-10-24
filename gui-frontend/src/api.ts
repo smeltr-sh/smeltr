@@ -4884,6 +4884,9 @@ export interface AcmeDto {
   eabKeyId: string;
   /** Whether an external account HMAC key is stored. The key itself is never sent back. */
   eabHmacSet: boolean;
+  dnsProvider: AcmeDnsProvider;
+  /** Whether a Cloudflare API token is stored. The token itself is never sent back. */
+  cloudflareTokenSet: boolean;
   /** Where this leader answers an authority's HTTP-01 challenge. */
   httpPort: number;
   /** The certificate the last order installed, by fingerprint, and its dates. `null` before any. */
@@ -4894,7 +4897,10 @@ export interface AcmeDto {
   lastError: string | null;
 }
 
-export type AcmeChallenge = 'tls-alpn-01' | 'http-01';
+export type AcmeChallenge = 'tls-alpn-01' | 'http-01' | 'dns-01';
+
+/** Who publishes a DNS-01 record. */
+export type AcmeDnsProvider = 'cloudflare';
 
 export interface AcmeSettings {
   enabled: boolean;
@@ -4906,6 +4912,9 @@ export interface AcmeSettings {
   eabKeyId: string;
   /** `null` keeps the stored key; empty removes it. */
   eabHmac: string | null;
+  dnsProvider: AcmeDnsProvider;
+  /** `null` keeps the stored token; empty removes it. */
+  cloudflareToken: string | null;
 }
 
 /** The directories the page offers by name. Any other is typed as a URL. */

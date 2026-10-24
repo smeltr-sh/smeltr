@@ -13,6 +13,7 @@ let page: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
 let posts: string[];
 let deletes: string[];
+let puts: Record<string, unknown>[];
 
 const YEAR = 365 * 24 * 60 * 60 * 1000;
 
@@ -55,6 +56,8 @@ const ACME = {
   authority: '',
   eabKeyId: '',
   eabHmacSet: false,
+  dnsProvider: 'cloudflare',
+  cloudflareTokenSet: false,
   httpPort: 80,
   issued: null,
   notAfterMillis: null,
@@ -77,6 +80,7 @@ async function show(
     vi.fn(async (url: string, init?: RequestInit) => {
       if (init?.method === 'POST') posts.push(url);
       if (init?.method === 'DELETE') deletes.push(url);
+      if (init?.method === 'PUT') puts.push(JSON.parse(String(init.body)));
       if (url.startsWith('/api/settings/certificates')) return json(certificates);
       if (url.startsWith('/api/settings/acme')) return json(acme);
       throw new Error(`unexpected ${url}`);
@@ -106,6 +110,7 @@ async function settle() {
 beforeEach(() => {
   posts = [];
   deletes = [];
+  puts = [];
   ask.mockReset();
   target = document.createElement('div');
   document.body.append(target);
@@ -358,5 +363,31 @@ describe('ACME', () => {
     await show(moving, 'Cut over now', ORDERED);
     expect(target.textContent).toContain('Moving workers to a new root');
     expect(button('Renew now')).toBeDefined();
+  });
+
+  it('asks DNS-01 for its provider and token, and names the zones instead of a port', async () => {
+    await show(IN_FORCE, 'Save', { ...ORDERED, challenge: 'dns-01' });
+    expect(target.textContent).toContain('DNS provider');
+    expect(target.querySelector('[aria-label="API token"]')).not.toBeNull();
+    expect(target.textContent).not.toContain('must reach this leader');
+  });
+
+  it('sends a typed token, and keeps a stored one when none is typed', async () => {
+    await show(IN_FORCE, 'Save', { ...ORDERED, challenge: 'dns-01', cloudflareTokenSet: true });
+    expect(target.textContent).toContain('Stored');
+    button('Save')!.click();
+    await vi.waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toMatchObject({ challenge: 'dns-01', dnsProvider: 'cloudflare', cloudflareToken: null });
+    await vi.waitFor(() => expect(target.textContent).toContain('settings saved'));
+
+    target.querySelector<HTMLButtonElement>('button[aria-label="replace the API token"]')!.click();
+    flushSync();
+    const input = target.querySelector<HTMLInputElement>('input[aria-label="API token"]')!;
+    input.value = 'cf-token';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    button('Save')!.click();
+    await vi.waitFor(() => expect(puts).toHaveLength(2));
+    expect(puts[1]).toMatchObject({ cloudflareToken: 'cf-token' });
   });
 });
