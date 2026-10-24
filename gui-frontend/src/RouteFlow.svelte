@@ -184,11 +184,13 @@
     });
   }
 
+  /** A condition box's field. */
+  const FIELD = '.expr :is(input, textarea)';
   async function writeCondition(route: RouteDto) {
     writing.add(route);
     await tick();
     flowEl
-      ?.querySelector<HTMLInputElement>(`[data-node="c:${routes.indexOf(route)}"] input`)
+      ?.querySelector<HTMLElement>(`[data-node="c:${routes.indexOf(route)}"] ${FIELD}`)
       ?.focus();
   }
   async function writeWhen(route: RouteDto, dest: string) {
@@ -197,7 +199,7 @@
     await tick();
     const i = routes.indexOf(route);
     const j = (route.deliver ?? []).indexOf(rule);
-    flowEl?.querySelector<HTMLInputElement>(`[data-node="w:${i}:${j}"] input`)?.focus();
+    flowEl?.querySelector<HTMLElement>(`[data-node="w:${i}:${j}"] ${FIELD}`)?.focus();
   }
   function setCondition(route: RouteDto, text: string) {
     route.condition = text.trim() === '' ? null : text;
@@ -237,7 +239,7 @@
   /** A condition box as the place its save errors are focused: a route's condition, or each error tied to `rule`. */
   function errorPlace(route: RouteDto, rule?: DeliverRuleDto): Attachment<HTMLElement> {
     return (box) => {
-      const focus = () => box.querySelector('input')?.focus();
+      const focus = () => box.querySelector<HTMLElement>(FIELD)?.focus();
       if (!validation) return;
       if (!rule) return validation.mount(route.id, 'condition', focus);
       const off = (ruleErrors.get(rule) ?? []).map((e) =>
@@ -308,11 +310,16 @@
   /** Where each condition box sits in its row on a vertical card, by its `data-node`: its center's x within
    * the row. */
   let slots: Record<string, number> = $state({});
+  /** Each condition box's room on a vertical card, by its `data-node`: out to halfway to its neighbours. */
+  let slotWidths: Record<string, number> = $state({});
   let whensEl: HTMLDivElement | undefined = $state();
   /** How far apart two boxes' lines cross over below them. */
   const LANE = 8;
   /** The least room between two condition boxes side by side. */
   const BOX_GAP = 12;
+  /** The least and most room a condition box on a vertical card has to lay its text out in. */
+  const SLOT_MIN = 192;
+  const SLOT_MAX = 448;
 
   /** An element's x within the card as laid out, before any glide moves it: so a box placed from it does not
    * chase a pill mid-flight. */
@@ -347,8 +354,18 @@
         want.push((xs.length ? centerOver(xs) : pipe ? middle(pipe) : left) - left);
       }),
     );
-    const width = whensEl.querySelector<HTMLElement>('.slot')?.offsetWidth ?? 0;
-    const xs = pushApart(want, width, BOX_GAP, 0, whensEl.offsetWidth);
+    const rowW = whensEl.offsetWidth;
+    const xs = pushApart(want, SLOT_MIN, BOX_GAP, 0, rowW);
+    // A box is centered on its place, so its room is twice the way to the nearer of its halfway marks.
+    const order = xs.map((_, j) => j).sort((a, b) => xs[a] - xs[b]);
+    const widths: Record<string, number> = {};
+    order.forEach((j, o) => {
+      const lo = o === 0 ? 0 : (xs[order[o - 1]] + xs[j]) / 2;
+      const hi = o === order.length - 1 ? rowW : (xs[order[o + 1]] + xs[j]) / 2;
+      const half = Math.min(xs[j] - lo, hi - xs[j]) - BOX_GAP / 2;
+      widths[keys[j]] = Math.round(Math.max(SLOT_MIN, Math.min(2 * half, SLOT_MAX)));
+    });
+    if (keys.some((key) => slotWidths[key] !== widths[key])) slotWidths = widths;
     const next = Object.fromEntries(keys.map((key, j) => [key, Math.round(xs[j])]));
     const same =
       keys.length === Object.keys(slots).length && keys.every((key) => slots[key] === next[key]);
@@ -360,6 +377,13 @@
    * elbows, as the map's do. */
   function measure() {
     if (!flowEl) return;
+    // The boxes in the row are placed, so they do not size it: it is as high as its highest.
+    if (whensEl) {
+      const heights = [...whensEl.querySelectorAll<HTMLElement>('.slot')].map(
+        (e) => e.offsetHeight,
+      );
+      whensEl.style.height = `${Math.max(40, ...heights)}px`;
+    }
     if (placeBoxes()) void tick().then(measure);
     const down = !line;
     const out: Edge[] = [];
@@ -791,13 +815,14 @@
 {/snippet}
 
 {#snippet conditionBox(route: RouteDto, i: number)}
-  <div class="box cond" data-node="c:{i}" {@attach errorPlace(route)}>
+  <div class="box cond" data-wrap-box data-node="c:{i}" {@attach errorPlace(route)}>
     <div class="expr" onfocusout={(e) => leaveCondition(e, route)}>
       <ValidatedField
         ariaLabel="takes rows where"
         bind:value={() => route.condition ?? '', (v) => setCondition(route, v)}
         forced={validation?.message(route.id, 'condition') ?? null}
         autocomplete="condition"
+        wrap
         placeholder="true; every row"
       />
     </div>
@@ -861,6 +886,7 @@
 {#snippet whenBox(route: RouteDto, i: number, rule: DeliverRuleDto, k: number)}
   <div
     class="box cond when"
+    data-wrap-box
     class:over={overKey === `w:${i}:${k}`}
     data-node="w:{i}:{k}"
     data-drop="w:{i}:{k}"
@@ -872,6 +898,7 @@
         bind:value={() => rule.when ?? '', (v) => setWhen(route, rule, v)}
         forced={whenError(rule)}
         autocomplete="condition"
+        wrap
         placeholder="true; every row"
       />
     </div>
@@ -1061,13 +1088,13 @@
         )}</span
       >
       <div class="cell" style:grid-row="2" style:grid-column="1">{@render sourceBox()}</div>
-      <div class="cell" style:grid-row="2" style:grid-column="2">
+      <div class="cell" data-wrap-room style:grid-row="2" style:grid-column="2">
         {#if showsCondition(route)}{@render conditionBox(route, 0)}{/if}
       </div>
       <div class="cell" style:grid-row="2" style:grid-column="3">
         {@render pipelineBox(route, 0)}
       </div>
-      <div class="cell" style:grid-row="2" style:grid-column="4">
+      <div class="cell" data-wrap-room style:grid-row="2" style:grid-column="4">
         {#if box}{@render whenBox(route, 0, box, k)}{/if}
       </div>
       <div class="cell" style:grid-row="2" style:grid-column="5">
@@ -1084,7 +1111,7 @@
 
       <span class="lbl" style:grid-row="2">takes rows where {@render conditionHelp()}</span>
       {#each routes as route, i (route)}
-        <div class="cell" style:grid-row="2" style:grid-column={i + 2}>
+        <div class="cell" data-wrap-room style:grid-row="2" style:grid-column={i + 2}>
           {#if showsCondition(route)}{@render conditionBox(route, i)}{/if}
         </div>
       {/each}
@@ -1107,7 +1134,14 @@
           {#each route.deliver ?? [] as rule, k (rule)}
             {#if boxed(rule)}
               {@const x = slots[`w:${i}:${k}`]}
-              <div class="slot" style:left={x === undefined ? '50%' : `${x}px`}>
+              <div
+                class="slot"
+                data-wrap-room
+                style:left={x === undefined ? '50%' : `${x}px`}
+                style:width={slotWidths[`w:${i}:${k}`]
+                  ? `${slotWidths[`w:${i}:${k}`]}px`
+                  : undefined}
+              >
                 {@render whenBox(route, i, rule, k)}
               </div>
             {/if}
@@ -1371,16 +1405,23 @@
     padding: 6px 2px 10px;
   }
   /* A line: source, its condition, pipeline, a rule's condition, destination. A condition nobody wrote is a [+] on
-     its line, so its column closes up to the line's width. */
+     its line, so its column closes up to the [+]. A written one's column takes a share of the line, so the room
+     its text is laid out in does not follow the box it is laid out to. */
   .flow.line {
     grid-template-columns:
-      minmax(0, 1fr) minmax(2.5rem, auto) minmax(0, 1fr) minmax(2.5rem, auto)
+      minmax(0, 1fr) minmax(2.5rem, var(--c, auto)) minmax(0, 1fr) minmax(2.5rem, var(--w, auto))
       minmax(0, 1fr);
     column-gap: 1.25rem;
     row-gap: 0.4rem;
     min-width: 640px;
   }
   /* Top to bottom: a row per step, a column per route under the label column. */
+  .flow.line:has(.cond[data-node^='c:']) {
+    --c: 2fr;
+  }
+  .flow.line:has(.cond[data-node^='w:']) {
+    --w: 2fr;
+  }
   .flow.tree {
     grid-template-columns: 10rem repeat(var(--n), minmax(11rem, 1fr));
     column-gap: 1rem;
@@ -1398,6 +1439,10 @@
     justify-self: center;
     width: min(100%, 16rem);
   }
+  /* A condition lays its text out in all of its column. */
+  .tree .cell:has(> .box.cond) {
+    width: 100%;
+  }
   /* One row: a line ends on a pill in its own place, so the card widens for its pills rather than wrapping them. */
   .tree .pills {
     justify-self: stretch;
@@ -1409,8 +1454,8 @@
   .tree .pills .pillcell {
     flex: 0 1 14rem;
   }
-  /* One box high, so a box written into it does not move the rows under it. Its boxes are placed over their
-     destinations. */
+  /* Its boxes are placed over their destinations, so they do not size it: it is as high as its highest box
+     (`measure`), and one box high to start. */
   .tree .whens {
     justify-self: stretch;
     height: 40px;
@@ -1553,7 +1598,17 @@
     background: var(--bg);
     padding: 0 6px;
   }
+  /* A condition's box is as wide as its text laid out, and as high: one line is a box's height. */
+  .box.cond {
+    height: auto;
+    min-height: 40px;
+    padding-block: 3px;
+    width: fit-content;
+    max-width: 100%;
+    align-self: center;
+  }
   .expr {
+    display: flex;
     flex: 1 1 0;
     min-width: 0;
   }
