@@ -12,7 +12,8 @@
 //! ```
 //!
 //! The authority proves the leader holds a name by connecting to it: on the port the leader serves, asking for
-//! `acme-tls/1` (`leader::resolver`), or on the HTTP port, asking for the challenge's token. The certificate
+//! `acme-tls/1` (`leader::resolver`), or on the HTTP port, asking for the challenge's token; or by asking the
+//! name's DNS for a TXT record the leader published through the zone's provider (`leader::acme_dns`). The certificate
 //! arrives the way an uploaded one does ([`tls::install`] under the root already in force, a rotation
 //! ([`tls::begin_supplied_rotation`]) under another), so a worker is given the root that signed it and nothing
 //! about serving it is new. What this module keeps is under `tls/acme/`: the account, and what the last order
@@ -31,6 +32,7 @@ use instant_acme::{
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 
+use super::acme_dns;
 use super::private_file;
 use super::resolver::Resolver;
 use super::store::{Store, StoreError};
@@ -43,8 +45,11 @@ pub const DIRECTORY_KEY: &str = "acme.directory";
 pub const CONTACT_KEY: &str = "acme.contact";
 /// The names the certificate carries, comma-separated.
 pub const NAMES_KEY: &str = "acme.names";
-/// How the authority is to prove the leader holds a name: `tls-alpn-01` or `http-01`.
+/// How the authority is to prove the leader holds a name: `tls-alpn-01`, `http-01` or `dns-01`.
 pub const CHALLENGE_KEY: &str = "acme.challenge";
+/// Which provider publishes a DNS-01 record (`acme_dns::Kind`), and Cloudflare's API token, sealed.
+pub const DNS_PROVIDER_KEY: &str = "acme.dns.provider";
+pub const CLOUDFLARE_TOKEN_KEY: &str = "acme.dns.cloudflare.token";
 /// Roots this leader trusts beyond the platform's, PEM: the authority's own, where it is not publicly trusted.
 pub const AUTHORITY_KEY: &str = "acme.authority";
 /// External account binding, for an authority that asks for one: the key id, and the HMAC key, sealed.
@@ -59,6 +64,9 @@ const STATE: &str = "state.json";
 /// How long an order may take, the authority's validation included. Let's Encrypt validates within seconds; a
 /// minute is for an authority that queues.
 const ORDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// A DNS-01 order also waits for each record to reach the zone's nameservers, which a provider may take minutes
+/// over.
+const DNS_ORDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// How a certificate authority proves the leader holds a name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -67,6 +75,8 @@ pub enum Challenge {
     TlsAlpn01,
     #[serde(rename = "http-01")]
     Http01,
+    #[serde(rename = "dns-01")]
+    Dns01,
 }
 
 impl Challenge {
@@ -74,6 +84,7 @@ impl Challenge {
         match self {
             Challenge::TlsAlpn01 => "tls-alpn-01",
             Challenge::Http01 => "http-01",
+            Challenge::Dns01 => "dns-01",
         }
     }
 
@@ -81,6 +92,7 @@ impl Challenge {
         match text {
             "tls-alpn-01" => Some(Challenge::TlsAlpn01),
             "http-01" => Some(Challenge::Http01),
+            "dns-01" => Some(Challenge::Dns01),
             _ => None,
         }
     }
@@ -97,6 +109,8 @@ pub struct Settings {
     pub authority: String,
     pub eab_key_id: String,
     pub eab_hmac: Option<String>,
+    pub dns_provider: acme_dns::Kind,
+    pub cloudflare_token: Option<String>,
 }
 
 impl Settings {
@@ -113,6 +127,11 @@ impl Settings {
             authority: store.setting(AUTHORITY_KEY)?.unwrap_or_default(),
             eab_key_id: store.setting(EAB_KEY_ID_KEY)?.unwrap_or_default(),
             eab_hmac: store.opened_setting(EAB_HMAC_KEY)?.filter(|s| !s.is_empty()),
+            dns_provider: store
+                .setting(DNS_PROVIDER_KEY)?
+                .and_then(|p| acme_dns::Kind::parse(&p))
+                .unwrap_or(acme_dns::Kind::Cloudflare),
+            cloudflare_token: store.opened_setting(CLOUDFLARE_TOKEN_KEY)?.filter(|s| !s.is_empty()),
         })
     }
 }
@@ -249,6 +268,8 @@ pub trait Prover: Send + Sync {
     async fn tls_alpn(&self, name: &str, digest: &[u8]) -> Result<(), String>;
     /// Answer `GET /.well-known/acme-challenge/{token}` with `key_authorization`.
     async fn http(&self, token: &str, key_authorization: &str) -> Result<(), String>;
+    /// Answer a TXT query for `name`'s `_acme-challenge` with `value`, once it is there to be asked.
+    async fn dns(&self, name: &str, value: &str) -> Result<(), String>;
     /// The order is over, however it ended.
     async fn done(&self);
 }
@@ -286,8 +307,8 @@ pub async fn order(
         return Err("name at least one name for the certificate to carry".to_string());
     }
     // Asked before the authority is, so an order that cannot be served is not spent: an authority counts them.
-    // A required name is the one the worker inside this process reaches the leader by. Neither challenge can prove
-    // a wildcard, so the names carry it as written or not at all. A renewal of the
+    // A required name is the one the worker inside this process reaches the leader by. Only DNS-01 can prove a
+    // wildcard, so the names carry it as written or not at all. A renewal of the
     // certificate in force changes no root and is served whatever rotation is open; anything else would begin
     // one, and only one is open at a time.
     if let Some(name) = required
@@ -315,17 +336,16 @@ pub async fn order(
         .serialize_request(&key)
         .map_err(|e| format!("the certificate request: {e}"))?;
 
-    let issued = tokio::time::timeout(ORDER_TIMEOUT, issuer.issue(&settings.names, csr.der(), prover)).await;
+    let within = match settings.challenge {
+        Challenge::Dns01 => DNS_ORDER_TIMEOUT,
+        Challenge::TlsAlpn01 | Challenge::Http01 => ORDER_TIMEOUT,
+    };
+    let issued = tokio::time::timeout(within, issuer.issue(&settings.names, csr.der(), prover)).await;
     prover.done().await;
     let chain = match issued {
         Ok(Ok(chain)) => chain.into_bytes(),
         Ok(Err(e)) => return Err(e),
-        Err(_) => {
-            return Err(format!(
-                "the authority did not finish within {}s",
-                ORDER_TIMEOUT.as_secs()
-            ));
-        }
+        Err(_) => return Err(format!("the authority did not finish within {}s", within.as_secs())),
     };
     let key = key.serialize_pem().into_bytes();
 
@@ -532,6 +552,7 @@ impl Issuer for Directory {
         let kind = match self.settings.challenge {
             Challenge::TlsAlpn01 => ChallengeType::TlsAlpn01,
             Challenge::Http01 => ChallengeType::Http01,
+            Challenge::Dns01 => ChallengeType::Dns01,
         };
         let mut authorizations = order.authorizations();
         while let Some(authorization) = authorizations.next().await {
@@ -550,6 +571,7 @@ impl Issuer for Directory {
             match self.settings.challenge {
                 Challenge::TlsAlpn01 => prover.tls_alpn(&name, key_authorization.digest().as_ref()).await?,
                 Challenge::Http01 => prover.http(&challenge.token, key_authorization.as_str()).await?,
+                Challenge::Dns01 => prover.dns(&name, &key_authorization.dns_value()).await?,
             }
             challenge
                 .set_ready()
@@ -707,6 +729,10 @@ impl Prover for Proving {
         Ok(())
     }
 
+    async fn dns(&self, _: &str, _: &str) -> Result<(), String> {
+        Err("a DNS-01 proof is published through the zone's provider, not on this leader".to_string())
+    }
+
     async fn done(&self) {
         self.resolver.done();
         self.tokens.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -822,6 +848,7 @@ mod tests {
                             return Err(format!("the listener answered {body:?}"));
                         }
                     }
+                    Challenge::Dns01 => prover.dns(name, &format!("value-{name}")).await?,
                 }
             }
             match self.fails {
@@ -843,6 +870,8 @@ mod tests {
             authority,
             eab_key_id: String::new(),
             eab_hmac: None,
+            dns_provider: acme_dns::Kind::Cloudflare,
+            cloudflare_token: None,
         }
     }
 
