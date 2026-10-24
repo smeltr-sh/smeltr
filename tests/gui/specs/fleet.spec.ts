@@ -150,7 +150,7 @@ test('the Status page shows every worker of every group, and one that stops repo
 
     await admin.getByRole('link', { name: 'Active fleet issues' }).click();
     await expect(admin.getByRole('heading', { name: 'Issues' })).toBeVisible();
-    await expect(admin.getByRole('button', { name: 'Failed (1)' })).toBeVisible();
+    await expect(admin.getByRole('button', { name: /^Failed\s*1$/ })).toBeVisible();
     await expect(issue(admin, 'Worker silent', 'east-2', 'east')).toContainText(
       'stopped sending heartbeats',
     );
@@ -250,11 +250,11 @@ test("the Issues page filters by severity, and tells a stalled destination's log
   await expect(unreachable).toContainText('Last reported by worker north-1', { timeout: 30_000 });
   await expect(admin.getByText(/egress\.destination_stalled/)).toHaveCount(0);
 
-  await admin.getByRole('button', { name: 'Failed (1)' }).click();
+  await admin.getByRole('button', { name: /^Failed\s*1$/ }).click();
   await expect(admin.getByText('Destination unreachable', { exact: true })).toBeVisible();
   await expect(admin.getByText('Logged a warning', { exact: true })).toHaveCount(0);
 
-  await admin.getByRole('button', { name: /^Warning \(/ }).click();
+  await admin.getByRole('button', { name: /^Warning\s*\d/ }).click();
   await expect(admin.getByText('Destination unreachable', { exact: true })).toHaveCount(0);
   await expect(admin.getByText('east-1')).toHaveCount(0);
 });
