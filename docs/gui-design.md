@@ -305,7 +305,10 @@ line from a pipeline to a destination holds a delivery rule's: a condition over
 the pipeline's output, drawn as a box that feeds the destinations wired from
 it. A rule with no condition is plain lines. On a card drawn top to bottom, a
 condition's box sits centered over its destinations, and boxes that would
-overlap push each other aside. Lines turn in elbows, as the map's do, and none
+overlap push each other aside. A condition reads whole wherever there is room
+for it, as every condition field does (The workspace): its box takes the room it
+has, out to halfway to the boxes beside it, or its column's share of a line,
+and shrinks to the text laid out in it. Lines turn in elbows, as the map's do, and none
 runs through a box. The + beside "pipeline" adds a
 route from the same source, and the + beside "destination" brings one onto the
 card. Wiring is direct. A wire is drawn from a pipeline or a condition to a
@@ -391,6 +394,12 @@ the rows it produces on the other, recomputed as the author types, so
 previewing is not an action anyone takes. Which side gets the room changes
 with the work, so the split is a divider that drags, with snap points,
 rather than a mode to choose.
+
+A condition, in a step or wherever else one is written, reads whole when it is
+left: laid out to the width it has, broken before its `&&` and `||`, a
+bracketed group broken only where it cannot fit on a line of its own, three
+lines at most. Written in, it grows with its text. An `if`'s condition takes a
+row of its own under the step's head, as another step's fields do.
 
 Every step has an id, an `if` included. A compile error pinned to a step
 names it by that id and lands on that step, in the preview as on save. An
