@@ -1,8 +1,8 @@
 //! The secrets encryption key, which seals a leader-stored secret's value, and the sealing itself.
 //!
-//! One key, generated when a leader starts with nothing sealed and kept in its own file outside the leader's data directory:
-//! a backup of that directory must not carry the key that opens it. A value is sealed under the key with the
-//! secret's name as associated data, so a ciphertext cannot be moved to another name.
+//! One key, generated when a leader starts with nothing sealed and kept in its own file outside the leader's data
+//! directory: a backup of that directory must not carry the key that opens it. A value is sealed under the key with
+//! the secret's name as associated data, so a ciphertext cannot be moved to another name.
 //!
 //! This protects a stolen file, a backup, a discarded disk. It does not protect a running leader, which holds the
 //! key in order to serve workers.
@@ -192,8 +192,7 @@ fn create(path: &Path) -> Result<EncryptionKey, KeyError> {
     tracing::warn!(
         target: "secrets.key_created",
         path = %path.display(),
-        "wrote a new secrets encryption key. Back it up somewhere other than the leader's data directory: restoring that \
-         directory without this key leaves every stored secret unopenable."
+        "wrote a new secrets encryption key. Back it up: without it, a restored leader cannot open the stored secrets."
     );
     key_from(&material, path)
 }

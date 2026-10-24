@@ -94,8 +94,9 @@
         <h3>
           Key
           <Help label="Key"
-            >Seals every stored secret, and the git token, OIDC client secret and model API key.
-            Back it up somewhere other than the leader's data directory.</Help
+            >Encrypts every stored secret, the Git remote token, the single sign-on client secret
+            and the AI agents API key. Keep a backup: without it, a restored leader cannot open
+            them.</Help
           >
         </h3>
       </div>
