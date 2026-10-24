@@ -3376,8 +3376,6 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/secrets", get(list_secrets).post(create_secret))
         .route("/api/secrets/:name", put(store_secret_value).delete(delete_secret))
         .route("/api/certificates", get(list_certificates).post(create_certificate))
-        // Replacing one is the binary's route, which serves the new version where the leader serves it.
-        .route("/api/certificates/:name", axum::routing::delete(delete_secret))
         .route(
             "/api/secrets/:name/versions/:version",
             axum::routing::delete(forget_secret_version),

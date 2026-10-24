@@ -21,7 +21,7 @@
     listCertificates,
     createCertificate,
     replaceCertificate,
-    deleteCertificate,
+    deleteSecret,
     currentVersion,
     type CertificateDto,
   } from './api';
@@ -111,7 +111,7 @@
     });
     if (!yes) return;
     try {
-      const res = await deleteCertificate(c.name);
+      const res = await deleteSecret(c.name);
       if (res.ok) await load();
     } catch (e) {
       reported(e);

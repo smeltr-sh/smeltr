@@ -764,7 +764,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "DELETE",
         path: "/api/secrets/:name",
-        what: "Delete a secret; refused while the deployed bundle or main's head names it. No query.",
+        what: "Delete a secret or a certificate; refused while the deployed bundle or main's head names it, or the leader serves it. No query.",
         body: "",
     },
     Route {
@@ -815,12 +815,6 @@ pub const CATALOG: &[Route] = &[
         path: "/api/certificates/:name",
         what: "Store a new version of a certificate and its private key; where the leader serves it, the version must be one the leader can serve, and it serves it. No query.",
         body: "{ certificate: pem, privateKey: pem }",
-    },
-    Route {
-        method: "DELETE",
-        path: "/api/certificates/:name",
-        what: "Delete a certificate; refused while the leader serves it, or the deployed bundle or main's head names it. No query.",
-        body: "",
     },
 ];
 

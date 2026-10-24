@@ -785,7 +785,7 @@ fn an_administrator_keeps_certificates_in_the_list() {
     let (_, listed) = leader.get_as(&op.session, "/api/certificates");
     assert_eq!(listed[0]["versions"].as_array().map(Vec::len), Some(2));
 
-    assert_eq!(leader.delete_as(&op, "/api/certificates/receiver"), 200);
+    assert_eq!(leader.delete_as(&op, "/api/secrets/receiver"), 200);
     let (_, listed) = leader.get_as(&op.session, "/api/certificates");
     assert_eq!(listed, serde_json::json!([]));
 }

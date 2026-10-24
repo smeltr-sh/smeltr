@@ -274,7 +274,6 @@ mod tests {
             (Method::GET, "/api/secrets/s1/versions/1"),
             (Method::POST, "/api/certificates"),
             (Method::PUT, "/api/certificates/c1"),
-            (Method::DELETE, "/api/certificates/c1"),
             (Method::GET, "/api/workers"),
             (Method::POST, "/api/workers/w1/restart"),
             (Method::GET, "/api/enrollment-codes"),

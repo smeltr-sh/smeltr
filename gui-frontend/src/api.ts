@@ -3481,10 +3481,6 @@ export function replaceCertificate(
   });
 }
 
-export function deleteCertificate(name: string): Promise<AdminActionResult> {
-  return apiJson(`/api/certificates/${encodeURIComponent(name)}`, { method: 'DELETE' });
-}
-
 /** Whether a candidate is the stored value -- what answers "does this still
  * need rotating" without the value reaching the browser. Bounded to a few
  * attempts a minute per secret, and every attempt is logged by the leader. */
