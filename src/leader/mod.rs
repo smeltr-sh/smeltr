@@ -991,7 +991,10 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
         &recovering,
         heartbeat_interval,
     ));
+    let key = run_store(state.store.clone(), |s| s.key_standing()).await?;
+    active_facts.extend(warnings::encryption_key_facts(&key));
     let starts = state.registry.observe_facts(&active_facts, now_ms);
+    let key_warnings = warnings::encryption_key_warnings(&key, &starts);
     let normal_warnings =
         warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, heartbeat_interval);
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
@@ -1046,6 +1049,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     .unwrap_or_default();
     out.extend(deploy_warnings);
     out.extend(normal_warnings);
+    out.extend(key_warnings);
     for w in out
         .iter_mut()
         .filter(|w| w.subject_kind == warnings::SubjectKind::Pipeline)
@@ -2163,6 +2167,85 @@ async fn create_secret(State(state): State<AppState>, Json(req): Json<CreateSecr
     }
 }
 
+/// Where the secrets encryption key stands, as the Secrets page shows it.
+#[derive(serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptionKeyOut {
+    /// `absent`, `held`, `missing` or `mismatched` (`store::KeyState`).
+    pub state: String,
+    /// The key's id, where there is a key file.
+    pub key_id: Option<String>,
+    pub path: String,
+    /// Each value whose newest copy the key cannot open.
+    pub unopenable: Vec<UnopenableOut>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnopenableOut {
+    /// `secret` or `setting`.
+    pub kind: &'static str,
+    /// A secret's name, or a setting's key.
+    pub name: String,
+    /// What a person calls it: a secret's name, or what the setting is.
+    pub label: String,
+}
+
+impl From<store::KeyStanding> for EncryptionKeyOut {
+    fn from(standing: store::KeyStanding) -> EncryptionKeyOut {
+        let (state, key_id) = match standing.key {
+            store::KeyState::Absent => ("absent", None),
+            store::KeyState::Held { key_id } => ("held", Some(key_id)),
+            store::KeyState::Missing => ("missing", None),
+            store::KeyState::Mismatched { key_id } => ("mismatched", Some(key_id)),
+        };
+        EncryptionKeyOut {
+            state: state.to_string(),
+            key_id,
+            path: standing.path.display().to_string(),
+            unopenable: standing
+                .unopenable
+                .into_iter()
+                .map(|u| match u {
+                    store::Unopenable::Secret(name) => UnopenableOut {
+                        kind: "secret",
+                        label: name.clone(),
+                        name,
+                    },
+                    store::Unopenable::Setting(name) => UnopenableOut {
+                        kind: "setting",
+                        label: warnings::sealed_setting_place(&name).0.to_string(),
+                        name,
+                    },
+                })
+                .collect(),
+        }
+    }
+}
+
+async fn encryption_key(
+    State(state): State<AppState>,
+) -> Result<Json<EncryptionKeyOut>, (axum::http::StatusCode, String)> {
+    run_store(state.store, |s| s.key_standing())
+        .await
+        .map(|standing| Json(standing.into()))
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn regenerate_encryption_key(
+    State(state): State<AppState>,
+    // Inserted by the operator gate: who regenerated it is what the audit row says.
+    axum::Extension(actor): axum::Extension<store::Actor>,
+) -> Json<Envelope<EncryptionKeyOut>> {
+    let event = accounts::event_for(&actor, "key-regenerate", "", "ok");
+    Json(
+        run_store(state.store, move |s| s.regenerate_key(&event))
+            .await
+            .map(EncryptionKeyOut::from)
+            .into(),
+    )
+}
+
 /// Stores a new value and forgets what retention no longer keeps.
 ///
 /// Adding and forgetting are two store calls rather than one, because what may be forgotten depends on what the
@@ -3051,6 +3134,8 @@ pub fn admin_router() -> Router<AppState> {
         )
         .route("/api/secrets/:name/verify", post(verify_secret))
         .route("/api/secrets/:name/references", put(point_secret))
+        .route("/api/encryption-key", get(encryption_key))
+        .route("/api/encryption-key/regenerate", post(regenerate_encryption_key))
 }
 
 /// Every leader route. `admin` is [`admin_router`], wrapped in the caller's operator gate and any routes that share it.
@@ -3071,8 +3156,8 @@ pub fn router(state: AppState) -> Router {
     )
 }
 
-/// Where a store would write its sealing key. No fixture below stores a secret, so nothing is written -- but two
-/// must not name one file between them if one ever does.
+/// Where a store would write its secrets encryption key. No fixture below stores a secret, so nothing is written --
+/// but two must not name one file between them if one ever does.
 #[cfg(test)]
 mod identity_expiry_tests {
     use super::*;

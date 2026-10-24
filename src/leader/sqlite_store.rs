@@ -1,8 +1,8 @@
 //! `Store` on one SQLite file, one connection behind a `Mutex`. Every write is an operator action, never a
 //! per-heartbeat one, but a single-worker source's hold and progress: those are what its holder's heartbeat says.
 //!
-//! The sealing key is not in this file and not in the leader's data directory (`secrets`). It is read per operation
-//! rather than held: operator actions are rare, and a key that is not resident is not in a core dump.
+//! The secrets encryption key is not in this file and not in the leader's data directory (`secrets`). It is read per
+//! operation rather than held: operator actions are rare, and a key that is not resident is not in a core dump.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -10,14 +10,18 @@ use std::sync::Mutex;
 use rusqlite::{Connection, ErrorCode, OptionalExtension};
 
 use super::access::{AgentPermissions, Level, Role};
-use super::secrets::{self, Sealed, SealingKey};
+use super::secrets::{self, EncryptionKey, Sealed};
 use super::store::{
-    AccountError, AuthSource, ConversationRecord, Custody, EnrollmentCodeRecord, HeldSource, LocalCredentialRecord,
-    NewEnrollmentCode, NewLocalUser, OidcIdentityRecord, OidcSignIn, SecretRecord, SecurityEvent, SourceHold, Spend,
-    Store, StoreError, StoredValue, UsableEnrollmentCode, UserRecord, WorkerCredentialRecord, WorkerKind,
+    AccountError, AuthSource, ConversationRecord, Custody, EnrollmentCodeRecord, HeldSource, KeyStanding, KeyState,
+    LocalCredentialRecord, NewEnrollmentCode, NewLocalUser, OidcIdentityRecord, OidcSignIn, SecretRecord,
+    SecurityEvent, SourceHold, Spend, Store, StoreError, StoredValue, Unopenable, UsableEnrollmentCode, UserRecord,
+    WorkerCredentialRecord, WorkerKind,
 };
 use crate::heartbeat::{LedgerEntry, SourceKey};
 use crate::io::Progress;
+
+/// The setting that lists the keys a regeneration replaced, comma-separated.
+const RETIRED_KEY_IDS: &str = "secrets.retired_key_ids";
 
 pub struct SqliteStore {
     conn: Mutex<Connection>,
@@ -92,7 +96,8 @@ fn set_mode_if_looser(path: &Path, wanted: u32) -> std::io::Result<()> {
 /// `std::fs::set_permissions` cannot close this: on Windows it toggles the read-only flag and says nothing about
 /// who may read. Doing it properly means writing a DACL that grants the owner and the SYSTEM account only, which needs the
 /// Win32 API rather than `std::fs`. Until that exists this is a no-op that returns `Ok`, and saying so is the
-/// point -- the sealing key has the same hole (`secrets.rs`), and neither should read as though it were handled.
+/// point -- the secrets encryption key has the same hole (`secrets.rs`), and neither should read as though it were
+/// handled.
 #[cfg(not(unix))]
 fn make_private(_path: &Path) -> Result<(), StoreError> {
     Ok(())
@@ -459,14 +464,59 @@ impl SqliteStore {
         })
     }
 
-    /// The key, writing one if there is none. For storing a value: the first one stored is what creates the key.
-    fn key_for_sealing(&self) -> Result<SealingKey, StoreError> {
+    /// The key, writing one if there is none and nothing is sealed yet. Refused while the key is broken: a value
+    /// sealed then is one the restored key could not open.
+    fn key_for_sealing(&self) -> Result<EncryptionKey, StoreError> {
+        if let Some(problem) = self.key_standing()?.problem() {
+            return Err(StoreError(problem));
+        }
         Ok(secrets::load_or_create(&self.secret_key)?)
+    }
+
+    /// The key ids every sealed value carries, and which value each newest copy is, keyed the way
+    /// [`Unopenable`] names it.
+    fn sealed_by(&self) -> Result<Vec<(Unopenable, String)>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut newest = conn.prepare(
+            "SELECT v.name, v.key_id FROM secret_versions v
+              WHERE v.version = (SELECT MAX(version) FROM secret_versions WHERE name = v.name)
+              ORDER BY v.name",
+        )?;
+        let mut out = newest
+            .query_map((), |row| Ok((Unopenable::Secret(row.get(0)?), row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        // A sealed setting is told apart by its shape: nothing else a setting holds is a key id, a nonce of the
+        // one length a sealed value carries, and hex, separated by colons.
+        let mut settings = conn.prepare("SELECT key, value FROM settings ORDER BY key")?;
+        for row in settings.query_map((), |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))? {
+            let (key, value) = row?;
+            if let Some(sealed) = Sealed::from_text(&value) {
+                out.push((Unopenable::Setting(key), sealed.key_id().to_string()));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every key id any stored version carries, older versions included.
+    fn every_key_id(&self) -> Result<std::collections::BTreeSet<String>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare("SELECT DISTINCT key_id FROM secret_versions")?;
+        Ok(stmt
+            .query_map((), |row| row.get::<_, String>(0))?
+            .collect::<Result<_, _>>()?)
+    }
+
+    /// The keys a regeneration replaced, whose values read as values to enter again.
+    fn retired_key_ids(&self) -> Result<std::collections::BTreeSet<String>, StoreError> {
+        Ok(self
+            .setting(RETIRED_KEY_IDS)?
+            .map(|ids| ids.split(',').filter(|id| !id.is_empty()).map(str::to_string).collect())
+            .unwrap_or_default())
     }
 
     /// The key if there is one. Absent means every stored value is unusable, which is a fact to report rather than
     /// an error, and never a reason to write a key.
-    fn key_if_any(&self) -> Result<Option<SealingKey>, StoreError> {
+    fn key_if_any(&self) -> Result<Option<EncryptionKey>, StoreError> {
         Ok(secrets::load(&self.secret_key)?)
     }
 
@@ -1108,6 +1158,61 @@ impl Store for SqliteStore {
         ))?;
         let rows = stmt.query_map((), credential_row)?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    fn key_standing(&self) -> Result<KeyStanding, StoreError> {
+        let key = self.key_if_any()?;
+        // Only the newest copy of each value counts. An older version under a key since replaced is history: a leader
+        // that lost its key before regeneration existed, and entered every secret again, is not broken.
+        let sealed = self.sealed_by()?;
+        let ids: std::collections::BTreeSet<&String> = sealed.iter().map(|(_, id)| id).collect();
+        let retired = self.retired_key_ids()?;
+        let held = key.as_ref().map(|k| k.key_id().to_string());
+        let foreign = ids.iter().any(|&id| Some(id) != held.as_ref() && !retired.contains(id));
+        let state = match held {
+            None if ids.is_empty() => KeyState::Absent,
+            None => KeyState::Missing,
+            Some(key_id) if foreign => KeyState::Mismatched { key_id },
+            Some(key_id) => KeyState::Held { key_id },
+        };
+        let opens = |id: &String| matches!(&state, KeyState::Held { key_id } if key_id == id);
+        Ok(KeyStanding {
+            path: self.secret_key.clone(),
+            unopenable: sealed
+                .into_iter()
+                .filter(|(_, id)| !opens(id))
+                .map(|(what, _)| what)
+                .collect(),
+            key: state,
+        })
+    }
+
+    fn regenerate_key(&self, event: &SecurityEvent) -> Result<KeyStanding, StoreError> {
+        let standing = self.key_standing()?;
+        if !standing.broken() {
+            return Err(StoreError(
+                "the secrets encryption key opens what is stored under it: there is nothing to regenerate".to_string(),
+            ));
+        }
+        if let KeyState::Mismatched { .. } = standing.key {
+            let now = super::warnings::now_millis() / 1000;
+            let aside = PathBuf::from(format!("{}.replaced-{now}", self.secret_key.display()));
+            std::fs::rename(&self.secret_key, &aside)
+                .map_err(|e| StoreError(format!("{}: {e}", self.secret_key.display())))?;
+            tracing::warn!(
+                target: "secrets.key_replaced",
+                path = %aside.display(),
+                "moved aside a secrets encryption key that did not match the stored secrets"
+            );
+        }
+        let key = secrets::load_or_create(&self.secret_key)?;
+        let mut retired = self.retired_key_ids()?;
+        retired.extend(self.every_key_id()?);
+        retired.extend(self.sealed_by()?.into_iter().map(|(_, id)| id));
+        retired.remove(key.key_id());
+        let retired = retired.into_iter().collect::<Vec<_>>().join(",");
+        self.put_settings(&[(RETIRED_KEY_IDS, retired)], Some(event))?;
+        self.key_standing()
     }
 
     fn group_hues(&self) -> Result<std::collections::HashMap<String, u16>, StoreError> {
@@ -2804,6 +2909,169 @@ mod tests {
         assert!(!current.usable);
         assert_eq!(current.version, 1, "and still says which value it was");
         assert!(!s.verify_secret("kafka-west-sasl", 1, "hunter2").unwrap());
+    }
+
+    fn regenerated() -> SecurityEvent {
+        crate::leader::accounts::event_for(&crate::leader::store::Actor::system(), "key-regenerate", "", "ok")
+    }
+
+    fn secret(name: &str) -> Unopenable {
+        Unopenable::Secret(name.to_string())
+    }
+
+    #[test]
+    fn a_leader_that_has_sealed_nothing_has_no_key_and_nothing_wrong() {
+        let s = store();
+        let standing = s.key_standing().unwrap();
+        assert_eq!(standing.key, KeyState::Absent);
+        assert!(!standing.broken());
+        assert!(standing.unopenable.is_empty());
+    }
+
+    /// The case issue 21 is about: values sealed, key gone. Every value is named, and nothing more is sealed until
+    /// the key is back or regenerated -- a value sealed now would be one the restored key could not open.
+    #[test]
+    fn a_missing_key_with_values_sealed_is_broken_and_refuses_to_seal() {
+        let key = temp_key();
+        let s = store_with_key(&key);
+        leader_stored(&s, "kafka-west-sasl", "hunter2");
+        let token = s.sealed_setting("git.remote.token", "s3cret").unwrap();
+        s.put_settings(&[("git.remote.token", token)], None).unwrap();
+        std::fs::remove_file(&key).unwrap();
+
+        let standing = s.key_standing().unwrap();
+        assert_eq!(standing.key, KeyState::Missing);
+        assert_eq!(
+            standing.unopenable,
+            vec![
+                secret("kafka-west-sasl"),
+                Unopenable::Setting("git.remote.token".to_string())
+            ]
+        );
+        let problem = standing.problem().expect("a broken key is a problem");
+        assert!(
+            problem.contains("is missing, so the 2 stored secrets cannot be opened"),
+            "{problem}"
+        );
+
+        let refused = s.add_secret_version("kafka-west-sasl", "hunter3").unwrap_err();
+        assert_eq!(refused.0, problem);
+        assert!(
+            s.create_secret("es-auth", Custody::LeaderStored, "", Some("x"))
+                .is_err()
+        );
+        assert!(s.sealed_setting("agents.api_key", "sk-1").is_err());
+        assert!(!key.exists(), "a refused write does not write a key either");
+        s.create_secret("pg-replica", Custody::WorkerLocal, "", None)
+            .expect("a worker-local secret seals nothing");
+    }
+
+    #[test]
+    fn a_key_that_did_not_seal_the_values_is_mismatched() {
+        let key = temp_key();
+        let s = store_with_key(&key);
+        leader_stored(&s, "kafka-west-sasl", "hunter2");
+        std::fs::remove_file(&key).unwrap();
+        let other = secrets::load_or_create(&key).unwrap();
+
+        let standing = s.key_standing().unwrap();
+        assert_eq!(
+            standing.key,
+            KeyState::Mismatched {
+                key_id: other.key_id().to_string()
+            }
+        );
+        assert!(
+            standing
+                .problem()
+                .unwrap()
+                .contains("does not match the stored secrets")
+        );
+        assert!(s.add_secret_version("kafka-west-sasl", "hunter3").is_err());
+    }
+
+    /// Regenerating keeps the old values and names each one to enter again; entering one clears it.
+    #[test]
+    fn a_regenerated_key_lists_what_to_enter_again_until_it_is() {
+        let key = temp_key();
+        let s = store_with_key(&key);
+        leader_stored(&s, "kafka-west-sasl", "hunter2");
+        leader_stored(&s, "es-auth", "changeme");
+        std::fs::remove_file(&key).unwrap();
+
+        let standing = s.regenerate_key(&regenerated()).unwrap();
+        assert!(matches!(standing.key, KeyState::Held { .. }), "{:?}", standing.key);
+        assert_eq!(standing.unopenable, vec![secret("es-auth"), secret("kafka-west-sasl")]);
+        assert!(key.exists());
+        assert!(
+            !record(&s, "es-auth").current().unwrap().usable,
+            "the old value stays, unusable"
+        );
+
+        s.add_secret_version("es-auth", "changeme2")
+            .expect("sealing works again");
+        assert_eq!(s.key_standing().unwrap().unopenable, vec![secret("kafka-west-sasl")]);
+        assert_eq!(
+            s.list_security_events(10)
+                .unwrap()
+                .iter()
+                .filter(|e| e.action == "key-regenerate")
+                .count(),
+            1,
+            "the regeneration is audited"
+        );
+    }
+
+    #[test]
+    fn an_older_version_under_a_lost_key_does_not_break_the_key() {
+        let key = temp_key();
+        let s = store_with_key(&key);
+        leader_stored(&s, "kafka-west-sasl", "hunter2");
+        s.add_secret_version("kafka-west-sasl", "hunter3").unwrap();
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE secret_versions SET key_id = '0000000000000000' WHERE version = 1",
+                (),
+            )
+            .unwrap();
+
+        let standing = s.key_standing().unwrap();
+        assert!(matches!(standing.key, KeyState::Held { .. }), "{:?}", standing.key);
+        assert!(standing.unopenable.is_empty());
+    }
+
+    /// A key file that is there but wrong may yet be the right key for something, so it is kept beside the new one.
+    #[test]
+    fn regenerating_over_a_mismatched_key_moves_it_aside() {
+        let key = temp_key();
+        let s = store_with_key(&key);
+        leader_stored(&s, "kafka-west-sasl", "hunter2");
+        std::fs::remove_file(&key).unwrap();
+        let wrong = std::fs::read_to_string({
+            secrets::load_or_create(&key).unwrap();
+            &key
+        })
+        .unwrap();
+
+        s.regenerate_key(&regenerated()).unwrap();
+        let aside: Vec<_> = std::fs::read_dir(key.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.to_string_lossy().contains(".replaced-"))
+            .collect();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(std::fs::read_to_string(&aside[0]).unwrap(), wrong);
+        assert_ne!(std::fs::read_to_string(&key).unwrap(), wrong);
+    }
+
+    #[test]
+    fn a_working_key_is_not_regenerated() {
+        let s = store();
+        leader_stored(&s, "kafka-west-sasl", "hunter2");
+        assert!(s.regenerate_key(&regenerated()).is_err());
+        assert!(s.regenerate_key(&regenerated()).is_err(), "nor is an absent one");
     }
 
     /// The name is sealed in with the value, so lifting one row's ciphertext into another buys nothing -- which is

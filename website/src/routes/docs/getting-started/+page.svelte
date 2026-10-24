@@ -159,8 +159,9 @@
       <a href="/docs/first-pipeline#verify">Verify the data path</a>.
     </li>
     <li>
-      <strong>A recoverable backup.</strong> Take a consistent leader backup, retain the matching
-      sealing key securely, and test a restore in isolation.
+      <strong>A recoverable backup.</strong> Take a consistent leader backup, keep the matching
+      <a href="/docs/secrets#encryption-key">secrets encryption key</a>, and test a restore in
+      isolation.
       <a href="/docs/backup-recovery#backup">Follow the backup procedure</a>.
     </li>
   </ul>

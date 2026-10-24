@@ -1,4 +1,4 @@
-//! Files only their owner may read: the leader's sealing key, and the private keys behind its certificate
+//! Files only their owner may read: the leader's secrets encryption key, and the private keys behind its certificate
 //! authority.
 //!
 //! On Unix that is a file mode. On Windows it is the parent directory's ACL; see [`check`].

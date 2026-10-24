@@ -2,6 +2,8 @@
 // (`specs/journey-fuzz.spec.ts`) strings together. Each move is done through the GUI, by role and label, and then
 // checked against what is true outside the page: the leader's API, the worker it started, the rows at the sink.
 // `World` is what the moves so far have left the leader holding; a move is offered only when it makes sense there.
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Browser, Locator, Page } from '@playwright/test';
 import {
   expect,
@@ -538,7 +540,7 @@ const METRICS_STREAM = '__smeltr_metrics';
 
 const routeStream: Move = {
   name: 'route-stream',
-  leadsTo: ['open-change'],
+  leadsTo: ['open-change', 'refused-route'],
   // A metrics source the fleet runs with no route, so its rows arrive as a stream no route takes, and nothing
   // since has routed it.
   weight: (w) =>
@@ -647,6 +649,7 @@ const ORDER_FIELDS = [
 
 const fillAvro: Move = {
   name: 'fill-avro',
+  leadsTo: ['refused-route'],
   weight: (w) =>
     heartbeating(w, 'default').length && !w.editing.sources.some((s) => s.startsWith('avro-'))
       ? 1
@@ -719,6 +722,14 @@ async function addElasticsearch(j: Journey, id: string, index: string) {
   return form;
 }
 
+/** The pipelines that compile for `source`. A pipeline made from a capture parses `_raw` as JSON, which an Avro source,
+ * reading declared fields, does not have: the leader refuses that route's save. */
+const pipelinesFor = (w: World, source: string) =>
+  w.editing.pipelines.filter((p) => !(source.startsWith('avro-') && p.endsWith('-parse')));
+
+/** The sources a new route can take, each with a pipeline that compiles for it. */
+const routable = (w: World) => w.editing.sources.filter((s) => pipelinesFor(w, s).length);
+
 /** Adds a route on the Routes page and picks its source and pipeline. A source's routes share one card, the new
  * route last on it; the card, which is a line while it holds one route to one destination. */
 async function startRoute(j: Journey, source: string, pipeline: string) {
@@ -772,15 +783,11 @@ const addRoute: Move = {
   name: 'add-route',
   leadsTo: ['open-change', 'blast-radius'],
   weight: (w) =>
-    !w.editing.sources.length || !w.editing.pipelines.length || w.editing.routes.length >= 3
-      ? 0
-      : w.editing.routes.length
-        ? 1
-        : 4,
+    !routable(w).length || w.editing.routes.length >= 3 ? 0 : w.editing.routes.length ? 1 : 4,
   run: async (j) => {
     const { page, rng, world } = j;
-    const source = rng.pick(world.editing.sources);
-    const pipeline = rng.pick(world.editing.pipelines);
+    const source = rng.pick(routable(world));
+    const pipeline = rng.pick(pipelinesFor(world, source));
     await startRoute(j, source, pipeline);
     await save(j, unsaved(page));
     // A new route delivers to the first destination there is.
@@ -796,16 +803,15 @@ const addRouteToNewDestination: Move = {
   leadsTo: ['open-change'],
   weight: (w) =>
     !w.password ||
-    !w.editing.sources.length ||
-    !w.editing.pipelines.length ||
+    !routable(w).length ||
     w.editing.routes.length >= 3 ||
     w.editing.destinations.length >= 2
       ? 0
       : 1,
   run: async (j) => {
     const { page, rng, world } = j;
-    const source = rng.pick(world.editing.sources);
-    const pipeline = rng.pick(world.editing.pipelines);
+    const source = rng.pick(routable(world));
+    const pipeline = rng.pick(pipelinesFor(world, source));
     const id = `dst-${world.made++}`;
     const card = await startRoute(j, source, pipeline);
     // The destination is made from the card, and saved on Add: a line card's + beside "destination" wires it to
@@ -842,6 +848,32 @@ const addRouteToNewDestination: Move = {
     world.editing.routes.push({ source, pipeline, to: id });
     await editingIsSaved(j);
     return `add route from ${source} through "${pipeline}" to a new destination ${id}`;
+  },
+};
+
+/** The routes whose pipeline does not compile for their source, each a source and a pipeline. */
+const unroutable = (w: World) =>
+  w.editing.sources.flatMap((s) =>
+    w.editing.pipelines.filter((p) => !pipelinesFor(w, s).includes(p)).map((p) => [s, p]),
+  );
+
+const refusedRoute: Move = {
+  name: 'refused-route',
+  // On a branch already saved, so the refused save names none.
+  weight: (w) => (w.branch !== null && w.branchSaved && unroutable(w).length ? 1 : 0),
+  run: async (j) => {
+    const { page, rng, world } = j;
+    const [source, pipeline] = rng.pick(unroutable(world));
+    const before = await configOn(await j.truth(), world.branch!);
+    await startRoute(j, source, pipeline);
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    // The leader says why, and the edit stays to be put right or discarded.
+    await expect(page.getByRole('alert').filter({ hasText: '`_raw` is a variant' })).toBeVisible();
+    await expect(page.getByText('Unsaved', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Discard' }).click();
+    await unsaved(page)();
+    expect(await configOn(await j.truth(), world.branch!)).toEqual(before);
+    return `a route from ${source} through "${pipeline}" is refused`;
   },
 };
 
@@ -1112,6 +1144,91 @@ const rotateSecret: Move = {
   },
 };
 
+/** Where the journey's leader keeps its secrets encryption key: the default, under its own directory. */
+const keyFile = (leader: Leader) =>
+  path.join(leader.proc.dir, 'smeltr-leader-secrets', 'sealing.key');
+
+/** The key file is lost, which is not something the GUI does; finding out and regenerating it is. Only while
+ * nothing else is sealed: single sign-on and the agents would stop working until entered again, and no move
+ * enters them again. */
+const regenerateKey: Move = {
+  name: 'regenerate-key',
+  leadsTo: ['rotate-secret'],
+  weight: (w) => (w.password && w.secrets.size ? 3 : 0),
+  run: async (j) => {
+    const { page, leader, world } = j;
+    // The settings it encrypts, each entered again from the link beside it, so a later move finds them working.
+    const settings = [
+      ...(world.sso
+        ? [
+            {
+              key: 'oidc.client_secret',
+              label: 'Single sign-on client secret',
+              field: 'client secret',
+              value: CLIENT_SECRET,
+            },
+          ]
+        : []),
+      ...(world.agentsOn
+        ? [
+            {
+              key: 'agents.api_key',
+              label: 'AI agents API key',
+              field: 'API key',
+              value: MODEL_KEY,
+            },
+          ]
+        : []),
+    ];
+    fs.rmSync(keyFile(leader));
+    await openAdmin(page, 'Secrets');
+    await expect(page.getByText(/^The key file is missing/)).toBeVisible();
+    await page
+      .getByRole('navigation', { name: 'Secrets' })
+      .getByRole('link', { name: 'Encryption key', exact: true })
+      .click();
+    await page.getByRole('button', { name: 'Regenerate key' }).click();
+    await page
+      .getByRole('dialog', { name: 'regenerate the encryption key' })
+      .getByRole('button', { name: 'Regenerate key' })
+      .click();
+    await expect(page.getByText('To enter again')).toBeVisible();
+    for (const name of world.secrets.keys())
+      await expect(page.getByText(name, { exact: true })).toBeVisible();
+    expect(fs.existsSync(keyFile(leader))).toBe(true);
+    const unopenable = async () => {
+      const key: { state: string; unopenable: { name: string }[] } = await (
+        await j.truth()
+      ).get('/api/encryption-key');
+      expect(key.state).toBe('held');
+      return key.unopenable.map((u) => u.name).sort();
+    };
+    expect(await unopenable()).toEqual(
+      [...world.secrets.keys(), ...settings.map((s) => s.key)].sort(),
+    );
+    for (const setting of settings) {
+      await page.getByRole('listitem').filter({ hasText: setting.label }).getByRole('link').click();
+      // A value the key cannot open reads as none stored, so the page offers an empty input, not Replace.
+      await page.getByLabel(setting.field, { exact: true }).fill(setting.value);
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(
+        page.getByRole('button', { name: `replace the ${setting.field}` }),
+      ).toBeVisible();
+      await openAdmin(page, 'Secrets');
+      await page
+        .getByRole('navigation', { name: 'Secrets' })
+        .getByRole('link', { name: 'Encryption key', exact: true })
+        .click();
+      await expect(page.getByText(setting.label, { exact: true })).toHaveCount(0);
+    }
+    expect(await unopenable()).toEqual([...world.secrets.keys()].sort());
+    const entered = settings.length
+      ? `, ${settings.map((s) => s.label).join(' and ')} entered again`
+      : '';
+    return `regenerate the key, ${world.secrets.size} to enter again${entered}`;
+  },
+};
+
 const addStep: Move = {
   name: 'add-step',
   weight: (w) => (w.editing.pipelines.length ? 1 : 0),
@@ -1162,7 +1279,9 @@ const declareFromProduction: Move = {
     await page.getByRole('link', { name: pipeline, exact: true }).click();
     // The editor opens on the steps it opened last, so the Parser may be open already.
     const parser = page.getByRole('button', { name: /as JSON/ });
-    if ((await parser.getAttribute('aria-expanded')) !== 'true') await parser.click();
+    // At its start: on a narrow page the step's controls, arriving on hover, cover the head's middle.
+    if ((await parser.getAttribute('aria-expanded')) !== 'true')
+      await parser.click({ position: { x: 8, y: 8 } });
     const suggested = page.getByRole('group', { name: 'Suggested fields' });
     // Shown once a worker's heartbeat has carried what the parser read to the leader. Suggesting again reads again.
     await expect(async () => {
@@ -2349,6 +2468,7 @@ export const MOVES: readonly Move[] = [
   addPipeline,
   addRoute,
   addRouteToNewDestination,
+  refusedRoute,
   blastRadius,
   openChange,
   comment,
@@ -2358,6 +2478,7 @@ export const MOVES: readonly Move[] = [
   release,
   addSecret,
   rotateSecret,
+  regenerateKey,
   addStep,
   declareFromProduction,
   addReceiver,
