@@ -1102,11 +1102,10 @@
   type RowMaps = { before: Map<string, unknown>; after: Map<string, unknown> };
   let rowsMaps: RowMaps[] = $derived(
     (lastGoodResult?.rows ?? []).map((row) => {
-      if (selectedByRow)
-        return {
-          before: leafMap(withSource(selectedByRow.before.get(row.row)?.json ?? null, row.row)),
-          after: leafMap(withSource(selectedByRow.after.get(row.row)?.json ?? null, row.row)),
-        };
+      if (selectedByRow) {
+        const sides = rowSides(row);
+        return { before: leafMap(sides.before), after: leafMap(sides.after) };
+      }
       return {
         before: sampleMaps[row.row] ?? leafMap(withSource({}, row.row)),
         after: leafMap(withSource(row.json, row.row)),
