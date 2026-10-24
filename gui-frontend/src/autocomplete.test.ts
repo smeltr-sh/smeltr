@@ -148,7 +148,7 @@ describe('memberSuggestions', () => {
     expect(got.map((f) => [f.name, f.warning])).toEqual([
       ['length', undefined],
       ['sign', 'takes i64/f64, not str'],
-      ['keys', 'not for str'],
+      ['keys', 'takes object, not str'],
     ]);
   });
 

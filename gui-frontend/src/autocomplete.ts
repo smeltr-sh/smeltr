@@ -138,7 +138,8 @@ export function memberSuggestions(
     else
       misfit.push({
         ...f,
-        warning: known.takes ? `takes ${known.takes}, not ${type}` : `not for ${type}`,
+        // Without a signature, the kind its reference writes it on: `object.keys()` takes an object.
+        warning: `takes ${known.takes || f.signature.split('.')[0]}, not ${type}`,
       });
   }
   return [...fields, ...fit, ...misfit];
