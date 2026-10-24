@@ -1,0 +1,267 @@
+<!--
+  The certificate list: each a chain and its private key, kept by the leader
+  as a leader-stored secret is. The leader serves a copy of one; a key is
+  never shown again once uploaded.
+
+  Opened at #/admin/certificates/new by a chooser's add link, it starts on the
+  upload and goes back to that chooser once the certificate is added.
+-->
+<script lang="ts">
+  import { untrack } from 'svelte';
+  import { reported } from './errors.svelte';
+  import SectionShell from './SectionShell.svelte';
+  import ListTable from './ListTable.svelte';
+  import PageHeader from './PageHeader.svelte';
+  import Field from './Field.svelte';
+  import Dialog from './Dialog.svelte';
+  import { ask } from './Confirm.svelte';
+  import SortButton from './SortButton.svelte';
+  import { TableSort } from './sort.svelte';
+  import {
+    listCertificates,
+    createCertificate,
+    replaceCertificate,
+    deleteCertificate,
+    currentVersion,
+    type CertificateDto,
+  } from './api';
+  import { ago, expiry } from './time';
+
+  let { adding: startAdding = false }: { adding?: boolean } = $props();
+
+  let certificates: CertificateDto[] = $state([]);
+  let loading = $state(true);
+
+  async function load() {
+    loading = true;
+    try {
+      certificates = await listCertificates();
+    } catch (e) {
+      reported(e);
+    } finally {
+      loading = false;
+    }
+  }
+  load();
+
+  /** The certificate being uploaded or replaced; `name` is null while adding a new one. */
+  let editing = $state<{ name: string | null } | null>(
+    untrack(() => (startAdding ? { name: null } : null)),
+  );
+  let newName = $state('');
+  let newDescription = $state('');
+  let pem = $state('');
+  let privateKey = $state('');
+  let saving = $state(false);
+
+  function open(name: string | null) {
+    editing = { name };
+    newName = '';
+    newDescription = '';
+    pem = '';
+    privateKey = '';
+  }
+
+  const nameProblem = (name: string): string | null =>
+    certificates.some((c) => c.name === name.trim()) ? `${name.trim()} is taken` : null;
+
+  const canSave = $derived(
+    !saving &&
+      pem.trim() !== '' &&
+      privateKey.trim() !== '' &&
+      (editing?.name != null || (newName.trim() !== '' && nameProblem(newName) === null)),
+  );
+
+  /** Refused while the upload is in flight: closing then would hide whether it landed. */
+  function cancel() {
+    if (saving) return;
+    editing = null;
+    if (startAdding) history.back();
+  }
+
+  async function save() {
+    if (!canSave || !editing) return;
+    saving = true;
+    try {
+      const res =
+        editing.name === null
+          ? await createCertificate(newName.trim(), newDescription.trim(), pem, privateKey)
+          : await replaceCertificate(editing.name, pem, privateKey);
+      if (!res.ok) return;
+      editing = null;
+      privateKey = '';
+      if (startAdding) {
+        history.back();
+        return;
+      }
+      await load();
+    } catch (e) {
+      reported(e);
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function remove(c: CertificateDto) {
+    const yes = await ask({
+      title: 'delete certificate',
+      body: `Delete ${c.name}. Every version and its private key go with it.`,
+      action: 'Delete',
+      danger: true,
+    });
+    if (!yes) return;
+    try {
+      const res = await deleteCertificate(c.name);
+      if (res.ok) await load();
+    } catch (e) {
+      reported(e);
+    }
+  }
+
+  const leaf = (c: CertificateDto) => c.chain[0];
+
+  const sort = new TableSort<'name' | 'names' | 'expires' | 'setAt'>();
+  let sorted = $derived(
+    sort.apply(certificates, {
+      name: (c) => c.name,
+      names: (c) => leaf(c)?.names.join(', '),
+      expires: (c) => leaf(c)?.notAfterMillis,
+      setAt: (c) => currentVersion(c)?.setAt,
+    }),
+  );
+</script>
+
+<SectionShell>
+  <PageHeader title="Certificates">
+    {#snippet help()}
+      Certificates and their private keys, for the leader and for sources and destinations to
+      present.
+    {/snippet}
+  </PageHeader>
+
+  <div class="toolbar">
+    <button type="button" class="primary" onclick={() => open(null)} disabled={editing !== null}>
+      + Add certificate
+    </button>
+  </div>
+
+  <Dialog
+    open={editing !== null}
+    title={editing?.name ? `replace ${editing.name}` : 'new certificate'}
+    oncancel={cancel}
+    onsubmit={save}
+  >
+    <div class="form-body">
+      {#if editing?.name === null}
+        <Field label="Name" error={nameProblem(newName)}>
+          <input bind:value={newName} placeholder="receiver-tls" class="mono" />
+        </Field>
+      {/if}
+      <Field
+        label="Certificate"
+        note="PEM, the full chain. For a private authority, end it with the root."
+      >
+        <textarea bind:value={pem} rows="5" spellcheck="false"></textarea>
+      </Field>
+      <Field label="Private key" note="PEM. Stored encrypted and never shown again.">
+        <textarea bind:value={privateKey} rows="5" spellcheck="false"></textarea>
+      </Field>
+      {#if editing?.name === null}
+        <Field label="Description">
+          <input bind:value={newDescription} />
+        </Field>
+      {/if}
+    </div>
+    {#snippet actions()}
+      <button type="button" onclick={cancel} disabled={saving}>Cancel</button>
+      <button type="submit" class="primary" disabled={!canSave}>
+        {saving ? 'Saving…' : editing?.name ? 'Replace' : 'Add'}
+      </button>
+    {/snippet}
+  </Dialog>
+
+  {#if loading}
+    <p class="dim">Loading…</p>
+  {:else if certificates.length === 0}
+    <p class="dim">No certificates yet.</p>
+  {:else}
+    <ListTable>
+      {#snippet head()}
+        <th aria-sort={sort.aria('name')}><SortButton {sort} key="name">Name</SortButton></th>
+        <th aria-sort={sort.aria('names')}><SortButton {sort} key="names">Serves</SortButton></th>
+        <th aria-sort={sort.aria('expires')}
+          ><SortButton {sort} key="expires">Expires</SortButton></th
+        >
+        <th aria-sort={sort.aria('setAt')}><SortButton {sort} key="setAt">Last set</SortButton></th>
+        <th></th>
+      {/snippet}
+      {#each sorted as c (c.name)}
+        {@const current = currentVersion(c)}
+        <tr>
+          <td>
+            <span class="mono">{c.name}</span>
+            {#if c.served}<span class="badge">leader</span>{/if}
+            {#if c.description}<small class="note">{c.description}</small>{/if}
+          </td>
+          <td class="mono">{leaf(c)?.names.join(', ') || '--'}</td>
+          <td
+            class="one-line"
+            class:soon={leaf(c) && leaf(c).notAfterMillis - Date.now() < 30 * 86_400_000}
+          >
+            {leaf(c) ? expiry(leaf(c).notAfterMillis) : '--'}
+          </td>
+          <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
+          <td class="row-actions">
+            <button type="button" onclick={() => open(c.name)}>Replace</button>
+            <button type="button" onclick={() => remove(c)}>Delete</button>
+          </td>
+        </tr>
+      {/each}
+    </ListTable>
+  {/if}
+</SectionShell>
+
+<style>
+  .toolbar {
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    margin: 1.2rem 0;
+  }
+
+  .form-body {
+    display: grid;
+    gap: 0.7rem;
+  }
+
+  .form-body input,
+  .form-body textarea {
+    width: 100%;
+  }
+
+  .form-body textarea {
+    font-family: var(--mono);
+    font-size: var(--text-note);
+  }
+
+  .soon {
+    color: var(--warn);
+  }
+
+  .badge {
+    margin-left: 0.4rem;
+    padding: 0 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 0.6rem;
+    font-size: var(--text-micro);
+    color: var(--dim);
+  }
+
+  .dim {
+    color: var(--dim);
+  }
+
+  .mono {
+    font-family: var(--mono);
+  }
+</style>

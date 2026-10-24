@@ -237,13 +237,12 @@ pub(crate) fn must_serve(serving: &Tls, headers: &axum::http::HeaderMap) -> Vec<
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InstallRequest {
-    /// The certificate to serve, then its intermediates, then -- for an authority the platform does not hold --
-    /// its root. PEM.
+    /// The name of the certificate in the list to serve. Its chain ends with its root where the platform does not
+    /// hold that root.
     certificate: String,
-    private_key: String,
 }
 
-/// `PUT /api/settings/certificates`: serve a certificate an operator already has.
+/// `PUT /api/settings/certificates`: serve a copy of a certificate from the list.
 async fn install(
     State(state): State<Certificates>,
     actor: axum::Extension<Actor>,
@@ -259,9 +258,21 @@ async fn install(
     // directory besides.
     let _ordered = state.auth.settings_writes.lock().await;
 
+    let store = state.auth.store.clone();
+    let name = request.certificate.clone();
+    let (certificate, key) = match blocking(move || smeltr::leader::newest_certificate(store.as_ref(), &name)).await {
+        Ok(Some(found)) => found,
+        Ok(None) => {
+            return refuse(
+                StatusCode::NOT_FOUND,
+                &format!("there is no certificate named {:?}", request.certificate),
+            );
+        }
+        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e.to_string()),
+    };
     // Everything the upload has to satisfy, before a byte is written, so a refusal leaves this leader serving
     // exactly what it served before.
-    let (chain, ca) = match tls::split_root(request.certificate.as_bytes(), b"") {
+    let (chain, ca) = match tls::split_root(certificate.as_bytes(), b"") {
         Ok(Some((chain, ca))) => (chain, ca.into_bytes()),
         Ok(None) => {
             return refuse(
@@ -272,7 +283,7 @@ async fn install(
         Err(e) => return refuse(StatusCode::BAD_REQUEST, &e),
     };
     let (chain, ca) = (chain.as_slice(), ca.as_slice());
-    let key = request.private_key.as_bytes();
+    let key = key.as_bytes();
     let required = must_serve(&serving, &headers);
     if let Err(e) = tls::check_supplied(chain, key, ca, &serving.names, &required) {
         return refuse(StatusCode::BAD_REQUEST, &e);

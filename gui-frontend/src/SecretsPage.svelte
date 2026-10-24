@@ -12,6 +12,7 @@
 <script lang="ts">
   import { reported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
+  import ListTable from './ListTable.svelte';
   import PageHeader from './PageHeader.svelte';
   import Help from './Help.svelte';
   import Field from './Field.svelte';
@@ -313,129 +314,122 @@
     {:else if secrets.length === 0}
       <p class="dim">No secrets declared yet.</p>
     {:else}
-      <div class="table-wrap">
-        <table>
-          <thead>
+      <ListTable>
+        {#snippet head()}
+          <th aria-sort={secretSort.aria('name')}
+            ><SortButton sort={secretSort} key="name">Name</SortButton></th
+          >
+          <th aria-sort={secretSort.aria('custody')}
+            ><SortButton sort={secretSort} key="custody">Value lives on</SortButton></th
+          >
+          <th class="num" aria-sort={secretSort.aria('stored')}
+            ><SortButton sort={secretSort} key="stored">Stored</SortButton></th
+          >
+          <th aria-sort={secretSort.aria('running')}
+            ><SortButton sort={secretSort} key="running">Running</SortButton></th
+          >
+          <th aria-sort={secretSort.aria('setAt')}
+            ><SortButton sort={secretSort} key="setAt">Last set</SortButton></th
+          >
+          <th></th>
+        {/snippet}
+        {#each sortedSecrets as s (s.name)}
+          {@const current = currentVersion(s)}
+          {@const running = deployedVersions(s)}
+          <tr>
+            <td>
+              <span class="mono">{s.name}</span>
+              {#if s.description}<small class="note">{s.description}</small>{/if}
+            </td>
+            <td class="one-line">
+              {CUSTODY_LABEL[s.custody]}
+              {#if current && !current.usable}
+                <small class="unusable">
+                  unusable &mdash; encrypted with a key this leader no longer has
+                </small>
+              {/if}
+            </td>
+            <td class="num mono">{current ? `v${current.version}` : '--'}</td>
+            <td class="mono one-line">
+              {#if s.custody === 'worker-local'}
+                <span class="dim">--</span>
+              {:else if running.length === 0}
+                <span class="dim">nothing</span>
+              {:else}
+                {running.map((v) => `v${v}`).join(', ')}
+              {/if}
+              {#if staged(s)}
+                <small class="staged">stored, not deployed</small>
+              {/if}
+            </td>
+            <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
+            <td class="row-actions">
+              {#if s.custody === 'leader-stored'}
+                <button type="button" onclick={() => openPanel(s, 'check')}> Check </button>
+                <button type="button" onclick={() => openPanel(s, 'store')}> New value </button>
+              {/if}
+              <button type="button" onclick={() => remove(s)}>Delete</button>
+            </td>
+          </tr>
+
+          {#if showing(s, 'store')}
             <tr>
-              <th aria-sort={secretSort.aria('name')}
-                ><SortButton sort={secretSort} key="name">Name</SortButton></th
-              >
-              <th aria-sort={secretSort.aria('custody')}
-                ><SortButton sort={secretSort} key="custody">Value lives on</SortButton></th
-              >
-              <th class="num" aria-sort={secretSort.aria('stored')}
-                ><SortButton sort={secretSort} key="stored">Stored</SortButton></th
-              >
-              <th aria-sort={secretSort.aria('running')}
-                ><SortButton sort={secretSort} key="running">Running</SortButton></th
-              >
-              <th aria-sort={secretSort.aria('setAt')}
-                ><SortButton sort={secretSort} key="setAt">Last set</SortButton></th
-              >
-              <th></th>
+              <td colspan="6">
+                <div class="row-edit">
+                  <PasswordField
+                    bind:value={storeValue}
+                    ariaLabel="the new value"
+                    placeholder="the new value"
+                  />
+                  <button
+                    type="button"
+                    class="primary"
+                    disabled={busy || storeValue.length === 0}
+                    onclick={() => store(s.name)}
+                  >
+                    {busy ? 'Storing…' : 'Store'}
+                  </button>
+                  <button type="button" onclick={() => (open = null)}>Cancel</button>
+                  <Help label="New value">
+                    Stores a new version and points every reference to this secret at it, as a
+                    change on your branch.
+                  </Help>
+                </div>
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {#each sortedSecrets as s (s.name)}
-              {@const current = currentVersion(s)}
-              {@const running = deployedVersions(s)}
-              <tr>
-                <td>
-                  <span class="mono">{s.name}</span>
-                  {#if s.description}<small class="note">{s.description}</small>{/if}
-                </td>
-                <td class="one-line">
-                  {CUSTODY_LABEL[s.custody]}
-                  {#if current && !current.usable}
-                    <small class="unusable">
-                      unusable &mdash; encrypted with a key this leader no longer has
-                    </small>
-                  {/if}
-                </td>
-                <td class="num mono">{current ? `v${current.version}` : '--'}</td>
-                <td class="mono one-line">
-                  {#if s.custody === 'worker-local'}
-                    <span class="dim">--</span>
-                  {:else if running.length === 0}
-                    <span class="dim">nothing</span>
-                  {:else}
-                    {running.map((v) => `v${v}`).join(', ')}
-                  {/if}
-                  {#if staged(s)}
-                    <small class="staged">stored, not deployed</small>
-                  {/if}
-                </td>
-                <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
-                <td class="row-actions">
-                  {#if s.custody === 'leader-stored'}
-                    <button type="button" onclick={() => openPanel(s, 'check')}> Check </button>
-                    <button type="button" onclick={() => openPanel(s, 'store')}> New value </button>
-                  {/if}
-                  <button type="button" onclick={() => remove(s)}>Delete</button>
-                </td>
-              </tr>
+          {/if}
 
-              {#if showing(s, 'store')}
-                <tr>
-                  <td colspan="6">
-                    <div class="row-edit">
-                      <PasswordField
-                        bind:value={storeValue}
-                        ariaLabel="the new value"
-                        placeholder="the new value"
-                      />
-                      <button
-                        type="button"
-                        class="primary"
-                        disabled={busy || storeValue.length === 0}
-                        onclick={() => store(s.name)}
-                      >
-                        {busy ? 'Storing…' : 'Store'}
-                      </button>
-                      <button type="button" onclick={() => (open = null)}>Cancel</button>
-                      <Help label="New value">
-                        Stores a new version and points every reference to this secret at it, as a
-                        change on your branch.
-                      </Help>
-                    </div>
-                  </td>
-                </tr>
-              {/if}
-
-              {#if showing(s, 'check')}
-                <tr>
-                  <td colspan="6">
-                    <div class="row-edit">
-                      <PasswordField
-                        bind:value={checkValue}
-                        ariaLabel="the value you think is stored"
-                        placeholder="the value you think is stored"
-                      />
-                      <button
-                        type="button"
-                        disabled={busy || checkValue.length === 0}
-                        onclick={() => check(s.name)}
-                      >
-                        {busy ? 'Checking…' : 'Check'}
-                      </button>
-                      <button type="button" onclick={() => (open = null)}>Close</button>
-                      {#if checkAnswer && checkAnswer.name === s.name}
-                        <span class={checkAnswer.matches ? 'match' : 'no-match'}>
-                          {checkAnswer.matches
-                            ? 'That matches what is stored.'
-                            : 'That does not match.'}
-                        </span>
-                      {/if}
-                      <small class="note">A few attempts a minute; the leader logs every one.</small
-                      >
-                    </div>
-                  </td>
-                </tr>
-              {/if}
-            {/each}
-          </tbody>
-        </table>
-      </div>
+          {#if showing(s, 'check')}
+            <tr>
+              <td colspan="6">
+                <div class="row-edit">
+                  <PasswordField
+                    bind:value={checkValue}
+                    ariaLabel="the value you think is stored"
+                    placeholder="the value you think is stored"
+                  />
+                  <button
+                    type="button"
+                    disabled={busy || checkValue.length === 0}
+                    onclick={() => check(s.name)}
+                  >
+                    {busy ? 'Checking…' : 'Check'}
+                  </button>
+                  <button type="button" onclick={() => (open = null)}>Close</button>
+                  {#if checkAnswer && checkAnswer.name === s.name}
+                    <span class={checkAnswer.matches ? 'match' : 'no-match'}>
+                      {checkAnswer.matches
+                        ? 'That matches what is stored.'
+                        : 'That does not match.'}
+                    </span>
+                  {/if}
+                  <small class="note">A few attempts a minute; the leader logs every one.</small>
+                </div>
+              </td>
+            </tr>
+          {/if}
+        {/each}
+      </ListTable>
       <p class="note-line">
         Open changes are reviewed and deployed in <a href="#/changes">Branches</a>. Current branch:
         <code class="mono">{currentBranch()}</code>.
@@ -464,53 +458,6 @@
   .form-body input,
   .form-body select {
     width: 100%;
-  }
-
-  .table-wrap {
-    overflow-x: auto;
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--text-body);
-  }
-
-  th {
-    text-align: left;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
-    border-bottom: 1px solid var(--border);
-    padding: 0.4rem 0.6rem;
-  }
-
-  td {
-    padding: 0.5rem 0.6rem;
-    border-bottom: 1px solid var(--border);
-  }
-
-  tbody tr:last-child td {
-    border-bottom: none;
-  }
-
-  /* Each cell beside the name holds one short answer -- a custody, a
-     version, an age -- and reads as one line rather than breaking between
-     words when the frame is narrow. */
-  th,
-  .one-line {
-    white-space: nowrap;
-  }
-
-  .num {
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .row-actions {
-    white-space: nowrap;
   }
 
   /* A panel opened under its row: its controls on one line, wrapping only
@@ -550,16 +497,6 @@
     white-space: normal;
     color: var(--error);
     font-size: var(--text-note);
-  }
-
-  /* The note register: one line stating what a field takes. Weight 400 --
-     it is a sentence, not a second label. */
-  .note {
-    display: block;
-    color: var(--dim);
-    font-size: var(--text-note);
-    font-weight: 400;
-    line-height: 1.4;
   }
 
   .note-line {
