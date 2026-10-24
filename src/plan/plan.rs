@@ -612,7 +612,13 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
             .clone()
     });
     plan.instrs = instrs;
-    let unread = unread_writes(&plan, &c.syms.local_slots, &c.syms.deleted_slots, &c.syms.aliases);
+    let unread = unread_writes(
+        &plan,
+        &c.syms.local_slots,
+        &c.syms.deleted_slots,
+        &c.syms.nulls,
+        &c.syms.aliases,
+    );
     plan.warnings.extend(unread);
     // A case that runs on into the next has the next one's statements copied into its branch, so a warning about
     // them comes twice.
@@ -675,11 +681,13 @@ fn same(a: &Ir, b: &Ir) -> bool {
 /// A warning for each value a statement writes that nothing reads: no instruction reads it and the record does not
 /// hold it at the end. A local is never read; a field is written again, or deleted, first. Only an expression's own
 /// write counts, under a name code can spell, so a parse's outputs and the engine's own slots are never named. A copy
-/// shares its value's slot (`aliases`), so the name a warning gives is the last one to let the value go.
+/// shares its value's slot (`aliases`), so the name a warning gives is the last one to let the value go. Null written
+/// where nothing was, as a declaration writes it, loses no value.
 fn unread_writes(
     plan: &Plan,
     locals: &HashSet<SlotId>,
     deleted: &HashSet<SlotId>,
+    nulls: &HashSet<SlotId>,
     aliases: &[(SlotId, String, usize)],
 ) -> Vec<CompileError> {
     let mut read = HashSet::new();
@@ -700,7 +708,7 @@ fn unread_writes(
     for slot in written {
         let o = &plan.provenance[slot];
         let Origin::Function(f) = o.origin else { continue };
-        if !spelled(&o.name) || read.contains(&slot) || held.contains(&slot) {
+        if !spelled(&o.name) || read.contains(&slot) || held.contains(&slot) || nulls.contains(&slot) {
             continue;
         }
         // Each name the value was put at, from the slot after which a write of that name replaces it.
@@ -4653,11 +4661,42 @@ mod tests {
             "let n = 0; for (let v of [1, 2]) { n = n + v } x = n",
             "x = [1, 2].map(v => v * 2)",
             "_raw = \"a\"",
+            "x: str; x = \"a\"",
             // Replaced with the record, not deleted.
             "x = 1; $ = {y: 2}",
         ] {
             assert_eq!(warnings(body), Vec::<String>::new(), "{body}");
         }
+    }
+
+    /// A parser's declared field holds null until the parse writes it, which loses no value.
+    #[test]
+    fn a_parsed_field_is_no_unread_write() {
+        let mut p = eval_pipeline(&[]);
+        let field = |name: &str| DeclaredField {
+            name: name.into(),
+            ty: DataType::Str,
+            time_source: None,
+        };
+        p.body = vec![
+            Step::Function(FunctionConfig::new(
+                0,
+                FunctionKind::Parser {
+                    input: "_raw".into(),
+                    kind: ParserKind::Json { split_dots: false },
+                    declared: vec![field("srcip"), field("service")],
+                },
+            )),
+            Step::Function(FunctionConfig::new(
+                1,
+                FunctionKind::Drop {
+                    cond: r#"service == "NTP""#.into(),
+                },
+            )),
+        ];
+        p.step_ids = vec!["parse-1".into(), "drop-1".into()];
+        let plan = compile(&p, &SourceMeta::KAFKA).unwrap();
+        assert_eq!(plan.warnings, Vec::new());
     }
 
     /// What follows `drop()`, `return`, `break` or `continue` in its block never runs.
