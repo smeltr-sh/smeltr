@@ -17,7 +17,6 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::format::bytes_text::BytesForm;
 use crate::io::IoError;
 use crate::io::http::percent_encode;
 use crate::plan::topology::{HeldSecrets, Identity, SchemaRegistry};
@@ -97,13 +96,13 @@ impl Registry {
         secrets: &HeldSecrets,
     ) -> Result<Registry, IoError> {
         let authorization = match &config.basic {
-            Some((user, password)) => {
-                let password = crate::io::http::credential("the schema registry", "password", password, secrets)?;
-                Some(format!(
-                    "Basic {}",
-                    BytesForm::Base64.text(format!("{user}:{password}").as_bytes())
-                ))
-            }
+            Some((user, password)) => Some(crate::io::http::basic(
+                "the schema registry",
+                "password",
+                user,
+                password,
+                secrets,
+            )?),
             None => None,
         };
         Ok(Registry {

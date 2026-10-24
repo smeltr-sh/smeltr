@@ -144,6 +144,19 @@ pub struct LineBreakerRequest {
     pub pattern: String,
 }
 
+/// Pipeline code as it is typed into a step's field.
+#[derive(serde::Deserialize)]
+pub struct FormatRequest {
+    pub code: String,
+    pub kind: crate::expr::pretty::Kind,
+}
+
+/// The code laid out in the style (`expr::pretty`), or null where it does not parse yet.
+#[derive(Default, serde::Serialize)]
+pub struct Formatted {
+    pub code: Option<String>,
+}
+
 /// How a declaration spells a type, which is what the editor's own type list offers.
 fn kinds_of(counts: &crate::core::tally::TagCounts) -> Vec<(String, u32)> {
     let mut kinds: Vec<(String, u32)> = [
@@ -564,6 +577,15 @@ pub fn captures_of(req: GrokCapturesRequest) -> Envelope<GrokCaptures> {
 pub fn line_breaker_verdict(req: LineBreakerRequest) -> Envelope {
     let refusal = config_file::line_breaker_refusal("this line breaker", &req.pattern);
     Envelope::with(Empty, refusal.into_iter().map(ApiError::new).collect())
+}
+
+pub fn format_code(req: FormatRequest) -> Envelope<Formatted> {
+    Envelope::with(
+        Formatted {
+            code: crate::expr::pretty::format(&req.code, req.kind),
+        },
+        Vec::new(),
+    )
 }
 
 pub fn run_preview(

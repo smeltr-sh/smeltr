@@ -5223,6 +5223,7 @@ mod tests {
                 default_index: "i".into(),
                 identity: None,
                 auth: None,
+                basic: None,
                 doc_id: DocIdPolicy::default(),
                 in_flight: 4,
                 max_bulk_bytes: 5 * 1024 * 1024,

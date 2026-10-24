@@ -12,7 +12,7 @@
   import KafkaPropsEditor from './KafkaPropsEditor.svelte';
   import KafkaSecurity from './KafkaSecurity.svelte';
   import SecretRefInput from './SecretRefInput.svelte';
-  import ObjectStoreAccess, { accessModified } from './ObjectStoreAccess.svelte';
+  import ConnectorAccess, { accessModified } from './ConnectorAccess.svelte';
   import ListingFields, { listingModified } from './ListingFields.svelte';
   import TokenListInput from './TokenListInput.svelte';
   import PropsEditor from './PropsEditor.svelte';
@@ -322,7 +322,7 @@
       <input type="text" bind:value={source.container} />
     </Field>
   {:else if source.type === 'sftp'}
-    <ObjectStoreAccess {store} value={source} show="credential" {secrets} />
+    <ConnectorAccess {store} value={source} show="credential" {secrets} />
     <Field field="directory" label="directory">
       {#snippet help()}
         The directory it reads: absolute, or under the user's home directory. Empty is the home
@@ -346,7 +346,7 @@
     </Field>
   {/if}
   {#if source.type !== 'sftp'}
-    <ObjectStoreAccess {store} value={source} show="credential" {secrets} />
+    <ConnectorAccess {store} value={source} show="credential" {secrets} />
   {/if}
   <ListingFields value={source} noun={listed.noun} within={listed.within} show="main" />
   {@render framingField(source)}
@@ -359,7 +359,7 @@
     />
   {/if}
   <Advanced label="Advanced" modified={listingSourceModified(source)}>
-    <ObjectStoreAccess {store} value={source} show="advanced" />
+    <ConnectorAccess {store} value={source} show="advanced" />
     <ListingFields value={source} noun={listed.noun} within={listed.within} show="advanced" />
     {@render encodingField(source)}
   </Advanced>
@@ -831,7 +831,7 @@
     {/snippet}
     <input type="text" bind:value={source.consumerGroup} />
   </Field>
-  <ObjectStoreAccess
+  <ConnectorAccess
     store="eventHubs"
     value={source}
     show="credential"
@@ -1153,7 +1153,7 @@
     {/if}
     <Advanced label="Advanced" modified={streamModified(source)}>
       {#if source.type === 'eventHubs'}
-        <ObjectStoreAccess store="eventHubs" value={source} show="advanced" />
+        <ConnectorAccess store="eventHubs" value={source} show="advanced" />
       {/if}
       {#if source.type === 'kafka'}
         <Field field="groupId" label="group id">
@@ -1229,7 +1229,7 @@
         <input type="text" bind:value={source.account} />
       </Field>
     {/if}
-    <ObjectStoreAccess {store} value={source} show="credential" {secrets} />
+    <ConnectorAccess {store} value={source} show="credential" {secrets} />
     {@render framingField(source)}
     <IdentityPicker
       value={source.identity}
@@ -1257,7 +1257,7 @@
           {/snippet}
         </UrlField>
       {/if}
-      <ObjectStoreAccess {store} value={source} show="advanced" />
+      <ConnectorAccess {store} value={source} show="advanced" />
       {@render encodingField(source)}
       <Field field="visibilitySecs" label="visibility seconds" note="Default {limit.default}.">
         {#snippet help()}

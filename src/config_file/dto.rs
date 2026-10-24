@@ -1250,7 +1250,9 @@ impl DestinationDto {
                 .chain(sign_in.secrets())
                 .chain(schema_registry.iter().flat_map(|r| r.secrets()))
                 .collect(),
-            DestinationKindDto::Elasticsearch { auth, .. } => auth.iter().map(|r| ("auth", r)).collect(),
+            DestinationKindDto::Elasticsearch { auth, password, .. } => (auth.iter().map(|r| ("auth", r)))
+                .chain(password.iter().map(|r| ("password", r)))
+                .collect(),
             DestinationKindDto::SplunkHec { token, .. } => vec![("token", token)],
             DestinationKindDto::S3 { access, .. } => access.secrets(),
             DestinationKindDto::Gcs { access, .. } => access.secrets(),
@@ -1295,7 +1297,9 @@ impl DestinationDto {
             } => (connection_string.iter_mut().chain(sign_in.secrets_mut()))
                 .chain(schema_registry.iter_mut().flat_map(|r| r.secrets_mut()))
                 .collect(),
-            DestinationKindDto::Elasticsearch { auth, .. } => auth.iter_mut().collect(),
+            DestinationKindDto::Elasticsearch { auth, password, .. } => {
+                auth.iter_mut().chain(password.iter_mut()).collect()
+            }
             DestinationKindDto::SplunkHec { token, .. } => vec![token],
             DestinationKindDto::S3 { access, .. } => access.secrets_mut(),
             DestinationKindDto::Gcs { access, .. } => access.secrets_mut(),
@@ -1419,6 +1423,12 @@ pub enum DestinationKindDto {
         /// The credential holding the API key or a whole `Authorization` header value, never the value itself.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         auth: Option<SecretRefDto>,
+        /// Basic auth, in place of `auth`: `username` and `password` together.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
+        /// The credential holding `username`'s password.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<SecretRefDto>,
         /// `"auto"` (default), `"dedupe"`, or `"overwrite"`; see `plan::topology::DocIdPolicy`.
         #[serde(default, skip_serializing_if = "DocIdPolicyDto::is_default")]
         doc_id: DocIdPolicyDto,

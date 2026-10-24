@@ -78,7 +78,7 @@
   async function remove(id: string, name: string) {
     const ok = await ask({
       title: 'delete pipeline',
-      body: `Delete the pipeline "${name}". This cannot be undone.`,
+      body: `Delete the pipeline "${name}".`,
       action: 'Delete',
       danger: true,
     });

@@ -1002,6 +1002,55 @@ test('A4: after a refused save, a new compile error is still shown', async ({
   ).toBeVisible();
 });
 
+// A4. Leaving a code field lays its code out.
+test('A4: a code field is laid out when it is left', async ({ admin, leader, api }) => {
+  await api.put(`/api/pipelines/orders${ON}`, {
+    id: 'orders',
+    name: 'orders',
+    steps: [{ type: 'code', id: 'code-1', filter: 'true', disabled: false, body: 'x = 1;' }],
+  });
+  await api.put(`/api/samples${ON}`, {
+    id: 'orders-sample',
+    name: 'orders',
+    records: ORDERS.map((raw) => ({ _raw: raw })),
+  });
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await admin.getByRole('button', { name: /line\(s\) of code/ }).click();
+  const body = admin.locator('textarea').last();
+  await body.fill('let n=1\nif(_raw!=""){x=1}else{x=2}');
+  await body.blur();
+
+  await expect(body).toHaveValue('let n = 1;\nif (_raw != "") {\n  x = 1;\n} else {\n  x = 2;\n}');
+});
+
+// A4, the whole trip. Save pressed straight from a code field saves the field as it is laid out, however slowly the
+// layout comes back.
+test('A4: a save pressed from a code field saves its layout', async ({ admin, leader, api }) => {
+  await api.put(`/api/pipelines/orders${ON}`, {
+    id: 'orders',
+    name: 'orders',
+    steps: [{ type: 'code', id: 'code-1', filter: 'true', disabled: false, body: 'x = 1;' }],
+  });
+
+  await goto(admin, leader, '#/build/pipelines/orders');
+  await admin.getByRole('button', { name: /line\(s\) of code/ }).click();
+  const body = admin.locator('textarea').last();
+  await body.fill('x=2');
+  await admin.route('**/api/format', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await route.continue();
+  });
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+
+  await expect(admin.getByText('Saved.')).toBeVisible();
+  await expect(body).toHaveValue('x = 2;');
+  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden();
+  const saved = (await api.get(`/api/pipelines/orders${ON}`)).pipeline;
+  expect(saved.steps[0].body).toBe('x = 2;');
+});
+
 // A6, samples become tests.
 test('A6: a sample locked as a test passes, and a save that breaks it is allowed and shows it failing', async ({
   admin,
@@ -1957,6 +2006,53 @@ test('A10: an SFTP destination is added from its form and saved as the leader ac
   await expect(admin.getByRole('button', { name: /^drop-box\b/ })).toContainText(
     'sftp.example.com',
   );
+});
+
+// A10, sources and destinations from a form. An Elasticsearch destination signs in with a username and password in
+// place of an API key, and choosing it clears the other.
+test('A10: an Elasticsearch destination signs in with a username and password', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.post('/api/secrets', {
+    name: 'es-password',
+    custody: 'leader-stored',
+    description: 'the writer',
+    value: 'changeme',
+  });
+
+  await goto(admin, leader, '#/build/destinations');
+  await admin.getByRole('button', { name: '+ Add destination' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+  await dialog.getByRole('textbox', { name: /^id/ }).fill('search');
+  await dialog.getByRole('textbox', { name: 'url' }).fill('https://es.example.com:9200');
+  await dialog.getByRole('textbox', { name: 'default index' }).fill('logs');
+  const credential = dialog.getByRole('combobox', { name: /^credential/ });
+  await expect(credential).toHaveValue('none');
+  await credential.selectOption('apiKey');
+  await expect(dialog.getByRole('combobox', { name: 'API key source' })).toBeVisible();
+  await credential.selectOption('basic');
+  await expect(dialog.getByRole('combobox', { name: 'API key source' })).toBeHidden();
+  await dialog.getByRole('textbox', { name: /^username/ }).fill('smeltr_writer');
+  await dialog.getByRole('combobox', { name: 'password source' }).selectOption('es-password');
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+
+  const saved = await api.get(`/api/config${ON}`);
+  expect(saved.config.destinations).toEqual([
+    {
+      id: 'search',
+      type: 'elasticsearch',
+      url: 'https://es.example.com:9200',
+      defaultIndex: 'logs',
+      username: 'smeltr_writer',
+      password: { secret: 'es-password', version: 1 },
+    },
+  ]);
 });
 
 // A10, sources and destinations from a form. A Delta table's root is checked as it is typed; its partition columns

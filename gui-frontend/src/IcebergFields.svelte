@@ -10,7 +10,7 @@
   import Field from './Field.svelte';
   import UrlField from './UrlField.svelte';
   import IdentityPicker from './IdentityPicker.svelte';
-  import ObjectStoreAccess from './ObjectStoreAccess.svelte';
+  import ConnectorAccess from './ConnectorAccess.svelte';
   import SecretRefInput from './SecretRefInput.svelte';
   import TokenListInput from './TokenListInput.svelte';
   import type { IdentityDto, SecretDto } from './api';
@@ -196,8 +196,8 @@
       />
     </Field>
   {/if}
-  <ObjectStoreAccess store="iceberg" value={d} show="credential" {secrets} />
-  <ObjectStoreAccess
+  <ConnectorAccess store="iceberg" value={d} show="credential" {secrets} />
+  <ConnectorAccess
     store="iceberg"
     value={d}
     show="advanced"

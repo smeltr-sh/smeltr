@@ -1624,6 +1624,7 @@ fn a_missing_credential_environment_variable_is_refused_at_construction() {
             auth: Some(smeltr::plan::topology::SecretRef::WorkerLocal(
                 "SMELTR_ES_AUTH_DEFINITELY_NOT_SET".into(),
             )),
+            basic: None,
             doc_id: Default::default(),
             id_field: None,
             in_flight: 4,

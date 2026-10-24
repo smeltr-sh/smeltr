@@ -113,6 +113,44 @@ impl AssignTarget {
     }
 }
 
+/// What the parser learned of the text's layout that its tokens alone do not say, for the formatter
+/// (`expr::pretty`). Every place is a byte offset into the text parsed.
+#[derive(Default, Debug)]
+pub struct Shape {
+    /// Each block's `{` and `}`, in the order they close.
+    pub blocks: Vec<(u32, u32)>,
+    /// Where each statement ends, and whether a `;` belongs there: not after a block's `}`, and not after an
+    /// expression a `}` or `else` follows, which may be a function's value.
+    pub statements: Vec<(u32, bool)>,
+    /// Each type a declaration, a parameter or `as` spells.
+    pub types: Vec<Span>,
+    /// Each ternary's `:`.
+    pub ternary_colons: Vec<u32>,
+    /// Each `switch` label's `case` or `default`.
+    pub case_labels: Vec<u32>,
+}
+
+impl Shape {
+    fn mark(&self) -> [usize; 5] {
+        [
+            self.blocks.len(),
+            self.statements.len(),
+            self.types.len(),
+            self.ternary_colons.len(),
+            self.case_labels.len(),
+        ]
+    }
+
+    /// Forgets what a parse that was rolled back recorded.
+    fn truncate(&mut self, [b, s, t, c, l]: [usize; 5]) {
+        self.blocks.truncate(b);
+        self.statements.truncate(s);
+        self.types.truncate(t);
+        self.ternary_colons.truncate(c);
+        self.case_labels.truncate(l);
+    }
+}
+
 pub struct Parser<'s> {
     /// The text the tokens came from, so an error can quote what it refuses.
     src: &'s str,
@@ -128,6 +166,11 @@ pub struct Parser<'s> {
     open_tails: Vec<(Span, Option<String>)>,
     /// The names the `catch` blocks around the statement being read bind: what a `throw` may name.
     catches: Vec<String>,
+    shape: Shape,
+    /// Where `close_angle` last took a `>` off a glued token: the rest starts there.
+    split_at: Option<u32>,
+    /// How many types are being read, one inside another: only the outermost is recorded.
+    in_type: u32,
 }
 
 /// The one message for a `break` a `switch` case cannot take: anywhere but the last statement of the case.
@@ -148,6 +191,14 @@ fn shift_expr_spans(e: &mut Expr, offset: usize) {
 /// Parse one expression; the whole input must be consumed.
 pub fn parse_expr(src: &str) -> Result<Expr, ParseError> {
     parse_expr_within(src, 0)
+}
+
+/// `parse_expr`, with the text's [`Shape`].
+pub fn parse_expr_shaped(src: &str) -> Result<(Expr, Shape), ParseError> {
+    let mut p = Parser::new(src)?;
+    let e = p.expr_bp(0)?;
+    p.expect_eof()?;
+    Ok((e, p.shape))
 }
 
 /// What a template hole costs of the `MAX_DEPTH` budget. A hole is parsed by a lexer and parser of its own, whose
@@ -212,6 +263,11 @@ pub fn declared(name: &str, ty: Option<DataType>, value: Expr) -> Expr {
 
 /// Parse a `Code` body: a statement list with no enclosing braces.
 pub fn parse_block(src: &str) -> Result<Vec<Stmt>, ParseError> {
+    parse_block_shaped(src).map(|(stmts, _)| stmts)
+}
+
+/// `parse_block`, with the text's [`Shape`].
+pub fn parse_block_shaped(src: &str) -> Result<(Vec<Stmt>, Shape), ParseError> {
     let mut p = Parser::new(src)?;
     let mut out = Vec::new();
     while !p.at_eof() {
@@ -224,7 +280,7 @@ pub fn parse_block(src: &str) -> Result<Vec<Stmt>, ParseError> {
             message: message.clone(),
         });
     }
-    Ok(out)
+    Ok((out, p.shape))
 }
 
 impl<'s> Parser<'s> {
@@ -241,6 +297,9 @@ impl<'s> Parser<'s> {
             temps: 0,
             open_tails: Vec::new(),
             catches: Vec::new(),
+            shape: Shape::default(),
+            split_at: None,
+            in_type: 0,
         })
     }
 
@@ -442,8 +501,16 @@ impl<'s> Parser<'s> {
             self.depth -= 1;
             return Err(self.too_deep());
         }
+        let tails = self.open_tails.len();
         let r = self.stmt_inner(out);
         self.depth -= 1;
+        if r.is_ok() {
+            let last = self.tokens[self.pos - 1].span;
+            let after_block = self.shape.blocks.last().is_some_and(|b| b.1 == last.start);
+            let open_tail = self.open_tails.len() > tails
+                && matches!(out.last(), Some(Stmt::Expr(e)) if self.open_tails.last().is_some_and(|t| t.0 == e.span));
+            self.shape.statements.push((last.end, !after_block && !open_tail));
+        }
         r
     }
 
@@ -886,7 +953,7 @@ impl<'s> Parser<'s> {
                 value: std::mem::replace(&mut subject, Expr::new(span, ExprKind::Field(tmp))),
             });
         }
-        self.expect_punct(Punct::LBrace, "`{` to open the `switch` body")?;
+        let open = self.expect_punct(Punct::LBrace, "`{` to open the `switch` body")?;
 
         let mut cases: Vec<Case> = Vec::new();
         // Labels with no statements of their own, waiting for the case they share.
@@ -897,6 +964,7 @@ impl<'s> Parser<'s> {
                 return Err(self.error("unterminated `switch`, expected `}`"));
             }
             let label_span = self.peek_span();
+            self.shape.case_labels.push(label_span.start);
             if seen_default {
                 return Err(ParseError {
                     span: label_span,
@@ -916,7 +984,9 @@ impl<'s> Parser<'s> {
                     self.describe()
                 )));
             };
-            self.expect_punct(Punct::Colon, "`:` after the case label")?;
+            let colon = self.expect_punct(Punct::Colon, "`:` after the case label")?;
+            // A label ends like a statement does, without a `;`.
+            self.shape.statements.push((colon.end, false));
             let (body, breaks) = self.case_body()?;
             match label {
                 // `default` takes every row no case before it took, a waiting label's among them.
@@ -939,6 +1009,9 @@ impl<'s> Parser<'s> {
                 }
             }
         }
+        self.shape
+            .blocks
+            .push((open.start, self.tokens[self.pos - 1].span.start));
         // Labels still waiting at the end fall through to nothing, as a row no case takes does.
 
         let branches: Vec<Vec<Stmt>> = (0..cases.len())
@@ -1015,7 +1088,8 @@ impl<'s> Parser<'s> {
         let mut body = Vec::new();
         while !at_end(self) {
             if self.peek() == &Token::Keyword(Keyword::Break) {
-                self.advance();
+                let end = self.advance().span.end;
+                self.shape.statements.push((end, true));
                 while self.eat_punct(Punct::Semi) {}
                 if !at_end(self) {
                     return Err(self.error(BREAK_ENDS_A_CASE));
@@ -1154,8 +1228,20 @@ impl<'s> Parser<'s> {
             self.depth -= 1;
             return Err(self.error(format!("a type nests more than {MAX_DEPTH} levels deep")));
         }
+        let start = self.peek_span().start;
+        self.in_type += 1;
         let r = self.type_expr_inner();
+        self.in_type -= 1;
         self.depth -= 1;
+        if r.is_ok() && self.in_type == 0 {
+            // A `>` `close_angle` took off a glued token ends the type inside that token.
+            let last = self.tokens[self.pos - 1].span.end;
+            let end = match self.split_at {
+                Some(at) if at >= last => at,
+                _ => last,
+            };
+            self.shape.types.push(Span { start, end });
+        }
         r
     }
 
@@ -1180,6 +1266,7 @@ impl<'s> Parser<'s> {
         let t = &mut self.tokens[self.pos];
         t.token = Token::Punct(rest);
         t.span = Span::new(t.span.start as usize + 1, t.span.end as usize);
+        self.split_at = Some(t.span.start);
         Ok(())
     }
 
@@ -1350,7 +1437,7 @@ impl<'s> Parser<'s> {
 
     /// `{ stmt; ... }`: a loop's, a function's and a `try`'s block always has braces.
     fn stmt_block(&mut self) -> Result<Vec<Stmt>, ParseError> {
-        self.expect_punct(Punct::LBrace, "`{`")?;
+        let open = self.expect_punct(Punct::LBrace, "`{`")?;
         let mut out = Vec::new();
         while self.peek() != &Token::Punct(Punct::RBrace) {
             if self.at_eof() {
@@ -1359,7 +1446,8 @@ impl<'s> Parser<'s> {
             self.stmt(&mut out)?;
             while self.eat_punct(Punct::Semi) {}
         }
-        self.advance(); // `}`
+        let close = self.advance().span; // `}`
+        self.shape.blocks.push((open.start, close.start));
         Ok(out)
     }
 
@@ -1429,7 +1517,8 @@ impl<'s> Parser<'s> {
                 }
                 None => {
                     let then = self.expr_bp(0)?;
-                    self.expect_punct(Punct::Colon, "`:` in ternary")?;
+                    let colon = self.expect_punct(Punct::Colon, "`:` in ternary")?;
+                    self.shape.ternary_colons.push(colon.start);
                     let else_ = self.expr_bp(TERNARY_BP)?;
                     let span = lhs.span.join(else_.span);
                     Expr::new(
@@ -1647,6 +1736,7 @@ impl<'s> Parser<'s> {
     #[allow(clippy::type_complexity)]
     fn arrow_head(&mut self) -> Option<(Vec<String>, Vec<Option<DataType>>, Option<DataType>)> {
         let at = self.pos;
+        let mark = self.shape.mark();
         self.advance(); // `(`
         let head = match (self.params(), self.return_type()) {
             (Ok((params, types)), Ok(ret)) if self.peek() == &Token::Punct(Punct::FatArrow) => {
@@ -1656,6 +1746,7 @@ impl<'s> Parser<'s> {
         };
         if head.is_none() {
             self.pos = at;
+            self.shape.truncate(mark);
         }
         head
     }

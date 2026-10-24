@@ -99,6 +99,7 @@ pub fn need(method: &Method, path: &str, query: Option<&str>) -> Need {
         | (Method::POST, ["grok-captures"])
         | (Method::POST, ["onboard", "propose"])
         | (Method::POST, ["line-breaker"])
+        | (Method::POST, ["format"])
         | (Method::POST, ["identities", "describe"])
         | (Method::POST, ["sql", "statement"])
         // Names, versions and where each is used, never a value: what a secret picker offers whoever saves a form.
@@ -374,6 +375,7 @@ mod tests {
             (Method::POST, "/api/grok-captures"),
             (Method::POST, "/api/onboard/propose"),
             (Method::POST, "/api/line-breaker"),
+            (Method::POST, "/api/format"),
             (Method::POST, "/api/identities/describe"),
             (Method::POST, "/api/sql/statement"),
             (Method::GET, "/api/secrets"),

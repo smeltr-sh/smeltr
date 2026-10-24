@@ -111,7 +111,7 @@
   async function removeTest(t: TestSummary) {
     const ok = await ask({
       title: 'delete test',
-      body: `Delete the test "${t.name}". This cannot be undone.`,
+      body: `Delete the test "${t.name}".`,
       action: 'Delete',
       danger: true,
     });
@@ -152,7 +152,7 @@
   async function remove(s: SampleSummary) {
     const ok = await ask({
       title: 'delete sample',
-      body: `Delete the sample "${s.name}". This cannot be undone.`,
+      body: `Delete the sample "${s.name}".`,
       action: 'Delete',
       danger: true,
     });

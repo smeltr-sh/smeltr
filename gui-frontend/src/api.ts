@@ -596,6 +596,9 @@ export type DestinationDto =
       /** The identity this client connects under, by id. */
       identity?: string;
       auth?: SecretRef;
+      /** Basic auth, in place of `auth`: `username` and `password` together. */
+      username?: string;
+      password?: SecretRef;
       docId?: DocIdPolicy;
       idField?: string;
       inFlight?: number;
@@ -2011,6 +2014,17 @@ export interface LineBreakerVerdict {
 
 export function lineBreakerVerdict(pattern: string): Promise<LineBreakerVerdict> {
   return post('/api/line-breaker', { pattern }, 'quiet');
+}
+
+/** Pipeline code laid out in the style, or `code: null` where it does not parse yet. */
+export interface Formatted {
+  ok: boolean;
+  errors: ApiError[];
+  code: string | null;
+}
+
+export function formatCode(code: string, kind: 'expr' | 'block'): Promise<Formatted> {
+  return post('/api/format', { code, kind }, 'quiet');
 }
 
 // -- onboarding -----------------------------------------------------------

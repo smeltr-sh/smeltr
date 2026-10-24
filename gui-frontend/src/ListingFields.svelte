@@ -4,7 +4,7 @@
   first, what it does with an object once it is committed, and how often it
   lists. Every listing source draws the same block, so the four read alike.
 
-  Mutates `value` in place, as `ObjectStoreAccess` does; the page's Save
+  Mutates `value` in place, as `ConnectorAccess` does; the page's Save
   commits. `show` picks the half: what every form shows, or the poll interval,
   which sits under the form's Advanced.
 -->

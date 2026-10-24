@@ -148,7 +148,7 @@
   async function remove() {
     if (!open || !shown) return;
     const sure = await ask({
-      title: 'Delete this conversation?',
+      title: 'delete conversation',
       body: `“${firstLineText(shown.title)}” and everything said in it are deleted for good.`,
       action: 'Delete',
       danger: true,
@@ -165,7 +165,7 @@
     if (!open) return;
     if (!summarize) {
       const sure = await ask({
-        title: 'Clear the context?',
+        title: 'clear context',
         body: 'Your agent forgets everything said so far.',
         action: 'Clear',
       });

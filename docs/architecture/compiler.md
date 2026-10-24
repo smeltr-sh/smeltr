@@ -105,6 +105,14 @@ unmatched and unprocessable rows, or a DLQ chain, and does not declare that
 field as `bytes`. The error names the source, the destination and the field
 (`check_bytes_fields`).
 
+## Formatting
+
+The formatter (`expr::pretty`) lays code out in one style. It changes only the
+space between tokens and the `;` that ends a statement, and keeps every comment.
+It returns no layout whose tree differs from the text's, so formatting never
+changes what code does, and it leaves text that does not parse as written. The
+editor formats a code field when it is left.
+
 ## Seams
 
 The [config plane](config-plane.md) hands the compiler a resolved topology with

@@ -250,10 +250,8 @@
     const ok = await ask({
       title: 'delete group',
       body:
-        `Delete the group ${name} (${id}).${codeWarning} Branch-backed like any other change here. It ` +
-        'takes effect after review and deployment, and the commit can be reverted. Once deployed, ' +
-        'workers running under this id stop all their pipelines until someone moves them to another ' +
-        'group or shuts them down.',
+        `Delete the group ${name} (${id}).${codeWarning} Once deployed, its workers stop all their ` +
+        'pipelines until they are moved or shut down.',
       action: 'Delete',
       danger: true,
     });

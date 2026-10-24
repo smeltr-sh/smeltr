@@ -900,6 +900,26 @@ pub fn credential(
     Ok(value)
 }
 
+/// The `Authorization` value signing in as `user` with the password the credential `what` names `password` holds,
+/// refused as `credential` refuses one.
+pub fn basic(
+    what: &str,
+    name: &str,
+    user: &str,
+    password: &crate::plan::topology::SecretRef,
+    secrets: &HeldSecrets,
+) -> Result<String, IoError> {
+    Ok(basic_authorization(user, &credential(what, name, password, secrets)?))
+}
+
+/// The `Authorization` value signing in as `user` with `password` (RFC 7617).
+pub fn basic_authorization(user: &str, password: &str) -> String {
+    format!(
+        "Basic {}",
+        crate::format::bytes_text::BytesForm::Base64.text(format!("{user}:{password}").as_bytes())
+    )
+}
+
 /// How a client's transports connect: the certificate they present, and the roots they verify the service against
 /// (`io::trust`). Without an identity, no certificate.
 ///

@@ -1869,7 +1869,7 @@ const restartConversation: Move = {
       expect(asked).toContain('Summarize the conversation');
     } else {
       await page
-        .getByRole('dialog', { name: 'Clear the context?' })
+        .getByRole('dialog', { name: 'clear context' })
         .getByRole('button', { name: 'Clear', exact: true })
         .click();
       await expect(page.getByText(/^Cleared\./).last()).toBeVisible();
@@ -1890,7 +1890,7 @@ const deleteConversation: Move = {
     await conversationLink(page, title).click();
     await page.getByRole('button', { name: 'Delete conversation' }).click();
     await page
-      .getByRole('dialog', { name: 'Delete this conversation?' })
+      .getByRole('dialog', { name: 'delete conversation' })
       .getByRole('button', { name: 'Delete', exact: true })
       .click();
     world.conversations = world.conversations.filter((t) => t !== title);
