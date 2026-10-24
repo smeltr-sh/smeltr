@@ -20,6 +20,7 @@ document's systems.
 | Bytes are not text: `decode`, `encode`, `toString(bytes, form)`, `parseBytes` (Language, Columnar data model) | built |
 | Functions as values: `let`-bound arrows, `map`/`filter` (Language) | built. Not built: a function type annotation, `(x: T) => R`; a function chosen per row, `(c ? f : g)(x)`; a `let`-bound arrow calling itself |
 | A key is a key; `splitDots` (Language) | built |
+| Formatting (Compiler) | built (`expr::pretty`, `POST /api/format`) |
 | CSV column table, `skip` (Config plane) | built |
 | Grok: `.` matches a newline (Runtime stages) | built |
 | Lookup: CSV, inline, MMDB; exact, CIDR, regex (Runtime stages) | built; files live in the leader's lookup store as Git LFS pointers |

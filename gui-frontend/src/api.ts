@@ -2013,6 +2013,17 @@ export function lineBreakerVerdict(pattern: string): Promise<LineBreakerVerdict>
   return post('/api/line-breaker', { pattern }, 'quiet');
 }
 
+/** Pipeline code laid out in the style, or `code: null` where it does not parse yet. */
+export interface Formatted {
+  ok: boolean;
+  errors: ApiError[];
+  code: string | null;
+}
+
+export function formatCode(code: string, kind: 'expr' | 'block'): Promise<Formatted> {
+  return post('/api/format', { code, kind }, 'quiet');
+}
+
 // -- onboarding -----------------------------------------------------------
 //
 // What a capture of a source reads as (`leader::onboard`): the steps that parse its records and the condition a
