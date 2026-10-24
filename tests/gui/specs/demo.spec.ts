@@ -142,7 +142,7 @@ test('a visitor captures a sample, saves it on a branch and previews a pipeline 
 
   await page.goto(`${base}#/build/pipelines/panos-traffic/for/${sample}`);
   await expect(page.getByText('panw-firewalls, captured', { exact: true })).toBeVisible();
-  await expect(page.getByText('50 rows', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Choose a sample' })).toContainText('50 records');
   // The directory table is a CSV under the service's bundle: a department in the output is a lookup that read it.
   await expect(page.getByText('Engineering').first()).toBeVisible();
 });
