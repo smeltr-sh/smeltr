@@ -66,6 +66,17 @@ const ACME = {
   lastError: null,
 };
 
+/** The certificate list the leader's chooser offers. */
+const LISTED = [
+  {
+    name: 'corporate',
+    description: '',
+    versions: [{ version: 1, setAt: 0, usable: true }],
+    chain: [],
+    served: false,
+  },
+];
+
 function json(body: unknown) {
   return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
 }
@@ -82,6 +93,7 @@ async function show(
       if (init?.method === 'DELETE') deletes.push(url);
       if (init?.method === 'PUT') puts.push(JSON.parse(String(init.body)));
       if (url.startsWith('/api/settings/certificates')) return json(certificates);
+      if (url.startsWith('/api/certificates')) return json(LISTED);
       if (url.startsWith('/api/settings/acme')) return json(acme);
       throw new Error(`unexpected ${url}`);
     }),
@@ -245,12 +257,14 @@ describe('the source', () => {
       'fetch',
       vi.fn(async (url: string, init?: RequestInit) => {
         if (init?.method === 'PUT') {
+          puts.push(JSON.parse(String(init.body)));
           answered = {
             ...CERTIFICATES,
             rotation: { ...CERTIFICATES.rotation, installs: 'supplied', source: 'upload' },
           };
         }
         if (url.startsWith('/api/settings/certificates')) return json(answered);
+        if (url.startsWith('/api/certificates')) return json(LISTED);
         if (url.startsWith('/api/settings/acme')) return json(ACME);
         throw new Error(`unexpected ${url}`);
       }),
@@ -259,10 +273,10 @@ describe('the source', () => {
     await vi.waitFor(() => expect(button('Issue a new one')).toBeDefined());
     option('Uploaded')!.click();
     flushSync();
-    for (const area of target.querySelectorAll('textarea')) {
-      area.value = 'pem';
-      area.dispatchEvent(new Event('input', { bubbles: true }));
-    }
+    const chooser = target.querySelector('select')!;
+    await vi.waitFor(() => expect(chooser.options).toHaveLength(2));
+    chooser.value = 'corporate';
+    chooser.dispatchEvent(new Event('change', { bubbles: true }));
     flushSync();
     button('Serve this certificate')!.click();
     await vi.waitFor(() =>
@@ -271,6 +285,7 @@ describe('the source', () => {
       ),
     );
     expect(target.textContent).toContain('Switch to Uploaded in progress');
+    expect(puts).toEqual([{ certificate: 'corporate' }]);
   });
 
   it('keeps a rotation already open in reach while an uploaded certificate is in force', async () => {

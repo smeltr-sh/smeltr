@@ -43,12 +43,29 @@ async function publishing(served: Locator, heading: RegExp) {
   await expect(served.getByText(/Not waited for/)).toHaveCount(0);
 }
 
+let uploads = 0;
+
+/** Adds `pki` to the certificate list through the chooser's add link, which comes back to the Leader certificate
+ * card, and picks it there. Returns the card. */
+export async function chooseUploaded(page: Page, pki: Pki): Promise<Locator> {
+  const name = `uploaded-${++uploads}`;
+  let served = await openCertificates(page);
+  await source(served, 'Uploaded').click();
+  await served.getByRole('link', { name: 'add a certificate' }).click();
+  const dialog = page.getByRole('dialog', { name: 'new certificate' });
+  await dialog.getByRole('textbox', { name: 'Name' }).fill(name);
+  await dialog.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
+  await dialog.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  served = page.getByRole('region', { name: /^Leader certificate/ });
+  await source(served, 'Uploaded').click();
+  await served.getByRole('combobox', { name: 'Certificate' }).selectOption(name);
+  return served;
+}
+
 /** Serves `pki` in place of the leader's own, and waits until it is in force. */
 export async function switchToUploaded(page: Page, pki: Pki) {
-  const served = await openCertificates(page);
-  await source(served, 'Uploaded').click();
-  await served.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
-  await served.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
+  const served = await chooseUploaded(page, pki);
   await served.getByRole('button', { name: 'Serve this certificate' }).click();
   await publishing(served, /^Switch to Uploaded in progress/);
   await inForce(served, 'Uploaded');

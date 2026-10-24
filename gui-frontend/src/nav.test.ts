@@ -69,6 +69,12 @@ describe('parseRoute', () => {
       section: 'enrollment',
     });
     expect(parseRoute('#/admin/secrets')).toEqual({ tab: 'admin', page: 'secrets' });
+    expect(parseRoute('#/admin/certificates')).toEqual({ tab: 'admin', page: 'certificates' });
+    expect(parseRoute('#/admin/certificates/new')).toEqual({
+      tab: 'admin',
+      page: 'certificates',
+      adding: true,
+    });
     expect(parseRoute('#/admin/accounts')).toEqual({
       tab: 'admin',
       page: 'accounts',
