@@ -60,7 +60,7 @@ Kerberos tests, also run `just check-kerberos`.
 A dependency change also needs `just notices`: nothing else keeps
 `THIRD-PARTY-NOTICES.md` current.
 
-`just check` runs what the files changed since origin/main can break, as `tools/check-scope` decides: a document,
+`just check` runs what the files changed since origin/nightly can break, as `tools/check-scope` decides: a document,
 the citation checks; the GUI or the site, their own checks; a Rust file, the tests of its module and of the
 integration modules that use it. It can miss a test, and anything it cannot place runs `just check-all`, which is every
 check but the fuzzers.

@@ -84,7 +84,7 @@ pub struct SymbolTable {
     /// How many locals have been opened: the next one's serial.
     opened: usize,
     /// Slots null on every row: bound to the null literal where nothing, or only null, was before.
-    nulls: HashSet<SlotId>,
+    pub nulls: HashSet<SlotId>,
     /// Names whose read is a slot's value where it holds one, else what the tree reads there (`over_plan_output`).
     laid: Vec<(String, SlotId)>,
     /// The tree without the laid names: what a laid name's own read falls back to. A read above one sees it in `root`.
