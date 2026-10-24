@@ -3156,8 +3156,8 @@ pub fn router(state: AppState) -> Router {
     )
 }
 
-/// Where a store would write its secrets encryption key. No fixture below stores a secret, so nothing is written -- but two
-/// must not name one file between them if one ever does.
+/// Where a store would write its secrets encryption key. No fixture below stores a secret, so nothing is written --
+/// but two must not name one file between them if one ever does.
 #[cfg(test)]
 mod identity_expiry_tests {
     use super::*;
