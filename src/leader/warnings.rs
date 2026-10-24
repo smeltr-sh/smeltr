@@ -2315,10 +2315,13 @@ fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
     }
 }
 
+/// What the key's failure is about, as the Issues page names it.
+const KEY_SUBJECT: &str = "secrets encryption key";
+
 /// The facts the secrets encryption key's warnings start from, so each says how long it has held.
 pub fn encryption_key_facts(standing: &KeyStanding) -> HashSet<FactKey> {
     if standing.broken() {
-        return HashSet::from([FactKey::new("secretsKeyUnusable", "leader")]);
+        return HashSet::from([FactKey::new("secretsKeyUnusable", KEY_SUBJECT)]);
     }
     standing
         .unopenable
@@ -2345,7 +2348,7 @@ pub fn encryption_key_warnings(standing: &KeyStanding, starts: &HashMap<FactKey,
     if let Some(problem) = standing.problem() {
         return vec![leader(
             Condition::SecretsKeyUnusable,
-            "leader".to_string(),
+            KEY_SUBJECT.to_string(),
             Severity::Failed,
             problem,
         )];
@@ -2383,7 +2386,7 @@ fn unopenable_id(u: &Unopenable) -> String {
 }
 
 /// What a sealed leader setting is called, and where it is entered.
-fn sealed_setting_place(key: &str) -> (&str, &'static str) {
+pub(crate) fn sealed_setting_place(key: &str) -> (&str, &'static str) {
     match key {
         crate::leader::remote::TOKEN_KEY => ("Git remote token", "System, Git remote"),
         crate::leader::oidc::CLIENT_SECRET_KEY => ("OIDC client secret", "Accounts, Single sign-on"),

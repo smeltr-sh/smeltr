@@ -68,7 +68,16 @@ describe('parseRoute', () => {
       page: 'workers',
       section: 'enrollment',
     });
-    expect(parseRoute('#/admin/secrets')).toEqual({ tab: 'admin', page: 'secrets' });
+    expect(parseRoute('#/admin/secrets')).toEqual({
+      tab: 'admin',
+      page: 'secrets',
+      section: 'secrets',
+    });
+    expect(parseRoute('#/admin/secrets/key')).toEqual({
+      tab: 'admin',
+      page: 'secrets',
+      section: 'key',
+    });
     expect(parseRoute('#/admin/accounts')).toEqual({
       tab: 'admin',
       page: 'accounts',
@@ -525,7 +534,7 @@ describe('trail', () => {
       { label: 'Branches', hash: '#/changes' },
       { label: 'History', hash: undefined },
     ]);
-    expect(trail({ tab: 'admin', page: 'secrets' })).toEqual([
+    expect(trail({ tab: 'admin', page: 'secrets', section: 'secrets' })).toEqual([
       { label: 'Admin', hash: '#/admin' },
       { label: 'Secrets', hash: undefined },
     ]);

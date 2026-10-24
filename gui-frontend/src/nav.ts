@@ -34,6 +34,9 @@ export type WorkersSection = 'workers' | 'enrollment';
 /** The tabs of Admin -> Accounts: the people, the roles their provider's groups give them, and the provider. */
 export type AccountsSection = 'users' | 'roles' | 'oidc';
 
+/** The tabs of Admin -> Secrets: the secrets, and the key that encrypts the ones the leader stores. */
+export type SecretsSection = 'secrets' | 'key';
+
 export type Route =
   // `deploying` is the commit a deploy just pointed the fleet at, whose
   // rollout the page follows.
@@ -133,7 +136,7 @@ export type Route =
   | { tab: 'changes'; page: 'history' }
   | { tab: 'admin'; page: 'workers'; section: WorkersSection }
   | { tab: 'admin'; page: 'groups' }
-  | { tab: 'admin'; page: 'secrets' }
+  | { tab: 'admin'; page: 'secrets'; section: SecretsSection }
   // `section` is which tab of Accounts is showing.
   | { tab: 'admin'; page: 'accounts'; section: AccountsSection }
   // `section` is which tab of System is showing; the others arrive when their
@@ -298,6 +301,16 @@ export const ACCOUNTS_SECTIONS: { section: AccountsSection; label: string }[] = 
 
 export function accountsHash(section: AccountsSection): string {
   return section === 'users' ? '#/admin/accounts' : `#/admin/accounts/${section}`;
+}
+
+/** Admin -> Secrets' tabs. The first is where the bare `#/admin/secrets` lands. */
+export const SECRETS_TABS: SectionItem[] = [
+  { label: 'Secrets', hash: '#/admin/secrets' },
+  { label: 'Encryption key', hash: '#/admin/secrets/key' },
+];
+
+export function secretsHash(section: SecretsSection): string {
+  return section === 'secrets' ? '#/admin/secrets' : `#/admin/secrets/${section}`;
 }
 
 /** Admin -> Accounts' tabs, in the same strip. */
@@ -583,7 +596,9 @@ export function parseRoute(hash: string): Route {
       return { tab: 'changes', page: 'changes' };
     case 'admin':
       if (parts[1] === 'groups') return { tab: 'admin', page: 'groups' };
-      if (parts[1] === 'secrets') return { tab: 'admin', page: 'secrets' };
+      if (parts[1] === 'secrets') {
+        return { tab: 'admin', page: 'secrets', section: parts[2] === 'key' ? 'key' : 'secrets' };
+      }
       if (parts[1] === 'accounts') {
         const named = ACCOUNTS_SECTIONS.find((s) => s.section === parts[2]);
         return { tab: 'admin', page: 'accounts', section: named?.section ?? 'users' };

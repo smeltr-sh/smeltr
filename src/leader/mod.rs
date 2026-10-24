@@ -2187,6 +2187,8 @@ pub struct UnopenableOut {
     pub kind: &'static str,
     /// A secret's name, or a setting's key.
     pub name: String,
+    /// What a person calls it: a secret's name, or what the setting is.
+    pub label: String,
 }
 
 impl From<store::KeyStanding> for EncryptionKeyOut {
@@ -2205,8 +2207,16 @@ impl From<store::KeyStanding> for EncryptionKeyOut {
                 .unopenable
                 .into_iter()
                 .map(|u| match u {
-                    store::Unopenable::Secret(name) => UnopenableOut { kind: "secret", name },
-                    store::Unopenable::Setting(name) => UnopenableOut { kind: "setting", name },
+                    store::Unopenable::Secret(name) => UnopenableOut {
+                        kind: "secret",
+                        label: name.clone(),
+                        name,
+                    },
+                    store::Unopenable::Setting(name) => UnopenableOut {
+                        kind: "setting",
+                        label: warnings::sealed_setting_place(&name).0.to_string(),
+                        name,
+                    },
                 })
                 .collect(),
         }
