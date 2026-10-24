@@ -246,7 +246,8 @@ version is exact: a deployment runs the version its bundle quotes or does not
 run, so rotation is two steps, storing a value and then committing the bundle
 that quotes it, reviewed like any other change. A value is never readable
 back; an admin may ask whether a candidate matches, bounded and logged. The
-sealing key lives outside the data directory so one backup cannot carry both.
+secrets encryption key lives outside the data directory so one backup cannot
+carry both.
 
 **The git host's token, the OIDC client secret and the model endpoint's API
 key are sealed leader settings.** Only the leader uses them. They are sealed under the same key,
@@ -258,6 +259,36 @@ A named credential takes effect only when a commit quotes its version, and
 with a git host every commit reaches `main` through the host, so the host's
 own token, kept that way, could be replaced only by using the token it
 replaces.
+
+### The secrets encryption key
+
+Every sealed value carries the id of the key that sealed it, so the leader
+knows, without opening anything, whether its key fits what it holds. A leader
+that starts with nothing sealed writes the key. One whose key is missing, or
+does not fit what it sealed, cannot open any of it, so it says so as a failure
+on Issues and in its log, and seals nothing until the key is restored or
+regenerated: a value sealed meanwhile would be one the restored key could not
+open.
+
+Regenerating writes a new key and records the ids of the keys it replaces. A
+value sealed under a replaced key is then a value to enter again, a warning of
+its own that clears when it is. A key file that is there but does not fit is
+moved aside rather than overwritten, since it may be the right key for
+something.
+
+```mermaid
+stateDiagram-v2
+  state "Held, values to enter again" as Regenerated
+  [*] --> Held: first start writes the key
+  Held --> Missing: key file lost
+  Held --> Mismatched: another key put in its place
+  Missing --> Held: key restored
+  Mismatched --> Held: original restored
+  Missing --> Regenerated: regenerate
+  Mismatched --> Regenerated: regenerate, old file moved aside
+  Regenerated --> Held: every value entered again
+  note right of Missing: nothing is sealed until restored or regenerated
+```
 
 ### A certificate is not a credential
 

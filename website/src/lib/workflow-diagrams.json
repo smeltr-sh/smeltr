@@ -593,7 +593,7 @@
   "kubernetes": {
     "title": "Smeltr on Kubernetes",
     "description": "An administrator reaches the ingress over HTTPS. The ingress forwards through a private ClusterIP Service to one leader pod. Workers fetch main and report status through the ingress and connect directly to sources and destinations. The leader and each worker have persistent storage.",
-    "caption": "Dashed arrows show workers fetching main and reporting status through the ingress HTTPS address. The ingress forwards to the leader through a private ClusterIP Service. Dotted lines connect processes to persistent volumes: keep leader data and its sealing key on separate volumes, and give each worker its own state volume. Back up the volumes. Sources and destinations may be inside or outside the cluster.",
+    "caption": "Dashed arrows show workers fetching main and reporting status through the ingress HTTPS address. The ingress forwards to the leader through a private ClusterIP Service. Dotted lines connect processes to persistent volumes: keep leader data and its secrets encryption key on separate volumes, and give each worker its own state volume. Back up the volumes. Sources and destinations may be inside or outside the cluster.",
     "layouts": [
       {
         "width": 900,

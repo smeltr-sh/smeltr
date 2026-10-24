@@ -2,6 +2,8 @@
 // (`specs/journey-fuzz.spec.ts`) strings together. Each move is done through the GUI, by role and label, and then
 // checked against what is true outside the page: the leader's API, the worker it started, the rows at the sink.
 // `World` is what the moves so far have left the leader holding; a move is offered only when it makes sense there.
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Browser, Locator, Page } from '@playwright/test';
 import {
   expect,
@@ -1109,6 +1111,44 @@ const rotateSecret: Move = {
     expect(secrets.find((s) => s.name === name)?.versions).toHaveLength(version);
     expect(JSON.stringify(secrets)).not.toContain(value);
     return `rotate ${name} to v${version}`;
+  },
+};
+
+/** Where the journey's leader keeps its secrets encryption key: the default, under its own directory. */
+const keyFile = (leader: Leader) =>
+  path.join(leader.proc.dir, 'smeltr-leader-secrets', 'sealing.key');
+
+/** The key file is lost, which is not something the GUI does; finding out and regenerating it is. Only while
+ * nothing else is sealed: single sign-on and the agents would stop working until entered again, and no move
+ * enters them again. */
+const regenerateKey: Move = {
+  name: 'regenerate-key',
+  leadsTo: ['rotate-secret'],
+  weight: (w) => (w.password && w.secrets.size && !w.sso && !w.agentsOn ? 3 : 0),
+  run: async (j) => {
+    const { page, leader, world } = j;
+    fs.rmSync(keyFile(leader));
+    await openAdmin(page, 'Secrets');
+    await expect(page.getByText(/^The key file is missing/)).toBeVisible();
+    await page
+      .getByRole('navigation', { name: 'Secrets' })
+      .getByRole('link', { name: 'Encryption key', exact: true })
+      .click();
+    await page.getByRole('button', { name: 'Regenerate key' }).click();
+    await page
+      .getByRole('dialog', { name: 'regenerate the encryption key' })
+      .getByRole('button', { name: 'Regenerate key' })
+      .click();
+    await expect(page.getByText('To enter again')).toBeVisible();
+    for (const name of world.secrets.keys())
+      await expect(page.getByText(name, { exact: true })).toBeVisible();
+    expect(fs.existsSync(keyFile(leader))).toBe(true);
+    const key: { state: string; unopenable: { name: string }[] } = await (
+      await j.truth()
+    ).get('/api/encryption-key');
+    expect(key.state).toBe('held');
+    expect(key.unopenable.map((u) => u.name).sort()).toEqual([...world.secrets.keys()].sort());
+    return `regenerate the key, ${world.secrets.size} to enter again`;
   },
 };
 
@@ -2358,6 +2398,7 @@ export const MOVES: readonly Move[] = [
   release,
   addSecret,
   rotateSecret,
+  regenerateKey,
   addStep,
   declareFromProduction,
   addReceiver,
