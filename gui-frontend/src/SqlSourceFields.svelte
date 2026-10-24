@@ -9,6 +9,7 @@
   import { unreported } from './errors.svelte';
   import { onDestroy } from 'svelte';
   import Field from './Field.svelte';
+  import Nested from './Nested.svelte';
   import Advanced from './Advanced.svelte';
   import IdentityPicker from './IdentityPicker.svelte';
   import SecretRefInput from './SecretRefInput.svelte';
@@ -356,12 +357,14 @@
   </select>
 </Field>
 {#if (source.tls ?? 'require') === 'require'}
-  <IdentityPicker
-    value={source.identity}
-    {identities}
-    farEnd="source"
-    onchange={(v) => (source.identity = v)}
-  />
+  <Nested>
+    <IdentityPicker
+      value={source.identity}
+      {identities}
+      farEnd="source"
+      onchange={(v) => (source.identity = v)}
+    />
+  </Nested>
 {/if}
 
 <Field field="query" label="query" group>

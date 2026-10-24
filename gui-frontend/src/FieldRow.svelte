@@ -11,6 +11,7 @@
   import MoreIcon from './MoreIcon.svelte';
   import TypePicker from './TypePicker.svelte';
   import DatetimeFormat from './DatetimeFormat.svelte';
+  import Nested from './Nested.svelte';
   import { typeKey, withTypeKey, type DataTypeSpec, type TypeKey } from './pipeline';
 
   let {
@@ -73,7 +74,7 @@
   </div>
 {/if}
 {#if nested}
-  <div class="nested" class:numbered={number !== undefined}>{@render nested()}</div>
+  <Nested numbered={number !== undefined}>{@render nested()}</Nested>
 {/if}
 
 <style>
@@ -104,17 +105,7 @@
     margin-top: -0.1rem;
   }
 
-  .under.numbered,
-  .nested.numbered {
+  .under.numbered {
     margin-left: 1.7rem;
-  }
-
-  .nested {
-    margin: 0 0 0.2rem 0.6rem;
-    padding-left: 0.75rem;
-    border-left: 2px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
   }
 </style>

@@ -41,6 +41,7 @@
 
 <script lang="ts">
   import Field from './Field.svelte';
+  import Nested from './Nested.svelte';
   import { numberOrUnset } from './page';
 
   let {
@@ -93,19 +94,21 @@
     </select>
   </Field>
   {#if value.afterCommit === 'move'}
-    <Field field="movePrefix" label="move prefix">
-      {#snippet help()}
-        Where <code>move</code> puts {noun === 'object' ? 'an' : 'a'}
-        {noun}, in place of the prefix, and outside it. It does not start with <code>/</code>, and
-        ends in <code>/</code> when the prefix does or is empty, and only then.
-      {/snippet}
-      <input
-        type="text"
-        value={value.movePrefix ?? ''}
-        oninput={(e) => (value.movePrefix = optional(e.currentTarget.value))}
-        placeholder="done/"
-      />
-    </Field>
+    <Nested>
+      <Field field="movePrefix" label="move prefix">
+        {#snippet help()}
+          Where <code>move</code> puts {noun === 'object' ? 'an' : 'a'}
+          {noun}, in place of the prefix, and outside it. It does not start with <code>/</code>, and
+          ends in <code>/</code> when the prefix does or is empty, and only then.
+        {/snippet}
+        <input
+          type="text"
+          value={value.movePrefix ?? ''}
+          oninput={(e) => (value.movePrefix = optional(e.currentTarget.value))}
+          placeholder="done/"
+        />
+      </Field>
+    </Nested>
   {/if}
   <Field field="start" label="start at">
     {#snippet help()}

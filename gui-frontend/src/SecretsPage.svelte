@@ -15,6 +15,7 @@
   import PageHeader from './PageHeader.svelte';
   import Help from './Help.svelte';
   import Field from './Field.svelte';
+  import Nested from './Nested.svelte';
   import PasswordField from './PasswordField.svelte';
   import Dialog from './Dialog.svelte';
   import { ask } from './Confirm.svelte';
@@ -260,10 +261,12 @@
         </select>
       </Field>
       {#if newCustody === 'leader-stored'}
-        <Field label="Value">
-          {#snippet help()}Stored encrypted and never shown again.{/snippet}
-          <PasswordField bind:value={newValue} ariaLabel="value" />
-        </Field>
+        <Nested>
+          <Field label="Value">
+            {#snippet help()}Stored encrypted and never shown again.{/snippet}
+            <PasswordField bind:value={newValue} ariaLabel="value" />
+          </Field>
+        </Nested>
       {/if}
       <Field label="Description">
         <input bind:value={newDescription} placeholder="the west broker's SCRAM password" />

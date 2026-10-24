@@ -6,6 +6,7 @@
   import Advanced from './Advanced.svelte';
   import IdentityPicker from './IdentityPicker.svelte';
   import Field from './Field.svelte';
+  import Nested from './Nested.svelte';
   import StartAt from './StartAt.svelte';
   import UrlField from './UrlField.svelte';
   import JsonField from './JsonField.svelte';
@@ -295,11 +296,13 @@
       </select>
     </Field>
     {#if (source.framing ?? 'lines') === 'lines'}
-      <LineBreakerField
-        value={source.lineBreaker}
-        placeholder={'([\\r\\n]+)\\d{4}-'}
-        onchange={(v) => (source.lineBreaker = v)}
-      />
+      <Nested>
+        <LineBreakerField
+          value={source.lineBreaker}
+          placeholder={'([\\r\\n]+)\\d{4}-'}
+          onchange={(v) => (source.lineBreaker = v)}
+        />
+      </Nested>
     {/if}
   {/if}
 {/snippet}
@@ -443,19 +446,21 @@
     </select>
   </Field>
   {#if source.method === 'POST'}
-    <JsonField
-      field="body"
-      label="body"
-      value={source.body}
-      set={(v) => {
-        if (source.type === 'httpApi') source.body = v;
-      }}
-      placeholder={'{"batchSize": 1000}'}
-    >
-      {#snippet help()}
-        The JSON every request sends. Empty sends nothing.
-      {/snippet}
-    </JsonField>
+    <Nested>
+      <JsonField
+        field="body"
+        label="body"
+        value={source.body}
+        set={(v) => {
+          if (source.type === 'httpApi') source.body = v;
+        }}
+        placeholder={'{"batchSize": 1000}'}
+      >
+        {#snippet help()}
+          The JSON every request sends. Empty sends nothing.
+        {/snippet}
+      </JsonField>
+    </Nested>
   {/if}
   <PropsEditor
     value={source}
@@ -500,21 +505,23 @@
     </select>
   </Field>
   {#if source.records === 'array'}
-    <Field field="recordsAt" label="records at">
-      {#snippet help()}
-        The JSON pointer to the array, such as <code>/data</code>. Empty is an answer that is the
-        array.
-      {/snippet}
-      <input
-        type="text"
-        value={source.recordsAt ?? ''}
-        oninput={(e) => {
-          if (source.type === 'httpApi')
-            source.recordsAt = e.currentTarget.value.trim() || undefined;
-        }}
-        placeholder="/data"
-      />
-    </Field>
+    <Nested>
+      <Field field="recordsAt" label="records at">
+        {#snippet help()}
+          The JSON pointer to the array, such as <code>/data</code>. Empty is an answer that is the
+          array.
+        {/snippet}
+        <input
+          type="text"
+          value={source.recordsAt ?? ''}
+          oninput={(e) => {
+            if (source.type === 'httpApi')
+              source.recordsAt = e.currentTarget.value.trim() || undefined;
+          }}
+          placeholder="/data"
+        />
+      </Field>
+    </Nested>
   {/if}
   <Field field="followLinks" label="pages">
     {#snippet help()}
@@ -621,87 +628,91 @@
   </Field>
   {#if how !== 'none'}
     {@const from = tokenFrom(source)}
-    <Field field="clientId" label="client id">
-      {#snippet help()}
-        The OAuth client it signs in as.
-      {/snippet}
-      <input
-        type="text"
-        value={source.clientId ?? ''}
-        oninput={(e) => {
-          if (source.type === 'httpApi') source.clientId = e.currentTarget.value.trim();
-        }}
-        placeholder="0oa1b2c3d4"
-      />
-    </Field>
-    {#if how === 'secret'}
-      <Field field="clientSecret" label="client secret">
+    <Nested>
+      <Field field="clientId" label="client id">
         {#snippet help()}
-          Where the OAuth client's secret lives. The value never reaches git.
+          The OAuth client it signs in as.
         {/snippet}
-        <SecretRefInput
-          value={source.clientSecret}
-          {secrets}
-          label="client secret"
-          onchange={(v) => {
-            if (source.type === 'httpApi') source.clientSecret = v ?? '';
+        <input
+          type="text"
+          value={source.clientId ?? ''}
+          oninput={(e) => {
+            if (source.type === 'httpApi') source.clientId = e.currentTarget.value.trim();
           }}
+          placeholder="0oa1b2c3d4"
         />
       </Field>
-    {:else}
-      <Field field="privateKey" label="private key">
+      {#if how === 'secret'}
+        <Field field="clientSecret" label="client secret">
+          {#snippet help()}
+            Where the OAuth client's secret lives. The value never reaches git.
+          {/snippet}
+          <SecretRefInput
+            value={source.clientSecret}
+            {secrets}
+            label="client secret"
+            onchange={(v) => {
+              if (source.type === 'httpApi') source.clientSecret = v ?? '';
+            }}
+          />
+        </Field>
+      {:else}
+        <Field field="privateKey" label="private key">
+          {#snippet help()}
+            Where the client's RSA private key lives, as PEM PKCS#8, which begins
+            <code>BEGIN PRIVATE KEY</code>.
+          {/snippet}
+          <SecretRefInput
+            value={source.privateKey}
+            {secrets}
+            label="private key"
+            onchange={(v) => {
+              if (source.type === 'httpApi') source.privateKey = v ?? '';
+            }}
+          />
+        </Field>
+      {/if}
+      <Field label="token from">
         {#snippet help()}
-          Where the client's RSA private key lives, as PEM PKCS#8, which begins
-          <code>BEGIN PRIVATE KEY</code>.
+          A token URL is used as given. An issuer is asked where its token endpoint is, and how it
+          takes a secret.
         {/snippet}
-        <SecretRefInput
-          value={source.privateKey}
-          {secrets}
-          label="private key"
-          onchange={(v) => {
-            if (source.type === 'httpApi') source.privateKey = v ?? '';
-          }}
-        />
+        <select
+          value={from}
+          onchange={(e) => setTokenFrom(source, e.currentTarget.value as TokenFrom)}
+        >
+          <option value="url">token URL</option>
+          <option value="issuer">issuer's discovery</option>
+        </select>
       </Field>
-    {/if}
-    <Field label="token from">
-      {#snippet help()}
-        A token URL is used as given. An issuer is asked where its token endpoint is, and how it
-        takes a secret.
-      {/snippet}
-      <select
-        value={from}
-        onchange={(e) => setTokenFrom(source, e.currentTarget.value as TokenFrom)}
-      >
-        <option value="url">token URL</option>
-        <option value="issuer">issuer's discovery</option>
-      </select>
-    </Field>
-    {#if from === 'url'}
-      <UrlField
-        field="tokenUrl"
-        label="token URL"
-        bind:value={source.tokenUrl}
-        sends={true}
-        placeholder="https://auth.example.com/oauth2/token"
-      >
-        {#snippet help()}
-          Where the client's token is obtained.
-        {/snippet}
-      </UrlField>
-    {:else}
-      <UrlField
-        field="issuer"
-        label="issuer"
-        bind:value={source.issuer}
-        sends={false}
-        placeholder="https://login.example.com/realms/acme"
-      >
-        {#snippet help()}
-          The OpenID issuer, exactly as the provider writes it.
-        {/snippet}
-      </UrlField>
-    {/if}
+      <Nested>
+        {#if from === 'url'}
+          <UrlField
+            field="tokenUrl"
+            label="token URL"
+            bind:value={source.tokenUrl}
+            sends={true}
+            placeholder="https://auth.example.com/oauth2/token"
+          >
+            {#snippet help()}
+              Where the client's token is obtained.
+            {/snippet}
+          </UrlField>
+        {:else}
+          <UrlField
+            field="issuer"
+            label="issuer"
+            bind:value={source.issuer}
+            sends={false}
+            placeholder="https://login.example.com/realms/acme"
+          >
+            {#snippet help()}
+              The OpenID issuer, exactly as the provider writes it.
+            {/snippet}
+          </UrlField>
+        {/if}
+      </Nested>
+    </Nested>
   {/if}
 {/snippet}
 
@@ -732,50 +743,52 @@
       <option value="token">with an API token</option>
     </select>
   </Field>
-  {#if how === 'serviceApp'}
-    <Field field="clientId" label="client id">
-      {#snippet help()}
-        The client id of an API Services app granted the <code>okta.logs.read</code> scope and the Read-only
-        Administrator role.
-      {/snippet}
-      <input
-        type="text"
-        value={source.clientId ?? ''}
-        oninput={(e) => {
-          if (source.type === 'oktaLogs') source.clientId = e.currentTarget.value.trim();
-        }}
-        placeholder="0oa1b2c3d4e5f6g7h8i9"
-      />
-    </Field>
-    <Field field="privateKey" label="private key">
-      {#snippet help()}
-        Where the app's private key lives: an RSA key as PEM PKCS#8, which begins
-        <code>BEGIN PRIVATE KEY</code>.
-      {/snippet}
-      <SecretRefInput
-        value={source.privateKey}
-        {secrets}
-        label="private key"
-        onchange={(v) => {
-          if (source.type === 'oktaLogs') source.privateKey = v ?? '';
-        }}
-      />
-    </Field>
-  {:else}
-    <Field field="token" label="token">
-      {#snippet help()}
-        Where an API token lives, created by an admin who can read the System Log.
-      {/snippet}
-      <SecretRefInput
-        value={source.token}
-        {secrets}
-        label="token"
-        onchange={(v) => {
-          if (source.type === 'oktaLogs') source.token = v ?? '';
-        }}
-      />
-    </Field>
-  {/if}
+  <Nested>
+    {#if how === 'serviceApp'}
+      <Field field="clientId" label="client id">
+        {#snippet help()}
+          The client id of an API Services app granted the <code>okta.logs.read</code> scope and the Read-only
+          Administrator role.
+        {/snippet}
+        <input
+          type="text"
+          value={source.clientId ?? ''}
+          oninput={(e) => {
+            if (source.type === 'oktaLogs') source.clientId = e.currentTarget.value.trim();
+          }}
+          placeholder="0oa1b2c3d4e5f6g7h8i9"
+        />
+      </Field>
+      <Field field="privateKey" label="private key">
+        {#snippet help()}
+          Where the app's private key lives: an RSA key as PEM PKCS#8, which begins
+          <code>BEGIN PRIVATE KEY</code>.
+        {/snippet}
+        <SecretRefInput
+          value={source.privateKey}
+          {secrets}
+          label="private key"
+          onchange={(v) => {
+            if (source.type === 'oktaLogs') source.privateKey = v ?? '';
+          }}
+        />
+      </Field>
+    {:else}
+      <Field field="token" label="token">
+        {#snippet help()}
+          Where an API token lives, created by an admin who can read the System Log.
+        {/snippet}
+        <SecretRefInput
+          value={source.token}
+          {secrets}
+          label="token"
+          onchange={(v) => {
+            if (source.type === 'oktaLogs') source.token = v ?? '';
+          }}
+        />
+      </Field>
+    {/if}
+  </Nested>
   <Advanced label="Advanced" modified={apiModified(source)}>
     {#if how === 'serviceApp'}
       <Field field="keyId" label="key id">
@@ -1065,21 +1078,23 @@
       </select>
     </Field>
     {#if source.records === 'array'}
-      <Field field="recordsAt" label="records at">
-        {#snippet help()}
-          The JSON pointer to the array, such as <code>/events</code>. Empty is a body that is the
-          array.
-        {/snippet}
-        <input
-          type="text"
-          value={source.recordsAt ?? ''}
-          oninput={(e) => {
-            if (source.type === 'httpReceiver')
-              source.recordsAt = e.currentTarget.value.trim() || undefined;
-          }}
-          placeholder="/events"
-        />
-      </Field>
+      <Nested>
+        <Field field="recordsAt" label="records at">
+          {#snippet help()}
+            The JSON pointer to the array, such as <code>/events</code>. Empty is a body that is the
+            array.
+          {/snippet}
+          <input
+            type="text"
+            value={source.recordsAt ?? ''}
+            oninput={(e) => {
+              if (source.type === 'httpReceiver')
+                source.recordsAt = e.currentTarget.value.trim() || undefined;
+            }}
+            placeholder="/events"
+          />
+        </Field>
+      </Nested>
     {/if}
   {/if}
   <Advanced label="Advanced" modified={receiverModified(source)}>
