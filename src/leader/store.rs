@@ -121,6 +121,63 @@ impl SecretRecord {
     }
 }
 
+/// Where the secrets encryption key stands against the values sealed under it (`docs/architecture/security.md`,
+/// Secrets boundary).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyStanding {
+    /// Where the leader reads the key from.
+    pub path: std::path::PathBuf,
+    pub key: KeyState,
+    /// Every value whose newest copy the key cannot open, by name: what an admin enters again.
+    pub unopenable: Vec<Unopenable>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyState {
+    /// No key and nothing sealed: a leader that has stored nothing yet.
+    Absent,
+    /// The key opens every value sealed since it was written. Values sealed before it, under a key it replaced, are
+    /// [`KeyStanding::unopenable`] until entered again.
+    Held { key_id: String },
+    /// No key, and values sealed under one.
+    Missing,
+    /// A key that did not seal the stored values, nor replaced the key that did.
+    Mismatched { key_id: String },
+}
+
+/// One value the key cannot open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unopenable {
+    /// A leader-stored secret, by name.
+    Secret(String),
+    /// A sealed leader setting, by its key.
+    Setting(String),
+}
+
+impl KeyStanding {
+    /// Whether the key is gone or wrong. While it is, nothing is sealed: a value sealed now would be sealed under a
+    /// key the restored one cannot open, or written beside values the leader can no longer read.
+    pub fn broken(&self) -> bool {
+        matches!(self.key, KeyState::Missing | KeyState::Mismatched { .. })
+    }
+
+    /// What is wrong, in the words the Issues page and a refused write both use. `None` while the key is not broken.
+    pub fn problem(&self) -> Option<String> {
+        let what = match self.key {
+            KeyState::Missing => "is missing",
+            KeyState::Mismatched { .. } => "does not match the stored secrets",
+            KeyState::Absent | KeyState::Held { .. } => return None,
+        };
+        let n = self.unopenable.len();
+        Some(format!(
+            "the secrets encryption key at {} {what}, so the {n} stored secret{} cannot be opened and no new ones can \
+             be stored. Restore it and restart the leader, or regenerate it under Secrets, Encryption key",
+            self.path.display(),
+            if n == 1 { "" } else { "s" },
+        ))
+    }
+}
+
 // -- people -----------------------------------------------------------------
 
 /// Where an account's credentials come from, fixed when the account is created.
@@ -636,6 +693,15 @@ pub trait Store: Send + Sync {
         entitled: &[(String, i64)],
         held: &[(String, i64)],
     ) -> Result<Vec<(String, i64, String)>, StoreError>;
+
+    /// Where the secrets encryption key stands against what is sealed under it.
+    fn key_standing(&self) -> Result<KeyStanding, StoreError>;
+
+    /// Writes a new secrets encryption key in place of one that is missing or does not match, and records the keys
+    /// it replaces so the values they sealed read as values to enter again rather than as a wrong key. A
+    /// mismatched key file is moved aside, not overwritten: it may yet be the right one for something. Refused
+    /// while the key is not broken.
+    fn regenerate_key(&self, event: &SecurityEvent) -> Result<KeyStanding, StoreError>;
 
     /// Every hue chosen so far, keyed by whatever id it was set for -- a real group's, or `"shared"`'s. What a new
     /// group's color is picked distinct from.
