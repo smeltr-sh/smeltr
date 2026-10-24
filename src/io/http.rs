@@ -909,11 +909,15 @@ pub fn basic(
     password: &crate::plan::topology::SecretRef,
     secrets: &HeldSecrets,
 ) -> Result<String, IoError> {
-    let password = credential(what, name, password, secrets)?;
-    Ok(format!(
+    Ok(basic_authorization(user, &credential(what, name, password, secrets)?))
+}
+
+/// The `Authorization` value signing in as `user` with `password` (RFC 7617).
+pub fn basic_authorization(user: &str, password: &str) -> String {
+    format!(
         "Basic {}",
         crate::format::bytes_text::BytesForm::Base64.text(format!("{user}:{password}").as_bytes())
-    ))
+    )
 }
 
 /// How a client's transports connect: the certificate they present, and the roots they verify the service against

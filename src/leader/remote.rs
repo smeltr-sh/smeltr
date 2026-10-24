@@ -19,7 +19,6 @@ use std::time::Duration;
 use axum::Json;
 use axum::extract::State;
 
-use crate::format::bytes_text::BytesForm;
 use crate::lookup::store::{self, Pointer};
 
 use super::envelope::Envelope;
@@ -63,10 +62,7 @@ impl Remote {
     /// what every git host takes a token as.
     fn authorization(&self) -> Option<String> {
         let token = self.token.as_deref()?;
-        Some(format!(
-            "Basic {}",
-            BytesForm::Base64.text(format!("{}:{token}", self.user).as_bytes())
-        ))
+        Some(crate::io::http::basic_authorization(&self.user, token))
     }
 }
 
@@ -1108,6 +1104,7 @@ pub async fn post_sync(State(state): State<AppState>) -> Json<Envelope<RemoteSet
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format::bytes_text::BytesForm;
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
