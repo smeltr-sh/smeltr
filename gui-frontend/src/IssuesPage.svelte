@@ -159,6 +159,10 @@
                     href={`#/status/logs?worker=${encodeURIComponent(warning.subjectId)}&level=warn,error`}
                     >{warning.subjectId}</a
                   >
+                {:else if warning.subjectKind === 'secret'}
+                  <a href="#/admin/secrets">{warning.subjectId}</a>
+                {:else if warning.condition === 'secretsKeyUnusable'}
+                  <a href="#/admin/secrets/key">{warning.subjectId}</a>
                 {:else if warning.subjectKind === 'pipeline' && warning.scope}
                   {@const scope = warning.scope}
                   <a

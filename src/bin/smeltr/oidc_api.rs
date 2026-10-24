@@ -42,7 +42,7 @@ use crate::gate::{Auth, refuse};
 pub const ENABLED_KEY: &str = "oidc.enabled";
 pub const ISSUER_KEY: &str = "oidc.issuer";
 pub const CLIENT_ID_KEY: &str = "oidc.client_id";
-pub const SECRET_KEY: &str = "oidc.client_secret";
+pub const SECRET_KEY: &str = smeltr::leader::oidc::CLIENT_SECRET_KEY;
 pub const GROUPS_CLAIM_KEY: &str = "oidc.groups_claim";
 
 /// The claim groups are read from where nobody has said. What Okta, Keycloak and Entra ID send by that name.
