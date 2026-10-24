@@ -116,26 +116,24 @@ export async function renewAcme(page: Page, challenge: 'TLS-ALPN-01' | 'HTTP-01'
   await expect(served.getByText(/in progress|new root/)).toHaveCount(0);
 }
 
-/** Saves DNS-01 through Cloudflare with `token`, without ordering, then saves `back` as the challenge again: a
- * DNS-01 order needs Cloudflare, which the journey has none of. */
-export async function saveDns01(page: Page, token: string, back: 'TLS-ALPN-01' | 'HTTP-01') {
+/** Tries to save DNS-01 through Cloudflare with `token` for names that include an IP address, which DNS-01 cannot
+ * prove: the save is refused, saying which, and the challenge is put back. */
+export async function refuseDns01(page: Page, token: string, ip: string) {
   const served = await openCertificates(page);
   await source(served, 'ACME').click();
   await advanced(served);
   const challenge = served.getByRole('combobox', { name: 'Challenge' });
+  const was = await challenge.inputValue();
   await challenge.selectOption({ label: 'DNS-01' });
   await served
     .getByRole('combobox', { name: 'DNS provider' })
     .selectOption({ label: 'Cloudflare' });
-  const replace = served.getByRole('button', { name: 'replace the API token' });
-  if (await replace.isVisible()) await replace.click();
   await served.getByLabel('API token', { exact: true }).fill(token);
   await served.getByRole('button', { name: 'Save' }).click();
-  await expect(served.getByRole('status')).toHaveText('settings saved');
-  await expect(served.getByText('Stored', { exact: true })).toBeVisible();
-  await challenge.selectOption({ label: back });
-  await served.getByRole('button', { name: 'Save' }).click();
-  await expect(served.getByRole('status')).toHaveText('settings saved');
+  await expect(page.getByText(`DNS-01 cannot prove an IP address: ${ip}`)).toBeVisible();
+  await challenge.selectOption(was);
+  // What was typed goes with the page, so no later save carries it.
+  await page.reload();
 }
 
 /** Has `authority` issue under a new root, tells the leader to trust it, and renews: the fleet is moved to the
