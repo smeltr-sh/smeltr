@@ -48,14 +48,13 @@
   import RecordFields from './RecordFields.svelte';
   import { formatDiffValue } from './diff';
   import {
-    cellOf,
-    columnsFor,
     countStates,
     declaredRecord,
-    diffRecords,
+    fieldAt,
+    leafMap,
+    pathsOf,
     splitPath,
     type Declared,
-    type FieldLeaf,
   } from './recordDiff';
   import {
     sharedConfig,
@@ -1067,6 +1066,14 @@
 
   let runDeclared = $derived(declaredOf(lastGoodResult));
 
+  // The selected step's runs by row, so a row finds its sides without a search.
+  let selectedByRow = $derived.by(() => {
+    const d = selectedStep ? selectedDiff : null;
+    if (!d) return null;
+    const byRow = (rows: PreviewRow[]) => new Map(rows.map((r) => [r.row, r]));
+    return { before: byRow(d.before), after: byRow(d.after) };
+  });
+
   /** The record on either side of the step shown: the selected step, or the
    * whole pipeline from its sample row. */
   function rowSides(row: PreviewRow): {
@@ -1074,32 +1081,43 @@
     after: unknown;
     declared: { before: Declared | null; after: Declared | null };
   } {
-    if (selectedStep && selectedDiff) {
-      const before = selectedDiff.before.find((r) => r.row === row.row);
-      const after = selectedDiff.after.find((r) => r.row === row.row);
+    if (selectedByRow && selectedDiff) {
       return {
-        before: withSource(before?.json ?? null, row.row),
-        after: withSource(after?.json ?? null, row.row),
+        before: withSource(selectedByRow.before.get(row.row)?.json ?? null, row.row),
+        after: withSource(selectedByRow.after.get(row.row)?.json ?? null, row.row),
         declared: selectedDiff.declared,
       };
     }
-    const before = sampleRows[row.row] ?? {};
     return {
-      before: withSource(before, row.row),
+      before: withSource(sampleRows[row.row] ?? {}, row.row),
       after: withSource(row.json, row.row),
       declared: { before: sampleDeclared, after: runDeclared },
     };
   }
 
-  function rowFields(row: PreviewRow): FieldLeaf[] {
-    const { before, after } = rowSides(row);
-    return diffRecords(before, after);
-  }
+  // Each row's leaves, both sides, by path: what a cell, the search and the
+  // sort read, without diffing a row nobody is looking at. The sample's side
+  // is read once per sample rather than once per run.
+  let sampleMaps = $derived(sampleRows.map((r, i) => leafMap(withSource(r, i))));
+  type RowMaps = { before: Map<string, unknown>; after: Map<string, unknown> };
+  let rowsMaps: RowMaps[] = $derived(
+    (lastGoodResult?.rows ?? []).map((row) => {
+      if (selectedByRow) {
+        const sides = rowSides(row);
+        return { before: leafMap(sides.before), after: leafMap(sides.after) };
+      }
+      return {
+        before: sampleMaps[row.row] ?? leafMap(withSource({}, row.row)),
+        after: leafMap(withSource(row.json, row.row)),
+      };
+    }),
+  );
+  let allColumns = $derived(pathsOf(rowsMaps.flatMap((m) => [m.before, m.after])));
 
-  // Read once per run, not once per row per column: the columns are the union
-  // over every row, so the grid needs all of them in hand anyway.
-  let rowsFields = $derived(lastGoodResult ? lastGoodResult.rows.map(rowFields) : []);
-  let allColumns = $derived(columnsFor(rowsFields));
+  /** What a cell shows: what the field became, or what it was if the step took it away. */
+  function cellValue(m: RowMaps, path: string): unknown {
+    return m.after.has(path) ? m.after.get(path) : m.before.get(path);
+  }
 
   // What differs from each column's default, rather than what is shown: a
   // step added along the way brings its fields with it, instead of arriving
@@ -1110,10 +1128,9 @@
   const startsHidden = (path: string) => path.startsWith('__') || path.startsWith('["__');
   let toggledColumns = $state(new SvelteSet<string>());
   const isShown = (path: string) => startsHidden(path) === toggledColumns.has(path);
-  let columns = $derived(allColumns.filter((c) => isShown(c.path)));
+  let columns = $derived(allColumns.filter(isShown));
 
   const unfoldedPath = (path: string) => !startsHidden(path) || isShown(path);
-  const unfolded = (f: FieldLeaf) => unfoldedPath(f.path);
 
   function toggleColumn(path: string) {
     if (toggledColumns.has(path)) toggledColumns.delete(path);
@@ -1122,7 +1139,7 @@
 
   function showAllColumns() {
     toggledColumns.clear();
-    for (const c of allColumns) if (startsHidden(c.path)) toggledColumns.add(c.path);
+    for (const path of allColumns) if (startsHidden(path)) toggledColumns.add(path);
   }
 
   let columnsOpen = $state(false);
@@ -1149,6 +1166,142 @@
     if (allOpen) expanded.clear();
     else for (const row of lastGoodResult?.rows ?? []) expanded.add(row.row);
   }
+
+  // A sample opens on a record rather than a wall of lines: the first that
+  // failed, which is what needs reading, or else the first. Once per sample,
+  // so a re-run as the steps are typed leaves the reader's choice alone.
+  let openedFor = '';
+  $effect(() => {
+    const res = lastGoodResult;
+    const sample = lastSample;
+    if (!res || !sample || sample === openedFor) return;
+    openedFor = sample;
+    const first = res.rows.find((r) => r.exceptions.length > 0) ?? res.rows[0];
+    if (first) untrack(() => expanded.add(first.row));
+  });
+
+  /** What the step did to a row's shown fields, for the head of its record. */
+  function rowMarks(m: RowMaps) {
+    return countStates(
+      pathsOf([m.before, m.after])
+        .filter(unfoldedPath)
+        .map((path) => fieldAt(m.before, m.after, path)!),
+    );
+  }
+
+  // -- the window -------------------------------------------------------------
+  //
+  // A thousand rows of five hundred cells is more than a page draws and stays
+  // responsive, so the grid draws the rows near the viewport and a spacer
+  // stands for the rest. A folded row is one line, as tall as the first one
+  // drawn; an opened row's record is measured once it is drawn.
+
+  const OVERSCAN = 20;
+  let tbody = $state<HTMLElement | undefined>();
+  let rowHeight = $state(24);
+  let openHeights: Record<number, number> = $state({});
+  /** How wide the grid shows, which an opened record wraps to however wide its columns run. */
+  let paneWidth = $state(0);
+  /** The viewport, from the top of the grid's body. */
+  let viewport = $state({ top: 0, bottom: 1080 });
+
+  function measure() {
+    if (!tbody) return;
+    const top = tbody.getBoundingClientRect().top;
+    // What shows of the grid: its own box where it scrolls itself, the window where the page does.
+    const box = tbody.closest('.grid-wrap')!.getBoundingClientRect();
+    viewport = {
+      top: Math.max(0, box.top) - top,
+      bottom: Math.min(window.innerHeight, box.bottom) - top,
+    };
+    const first = tbody.querySelector<HTMLElement>('tr.grid-row');
+    if (first && first.offsetHeight > 0) rowHeight = first.offsetHeight;
+  }
+
+  $effect(() => {
+    // Again whenever the rows change, since what sits above the grid may have too.
+    void gridOrder;
+    if (!tbody) return;
+    measure();
+    // Captured, so the grid hears whichever ancestor it is that scrolls.
+    window.addEventListener('scroll', measure, { capture: true, passive: true });
+    window.addEventListener('resize', measure);
+    return () => {
+      window.removeEventListener('scroll', measure, { capture: true });
+      window.removeEventListener('resize', measure);
+    };
+  });
+
+  // The records pane ends at the bottom of the window, wherever it starts, so only the steps make the
+  // page taller than the window. What the page holds below the pane is left room for too.
+  let rightCol = $state<HTMLElement | undefined>();
+  let paneTop = $state(0);
+  let paneAfter = $state(0);
+  $effect(() => {
+    const pane = rightCol;
+    if (!pane) return;
+    const place = () => {
+      const top = pane.getBoundingClientRect().top;
+      const columns = pane.parentElement!.getBoundingClientRect().bottom;
+      paneTop = Math.max(0, top);
+      // The page ends where its content does, short of the window or past it.
+      paneAfter = Math.max(0, document.documentElement.getBoundingClientRect().bottom - columns);
+    };
+    place();
+    // And as the page settles: what loads above the pane moves it down.
+    const settled = new ResizeObserver(place);
+    settled.observe(document.body);
+    settled.observe(pane);
+    window.addEventListener('scroll', place, { capture: true, passive: true });
+    window.addEventListener('resize', place);
+    return () => {
+      settled.disconnect();
+      window.removeEventListener('scroll', place, { capture: true });
+      window.removeEventListener('resize', place);
+    };
+  });
+
+  let drawn = $derived.by(() => {
+    const rows = lastGoodResult?.rows ?? [];
+    const n = gridOrder.length;
+    const tops = new Array<number>(n + 1);
+    tops[0] = 0;
+    for (let k = 0; k < n; k++) {
+      const row = rows[gridOrder[k]].row;
+      tops[k + 1] = tops[k] + rowHeight + (expanded.has(row) ? (openHeights[row] ?? 0) : 0);
+    }
+    let first = 0;
+    while (first < n && tops[first + 1] <= viewport.top) first++;
+    let last = first;
+    while (last < n && tops[last] < viewport.bottom) last++;
+    const start = Math.max(0, first - OVERSCAN);
+    const end = Math.min(n, last + OVERSCAN);
+    return { start, end, above: tops[start], below: tops[n] - tops[end] };
+  });
+
+  // Widths fixed per column, from the values a column holds, so a column does
+  // not jump as rows scroll past. Read off the first rows of the run rather
+  // than all of them: enough to size by, and the same whichever are drawn.
+  const COLUMN_CH = 28;
+  const COLUMN_MIN_CH = 6;
+  const SIZED_ROWS = 200;
+  let columnWidths = $derived.by(() => {
+    const sized = rowsMaps.slice(0, SIZED_ROWS);
+    return columns.map((path) => {
+      let w = COLUMN_MIN_CH;
+      for (const m of sized) {
+        if (w >= COLUMN_CH) break;
+        if (m.after.has(path) || m.before.has(path))
+          w = Math.max(w, formatDiffValue(cellValue(m, path)).length);
+      }
+      return Math.min(w, COLUMN_CH);
+    });
+  });
+  /** The row number, with room for a failing row's mark. */
+  let indexWidth = $derived(String(lastGoodResult?.rows.length ?? 0).length + 2);
+  let gridWidth = $derived(
+    `max(100%, calc(${columnWidths.reduce((a, b) => a + b, 2 + indexWidth)}ch + ${columns.length + 2}rem))`,
+  );
 
   const dictionarySort = new TableSort<'field' | 'type'>();
   const sortDictionary = (fields: [string, string][]) =>
@@ -1210,25 +1363,25 @@
     const row = lastGoodResult?.rows[i];
     if (!row) return false;
     if (expressionRows) return expressionRows.has(row.row);
-    return columns.some((col) => {
-      const field = cellOf(rowsFields[i] ?? [], col.path);
-      if (!field) return false;
-      const v = field.state === 'removed' ? field.before : field.after;
-      return formatDiffValue(v).toLowerCase().includes(q);
-    });
+    const m = rowsMaps[i];
+    return columns.some(
+      (path) =>
+        (m.after.has(path) || m.before.has(path)) &&
+        formatDiffValue(cellValue(m, path)).toLowerCase().includes(q),
+    );
   }
 
-  // Indices, not rows: `rowsFields` is position-parallel to the run's rows.
+  // Indices, not rows: `rowsMaps` is position-parallel to the run's rows.
   let gridOrder = $derived.by(() => {
     const rows = lastGoodResult?.rows ?? [];
     const by: Record<string, (i: number) => number | string | undefined> = {
       [ROW_KEY]: (i) => rows[i].row,
     };
-    for (const col of columns)
-      by[col.path] = (i) => {
-        const field = cellOf(rowsFields[i] ?? [], col.path);
-        if (!field) return undefined;
-        const v = field.state === 'removed' ? field.before : field.after;
+    for (const path of columns)
+      by[path] = (i) => {
+        const m = rowsMaps[i];
+        if (!m.after.has(path) && !m.before.has(path)) return undefined;
+        const v = cellValue(m, path);
         return typeof v === 'number' ? v : formatDiffValue(v);
       };
     return gridSort.apply(rows.map((_, i) => i).filter(matches), by);
@@ -1370,7 +1523,12 @@
           <span class="grip" aria-hidden="true">&#8596;</span>
         </div>
 
-        <section class="right-col">
+        <section
+          class="right-col"
+          bind:this={rightCol}
+          style:--pane-top={`${paneTop}px`}
+          style:--pane-after={`${paneAfter}px`}
+        >
           <InlineError message={proposeError} />
           <AddSampleDialog
             open={capturing}
@@ -1444,7 +1602,7 @@
             {/if}
           {/if}
 
-          <div role="tabpanel">
+          <div role="tabpanel" class="records">
             {#if paneTab === 'dictionary'}
               {#if dictionary}
                 {@const d = dictionary}
@@ -1540,11 +1698,6 @@
                 </div>
               {/if}
               <div class="output-actions">
-                <FoldAllButton
-                  {allOpen}
-                  disabled={!lastGoodResult || lastGoodResult.rows.length === 0}
-                  onclick={toggleAll}
-                />
                 <button
                   type="button"
                   class="toggle"
@@ -1571,15 +1724,15 @@
                     {/snippet}
                     {#snippet children()}
                       <div class="column-list">
-                        {#each allColumns as col (col.path)}
-                          {@const name = splitPath(col.path)}
-                          {@const shown = isShown(col.path)}
+                        {#each allColumns as path (path)}
+                          {@const name = splitPath(path)}
+                          {@const shown = isShown(path)}
                           <button
                             type="button"
                             class="pick"
                             class:on={shown}
                             aria-pressed={shown}
-                            onclick={() => toggleColumn(col.path)}
+                            onclick={() => toggleColumn(path)}
                           >
                             <span class="tick">{shown ? '✓' : ''}</span>
                             <span class="mono"
@@ -1618,40 +1771,58 @@
                 {:else if lastGoodResult.rows.length === 0}
                   <p class="dim">No sample rows.</p>
                 {:else}
-                  <!-- A table, so a column is only as wide as what it holds.
-                   `.cell`'s max-width caps that: one long value would otherwise
-                   set the width of its column for every row. -->
-                  <div class="grid-wrap">
-                    <table class="grid">
+                  <!-- Fixed widths, so a column holds still as rows scroll past
+                   (`columnWidths`); a value wider than its column ends in an
+                   ellipsis, and opening the row shows it whole. -->
+                  <div class="grid-wrap" bind:clientWidth={paneWidth}>
+                    <table class="grid" style:width={gridWidth}>
+                      <colgroup>
+                        <col style:width="calc(2ch + 1rem)" />
+                        <col style:width={`calc(${indexWidth}ch + 1rem)`} />
+                        <!-- The last column takes what the pane has to spare. -->
+                        {#each columnWidths as w, k (columns[k])}
+                          <col
+                            style:width={k < columns.length - 1 ? `calc(${w}ch + 1rem)` : undefined}
+                          />
+                        {/each}
+                      </colgroup>
                       <thead>
                         <tr>
-                          <th class="fold-cell"></th>
-                          <th class="index-cell" aria-sort={gridSort.aria(ROW_KEY)}
-                            ><SortButton sort={gridSort} key={ROW_KEY}>row</SortButton></th
+                          <th class="fold-cell"
+                            ><FoldAllButton icon {allOpen} what="records" onclick={toggleAll} /></th
                           >
-                          {#each columns as col (col.path)}
-                            <!-- A field the step treated the same way in every row
-                             says so once, here. Where the rows disagree the
-                             header stays plain and each cell speaks for itself. -->
-                            {@const name = splitPath(col.path)}
-                            <th
-                              class="cell state-{col.state ?? 'none'}"
-                              aria-sort={gridSort.aria(col.path)}
-                              ><SortButton sort={gridSort} key={col.path}
-                                ><span class="path-prefix">{name.prefix}</span
-                                >{name.leaf}</SortButton
+                          <th class="index-cell" aria-sort={gridSort.aria(ROW_KEY)}
+                            ><SortButton sort={gridSort} key={ROW_KEY}>#</SortButton></th
+                          >
+                          {#each columns as path (path)}
+                            {@const name = splitPath(path)}
+                            <th class="cell" title={path} aria-sort={gridSort.aria(path)}
+                              ><SortButton sort={gridSort} key={path}
+                                ><span class="head-name"
+                                  ><span class="path-prefix">{name.prefix}</span>{name.leaf}</span
+                                ></SortButton
                               ></th
                             >
                           {/each}
                         </tr>
                       </thead>
-                      <tbody>
-                        {#each gridOrder as i (lastGoodResult.rows[i].row)}
+                      <tbody bind:this={tbody}>
+                        {#if drawn.above > 0}
+                          <tr class="spacer" aria-hidden="true" style:height={`${drawn.above}px`}
+                            ><td colspan={columns.length + 2}></td></tr
+                          >
+                        {/if}
+                        {#each gridOrder.slice(drawn.start, drawn.end) as i (lastGoodResult.rows[i].row)}
                           {@const row = lastGoodResult.rows[i]}
-                          {@const fields = (rowsFields[i] ?? []).filter(unfolded)}
-                          {@const marks = countStates(fields)}
+                          {@const m = rowsMaps[i]}
                           {@const open = expanded.has(row.row)}
-                          <tr class="grid-row" class:dropped={row.json === null} class:open>
+                          {@const failing = row.exceptions.length > 0}
+                          <tr
+                            class="grid-row"
+                            class:dropped={row.json === null}
+                            class:open
+                            class:failing
+                          >
                             <td class="fold-cell">
                               <button
                                 type="button"
@@ -1661,9 +1832,11 @@
                                 onclick={() => toggleRow(row.row)}>{open ? '▾︎' : '▸︎'}</button
                               >
                             </td>
-                            <td class="index-cell">{row.row}</td>
-                            {#each columns as col (col.path)}
-                              {@const field = cellOf(fields, col.path)}
+                            <td class="index-cell"
+                              >{#if failing}<span class="warn">⚠</span>{/if}{row.row}</td
+                            >
+                            {#each columns as path (path)}
+                              {@const field = fieldAt(m.before, m.after, path)}
                               <td class="cell">
                                 {#if !field}
                                   <span class="dim">&mdash;</span>
@@ -1673,12 +1846,10 @@
                                    through, rather than an em dash saying only
                                    that something used to be here. -->
                                   <span class="state-removed">{formatDiffValue(field.before)}</span>
-                                {:else if col.state === null}
+                                {:else}
                                   <span class="state-{field.state}"
                                     >{formatDiffValue(field.after)}</span
                                   >
-                                {:else}
-                                  {formatDiffValue(field.after)}
                                 {/if}
                               </td>
                             {/each}
@@ -1686,21 +1857,17 @@
 
                           {#if open}
                             {@const sides = rowSides(row)}
-                            <tr class="expanded-row">
-                              <td
-                                class="expanded-cell"
-                                class:changed={marks.added + marks.changed + marks.removed > 0}
-                                colspan={columns.length + 2}
-                              >
+                            {@const marks = rowMarks(m)}
+                            <!-- Named apart from its row, which is named by its fold button. -->
+                            <tr
+                              class="expanded-row"
+                              aria-label={`record ${row.row}`}
+                              bind:offsetHeight={openHeights[row.row]}
+                            >
+                              <td class="expanded-cell" colspan={columns.length + 2}>
                                 <div class="row-head-wrap">
                                   <div class="row-head">
                                     <span class="row-index">row {row.row}</span>
-                                    {#each row.exceptions as a}
-                                      <span class="badge">{a.message}</span>
-                                    {/each}
-                                    {#if row.json === null}
-                                      <span class="badge dropped-badge">dropped</span>
-                                    {/if}
                                     <!-- Beside the row number: pushing it to the far
                                      side needed the row-head to reliably span the
                                      visible width, which a `colspan` cell wider
@@ -1708,26 +1875,42 @@
                                     {#if marks.added > 0}<span class="mark added"
                                         >+{marks.added}</span
                                       >{/if}
-                                    {#if marks.changed > 0}<span class="mark changed"
-                                        >~{marks.changed}</span
-                                      >{/if}
                                     {#if marks.removed > 0}<span class="mark removed"
                                         >&minus;{marks.removed}</span
                                       >{/if}
+                                    {#if marks.changed > 0}<span class="mark changed"
+                                        >~{marks.changed}</span
+                                      >{/if}
+                                    {#if row.json === null}
+                                      <span class="badge dropped-badge">dropped</span>
+                                    {/if}
                                   </div>
+                                  {#each row.exceptions as a}
+                                    <p class="exception">{a.message}</p>
+                                  {/each}
                                 </div>
-                                <RecordFields
-                                  before={sides.before}
-                                  after={sides.after}
-                                  keep={unfoldedPath}
-                                  declared={sides.declared}
-                                  {changedOnly}
-                                  {showTypes}
-                                />
+                                <div
+                                  class="record-body"
+                                  style:max-width={`calc(${paneWidth}px - 1.5rem)`}
+                                >
+                                  <RecordFields
+                                    before={sides.before}
+                                    after={sides.after}
+                                    keep={unfoldedPath}
+                                    declared={sides.declared}
+                                    {changedOnly}
+                                    {showTypes}
+                                  />
+                                </div>
                               </td>
                             </tr>
                           {/if}
                         {/each}
+                        {#if drawn.below > 0}
+                          <tr class="spacer" aria-hidden="true" style:height={`${drawn.below}px`}
+                            ><td colspan={columns.length + 2}></td></tr
+                          >
+                        {/if}
                       </tbody>
                     </table>
                   </div>
@@ -2084,6 +2267,48 @@
     gap: 0;
   }
 
+  /* Beside the steps, the records scroll on their own: the 500th record and the step that set it
+     are on screen together. */
+  @media (min-width: 1001px) {
+    .right-col {
+      position: sticky;
+      top: var(--clear-top, 0px);
+      /* Its grid and dictionary scroll themselves; a short pane must not clip a menu opened in it. */
+      overflow: visible;
+      /* From where it stands on screen to the bottom of the window, clear of what the page holds
+         below it and of the bars held over the page: the Save bar, and the agent panel under it. */
+      max-height: calc(
+        100vh - max(var(--pane-top), var(--clear-top, 0px)) - var(--pane-after) -
+          var(--clear-bottom, 0px) - var(--agent-panel, 0px)
+      );
+    }
+
+    /* The grid is what scrolls, so the controls above it and its header row stay put. */
+    .records,
+    .results {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+
+    /* Only what fills the pane scrolls: a scroller around the controls would clip their menus. */
+    .dictionary {
+      overflow-y: auto;
+      min-height: 0;
+    }
+
+    .right-col > :not(.records),
+    .records > :not(.results, .dictionary) {
+      flex-shrink: 0;
+    }
+
+    .grid-wrap {
+      overflow: auto;
+      min-height: 0;
+    }
+  }
+
   .output-actions {
     display: flex;
     align-items: center;
@@ -2146,7 +2371,7 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--dim);
+    color: var(--ink);
   }
 
   .badge {
@@ -2181,7 +2406,7 @@
      than the panel when the columns need it, which is what scrolls. */
   .grid {
     border-collapse: collapse;
-    min-width: 100%;
+    table-layout: fixed;
     font-family: var(--mono);
     font-size: var(--text-note);
   }
@@ -2199,6 +2424,8 @@
     font-size: var(--text-micro);
     position: sticky;
     top: 0;
+    /* Above the open record's body, which is sticky too and later in the page. */
+    z-index: 1;
     background: var(--bg);
   }
 
@@ -2211,10 +2438,6 @@
 
   .grid-row.dropped .cell {
     opacity: 0.55;
-  }
-
-  .fold-cell {
-    width: 1.2rem;
   }
 
   .fold {
@@ -2231,10 +2454,7 @@
     text-align: right;
   }
 
-  /* Wide enough for what it holds, up to the point where one value would
-     push every other column off the panel. */
   .cell {
-    max-width: 14rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2249,9 +2469,51 @@
     padding: 0.5rem 0.5rem 0.5rem 0.75rem;
   }
 
-  .expanded-cell.changed {
-    background: color-mix(in oklch, var(--added) 7%, transparent);
-    box-shadow: inset 3px 0 0 var(--added);
+  /* The record follows the left edge as the grid scrolls sideways, and wraps
+     to what shows of it rather than to the width of every column. */
+  .record-body {
+    position: sticky;
+    left: 0.75rem;
+  }
+
+  /* A row that failed is the one to read, so it is the one that stands out. */
+  .grid-row.failing > td {
+    background: color-mix(in srgb, var(--error) 10%, transparent);
+  }
+
+  .grid-row.failing .index-cell,
+  .warn {
+    color: var(--error);
+  }
+
+  .warn {
+    margin-right: 0.4ch;
+  }
+
+  /* Why the row failed, under its head, in the words the step gave. */
+  .exception {
+    position: sticky;
+    left: 0.75rem;
+    width: max-content;
+    max-width: 100%;
+    margin: 0.3rem 0 0;
+    padding-left: 0.5rem;
+    border-left: 2px solid var(--error);
+    color: var(--error);
+    white-space: normal;
+  }
+
+  .spacer td {
+    padding: 0;
+    border: 0;
+  }
+
+  /* The header's name gives way to an ellipsis rather than widening its
+     column; the whole path is its title. */
+  .head-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   /* The head of an open record follows the left edge rather than scrolling
