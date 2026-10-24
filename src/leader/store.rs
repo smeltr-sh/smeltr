@@ -603,10 +603,6 @@ pub trait Store: Send + Sync {
     /// Errors if the name is taken or unusable as a name.
     fn create_certificate(&self, name: &str, description: &str, value: &str) -> Result<(), StoreError>;
 
-    /// The chain and private key of the certificate `name` at `version`, PEM, for this leader to serve. `None` for an
-    /// unknown name, an unheld version, a secret that is not a certificate, and a row the leader's key cannot open.
-    fn certificate_value(&self, name: &str, version: i64) -> Result<Option<String>, StoreError>;
-
     /// Seals `value` as a new version of `name` and returns its number -- what a bundle quotes to run it. Errors
     /// for an unknown name and for worker-local custody.
     ///

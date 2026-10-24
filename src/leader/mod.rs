@@ -2303,10 +2303,18 @@ pub fn newest_certificate(store: &dyn Store, name: &str) -> Result<Option<(Strin
     let Some(version) = current.current().map(|v| v.version) else {
         return Ok(None);
     };
-    Ok(store.certificate_value(name, version)?.and_then(|value| {
+    let opened = store.secrets_for_delivery(&[(name.to_string(), version)], &[])?;
+    Ok(opened.into_iter().next().and_then(|(_, _, value)| {
         let (chain, key) = crate::io::trust::certificate_parts(&value).ok()?;
         Some((chain.to_string(), key.to_string()))
     }))
+}
+
+/// The fingerprint of the newest leaf of the certificate `name`, `None` where it has none this leader can open.
+fn newest_fingerprint(store: &dyn Store, name: &str) -> Result<Option<String>, StoreError> {
+    Ok(newest_certificate(store, name)?
+        .and_then(|(chain, _)| tls::describe(chain.as_bytes(), "the certificate").ok())
+        .map(|leaf| leaf.fingerprint))
 }
 
 /// The name a certificate uploaded before the list existed is listed under.
@@ -2321,11 +2329,13 @@ pub fn list_uploaded_certificate(store: &dyn Store, tls_dir: &std::path::Path) -
     }
     let (materials, served) = tls::in_force(tls_dir)?;
     let fingerprint = tls::describe(&served, "the certificate")?.fingerprint;
-    for r in store.list_secrets().map_err(|e| e.to_string())? {
-        let listed = newest_certificate(store, &r.name).map_err(|e| e.to_string())?;
-        if listed.is_some_and(|(chain, _)| {
-            tls::describe(chain.as_bytes(), "the certificate").is_ok_and(|leaf| leaf.fingerprint == fingerprint)
-        }) {
+    for r in store
+        .list_secrets()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|r| r.certificate)
+    {
+        if newest_fingerprint(store, &r.name).map_err(|e| e.to_string())? == Some(fingerprint.clone()) {
             return Ok(());
         }
     }
@@ -2366,9 +2376,7 @@ async fn list_certificates(
                 versions,
                 ..
             } = SecretOut::from(r);
-            let served = chain
-                .first()
-                .is_some_and(|leaf| served.as_ref() == Some(&leaf.fingerprint));
+            let served = served.is_some() && chain.first().map(|leaf| &leaf.fingerprint) == served.as_ref();
             out.push(CertificateOut {
                 name,
                 description,
@@ -2423,9 +2431,7 @@ async fn delete_certificate(State(state): State<AppState>, Path(name): Path<Stri
     let data_dir = state.data_dir.clone();
     let wanted = name.clone();
     let served = run_store(state.store.clone(), move |s| {
-        let leaf = newest_certificate(s, &wanted)?
-            .and_then(|(chain, _)| tls::describe(chain.as_bytes(), "the certificate").ok())
-            .map(|leaf| leaf.fingerprint);
+        let leaf = newest_fingerprint(s, &wanted)?;
         Ok(leaf.is_some() && leaf == served_from_list(&data_dir))
     })
     .await;

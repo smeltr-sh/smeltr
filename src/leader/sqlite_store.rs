@@ -1050,23 +1050,6 @@ impl Store for SqliteStore {
         self.create(name, Custody::LeaderStored, CERTIFICATE, description, Some(value))
     }
 
-    fn certificate_value(&self, name: &str, version: i64) -> Result<Option<String>, StoreError> {
-        let Some(key) = self.key_if_any()? else {
-            return Ok(None);
-        };
-        let conn = self.conn.lock().unwrap();
-        let kind: Option<String> = conn
-            .query_row("SELECT kind FROM secrets WHERE name = ?1", [name], |row| row.get(0))
-            .optional()?;
-        if kind.as_deref() != Some(CERTIFICATE) {
-            return Ok(None);
-        }
-        let Some(sealed) = Self::sealed(&conn, name, version)? else {
-            return Ok(None);
-        };
-        Ok(key.open(name, &sealed).and_then(|value| String::from_utf8(value).ok()))
-    }
-
     fn add_secret_version(&self, name: &str, value: &str) -> Result<i64, StoreError> {
         let sealed = self.key_for_sealing()?.seal(name, value.as_bytes());
         let mut conn = self.conn.lock().unwrap();
@@ -2732,11 +2715,8 @@ mod tests {
         assert_eq!(r.custody(), Custody::LeaderStored);
         assert_eq!(r.current().map(|v| v.version), Some(1));
         assert!(!record(&s, "kafka-west-sasl").certificate);
-        assert_eq!(
-            s.certificate_value("leader", 1).unwrap().as_deref(),
-            Some("chain and key")
-        );
-        assert_eq!(s.certificate_value("kafka-west-sasl", 1).unwrap(), None);
+        let delivered = s.secrets_for_delivery(&[("leader".to_string(), 1)], &[]).unwrap();
+        assert_eq!(delivered, [("leader".to_string(), 1, "chain and key".to_string())]);
         assert!(
             s.create_certificate("kafka-west-sasl", "", "x").is_err(),
             "one name space"
