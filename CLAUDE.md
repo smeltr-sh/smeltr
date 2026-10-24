@@ -76,6 +76,9 @@ After a change to the GUI or the API it calls, also run `just check-gui`. While 
 touches (`just check-gui specs/<name>.spec.ts`), and the whole of it once, before the PR leaves draft. A base merged
 into a branch without a conflict needs only `just check`.
 
+While building, run the app with `just build-dev` or `just run-dev`, and take screenshots from it. `just build` and
+`just run` are for checking how a release build behaves.
+
 A machine builds into one `target/`, the main checkout's. A worktree or second clone sets `CARGO_TARGET_DIR` to
 it, so dependencies build once and a new checkout recompiles only smeltr. Cargo commands on one `target/` run one
 at a time: a second waits on the first's lock, so a waiting build is queued, not hung. Clippy builds into
