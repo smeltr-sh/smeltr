@@ -774,6 +774,9 @@ fn an_administrator_keeps_certificates_in_the_list() {
         value["ok"], false,
         "a certificate's value is not set as a secret's: {value}"
     );
+    let verify = serde_json::json!({"version": 1, "candidate": private_key});
+    let (status, _) = leader.post_as(&op, "/api/secrets/receiver/verify", verify);
+    assert_eq!(status, 409, "a certificate's key is not verified as a secret's");
 
     let (renewed, renewed_key) = certificate_and_key("receiver.example.com");
     let body = serde_json::json!({"certificate": renewed, "privateKey": renewed_key});

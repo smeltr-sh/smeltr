@@ -2257,12 +2257,19 @@ async fn store_secret_value(
     Path(name): Path<String>,
     Json(req): Json<SecretValueRequest>,
 ) -> Json<Envelope> {
-    match is_certificate(&state, &name).await {
-        Ok(false) => store_value(state, name, req.value, None).await,
-        Ok(true) => Json(Envelope::failed_one(format!(
-            "{name:?} is a certificate; replace it on the Certificates page"
-        ))),
+    match not_a_certificate(&state, &name).await {
+        Ok(()) => store_value(state, name, req.value, None).await,
         Err(e) => Json(Envelope::failed_one(e)),
+    }
+}
+
+/// Refuses a secret route that means nothing for a certificate's key: its value is set with its chain, and nothing
+/// verifies or points at it as a secret.
+async fn not_a_certificate(state: &AppState, name: &str) -> Result<(), String> {
+    match is_certificate(state, name).await {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(format!("{name:?} is a certificate; change it on the Certificates page")),
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -2505,9 +2512,11 @@ async fn replace_certificate(
     }
 }
 
-/// Deleting the certificate the leader serves is refused, as deleting a secret the fleet runs is: the leader would
-/// serve a certificate the list no longer shows.
-async fn delete_certificate(State(state): State<AppState>, Path(name): Path<String>) -> Json<Envelope> {
+/// Deleting a credential the fleet runs, or would run once released, would strand the groups that use it, with no way
+/// back: the value is gone. So the one case that cannot be undone is refused, and everything else deletes. The
+/// certificate the leader serves is refused too, whichever route asks: the leader would serve one the list no longer
+/// shows.
+async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) -> Json<Envelope> {
     let data_dir = state.data_dir.clone();
     let wanted = name.clone();
     let served = run_store(state.store.clone(), move |s| {
@@ -2516,17 +2525,14 @@ async fn delete_certificate(State(state): State<AppState>, Path(name): Path<Stri
     })
     .await;
     match served {
-        Ok(false) => delete_secret(State(state), Path(name)).await,
-        Ok(true) => Json(Envelope::failed_one(format!(
-            "the leader serves {name:?}; choose another certificate for it first"
-        ))),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(false) => {}
+        Ok(true) => {
+            return Json(Envelope::failed_one(format!(
+                "the leader serves {name:?}; choose another certificate for it first"
+            )));
+        }
+        Err(e) => return Json(Envelope::failed_one(e)),
     }
-}
-
-/// Deleting a credential the fleet runs, or would run once released, would strand the groups that use it, with no way
-/// back: the value is gone. So the one case that cannot be undone is refused, and everything else deletes.
-async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) -> Json<Envelope> {
     let data_dir = state.data_dir.clone();
     let entitlements = state.entitlements.clone();
     let wanted = name.clone();
@@ -2583,6 +2589,9 @@ async fn verify_secret(
                 VERIFY_WINDOW.as_secs()
             ),
         ));
+    }
+    if let Err(e) = not_a_certificate(&state, &name).await {
+        return Err((axum::http::StatusCode::CONFLICT, e));
     }
     let asked = name.clone();
     let version = req.version;
@@ -2869,6 +2878,9 @@ async fn point_secret(
     Path(name): Path<String>,
     Json(req): Json<PointSecretRequest>,
 ) -> Json<Envelope<PointedSecret>> {
+    if let Err(e) = not_a_certificate(&state, &name).await {
+        return Json(Envelope::failed_one(e));
+    }
     let held = {
         let wanted = name.clone();
         let version = req.version;
@@ -3348,7 +3360,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/certificates", get(list_certificates).post(create_certificate))
         .route(
             "/api/certificates/:name",
-            put(replace_certificate).delete(delete_certificate),
+            put(replace_certificate).delete(delete_secret),
         )
         .route(
             "/api/secrets/:name/versions/:version",
