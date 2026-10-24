@@ -377,7 +377,11 @@ describe('ACME', () => {
     expect(target.textContent).toContain('Stored');
     button('Save')!.click();
     await vi.waitFor(() => expect(puts).toHaveLength(1));
-    expect(puts[0]).toMatchObject({ challenge: 'dns-01', dnsProvider: 'cloudflare', cloudflareToken: null });
+    expect(puts[0]).toMatchObject({
+      challenge: 'dns-01',
+      dnsProvider: 'cloudflare',
+      cloudflareToken: null,
+    });
     await vi.waitFor(() => expect(target.textContent).toContain('settings saved'));
 
     target.querySelector<HTMLButtonElement>('button[aria-label="replace the API token"]')!.click();

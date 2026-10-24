@@ -844,7 +844,8 @@
           </Advanced>
           {#if inForce !== 'acme' && challenge === 'dns-01'}
             <p class="critical">
-              The zones that hold {nameList.join(', ') || 'the names above'} must be in this Cloudflare account.
+              The zones that hold {nameList.join(', ') || 'the names above'} must be in this Cloudflare
+              account.
             </p>
           {:else if inForce !== 'acme'}
             <p class="critical">
