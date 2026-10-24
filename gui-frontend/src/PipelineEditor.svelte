@@ -1817,7 +1817,12 @@
                           {#if open}
                             {@const sides = rowSides(row)}
                             {@const marks = rowMarks(m)}
-                            <tr class="expanded-row" bind:offsetHeight={openHeights[row.row]}>
+                            <!-- Named apart from its row, which is named by its fold button. -->
+                            <tr
+                              class="expanded-row"
+                              aria-label={`record ${row.row}`}
+                              bind:offsetHeight={openHeights[row.row]}
+                            >
                               <td class="expanded-cell" colspan={columns.length + 2}>
                                 <div class="row-head-wrap">
                                   <div class="row-head">
