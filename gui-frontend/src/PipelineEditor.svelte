@@ -1266,7 +1266,12 @@
   function measure() {
     if (!tbody) return;
     const top = tbody.getBoundingClientRect().top;
-    viewport = { top: -top, bottom: window.innerHeight - top };
+    // What shows of the grid: its own box where it scrolls itself, the window where the page does.
+    const box = tbody.closest('.grid-wrap')!.getBoundingClientRect();
+    viewport = {
+      top: Math.max(0, box.top) - top,
+      bottom: Math.min(window.innerHeight, box.bottom) - top,
+    };
     const first = tbody.querySelector<HTMLElement>('tr.grid-row');
     if (first && first.offsetHeight > 0) rowHeight = first.offsetHeight;
   }
@@ -2239,8 +2244,11 @@
   @media (min-width: 1001px) {
     .right-col {
       position: sticky;
-      top: 0;
-      max-height: 100vh;
+      top: var(--clear-top, 0px);
+      /* Clear of the bars held over the page: the Save bar, and the agent panel under it. */
+      max-height: calc(
+        100vh - var(--clear-top, 0px) - var(--clear-bottom, 0px) - var(--agent-panel, 0px)
+      );
     }
 
     /* The grid is what scrolls, so the controls above it and its header row stay put. */
