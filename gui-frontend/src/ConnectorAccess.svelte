@@ -290,6 +290,7 @@
 
 <script lang="ts">
   import Field from './Field.svelte';
+  import Nested from './Nested.svelte';
   import UrlField from './UrlField.svelte';
   import SecretRefInput from './SecretRefInput.svelte';
   import { numberOrUnset } from './page';
@@ -339,6 +340,7 @@
 
 {#if show === 'credential'}
   {@const choice = credentialOf(store, value)}
+  {@const credentialFields = CREDENTIALS[store][choice]?.fields ?? []}
   {#if store === 'sftp'}
     <div class="pair">
       {@render serverField('host', 'host', "The server's host name or address.")}
@@ -381,27 +383,31 @@
       {/each}
     </select>
   </Field>
-  {#each CREDENTIALS[store][choice]?.fields ?? [] as f (f.key)}
-    {@const v = fields(value)[f.key]}
-    {@const about = help[f.key] ?? f.help}
-    {#snippet fieldHelp()}{about}{/snippet}
-    <Field field={f.key} label={f.name} help={about ? fieldHelp : undefined}>
-      {#if f.secret}
-        <SecretRefInput
-          value={v as SecretRef | undefined}
-          {secrets}
-          label={f.name}
-          onchange={(r) => setField(store, value, f.key, r ?? '')}
-        />
-      {:else}
-        <input
-          type="text"
-          value={(v as string | undefined) ?? ''}
-          oninput={(e) => setField(store, value, f.key, e.currentTarget.value)}
-        />
-      {/if}
-    </Field>
-  {/each}
+  {#if credentialFields.length > 0}
+    <Nested>
+      {#each credentialFields as f (f.key)}
+        {@const v = fields(value)[f.key]}
+        {@const about = help[f.key] ?? f.help}
+        {#snippet fieldHelp()}{about}{/snippet}
+        <Field field={f.key} label={f.name} help={about ? fieldHelp : undefined}>
+          {#if f.secret}
+            <SecretRefInput
+              value={v as SecretRef | undefined}
+              {secrets}
+              label={f.name}
+              onchange={(r) => setField(store, value, f.key, r ?? '')}
+            />
+          {:else}
+            <input
+              type="text"
+              value={(v as string | undefined) ?? ''}
+              oninput={(e) => setField(store, value, f.key, e.currentTarget.value)}
+            />
+          {/if}
+        </Field>
+      {/each}
+    </Nested>
+  {/if}
   {#if store === 'sftp'}
     {@render serverField(
       'hostKey',

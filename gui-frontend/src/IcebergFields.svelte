@@ -8,6 +8,7 @@
   import Advanced from './Advanced.svelte';
   import TableDelivery from './TableDelivery.svelte';
   import Field from './Field.svelte';
+  import Nested from './Nested.svelte';
   import UrlField from './UrlField.svelte';
   import IdentityPicker from './IdentityPicker.svelte';
   import ConnectorAccess from './ConnectorAccess.svelte';
@@ -107,49 +108,58 @@
     {/each}
   </select>
 </Field>
-{#if signIn === 'token'}
-  <Field field="token" label="token">
-    {#snippet help()}
-      The secret holding a bearer token for the catalog.
-    {/snippet}
-    <SecretRefInput value={d.token} {secrets} label="token" onchange={(v) => (d.token = v ?? '')} />
-  </Field>
-{:else if signIn === 'client'}
-  <Field field="clientId" label="client id">
-    {#snippet help()}
-      The OAuth client it signs in to the catalog as.
-    {/snippet}
-    <input type="text" bind:value={d.clientId} />
-  </Field>
-  <Field field="clientSecret" label="client secret">
-    {#snippet help()}
-      The secret holding the OAuth client's secret.
-    {/snippet}
-    <SecretRefInput
-      value={d.clientSecret}
-      {secrets}
-      label="client secret"
-      onchange={(v) => (d.clientSecret = v ?? '')}
-    />
-  </Field>
-{:else if signIn === 'aws'}
-  {@const known = (SIGNING_NAMES as readonly string[]).includes(d.signingName ?? '')}
-  <Field
-    field="signingName"
-    label="signing service"
-    error={signingNameRefusal(d) ?? regionRefusal(d) ?? null}
-  >
-    {#snippet help()}
-      <code>glue</code> for Glue's Iceberg endpoint, <code>s3tables</code> for S3 Tables. Calls are
-      signed for the region the catalog's AWS address names, else its <code>region</code>.
-    {/snippet}
-    <select value={d.signingName} onchange={(e) => (d.signingName = e.currentTarget.value)}>
-      {#each SIGNING_NAMES as name (name)}
-        <option value={name}>{name}</option>
-      {/each}
-      {#if !known}<option value={d.signingName}>{d.signingName}</option>{/if}
-    </select>
-  </Field>
+{#if signIn !== 'none'}
+  <Nested>
+    {#if signIn === 'token'}
+      <Field field="token" label="token">
+        {#snippet help()}
+          The secret holding a bearer token for the catalog.
+        {/snippet}
+        <SecretRefInput
+          value={d.token}
+          {secrets}
+          label="token"
+          onchange={(v) => (d.token = v ?? '')}
+        />
+      </Field>
+    {:else if signIn === 'client'}
+      <Field field="clientId" label="client id">
+        {#snippet help()}
+          The OAuth client it signs in to the catalog as.
+        {/snippet}
+        <input type="text" bind:value={d.clientId} />
+      </Field>
+      <Field field="clientSecret" label="client secret">
+        {#snippet help()}
+          The secret holding the OAuth client's secret.
+        {/snippet}
+        <SecretRefInput
+          value={d.clientSecret}
+          {secrets}
+          label="client secret"
+          onchange={(v) => (d.clientSecret = v ?? '')}
+        />
+      </Field>
+    {:else if signIn === 'aws'}
+      {@const known = (SIGNING_NAMES as readonly string[]).includes(d.signingName ?? '')}
+      <Field
+        field="signingName"
+        label="signing service"
+        error={signingNameRefusal(d) ?? regionRefusal(d) ?? null}
+      >
+        {#snippet help()}
+          <code>glue</code> for Glue's Iceberg endpoint, <code>s3tables</code> for S3 Tables. Calls
+          are signed for the region the catalog's AWS address names, else its <code>region</code>.
+        {/snippet}
+        <select value={d.signingName} onchange={(e) => (d.signingName = e.currentTarget.value)}>
+          {#each SIGNING_NAMES as name (name)}
+            <option value={name}>{name}</option>
+          {/each}
+          {#if !known}<option value={d.signingName}>{d.signingName}</option>{/if}
+        </select>
+      </Field>
+    {/if}
+  </Nested>
 {/if}
 <IdentityPicker
   value={d.identity}
