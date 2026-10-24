@@ -288,8 +288,8 @@
 
   async function undo(c: SectionChange) {
     const ok = await ask({
-      title: `Undo changes to ${c.label}?`,
-      body: `Its edits are undone as a new save on ${branch.name}.`,
+      title: 'undo changes',
+      body: `Undo the changes to ${c.label}, as a new save on ${branch.name}.`,
       action: 'Undo changes',
       danger: true,
     });
