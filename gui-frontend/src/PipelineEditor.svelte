@@ -102,7 +102,6 @@
   import { hold, verdictFor, drop } from './edits';
   import type { ChangeRow } from './diff';
   import AddSampleDialog from './AddSampleDialog.svelte';
-  import SamplePicker from './SamplePicker.svelte';
   import SampleMenu from './SampleMenu.svelte';
   import PencilIcon from './PencilIcon.svelte';
   import { mintPipelineId } from './ids';
@@ -1669,36 +1668,91 @@
           {/if}
 
           <div class="records">
-            {#if !selectedSample}
-              {#if dictionary}
+            <div class="output-search">
+              <SampleMenu
+                {samples}
+                selected={selectedSample}
+                {lastUsed}
+                records={lastGoodResult && lastSample === selectedSample
+                  ? lastGoodResult.rows.length
+                  : null}
+                {lockedBy}
+                pipeline={loadedId}
+                mayCapture={(c) => mayCapture(sourceTarget(c))}
+                onpick={chooseSample}
+                onsaved={captured}
+                oncapture={(c) => {
+                  captureAt = sourceTarget(c);
+                  capturing = true;
+                }}
+              />
+              {#if lastGoodResult && lastGoodResult.rows.length > 0}
+                <label class="search"
+                  ><span aria-hidden="true">⌕</span>{#each chips as c (chipKey(c))}<span
+                      class="find-chip"
+                      >{c.kind === 'has'
+                        ? `has ${c.path}`
+                        : c.kind === 'failing'
+                          ? '⚠ Failing'
+                          : c.kind === 'dropped'
+                            ? '⌫ Dropped'
+                            : '~ Changed by a step'}<button
+                        type="button"
+                        aria-label={`remove ${chipKey(c)}`}
+                        onclick={() => toggleChip(c)}>✕</button
+                      ></span
+                    >{/each}<input
+                    type="search"
+                    class:mono={expressionRows !== null}
+                    bind:value={outputQuery}
+                    placeholder="Search the output, or filter with an expression such as status >= 500"
+                    aria-label="Search the output"
+                  />{#if outputQuery.trim()}<span
+                      class="mode"
+                      class:expression={expressionRows !== null}
+                      >{expressionRows !== null ? 'ƒ expression' : 'keyword'}</span
+                    >{/if}</label
+                >
+                {#if outputQuery.trim() || chips.length > 0}
+                  <span class="dim count"
+                    >{gridOrder.length} of {lastGoodResult.rows.length} rows</span
+                  >
+                {/if}
+                {#if failingCount > 0}
+                  <button
+                    type="button"
+                    class="failing"
+                    aria-pressed={chips.some((c) => c.kind === 'failing')}
+                    onclick={() => toggleChip({ kind: 'failing' })}>⚠ {failingCount} failing</button
+                  >
+                {/if}
+                <FieldsMenu
+                  fields={menuFields}
+                  records={lastGoodResult.rows.length}
+                  shown={isShown}
+                  {dictionary}
+                  onshow={showFields}
+                  ondefault={() => toggledColumns.clear()}
+                  onhas={(path) => {
+                    showFields([path], true);
+                    addChip({ kind: 'has', path });
+                  }}
+                />
+              {:else if !selectedSample && dictionary}
                 <!-- No records to count, but the steps compiled: what they declare. -->
-                <div class="output-search">
-                  <span class="grow"></span>
-                  <FieldsMenu
-                    fields={menuFields}
-                    records={null}
-                    shown={isShown}
-                    {dictionary}
-                    onshow={showFields}
-                    ondefault={() => toggledColumns.clear()}
-                    onhas={() => {}}
-                  />
-                </div>
+                <span class="grow"></span>
+                <FieldsMenu
+                  fields={menuFields}
+                  records={null}
+                  shown={isShown}
+                  {dictionary}
+                  onshow={showFields}
+                  ondefault={() => toggledColumns.clear()}
+                  onhas={() => {}}
+                />
               {/if}
-              {#if samples.length === 0}
-                <p class="dim">
-                  No samples yet. Capture one, or paste or upload records on the
-                  <a class="btn" href="#/build">Samples</a> page.
-                </p>
-              {:else}
-                <SamplePicker {samples} {lockedBy} onpick={chooseSample}>
-                  {#snippet tools()}
-                    <button type="button" onclick={() => (capturing = true)}>Capture</button>
-                    <a class="btn" href="#/build">Paste or upload</a>
-                  {/snippet}
-                </SamplePicker>
-              {/if}
-            {:else}
+            </div>
+            {#if selectedSample}
               {#if selectedStep}
                 <div class="diff-scope">
                   <span class="dim">Diffing:</span>
@@ -1711,79 +1765,6 @@
                 <InlineError message={selectedDiffError} />
               {/if}
 
-              <div class="output-search">
-                <SampleMenu
-                  {samples}
-                  selected={selectedSample}
-                  {lastUsed}
-                  records={lastGoodResult && lastSample === selectedSample
-                    ? lastGoodResult.rows.length
-                    : null}
-                  {lockedBy}
-                  pipeline={loadedId}
-                  mayCapture={(c) => mayCapture(sourceTarget(c))}
-                  onpick={chooseSample}
-                  onsaved={captured}
-                  oncapture={(c) => {
-                    captureAt = sourceTarget(c);
-                    capturing = true;
-                  }}
-                />
-                {#if lastGoodResult && lastGoodResult.rows.length > 0}
-                  <label class="search"
-                    ><span aria-hidden="true">⌕</span>{#each chips as c (chipKey(c))}<span
-                        class="find-chip"
-                        >{c.kind === 'has'
-                          ? `has ${c.path}`
-                          : c.kind === 'failing'
-                            ? '⚠ Failing'
-                            : c.kind === 'dropped'
-                              ? '⌫ Dropped'
-                              : '~ Changed by a step'}<button
-                          type="button"
-                          aria-label={`remove ${chipKey(c)}`}
-                          onclick={() => toggleChip(c)}>✕</button
-                        ></span
-                      >{/each}<input
-                      type="search"
-                      class:mono={expressionRows !== null}
-                      bind:value={outputQuery}
-                      placeholder="Search the output, or filter with an expression such as status >= 500"
-                      aria-label="Search the output"
-                    />{#if outputQuery.trim()}<span
-                        class="mode"
-                        class:expression={expressionRows !== null}
-                        >{expressionRows !== null ? 'ƒ expression' : 'keyword'}</span
-                      >{/if}</label
-                  >
-                  {#if outputQuery.trim() || chips.length > 0}
-                    <span class="dim count"
-                      >{gridOrder.length} of {lastGoodResult.rows.length} rows</span
-                    >
-                  {/if}
-                  {#if failingCount > 0}
-                    <button
-                      type="button"
-                      class="failing"
-                      aria-pressed={chips.some((c) => c.kind === 'failing')}
-                      onclick={() => toggleChip({ kind: 'failing' })}
-                      >⚠ {failingCount} failing</button
-                    >
-                  {/if}
-                  <FieldsMenu
-                    fields={menuFields}
-                    records={lastGoodResult.rows.length}
-                    shown={isShown}
-                    {dictionary}
-                    onshow={showFields}
-                    ondefault={() => toggledColumns.clear()}
-                    onhas={(path) => {
-                      showFields([path], true);
-                      addChip({ kind: 'has', path });
-                    }}
-                  />
-                {/if}
-              </div>
               <div class="output-actions">
                 <button
                   type="button"
