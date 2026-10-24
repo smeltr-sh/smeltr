@@ -240,13 +240,14 @@ fn layout(src: &str, shape: &Shape) -> Option<String> {
             starts = false;
         }
 
-        // A `//` comment ends its line.
+        // A `//` comment ends its line. One on a line of its own above a case's label belongs to that case.
+        let comment_at = label(piece).then_some(piece);
         let mut line_comment = false;
         for c in &comments {
             if w.out.is_empty() {
                 // The comment opens the text.
             } else if c.breaks > 0 || line_comment {
-                w.newline(c.breaks, indent_at(&w, None));
+                w.newline(c.breaks, indent_at(&w, comment_at));
                 starts = false;
             } else {
                 w.out.push(' ');
@@ -432,6 +433,10 @@ mod tests {
         assert_eq!(
             block(r#"switch (c) { case "a": x = 1; break; default: x = 0; }"#),
             "switch (c) {\n  case \"a\":\n    x = 1;\n    break;\n  default:\n    x = 0;\n}"
+        );
+        assert_eq!(
+            block("switch (c) {\ncase 1:\nx = 1;\nbreak;\n// then two\ncase 2:\nx = 2;\n}"),
+            "switch (c) {\n  case 1:\n    x = 1;\n    break;\n  // then two\n  case 2:\n    x = 2;\n}"
         );
         assert_eq!(
             block("for (let x of xs) { if (x > 0) { n += 1 } }"),

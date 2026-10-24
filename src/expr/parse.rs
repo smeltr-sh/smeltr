@@ -128,26 +128,61 @@ pub struct Shape {
     pub ternary_colons: Vec<u32>,
     /// Each `switch` label's `case` or `default`.
     pub case_labels: Vec<u32>,
+    /// The label of each case with statements of its own that runs on into the next case: no `break`, `return`,
+    /// `throw`, `continue` or `drop()` ends it.
+    pub fall_throughs: Vec<Span>,
+    /// What ends a block before statements that therefore never run: `drop()`, `return`, `throw`, `break` or
+    /// `continue`.
+    pub unreachable: Vec<&'static str>,
 }
 
 impl Shape {
-    fn mark(&self) -> [usize; 5] {
+    fn mark(&self) -> [usize; 7] {
         [
             self.blocks.len(),
             self.statements.len(),
             self.types.len(),
             self.ternary_colons.len(),
             self.case_labels.len(),
+            self.fall_throughs.len(),
+            self.unreachable.len(),
         ]
     }
 
     /// Forgets what a parse that was rolled back recorded.
-    fn truncate(&mut self, [b, s, t, c, l]: [usize; 5]) {
+    fn truncate(&mut self, [b, s, t, c, l, f, u]: [usize; 7]) {
         self.blocks.truncate(b);
         self.statements.truncate(s);
         self.types.truncate(t);
         self.ternary_colons.truncate(c);
         self.case_labels.truncate(l);
+        self.fall_throughs.truncate(f);
+        self.unreachable.truncate(u);
+    }
+
+    /// Notes a statement read after the one that ends its block, the statements before it `body[..from]`.
+    fn after(&mut self, body: &[Stmt], from: usize) {
+        let ender = match body[..from].last() {
+            Some(Stmt::Drop(_)) => "drop()",
+            Some(Stmt::Return(_)) => "return",
+            Some(Stmt::Throw(_)) => "throw",
+            Some(Stmt::Leave { to: Region::Loop, .. }) => "break",
+            Some(Stmt::Leave { to: Region::Trip, .. }) => "continue",
+            _ => return,
+        };
+        if from < body.len() {
+            self.unreachable.push(ender);
+        }
+    }
+}
+
+/// Whether no row runs past the end of `body`: it ends in `return`, `throw`, `drop()` or `continue`, or in an
+/// `if` whose branches both end so.
+fn ends_the_row(body: &[Stmt]) -> bool {
+    match body.last() {
+        Some(Stmt::Return(_) | Stmt::Throw(_) | Stmt::Drop(_) | Stmt::Leave { to: Region::Trip, .. }) => true,
+        Some(Stmt::If { then, else_, .. }) => ends_the_row(then) && ends_the_row(else_),
+        _ => false,
     }
 }
 
@@ -321,6 +356,11 @@ impl<'s> Parser<'s> {
 
     fn peek_span(&self) -> Span {
         self.tokens[self.pos].span
+    }
+
+    /// The span of the token read last.
+    fn last_span(&self) -> Span {
+        self.tokens[self.pos - 1].span
     }
 
     fn at_eof(&self) -> bool {
@@ -502,10 +542,12 @@ impl<'s> Parser<'s> {
             return Err(self.too_deep());
         }
         let tails = self.open_tails.len();
+        let from = out.len();
         let r = self.stmt_inner(out);
         self.depth -= 1;
         if r.is_ok() {
-            let last = self.tokens[self.pos - 1].span;
+            self.shape.after(out, from);
+            let last = self.last_span();
             let after_block = self.shape.blocks.last().is_some_and(|b| b.1 == last.start);
             let open_tail = self.open_tails.len() > tails
                 && matches!(out.last(), Some(Stmt::Expr(e)) if self.open_tails.last().is_some_and(|t| t.0 == e.span));
@@ -959,12 +1001,15 @@ impl<'s> Parser<'s> {
         // Labels with no statements of their own, waiting for the case they share.
         let mut pending: Vec<Expr> = Vec::new();
         let mut seen_default = false;
+        // The label of the case before, where it runs on into the one being read.
+        let mut running_on: Option<Span> = None;
         while !self.eat_punct(Punct::RBrace) {
             if self.at_eof() {
                 return Err(self.error("unterminated `switch`, expected `}`"));
             }
             let label_span = self.peek_span();
             self.shape.case_labels.push(label_span.start);
+            self.shape.fall_throughs.extend(running_on.take());
             if seen_default {
                 return Err(ParseError {
                     span: label_span,
@@ -988,6 +1033,9 @@ impl<'s> Parser<'s> {
             // A label ends like a statement does, without a `;`.
             self.shape.statements.push((colon.end, false));
             let (body, breaks) = self.case_body()?;
+            if !body.is_empty() && !breaks && !ends_the_row(&body) {
+                running_on = Some(Span::new(label_span.start as usize, colon.start as usize));
+            }
             match label {
                 // `default` takes every row no case before it took, a waiting label's among them.
                 None => {
@@ -1009,9 +1057,7 @@ impl<'s> Parser<'s> {
                 }
             }
         }
-        self.shape
-            .blocks
-            .push((open.start, self.tokens[self.pos - 1].span.start));
+        self.shape.blocks.push((open.start, self.last_span().start));
         // Labels still waiting at the end fall through to nothing, as a row no case takes does.
 
         let branches: Vec<Vec<Stmt>> = (0..cases.len())
@@ -1235,7 +1281,7 @@ impl<'s> Parser<'s> {
         self.depth -= 1;
         if r.is_ok() && self.in_type == 0 {
             // A `>` `close_angle` took off a glued token ends the type inside that token.
-            let last = self.tokens[self.pos - 1].span.end;
+            let last = self.last_span().end;
             let end = match self.split_at {
                 Some(at) if at >= last => at,
                 _ => last,
@@ -1479,7 +1525,7 @@ impl<'s> Parser<'s> {
                 }
                 self.advance();
                 let ty = self.type_expr()?;
-                let span = lhs.span.join(self.tokens[self.pos - 1].span);
+                let span = lhs.span.join(self.last_span());
                 lhs = Expr::new(
                     span,
                     ExprKind::Coerce {
@@ -1721,7 +1767,7 @@ impl<'s> Parser<'s> {
             vec![Stmt::Return(self.expr_bp(0)?)]
         };
         Ok(Expr::new(
-            start.join(self.tokens[self.pos - 1].span),
+            start.join(self.last_span()),
             ExprKind::Arrow(Function {
                 params,
                 param_types,

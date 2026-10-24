@@ -1947,6 +1947,8 @@ export interface PreviewResult {
   parsers: ParserProposal[];
   /** The record the pipeline writes. Absent when it did not compile. */
   dictionary?: DictionaryOut;
+  /** What compiles but is likely a mistake, each placed at its step as an error is. */
+  warnings?: ApiError[];
 }
 
 /** What a preview that did not run says went wrong. */

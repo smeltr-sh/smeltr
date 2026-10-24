@@ -37,7 +37,7 @@
     rankedSuggestions,
     inGrokMacroName,
   } from './autocomplete';
-  import { highlight } from '../../website/src/lib/highlight/highlight';
+  import { highlight, KEYWORDS, LITERALS } from '../../website/src/lib/highlight/highlight';
   import { fieldError, holdsName, markRuns, quotedTokens } from './errorMarks';
   import { formatCode } from './api';
   import { beginReconcile, endReconcile } from './grokFields';
@@ -45,6 +45,7 @@
   let {
     value = $bindable(''),
     errors = [],
+    warnings = [],
     forced = null,
     placeholder = '',
     ariaLabel = '',
@@ -56,6 +57,9 @@
   }: {
     value: string;
     errors?: string[];
+    /** Every warning attributed to the enclosing step (`Plan::warnings`). A colored field marks the names one quotes
+     * in the warning color, where no error is marked; a keyword or literal it quotes (`break`, `true`) is no name. */
+    warnings?: string[];
     /** An error already known to belong to this exact field -- an eval
      * assignment's own error, say (`CompileError::assignment_index`) --
      * marked regardless of whether its text happens to quote an identifier
@@ -108,7 +112,20 @@
           .filter((t) => holdsName(value, t))
       : [],
   );
-  let runs = $derived(named.length > 0 ? markRuns(value + '\n', named) : []);
+  let warned = $derived(
+    colored && !matched
+      ? warnings
+          .flatMap(quotedTokens)
+          .filter((t) => !KEYWORDS.has(t) && !LITERALS.has(t) && holdsName(value, t))
+      : [],
+  );
+  let runs = $derived(
+    named.length > 0
+      ? markRuns(value + '\n', named)
+      : warned.length > 0
+        ? markRuns(value + '\n', warned)
+        : [],
+  );
   let whole = $derived(!!matched && runs.length === 0);
 
   function syncScroll() {
@@ -255,7 +272,8 @@
       bind:this={marksEl}
       class="paint marks"
       class:has-fn-toggle={functions !== null}
-      aria-hidden="true">{#each runs as r}{#if r.mark}<span class="squiggle">{r.text}</span
+      aria-hidden="true">{#each runs as r}{#if r.mark}<span class="squiggle" class:warn={!matched}
+            >{r.text}</span
           >{:else}{r.text}{/if}{/each}</pre>
   {/if}
   {#if multiline}
@@ -505,6 +523,10 @@
     text-decoration: underline wavy var(--error);
     text-decoration-thickness: 1.5px;
     text-underline-offset: 2px;
+  }
+
+  .squiggle.warn {
+    text-decoration-color: var(--warn);
   }
 
   .marks {
