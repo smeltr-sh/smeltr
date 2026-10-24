@@ -261,6 +261,8 @@ definition, not a page's own rule.
   (`aria-invalid`) takes an `--error` border.
 - **Field.** `Field.svelte`: the label, a `?` when the label leaves
   something out, the control, then its note or its error.
+- **Filter.** `Chips.svelte`: All, then one chip per value, each with its count.
+- **Fold all.** `FoldAllButton.svelte`: one button that folds every item of a list or unfolds them all.
 - **Card.** `Panel.svelte`, below.
 - **Error.** In `--error`, drawn by one of three components, never by
   hand. `ErrorBar.svelte` shows what a call refused or failed, under the nav
