@@ -860,7 +860,7 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
   await picker.getByRole('button', { name: 'orders', exact: true }).click();
   const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
   await expect(sampleMenu).toContainText('3 records');
-  const search = admin.getByRole('searchbox', { name: 'Search the output' });
+  const search = admin.getByRole('combobox', { name: 'Search the output' });
   await search.fill('SPRING');
   await expect(admin.getByText('2 of 3 rows')).toBeVisible();
   await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
@@ -870,6 +870,16 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
   // One that does not compile to a Bool is a keyword.
   await search.fill('total +');
   await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
+  // Left with an expression in it, the box offers it again, under the kinds of row a chip keeps.
+  await search.fill('total > 15');
+  await expect(admin.getByText('ƒ expression')).toBeVisible();
+  await search.blur();
+  await search.fill('');
+  const offered = admin.getByRole('listbox', { name: 'Suggestions' });
+  await expect(offered.getByRole('option', { name: 'total > 15' })).toBeVisible();
+  await offered.getByRole('option', { name: /Changed by a step/ }).click();
+  await expect(admin.getByRole('button', { name: 'remove changed' })).toBeVisible();
+  await expect(admin.getByText('3 of 3 rows')).toBeVisible();
   await admin.screenshot({ path: 'results/sample-pane-search.png', fullPage: true });
 
   // Another sample, from the menu: the locked one first, and the search starts over.
