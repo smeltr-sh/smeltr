@@ -39,8 +39,10 @@
     currentWord as wordAt,
     describedRuns,
     rankedSuggestions,
+    memberSuggestions,
     inGrokMacroName,
   } from './autocomplete';
+  import { contextFieldTypes, memberBefore, type FieldTypes } from './fieldTypes';
   import { highlight, KEYWORDS, LITERALS } from '../../website/src/lib/highlight/highlight';
   import { wrapCondition } from './conditionWrap';
   import type { Attachment } from 'svelte/attachments';
@@ -61,6 +63,7 @@
     rows = 6,
     paint,
     wrap = false,
+    fields,
   }: {
     value: string;
     errors?: string[];
@@ -90,7 +93,11 @@
     paint?: (text: string) => string;
     /** Left, the text is drawn broken before its operators, to the room it has: see the comment at the top. */
     wrap?: boolean;
+    /** The record the expression reads, for what may follow a dot. Absent, the record a component above provides
+     * (`provideFieldTypes`). */
+    fields?: FieldTypes;
   } = $props();
+  const provided = contextFieldTypes();
 
   /** A `wrap` field being written in: left, it shows its text laid out instead. */
   let editing = $state(false);
@@ -225,7 +232,17 @@
 
   let grokActive = $derived(autocomplete === 'grok' && inGrokMacroName(value, currentWord().pos));
 
+  /** What the chain before the dot the word follows is, or null where the word follows no dot. */
+  let member = $derived.by(() => {
+    const { start } = currentWord();
+    if (!functions || value[start - 1] !== '.') return null;
+    return memberBefore(value, start - 1, fields ?? provided?.());
+  });
+
   let suggestions = $derived.by((): StdFuncEntry[] => {
+    if (functions && member) {
+      return memberSuggestions(member, functions, currentWordText, functionUsage);
+    }
     if (functions) return rankedSuggestions(functions, currentWordText, { usage: functionUsage });
     if (grokActive) {
       return rankedSuggestions([...GROK_BUILTIN_PATTERNS, ...grokNamed], currentWordText, {
@@ -240,7 +257,8 @@
 
   function onInput() {
     if (functions) {
-      open = currentWordText.length > 0;
+      // A dot is where a list helps most: what can follow it depends on what is before it.
+      open = currentWordText.length > 0 || member !== null;
     } else if (autocomplete === 'grok') {
       open = grokActive && currentWordText.length > 0;
     } else {
@@ -278,7 +296,7 @@
   }
 
   async function pick(fn: StdFuncEntry) {
-    const { start, pos } = currentWord();
+    let { start, pos } = currentWord();
     // A function call is inserted whole. A grok macro's `%{` is already
     // typed (suggestions only show inside one); its own `}` is added only
     // when nothing already closes the macro past the caret -- editing
@@ -290,6 +308,12 @@
       const next = value[pos];
       insertion = next === ':' || next === '}' ? fn.name : `${fn.name}}`;
       caretOffset = fn.name.length;
+    } else if (fn.field) {
+      // A key that is not a name is written in brackets, in place of the dot.
+      const bare = /^[A-Za-z_$][\w$]*$/.test(fn.name);
+      if (!bare) start--;
+      insertion = bare ? fn.name : `[${JSON.stringify(fn.name)}]`;
+      caretOffset = insertion.length;
     } else {
       insertion = `${fn.name}()`;
       caretOffset = fn.name.length + 1;
@@ -440,6 +464,7 @@
           role="option"
           aria-selected={i === highlighted}
           class:highlighted={i === highlighted}
+          class:misfit={!!fn.warning}
           onmousedown={(e) => e.preventDefault()}
           onclick={() => pick(fn)}
           onkeydown={(e) => e.key === 'Enter' && pick(fn)}
@@ -457,6 +482,9 @@
               >
             {/if}
           </span>
+          {#if fn.warning}
+            <span class="fn-warn">&#9888; {fn.warning}</span>
+          {/if}
           <span class="fn-desc"
             >{#each describedRuns(fn.description) as p, j (j)}{#if p.code}<code>{p.text}</code
                 >{:else}{p.text}{/if}{/each}</span
@@ -770,6 +798,16 @@
     -webkit-line-clamp: 3;
     line-clamp: 3;
     overflow: hidden;
+  }
+
+  /* A function that does not take the type before the dot: offered, below every one that does. */
+  .misfit .fn-sig {
+    color: var(--dim);
+  }
+
+  .fn-warn {
+    font-size: var(--text-micro);
+    color: var(--warn);
   }
 
   .fn-desc code {

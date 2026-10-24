@@ -2,6 +2,7 @@
 // is being typed, and which functions match it, in what order.
 
 import type { StdFuncEntry } from './stdlib';
+import { takes, type Member } from './fieldTypes';
 
 export interface CurrentWord {
   word: string;
@@ -94,6 +95,53 @@ export function rankedSuggestions(
   return scored
     .sort((a, b) => Number(b.byName) - Number(a.byName) || b.score - a.score)
     .map(({ f }) => f);
+}
+
+/** What may follow a dot, best first: an object's fields, then the functions that take what is before the dot, then
+ * every other function, each with a warning naming what it takes. Within each, as `rankedSuggestions` orders them.
+ * Only a function written on a value (`value.sign()`) can follow a dot. Where `member` is unknown, every such
+ * function, as they rank. */
+export function memberSuggestions(
+  member: Member,
+  functions: StdFuncEntry[],
+  word: string,
+  usage: ReadonlyMap<string, number> = new Map(),
+): StdFuncEntry[] {
+  const methods = rankedSuggestions(
+    functions.filter((f) => /^\w+\.\w+\(/.test(f.signature)),
+    word,
+    { usage },
+  );
+  if (member.kind === 'unknown') return methods;
+  const fields: StdFuncEntry[] =
+    member.kind === 'object'
+      ? rankedSuggestions(
+          member.fields.map((f) => ({
+            name: f.name,
+            signature: `${f.name}: ${f.type}`,
+            description: '',
+            field: true,
+          })),
+          word,
+          { matchDescription: false },
+        )
+      : [];
+  const type = member.kind === 'object' ? 'object' : member.type;
+  const kind = member.kind === 'object' ? 'object' : type.startsWith('array<') ? 'array' : null;
+  const fit: StdFuncEntry[] = [];
+  const misfit: StdFuncEntry[] = [];
+  for (const f of methods) {
+    // A function the signatures do not type is written on the kind its reference names: `object.keys()`.
+    const known = takes(f.name, type);
+    const fits = known.fits ?? (kind !== null && f.signature.startsWith(`${kind}.`));
+    if (fits) fit.push(f);
+    else
+      misfit.push({
+        ...f,
+        warning: known.takes ? `takes ${known.takes}, not ${type}` : `not for ${type}`,
+      });
+  }
+  return [...fields, ...fit, ...misfit];
 }
 
 /** True once an unclosed `%{` precedes `cursorPos` with no `:` since -- the

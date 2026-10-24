@@ -19,6 +19,7 @@
   // ```
   //
   // The new route is held unsaved (`edits.ts`) while the pipeline is made, as any edit here is.
+  import { sourceRecord } from './fieldTypes';
   import EditInShared from './EditInShared.svelte';
   import OnlyNotice from './OnlyNotice.svelte';
   import { Narrowing } from './narrowing.svelte';
@@ -613,6 +614,7 @@
             {/snippet}
             <RouteFlow
               routes={card.routes}
+              record={sourceRecord(loadedConfig?.sources.find((s) => s.id === card.source))}
               {sourceIds}
               {pipelineIds}
               {destinationIds}

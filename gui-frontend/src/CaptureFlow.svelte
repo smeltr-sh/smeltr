@@ -13,6 +13,7 @@
   Closing this discards whatever session it still holds.
 -->
 <script lang="ts">
+  import { sourceRecord } from './fieldTypes';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import { onDestroy, onMount } from 'svelte';
@@ -319,6 +320,7 @@
           bind:value={filter}
           placeholder={filterPlaceholder(at)}
           autocomplete="condition"
+          fields={at === 'source' ? sourceRecord(captureSource) : undefined}
           wrap
         />
       </Field>

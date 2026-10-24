@@ -10,6 +10,7 @@
   on load instead of defaulting to the first in the library.
 -->
 <script lang="ts">
+  import { mergeFields, provideFieldTypes, SOURCE_FIELDS, type FieldTypes } from './fieldTypes';
   import InlineError from './InlineError.svelte';
   import { untrack } from 'svelte';
   import StepList from './StepList.svelte';
@@ -1052,14 +1053,18 @@
   // The sample's own types, as its source reads it before any step: what the
   // whole pipeline's "before" side declares.
   let sampleDeclared = $state<Declared | null>(null);
+  let sampleFields = $state<FieldTypes | null>(null);
 
   $effect(() => {
     const sample = lastSample;
     sampleDeclared = null;
+    sampleFields = null;
     if (!sample) return;
     untrack(() => fetchPreview([], sample)).then(
       (res) => {
-        if (lastSample === sample) sampleDeclared = res.ok ? declaredOf(res) : null;
+        if (lastSample !== sample) return;
+        sampleDeclared = res.ok ? declaredOf(res) : null;
+        sampleFields = (res.ok && res.dictionary?.compiled.fields) || null;
       },
       () => {},
     );
@@ -1172,6 +1177,8 @@
   let dictionary = $derived(
     (result?.ok ? result.dictionary : undefined) ?? lastGoodResult?.dictionary,
   );
+  // What a step's expressions read, for what may follow a dot: the sample's record and what the steps write.
+  provideFieldTypes(() => mergeFields(SOURCE_FIELDS, sampleFields, dictionary?.compiled.fields));
   let outputQuery = $state('');
   /** The row numbers the expression kept, or null while the search is a keyword. */
   let expressionRows = $state<Set<number> | null>(null);

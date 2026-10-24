@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { currentWord, describedRuns, inGrokMacroName, rankedSuggestions } from './autocomplete';
+import {
+  currentWord,
+  describedRuns,
+  inGrokMacroName,
+  memberSuggestions,
+  rankedSuggestions,
+} from './autocomplete';
 import { CODE_FUNCTIONS, CONDITION_FUNCTIONS } from './stdlib';
 import { GROK_BUILTIN_PATTERNS } from './grokPatterns';
 
@@ -125,5 +131,49 @@ describe('describedRuns', () => {
       { text: 'text', code: true },
       { text: ' as JSON.', code: false },
     ]);
+  });
+});
+
+describe('memberSuggestions', () => {
+  const fn = (name: string, signature: string) => ({ name, signature, description: '' });
+  const functions = [
+    fn('sign', 'value.sign()'),
+    fn('length', 'value.length()'),
+    fn('keys', 'object.keys()'),
+    fn('now', 'now()'),
+  ];
+
+  it('offers what takes the value first, and the rest after it, warned', () => {
+    const got = memberSuggestions({ kind: 'value', type: 'str' }, functions, '');
+    expect(got.map((f) => [f.name, f.warning])).toEqual([
+      ['length', undefined],
+      ['sign', 'takes i64/f64, not str'],
+      ['keys', 'not for str'],
+    ]);
+  });
+
+  it("offers an object's fields first", () => {
+    const got = memberSuggestions(
+      { kind: 'object', fields: [{ name: 'path', type: 'str' }] },
+      functions,
+      '',
+    );
+    expect(got.map((f) => [f.name, !!f.field, !!f.warning])).toEqual([
+      ['path', true, false],
+      ['keys', false, false],
+      ['sign', false, true],
+      ['length', false, true],
+    ]);
+  });
+
+  it('keeps a misfit below every fit, however well it matches the word', () => {
+    const got = memberSuggestions({ kind: 'value', type: 'str' }, functions, 'n');
+    expect(got.map((f) => f.name)).toEqual(['length', 'sign']);
+  });
+
+  it('offers every function written on a value where the type is unknown', () => {
+    const got = memberSuggestions({ kind: 'unknown' }, functions, '');
+    expect(got.map((f) => f.name)).toEqual(['sign', 'length', 'keys']);
+    expect(got.every((f) => !f.warning)).toBe(true);
   });
 });
