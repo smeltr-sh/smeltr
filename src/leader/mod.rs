@@ -2175,7 +2175,7 @@ async fn store_secret_value(
     Json(req): Json<SecretValueRequest>,
 ) -> Json<Envelope> {
     match is_certificate(&state, &name).await {
-        Ok(false) => store_value(state, name, req.value).await,
+        Ok(false) => store_value(state, name, req.value, None).await,
         Ok(true) => Json(Envelope::failed_one(format!(
             "{name:?} is a certificate; replace it on the Certificates page"
         ))),
@@ -2192,12 +2192,16 @@ async fn is_certificate(state: &AppState, name: &str) -> Result<bool, StoreError
     .await
 }
 
-/// [`store_secret_value`] for a value already checked.
-async fn store_value(state: AppState, name: String, value: String) -> Json<Envelope> {
+/// [`store_secret_value`] for a value already checked, with its certificate chain where it is a certificate's key.
+async fn store_value(state: AppState, name: String, value: String, chain: Option<String>) -> Json<Envelope> {
     let store = state.store.clone();
     let added = {
         let name = name.clone();
-        run_store(store, move |s| s.add_secret_version(&name, &value)).await
+        run_store(store, move |s| match chain {
+            Some(chain) => s.add_certificate_version(&name, &chain, &value),
+            None => s.add_secret_version(&name, &value),
+        })
+        .await
     };
     if let Err(e) = added {
         return Json(Envelope::failed_one(e));
@@ -2248,9 +2252,8 @@ async fn store_value(state: AppState, name: String, value: String) -> Json<Envel
 
 // -- certificates ------------------------------------------------------------
 //
-// A certificate is a secret whose value is a chain and its private key (`io::trust::certificate_value`). It is
-// sealed, versioned, retained and delivered as every secret is; these routes are where one is added, replaced and
-// read about, since its value is never typed into the Secrets page.
+// A certificate is the secret holding its private key, sealed, versioned, retained and delivered as every secret is,
+// with its public chain kept beside each version. These routes are where one is added, replaced and read about.
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2280,40 +2283,37 @@ pub struct CertificateRequest {
 }
 
 impl CertificateRequest {
-    /// The value to store, once the certificate reads as one and the key is its key.
-    fn checked(&self) -> Result<String, String> {
+    /// Whether the certificate reads as one and the key is its key.
+    fn check(&self) -> Result<(), String> {
         tls::describe_each(self.certificate.as_bytes(), "the certificate")?;
-        tls::is_pair(self.certificate.as_bytes(), self.private_key.as_bytes())?;
-        Ok(crate::io::trust::certificate_value(
-            &self.certificate,
-            &self.private_key,
-        ))
+        tls::is_pair(self.certificate.as_bytes(), self.private_key.as_bytes())
     }
+}
+
+/// The newest version of the certificate `name` and its chain, `None` where it is no certificate.
+fn newest_chain(store: &dyn Store, name: &str) -> Result<Option<(i64, String)>, StoreError> {
+    let newest = (store.list_secrets()?.into_iter())
+        .find(|r| r.name == name && r.certificate)
+        .and_then(|r| r.current().map(|v| v.version));
+    let Some(version) = newest else {
+        return Ok(None);
+    };
+    Ok(store.certificate_chain(name, version)?.map(|chain| (version, chain)))
 }
 
 /// The newest chain and private key of the certificate `name`, `None` where it has none this leader can open.
 pub fn newest_certificate(store: &dyn Store, name: &str) -> Result<Option<(String, String)>, StoreError> {
-    let Some(current) = store
-        .list_secrets()?
-        .into_iter()
-        .find(|r| r.name == name && r.certificate)
-    else {
-        return Ok(None);
-    };
-    let Some(version) = current.current().map(|v| v.version) else {
+    let Some((version, chain)) = newest_chain(store, name)? else {
         return Ok(None);
     };
     let opened = store.secrets_for_delivery(&[(name.to_string(), version)], &[])?;
-    Ok(opened.into_iter().next().and_then(|(_, _, value)| {
-        let (chain, key) = crate::io::trust::certificate_parts(&value).ok()?;
-        Some((chain.to_string(), key.to_string()))
-    }))
+    Ok(opened.into_iter().next().map(|(_, _, key)| (chain, key)))
 }
 
 /// The fingerprint of the newest leaf of the certificate `name`, `None` where it has none this leader can open.
 fn newest_fingerprint(store: &dyn Store, name: &str) -> Result<Option<String>, StoreError> {
-    Ok(newest_certificate(store, name)?
-        .and_then(|(chain, _)| tls::describe(chain.as_bytes(), "the certificate").ok())
+    Ok(newest_chain(store, name)?
+        .and_then(|(_, chain)| tls::describe(chain.as_bytes(), "the certificate").ok())
         .map(|leaf| leaf.fingerprint))
 }
 
@@ -2343,9 +2343,8 @@ pub fn list_uploaded_certificate(store: &dyn Store, tls_dir: &std::path::Path) -
     let key = std::fs::read_to_string(key_path).map_err(|e| format!("{}: {e}", key_path.display()))?;
     let (_, root) = tls::signing_root_pem(&materials.ca_pem, &served)?;
     let chain = format!("{}\n{root}", String::from_utf8_lossy(&served).trim_end());
-    let value = crate::io::trust::certificate_value(&chain, &key);
     store
-        .create_certificate(UPLOADED_BEFORE_THE_LIST, "", &value)
+        .create_certificate(UPLOADED_BEFORE_THE_LIST, "", &chain, &key)
         .map_err(|e| e.to_string())
 }
 
@@ -2367,8 +2366,8 @@ async fn list_certificates(
         let served = served_from_list(&data_dir);
         let mut out = Vec::new();
         for r in s.list_secrets()?.into_iter().filter(|r| r.certificate) {
-            let chain = newest_certificate(s, &r.name)?
-                .and_then(|(chain, _)| tls::describe_each(chain.as_bytes(), "the certificate").ok())
+            let chain = newest_chain(s, &r.name)?
+                .and_then(|(_, chain)| tls::describe_each(chain.as_bytes(), "the certificate").ok())
                 .unwrap_or_default();
             let SecretOut {
                 name,
@@ -2393,12 +2392,11 @@ async fn list_certificates(
 }
 
 async fn create_certificate(State(state): State<AppState>, Json(req): Json<CertificateRequest>) -> Json<Envelope> {
-    let value = match req.checked() {
-        Ok(value) => value,
-        Err(e) => return Json(Envelope::failed_one(e)),
-    };
+    if let Err(e) = req.check() {
+        return Json(Envelope::failed_one(e));
+    }
     match run_store(state.store, move |s| {
-        s.create_certificate(&req.name, &req.description, &value)
+        s.create_certificate(&req.name, &req.description, &req.certificate, &req.private_key)
     })
     .await
     {
@@ -2414,12 +2412,11 @@ async fn replace_certificate(
     Path(name): Path<String>,
     Json(req): Json<CertificateRequest>,
 ) -> Json<Envelope> {
-    let value = match req.checked() {
-        Ok(value) => value,
-        Err(e) => return Json(Envelope::failed_one(e)),
-    };
+    if let Err(e) = req.check() {
+        return Json(Envelope::failed_one(e));
+    }
     match is_certificate(&state, &name).await {
-        Ok(true) => store_value(state, name, value).await,
+        Ok(true) => store_value(state, name, req.private_key, Some(req.certificate)).await,
         Ok(false) => Json(Envelope::failed_one(format!("no certificate named {name:?}"))),
         Err(e) => Json(Envelope::failed_one(e)),
     }

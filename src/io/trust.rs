@@ -147,22 +147,6 @@ pub fn presented(identity: &Identity, secrets: &HeldSecrets) -> Result<Option<Pr
     Ok(Some(Presented { chain, key, key_pem }))
 }
 
-/// A certificate as the leader stores it: its chain and then its private key, PEM.
-pub fn certificate_value(chain: &str, key: &str) -> String {
-    let chain = chain.trim_end();
-    format!("{chain}\n{}", key.trim_start())
-}
-
-/// [`certificate_value`] split back into its chain and its private key: the key starts at the first PEM block that is
-/// not a certificate.
-pub fn certificate_parts(value: &str) -> Result<(&str, &str), String> {
-    let at = (value.match_indices("-----BEGIN "))
-        .map(|(at, _)| at)
-        .find(|&at| !value[at..].starts_with("-----BEGIN CERTIFICATE-----"))
-        .ok_or_else(|| "the certificate is stored without its private key".to_string())?;
-    Ok((&value[..at], &value[at..]))
-}
-
 /// Every certificate in `pem`, one of `identity`'s fields, in the order it was written. `what` names the field for
 /// an operator reading the failure.
 pub fn certificates(identity: &Identity, pem: &str, what: &str) -> Result<Vec<CertificateDer<'static>>, IoError> {
