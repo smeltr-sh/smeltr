@@ -4,10 +4,10 @@
   `/api/preview`, and saved with `PUT /api/pipelines/:id`, which the
   backend validates against the whole bundle.
 
-  The sample is chosen from the library, never typed here: records are
-  authored on the Samples page, so what a preview ran over has a name and
-  is in the branch's history. Arriving with one named in the URL selects it
-  on load instead of defaulting to the first in the library.
+  The records come from a saved sample, so what a preview ran over has a
+  name and is in the branch's history; the sample menu also saves a
+  capture or pasted records as one. The editor opens on the sample named in
+  the URL, else on the one this pipeline last ran over in this browser.
 -->
 <script lang="ts">
   import InlineError from './InlineError.svelte';
@@ -80,6 +80,7 @@
     type GrokPatternDto,
     type LookupTableDto,
     type PipelineDto,
+    type Connected,
     type SampleRecordDto,
     type SampleSummary,
     type TestSummary,
@@ -102,10 +103,11 @@
   import type { ChangeRow } from './diff';
   import AddSampleDialog from './AddSampleDialog.svelte';
   import SamplePicker from './SamplePicker.svelte';
+  import SampleMenu from './SampleMenu.svelte';
   import PencilIcon from './PencilIcon.svelte';
   import { mintPipelineId } from './ids';
   import { announcePipelineNames, newPipelineHash, withPipeline, type Making } from './nav';
-  import { ago, count } from './time';
+  import { ago } from './time';
   import { editable, mayCapture } from './access';
   import SortButton from './SortButton.svelte';
   import FoldAllButton from './FoldAllButton.svelte';
@@ -128,6 +130,8 @@
   } = $props();
 
   const readOnly = !editable();
+  // `id` is shadowed where a sample's id is in hand.
+  const routeId = $derived(id);
 
   // The id this pipeline is saved under: empty until a new one's first
   // save, and distinct from the route param `id`, which may be `new`.
@@ -646,8 +650,10 @@
       // link, or a pipeline opened from the list while it held one). With
       // none, or a stale one not on this branch, the editor opens on the
       // picker: which records to run is the author's to choose.
-      if (!selectedSample && sample && samples.some((s) => s.id === sample)) {
-        await chooseSample(sample);
+      lastUsed = readLastUsed();
+      const opening = sample || lastUsed;
+      if (!selectedSample && opening && samples.some((s) => s.id === opening)) {
+        await chooseSample(opening);
       }
     } catch (e) {
       reported(e);
@@ -674,13 +680,35 @@
 
   async function captured(id: string) {
     capturing = false;
+    captureAt = null;
     await loadSamples();
     await chooseSample(id);
     if (making) await proposeFrom(sampleRows);
   }
 
+  // The sample a pipeline last ran over, remembered per pipeline in this browser: the editor
+  // opens on it, and the sample menu lists it first.
+  const sampleKey = (pipeline: string) => `smeltr-workspace-sample:${pipeline}`;
+  let lastUsed = $state('');
+  function readLastUsed(): string {
+    try {
+      return window.localStorage.getItem(sampleKey(id)) ?? '';
+    } catch {
+      return '';
+    }
+  }
+
   async function chooseSample(id: string) {
+    const pipeline = untrack(() => routeId);
     selectedSample = id;
+    if (id) {
+      lastUsed = id;
+      try {
+        window.localStorage.setItem(sampleKey(pipeline), id);
+      } catch {
+        // Storage refused: the editor opens on the picker next time.
+      }
+    }
     sampleRows = [];
     // The rows on screen were the last sample's.
     lastGoodResult = null;
@@ -920,6 +948,17 @@
       ...(making.condition ? { filter: making.condition } : {}),
     },
   );
+  /** A capture the sample menu started, at one of the pipeline's sources: in place of the route's. */
+  let captureAt = $state<ReturnType<typeof sourceTarget> | null>(null);
+  function sourceTarget(c: Connected) {
+    return {
+      kind: 'source' as const,
+      id: c.id,
+      scope: c.scope,
+      group: c.scope === SHARED_SCOPE ? '' : c.scope,
+    };
+  }
+
   /** What the proposal read, said over the steps it made. */
   let proposed = $state('');
   /** Why no proposal was made. Its calls are quiet: this is said beside the samples. */
@@ -1589,21 +1628,13 @@
           <AddSampleDialog
             open={capturing}
             start="capture"
-            target={captureTarget}
-            oncancel={() => (capturing = false)}
+            target={captureAt ?? captureTarget}
+            oncancel={() => {
+              capturing = false;
+              captureAt = null;
+            }}
             onsaved={captured}
           />
-
-          {#if selectedSample}
-            <div class="sample-line">
-              <button type="button" class="compact" onclick={() => chooseSample('')}>← Back</button>
-              <span class="dim">Sample</span>
-              <strong>{selectedSampleName}</strong>
-              {#if lastGoodResult && lastSample === selectedSample}
-                <span class="dim">{count(lastGoodResult.rows.length, 'row')}</span>
-              {/if}
-            </div>
-          {/if}
 
           {#if result && !result.ok}
             <!-- Above the grid, not instead of it: a syntax slip mid-edit
@@ -1675,8 +1706,25 @@
                 <InlineError message={selectedDiffError} />
               {/if}
 
-              {#if lastGoodResult && lastGoodResult.rows.length > 0}
-                <div class="output-search">
+              <div class="output-search">
+                <SampleMenu
+                  {samples}
+                  selected={selectedSample}
+                  {lastUsed}
+                  records={lastGoodResult && lastSample === selectedSample
+                    ? lastGoodResult.rows.length
+                    : null}
+                  {lockedBy}
+                  pipeline={loadedId}
+                  mayCapture={(c) => mayCapture(sourceTarget(c))}
+                  onpick={chooseSample}
+                  onsaved={captured}
+                  oncapture={(c) => {
+                    captureAt = sourceTarget(c);
+                    capturing = true;
+                  }}
+                />
+                {#if lastGoodResult && lastGoodResult.rows.length > 0}
                   <label class="search"
                     ><span aria-hidden="true">⌕</span>{#each chips as c (chipKey(c))}<span
                         class="find-chip"
@@ -1729,8 +1777,8 @@
                       addChip({ kind: 'has', path });
                     }}
                   />
-                </div>
-              {/if}
+                {/if}
+              </div>
               <div class="output-actions">
                 <button
                   type="button"
@@ -2092,14 +2140,6 @@
     display: flex;
     align-items: center;
     font-weight: 600;
-  }
-
-  .sample-line {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    margin-bottom: 0.4rem;
-    font-size: var(--text-body);
   }
 
   /* ChangeDetailPage's tabs. */

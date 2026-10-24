@@ -776,7 +776,7 @@ test('A2: the parser proposes its declared fields from a sample, and the analyst
   // Suggested in the step's own card: the sample stays where it was.
   const suggested = admin.getByRole('group', { name: 'Suggested fields' });
   await expect(suggested).toContainText('Suggested from orders, 3 rows');
-  await expect(admin.getByRole('button', { name: '← Back' })).toBeVisible();
+  await expect(admin.getByRole('button', { name: 'Choose a sample' })).toContainText('orders');
   await expect(suggested.getByRole('group', { name: 'id' }).getByRole('combobox')).toHaveValue(
     'i64',
   );
@@ -858,7 +858,8 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
   await admin.keyboard.press('Escape');
 
   await picker.getByRole('button', { name: 'orders', exact: true }).click();
-  await expect(admin.getByText('3 rows', { exact: true })).toBeVisible();
+  const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
+  await expect(sampleMenu).toContainText('3 records');
   const search = admin.getByRole('searchbox', { name: 'Search the output' });
   await search.fill('SPRING');
   await expect(admin.getByText('2 of 3 rows')).toBeVisible();
@@ -871,9 +872,13 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
   await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
   await admin.screenshot({ path: 'results/sample-pane-search.png', fullPage: true });
 
-  await admin.getByRole('button', { name: '← Back' }).click();
-  await expect(picker).toBeVisible();
-  await expect(admin.getByText('3 rows', { exact: true })).toHaveCount(0);
+  // Another sample, from the menu: the locked one first, and the search starts over.
+  await sampleMenu.click();
+  const saved = admin.getByRole('listbox', { name: 'Saved samples' });
+  await expect(saved.getByRole('option').first()).toContainText('orders');
+  await saved.getByRole('option', { name: /^other/ }).click();
+  await expect(sampleMenu).toContainText('1 record');
+  await expect(search).toHaveValue('');
 });
 
 /** A source, destinations and a `web` pipeline routed from one to them: every record to `es-web`, a server error
