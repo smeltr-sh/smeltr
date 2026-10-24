@@ -1636,7 +1636,7 @@ pub async fn delete_pipeline(
 /// A section an object is undone in, as the editor names it.
 #[derive(Clone, Copy, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-enum Section {
+pub enum Section {
     Sources,
     Destinations,
     Routes,
@@ -1673,12 +1673,20 @@ impl Section {
 }
 
 #[derive(serde::Deserialize)]
-pub struct UndoRequest {
-    section: Section,
-    id: String,
+#[serde(untagged)]
+pub enum UndoRequest {
+    Object {
+        section: Section,
+        id: String,
+    },
+    /// A file no section owns, by its path within the bundle.
+    File {
+        path: String,
+    },
 }
 
-/// Puts one object back the way it was where the branch left `main`, as one save on the branch.
+/// Puts one object, or one file no section owns, back the way it was where the branch left `main`, as one save on
+/// the branch.
 /// An identity put back is held to `put_identities`'s pairing check, which is why this needs `AppState`.
 pub async fn undo(
     State(state): State<smeltr::leader::AppState>,
@@ -1785,13 +1793,17 @@ fn undo_in(
         Ok(left_at) => left_at,
         Err(e) => return Envelope::failed_one(e.to_string()),
     };
+    let (section, id) = match req {
+        UndoRequest::Object { section, id } => (section, id),
+        UndoRequest::File { path } => return undo_file_in(data_dir, branch, scope, &writing, &left_at, &path, author),
+    };
+    let id = id.as_str();
     let was = match Reading::open_commit_in(data_dir, branch, scope, &left_at) {
         Ok(reading) => reading.raw().file,
         Err(e) => return Envelope::failed_one(e),
     };
     let mut file = writing.read().file;
 
-    let (section, id) = (req.section, req.id.as_str());
     let missing = || {
         Envelope::failed_one(format!(
             "there is no {} {id:?} on {branch:?} or where it left {}",
@@ -1860,6 +1872,81 @@ fn undo_in(
         files,
         |into| *into = file,
     )
+}
+
+/// Puts `within`, a path in the scope's bundle, back as it was at `left_at`, or removes it where `left_at` has none.
+///
+/// Only a file no section owns -- a sample, a test, a lookup file -- or one that does not read at either end: a
+/// section's objects go back one at a time, each judged as a save of its section is. The bytes it writes are the
+/// ones `main` held there, so it is not refused for a file that does not read: putting such a file back is the point.
+fn undo_file_in(
+    data_dir: &Path,
+    branch: &str,
+    scope: &str,
+    writing: &Writing,
+    left_at: &str,
+    within: &str,
+    author: &Actor,
+) -> Envelope<Save> {
+    let path = format!("{}/{within}", writing.prefix);
+    // A `..` would reach past the bundle the checks below read.
+    if within
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Envelope::failed_one(format!("{path:?} is not a path within the bundle"));
+    }
+    let unowned = [
+        config_file::SAMPLES_DIR,
+        config_file::TESTS_DIR,
+        config_file::LOOKUPS_DIR,
+    ]
+    .iter()
+    .any(|dir| within.starts_with(&format!("{dir}/")));
+    let unread = |files: &mut dyn config_file::FileSet| unreadable_in_bundle(files).iter().any(|(p, _)| p == within);
+    if !unowned && !unread(&mut writing.files()) {
+        let then = match Reading::open_commit_in(data_dir, branch, scope, left_at) {
+            Ok(reading) => unread(&mut reading.files()),
+            Err(e) => return Envelope::failed_one(e),
+        };
+        if !then {
+            return Envelope::failed_one(format!(
+                "{path} reads as objects: undo the changes to each of them instead"
+            ));
+        }
+    }
+    let in_repo = vec![path.clone()];
+    let read = |commit: &str| git::read_blobs(&writing.repo, commit, &in_repo).map(|mut b| b.remove(0));
+    let (then, now) = match (read(left_at), read(&writing.parent)) {
+        (Ok(then), Ok(now)) => (then, now),
+        (Err(e), _) | (_, Err(e)) => return Envelope::failed_one(e.to_string()),
+    };
+    if then == now {
+        return Envelope::failed_one(format!(
+            "{path} is as it was where {branch:?} left {}: there is nothing to undo",
+            git::MAIN_BRANCH
+        ));
+    }
+    if then.is_none() && writing.prefix != config_file::SHARED_DIR && within == "system.json" {
+        return Envelope::failed_one(format!(
+            "{path} is what makes its directory a group: deleting it breaks the group -- edit it instead"
+        ));
+    }
+    let edits = vec![git::FileEdit {
+        path: within.to_string(),
+        content: then,
+    }];
+    // Named as the save that made the change names it: `delete sample keep`.
+    let stem = |dir: &str| within.strip_prefix(&format!("{dir}/"))?.strip_suffix(".json");
+    let named = match (stem(config_file::SAMPLES_DIR), stem(config_file::TESTS_DIR)) {
+        (Some(id), _) => format!("sample {id}"),
+        (_, Some(id)) => format!("test {id}"),
+        _ => format!("file {path}"),
+    };
+    match writing.commit(edits, &format!("undo changes to {named}"), author) {
+        Ok(commit) => Save::done(commit),
+        Err(e) => Save::refused(e),
+    }
 }
 
 // -- samples ------------------------------------------------------------
@@ -4103,7 +4190,7 @@ mod tests {
     }
 
     fn undo_on_work(data: &Path, section: Section, id: &str) -> Envelope<Save> {
-        let req = UndoRequest {
+        let req = UndoRequest::Object {
             section,
             id: id.to_string(),
         };
@@ -4127,7 +4214,7 @@ mod tests {
         save_work(&data, Touches::Identities, |file| file.identities.clear());
         let tip = git::branch_tip(&git::repo_path(&data), "work");
 
-        let req = UndoRequest {
+        let req = UndoRequest::Object {
             section: Section::Identities,
             id: "i1".to_string(),
         };
@@ -4250,6 +4337,99 @@ mod tests {
         assert!(
             !neither.ok && neither.errors[0].message.contains("no route \"r9\""),
             "{neither:?}"
+        );
+        assert_eq!(
+            git::branch_tip(&git::repo_path(&data), "work"),
+            tip,
+            "nothing was saved"
+        );
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// `path`, within `shared/`, set to `content` on `work`, or removed when that is `None`.
+    fn edit_work(data: &Path, path: &str, content: Option<&[u8]>) {
+        let writing = Writing::open_in(data, "work", None, "shared").unwrap();
+        let edit = git::FileEdit {
+            path: path.to_string(),
+            content: content.map(<[u8]>::to_vec),
+        };
+        writing.commit(vec![edit], "an edit", &Actor::system()).unwrap();
+    }
+
+    fn undo_file_on_work(data: &Path, path: &str) -> Envelope<Save> {
+        let req = UndoRequest::File { path: path.to_string() };
+        undo_in(data, "work", None, "shared", req, &Actor::system(), |_| Ok(vec![]))
+    }
+
+    fn on_work(data: &Path, path: &str) -> Option<Vec<u8>> {
+        let repo = git::repo_path(data);
+        let tip = git::branch_tip(&repo, "work").unwrap();
+        git::read_blobs(&repo, &tip, &[format!("shared/{path}")])
+            .unwrap()
+            .remove(0)
+    }
+
+    #[test]
+    fn a_sample_the_branch_deleted_comes_back_as_one_save() {
+        let data = main_with_routes("undo-sample");
+        let sample = br#"{"id": "s", "name": "s", "records": ["x"]}"#;
+        commit_to(&data, git::MAIN_BRANCH, &[("samples/s.json", sample.to_vec())]);
+        edit_work(&data, "samples/s.json", None);
+
+        let undone = undo_file_on_work(&data, "samples/s.json");
+        assert!(undone.ok, "{undone:?}");
+        assert_eq!(on_work(&data, "samples/s.json").as_deref(), Some(&sample[..]));
+        let saves = saves_on_work(&data);
+        assert_eq!(saves[0].subject, "undo changes to sample s");
+        assert_eq!(saves[0].files, vec!["shared/samples/s.json".to_string()]);
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn a_test_the_branch_added_is_removed() {
+        let data = main_with_routes("undo-test");
+        edit_work(&data, "tests/t.json", Some(b"{}"));
+
+        let undone = undo_file_on_work(&data, "tests/t.json");
+        assert!(undone.ok, "{undone:?}");
+        assert_eq!(on_work(&data, "tests/t.json"), None);
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// The file is gone from the branch, so only the read where the branch left `main` lists it as not loading.
+    #[test]
+    fn a_file_that_does_not_read_and_was_deleted_comes_back() {
+        let data = main_with_routes("undo-unreadable");
+        commit_to(&data, git::MAIN_BRANCH, &[("destinations.json", b"{".to_vec())]);
+        edit_work(&data, "destinations.json", None);
+
+        let undone = undo_file_on_work(&data, "destinations.json");
+        assert!(undone.ok, "{undone:?}");
+        assert_eq!(on_work(&data, "destinations.json").as_deref(), Some(&b"{"[..]));
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn a_file_that_reads_as_objects_or_is_unchanged_or_outside_the_bundle_is_refused() {
+        let data = main_with_routes("undo-file-refused");
+        save_work(&data, Touches::Routes, |file| file.routes.truncate(2));
+        edit_work(&data, "samples/s.json", Some(b"{}"));
+        let tip = git::branch_tip(&git::repo_path(&data), "work");
+
+        let objects = undo_file_on_work(&data, "routes.json");
+        assert!(
+            !objects.ok && objects.errors[0].message.contains("reads as objects"),
+            "{objects:?}"
+        );
+        let same = undo_file_on_work(&data, "samples/other.json");
+        assert!(
+            !same.ok && same.errors[0].message.contains("nothing to undo"),
+            "{same:?}"
+        );
+        let outside = undo_file_on_work(&data, "samples/../../groups/west/system.json");
+        assert!(
+            !outside.ok && outside.errors[0].message.contains("not a path within the bundle"),
+            "{outside:?}"
         );
         assert_eq!(
             git::branch_tip(&git::repo_path(&data), "work"),

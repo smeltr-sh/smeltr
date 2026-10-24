@@ -182,6 +182,17 @@ export function isSectionChange(c: ObjectChange): c is SectionChange {
   return SECTIONS.some((spec) => spec.key === c.section);
 }
 
+/** What Undo changes puts back for a card: its object, or its file by its
+ * path in the bundle. Null for a group's own card. */
+export function undoTarget(
+  c: ObjectChange,
+): { section: ConfigSection; id: string } | { path: string } | null {
+  if (isSectionChange(c)) return { section: c.section, id: c.id };
+  if (c.section === SAMPLES || c.section === TESTS) return { path: `${c.section}/${c.id}.json` };
+  if (c.section === LOOKUPS || c.section === UNREADABLE) return { path: c.id };
+  return null;
+}
+
 /** One scope's two sides. */
 export interface ScopePair {
   scope: string;

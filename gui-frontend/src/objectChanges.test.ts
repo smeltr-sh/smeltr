@@ -14,7 +14,9 @@ import {
   scopeOf,
   stepLine,
   testsCovering,
+  undoTarget,
   uploadedName,
+  type ObjectChange,
 } from './objectChanges';
 
 const parse = {
@@ -561,5 +563,29 @@ describe('a source deploying moves', () => {
 
   it('is not one that names the start it already had', () => {
     expect(moves(undefined, { type: 'earliest' })).toBeUndefined();
+  });
+});
+
+describe('undoTarget', () => {
+  const card = (section: ObjectChange['section'], id: string): ObjectChange => ({
+    scope: 'shared',
+    section,
+    noun: 'file',
+    id,
+    label: id,
+    status: 'changed',
+    fields: [],
+  });
+  it('puts back an object by its section and id', () => {
+    expect(undoTarget(card('routes', 'r1'))).toEqual({ section: 'routes', id: 'r1' });
+  });
+  it('puts back a sample, a test, a lookup file or a file that does not read by its path', () => {
+    expect(undoTarget(card('samples', 's'))).toEqual({ path: 'samples/s.json' });
+    expect(undoTarget(card('tests', 't'))).toEqual({ path: 'tests/t.json' });
+    expect(undoTarget(card('lookups', 'lookups/geo.csv'))).toEqual({ path: 'lookups/geo.csv' });
+    expect(undoTarget(card('unreadable', 'routes.json'))).toEqual({ path: 'routes.json' });
+  });
+  it("leaves a group's own card read only", () => {
+    expect(undoTarget(card('manifest', 'west'))).toBeNull();
   });
 });

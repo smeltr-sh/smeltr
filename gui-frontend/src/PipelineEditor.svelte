@@ -421,8 +421,7 @@
       const res = await undoChanges(
         editingBranch,
         currentScope(),
-        'pipelines',
-        loadedId,
+        { section: 'pipelines', id: loadedId },
         readAtCommit,
       );
       if (!res.ok) {

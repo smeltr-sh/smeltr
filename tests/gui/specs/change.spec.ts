@@ -378,6 +378,35 @@ test('the branch list shows every branch with its state, and deletes one', async
   expect(await branchNames(api)).not.toContain('parked');
 });
 
+test('a sample the branch deleted is put back from its card on the change page', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  // W3
+  await api.put('/api/samples?branch=seed&scope=shared', {
+    id: 'keep',
+    name: 'keep',
+    records: [{ _raw: 'a line' }],
+  });
+  await api.openChange('seed', 'Add a sample');
+  await api.deploy('seed');
+  await api.delete('/api/samples/keep?branch=tidy&scope=shared');
+  await api.openChange('tidy', 'Tidy the samples');
+
+  await goto(admin, leader, '#/changes');
+  await admin.getByRole('link', { name: /Tidy the samples/ }).click();
+  await expect(admin.getByText('sample · shared')).toBeVisible();
+  await admin.getByRole('button', { name: 'Undo changes' }).click();
+  await admin
+    .getByRole('dialog', { name: 'undo changes' })
+    .getByRole('button', { name: 'Undo changes' })
+    .click();
+  await expect(admin.getByText('No objects changed.')).toBeVisible();
+  const { sample } = await api.get('/api/samples/keep?branch=tidy&scope=shared');
+  expect(sample.records).toEqual([{ _raw: 'a line' }]);
+});
+
 test('a deployed commit that fails its own tests is deployed, and flagged on the Issues page', async ({
   admin,
   api,
