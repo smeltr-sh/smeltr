@@ -163,6 +163,8 @@ struct PreviewBody {
     at_micros: Option<i64>,
     #[serde(default)]
     filter: Option<String>,
+    #[serde(default)]
+    attribution: bool,
 }
 
 async fn preview(State(service): State<Service>, Json(body): Json<PreviewBody>) -> Json<Envelope<Preview>> {
@@ -191,6 +193,7 @@ async fn preview(State(service): State<Service>, Json(body): Json<PreviewBody>) 
                     show_internal: body.show_internal,
                     at_micros: body.at_micros,
                     filter: body.filter,
+                    attribution: body.attribution,
                 };
                 run_preview(req, declared_at, &columns, records)
             })

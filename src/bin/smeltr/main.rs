@@ -2380,6 +2380,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
             },
             Default::default(),
             &[
@@ -2399,6 +2400,53 @@ mod tests {
             previewed.rows[0].json,
             Some(serde_json::json!({"n": 2, "doubled": 4, "seen": "orders", "id": "d2"}))
         );
+    }
+
+    /// With attribution, each row says which steps changed each field, in the order they ran, and which step dropped
+    /// it: a step in an `if` branch the row did not take changed nothing on it.
+    #[test]
+    fn attribution_names_the_steps_that_changed_each_field_and_dropped_each_row() {
+        let config = r#"{"version":1,"sources":[],"destinations":[],"routes":[],
+            "pipelines":[{"id":"p","name":"p","steps":[
+                {"id":"set","type":"code","body":"a = n * 2; b = 1;"},
+                {"id":"big","type":"if","condition":"n > 1",
+                    "then":[{"id":"bump","type":"code","body":"a = a + 1;"}],
+                    "else":[{"id":"gone","type":"drop","condition":"true"}]},
+                {"id":"trim","type":"code","body":"delete(b);"}]}]}"#;
+        let previewed = super::run_preview(
+            super::PreviewRequest {
+                config: config.to_string(),
+                pipeline: None,
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: true,
+            },
+            Default::default(),
+            &[column("n", "i64")],
+            serde_json::from_value(serde_json::json!([{"n": 2}, {"n": 1}])).unwrap(),
+        );
+        assert!(
+            previewed.ok,
+            "{:?}",
+            previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        let steps = |row: usize| serde_json::to_value(&previewed.rows[row].steps).unwrap();
+        assert_eq!(
+            steps(0),
+            serde_json::json!({"a": ["set", "bump"], "b": ["set", "trim"]})
+        );
+        assert_eq!(previewed.rows[0].dropped_by, None);
+        assert_eq!(steps(1), serde_json::json!({"a": ["set"], "b": ["set"]}));
+        assert_eq!(previewed.rows[1].dropped_by.as_deref(), Some("gone"));
+    }
+
+    /// An exception names the step that raised it.
+    #[test]
+    fn an_exception_names_its_step() {
+        let previewed = preview_of(r#"[{"_raw": "x"}]"#, "y = 1 / 0;");
+        assert_eq!(previewed.rows[0].exceptions[0].step.as_deref(), Some("c"));
     }
 
     /// A pasted sample has no columns, and reads as `_raw` text.
@@ -2436,6 +2484,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
             },
             Default::default(),
             columns,
@@ -2456,6 +2505,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: Some(filter.to_string()),
+                attribution: false,
             },
             Default::default(),
             &[],
@@ -2510,6 +2560,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
             },
             Default::default(),
             &[],
@@ -2905,6 +2956,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
             },
         );
 
@@ -2937,6 +2989,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
             },
         );
         assert!(!response.ok, "{} rows", response.rows.len());

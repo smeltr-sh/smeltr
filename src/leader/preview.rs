@@ -3,7 +3,7 @@
 //! everything it reads as arguments -- the config, the sample and where its lookup tables resolve -- so the leader's
 //! routes, its test runner and the demo's preview service give one answer.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::config_file::{self, Verdict};
 use crate::core::batch::Batch;
@@ -37,6 +37,10 @@ pub struct PreviewRequest {
     /// for are returned. One that does not compile fails the preview at the `filter` stage.
     #[serde(default)]
     pub filter: Option<String>,
+    /// Say, on each row, which steps changed each of its fields and which step dropped it (`attribute`). It runs the
+    /// pipeline once more for every step, so an editor asks for it once typing settles.
+    #[serde(default)]
+    pub attribution: bool,
 }
 
 #[derive(Default, serde::Serialize)]
@@ -200,6 +204,13 @@ pub struct RowOut {
     /// `None` when the row did not survive the pipeline.
     pub json: Option<serde_json::Value>,
     pub exceptions: Vec<ExceptionOut>,
+    /// With `attribution`: each field a step changed, added or removed, by its name as the editor writes it, and
+    /// those steps by id in the order they ran. Absent on a row no step changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<BTreeMap<String, Vec<String>>>,
+    /// With `attribution`: the step after which the row was gone.
+    #[serde(rename = "droppedBy", skip_serializing_if = "Option::is_none")]
+    pub dropped_by: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -207,6 +218,9 @@ pub struct ExceptionOut {
     /// The answer the exception's kind takes: `ignore`, `tag`, `drop`, `deliver` or `block`.
     pub answer: &'static str,
     pub message: String,
+    /// The step that raised it, by id. Absent for one raised reading the record, before any step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
 }
 
 // -- route preview ------------------------------------------------------
@@ -693,7 +707,11 @@ pub fn run_preview(
     let mut errors = ErrorSink::new();
     // Outside the budget guard, like the errors: a refusal still leaves whatever the parse got to say.
     let mut tally = crate::core::tally::FieldTally::new();
-    let at_micros = req.at_micros;
+    // Attribution compares this run with a run per step: one instant for them all, or `now()` would differ between
+    // them and look like a change.
+    let at_micros = req
+        .at_micros
+        .or_else(|| req.attribution.then(crate::core::ctx::wall_clock_micros));
 
     // Budgeted: the leader is also what serves the GUI, the config API and every worker's heartbeat, and a pipeline
     // that unrolls an array asks for far more than the sample weighs.
@@ -736,7 +754,7 @@ pub fn run_preview(
         }
     };
 
-    let rows: Vec<(RowOut, bool)> = preview_rows
+    let mut rows: Vec<(RowOut, bool)> = preview_rows
         .into_iter()
         .map(|r| {
             let row = RowOut {
@@ -747,12 +765,17 @@ pub fn run_preview(
                 exceptions: r
                     .exceptions
                     .into_iter()
-                    .map(|(answer, message)| ExceptionOut { answer, message })
+                    .map(|(answer, message, step)| ExceptionOut { answer, message, step })
                     .collect(),
+                steps: None,
+                dropped_by: None,
             };
             (row, r.matched)
         })
         .collect();
+    if req.attribution {
+        attribute(&req, at_micros, &declared_at, columns, &records, &mut rows);
+    }
 
     let parsers = tally
         .parses()
@@ -795,6 +818,156 @@ pub fn run_preview(
         parsers,
         warnings,
     })
+}
+
+/// Which steps changed each row's fields, and which step dropped it, written onto `rows`: the run of the whole
+/// pipeline. The pipeline is run cut after each step in the order its author reads them -- an `if` before its
+/// branches, `then` before `else` -- so each cut adds one step to the last, and what changed between two cuts is that
+/// step's doing on that row. Run, not read from the steps, because an `if` or a filter decides per row whether a step
+/// ran. Nothing is written if a cut does not run or gives a different number of rows, as an `unroll` does: rows
+/// would no longer line up.
+fn attribute(
+    req: &PreviewRequest,
+    at_micros: Option<i64>,
+    declared_at: &config_file::DeclaredAt,
+    columns: &[crate::heartbeat::CaptureColumn],
+    records: &[crate::io::RecordObject],
+    rows: &mut [(RowOut, bool)],
+) {
+    let Ok(config) = serde_json::from_str::<serde_json::Value>(&req.config) else {
+        return;
+    };
+    let Some(at) = pipeline_at(&config, req.pipeline.as_deref()) else {
+        return;
+    };
+    let steps = config["pipelines"][at]["steps"].as_array().cloned().unwrap_or_default();
+    let order = steps_in_order(&steps);
+    let count = rows.len();
+
+    let run_cut = |kept: usize| -> Option<Vec<Option<serde_json::Value>>> {
+        let mut cut = config.clone();
+        cut["pipelines"][at]["steps"] = serde_json::Value::Array(first_steps(&steps, &mut { kept }));
+        let req = PreviewRequest {
+            config: cut.to_string(),
+            pipeline: req.pipeline.clone(),
+            sample: None,
+            show_internal: req.show_internal,
+            at_micros,
+            filter: None,
+            attribution: false,
+        };
+        let previewed = run_preview(req, declared_at.clone(), columns, records.to_vec());
+        (previewed.ok && previewed.body.rows.len() == count)
+            .then(|| previewed.body.rows.into_iter().map(|r| r.json).collect())
+    };
+
+    let mut before = match run_cut(0) {
+        Some(input) => input.iter().map(|json| json.as_ref().map(leaves)).collect::<Vec<_>>(),
+        None => return,
+    };
+    let mut steps_of: Vec<BTreeMap<String, Vec<String>>> = vec![BTreeMap::new(); rows.len()];
+    let mut dropped_by: Vec<Option<String>> = vec![None; rows.len()];
+    for (k, id) in order.iter().enumerate() {
+        // The last cut is the whole pipeline, already run.
+        let after: Vec<Option<BTreeMap<String, serde_json::Value>>> = if k + 1 == order.len() {
+            rows.iter().map(|(r, _)| r.json.as_ref().map(leaves)).collect()
+        } else {
+            match run_cut(k + 1) {
+                Some(cut) => cut.iter().map(|json| json.as_ref().map(leaves)).collect(),
+                None => return,
+            }
+        };
+        for (row, (was, now)) in before.iter().zip(&after).enumerate() {
+            match (was, now) {
+                (Some(was), Some(now)) => {
+                    let changed = was
+                        .iter()
+                        .filter(|(path, value)| now.get(*path) != Some(value))
+                        .map(|(path, _)| path)
+                        .chain(now.keys().filter(|path| !was.contains_key(*path)));
+                    for path in changed {
+                        steps_of[row].entry(path.clone()).or_default().push(id.clone());
+                    }
+                }
+                (Some(_), None) => dropped_by[row] = Some(id.clone()),
+                _ => {}
+            }
+        }
+        before = after;
+    }
+    for ((row, _), (steps, dropped)) in rows.iter_mut().zip(steps_of.into_iter().zip(dropped_by)) {
+        row.steps = (!steps.is_empty()).then_some(steps);
+        row.dropped_by = dropped;
+    }
+}
+
+/// The index in `config["pipelines"]` of the pipeline with this id, or of the first.
+fn pipeline_at(config: &serde_json::Value, id: Option<&str>) -> Option<usize> {
+    let pipelines = config["pipelines"].as_array()?;
+    match id {
+        Some(id) => pipelines.iter().position(|p| p["id"] == id),
+        None => (!pipelines.is_empty()).then_some(0),
+    }
+}
+
+const IF: &str = "if";
+
+/// Every step's id, an `if` before its branches and `then` before `else`.
+fn steps_in_order(steps: &[serde_json::Value]) -> Vec<String> {
+    let mut order = Vec::new();
+    for step in steps {
+        order.push(step["id"].as_str().unwrap_or_default().to_string());
+        if step["type"] == IF {
+            for branch in ["then", "else"] {
+                order.extend(steps_in_order(step[branch].as_array().map_or(&[][..], |b| b)));
+            }
+        }
+    }
+    order
+}
+
+/// The first `kept` steps of `steps_in_order`, as steps: an `if` keeps the part of its branches among them.
+fn first_steps(steps: &[serde_json::Value], kept: &mut usize) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for step in steps {
+        if *kept == 0 {
+            break;
+        }
+        *kept -= 1;
+        let mut step = step.clone();
+        if step["type"] == IF {
+            for branch in ["then", "else"] {
+                let inner = step[branch].as_array().cloned().unwrap_or_default();
+                step[branch] = serde_json::Value::Array(first_steps(&inner, kept));
+            }
+        }
+        out.push(step);
+    }
+    out
+}
+
+/// A record's leaves by name, as the editor names them: what a cut is compared on. An empty object or an array is
+/// one leaf, as the editor draws it.
+fn leaves(record: &serde_json::Value) -> BTreeMap<String, serde_json::Value> {
+    fn walk(value: &serde_json::Value, path: &mut String, into: &mut BTreeMap<String, serde_json::Value>) {
+        match value {
+            serde_json::Value::Object(object) if !object.is_empty() => {
+                for (key, value) in object {
+                    let len = path.len();
+                    plan::tree::push_key(path, key);
+                    walk(value, path, into);
+                    path.truncate(len);
+                }
+            }
+            _ if !path.is_empty() => {
+                into.insert(path.clone(), value.clone());
+            }
+            _ => {}
+        }
+    }
+    let mut into = BTreeMap::new();
+    walk(record, &mut String::new(), &mut into);
+    into
 }
 
 /// What one test made of the config on a branch.
@@ -886,6 +1059,7 @@ pub fn run_pipeline_actual(
             show_internal: false,
             at_micros: Some(locked_at),
             filter: None,
+            attribution: false,
         },
         declared_at,
         columns,
