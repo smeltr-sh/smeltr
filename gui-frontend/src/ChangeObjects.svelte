@@ -23,6 +23,7 @@
     type TestSummary,
     type CommentAnchor,
     type TimelineEvent,
+    type UndoTarget,
   } from './api';
   import {
     LOOKUPS,
@@ -287,7 +288,7 @@
     return `${c.scope} ${c.section} ${c.id}`;
   }
 
-  async function undo(c: ObjectChange, what: NonNullable<ReturnType<typeof undoTarget>>) {
+  async function undo(c: ObjectChange, what: UndoTarget) {
     const ok = await ask({
       title: 'undo changes',
       body: `Undo the changes to ${c.label}, as a new save on ${branch.name}.`,

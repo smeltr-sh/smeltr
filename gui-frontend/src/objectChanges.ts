@@ -16,6 +16,7 @@ import {
   type TestDto,
   type TestResult,
   type TestSummary,
+  type UndoTarget,
 } from './api';
 import { diffObjects, type DiffEntry } from './diff';
 import { stepSummary, stepsFromDto } from './pipeline';
@@ -184,9 +185,7 @@ export function isSectionChange(c: ObjectChange): c is SectionChange {
 
 /** What Undo changes puts back for a card: its object, or its file by its
  * path in the bundle. Null for a group's own card. */
-export function undoTarget(
-  c: ObjectChange,
-): { section: ConfigSection; id: string } | { path: string } | null {
+export function undoTarget(c: ObjectChange): UndoTarget | null {
   if (isSectionChange(c)) return { section: c.section, id: c.id };
   if (c.section === SAMPLES || c.section === TESTS) return { path: `${c.section}/${c.id}.json` };
   if (c.section === LOOKUPS || c.section === UNREADABLE) return { path: c.id };

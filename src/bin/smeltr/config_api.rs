@@ -1746,7 +1746,11 @@ fn put_back<T: serde::Serialize + Clone>(was: &[T], now: &[T], id: &str, id_of: 
     })
 }
 
-/// The file a lookup table names under `lookups/`, relative to its bundle.
+/// The file at `path`, relative to the repository, in `commit`; `None` where the commit has none.
+fn blob_at(repo: &Path, commit: &str, path: &str) -> Result<Option<Vec<u8>>, git::GitError> {
+    git::read_blobs(repo, commit, &[path.to_string()]).map(|mut blobs| blobs.remove(0))
+}
+
 /// `put_back` written into `now`: whether that left it as it was, and the object's name.
 fn put_back_into<T: serde::Serialize + Clone>(
     was: &[T],
@@ -1759,6 +1763,7 @@ fn put_back_into<T: serde::Serialize + Clone>(
     Some((p.same, p.name))
 }
 
+/// The file a lookup table names under `lookups/`, relative to its bundle.
 fn lookup_file_of(table: &LookupTableDto) -> Option<&str> {
     match &table.source {
         LookupSourceDto::Csv { path, .. } | LookupSourceDto::Mmdb { path } => {
@@ -1823,8 +1828,8 @@ fn undo_in(
             Some(p) => {
                 // The table names its file, and the branch may have changed the bytes under the same name.
                 if let Some(path) = p.restored.as_ref().and_then(lookup_file_of) {
-                    let in_repo = vec![format!("{}/{path}", writing.prefix())];
-                    let read = |commit: &str| git::read_blobs(&repo, commit, &in_repo).map(|mut b| b.remove(0));
+                    let in_repo = format!("{}/{path}", writing.prefix());
+                    let read = |commit: &str| blob_at(&repo, commit, &in_repo);
                     match (read(&left_at), read(&writing.parent)) {
                         (Ok(Some(then)), Ok(now)) if now.as_ref() != Some(&then) => files.push(git::FileEdit {
                             path: path.to_string(),
@@ -1903,20 +1908,18 @@ fn undo_file_in(
     ]
     .iter()
     .any(|dir| within.starts_with(&format!("{dir}/")));
-    let unread = |files: &mut dyn config_file::FileSet| unreadable_in_bundle(files).iter().any(|(p, _)| p == within);
-    if !unowned && !unread(&mut writing.files()) {
-        let then = match Reading::open_commit_in(data_dir, branch, scope, left_at) {
-            Ok(reading) => unread(&mut reading.files()),
+    if !unowned && !does_not_load(&mut writing.files(), within) {
+        let did_not_load = match Reading::open_commit_in(data_dir, branch, scope, left_at) {
+            Ok(reading) => does_not_load(&mut reading.files(), within),
             Err(e) => return Envelope::failed_one(e),
         };
-        if !then {
+        if !did_not_load {
             return Envelope::failed_one(format!(
                 "{path} reads as objects: undo the changes to each of them instead"
             ));
         }
     }
-    let in_repo = vec![path.clone()];
-    let read = |commit: &str| git::read_blobs(&writing.repo, commit, &in_repo).map(|mut b| b.remove(0));
+    let read = |commit: &str| blob_at(&writing.repo, commit, &path);
     let (then, now) = match (read(left_at), read(&writing.parent)) {
         (Ok(then), Ok(now)) => (then, now),
         (Err(e), _) | (_, Err(e)) => return Envelope::failed_one(e.to_string()),
@@ -1927,10 +1930,10 @@ fn undo_file_in(
             git::MAIN_BRANCH
         ));
     }
-    if then.is_none() && writing.prefix != config_file::SHARED_DIR && within == "system.json" {
-        return Envelope::failed_one(format!(
-            "{path} is what makes its directory a group: deleting it breaks the group -- edit it instead"
-        ));
+    if then.is_none()
+        && let Err(e) = refuse_removing_manifest(writing, within, &path)
+    {
+        return Envelope::failed_one(e);
     }
     let edits = vec![git::FileEdit {
         path: within.to_string(),
@@ -2326,9 +2329,24 @@ fn scope_of_file(path: &str) -> Result<(String, String), String> {
     found.ok_or_else(|| format!("{path} is in no bundle: a path starts shared/ or groups/<id>/"))
 }
 
+/// Whether `within` is a file of `files` that does not load.
+fn does_not_load(files: &mut dyn config_file::FileSet, within: &str) -> bool {
+    unreadable_in_bundle(files).iter().any(|(p, _)| p == within)
+}
+
+/// `Err` when removing `within` would remove a group's manifest, which is what makes its directory a group.
+fn refuse_removing_manifest(writing: &Writing, within: &str, path: &str) -> Result<(), String> {
+    if writing.prefix != config_file::SHARED_DIR && within == "system.json" {
+        return Err(format!(
+            "{path} is what makes its directory a group: deleting it breaks the group -- edit it instead"
+        ));
+    }
+    Ok(())
+}
+
 /// Refuses `within` unless it is a file of `files` that does not load.
 fn refuse_unlisted(files: &mut dyn config_file::FileSet, within: &str, path: &str, branch: &str) -> Result<(), String> {
-    if unreadable_in_bundle(files).iter().any(|(p, _)| p == within) {
+    if does_not_load(files, within) {
         return Ok(());
     }
     Err(format!(
@@ -2402,10 +2420,10 @@ fn write_listed_file(
     if let Err(e) = refuse_unlisted(&mut writing.files(), &within, path, branch) {
         return Envelope::failed_one(e);
     }
-    if content.is_none() && writing.prefix != config_file::SHARED_DIR && within == "system.json" {
-        return Envelope::failed_one(format!(
-            "{path} is what makes its directory a group: deleting it breaks the group -- edit it instead"
-        ));
+    if content.is_none()
+        && let Err(e) = refuse_removing_manifest(&writing, &within, path)
+    {
+        return Envelope::failed_one(e);
     }
     let message = match content {
         Some(_) => format!("edit {path}"),
