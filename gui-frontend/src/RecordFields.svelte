@@ -22,6 +22,7 @@
     changeFitsInline,
     diffTree,
     leafLines,
+    PAGE_LINES,
     recordLines,
     splitPath,
     withoutRemoved,
@@ -50,7 +51,10 @@
   let split = $derived(withoutRemoved(diffTree(before, after, keep, declared)));
   let tree = $derived(split.tree);
   let removedOpen = $state(false);
-  let removed = $derived(removedOpen ? leafLines(split.removed) : []);
+  // Opened, a page at a time like the rest of the record.
+  let removedPages = $state(0);
+  let removedAll = $derived(removedOpen ? leafLines(split.removed) : []);
+  let removed = $derived(removedAll.slice(0, PAGE_LINES * (1 + removedPages)));
 
   // The reader's choices, by a struct's or an array's path: open or folded,
   // and how many pages past the first it draws.
@@ -128,6 +132,15 @@
 {#snippet name(label: string)}
   <!-- A long name breaks after a dot, where its parts already divide. -->
   {#each label.split('.') as part, k}{#if k > 0}.<wbr />{/if}{part}{/each}
+{/snippet}
+
+{#snippet more(depth: number, shown: number, total: number, onmore: () => void)}
+  <div class="line">
+    <span class="gutter"></span>
+    <span class="dim" style:margin-left={`${depth * INDENT_CH}ch`}
+      >{shown} of {total} shown ·&nbsp;</span
+    ><button type="button" class="more" onclick={onmore}>show more</button>
+  </div>
 {/snippet}
 
 {#snippet field(line: Extract<RecordLine, { kind: 'field' }>)}
@@ -232,16 +245,9 @@
         </button>
       {:else if line.kind === 'more'}
         {@const path = line.path}
-        <div class="line">
-          <span class="gutter"></span>
-          <span class="dim" style:margin-left={`${line.depth * INDENT_CH}ch`}
-            >{line.shown} of {line.total} shown ·&nbsp;</span
-          ><button
-            type="button"
-            class="more"
-            onclick={() => pages.set(path, (pages.get(path) ?? 0) + 1)}>show more</button
-          >
-        </div>
+        {@render more(line.depth, line.shown, line.total, () =>
+          pages.set(path, (pages.get(path) ?? 0) + 1),
+        )}
       {:else}
         {@render field(line)}
       {/if}
@@ -261,6 +267,9 @@
       {#each removed as line (line.kind + line.path)}
         {#if line.kind === 'field'}{@render field(line)}{/if}
       {/each}
+      {#if removed.length < removedAll.length}
+        {@render more(0, removed.length, removedAll.length, () => removedPages++)}
+      {/if}
     {/if}
   </div>
 {/if}

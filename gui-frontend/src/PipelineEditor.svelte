@@ -2422,6 +2422,8 @@
     font-size: var(--text-micro);
     position: sticky;
     top: 0;
+    /* Above the open record's body, which is sticky too and later in the page. */
+    z-index: 1;
     background: var(--bg);
   }
 
