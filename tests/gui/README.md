@@ -1,6 +1,6 @@
 # GUI tests
 
-`just check-gui` builds the release binary and drives the GUI in Chromium, one test per thing a user story in
+`just check-gui` builds the debug binary and drives the GUI in Chromium, one test per thing a user story in
 [`docs/user-stories.md`](../../docs/user-stories.md) asks for. Every test starts a leader of its own, and the
 workers it needs, from empty data directories, so tests run side by side and none depends on another.
 
