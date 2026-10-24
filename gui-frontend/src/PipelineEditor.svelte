@@ -46,6 +46,7 @@
   import { fieldsSettled } from './grokFields';
   import { provideUnfinishedRows } from './unfinished.svelte';
   import RecordFields from './RecordFields.svelte';
+  import SearchBox from './SearchBox.svelte';
   import { formatDiffValue } from './diff';
   import {
     countStates,
@@ -1419,6 +1420,71 @@
     (lastGoodResult?.rows ?? []).filter((r) => r.exceptions.length > 0).length,
   );
 
+  const CHIP_LABELS = {
+    failing: '⚠ Failing',
+    dropped: '⌫ Dropped',
+    changed: '~ Changed by a step',
+  } as const;
+
+  // What the find box offers: the kinds of row a chip keeps, with how many there are, and the
+  // expressions this pipeline was last filtered by, each narrowed to what is typed.
+  type FindItem =
+    | { kind: keyof typeof CHIP_LABELS; count: number; section?: undefined }
+    | { kind: 'recent'; expression: string; section: string };
+  let findItems = $derived.by((): FindItem[] => {
+    const rows = lastGoodResult?.rows ?? [];
+    const q = outputQuery.trim().toLowerCase();
+    const counts = {
+      failing: () => failingCount,
+      dropped: () => rows.filter((r) => r.json === null).length,
+      changed: () => rows.filter((_, i) => rowChanged(i)).length,
+    };
+    const kinds = (Object.keys(CHIP_LABELS) as (keyof typeof CHIP_LABELS)[])
+      .filter((kind) => !chips.some((c) => c.kind === kind))
+      .filter((kind) => CHIP_LABELS[kind].toLowerCase().includes(q))
+      .map((kind) => ({ kind, count: counts[kind]() }))
+      .filter((k) => k.count > 0);
+    const recent = recentExpressions
+      .filter((e) => e !== outputQuery.trim() && e.toLowerCase().includes(q))
+      .map((expression) => ({ kind: 'recent' as const, expression, section: 'Recent' }));
+    return [...kinds, ...recent];
+  });
+
+  function pickFind(item: FindItem): boolean {
+    if (item.kind === 'recent') outputQuery = item.expression;
+    else addChip({ kind: item.kind });
+    return true;
+  }
+
+  const RECENT_EXPRESSIONS = 5;
+  const expressionsKey = (pipeline: string) => `smeltr-workspace-expressions:${pipeline}`;
+  let recentExpressions = $state<string[]>([]);
+  $effect(() => {
+    const key = expressionsKey(pipelineId);
+    untrack(() => {
+      try {
+        recentExpressions = JSON.parse(window.localStorage.getItem(key) ?? '[]') as string[];
+      } catch {
+        recentExpressions = [];
+      }
+    });
+  });
+
+  /** Keeps the expression the rows are filtered by, once the box is left with it. */
+  function rememberExpression() {
+    const q = outputQuery.trim();
+    if (!q || expressionRows === null) return;
+    recentExpressions = [q, ...recentExpressions.filter((e) => e !== q)].slice(
+      0,
+      RECENT_EXPRESSIONS,
+    );
+    try {
+      window.localStorage.setItem(expressionsKey(pipelineId), JSON.stringify(recentExpressions));
+    } catch {
+      // Storage refused: they last as long as the page.
+    }
+  }
+
   let outputQuery = $state('');
   /** The row numbers the expression kept, or null while the search is a keyword. */
   let expressionRows = $state<Set<number> | null>(null);
@@ -1716,32 +1782,39 @@
 
               {#if lastGoodResult && lastGoodResult.rows.length > 0}
                 <div class="output-search">
-                  <label class="search"
-                    ><span aria-hidden="true">⌕</span>{#each chips as c (chipKey(c))}<span
-                        class="find-chip"
-                        >{c.kind === 'has'
-                          ? `has ${c.path}`
-                          : c.kind === 'failing'
-                            ? '⚠ Failing'
-                            : c.kind === 'dropped'
-                              ? '⌫ Dropped'
-                              : '~ Changed by a step'}<button
-                          type="button"
-                          aria-label={`remove ${chipKey(c)}`}
-                          onclick={() => toggleChip(c)}>✕</button
-                        ></span
-                      >{/each}<input
-                      type="search"
-                      class:mono={expressionRows !== null}
-                      bind:value={outputQuery}
-                      placeholder="Search the output, or filter with an expression such as status >= 500"
-                      aria-label="Search the output"
-                    />{#if outputQuery.trim()}<span
-                        class="mode"
-                        class:expression={expressionRows !== null}
-                        >{expressionRows !== null ? 'ƒ expression' : 'keyword'}</span
-                      >{/if}</label
+                  <SearchBox
+                    bind:query={outputQuery}
+                    items={findItems}
+                    onpick={pickFind}
+                    onleave={rememberExpression}
+                    id="find"
+                    label="Search the output"
+                    placeholder="Search the output, or filter with an expression such as status >= 500"
+                    mono={expressionRows !== null}
                   >
+                    {#snippet before()}<span aria-hidden="true">⌕</span
+                      >{#each chips as c (chipKey(c))}<span class="find-chip"
+                          >{c.kind === 'has' ? `has ${c.path}` : CHIP_LABELS[c.kind]}<button
+                            type="button"
+                            aria-label={`remove ${chipKey(c)}`}
+                            onclick={() => toggleChip(c)}>✕</button
+                          ></span
+                        >{/each}{/snippet}
+                    {#snippet after()}{#if outputQuery.trim()}<span
+                          class="mode"
+                          class:expression={expressionRows !== null}
+                          >{expressionRows !== null ? 'ƒ expression' : 'keyword'}</span
+                        >{/if}{/snippet}
+                    {#snippet option(item)}
+                      {#if item.kind === 'recent'}
+                        <code>{item.expression}</code>
+                      {:else}
+                        <span>{CHIP_LABELS[item.kind]}</span>
+                        <span></span>
+                        <span class="dim">{item.count}</span>
+                      {/if}
+                    {/snippet}
+                  </SearchBox>
                   {#if outputQuery.trim() || chips.length > 0}
                     <span class="dim count"
                       >{gridOrder.length} of {lastGoodResult.rows.length} rows</span
@@ -2125,10 +2198,6 @@
     margin: 0 0 0.35rem;
   }
 
-  .right-col label {
-    margin-top: 0;
-  }
-
   /* The label register: the field's name, weight 600. */
   .field-name {
     display: flex;
@@ -2150,30 +2219,6 @@
     display: flex;
     align-items: center;
     gap: 0.7rem;
-  }
-  /* ClusterPage's worker search. */
-  .search {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex: 1;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 0 0.7rem;
-    color: var(--dim);
-    font-weight: 400;
-  }
-  .search input {
-    width: 100%;
-    border: 0;
-    outline: 0;
-    background: transparent;
-    color: var(--ink);
-    font: inherit;
-    padding: 1px 2px;
-  }
-  .search input.mono {
-    font-family: var(--mono);
   }
   .mode {
     flex: none;
