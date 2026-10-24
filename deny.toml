@@ -2,6 +2,10 @@
 # `just check`, so a crate that arrives by feature unification is a failing
 # check rather than a silent addition.
 
+# The platforms smeltr builds for. A crate only another platform pulls in is never compiled, so it is not checked.
+[graph]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+
 [advisories]
 # RUSTSEC advisories are denied by default; list an id here, with the reason
 # and the date, only when the fix is not yet available.
@@ -44,7 +48,6 @@ multiple-versions = "warn"
 # matching is itself a warning, so each one leaves once upstream moves.
 skip = [
     { crate = "base64@0.22.1", reason = "gix-transport" },
-    { crate = "core-foundation@0.9.4", reason = "system-configuration 0.7, through hickory-resolver's system-config, on Apple only" },
     { crate = "digest@0.10.7", reason = "crc-fast, through object_store" },
     { crate = "crypto-common@0.1.7", reason = "digest 0.10, through crc-fast" },
     { crate = "generic-array@0.14.7", reason = "crypto-common 0.1, through crc-fast" },
@@ -53,9 +56,7 @@ skip = [
     { crate = "sha2@0.10.9", reason = "mysql_common 0.37, through mysql_async" },
     { crate = "cpufeatures@0.2.17", reason = "sha1 and sha2 0.10, through mysql_async" },
     { crate = "sha3@0.11.0", reason = "ml-kem, through russh" },
-    { crate = "getrandom@0.2.17", reason = "const-random-macro, through ahash in arrow" },
     { crate = "getrandom@0.3.4", reason = "ahash, through arrow" },
-    { crate = "r-efi@5.3.0", reason = "getrandom 0.3, through ahash" },
     { crate = "hashbrown@0.14.5", reason = "dashmap, through gix-tempfile" },
     { crate = "hashbrown@0.16.1", reason = "clru through gix-pack, and rsqlite-vfs through rusqlite" },
     { crate = "itertools@0.13.0", reason = "bindgen, building aws-lc-fips-sys" },
@@ -72,7 +73,6 @@ skip = [
     { crate = "der@0.7.10", reason = "x509-cert 0.2, through tokio-postgres-rustls" },
     { crate = "spki@0.7.3", reason = "x509-cert 0.2, through tokio-postgres-rustls" },
     { crate = "fallible-iterator@0.2.0", reason = "postgres-protocol, through tokio-postgres" },
-    { crate = "wasi@0.11.1", reason = "getrandom 0.2, through ahash in arrow; whoami, through tokio-postgres, is on wasi 0.14" },
 ]
 wildcards = "deny"
 # One cryptographic provider, and this is what holds it to one. `ring` is an
