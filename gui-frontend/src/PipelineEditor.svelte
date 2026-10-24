@@ -1892,8 +1892,11 @@
                       <colgroup>
                         <col style:width="calc(2ch + 1rem)" />
                         <col style:width={`calc(${indexWidth}ch + 1rem)`} />
+                        <!-- The last column takes what the pane has to spare. -->
                         {#each columnWidths as w, k (columns[k])}
-                          <col style:width={`calc(${w}ch + 1rem)`} />
+                          <col
+                            style:width={k < columns.length - 1 ? `calc(${w}ch + 1rem)` : undefined}
+                          />
                         {/each}
                       </colgroup>
                       <thead>
