@@ -360,6 +360,11 @@ impl<'s> Parser<'s> {
         self.tokens[self.pos].span
     }
 
+    /// The span of the token read last.
+    fn last_span(&self) -> Span {
+        self.tokens[self.pos - 1].span
+    }
+
     fn at_eof(&self) -> bool {
         matches!(self.peek(), Token::Eof)
     }
@@ -542,7 +547,7 @@ impl<'s> Parser<'s> {
         let r = self.stmt_inner(out);
         self.depth -= 1;
         if r.is_ok() {
-            let last = self.tokens[self.pos - 1].span;
+            let last = self.last_span();
             let after_block = self.shape.blocks.last().is_some_and(|b| b.1 == last.start);
             let open_tail = self.open_tails.len() > tails
                 && matches!(out.last(), Some(Stmt::Expr(e)) if self.open_tails.last().is_some_and(|t| t.0 == e.span));
@@ -1052,9 +1057,7 @@ impl<'s> Parser<'s> {
                 }
             }
         }
-        self.shape
-            .blocks
-            .push((open.start, self.tokens[self.pos - 1].span.start));
+        self.shape.blocks.push((open.start, self.last_span().start));
         // Labels still waiting at the end fall through to nothing, as a row no case takes does.
 
         let branches: Vec<Vec<Stmt>> = (0..cases.len())
@@ -1279,7 +1282,7 @@ impl<'s> Parser<'s> {
         self.depth -= 1;
         if r.is_ok() && self.in_type == 0 {
             // A `>` `close_angle` took off a glued token ends the type inside that token.
-            let last = self.tokens[self.pos - 1].span.end;
+            let last = self.last_span().end;
             let end = match self.split_at {
                 Some(at) if at >= last => at,
                 _ => last,
@@ -1525,7 +1528,7 @@ impl<'s> Parser<'s> {
                 }
                 self.advance();
                 let ty = self.type_expr()?;
-                let span = lhs.span.join(self.tokens[self.pos - 1].span);
+                let span = lhs.span.join(self.last_span());
                 lhs = Expr::new(
                     span,
                     ExprKind::Coerce {
@@ -1767,7 +1770,7 @@ impl<'s> Parser<'s> {
             vec![Stmt::Return(self.expr_bp(0)?)]
         };
         Ok(Expr::new(
-            start.join(self.tokens[self.pos - 1].span),
+            start.join(self.last_span()),
             ExprKind::Arrow(Function {
                 params,
                 param_types,
