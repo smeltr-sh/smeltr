@@ -171,7 +171,8 @@ impl KeyStanding {
         let n = self.unopenable.len();
         Some(format!(
             "the secrets encryption key at {} {what}, so the {n} stored secret{} cannot be opened and no new ones can \
-             be stored. Restore it and restart the leader, or regenerate it under Secrets, Encryption key",
+             be stored. Restore it and restart the leader, or regenerate it under Admin, \
+             Secrets, Encryption key",
             self.path.display(),
             if n == 1 { "" } else { "s" },
         ))

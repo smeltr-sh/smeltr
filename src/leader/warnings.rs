@@ -2360,12 +2360,12 @@ pub fn encryption_key_warnings(standing: &KeyStanding, starts: &HashMap<FactKey,
             let (subject_kind, message) = match u {
                 Unopenable::Secret(_) => (
                     SubjectKind::Secret,
-                    "sealed with a key this leader no longer has. Store a new version".to_string(),
+                    "encrypted with a key this leader no longer has. Store a new version".to_string(),
                 ),
                 Unopenable::Setting(key) => (
                     SubjectKind::Leader,
                     format!(
-                        "sealed with a key this leader no longer has. Enter it again under {}",
+                        "encrypted with a key this leader no longer has. Enter it again under {}",
                         sealed_setting_place(key).1
                     ),
                 ),
@@ -2394,7 +2394,7 @@ fn unopenable_id(u: &Unopenable) -> String {
 pub(crate) fn sealed_setting_place(key: &str) -> (&str, &'static str) {
     match key {
         crate::leader::remote::TOKEN_KEY => ("Git remote token", "System, Git remote"),
-        crate::leader::oidc::CLIENT_SECRET_KEY => ("OIDC client secret", "Accounts, Single sign-on"),
+        crate::leader::oidc::CLIENT_SECRET_KEY => ("Single sign-on client secret", "Accounts, Single sign-on"),
         crate::leader::model::API_KEY_KEY => ("AI agents API key", "System, AI agents"),
         crate::leader::acme::EAB_HMAC_KEY => ("ACME EAB HMAC key", "System, Certificates"),
         crate::leader::acme::CLOUDFLARE_TOKEN_KEY => ("Cloudflare API token", "System, Certificates"),
@@ -6438,7 +6438,7 @@ mod tests {
         assert!(said[0].message.ends_with("Store a new version"));
         assert_eq!(
             (said[1].subject_kind, said[1].subject_id.as_str()),
-            (SubjectKind::Leader, "OIDC client secret")
+            (SubjectKind::Leader, "Single sign-on client secret")
         );
         assert!(
             said[1]

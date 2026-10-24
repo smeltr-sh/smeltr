@@ -1717,27 +1717,15 @@ fn check_secrets_key(store: &dyn smeltr::leader::store::Store, path: &std::path:
             std::process::exit(1);
         }
     };
-    let what = match standing.key {
-        KeyState::Held { .. } => return,
-        KeyState::Absent => {
-            if let Err(e) = smeltr::leader::secrets::load_or_create(path) {
-                eprintln!("smeltr: refusing to start -- {e}");
-                std::process::exit(1);
-            }
-            return;
-        }
-        KeyState::Missing => "is missing",
-        KeyState::Mismatched { .. } => "does not match them",
-    };
-    let n = standing.unopenable.len();
-    tracing::error!(
-        target: "secrets.key_unusable",
-        path = %path.display(),
-        "cannot open the {n} stored secret{}: the secrets encryption key at {} {what}. Secrets cannot be stored or \
-         changed until it is restored, or regenerated under Admin, Secrets, Encryption key",
-        if n == 1 { "" } else { "s" },
-        path.display(),
-    );
+    if standing.key == KeyState::Absent
+        && let Err(e) = smeltr::leader::secrets::load_or_create(path)
+    {
+        eprintln!("smeltr: refusing to start -- {e}");
+        std::process::exit(1);
+    }
+    if let Some(problem) = standing.problem() {
+        tracing::error!(target: "secrets.key_unusable", path = %path.display(), "{problem}");
+    }
 }
 
 /// Make sure somebody can sign in, and say so on the console when a password was written.

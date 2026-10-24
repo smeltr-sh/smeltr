@@ -1,7 +1,7 @@
 <!--
-  Admin -> Secrets -> Encryption key: the key the leader seals stored secrets
-  and credential settings under. A key that is missing or does not match what
-  it sealed refuses every stored secret until it is restored or regenerated;
+  Admin -> Secrets -> Encryption key: the key the leader encrypts stored secrets
+  and credential settings with. A key that is missing or does not match what
+  it encrypted refuses every stored secret until it is restored or regenerated;
   after a regeneration, each value the new key cannot open is listed to enter
   again.
 -->
@@ -42,7 +42,7 @@
       });
   });
 
-  const broken = $derived(key !== null && (key.state === 'missing' || key.state === 'mismatched'));
+  const broken = $derived(keyProblem(key) !== '');
 
   /** Where each value is entered again. A secret on the Secrets tab; a setting on its own page. */
   const SETTING_PLACES: Record<string, { label: string; href: string }> = {
