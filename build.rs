@@ -117,7 +117,7 @@ fn warn_if_stale(manifest: &Path, dist: &Path) {
     }
     println!(
         "cargo:warning=gui-frontend/dist is older than gui-frontend's sources, so this binary \
-         will embed the PREVIOUS frontend build. Run `just build`, or `npm run build` in \
+         will embed the PREVIOUS frontend build. Run `just build-dev`, or `npm run build` in \
          gui-frontend and build again. (cargo does not run the bundler for you -- see build.rs.) \
          A release build refuses outright rather than warning."
     );
