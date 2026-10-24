@@ -253,7 +253,11 @@
   <SecondaryTabs tabs={SECRETS_TABS} active={secretsHash(section)} ariaLabel="Secrets" />
 
   {#if section === 'key'}
-    <div class="key"><EncryptionKeySettings /></div>
+    {#if key}
+      <div class="key"><EncryptionKeySettings bind:key /></div>
+    {:else if loading}
+      <p class="dim">Loading…</p>
+    {/if}
   {:else}
     {#if keyProblem(key)}
       <p class="critical" role="alert">{keyProblem(key, ' under Encryption key')}</p>
@@ -344,7 +348,7 @@
                   {CUSTODY_LABEL[s.custody]}
                   {#if current && !current.usable}
                     <small class="unusable">
-                      unusable &mdash; sealed with a key this leader no longer has
+                      unusable &mdash; encrypted with a key this leader no longer has
                     </small>
                   {/if}
                 </td>

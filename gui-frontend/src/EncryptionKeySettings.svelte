@@ -21,26 +21,17 @@
 </script>
 
 <script lang="ts">
-  import { reported, unreported } from './errors.svelte';
+  import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import Help from './Help.svelte';
   import Panel from './Panel.svelte';
   import { ask } from './Confirm.svelte';
   import { errorText, getEncryptionKey, regenerateEncryptionKey } from './api';
 
-  let key = $state<EncryptionKeyDto | null>(null);
-  let loadFailed = $state(false);
+  /** Read by the Secrets page, which shows it on both tabs; a regeneration writes the new standing back. */
+  let { key = $bindable() }: { key: EncryptionKeyDto } = $props();
   let busy = $state(false);
   let error = $state('');
-
-  $effect(() => {
-    getEncryptionKey()
-      .then((k) => (key = k))
-      .catch((e) => {
-        loadFailed = true;
-        reported(e);
-      });
-  });
 
   const broken = $derived(keyProblem(key) !== '');
 
@@ -57,7 +48,7 @@
   async function regenerate() {
     const ok = await ask({
       title: 'regenerate the encryption key',
-      body: 'Every stored secret and sealed setting must be entered again. Restoring the original key file instead keeps them.',
+      body: 'Every stored secret and encrypted setting must be entered again. Restoring the original key file instead keeps them.',
       action: 'Regenerate key',
       danger: true,
     });
@@ -79,65 +70,58 @@
   }
 </script>
 
-{#if loadFailed}
-  <!-- The error bar says why. -->
-{:else if key === null}
-  <p>Reading the encryption key…</p>
-{:else}
-  <Panel title="Encryption key">
-    {#if broken}
-      <p class="critical" role="alert">{keyProblem(key)}</p>
-    {/if}
+<Panel title="Encryption key">
+  {#if broken}
+    <p class="critical" role="alert">{keyProblem(key)}</p>
+  {/if}
 
+  <div class="setting">
+    <div>
+      <h3>
+        Key
+        <Help label="Key"
+          >Encrypts every stored secret, the Git remote token, the single sign-on client secret and
+          the AI agents API key. Keep a backup: without it, a restored leader cannot open them.</Help
+        >
+      </h3>
+    </div>
+    <div class="fields">
+      {#if key.state === 'missing'}
+        <span class="bad">missing</span>
+      {:else if key.state === 'mismatched'}
+        <span><code>{key.keyId}</code> <span class="bad">does not match</span></span>
+      {:else if key.keyId}
+        <code>{key.keyId}</code>
+      {/if}
+      <code class="dim">{key.path}</code>
+    </div>
+  </div>
+
+  {#if !broken && key.unopenable.length > 0}
     <div class="setting">
       <div>
-        <h3>
-          Key
-          <Help label="Key"
-            >Encrypts every stored secret, the Git remote token, the single sign-on client secret
-            and the AI agents API key. Keep a backup: without it, a restored leader cannot open
-            them.</Help
-          >
-        </h3>
+        <h3>To enter again</h3>
       </div>
-      <div class="fields">
-        {#if key.state === 'missing'}
-          <span class="bad">missing</span>
-        {:else if key.state === 'mismatched'}
-          <span><code>{key.keyId}</code> <span class="bad">does not match</span></span>
-        {:else if key.keyId}
-          <code>{key.keyId}</code>
-        {/if}
-        <code class="dim">{key.path}</code>
-      </div>
+      <ul class="fields">
+        {#each key.unopenable as item (`${item.kind}|${item.name}`)}
+          {@const place =
+            item.kind === 'secret' ? SECRETS_PLACE : (SETTING_PLACES[item.name] ?? SECRETS_PLACE)}
+          <li><code>{item.label}</code> <a href={place.href}>{place.label}</a></li>
+        {/each}
+      </ul>
     </div>
+  {/if}
 
-    {#if !broken && key.unopenable.length > 0}
-      <div class="setting">
-        <div>
-          <h3>To enter again</h3>
-        </div>
-        <ul class="fields">
-          {#each key.unopenable as item (`${item.kind}|${item.name}`)}
-            {@const place =
-              item.kind === 'secret' ? SECRETS_PLACE : (SETTING_PLACES[item.name] ?? SECRETS_PLACE)}
-            <li><code>{item.label}</code> <a href={place.href}>{place.label}</a></li>
-          {/each}
-        </ul>
-      </div>
-    {/if}
+  <InlineError message={error} />
 
-    <InlineError message={error} />
-
-    {#if broken}
-      <div class="buttons">
-        <button class="danger" type="button" disabled={busy} onclick={regenerate}>
-          Regenerate key
-        </button>
-      </div>
-    {/if}
-  </Panel>
-{/if}
+  {#if broken}
+    <div class="buttons">
+      <button class="danger" type="button" disabled={busy} onclick={regenerate}>
+        Regenerate key
+      </button>
+    </div>
+  {/if}
+</Panel>
 
 <style>
   .setting {
