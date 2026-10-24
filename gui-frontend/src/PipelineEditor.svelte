@@ -106,7 +106,6 @@
   import { hold, verdictFor, drop } from './edits';
   import type { ChangeRow } from './diff';
   import AddSampleDialog from './AddSampleDialog.svelte';
-  import SamplePicker from './SamplePicker.svelte';
   import SampleMenu from './SampleMenu.svelte';
   import PencilIcon from './PencilIcon.svelte';
   import { mintPipelineId } from './ids';
@@ -1382,6 +1381,35 @@
     };
   });
 
+  // The records pane ends at the bottom of the window, wherever it starts, so only the steps make the
+  // page taller than the window. What the page holds below the pane is left room for too.
+  let rightCol = $state<HTMLElement | undefined>();
+  let paneTop = $state(0);
+  let paneAfter = $state(0);
+  $effect(() => {
+    const pane = rightCol;
+    if (!pane) return;
+    const place = () => {
+      const top = pane.getBoundingClientRect().top;
+      const columns = pane.parentElement!.getBoundingClientRect().bottom;
+      paneTop = Math.max(0, top);
+      // The page ends where its content does, short of the window or past it.
+      paneAfter = Math.max(0, document.documentElement.getBoundingClientRect().bottom - columns);
+    };
+    place();
+    // And as the page settles: what loads above the pane moves it down.
+    const settled = new ResizeObserver(place);
+    settled.observe(document.body);
+    settled.observe(pane);
+    window.addEventListener('scroll', place, { capture: true, passive: true });
+    window.addEventListener('resize', place);
+    return () => {
+      settled.disconnect();
+      window.removeEventListener('scroll', place, { capture: true });
+      window.removeEventListener('resize', place);
+    };
+  });
+
   let drawn = $derived.by(() => {
     const rows = gridRows ?? [];
     const n = gridOrder.length;
@@ -1735,7 +1763,12 @@
           <span class="grip" aria-hidden="true">&#8596;</span>
         </div>
 
-        <section class="right-col">
+        <section
+          class="right-col"
+          bind:this={rightCol}
+          style:--pane-top={`${paneTop}px`}
+          style:--pane-after={`${paneAfter}px`}
+        >
           <InlineError message={proposeError} />
           <AddSampleDialog
             open={capturing}
@@ -1751,107 +1784,89 @@
           {#if !selectedSample}{@render stageChips()}{/if}
 
           <div class="records">
-            {#if !selectedSample}
-              {#if dictionary}
-                <!-- No records to count, but the steps compiled: what they declare. -->
-                <div class="output-search">
-                  <span class="grow"></span>
-                  <FieldsMenu
-                    fields={menuFields}
-                    records={null}
-                    shown={isShown}
-                    {dictionary}
-                    onshow={showFields}
-                    ondefault={() => toggledColumns.clear()}
-                    onhas={() => {}}
-                  />
-                </div>
-              {/if}
-              {#if samples.length === 0}
-                <p class="dim">
-                  No samples yet. Capture one, or paste or upload records on the
-                  <a class="btn" href="#/build">Samples</a> page.
-                </p>
-              {:else}
-                <SamplePicker {samples} {lockedBy} onpick={chooseSample}>
-                  {#snippet tools()}
-                    <button type="button" onclick={() => (capturing = true)}>Capture</button>
-                    <a class="btn" href="#/build">Paste or upload</a>
-                  {/snippet}
-                </SamplePicker>
-              {/if}
-            {:else}
-              <div class="output-search">
-                <SampleMenu
-                  {samples}
-                  selected={selectedSample}
-                  {lastUsed}
-                  records={lastGoodResult && lastSample === selectedSample
-                    ? lastGoodResult.rows.length
-                    : null}
-                  {lockedBy}
-                  pipeline={loadedId}
-                  mayCapture={(c) => mayCapture(sourceTarget(c))}
-                  onpick={chooseSample}
-                  onsaved={captured}
-                  oncapture={(c) => {
-                    captureAt = sourceTarget(c);
-                    capturing = true;
+            <div class="output-search">
+              <SampleMenu
+                {samples}
+                selected={selectedSample}
+                {lastUsed}
+                records={selectedSample && lastGoodResult && lastSample === selectedSample
+                  ? lastGoodResult.rows.length
+                  : null}
+                {lockedBy}
+                pipeline={loadedId}
+                mayCapture={(c) => mayCapture(sourceTarget(c))}
+                onpick={chooseSample}
+                onsaved={captured}
+                oncapture={(c) => {
+                  captureAt = sourceTarget(c);
+                  capturing = true;
+                }}
+              />
+              {#if gridRows && gridRows.length > 0}
+                <label class="search"
+                  ><span aria-hidden="true">⌕</span>{#each chips as c (chipKey(c))}<span
+                      class="find-chip"
+                      >{c.kind === 'has'
+                        ? `has ${c.path}`
+                        : c.kind === 'failing'
+                          ? '⚠ Failing'
+                          : c.kind === 'dropped'
+                            ? '⌫ Dropped'
+                            : '~ Changed by a step'}<button
+                        type="button"
+                        aria-label={`remove ${chipKey(c)}`}
+                        onclick={() => toggleChip(c)}>✕</button
+                      ></span
+                    >{/each}<input
+                    type="search"
+                    class:mono={expressionRows !== null}
+                    bind:value={outputQuery}
+                    placeholder="Search the output, or filter with an expression such as status >= 500"
+                    aria-label="Search the output"
+                  />{#if outputQuery.trim()}<span
+                      class="mode"
+                      class:expression={expressionRows !== null}
+                      >{expressionRows !== null ? 'ƒ expression' : 'keyword'}</span
+                    >{/if}</label
+                >
+                {#if outputQuery.trim() || chips.length > 0}
+                  <span class="dim count">{gridOrder.length} of {gridRows.length} rows</span>
+                {/if}
+                {#if failingCount > 0}
+                  <button
+                    type="button"
+                    class="failing"
+                    aria-pressed={chips.some((c) => c.kind === 'failing')}
+                    onclick={() => toggleChip({ kind: 'failing' })}>⚠ {failingCount} failing</button
+                  >
+                {/if}
+                <FieldsMenu
+                  fields={menuFields}
+                  records={gridRows.length}
+                  shown={isShown}
+                  {dictionary}
+                  onshow={showFields}
+                  ondefault={() => toggledColumns.clear()}
+                  onhas={(path) => {
+                    showFields([path], true);
+                    addChip({ kind: 'has', path });
                   }}
                 />
-                {#if gridRows && gridRows.length > 0}
-                  <label class="search"
-                    ><span aria-hidden="true">⌕</span>{#each chips as c (chipKey(c))}<span
-                        class="find-chip"
-                        >{c.kind === 'has'
-                          ? `has ${c.path}`
-                          : c.kind === 'failing'
-                            ? '⚠ Failing'
-                            : c.kind === 'dropped'
-                              ? '⌫ Dropped'
-                              : '~ Changed by a step'}<button
-                          type="button"
-                          aria-label={`remove ${chipKey(c)}`}
-                          onclick={() => toggleChip(c)}>✕</button
-                        ></span
-                      >{/each}<input
-                      type="search"
-                      class:mono={expressionRows !== null}
-                      bind:value={outputQuery}
-                      placeholder="Search the output, or filter with an expression such as status >= 500"
-                      aria-label="Search the output"
-                    />{#if outputQuery.trim()}<span
-                        class="mode"
-                        class:expression={expressionRows !== null}
-                        >{expressionRows !== null ? 'ƒ expression' : 'keyword'}</span
-                      >{/if}</label
-                  >
-                  {#if outputQuery.trim() || chips.length > 0}
-                    <span class="dim count">{gridOrder.length} of {gridRows.length} rows</span>
-                  {/if}
-                  {#if failingCount > 0}
-                    <button
-                      type="button"
-                      class="failing"
-                      aria-pressed={chips.some((c) => c.kind === 'failing')}
-                      onclick={() => toggleChip({ kind: 'failing' })}
-                      >⚠ {failingCount} failing</button
-                    >
-                  {/if}
-                  <FieldsMenu
-                    fields={menuFields}
-                    records={gridRows.length}
-                    shown={isShown}
-                    {dictionary}
-                    onshow={showFields}
-                    ondefault={() => toggledColumns.clear()}
-                    onhas={(path) => {
-                      showFields([path], true);
-                      addChip({ kind: 'has', path });
-                    }}
-                  />
-                {/if}
-              </div>
+              {:else if !selectedSample && dictionary}
+                <!-- No records to count, but the steps compiled: what they declare. -->
+                <span class="grow"></span>
+                <FieldsMenu
+                  fields={menuFields}
+                  records={null}
+                  shown={isShown}
+                  {dictionary}
+                  onshow={showFields}
+                  ondefault={() => toggledColumns.clear()}
+                  onhas={() => {}}
+                />
+              {/if}
+            </div>
+            {#if selectedSample}
               {@render stageChips()}
               <div class="output-actions">
                 <button
@@ -2384,9 +2399,11 @@
     .right-col {
       position: sticky;
       top: var(--clear-top, 0px);
-      /* Clear of the bars held over the page: the Save bar, and the agent panel under it. */
+      /* From where it stands on screen to the bottom of the window, clear of what the page holds
+         below it and of the bars held over the page: the Save bar, and the agent panel under it. */
       max-height: calc(
-        100vh - var(--clear-top, 0px) - var(--clear-bottom, 0px) - var(--agent-panel, 0px)
+        100vh - max(var(--pane-top), var(--clear-top, 0px)) - var(--pane-after) -
+          var(--clear-bottom, 0px) - var(--agent-panel, 0px)
       );
     }
 
@@ -2399,12 +2416,14 @@
       min-height: 0;
     }
 
-    .records {
+    /* Only what fills the pane scrolls: a scroller around the controls would clip their menus. */
+    .dictionary {
       overflow-y: auto;
+      min-height: 0;
     }
 
     .right-col > :not(.records),
-    .records > :not(.results) {
+    .records > :not(.results, .dictionary) {
       flex-shrink: 0;
     }
 
@@ -2512,6 +2531,8 @@
     font-size: var(--text-micro);
     position: sticky;
     top: 0;
+    /* Above the open record's body, which is sticky too and later in the page. */
+    z-index: 1;
     background: var(--bg);
   }
 

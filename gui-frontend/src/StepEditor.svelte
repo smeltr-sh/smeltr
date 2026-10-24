@@ -28,6 +28,7 @@
   import Collapsible from './Collapsible.svelte';
   import Toggle from './Toggle.svelte';
   import Field from './Field.svelte';
+  import Nested from './Nested.svelte';
   import Locked from './Locked.svelte';
   import SeparatorInput from './SeparatorInput.svelte';
   import ChipPicker from './ChipPicker.svelte';
@@ -881,49 +882,57 @@
 
             {#if step.kind.type === 'csv'}
               {@const csvKind = step.kind}
-              <Field label="delimiter">
-                <SeparatorInput bind:value={csvKind.delimiter} />
-              </Field>
+              <Nested>
+                <Field label="delimiter">
+                  <SeparatorInput bind:value={csvKind.delimiter} />
+                </Field>
+              </Nested>
             {:else if step.kind.type === 'keyValue'}
-              <div class="kind-fields">
-                <Field label="pair separator">
-                  <SeparatorInput bind:value={step.kind.pairSep} />
-                </Field>
-                <Field label="key/value separator">
-                  <SeparatorInput bind:value={step.kind.kvSep} />
-                </Field>
-              </div>
+              <Nested>
+                <div class="kind-fields">
+                  <Field label="pair separator">
+                    <SeparatorInput bind:value={step.kind.pairSep} />
+                  </Field>
+                  <Field label="key/value separator">
+                    <SeparatorInput bind:value={step.kind.kvSep} />
+                  </Field>
+                </div>
+              </Nested>
             {:else if step.kind.type === 'grok'}
               {@const grokKind = step.kind}
-              <div class="rows">
-                <div class="rows-label"><span class="field-name">patterns</span></div>
-                {#each grokKind.patterns as _, i}
-                  <div class="row-pair">
-                    <Locked>
-                      <ValidatedField
-                        placeholder={'%{IP:client} %{WORD:action}'}
-                        bind:value={grokKind.patterns[i]}
-                        autocomplete="grok"
-                        grokNamed={sharedGrokSuggestions(grokPatterns)}
-                      />
-                    </Locked>
-                    {#if !readOnly}
-                      <button
-                        type="button"
-                        class="ctl remove"
-                        onclick={() => grokKind.patterns.splice(i, 1)}
-                        aria-label="Remove pattern"
-                        title="Remove pattern">✕︎</button
-                      >
-                    {/if}
-                  </div>
-                {/each}
-                {#if !readOnly}
-                  <button type="button" class="add-small" onclick={() => grokKind.patterns.push('')}
-                    >+ pattern</button
-                  >
-                {/if}
-              </div>
+              <Nested>
+                <div class="rows">
+                  <div class="rows-label"><span class="field-name">patterns</span></div>
+                  {#each grokKind.patterns as _, i}
+                    <div class="row-pair">
+                      <Locked>
+                        <ValidatedField
+                          placeholder={'%{IP:client} %{WORD:action}'}
+                          bind:value={grokKind.patterns[i]}
+                          autocomplete="grok"
+                          grokNamed={sharedGrokSuggestions(grokPatterns)}
+                        />
+                      </Locked>
+                      {#if !readOnly}
+                        <button
+                          type="button"
+                          class="ctl remove"
+                          onclick={() => grokKind.patterns.splice(i, 1)}
+                          aria-label="Remove pattern"
+                          title="Remove pattern">✕︎</button
+                        >
+                      {/if}
+                    </div>
+                  {/each}
+                  {#if !readOnly}
+                    <button
+                      type="button"
+                      class="add-small"
+                      onclick={() => grokKind.patterns.push('')}>+ pattern</button
+                    >
+                  {/if}
+                </div>
+              </Nested>
             {/if}
 
             <div class="rows">

@@ -351,11 +351,12 @@ flowchart TD
 - **Nothing from before the first release is upgraded.** A store with no
   record of its steps is refused, with a message to move it aside.
 - **A leader says when a newer release is out.** A release leader reads the
-  releases published on GitHub when it starts and once a day after, unless an
-  administrator turns that off. The highest release that is no pre-release,
-  when it is newer than the leader's, is a notice. Nothing about the install is
-  sent, and a look that fails raises nothing, so a leader that cannot reach
-  GitHub is never noisy.
+  releases published on GitHub, through smeltr.sh, when it starts and once a
+  day after, unless an administrator turns that off. The highest release that is
+  no pre-release, when it is newer than the leader's, is a notice. The request
+  names the leader's release and nothing else about the install, and smeltr.sh
+  counts leaders by release from it. A look that fails raises nothing, so a
+  leader that cannot reach smeltr.sh is never noisy.
 
 ## Damaged stores
 

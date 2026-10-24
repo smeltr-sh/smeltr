@@ -43,6 +43,7 @@
   import Help from './Help.svelte';
   import Panel from './Panel.svelte';
   import Field from './Field.svelte';
+  import Nested from './Nested.svelte';
   import Collapsible from './Collapsible.svelte';
   import Segmented from './Segmented.svelte';
   import Advanced from './Advanced.svelte';
@@ -805,7 +806,7 @@
                   </select>
                 </Field>
                 {#if challenge === 'dns-01'}
-                  <div class="dns-fields">
+                  <Nested>
                     <Field label="DNS provider">
                       <select bind:value={dnsProvider}>
                         <option value="cloudflare">Cloudflare</option>
@@ -822,7 +823,7 @@
                         ariaLabel="API token"
                       />
                     </Field>
-                  </div>
+                  </Nested>
                 {/if}
               </div>
               <Field
@@ -1033,15 +1034,6 @@
   .challenge-group {
     display: grid;
     gap: 0.85rem;
-  }
-
-  /* What only DNS-01 asks for, under the challenge that asks for it. */
-  .dns-fields {
-    display: grid;
-    gap: 0.85rem;
-    margin-left: 0.6rem;
-    padding-left: 0.75rem;
-    border-left: 2px solid var(--border);
   }
 
   .rotation-settings {
