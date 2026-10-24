@@ -797,7 +797,7 @@
               <div class="challenge-group">
                 <Field
                   label="Challenge"
-                  note={challenge === 'http-01'
+                  note={challenge === 'http-01' && acme.httpPort !== 80
                     ? `Forward port 80 to port ${acme.httpPort} on this leader; the authority checks there.`
                     : undefined}
                 >
