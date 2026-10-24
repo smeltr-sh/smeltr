@@ -790,37 +790,41 @@
           </label>
           <Advanced modified={advancedChanged}>
             <div class="acme-advanced">
-              <Field
-                label="Challenge"
-                note={challenge === 'http-01'
-                  ? `The authority asks on port 80; this leader answers on port ${acme.httpPort}.`
-                  : undefined}
-              >
-                {#snippet help()}How the certificate authority checks this leader holds the names.{/snippet}
-                <select bind:value={challenge}>
-                  <option value="tls-alpn-01">TLS-ALPN-01</option>
-                  <option value="http-01">HTTP-01</option>
-                  <option value="dns-01">DNS-01</option>
-                </select>
-              </Field>
-              {#if challenge === 'dns-01'}
-                <Field label="DNS provider">
-                  <select bind:value={dnsProvider}>
-                    <option value="cloudflare">Cloudflare</option>
+              <div class="challenge-group">
+                <Field
+                  label="Challenge"
+                  note={challenge === 'http-01'
+                    ? `The authority asks on port 80; this leader answers on port ${acme.httpPort}.`
+                    : undefined}
+                >
+                  {#snippet help()}How the certificate authority checks this leader holds the names.{/snippet}
+                  <select bind:value={challenge}>
+                    <option value="tls-alpn-01">TLS-ALPN-01</option>
+                    <option value="http-01">HTTP-01</option>
+                    <option value="dns-01">DNS-01</option>
                   </select>
                 </Field>
-                <Field
-                  label="API token"
-                  note="Needs Zone · Zone · Read and Zone · DNS · Edit on the zones that hold the names."
-                >
-                  <LeaderSecretField
-                    bind:value={cloudflareToken}
-                    bind:replacing={replacingToken}
-                    stored={acme.cloudflareTokenSet}
-                    ariaLabel="API token"
-                  />
-                </Field>
-              {/if}
+                {#if challenge === 'dns-01'}
+                  <div class="dns-fields">
+                    <Field label="DNS provider">
+                      <select bind:value={dnsProvider}>
+                        <option value="cloudflare">Cloudflare</option>
+                      </select>
+                    </Field>
+                    <Field
+                      label="API token"
+                      note="Needs Zone · Zone · Read and Zone · DNS · Edit on the zones that hold the names."
+                    >
+                      <LeaderSecretField
+                        bind:value={cloudflareToken}
+                        bind:replacing={replacingToken}
+                        stored={acme.cloudflareTokenSet}
+                        ariaLabel="API token"
+                      />
+                    </Field>
+                  </div>
+                {/if}
+              </div>
               <Field
                 label="Authority"
                 note="Optional. PEM, the root a private authority issues under, where the platform does not trust it."
@@ -1024,6 +1028,20 @@
   .acme-advanced {
     display: grid;
     gap: 0.85rem;
+  }
+
+  .challenge-group {
+    display: grid;
+    gap: 0.85rem;
+  }
+
+  /* What only DNS-01 asks for, under the challenge that asks for it. */
+  .dns-fields {
+    display: grid;
+    gap: 0.85rem;
+    margin-left: 0.6rem;
+    padding-left: 0.75rem;
+    border-left: 2px solid var(--border);
   }
 
   .rotation-settings {
