@@ -220,7 +220,7 @@ test('a worker whose source is blocked needs attention, though it heartbeats', a
   await expect(blocked.locator('.state-dot')).toHaveClass(/\bfailed\b/);
   await expect(admin.getByRole('button', { name: /^east-1\b/ })).toHaveCount(0);
 
-  await admin.getByRole('button', { name: /^All \(/ }).click();
+  await admin.getByRole('button', { name: /^All\s*\d/ }).click();
   const fine = admin.getByRole('button', { name: /^east-1\b/ });
   await expect(fine).not.toHaveClass(/\battention\b/);
   await expect(fine.locator('.state-dot')).toHaveClass(/\bonline\b/);
