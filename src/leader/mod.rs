@@ -2405,8 +2405,11 @@ pub fn newest_certificate(store: &dyn Store, name: &str) -> Result<Option<(Strin
 /// stored at once and served only once the fleet holds that root.
 const FROM_THE_LIST: &str = "from-the-list.json";
 
-/// The names of the list entries the leader serves, or is rotating to.
+/// The names of the list entries the leader serves, or is rotating to. None where it serves plain HTTP.
 pub fn served_names(tls_dir: &std::path::Path) -> Result<Vec<String>, String> {
+    if !crate::startup_config::leader_tls_enabled() {
+        return Ok(Vec::new());
+    }
     let copies = copies_from_the_list(tls_dir)?;
     Ok(fingerprints_in_use(tls_dir)?
         .iter()
@@ -2478,8 +2481,8 @@ async fn list_certificates(
 ) -> Result<Json<Vec<CertificateOut>>, (axum::http::StatusCode, String)> {
     let data_dir = state.data_dir.clone();
     run_store(state.store, move |s| {
-        // None where the leader serves no TLS of its own.
-        let served = served_names(&data_dir.join("tls")).unwrap_or_default();
+        // Only a badge, so a TLS folder that cannot be read shows none rather than hiding the list. Deleting refuses.
+        let served = served_names(&tls::dir_of(&data_dir)).unwrap_or_default();
         let mut out = Vec::new();
         for r in s.list_secrets()?.into_iter().filter(|r| r.certificate) {
             let chain = newest_chain(s, &r.name)?
@@ -2543,13 +2546,14 @@ pub async fn replace_certificate(
 /// certificate the leader serves is refused too, whichever route asks: the leader would serve one the list no longer
 /// shows.
 async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) -> Json<Envelope> {
-    if served_names(&state.data_dir.join("tls"))
-        .unwrap_or_default()
-        .contains(&name)
-    {
-        return Json(Envelope::failed_one(format!(
-            "the leader serves {name:?}; choose another certificate for it first"
-        )));
+    match served_names(&tls::dir_of(&state.data_dir)) {
+        Ok(served) if served.contains(&name) => {
+            return Json(Envelope::failed_one(format!(
+                "the leader serves {name:?}; choose another certificate for it first"
+            )));
+        }
+        Ok(_) => {}
+        Err(e) => return Json(Envelope::failed_one(e)),
     }
     let data_dir = state.data_dir.clone();
     let entitlements = state.entitlements.clone();
