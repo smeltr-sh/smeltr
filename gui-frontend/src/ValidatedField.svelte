@@ -20,6 +20,10 @@
   A field that suggests functions is code, so it is laid out in the style when it is left. It is colored as it is
   typed, and so is any field given its own `paint`: the text is drawn by a highlighted copy
   behind the input, whose own text is transparent. The copy matches the input's box and follows its scroll.
+
+  A `wrap` field is a condition shown whole in a narrow box. Left, it is drawn broken before its operators
+  (`conditionWrap.ts`) to the width it has, three lines at most, and a click or focus opens it to edit. Inside a
+  `[data-wrap-room]`, the room is that element's width, and the box (`[data-wrap-box]`) shrinks to the longest line.
 -->
 <script lang="ts">
   import { tick } from 'svelte';
@@ -38,6 +42,8 @@
     inGrokMacroName,
   } from './autocomplete';
   import { highlight, KEYWORDS, LITERALS } from '../../website/src/lib/highlight/highlight';
+  import { wrapCondition } from './conditionWrap';
+  import type { Attachment } from 'svelte/attachments';
   import { fieldError, holdsName, markRuns, quotedTokens } from './errorMarks';
   import { formatCode } from './api';
   import { beginReconcile, endReconcile } from './grokFields';
@@ -54,6 +60,7 @@
     multiline = false,
     rows = 6,
     paint,
+    wrap = false,
   }: {
     value: string;
     errors?: string[];
@@ -81,7 +88,63 @@
     rows?: number;
     /** Colors text that is not an expression: the field's text as HTML, escaped. */
     paint?: (text: string) => string;
+    /** Left, the text is drawn broken before its operators, to the room it has: see the comment at the top. */
+    wrap?: boolean;
   } = $props();
+
+  /** A `wrap` field being written in: left, it shows its text laid out instead. */
+  let editing = $state(false);
+  let resting = $derived(wrap && !editing && value.trim() !== '');
+  function stopEdit() {
+    // Focus leaving the window is not leaving the field: it comes back to the text being written.
+    if (document.hasFocus()) editing = false;
+  }
+
+  let measurer: CanvasRenderingContext2D | null = null;
+  /** The width of one character of `cs`'s font, which is monospace. */
+  function charWidth(cs: CSSStyleDeclaration): number {
+    measurer ??= document.createElement('canvas').getContext('2d');
+    if (!measurer) return parseFloat(cs.fontSize) * 0.6;
+    measurer.font = `${cs.fontSize} ${cs.fontFamily}`;
+    return measurer.measureText('0').width;
+  }
+
+  /** The most lines a left `wrap` field shows. */
+  const WRAP_LINES = 3;
+  /** Draws `src` laid out into the rest view, again whenever its room changes size. */
+  function wrapTo(src: string): Attachment<HTMLElement> {
+    return (el) => {
+      const room = el.closest<HTMLElement>('[data-wrap-room]');
+      const box = el.closest<HTMLElement>('[data-wrap-box]');
+      const draw = () => {
+        const cs = getComputedStyle(el);
+        const edges =
+          parseFloat(cs.paddingLeft) +
+          parseFloat(cs.paddingRight) +
+          parseFloat(cs.borderLeftWidth) +
+          parseFloat(cs.borderRightWidth);
+        const ch = charWidth(cs);
+        // What else the box holds beside the text stays beside it, wherever the text's own width goes.
+        const beside = room && box ? box.offsetWidth - el.offsetWidth : 0;
+        const width = room ? room.clientWidth - beside : el.offsetWidth;
+        const cols = Math.max(8, Math.floor((width - edges) / ch));
+        let lines = wrapCondition(src, cols);
+        if (lines.length > WRAP_LINES) {
+          lines = lines.slice(0, WRAP_LINES);
+          lines[WRAP_LINES - 1] += ' …';
+        }
+        if (room) {
+          const longest = Math.max(...lines.map((l) => l.length));
+          el.style.width = `${Math.ceil(longest * ch + edges)}px`;
+        }
+        el.innerHTML = lines.map(highlight).join('\n');
+      };
+      draw();
+      const ro = new ResizeObserver(draw);
+      ro.observe(room ?? el);
+      return () => ro.disconnect();
+    };
+  }
 
   let matched = $derived(fieldError(value, errors, forced));
 
@@ -241,6 +304,8 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
+    // A `wrap` field is one line of text in a textarea: the box wraps it, a key does not.
+    if (wrap && e.key === 'Enter' && !showDropdown) e.preventDefault();
     if (!showDropdown) return;
     if (e.key === 'Escape') {
       open = false;
@@ -260,15 +325,33 @@
   }
 </script>
 
-<span class="field-wrap" class:has-error={!!matched} class:whole class:multiline class:colored>
-  {#if colored}
+<span
+  class="field-wrap"
+  class:has-error={!!matched}
+  class:whole
+  class:multiline={multiline || wrap}
+  class:colored
+  class:wrapped={wrap}
+>
+  {#if resting}
+    <!-- The field is still the textarea, unseen under this: a click or a focus reaches it. -->
+    <span
+      class="wrapview"
+      class:field-error={!!matched}
+      class:whole={!!matched}
+      class:whole-warn={!matched && warned.length > 0}
+      aria-hidden="true"
+      {@attach wrapTo(value)}
+    ></span>
+  {/if}
+  {#if colored && !resting}
     <pre
       bind:this={paintEl}
       class="paint"
       class:has-fn-toggle={functions !== null}
       aria-hidden="true">{@html painted}</pre>
   {/if}
-  {#if runs.length > 0}
+  {#if runs.length > 0 && !resting}
     <!-- The same text again over the painted copy, transparent, so only the
        marks under the quoted names show. -->
     <pre
@@ -279,10 +362,10 @@
             >{r.text}</span
           >{:else}{r.text}{/if}{/each}</pre>
   {/if}
-  {#if multiline}
+  {#if multiline || wrap}
     <textarea
       bind:this={inputEl}
-      {rows}
+      rows={wrap ? 1 : rows}
       {placeholder}
       aria-label={ariaLabel}
       bind:value
@@ -291,12 +374,17 @@
       class:whole
       class:whole-warn={wholeWarn}
       class:has-fn-toggle={functions !== null}
+      class:under={resting}
       oninput={onInput}
       onkeydown={onKeydown}
       onscroll={syncScroll}
       onkeyup={syncScroll}
       onpointerup={syncScroll}
-      onblur={onBlur}
+      onfocus={() => (editing = wrap)}
+      onblur={() => {
+        if (wrap) stopEdit();
+        void onBlur();
+      }}
       spellcheck="false"
       autocomplete="off"></textarea>
   {:else}
@@ -321,7 +409,7 @@
       autocomplete="off"
     />
   {/if}
-  {#if functions}
+  {#if functions && !resting}
     <button
       type="button"
       class="fn-toggle"
@@ -411,6 +499,47 @@
     padding-right: 1.6rem;
   }
 
+  /* A left `wrap` field: its lines laid out in the script, drawn as the field draws its text. It sizes the field,
+     and the textarea under it fills the field unseen, so a click, a focus or a reader still reaches the field
+     itself. */
+  .wrapview {
+    display: block;
+    pointer-events: none;
+    width: 100%;
+    box-sizing: border-box;
+    text-align: left;
+    padding: 0.45rem 0.55rem;
+    font-family: var(--mono);
+    font-size: var(--text-body);
+    line-height: 1.4;
+    white-space: pre;
+    overflow: hidden;
+    color: var(--ink);
+    background: var(--field);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+
+  .wrapped textarea.under {
+    position: absolute;
+    inset: 0;
+    height: 100%;
+    max-height: none;
+    opacity: 0;
+  }
+
+  .wrapped {
+    width: 100%;
+  }
+
+  /* Written in, a `wrap` field grows with its text, to the three lines it shows when left, then scrolls. */
+  .wrapped textarea {
+    field-sizing: content;
+    min-width: 100%;
+    max-height: calc(3 * 1.4em + 0.9rem + 2px);
+    resize: none;
+  }
+
   /* The colored copy sits under the input in the same box: the same border
      width, padding, font and line height, so each glyph lands where the
      input's own (transparent) glyph is. */
@@ -484,31 +613,40 @@
     scrollbar-gutter: stable;
   }
 
-  .paint :global(.tok-keyword) {
+  .paint :global(.tok-keyword),
+  .wrapview :global(.tok-keyword) {
     color: var(--tok-keyword);
   }
-  .paint :global(.tok-function) {
+  .paint :global(.tok-function),
+  .wrapview :global(.tok-function) {
     color: var(--tok-function);
   }
-  .paint :global(.tok-string) {
+  .paint :global(.tok-string),
+  .wrapview :global(.tok-string) {
     color: var(--tok-string);
   }
-  .paint :global(.tok-number) {
+  .paint :global(.tok-number),
+  .wrapview :global(.tok-number) {
     color: var(--tok-number);
   }
-  .paint :global(.tok-literal) {
+  .paint :global(.tok-literal),
+  .wrapview :global(.tok-literal) {
     color: var(--tok-literal);
   }
-  .paint :global(.tok-type) {
+  .paint :global(.tok-type),
+  .wrapview :global(.tok-type) {
     color: var(--tok-type);
   }
-  .paint :global(.tok-regex) {
+  .paint :global(.tok-regex),
+  .wrapview :global(.tok-regex) {
     color: var(--tok-regex);
   }
-  .paint :global(.tok-key) {
+  .paint :global(.tok-key),
+  .wrapview :global(.tok-key) {
     color: var(--tok-key);
   }
-  .paint :global(.tok-comment) {
+  .paint :global(.tok-comment),
+  .wrapview :global(.tok-comment) {
     color: var(--dim);
     font-style: italic;
   }
@@ -517,12 +655,14 @@
      does not compile", as the website's code reference draws it. A colored
      field's text is the painted copy, so the copy carries it. */
   input.field-error,
-  textarea.field-error {
+  textarea.field-error,
+  .wrapview.field-error {
     border-color: var(--error);
   }
 
   input.field-error.whole,
   textarea.field-error.whole,
+  .wrapview.whole,
   .whole .paint,
   .squiggle {
     text-decoration: underline wavy var(--error);
@@ -531,6 +671,7 @@
   }
 
   input.whole-warn,
+  .wrapview.whole-warn,
   .squiggle.warn {
     text-decoration: underline wavy var(--warn);
     text-decoration-thickness: 1.5px;

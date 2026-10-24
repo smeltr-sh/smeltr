@@ -625,6 +625,7 @@
             errors={stepErrorMessages}
             warnings={stepWarningMessages}
             autocomplete="condition"
+            wrap
           />
         </Locked>
       </div>
@@ -725,6 +726,7 @@
                 errors={stepErrorMessages}
                 warnings={stepWarningMessages}
                 autocomplete="condition"
+                wrap
               />
             </Field>
           {/if}
@@ -806,6 +808,7 @@
                 errors={stepErrorMessages}
                 warnings={stepWarningMessages}
                 autocomplete="condition"
+                wrap
               />
             </Field>
           {:else if step.type === 'rename'}
@@ -1108,6 +1111,7 @@
                   errors={stepErrorMessages}
                   warnings={stepWarningMessages}
                   autocomplete="condition"
+                  wrap
                 />
               </Field>
               {#if parserKind.type === 'grok'}
@@ -1575,7 +1579,16 @@
     min-width: 0;
   }
 
-  /* Pushed to the far edge when the condition takes a line of its own. */
+  /* An if step's condition takes a row of its own under its badge and controls, as another step's fields do. */
+  .if-head {
+    flex-wrap: wrap;
+  }
+
+  .if-head .condition {
+    order: 1;
+    flex-basis: 100%;
+  }
+
   .if-head .controls {
     margin-left: auto;
   }
@@ -1587,7 +1600,7 @@
   /* Five controls take 9.4rem and never shrink, and the summary needs room
      beside them. At 18.75rem and under, ◎ stays out and the rest fold into
      the More menu, the badge shows its glyph and keeps its name only for a
-     screen reader, and an if step's condition takes a line of its own. In
+     screen reader. In
      rem, so the fold moves with the reader's text size, as the controls do. */
   @container step (max-width: 18.75rem) {
     .controls .fold {
@@ -1605,15 +1618,6 @@
       overflow: hidden;
       clip-path: inset(50%);
       white-space: nowrap;
-    }
-
-    .if-head {
-      flex-wrap: wrap;
-    }
-
-    .if-head .condition {
-      order: 1;
-      flex-basis: 100%;
     }
   }
 

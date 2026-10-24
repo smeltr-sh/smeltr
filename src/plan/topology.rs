@@ -2898,7 +2898,7 @@ pub struct HeldSecrets {
 }
 
 /// Names and versions, never values. This holds every credential the deployment uses, so one `{:?}` reaching a
-/// panic message or a log line would be all of them at once -- the reason `leader::secrets::SealingKey` derives
+/// panic message or a log line would be all of them at once -- the reason `leader::secrets::EncryptionKey` derives
 /// nothing at all.
 impl std::fmt::Debug for HeldSecrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

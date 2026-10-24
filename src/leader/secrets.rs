@@ -1,8 +1,8 @@
-//! The key that seals a leader-stored secret's value, and the sealing itself.
+//! The secrets encryption key, which seals a leader-stored secret's value, and the sealing itself.
 //!
-//! One key, generated the first time a value is stored and kept in its own file outside the leader's data directory:
-//! a backup of that directory must not carry the key that opens it. A value is sealed under the key with the
-//! secret's name as associated data, so a ciphertext cannot be moved to another name.
+//! One key, generated when a leader starts with nothing sealed and kept in its own file outside the leader's data
+//! directory: a backup of that directory must not carry the key that opens it. A value is sealed under the key with
+//! the secret's name as associated data, so a ciphertext cannot be moved to another name.
 //!
 //! This protects a stolen file, a backup, a discarded disk. It does not protect a running leader, which holds the
 //! key in order to serve workers.
@@ -80,12 +80,12 @@ impl Sealed {
     }
 }
 
-pub struct SealingKey {
+pub struct EncryptionKey {
     key_id: String,
     key: LessSafeKey,
 }
 
-impl SealingKey {
+impl EncryptionKey {
     /// Names the key without exposing it: a digest of the material, truncated. Stored beside every sealed value.
     pub fn key_id(&self) -> &str {
         &self.key_id
@@ -150,19 +150,19 @@ impl SealingKey {
 
 /// The key at `path`, or `None` when there is none yet. A leader reads this at startup to refuse a key file anyone
 /// but its owner can read, before it has any reason to seal anything.
-pub fn load(path: &Path) -> Result<Option<SealingKey>, KeyError> {
+pub fn load(path: &Path) -> Result<Option<EncryptionKey>, KeyError> {
     let material = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(KeyError(format!("{}: {e}", path.display()))),
     };
-    private_file::check(path, "the secret key").map_err(KeyError)?;
+    private_file::check(path, "the secrets encryption key").map_err(KeyError)?;
     key_from(material.trim(), path).map(Some)
 }
 
-/// The key at `path`, generating one there if it does not exist. Called the first time a value is stored, so a
-/// leader that never stores one never writes a key.
-pub fn load_or_create(path: &Path) -> Result<SealingKey, KeyError> {
+/// The key at `path`, generating one there if it does not exist. A leader writes it at startup while it has sealed
+/// nothing, so the key exists before the first value needs it.
+pub fn load_or_create(path: &Path) -> Result<EncryptionKey, KeyError> {
     if let Some(key) = load(path)? {
         return Ok(key);
     }
@@ -171,7 +171,7 @@ pub fn load_or_create(path: &Path) -> Result<SealingKey, KeyError> {
 
 /// Writes a new key readable by its owner alone, in a directory of the same. Says so once, which is the only moment
 /// an operator is looking.
-fn create(path: &Path) -> Result<SealingKey, KeyError> {
+fn create(path: &Path) -> Result<EncryptionKey, KeyError> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         private_file::create_dir(parent).map_err(|e| KeyError(format!("{}: {e}", parent.display())))?;
     }
@@ -189,32 +189,31 @@ fn create(path: &Path) -> Result<SealingKey, KeyError> {
     file.write_all(material.as_bytes())
         .and_then(|()| file.sync_all())
         .map_err(|e| KeyError(format!("{}: {e}", path.display())))?;
-    tracing::warn!(
+    tracing::info!(
         target: "secrets.key_created",
         path = %path.display(),
-        "wrote a new secret key. Back it up somewhere other than the leader's data directory: restoring that \
-         directory without this key leaves every stored secret unopenable."
+        "wrote a new secrets encryption key. Back it up: without it, a restored leader cannot open the stored secrets."
     );
     key_from(&material, path)
 }
 
-fn key_from(material: &str, path: &Path) -> Result<SealingKey, KeyError> {
+fn key_from(material: &str, path: &Path) -> Result<EncryptionKey, KeyError> {
     let bytes = hex_decode(material).ok_or_else(|| {
         KeyError(format!(
-            "{}: not a secret key -- expected {} hex characters",
+            "{}: not a secrets encryption key -- expected {} hex characters",
             path.display(),
             AES_256_GCM.key_len() * 2
         ))
     })?;
     let key = UnboundKey::new(&AES_256_GCM, &bytes).map_err(|_| {
         KeyError(format!(
-            "{}: not a secret key -- it holds {} bytes, not {}",
+            "{}: not a secrets encryption key -- it holds {} bytes, not {}",
             path.display(),
             bytes.len(),
             AES_256_GCM.key_len()
         ))
     })?;
-    Ok(SealingKey {
+    Ok(EncryptionKey {
         key_id: auth::hash_secret(material)[..KEY_ID_LEN].to_string(),
         key: LessSafeKey::new(key),
     })
@@ -233,12 +232,11 @@ pub(crate) fn hex_decode(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Refuses a key file anyone but its owner can read: the cheapest catch for a restore that lost its permissions.
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn key() -> SealingKey {
+    fn key() -> EncryptionKey {
         key_from(&auth::generate_secret(), Path::new("<test>")).expect("a freshly generated key")
     }
 
