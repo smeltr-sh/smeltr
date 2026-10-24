@@ -2168,7 +2168,10 @@ const reissueCertificate: Move = {
   run: async (j) => {
     const { page } = j;
     await openAdmin(page, 'System');
-    await page.getByRole('link', { name: 'Certificates', exact: true }).click();
+    await page
+      .getByRole('navigation', { name: 'System settings' })
+      .getByRole('link', { name: 'Certificates', exact: true })
+      .click();
     const served = page.getByRole('region', { name: /^Leader certificate/ });
     const fingerprint = served.getByText(/^[0-9a-f]{16}…[0-9a-f]{8}$/);
     const before = await fingerprint.innerText();
