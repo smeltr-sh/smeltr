@@ -846,16 +846,13 @@
       onsubmit={mintCode}
     >
       <div class="mintrow">
-        <Field label="Group">
-          {#snippet note()}
-            {#if mintableGroups.length === 0}
-              <small class="critical">
-                Add a worker group on Worker groups and deploy it, then mint.
-              </small>
-            {:else}
-              Only live groups can receive new workers.
-            {/if}
-          {/snippet}
+        <Field
+          label="Group"
+          help="Only live groups can receive new workers."
+          note={mintableGroups.length === 0
+            ? 'Add a worker group on Worker groups and deploy it, then mint.'
+            : undefined}
+        >
           <select bind:value={mintGroup} disabled={mintableGroups.length === 0}>
             {#if mintableGroups.length === 0}
               <option value="">No live group</option>

@@ -133,7 +133,7 @@
     <div class="form-body">
       {#if way === 'upload'}
         <Field label="File">
-          {#snippet note()}One record per non-empty line; each line becomes <code>_raw</code
+          {#snippet help()}One record per non-empty line; each line becomes <code>_raw</code
             >.{/snippet}
           <input type="file" accept=".json,.ndjson,.jsonl,.txt,.log" onchange={pickFile} />
         </Field>
@@ -141,12 +141,12 @@
       <Field label="Name">
         <input bind:value={name} placeholder="orders-west, ordinary hour" />
       </Field>
-      <Field label="Source it stands for" note="Optional.">
+      <Field label="Source it stands for" help="Optional.">
         <input bind:value={source} placeholder="orders-west" class="mono" />
       </Field>
       {#if way === 'paste'}
         <Field label="Records">
-          {#snippet note()}One per line; each line becomes <code>_raw</code>.{/snippet}
+          {#snippet help()}One per line; each line becomes <code>_raw</code>.{/snippet}
           <textarea bind:value={text} rows="8" spellcheck="false"></textarea>
         </Field>
       {/if}

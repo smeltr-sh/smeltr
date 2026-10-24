@@ -667,7 +667,7 @@
             <Collapsible open={!!rotationError || !!rotationMessage}>
               {#snippet summary()}Rotate authority{/snippet}
               <div class="rotation-settings">
-                <Field label="Authority lifetime" note="A new authority defaults to 10 years.">
+                <Field label="Authority lifetime">
                   <select bind:value={authorityValidityDays}>
                     {#each AUTHORITY_VALIDITY_DAYS as days}
                       <option value={days}>{days / 365} {days === 365 ? 'year' : 'years'}</option>
@@ -763,14 +763,14 @@
             </select>
           </Field>
           {#if preset === OTHER}
-            <Field label="Directory URL" note="https://, as the authority publishes it">
+            <Field label="Directory URL" help="https://, as the authority publishes it">
               <input type="url" bind:value={directoryUrl} spellcheck="false" />
             </Field>
           {/if}
           <Field
             label="Names"
             group
-            note="What the certificate carries, and where the authority reaches this leader."
+            help="What the certificate carries, and where the authority reaches this leader."
           >
             <TokenListInput bind:values={nameList} placeholder="leader.example.com" />
           </Field>
@@ -814,7 +814,7 @@
                     </Field>
                     <Field
                       label="API token"
-                      note="Needs Zone · Zone · Read and Zone · DNS · Edit on the zones that hold the names."
+                      help="Needs Zone · Zone · Read and Zone · DNS · Edit on the zones that hold the names."
                     >
                       <LeaderSecretField
                         bind:value={cloudflareToken}
@@ -828,17 +828,17 @@
               </div>
               <Field
                 label="Authority"
-                note="Optional. PEM, the root a private authority issues under, where the platform does not trust it."
+                help="Optional. PEM, the root a private authority issues under, where the platform does not trust it."
               >
                 <textarea bind:value={acmeAuthority} rows="4" spellcheck="false"></textarea>
               </Field>
               <Field
                 label="EAB key ID"
-                note="Optional. External account binding, for an authority that requires an account with it."
+                help="Optional. External account binding, for an authority that requires an account with it."
               >
                 <input bind:value={eabKeyId} spellcheck="false" />
               </Field>
-              <Field label="EAB HMAC key" note="Optional. Stored encrypted and never shown again.">
+              <Field label="EAB HMAC key" help="Optional. Stored encrypted and never shown again.">
                 <PasswordField
                   bind:value={eabHmac}
                   ariaLabel="EAB HMAC key"

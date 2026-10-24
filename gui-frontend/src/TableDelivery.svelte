@@ -60,7 +60,6 @@
     {#snippet help()}
       How each Parquet file compresses its columns.
     {/snippet}
-    {#snippet note()}Default zstd.{/snippet}
     <select
       value={d.compression ?? 'zstd'}
       onchange={(e) => {
@@ -78,7 +77,6 @@
     {#snippet help()}
       How many parts of one file upload at once.
     {/snippet}
-    {#snippet note()}Default {LIMITS.inFlight.default}.{/snippet}
     <input
       type="number"
       min={LIMITS.inFlight.min}
@@ -91,7 +89,6 @@
     {#snippet help()}
       The largest data file it writes, compressed.
     {/snippet}
-    {#snippet note()}Default {exactBytes(LIMITS.maxObjectBytes.default)}.{/snippet}
     <BytesInput
       value={d.maxObjectBytes}
       fallback={LIMITS.maxObjectBytes.default}
@@ -103,7 +100,6 @@
       Memory it may use on each worker for records not yet committed. Files are committed early when
       it fills.
     {/snippet}
-    {#snippet note()}Default {exactBytes(LIMITS.objectBufferBytes.default)}.{/snippet}
     <BytesInput
       value={d.bufferBytes}
       fallback={LIMITS.objectBufferBytes.default}
@@ -114,7 +110,6 @@
     {#snippet help()}
       How long one call to {calls}, or one commit, may take before it counts as stalled.
     {/snippet}
-    {#snippet note()}Default {LIMITS.stallAfterSecs.default}.{/snippet}
     <input
       type="number"
       min={LIMITS.stallAfterSecs.min}
@@ -128,10 +123,6 @@
       The longest records wait before they are committed to the table. Each commit is {commit};
       records are acknowledged only once committed, so every source feeding this destination is held
       open for up to this long.
-    {/snippet}
-    {#snippet note()}
-      Default {LIMITS.tableFileIntervalSecs.default}; {LIMITS.tableFileIntervalSecs.min} to
-      {LIMITS.tableFileIntervalSecs.max}.
     {/snippet}
     <input
       type="number"

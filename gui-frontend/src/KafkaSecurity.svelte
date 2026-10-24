@@ -69,10 +69,8 @@
 <div class="security">
   <Field field="properties.security.protocol" label="protocol">
     {#snippet help()}
-      <code>SSL</code> and <code>SASL_SSL</code> use TLS; the two <code>SASL_</code> protocols also log
-      in.
-    {/snippet}
-    {#snippet note()}
+      <code>SSL</code> and <code>SASL_SSL</code> use TLS; the two <code>SASL_</code> protocols also
+      log in.
       {#if negotiatesTls && hasIdentity}
         The certificate, the key and the authorities come from the identity above.
       {:else if negotiatesTls}
@@ -101,13 +99,12 @@
       error={unavailable
         ? 'This build carries no provider for it, and the save is refused. Pick another, or deploy a build that carries it.'
         : null}
-      note={known
-        ? undefined
-        : 'This leader did not say which mechanisms its build carries, so this is what the file says and there is nothing to choose from.'}
     >
       {#snippet help()}
-        How this client logs in. <code>GSSAPI</code> (Kerberos) is listed only in a build linked with
-        a Kerberos provider.
+        How this client logs in. <code>GSSAPI</code> (Kerberos) is listed only in a build linked
+        with a Kerberos provider.{#if !known}
+          This leader did not say which mechanisms its build carries, so this is what the file says
+          and there is nothing to choose from.{/if}
       {/snippet}
       <select
         value={security.mechanism ?? ''}
@@ -133,7 +130,7 @@
 
     {#each fields as f (f.prop)}
       <Field label="{f.label}{f.optional ? ' (optional)' : ''}">
-        {#snippet note()}
+        {#snippet help()}
           {f.note} Written as <code>{f.prop}</code>.
         {/snippet}
         {#if f.secret}

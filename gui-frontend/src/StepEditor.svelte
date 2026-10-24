@@ -790,7 +790,7 @@
               />
             </Field>
           {:else if step.type === 'drop'}
-            <Field label="drop when this is true" note="Blank means never.">
+            <Field label="drop when this is true" help="Blank means never.">
               <ValidatedField
                 placeholder="e.g. status == 500"
                 bind:value={step.condition}
@@ -1162,7 +1162,7 @@
               {/if}
               {#if parserKind.type === 'keyValue'}
                 {@const kvKind = parserKind}
-                <Field label="quote char" note="Optional.">
+                <Field label="quote char" help="Optional.">
                   <input type="text" maxlength="1" bind:value={kvKind.quote} />
                 </Field>
                 <label class="inline">
