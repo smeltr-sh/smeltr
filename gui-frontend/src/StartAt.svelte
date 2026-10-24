@@ -46,7 +46,7 @@
     </select>
   </Field>
   {#if start?.type === 'timestamp'}
-    <Field label="from" help="Your own clock.">
+    <Field label="from" help="In your browser's time zone.">
       <input
         type="datetime-local"
         value={toLocalInput(start.millis)}

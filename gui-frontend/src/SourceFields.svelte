@@ -842,7 +842,8 @@
   />
 {/snippet}
 
-{#snippet moves()}Deploying this moves the source.{/snippet}
+{#snippet moves()}Deploying this moves the source to the new position, so records are skipped or
+  read again.{/snippet}
 
 <!-- Where a stream source starts and stops reading. -->
 {#snippet positions(source: StreamSource)}
@@ -870,7 +871,7 @@
       </select>
     </Field>
     {#if source.stop?.type === 'timestamp'}
-      <Field label="until" help="Exclusive.">
+      <Field label="until" help="Reading stops just before this time.">
         <input
           type="datetime-local"
           value={toLocalInput(source.stop.millis)}

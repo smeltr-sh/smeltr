@@ -502,14 +502,12 @@
                 <Field
                   field="mode.position"
                   label={mode.type === 'incrementing' ? 'incrementing column' : 'updated at column'}
+                  help={suggested &&
+                  'position' in suggested &&
+                  suggested.position[0] === mode.position[0]
+                    ? 'Picked for you from the columns the query returned.'
+                    : undefined}
                 >
-                  {#snippet help()}
-                    {suggested &&
-                    'position' in suggested &&
-                    suggested.position[0] === mode.position[0]
-                      ? 'Suggested from the result.'
-                      : 'An integer or a time.'}
-                  {/snippet}
                   <select
                     value={mode.position[0] ?? ''}
                     onchange={(e) => (mode.position = positionFor(shown, e.currentTarget.value))}
@@ -618,7 +616,7 @@
               {:else if source.mode.type === 'comparing'}
                 {@const mode = source.mode}
                 <Field field="mode.key" label="key">
-                  {#snippet help()}A column unique in the result.{/snippet}
+                  {#snippet help()}Tells rows apart: a column no two rows share.{/snippet}
                   <select
                     value={mode.key[0] ?? ''}
                     onchange={(e) => (mode.key = [e.currentTarget.value])}
