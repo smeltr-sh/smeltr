@@ -1,7 +1,8 @@
-//! The look for a newer smeltr: at startup and once a day after, the leader reads the releases published on GitHub
-//! and keeps the newest that is newer than its own. Nothing about this install is sent; GitHub sees the leader's
-//! address and its `User-Agent`. A look that fails says why on Admin -> System -> General and raises nothing, so a
-//! leader that cannot reach GitHub is never noisy. A build that is no release has nothing to compare and never looks.
+//! The look for a newer smeltr: at startup and once a day after, the leader reads the releases published on GitHub,
+//! through smeltr.sh, and keeps the newest that is newer than its own. The request names this leader's release in its
+//! `User-Agent` and nothing else; smeltr.sh counts leaders by release from it (`website/worker`). A look that fails
+//! says why on Admin -> System -> General and raises nothing, so a leader that cannot reach smeltr.sh is never noisy.
+//! A build that is no release has nothing to compare and never looks.
 
 use std::time::Duration;
 
@@ -12,12 +13,9 @@ use super::envelope::Envelope;
 use super::store::Actor;
 use super::{AppState, run_store};
 
-/// Where releases are published. The GitHub list, not its "latest": that marker follows the order releases were
-/// published in, so a patch to an older line published after a newer major would take it.
-const RELEASES: &str = "https://api.github.com/repos/smeltr-sh/smeltr/releases?per_page=100";
-
-/// The service [`RELEASES`] is on, which is what the client is made for: a URL with a query is not one.
-const GITHUB: &str = "https://api.github.com";
+/// Where releases are published: GitHub's list as smeltr.sh serves it, not its "latest". That marker follows the order
+/// releases were published in, so a patch to an older line published after a newer major would take it.
+const RELEASES: &str = "https://smeltr.sh/api/releases";
 
 /// How often the leader looks.
 const EVERY: Duration = Duration::from_secs(24 * 60 * 60);
@@ -140,16 +138,16 @@ pub async fn poll(state: AppState) {
 
 /// The newest published release newer than `own`, with its page.
 async fn fetch(own: &str) -> Result<Option<(String, String)>, String> {
-    let client = super::outbound::client(GITHUB, "GitHub", TIMEOUT, reqwest::redirect::Policy::limited(3))?;
+    let client = super::outbound::client(RELEASES, "smeltr.sh", TIMEOUT, reqwest::redirect::Policy::limited(3))?;
     let response = client
         .get(RELEASES)
         .header(reqwest::header::USER_AGENT, format!("smeltr/{own}"))
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| format!("could not reach api.github.com: {e}"))?;
+        .map_err(|e| format!("could not reach smeltr.sh: {e}"))?;
     if !response.status().is_success() {
-        return Err(format!("api.github.com answered {}", response.status()));
+        return Err(format!("smeltr.sh answered {}", response.status()));
     }
     let body = super::outbound::read(response, MAX_LIST).await?;
     newest(&body, own)
@@ -169,7 +167,7 @@ struct Published {
 /// The highest `v<major>.<minor>.<patch>` in `list` that is no draft or pre-release, when it is newer than `own`.
 fn newest(list: &[u8], own: &str) -> Result<Option<(String, String)>, String> {
     let list: Vec<Published> =
-        serde_json::from_slice(list).map_err(|e| format!("could not read GitHub's list of releases: {e}"))?;
+        serde_json::from_slice(list).map_err(|e| format!("could not read the list of releases: {e}"))?;
     let own = parse(own).ok_or_else(|| format!("{own} is not a release"))?;
     Ok(list
         .into_iter()

@@ -1328,6 +1328,35 @@
     };
   });
 
+  // The records pane ends at the bottom of the window, wherever it starts, so only the steps make the
+  // page taller than the window. What the page holds below the pane is left room for too.
+  let rightCol = $state<HTMLElement | undefined>();
+  let paneTop = $state(0);
+  let paneAfter = $state(0);
+  $effect(() => {
+    const pane = rightCol;
+    if (!pane) return;
+    const place = () => {
+      const top = pane.getBoundingClientRect().top;
+      const columns = pane.parentElement!.getBoundingClientRect().bottom;
+      paneTop = Math.max(0, top);
+      // The page ends where its content does, short of the window or past it.
+      paneAfter = Math.max(0, document.documentElement.getBoundingClientRect().bottom - columns);
+    };
+    place();
+    // And as the page settles: what loads above the pane moves it down.
+    const settled = new ResizeObserver(place);
+    settled.observe(document.body);
+    settled.observe(pane);
+    window.addEventListener('scroll', place, { capture: true, passive: true });
+    window.addEventListener('resize', place);
+    return () => {
+      settled.disconnect();
+      window.removeEventListener('scroll', place, { capture: true });
+      window.removeEventListener('resize', place);
+    };
+  });
+
   let drawn = $derived.by(() => {
     const rows = lastGoodResult?.rows ?? [];
     const n = gridOrder.length;
@@ -1627,7 +1656,12 @@
           <span class="grip" aria-hidden="true">&#8596;</span>
         </div>
 
-        <section class="right-col">
+        <section
+          class="right-col"
+          bind:this={rightCol}
+          style:--pane-top={`${paneTop}px`}
+          style:--pane-after={`${paneAfter}px`}
+        >
           <InlineError message={proposeError} />
           <AddSampleDialog
             open={capturing}
@@ -2266,9 +2300,11 @@
     .right-col {
       position: sticky;
       top: var(--clear-top, 0px);
-      /* Clear of the bars held over the page: the Save bar, and the agent panel under it. */
+      /* From where it stands on screen to the bottom of the window, clear of what the page holds
+         below it and of the bars held over the page: the Save bar, and the agent panel under it. */
       max-height: calc(
-        100vh - var(--clear-top, 0px) - var(--clear-bottom, 0px) - var(--agent-panel, 0px)
+        100vh - max(var(--pane-top), var(--clear-top, 0px)) - var(--pane-after) -
+          var(--clear-bottom, 0px) - var(--agent-panel, 0px)
       );
     }
 
@@ -2281,12 +2317,14 @@
       min-height: 0;
     }
 
-    .records {
+    /* Only what fills the pane scrolls: a scroller around the controls would clip their menus. */
+    .dictionary {
       overflow-y: auto;
+      min-height: 0;
     }
 
     .right-col > :not(.records),
-    .records > :not(.results) {
+    .records > :not(.results, .dictionary) {
       flex-shrink: 0;
     }
 
@@ -2411,6 +2449,8 @@
     font-size: var(--text-micro);
     position: sticky;
     top: 0;
+    /* Above the open record's body, which is sticky too and later in the page. */
+    z-index: 1;
     background: var(--bg);
   }
 
