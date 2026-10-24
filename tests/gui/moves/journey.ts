@@ -30,6 +30,7 @@ import { avro, avroFile, type FakeS3 } from '../buckets';
 import {
   acmeNewRoot,
   renewAcme,
+  saveDns01,
   switchToAcme,
   switchToLeaderIssued,
   switchToUploaded,
@@ -2121,6 +2122,26 @@ const renewAcmeCertificate: Move = {
   },
 };
 
+const acmeDns01Settings: Move = {
+  name: 'acme-dns-01-settings',
+  weight: (w) => (w.acme ? 1 : 0),
+  run: async (j) => {
+    const back = j.rng.pick(['TLS-ALPN-01', 'HTTP-01'] as const);
+    const token = `cf-${j.rng.below(1_000_000)}`;
+    const before = await (await j.truth()).get('/api/settings/acme');
+    await saveDns01(j.page, token, back);
+    const after = await (await j.truth()).get('/api/settings/acme');
+    // The token stays stored under the other challenge, and the settings are all that moved: nothing was ordered.
+    expect(after).toMatchObject({
+      challenge: back.toLowerCase(),
+      dnsProvider: 'cloudflare',
+      cloudflareTokenSet: true,
+      issued: before.issued,
+    });
+    return `save DNS-01 through Cloudflare, then go back to ${back}`;
+  },
+};
+
 const acmeUnderNewRoot: Move = {
   name: 'acme-new-root',
   weight: (w) => (w.acme ? 1 : 0),
@@ -2365,6 +2386,7 @@ export const MOVES: readonly Move[] = [
   withdrawCertificate,
   orderAcme,
   renewAcmeCertificate,
+  acmeDns01Settings,
   acmeUnderNewRoot,
   refusedRemote,
   closeChange,
