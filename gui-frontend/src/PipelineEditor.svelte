@@ -409,8 +409,8 @@
   async function undoPipeline() {
     if (!readAtCommit) return;
     const ok = await ask({
-      title: `Undo changes to ${savedPipelineName}?`,
-      body: `Its edits are undone as a new save on ${editingBranch}.`,
+      title: 'undo changes',
+      body: `Undo the changes to ${savedPipelineName}, as a new save on ${editingBranch}.`,
       action: 'Undo changes',
       danger: true,
     });

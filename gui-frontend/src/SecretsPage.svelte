@@ -186,11 +186,11 @@
 
   async function remove(s: SecretDto) {
     const yes = await ask({
-      title: `Delete ${s.name}?`,
+      title: 'delete secret',
       body:
         s.custody === 'leader-stored'
-          ? 'Every version goes with it. Nothing can recover them, and any bundle naming this secret stops deploying until the reference is taken out.'
-          : 'The name stops being listed. Hosts keep the variable; bundles naming it keep working.',
+          ? `Delete ${s.name}. Every version goes with it. Nothing can recover them, and any bundle naming this secret stops deploying until the reference is taken out.`
+          : `Delete ${s.name}. The name stops being listed. Hosts keep the variable; bundles naming it keep working.`,
       action: 'Delete',
       danger: true,
     });

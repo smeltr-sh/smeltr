@@ -462,7 +462,7 @@ test('a person asks their agent, sees what it asked the leader, and deletes the 
 
     await admin.getByRole('button', { name: 'Delete conversation' }).click();
     await admin
-      .getByRole('dialog', { name: 'Delete this conversation?' })
+      .getByRole('dialog', { name: 'delete conversation' })
       .getByRole('button', { name: 'Delete', exact: true })
       .click();
     await expect(admin.getByText('No conversations yet.')).toBeVisible();
