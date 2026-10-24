@@ -39,6 +39,7 @@
   import { pipelineNamesAt, type PipelineNames } from './pipelineNames';
   import { bytes } from './bytes';
   import SortButton from './SortButton.svelte';
+  import FoldAllButton from './FoldAllButton.svelte';
   import { TableSort } from './sort.svelte';
   import {
     errorText,
@@ -582,6 +583,9 @@
     }
     return [...groups.entries()];
   });
+  let allGroupsOpen = $derived(
+    displayedGroups.length > 0 && displayedGroups.every(([group]) => isExpanded(group)),
+  );
   // Sorts workers within their group only: the group row is the band they fold under.
   const workerSort = new TableSort<'worker' | 'running' | 'cpu' | 'memory' | 'lastSeen'>();
   let sortedGroups = $derived(
@@ -732,10 +736,11 @@
               onclick={() => (workerStatusFilter = 'online')}>Online ({workerCounts.online})</button
             >
           </div>
-          <div class="fold-controls" role="group" aria-label="Fold worker groups">
-            <button onclick={() => setAllGroups(true)}>Expand all</button>
-            <button onclick={() => setAllGroups(false)}>Collapse all</button>
-          </div>
+          <FoldAllButton
+            allOpen={allGroupsOpen}
+            disabled={displayedGroups.length === 0}
+            onclick={() => setAllGroups(!allGroupsOpen)}
+          />
           <label class="matrix-search"
             ><span aria-hidden="true">⌕</span><input
               type="search"
@@ -1344,10 +1349,6 @@
     font-size: var(--text-note);
     cursor: pointer;
   }
-  .fold-controls {
-    display: flex;
-    gap: 0.25rem;
-  }
   .status-pills button.on {
     background: var(--ink);
     color: var(--bg);
@@ -1921,8 +1922,7 @@
       align-items: stretch;
       flex-direction: column;
     }
-    .status-pills,
-    .fold-controls {
+    .status-pills {
       overflow-x: auto;
     }
     .status-pills button {

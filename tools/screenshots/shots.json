@@ -5,7 +5,7 @@
     "themes": ["light", "dark"],
     "full": true,
     "delay": 2500,
-    "steps": [{ "delay": 2500 }, { "text": "Expand all" }, { "text": "15m" }, { "delay": 3000 }]
+    "steps": [{ "delay": 2500 }, { "text": "15m" }, { "delay": 3000 }]
   },
   { "name": "03-logs", "hash": "#/status/logs", "themes": ["light", "dark"], "delay": 2500 },
   {
