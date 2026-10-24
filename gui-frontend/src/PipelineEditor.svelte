@@ -1201,6 +1201,8 @@
   let tbody = $state<HTMLElement | undefined>();
   let rowHeight = $state(24);
   let openHeights: Record<number, number> = $state({});
+  /** How wide the grid shows, which an opened record wraps to however wide its columns run. */
+  let paneWidth = $state(0);
   /** The viewport, from the top of the grid's body. */
   let viewport = $state({ top: 0, bottom: 1080 });
 
@@ -1734,7 +1736,7 @@
                   <!-- Fixed widths, so a column holds still as rows scroll past
                    (`columnWidths`); a value wider than its column ends in an
                    ellipsis, and opening the row shows it whole. -->
-                  <div class="grid-wrap">
+                  <div class="grid-wrap" bind:clientWidth={paneWidth}>
                     <table class="grid" style:width={gridWidth}>
                       <colgroup>
                         <col style:width="calc(2ch + 1rem)" />
@@ -1841,14 +1843,19 @@
                                     <p class="exception">{a.message}</p>
                                   {/each}
                                 </div>
-                                <RecordFields
-                                  before={sides.before}
-                                  after={sides.after}
-                                  keep={unfoldedPath}
-                                  declared={sides.declared}
-                                  {changedOnly}
-                                  {showTypes}
-                                />
+                                <div
+                                  class="record-body"
+                                  style:max-width={`calc(${paneWidth}px - 1.5rem)`}
+                                >
+                                  <RecordFields
+                                    before={sides.before}
+                                    after={sides.after}
+                                    keep={unfoldedPath}
+                                    declared={sides.declared}
+                                    {changedOnly}
+                                    {showTypes}
+                                  />
+                                </div>
                               </td>
                             </tr>
                           {/if}
@@ -2370,6 +2377,13 @@
     background: color-mix(in oklch, var(--ink) 6%, transparent);
     box-shadow: inset 3px 0 0 var(--border);
     padding: 0.5rem 0.5rem 0.5rem 0.75rem;
+  }
+
+  /* The record follows the left edge as the grid scrolls sideways, and wraps
+     to what shows of it rather than to the width of every column. */
+  .record-body {
+    position: sticky;
+    left: 0.75rem;
   }
 
   /* A row that failed is the one to read, so it is the one that stands out. */

@@ -1110,19 +1110,23 @@ test('A8: while authoring, a row that fails to parse is shown failing, with why'
   });
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
-  const grid = admin.getByRole('table').filter({ hasText: 'row' }).last();
-  await expect(grid.getByRole('row')).toHaveCount(4, { timeout: 15_000 });
+  const grid = admin.getByRole('table').filter({ hasText: '#' }).last();
+  // Three rows, and the first that failed opened.
+  await expect(grid.getByRole('row')).toHaveCount(5, { timeout: 15_000 });
+  await expect(admin.getByRole('button', { name: 'row 1', exact: true })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
 
   // The grid carries each exception in the row itself, and an opened row unfolds it.
   await expect(grid.getByRole('cell', { name: /"kind":"UnparsableField"/ })).toBeVisible();
   await expect(grid.getByRole('cell', { name: /"kind":"Unparsable"/ })).toBeVisible();
-  await admin.getByRole('button', { name: 'row 1', exact: true }).click();
-  // Beside the row's number, and as the unfolded exception's message.
+  // Under the row's head, and as the unfolded exception's message.
   await expect(
     admin.getByText('_raw.id is "two", which could not parse as i64 in id', { exact: true }),
   ).toHaveCount(2);
   await admin.getByRole('button', { name: 'row 2', exact: true }).click();
-  // Beside the row's number, and as the unfolded exception's message.
+  // Under the row's head, and as the unfolded exception's message.
   await expect(
     admin.getByText('_raw is "not json", which json could not parse', { exact: true }),
   ).toHaveCount(2);
