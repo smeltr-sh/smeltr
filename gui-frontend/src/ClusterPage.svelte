@@ -40,6 +40,7 @@
   import { bytes } from './bytes';
   import SortButton from './SortButton.svelte';
   import FoldAllButton from './FoldAllButton.svelte';
+  import Chips from './Chips.svelte';
   import { TableSort } from './sort.svelte';
   import {
     errorText,
@@ -559,7 +560,8 @@
   }
 
   let workerQuery = $state('');
-  let workerStatusFilter = $state<WorkerStatus | 'attention' | 'all'>('all');
+  // Null is All.
+  let workerStatusFilter = $state<'attention' | 'online' | null>(null);
   let workerCounts = $derived.by(() => countWorkers(workerRows));
   let healthOf = $derived.by(
     () =>
@@ -569,7 +571,7 @@
   let filteredWorkers = $derived.by(() =>
     workerStatusFilter === 'attention'
       ? filterWorkers(needsAttention, workerQuery, 'all')
-      : filterWorkers(workerRows, workerQuery, workerStatusFilter),
+      : filterWorkers(workerRows, workerQuery, workerStatusFilter ?? 'all'),
   );
   let selectedWorker = $derived.by(
     () => workerRows.find((w) => w.workerId === selectedWorkerId) ?? null,
@@ -721,21 +723,15 @@
     <section class="fleet-shell" class:has-detail={selectedWorker !== null}>
       <div class="fleet-matrix">
         <div class="matrix-tools">
-          <div class="status-pills" role="group" aria-label="Filter workers by status">
-            <button
-              class:on={workerStatusFilter === 'all'}
-              onclick={() => (workerStatusFilter = 'all')}>All ({workerRows.length})</button
-            >
-            <button
-              class:on={workerStatusFilter === 'attention'}
-              onclick={() => (workerStatusFilter = 'attention')}
-              >Needs attention ({needsAttention.length})</button
-            >
-            <button
-              class:on={workerStatusFilter === 'online'}
-              onclick={() => (workerStatusFilter = 'online')}>Online ({workerCounts.online})</button
-            >
-          </div>
+          <Chips
+            label="Filter workers by status"
+            allCount={workerRows.length}
+            items={[
+              { key: 'attention', label: 'Needs attention', count: needsAttention.length },
+              { key: 'online', label: 'Online', count: workerCounts.online },
+            ]}
+            bind:value={workerStatusFilter}
+          />
           <FoldAllButton
             allOpen={allGroupsOpen}
             disabled={displayedGroups.length === 0}
@@ -749,12 +745,7 @@
               aria-label="Search workers"
             /></label
           >
-          <button
-            class="icon-refresh"
-            title="Refresh now"
-            aria-label="Refresh now"
-            onclick={refreshNow}>↻</button
-          >
+          <button title="Refresh now" aria-label="Refresh now" onclick={refreshNow}>↻</button>
         </div>
         <div class="matrix-columns">
           <div>
@@ -1334,26 +1325,6 @@
     padding: 0.7rem;
     border-bottom: 1px solid var(--border);
   }
-  .status-pills {
-    display: flex;
-    gap: 0.45rem;
-  }
-  .status-pills button,
-  .icon-refresh {
-    border: 1px solid var(--border);
-    background: var(--bg);
-    color: var(--ink);
-    border-radius: var(--radius);
-    padding: 0.45rem 0.75rem;
-    font: inherit;
-    font-size: var(--text-note);
-    cursor: pointer;
-  }
-  .status-pills button.on {
-    background: var(--ink);
-    color: var(--bg);
-    border-color: var(--ink);
-  }
   .matrix-search {
     display: flex;
     align-items: center;
@@ -1373,10 +1344,6 @@
     font: inherit;
     /* The browser's own, which set this box's height before the shared field padding. */
     padding: 1px 2px;
-  }
-  .icon-refresh {
-    padding: 0.35rem 0.65rem;
-    font-size: 1.1rem;
   }
   .matrix-columns,
   .worker-row {
@@ -1921,12 +1888,6 @@
     .matrix-tools {
       align-items: stretch;
       flex-direction: column;
-    }
-    .status-pills {
-      overflow-x: auto;
-    }
-    .status-pills button {
-      white-space: nowrap;
     }
     .matrix-columns {
       display: none;
