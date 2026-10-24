@@ -18,7 +18,7 @@ export async function openCertificates(page: Page): Promise<Locator> {
   await openAdmin(page, 'System');
   await page
     .getByRole('navigation', { name: 'System settings' })
-    .getByRole('link', { name: 'Certificates', exact: true })
+    .getByRole('link', { name: 'Leader certificate', exact: true })
     .click();
   return page.getByRole('region', { name: /^Leader certificate/ });
 }

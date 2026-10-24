@@ -42,7 +42,7 @@
           ><td>Trust the proxy certificate; install a private CA if needed</td></tr
         >
         <tr
-          ><th>Certificate changes</th><td>Admin → System → Certificates</td><td
+          ><th>Certificate changes</th><td>Admin → System → Leader certificate</td><td
             >At the proxy or ingress</td
           ></tr
         >
@@ -53,8 +53,8 @@
   <p>
     For direct TLS the generated CA is at <code>tls/ca.pem</code> beneath leader.storage.data_dir.
     Obtain that public file through a trusted host-management channel for initial browser setup.
-    Once signed in, Admin → System → Certificates also provides <strong>Download ca.pem</strong> and the
-    authority fingerprint. Never distribute the CA private key.
+    Once signed in, Admin → System → Leader certificate also provides
+    <strong>Download ca.pem</strong> and the authority fingerprint. Never distribute the CA private key.
   </p>
   <pre><code
       >openssl x509 -in /var/lib/smeltr/tls/ca.pem -noout -subject -dates -fingerprint -sha256</code
@@ -78,9 +78,8 @@
   </p>
   <h2 id="source">Choose where the certificate comes from</h2>
   <p>
-    Admin → System → Certificates shows the authority and the certificate this leader serves, and a <strong
-      >Source</strong
-    > chooser with the one in force marked.
+    Admin → System → Leader certificate shows the authority and the certificate this leader serves,
+    and a <strong>Source</strong> chooser with the one in force marked.
   </p>
   <div class="table-scroll">
     <table>

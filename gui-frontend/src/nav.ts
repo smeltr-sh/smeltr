@@ -22,7 +22,7 @@ export type SystemSection = 'general' | 'sessions' | 'certificates' | 'git' | 'a
 export const SYSTEM_SECTIONS: { section: SystemSection; label: string }[] = [
   { section: 'general', label: 'General' },
   { section: 'sessions', label: 'Sessions' },
-  { section: 'certificates', label: 'Certificates' },
+  { section: 'certificates', label: 'Leader certificate' },
   { section: 'git', label: 'Git remote' },
   { section: 'agents', label: 'AI agents' },
   { section: 'license', label: 'License' },

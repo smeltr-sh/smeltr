@@ -181,7 +181,7 @@ test('the leader certificate is reissued under System', async ({ admin }) => {
   await openAdmin(admin, 'System');
   await admin
     .getByRole('navigation', { name: 'System settings' })
-    .getByRole('link', { name: 'Certificates', exact: true })
+    .getByRole('link', { name: 'Leader certificate', exact: true })
     .click();
   await expect(admin.getByRole('heading', { name: /Current authority/ })).toBeVisible();
   await expect(admin.getByRole('link', { name: 'Download ca.pem' })).toBeVisible();
