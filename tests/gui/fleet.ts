@@ -23,7 +23,7 @@ import { RUN_DIR, recordPid } from './run';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TARGET = path.resolve(REPO, process.env.CARGO_TARGET_DIR ?? 'target');
-const BINARY = process.env.SMELTR_BINARY ?? path.join(TARGET, 'release', 'smeltr');
+const BINARY = process.env.SMELTR_BINARY ?? path.join(TARGET, 'debug', 'smeltr');
 
 /** The password the `admin` fixture chooses for the administrator. */
 export const ADMIN_PASSWORD = 'gui-tests-admin-password';
@@ -122,7 +122,8 @@ export class Fleet {
   }
 
   private spawn(name: string, dir: string, settings: Record<string, string>): Proc {
-    if (!fs.existsSync(BINARY)) throw new Error(`no binary at ${BINARY}: run \`just build\` first`);
+    if (!fs.existsSync(BINARY))
+      throw new Error(`no binary at ${BINARY}: run \`just build-dev\` first`);
     // The caller's environment without any Smeltr setting, so one exported for a developer's own fleet does
     // not point a test at that fleet's data.
     const env: NodeJS.ProcessEnv = {};

@@ -73,6 +73,16 @@ struct Run {
     error: Option<String>,
     /// The answer the model is writing, so far; empty between answers.
     writing: String,
+    /// How many of the conversation's turns are kept ahead of `writing`. A read takes the turns and the run apart, so
+    /// it can find the answer kept and `writing` not yet cleared; this count tells it that `writing` is among them.
+    follows: usize,
+}
+
+impl Run {
+    /// What the model is writing, for a read that found `kept` turns kept.
+    fn writing(&self, kept: usize) -> Option<String> {
+        (self.running && !self.writing.is_empty() && kept == self.follows).then(|| self.writing.clone())
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -355,6 +365,7 @@ fn begin(
                 ended: None,
                 error: None,
                 writing: String::new(),
+                follows: turns.len(),
             },
         );
     }
@@ -501,6 +512,7 @@ impl Host for Turned {
         // What was being written is now among the turns.
         if let Some(run) = self.auth.chats.runs().get_mut(&self.conversation) {
             run.writing.clear();
+            run.follows += usize::from(kept);
         }
         Ok(())
     }
@@ -645,10 +657,7 @@ pub async fn read(
     let body = ConversationDto {
         summary: summary(&auth, conversation),
         ended: run.as_ref().and_then(|r| r.ended).map(Ended::as_str),
-        writing: run
-            .as_ref()
-            .filter(|r| r.running && !r.writing.is_empty())
-            .map(|r| r.writing.clone()),
+        writing: run.as_ref().and_then(|r| r.writing(turns.len())),
         error: run.and_then(|r| r.error),
         items: turns.iter().flat_map(|t| items(t)).collect(),
         model: last.and_then(|r| r.model.clone()),
@@ -756,5 +765,32 @@ pub async fn sweep(auth: Auth) {
                 "could not delete the conversations nobody added to"
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn writing(text: &str, follows: usize) -> Run {
+        Run {
+            stop: Arc::default(),
+            running: true,
+            ended: None,
+            error: None,
+            writing: text.to_string(),
+            follows,
+        }
+    }
+
+    #[test]
+    fn what_is_being_written_is_shown_until_it_is_kept() {
+        assert_eq!(writing("Answer", 1).writing(1).as_deref(), Some("Answer"));
+    }
+
+    /// A read between the answer being kept and `writing` being cleared would show the answer twice.
+    #[test]
+    fn what_is_being_written_is_not_shown_once_a_read_finds_it_kept() {
+        assert_eq!(writing("Answer", 1).writing(2), None);
     }
 }
