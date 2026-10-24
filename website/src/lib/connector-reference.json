@@ -4094,7 +4094,16 @@
         "reads": ["__destination.index", "__destination.id"],
         "form": [
           {
-            "settings": ["url", "defaultIndex", "identity", "auth", "username", "password", "docId", "idField"]
+            "settings": [
+              "url",
+              "defaultIndex",
+              "identity",
+              "auth",
+              "username",
+              "password",
+              "docId",
+              "idField"
+            ]
           },
           {
             "section": "Advanced",
