@@ -96,7 +96,7 @@ document's systems.
 | Worker groups, registry, heartbeat, `/api/health`, Cluster page (Control plane) | built; the Cluster page is not the Status area `gui-design.md` describes. Windows does not read a container's job-object limit |
 | A default worker group (Control plane) | built |
 | Worker↔leader authentication, TLS, enrollment codes, authority rotation for every certificate source (Security) | built |
-| A certificate ordered from a certificate authority over ACME and renewed (Security) | built: the certificates page's ACME source, `/api/settings/acme`, TLS-ALPN-01, HTTP-01 and DNS-01 through Cloudflare, checked against Pebble in `just check-live` (DNS-01 against Pebble's test DNS server) and against a stand-in authority in the journey |
+| A certificate ordered from a certificate authority over ACME and renewed (Security) | built: TLS-ALPN-01, HTTP-01, and DNS-01 through Cloudflare |
 | Config distribution (Control plane) | built; serving smart-HTTP still spawns `git`, so the leader needs it installed. A corrupt worker clone is never re-cloned |
 | One repository, one `main`, a subtree per group and `shared/` (Control plane) | built |
 | Upgrades (Control plane) | built. Not built: config file converters (there is one `system.json` version), the *Upgrade config files* action, and a supported floor |
