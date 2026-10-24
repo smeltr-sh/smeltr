@@ -10,6 +10,7 @@
   import { untrack } from 'svelte';
   import { reported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
+  import ListTable from './ListTable.svelte';
   import PageHeader from './PageHeader.svelte';
   import Field from './Field.svelte';
   import Dialog from './Dialog.svelte';
@@ -184,49 +185,39 @@
   {:else if certificates.length === 0}
     <p class="dim">No certificates yet.</p>
   {:else}
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th aria-sort={sort.aria('name')}><SortButton {sort} key="name">Name</SortButton></th>
-            <th aria-sort={sort.aria('names')}
-              ><SortButton {sort} key="names">Serves</SortButton></th
-            >
-            <th aria-sort={sort.aria('expires')}
-              ><SortButton {sort} key="expires">Expires</SortButton></th
-            >
-            <th aria-sort={sort.aria('setAt')}
-              ><SortButton {sort} key="setAt">Last set</SortButton></th
-            >
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each sorted as c (c.name)}
-            {@const current = currentVersion(c)}
-            <tr>
-              <td>
-                <span class="mono">{c.name}</span>
-                {#if c.served}<span class="badge">leader</span>{/if}
-                {#if c.description}<small class="note">{c.description}</small>{/if}
-              </td>
-              <td class="mono">{leaf(c)?.names.join(', ') || '--'}</td>
-              <td
-                class="one-line"
-                class:soon={leaf(c) && leaf(c).notAfterMillis - Date.now() < 30 * 86_400_000}
-              >
-                {leaf(c) ? expiry(leaf(c).notAfterMillis) : '--'}
-              </td>
-              <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
-              <td class="row-actions">
-                <button type="button" onclick={() => open(c.name)}>Replace</button>
-                <button type="button" onclick={() => remove(c)}>Delete</button>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
+    <ListTable>
+      {#snippet head()}
+        <th aria-sort={sort.aria('name')}><SortButton {sort} key="name">Name</SortButton></th>
+        <th aria-sort={sort.aria('names')}><SortButton {sort} key="names">Serves</SortButton></th>
+        <th aria-sort={sort.aria('expires')}
+          ><SortButton {sort} key="expires">Expires</SortButton></th
+        >
+        <th aria-sort={sort.aria('setAt')}><SortButton {sort} key="setAt">Last set</SortButton></th>
+        <th></th>
+      {/snippet}
+      {#each sorted as c (c.name)}
+        {@const current = currentVersion(c)}
+        <tr>
+          <td>
+            <span class="mono">{c.name}</span>
+            {#if c.served}<span class="badge">leader</span>{/if}
+            {#if c.description}<small class="note">{c.description}</small>{/if}
+          </td>
+          <td class="mono">{leaf(c)?.names.join(', ') || '--'}</td>
+          <td
+            class="one-line"
+            class:soon={leaf(c) && leaf(c).notAfterMillis - Date.now() < 30 * 86_400_000}
+          >
+            {leaf(c) ? expiry(leaf(c).notAfterMillis) : '--'}
+          </td>
+          <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
+          <td class="row-actions">
+            <button type="button" onclick={() => open(c.name)}>Replace</button>
+            <button type="button" onclick={() => remove(c)}>Delete</button>
+          </td>
+        </tr>
+      {/each}
+    </ListTable>
   {/if}
 </SectionShell>
 
@@ -253,42 +244,6 @@
     font-size: var(--text-note);
   }
 
-  .table-wrap {
-    overflow-x: auto;
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--text-body);
-  }
-
-  th {
-    text-align: left;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
-    border-bottom: 1px solid var(--border);
-    padding: 0.4rem 0.6rem;
-  }
-
-  td {
-    padding: 0.5rem 0.6rem;
-    border-bottom: 1px solid var(--border);
-  }
-
-  tbody tr:last-child td {
-    border-bottom: none;
-  }
-
-  th,
-  .one-line,
-  .row-actions {
-    white-space: nowrap;
-  }
-
   .soon {
     color: var(--warn);
   }
@@ -300,14 +255,6 @@
     border-radius: 0.6rem;
     font-size: var(--text-micro);
     color: var(--dim);
-  }
-
-  .note {
-    display: block;
-    color: var(--dim);
-    font-size: var(--text-note);
-    font-weight: 400;
-    line-height: 1.4;
   }
 
   .dim {
