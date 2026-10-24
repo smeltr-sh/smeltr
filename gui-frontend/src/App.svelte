@@ -43,6 +43,7 @@
   import DemoBar from './DemoBar.svelte';
   import Locked from './Locked.svelte';
   import HeldWork from './HeldWork.svelte';
+  import VersionTag from './VersionTag.svelte';
   import AgentPanel from './AgentPanel.svelte';
   import ChatIcon from './ChatIcon.svelte';
   import PersonIcon from './PersonIcon.svelte';
@@ -538,6 +539,7 @@
           <a href={item.hash} class:active={route.tab === item.tab}>{item.label}</a>
         {/each}
       </div>
+      <VersionTag {administrator} />
     </div>
   </nav>
 
