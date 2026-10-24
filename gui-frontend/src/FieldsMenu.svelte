@@ -54,6 +54,12 @@
   let listed = $derived(all ? matches : matches.slice(0, LISTED));
   let shownCount = $derived(fields.filter((f) => shown(f.path)).length);
 
+  const showMatches = (show: boolean) =>
+    onshow(
+      matches.map((f) => f.path),
+      show,
+    );
+
   /** `path` around the search's match, so the match can be marked. */
   function parts(path: string): [string, string, string] {
     const q = query.trim().toLowerCase();
@@ -93,22 +99,10 @@
         autofocus
       />
       <div class="actions">
-        <button
-          type="button"
-          onclick={() =>
-            onshow(
-              matches.map((f) => f.path),
-              true,
-            )}>Select all{query.trim() ? ` ${matches.length}` : ''}</button
+        <button type="button" onclick={() => showMatches(true)}
+          >Select all{query.trim() ? ` ${matches.length}` : ''}</button
         >
-        <button
-          type="button"
-          onclick={() =>
-            onshow(
-              matches.map((f) => f.path),
-              false,
-            )}>Select none</button
-        >
+        <button type="button" onclick={() => showMatches(false)}>Select none</button>
         <span class="grow"></span>
         <span class="dim"
           >{matches.filter((f) => shown(f.path)).length} of {matches.length} shown</span

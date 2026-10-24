@@ -1343,11 +1343,8 @@
 
   // The field choice is the reader's own, remembered per pipeline in this browser.
   const fieldsKey = (pipeline: string) => `smeltr-workspace-fields:${pipeline}`;
-  let fieldsLoadedFor = '';
   $effect(() => {
     const key = fieldsKey(pipelineId);
-    if (fieldsLoadedFor === key) return;
-    fieldsLoadedFor = key;
     untrack(() => {
       toggledColumns.clear();
       try {
@@ -1565,23 +1562,26 @@
     return CHIP_LABELS[c.kind];
   }
 
+  const hasChip = (c: FindChip) => chips.some((x) => chipKey(x) === chipKey(c));
+
   function addChip(c: FindChip) {
-    if (!chips.some((x) => chipKey(x) === chipKey(c))) chips = [...chips, c];
+    if (!hasChip(c)) chips = [...chips, c];
   }
 
   function toggleChip(c: FindChip) {
-    if (chips.some((x) => chipKey(x) === chipKey(c)))
-      chips = chips.filter((x) => chipKey(x) !== chipKey(c));
+    if (hasChip(c)) chips = chips.filter((x) => chipKey(x) !== chipKey(c));
     else chips = [...chips, c];
   }
 
   // Whether a step changed a row, kept per run: it diffs every field of the
   // row, so it is asked only of rows a chip or a count needs.
-  let changedRows = $derived.by(() => {
-    void rowsMaps;
-    return new Map<number, boolean>();
-  });
+  let changedRows = new Map<number, boolean>();
+  let changedFor: typeof rowsMaps | undefined;
   function rowChanged(i: number): boolean {
+    if (changedFor !== rowsMaps) {
+      changedRows = new Map();
+      changedFor = rowsMaps;
+    }
     let known = changedRows.get(i);
     if (known === undefined) {
       const m = rowsMaps[i];
@@ -1952,6 +1952,21 @@
 
           {#if !selectedSample}{@render stageChips()}{/if}
 
+          {#snippet fieldsMenu(records: number | null)}
+            <FieldsMenu
+              fields={menuFields}
+              {records}
+              shown={isShown}
+              {dictionary}
+              onshow={showFields}
+              ondefault={() => toggledColumns.clear()}
+              onhas={(path) => {
+                showFields([path], true);
+                addChip({ kind: 'has', path });
+              }}
+            />
+          {/snippet}
+
           <div class="records">
             <div class="output-search">
               <SampleMenu
@@ -2016,30 +2031,11 @@
                     onclick={() => toggleChip({ kind: 'failing' })}>⚠ {failingCount} failing</button
                   >
                 {/if}
-                <FieldsMenu
-                  fields={menuFields}
-                  records={gridRows.length}
-                  shown={isShown}
-                  {dictionary}
-                  onshow={showFields}
-                  ondefault={() => toggledColumns.clear()}
-                  onhas={(path) => {
-                    showFields([path], true);
-                    addChip({ kind: 'has', path });
-                  }}
-                />
+                {@render fieldsMenu(gridRows.length)}
               {:else if !selectedSample && dictionary}
                 <!-- No records to count, but the steps compiled: what they declare. -->
                 <span class="grow"></span>
-                <FieldsMenu
-                  fields={menuFields}
-                  records={null}
-                  shown={isShown}
-                  {dictionary}
-                  onshow={showFields}
-                  ondefault={() => toggledColumns.clear()}
-                  onhas={() => {}}
-                />
+                {@render fieldsMenu(null)}
               {/if}
             </div>
             {#if selectedSample}
@@ -2057,7 +2053,6 @@
                 <button type="button" onclick={() => (showTypes = !showTypes)}>
                   {showTypes ? 'Hide types' : 'Show types'}
                 </button>
-
                 <span class="grow"></span>
                 {#if !readOnly}
                   <button
@@ -2446,8 +2441,6 @@
     font-weight: 600;
   }
 
-  /* ChangeDetailPage's tabs. */
-
   .output-search {
     display: flex;
     align-items: center;
@@ -2813,9 +2806,6 @@
     color: var(--ink);
     font-weight: 600;
   }
-
-  /* A wide record has a column per field, so the list scrolls rather than
-     running off the bottom of the window. */
 
   .state-added {
     color: var(--added);
