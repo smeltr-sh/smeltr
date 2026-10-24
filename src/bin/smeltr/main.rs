@@ -1705,6 +1705,41 @@ fn refuse_damaged_repo(
     std::process::exit(1);
 }
 
+/// Writes the secrets encryption key on a leader that has sealed nothing yet, so the first secret stored is sealed
+/// under a key that has already been announced. A leader holding values its key cannot open says so as loudly as it
+/// can, and goes on: everything but the secrets still works, and the fix is on the Secrets page.
+fn check_secrets_key(store: &dyn smeltr::leader::store::Store, path: &std::path::Path) {
+    use smeltr::leader::store::KeyState;
+    let standing = match store.key_standing() {
+        Ok(standing) => standing,
+        Err(e) => {
+            eprintln!("smeltr: refusing to start -- {e}");
+            std::process::exit(1);
+        }
+    };
+    let what = match standing.key {
+        KeyState::Held { .. } => return,
+        KeyState::Absent => {
+            if let Err(e) = smeltr::leader::secrets::load_or_create(path) {
+                eprintln!("smeltr: refusing to start -- {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        KeyState::Missing => "is missing",
+        KeyState::Mismatched { .. } => "does not match them",
+    };
+    let n = standing.unopenable.len();
+    tracing::error!(
+        target: "secrets.key_unusable",
+        path = %path.display(),
+        "cannot open the {n} stored secret{}: the secrets encryption key at {} {what}. Secrets cannot be stored or \
+         changed until it is restored, or regenerated under Admin, Secrets, Encryption key",
+        if n == 1 { "" } else { "s" },
+        path.display(),
+    );
+}
+
 /// Make sure somebody can sign in, and say so on the console when a password was written.
 ///
 /// Two cases, both of them the operator's first minute with this leader. A store with no account at all gets one,
@@ -1850,6 +1885,7 @@ async fn run_leader() {
         eprintln!("smeltr: refusing to start -- {e}");
         std::process::exit(1);
     });
+    check_secrets_key(store.as_ref(), &secret_key);
     let repo = smeltr::leader::git::repo_path(&data_dir);
     if let Err(damage) = smeltr::leader::git::check_repo(&repo) {
         refuse_damaged_repo(&repo, &damage, store.as_ref());

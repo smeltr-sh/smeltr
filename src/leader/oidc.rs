@@ -37,6 +37,9 @@ use crate::io::discovery::{self, MAX_DISCOVERY, check_url, said};
 use crate::io::http::percent_encode;
 
 /// How long any one request to the provider may take.
+/// The setting that holds the client secret, sealed.
+pub const CLIENT_SECRET_KEY: &str = "oidc.client_secret";
+
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The most a key set may hold.

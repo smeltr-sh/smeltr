@@ -19,7 +19,7 @@ use crate::leader::access::{Access, Level};
 use crate::leader::deploy_checks::{FailingTest, Findings};
 use crate::leader::registry::{FactKey, ThreadHealth};
 use crate::leader::series::{DRIFT_WINDOW, DeclaredField, LoggedSite, RegistryStore, Tier};
-use crate::leader::store::WorkerCredentialRecord;
+use crate::leader::store::{KeyStanding, Unopenable, WorkerCredentialRecord};
 use crate::leader::throughput;
 
 /// *Failed*: the thing is not doing its job. *Warning*: it is working and something is off. (design doc, Control
@@ -52,6 +52,8 @@ pub enum SubjectKind {
     EnrollmentCode,
     /// A pipeline, by the id its author gave it.
     Pipeline,
+    /// A leader-stored secret, by name.
+    Secret,
 }
 
 /// Which catalog entry raised this warning. The catalog is fixed (design doc, Control plane), so a reader can
@@ -88,6 +90,8 @@ pub enum Condition {
     DeclaredFieldFailing,
     DeclaredFieldGone,
     StreamUnrouted,
+    SecretsKeyUnusable,
+    SecretNeedsValue,
 }
 
 impl Condition {
@@ -123,6 +127,8 @@ impl Condition {
         Condition::DeclaredFieldFailing,
         Condition::DeclaredFieldGone,
         Condition::StreamUnrouted,
+        Condition::SecretsKeyUnusable,
+        Condition::SecretNeedsValue,
     ];
 
     /// What this is called on the wire. The match is what makes a new entry a compile error here.
@@ -157,6 +163,8 @@ impl Condition {
             Condition::DeclaredFieldFailing => "declaredFieldFailing",
             Condition::DeclaredFieldGone => "declaredFieldGone",
             Condition::StreamUnrouted => "streamUnrouted",
+            Condition::SecretsKeyUnusable => "secretsKeyUnusable",
+            Condition::SecretNeedsValue => "secretNeedsValue",
         }
     }
 }
@@ -2304,6 +2312,85 @@ fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
         severity: Severity::Info,
         since_millis: Some(newer.since),
         message: format!("smeltr {} is out, and this leader runs {own}", newer.release),
+    }
+}
+
+/// The facts the secrets encryption key's warnings start from, so each says how long it has held.
+pub fn encryption_key_facts(standing: &KeyStanding) -> HashSet<FactKey> {
+    if standing.broken() {
+        return HashSet::from([FactKey::new("secretsKeyUnusable", "leader")]);
+    }
+    standing
+        .unopenable
+        .iter()
+        .map(|u| FactKey::new("secretNeedsValue", unopenable_id(u)))
+        .collect()
+}
+
+/// A key that is missing or wrong, as one failure: nothing sealed can be stored or changed until it is fixed. Once
+/// it holds again, each value it cannot open is a warning of its own, which clears when that value is entered again.
+/// A warning rather than a failure, because a running worker still holds what it was given.
+pub fn encryption_key_warnings(standing: &KeyStanding, starts: &HashMap<FactKey, i64>) -> Vec<Warning> {
+    let leader = |condition, subject_id: String, severity, message| Warning {
+        scope: None,
+        condition,
+        subject_kind: SubjectKind::Leader,
+        site: None,
+        since_millis: starts.get(&FactKey::new(condition.name(), subject_id.clone())).copied(),
+        subject_id,
+        group: None,
+        severity,
+        message,
+    };
+    if let Some(problem) = standing.problem() {
+        return vec![leader(
+            Condition::SecretsKeyUnusable,
+            "leader".to_string(),
+            Severity::Failed,
+            problem,
+        )];
+    }
+    standing
+        .unopenable
+        .iter()
+        .map(|u| {
+            let (subject_kind, message) = match u {
+                Unopenable::Secret(_) => (
+                    SubjectKind::Secret,
+                    "sealed with a key this leader no longer has. Store a new version".to_string(),
+                ),
+                Unopenable::Setting(key) => (
+                    SubjectKind::Leader,
+                    format!(
+                        "sealed with a key this leader no longer has. Enter it again under {}",
+                        sealed_setting_place(key).1
+                    ),
+                ),
+            };
+            Warning {
+                subject_kind,
+                ..leader(Condition::SecretNeedsValue, unopenable_id(u), Severity::Warning, message)
+            }
+        })
+        .collect()
+}
+
+fn unopenable_id(u: &Unopenable) -> String {
+    match u {
+        Unopenable::Secret(name) => name.clone(),
+        Unopenable::Setting(key) => sealed_setting_place(key).0.to_string(),
+    }
+}
+
+/// What a sealed leader setting is called, and where it is entered.
+fn sealed_setting_place(key: &str) -> (&str, &'static str) {
+    match key {
+        crate::leader::remote::TOKEN_KEY => ("Git remote token", "System, Git remote"),
+        crate::leader::oidc::CLIENT_SECRET_KEY => ("OIDC client secret", "Accounts, Single sign-on"),
+        crate::leader::model::API_KEY_KEY => ("AI agents API key", "System, AI agents"),
+        crate::leader::acme::EAB_HMAC_KEY => ("ACME EAB HMAC key", "System, Certificates"),
+        crate::leader::acme::CLOUDFLARE_TOKEN_KEY => ("Cloudflare API token", "System, Certificates"),
+        other => (other, "System"),
     }
 }
 
@@ -6276,5 +6363,57 @@ mod tests {
             authority_aging(Some(&dying), &Rotating::UnderWay, NOW).is_empty(),
             "a rotation that can still finish is an answer already coming"
         );
+    }
+
+    fn standing(key: crate::leader::store::KeyState, unopenable: Vec<Unopenable>) -> KeyStanding {
+        KeyStanding {
+            path: std::path::PathBuf::from("/var/lib/smeltr-keys/sealing.key"),
+            key,
+            unopenable,
+        }
+    }
+
+    /// Issue 21: a leader whose key is gone says so once, as a failure about itself, and names the fix.
+    #[test]
+    fn a_missing_encryption_key_is_one_failure_that_names_the_fix() {
+        let broken = standing(
+            crate::leader::store::KeyState::Missing,
+            vec![
+                Unopenable::Secret("es-auth".to_string()),
+                Unopenable::Setting(crate::leader::remote::TOKEN_KEY.to_string()),
+            ],
+        );
+        let facts = encryption_key_facts(&broken);
+        let starts: HashMap<FactKey, i64> = facts.iter().map(|f| (f.clone(), NOW)).collect();
+        let said = encryption_key_warnings(&broken, &starts);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(said[0].condition, Condition::SecretsKeyUnusable);
+        assert_eq!(said[0].severity, Severity::Failed);
+        assert_eq!(said[0].subject_kind, SubjectKind::Leader);
+        assert_eq!(said[0].since_millis, Some(NOW));
+        assert!(said[0].message.contains("is missing, so the 2 stored secrets cannot be opened"), "{}", said[0].message);
+        assert!(said[0].message.contains("Secrets, Encryption key"), "{}", said[0].message);
+    }
+
+    /// After a regeneration each value to enter again is its own warning, named where it is entered.
+    #[test]
+    fn each_value_a_regenerated_key_cannot_open_is_its_own_warning() {
+        let held = standing(
+            crate::leader::store::KeyState::Held { key_id: "5be1a09c44d7f312".to_string() },
+            vec![
+                Unopenable::Secret("es-auth".to_string()),
+                Unopenable::Setting(crate::leader::oidc::CLIENT_SECRET_KEY.to_string()),
+            ],
+        );
+        let said = encryption_key_warnings(&held, &HashMap::new());
+        assert_eq!(said.len(), 2);
+        assert!(said.iter().all(|w| w.condition == Condition::SecretNeedsValue && w.severity == Severity::Warning));
+        assert_eq!((said[0].subject_kind, said[0].subject_id.as_str()), (SubjectKind::Secret, "es-auth"));
+        assert!(said[0].message.ends_with("Store a new version"));
+        assert_eq!((said[1].subject_kind, said[1].subject_id.as_str()), (SubjectKind::Leader, "OIDC client secret"));
+        assert!(said[1].message.ends_with("Enter it again under Accounts, Single sign-on"), "{}", said[1].message);
+        assert!(said.iter().all(|w| w.group.is_none()), "an administrator's to act on");
+
+        assert!(encryption_key_warnings(&standing(crate::leader::store::KeyState::Absent, vec![]), &HashMap::new()).is_empty());
     }
 }
