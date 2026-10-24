@@ -14,6 +14,8 @@ const bound = $state({ value: '' });
 function show(props: {
   autocomplete: 'condition' | 'code' | null;
   multiline?: boolean;
+  wrap?: boolean;
+  ariaLabel?: string;
   errors?: string[];
   warnings?: string[];
 }) {
@@ -116,5 +118,40 @@ describe('a name box a warning names', () => {
     });
     expect(input.classList.contains('whole-warn')).toBe(false);
     expect(input.classList.contains('field-error')).toBe(true);
+  });
+});
+
+describe('a wrap field', () => {
+  it('shows its text laid out until it is written in', async () => {
+    bound.value = 'a == 1 || b == 2';
+    const input = show({ autocomplete: 'condition', wrap: true });
+    flushSync();
+    const view = () => target.querySelector('.wrapview');
+    expect(view()?.textContent).toContain('a == 1');
+    expect(input.classList.contains('under')).toBe(true);
+
+    input.focus();
+    flushSync();
+    expect(view()).toBeNull();
+    expect(input.classList.contains('under')).toBe(false);
+  });
+
+  it('is written in from the start when it is blank', () => {
+    bound.value = '';
+    show({ autocomplete: 'condition', wrap: true });
+    flushSync();
+    expect(target.querySelector('.wrapview')).toBeNull();
+  });
+
+  it('keeps its text on one line', () => {
+    bound.value = '';
+    const input = show({ autocomplete: 'condition', wrap: true });
+    const enter = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(enter);
+    expect(enter.defaultPrevented).toBe(true);
   });
 });

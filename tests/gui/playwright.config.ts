@@ -8,6 +8,8 @@ export default defineConfig({
   timeout: 120_000,
   // Every test starts a leader of its own, so they run side by side.
   fullyParallel: true,
+  // Mostly waiting, so one per CPU rather than the default half. Twice that starves the leaders and times tests out.
+  workers: '100%',
   reporter: [['list'], ['html', { outputFolder: 'report', open: 'never' }]],
   use: {
     // A leader serves its own self-signed certificate.

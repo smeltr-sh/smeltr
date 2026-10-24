@@ -2403,7 +2403,9 @@ export type WarningCondition =
   | 'declaredFieldGone'
   | 'streamUnrouted'
   | 'newerRelease'
-  | 'workerOnAnotherRelease';
+  | 'workerOnAnotherRelease'
+  | 'secretsKeyUnusable'
+  | 'secretNeedsValue';
 
 /** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. *Info*: a fact worth
  * knowing that asks nothing; the leader sends it only to a caller that asks (`listWarnings({ info: true })`). */
@@ -2421,7 +2423,8 @@ export interface WarningDto {
     | 'leader'
     | 'enrollmentCode'
     | 'identity'
-    | 'pipeline';
+    | 'pipeline'
+    | 'secret';
   /** Unique only within `group`, not fleet-wide -- a worker's own id is the exception. */
   subjectId: string;
   /** Which group this is about, or null where there is none to report -- an enrolled worker
@@ -2501,6 +2504,10 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Newer release';
     case 'workerOnAnotherRelease':
       return 'On another release';
+    case 'secretsKeyUnusable':
+      return 'Secrets encryption key unusable';
+    case 'secretNeedsValue':
+      return 'Secret needs a new value';
   }
 }
 
@@ -3443,6 +3450,29 @@ export function verifySecret(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ version, candidate }),
   });
+}
+
+/** Where the secrets encryption key stands (`EncryptionKeyOut`). `missing` and
+ * `mismatched` refuse every stored secret until the key is restored or
+ * regenerated. */
+export interface EncryptionKeyDto {
+  state: 'absent' | 'held' | 'missing' | 'mismatched';
+  /** Absent where there is no key file. */
+  keyId: string | null;
+  path: string;
+  /** Each value whose newest copy the key cannot open: what to enter again. */
+  unopenable: { kind: 'secret' | 'setting'; name: string; label: string }[];
+}
+
+export function getEncryptionKey(): Promise<EncryptionKeyDto> {
+  return apiJson('/api/encryption-key');
+}
+
+/** Writes a new key in place of a missing or mismatched one. */
+export function regenerateEncryptionKey(): Promise<
+  { ok: boolean; errors: ApiError[] } & Partial<EncryptionKeyDto>
+> {
+  return apiJson('/api/encryption-key/regenerate', { method: 'POST' });
 }
 
 // -- flow (E2), `src/leader/mod.rs` ----------------------------------------
