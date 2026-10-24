@@ -612,7 +612,7 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
             .clone()
     });
     plan.instrs = instrs;
-    let unread = unread_writes(&plan, &c.syms.local_slots, &c.syms.deleted_slots);
+    let unread = unread_writes(&plan, &c.syms.local_slots, &c.syms.deleted_slots, &c.syms.aliases);
     plan.warnings.extend(unread);
     // A case that runs on into the next has the next one's statements copied into its branch, so a warning about
     // them comes twice.
@@ -674,8 +674,14 @@ fn same(a: &Ir, b: &Ir) -> bool {
 
 /// A warning for each value a statement writes that nothing reads: no instruction reads it and the record does not
 /// hold it at the end. A local is never read; a field is written again, or deleted, first. Only an expression's own
-/// write counts, under a name code can spell, so a parse's outputs and the engine's own slots are never named.
-fn unread_writes(plan: &Plan, locals: &HashSet<SlotId>, deleted: &HashSet<SlotId>) -> Vec<CompileError> {
+/// write counts, under a name code can spell, so a parse's outputs and the engine's own slots are never named. A copy
+/// shares its value's slot (`aliases`), so the name a warning gives is the last one to let the value go.
+fn unread_writes(
+    plan: &Plan,
+    locals: &HashSet<SlotId>,
+    deleted: &HashSet<SlotId>,
+    aliases: &[(SlotId, String, usize)],
+) -> Vec<CompileError> {
     let mut read = HashSet::new();
     every_read(&plan.instrs, &mut |s| {
         read.insert(s);
@@ -687,26 +693,36 @@ fn unread_writes(plan: &Plan, locals: &HashSet<SlotId>, deleted: &HashSet<SlotId
         .chain(plan.tree.unclaimed_slots())
         .map(|(_, s)| s)
         .collect();
+    let spelled =
+        |n: &str| !n.is_empty() && !n.starts_with(['<', '#']) && !tree::is_internal(n) && !n.contains('*');
     let mut written = Vec::new();
     every_eval(&plan.instrs, &mut |s| written.push(s));
     let mut out: Vec<CompileError> = Vec::new();
     for slot in written {
         let o = &plan.provenance[slot];
         let Origin::Function(f) = o.origin else { continue };
-        let spelled = !o.name.is_empty()
-            && !o.name.starts_with(['<', '#'])
-            && !tree::is_internal(&o.name)
-            && !o.name.contains('*');
-        if !spelled || read.contains(&slot) || held.contains(&slot) {
+        if !spelled(&o.name) || read.contains(&slot) || held.contains(&slot) {
             continue;
         }
+        // Each name the value was put at, from the slot after which a write of that name replaces it.
+        let names: Vec<(&str, usize)> = std::iter::once((o.name.as_str(), slot + 1))
+            .chain(aliases.iter().filter(|(s, n, _)| *s == slot && spelled(n)).map(|(_, n, at)| (n.as_str(), *at)))
+            .collect();
+        let rewritten = names
+            .iter()
+            .filter_map(|&(name, from)| {
+                let again = plan.provenance.get(from..)?.iter().position(|later| later.name == name)?;
+                Some((from + again, name))
+            })
+            .max();
+        let last = names.last().map_or(o.name.as_str(), |&(n, _)| n);
         // A field `$ = {…}` or `unroll` cleared is neither written again nor deleted: nothing is said of it.
-        let message = if locals.contains(&slot) {
-            format!("the local `{}` is never read", o.name)
-        } else if plan.provenance[slot + 1..].iter().any(|later| later.name == o.name) {
-            format!("`{}` is written again before anything reads it", o.name)
+        let message = if let Some((_, name)) = rewritten {
+            format!("`{name}` is written again before anything reads it")
+        } else if locals.contains(&slot) {
+            format!("the local `{last}` is never read")
         } else if deleted.contains(&slot) {
-            format!("`{}` is deleted before anything reads it", o.name)
+            format!("`{last}` is deleted before anything reads it")
         } else {
             continue;
         };
@@ -2539,6 +2555,8 @@ impl Compiler<'_> {
         let ir = match r {
             Resolved::Slot(s) if guard.is_none() && !self.in_loop() => {
                 self.syms.put_place(place, s);
+                let made = self.syms.origins.len();
+                self.syms.aliases.push((s, place.name().to_string(), made));
                 return;
             }
             Resolved::Unclaimed(s, removed)
@@ -4593,7 +4611,29 @@ mod tests {
         // The copy of `g` the unroll makes is the local's.
         assert_eq!(
             warnings("a = [1, 2]; let g = a; unroll(a, false); g = [3];"),
-            ["the local `g` is never read"]
+            ["`g` is written again before anything reads it", "the local `g` is never read"]
+        );
+        // A local written again is read after, but not its first value.
+        assert_eq!(
+            warnings("let n = 0; n = parseInt(_raw); x = n"),
+            ["`n` is written again before anything reads it"]
+        );
+        // A copy shares its value: the name that lets it go is the one said.
+        assert_eq!(
+            warnings("let n = parseInt(_raw); x = n; x = 2"),
+            ["`x` is written again before anything reads it"]
+        );
+        assert_eq!(
+            warnings("a = 1; b = a; a = 2; b = 3"),
+            ["`b` is written again before anything reads it"]
+        );
+        assert_eq!(
+            warnings("a = 1; b = 5; b = a; a = 2; b = 3"),
+            ["`b` is written again before anything reads it"]
+        );
+        assert_eq!(
+            warnings("a = 1; move(a, b); b = 2"),
+            ["`b` is written again before anything reads it"]
         );
         for body in [
             "let n = 1; x = n",

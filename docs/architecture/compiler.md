@@ -111,8 +111,9 @@ A compile warning is code that compiles but is likely a mistake. It never refuse
 pipeline. Each names its step, as an error does, and the preview returns them
 with its rows (`Plan::warnings`):
 
-- a local nothing reads, and a field's value written again or deleted before
-  anything reads it;
+- a value nothing reads: a local's, and a field's written again or deleted
+  before anything reads it. A copy shares its value, so the name given is the
+  last one to let it go;
 - statements after `drop()`, `return`, `throw`, `break` or `continue` in one
   block;
 - a `switch` case with statements of its own that runs on into the next;

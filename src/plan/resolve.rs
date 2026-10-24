@@ -76,6 +76,9 @@ pub struct SymbolTable {
     pub local_slots: HashSet<SlotId>,
     /// The slots `delete` took out of the record.
     pub deleted_slots: HashSet<SlotId>,
+    /// Each copy that shares a slot rather than fill one: the slot, the name it was put at, and how many slots there
+    /// were then, so a later write of that name is told from an earlier one.
+    pub aliases: Vec<(SlotId, String, usize)>,
     /// Each open local, innermost last.
     open: Vec<Scope>,
     /// How many locals have been opened: the next one's serial.
@@ -155,6 +158,7 @@ impl SymbolTable {
             warnings: Vec::new(),
             local_slots: HashSet::new(),
             deleted_slots: HashSet::new(),
+            aliases: Vec::new(),
             open: Vec::new(),
             opened: 0,
             nulls: HashSet::new(),
@@ -169,6 +173,7 @@ impl SymbolTable {
             warnings: Vec::new(),
             local_slots: HashSet::new(),
             deleted_slots: HashSet::new(),
+            aliases: Vec::new(),
             open: Vec::new(),
             opened: 0,
             nulls: HashSet::new(),
