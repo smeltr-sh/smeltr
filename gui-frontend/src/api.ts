@@ -1542,7 +1542,11 @@ export type ConfigSection =
   | 'identities'
   | 'pipelines';
 
-/** Undo changes: put one object back the way it was where `onBranch` left
+/** What Undo changes puts back: one object, or one file no section owns by
+ * its path in the scope's bundle. */
+export type UndoTarget = { section: ConfigSection; id: string } | { path: string };
+
+/** Undo changes: put `what` back the way it was where `onBranch` left
  * `main`, as a new save on that branch. Names the branch and scope itself,
  * since a review can act on a branch the editor is not on. `base` is the
  * commit the caller read the branch at; the leader refuses the save if the
@@ -1550,8 +1554,7 @@ export type ConfigSection =
 export async function undoChanges(
   onBranch: string,
   inScope: string,
-  section: ConfigSection,
-  id: string,
+  what: UndoTarget,
   base: string,
 ): Promise<MutationResult> {
   const q = new URLSearchParams({ branch: onBranch, scope: inScope });
@@ -1561,7 +1564,7 @@ export async function undoChanges(
     {
       method: 'POST',
       headers: { 'x-smeltr-base-commit': base },
-      body: JSON.stringify({ section, id }),
+      body: JSON.stringify(what),
     },
     'quiet',
   );
