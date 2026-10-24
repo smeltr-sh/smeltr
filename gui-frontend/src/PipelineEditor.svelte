@@ -2273,6 +2273,8 @@
     .right-col {
       position: sticky;
       top: var(--clear-top, 0px);
+      /* Its grid and dictionary scroll themselves; a short pane must not clip a menu opened in it. */
+      overflow: visible;
       /* From where it stands on screen to the bottom of the window, clear of what the page holds
          below it and of the bars held over the page: the Save bar, and the agent panel under it. */
       max-height: calc(
