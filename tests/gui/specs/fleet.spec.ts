@@ -137,13 +137,13 @@ test('the Status page shows every worker of every group, and one that stops repo
   await expect(admin.getByRole('button', { name: /^west\s*1 worker/ })).toBeVisible();
   for (const w of ['east-1', 'east-2', 'west-1'])
     await expect(admin.getByRole('button', { name: new RegExp(`^${w}\\b`) })).toBeVisible();
-  await expect(admin.getByRole('button', { name: 'Needs attention (0)' })).toBeVisible();
+  await expect(admin.getByRole('button', { name: /^Needs attention\s*0$/ })).toBeVisible();
 
   // Frozen, the worker sends nothing: it is silent, not stopped.
   stalled.child.kill('SIGSTOP');
   try {
     await expect(totals).toContainText('1 silent', { timeout: 20_000 });
-    await admin.getByRole('button', { name: 'Needs attention (1)' }).click();
+    await admin.getByRole('button', { name: /^Needs attention\s*1$/ }).click();
     await expect(admin.getByRole('button', { name: /^east-2\b/ })).toBeVisible();
     await expect(admin.getByRole('button', { name: /^east-1\b/ })).toHaveCount(0);
     await expect(admin.getByRole('link', { name: 'Active fleet issues' })).toContainText('east-2');
@@ -214,7 +214,7 @@ test('a worker whose source is blocked needs attention, though it heartbeats', a
 
   await goto(admin, leader, '#/status');
   await expect(admin.getByLabel('Fleet totals')).toContainText('2 online', { timeout: 30_000 });
-  await admin.getByRole('button', { name: 'Needs attention (1)' }).click({ timeout: 30_000 });
+  await admin.getByRole('button', { name: /^Needs attention\s*1$/ }).click({ timeout: 30_000 });
   const blocked = admin.getByRole('button', { name: /^west-1\b/ });
   await expect(blocked).toHaveClass(/\battention\b/);
   await expect(blocked.locator('.state-dot')).toHaveClass(/\bfailed\b/);

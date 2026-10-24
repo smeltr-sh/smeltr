@@ -734,6 +734,7 @@
           />
           <FoldAllButton
             allOpen={allGroupsOpen}
+            what="worker groups"
             disabled={displayedGroups.length === 0}
             onclick={() => setAllGroups(!allGroupsOpen)}
           />
