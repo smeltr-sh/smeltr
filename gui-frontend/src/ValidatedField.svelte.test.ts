@@ -11,7 +11,12 @@ let field: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
 const bound = $state({ value: '' });
 
-function show(props: { autocomplete: 'condition' | 'code' | null; multiline?: boolean }) {
+function show(props: {
+  autocomplete: 'condition' | 'code' | null;
+  multiline?: boolean;
+  errors?: string[];
+  warnings?: string[];
+}) {
   field = mount(ValidatedField, {
     target,
     props: {
@@ -80,5 +85,36 @@ describe('leaving a code field', () => {
     bound.value = 'a&&b';
     await leave(show({ autocomplete: null }));
     expect(formatCode).not.toHaveBeenCalled();
+  });
+});
+
+describe('a name box a warning names', () => {
+  it('marks all of its text', () => {
+    bound.value = 'x';
+    const input = show({
+      autocomplete: null,
+      warnings: ['`x` is written again before it is read'],
+    });
+    expect(input.classList.contains('whole-warn')).toBe(true);
+  });
+
+  it('is left alone by a warning about another name', () => {
+    bound.value = 'y';
+    const input = show({
+      autocomplete: null,
+      warnings: ['`x` is written again before it is read'],
+    });
+    expect(input.classList.contains('whole-warn')).toBe(false);
+  });
+
+  it('shows an error that names it instead', () => {
+    bound.value = 'x';
+    const input = show({
+      autocomplete: null,
+      errors: ['unknown field `x`'],
+      warnings: ['`x` is written again before it is read'],
+    });
+    expect(input.classList.contains('whole-warn')).toBe(false);
+    expect(input.classList.contains('field-error')).toBe(true);
   });
 });
