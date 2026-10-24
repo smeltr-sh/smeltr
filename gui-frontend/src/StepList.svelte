@@ -85,7 +85,8 @@
   {#each steps as step, i (step)}
     {#if editable()}
       <div class="insert">
-        <button type="button" onclick={() => (addingAt = i)} aria-label="Insert step">+ step</button>
+        <button type="button" onclick={() => (addingAt = i)} aria-label="Insert step">+ step</button
+        >
       </div>
     {/if}
     <StepEditor
@@ -106,7 +107,9 @@
 
   {#if editable()}
     <div class="add-row">
-      <button type="button" onclick={() => (addingAt = steps.length)} aria-label="Add step">+ step</button>
+      <button type="button" onclick={() => (addingAt = steps.length)} aria-label="Add step"
+        >+ step</button
+      >
     </div>
   {/if}
 </div>
