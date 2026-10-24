@@ -46,6 +46,7 @@
   import { fieldsSettled } from './grokFields';
   import { provideUnfinishedRows } from './unfinished.svelte';
   import RecordFields from './RecordFields.svelte';
+  import SearchBox from './SearchBox.svelte';
   import { formatDiffValue } from './diff';
   import {
     countStates,
@@ -90,7 +91,7 @@
     parsersIn,
     sampleSource,
   } from './api';
-  import ChipPicker from './ChipPicker.svelte';
+  import FieldsMenu from './FieldsMenu.svelte';
   import JumpLinks from './JumpLinks.svelte';
   import { setFunctionUsage } from './usage.svelte';
   import { ask } from './Confirm.svelte';
@@ -100,7 +101,6 @@
   import HeldEdit from './HeldEdit.svelte';
   import { hold, verdictFor, drop } from './edits';
   import type { ChangeRow } from './diff';
-  import Help from './Help.svelte';
   import AddSampleDialog from './AddSampleDialog.svelte';
   import SamplePicker from './SamplePicker.svelte';
   import PencilIcon from './PencilIcon.svelte';
@@ -638,18 +638,6 @@
   let requestError = $state('');
   /** The sample the rows on screen came from. */
   let lastSample = $state('');
-  let includeSampled = $state(false);
-  let copiedMapping = $state(false);
-
-  async function copyMapping(mapping: unknown) {
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(mapping, null, 2));
-      copiedMapping = true;
-      setTimeout(() => (copiedMapping = false), 1500);
-    } catch {
-      // No clipboard access: the mapping is on screen to select by hand.
-    }
-  }
 
   async function loadSamples() {
     try {
@@ -699,6 +687,7 @@
     lastGoodResult = null;
     lastSample = '';
     outputQuery = '';
+    chips = [];
     if (!id) return;
     try {
       const res = await getSample(id);
@@ -1119,30 +1108,100 @@
     return m.after.has(path) ? m.after.get(path) : m.before.get(path);
   }
 
-  // What differs from each column's default, rather than what is shown: a
+  // How many records hold each field, after the step shown.
+  let fieldCounts = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const m of rowsMaps)
+      for (const p of m.after.keys()) counts.set(p, (counts.get(p) ?? 0) + 1);
+    return counts;
+  });
+
+  /** The record the steps write, from the last run that compiled: with no sample, a run that
+   * read no records. */
+  let dictionary = $derived(
+    (result?.ok ? result.dictionary : undefined) ?? lastGoodResult?.dictionary,
+  );
+  let declaredTypes = $derived(new Map(dictionary?.compiled.fields ?? []));
+
+  /** Every field the records hold, and every field the pipeline declares that none of them
+   * do, which the Fields menu lists as held by none. A declared struct a record fills is its
+   * fields, not one of its own. */
+  let menuFields = $derived.by(() => {
+    const paths = new Set(allColumns);
+    for (const [path] of dictionary?.compiled.fields ?? []) {
+      if (path.includes('*')) continue;
+      if (allColumns.some((c) => c.startsWith(path + '.') || c.startsWith(path + '['))) continue;
+      paths.add(path);
+    }
+    return [...paths].sort().map((path) => ({
+      path,
+      type: declaredTypes.get(path) ?? null,
+      count: fieldCounts.get(path) ?? 0,
+    }));
+  });
+
+  // What differs from each field's default, rather than what is shown: a
   // step added along the way brings its fields with it, instead of arriving
-  // invisible behind a choice made before they existed. A field under a `__`
+  // invisible behind a choice made before they existed. The default is the
+  // fields most records hold, up to a grid's worth. A field under a `__`
   // key is internal, smeltr's own and never delivered, so it starts hidden,
   // and an unfolded row shows it only while its column is shown. A root key
   // the path has to quote (`["__a.b"]`) counts as well.
+  const DEFAULT_FIELDS = 50;
   const startsHidden = (path: string) => path.startsWith('__') || path.startsWith('["__');
+  let shownByDefault = $derived(
+    new Set(
+      menuFields
+        .filter((f) => !startsHidden(f.path))
+        .sort((x, y) => y.count - x.count || (x.path < y.path ? -1 : 1))
+        .slice(0, DEFAULT_FIELDS)
+        .map((f) => f.path),
+    ),
+  );
   let toggledColumns = $state(new SvelteSet<string>());
-  const isShown = (path: string) => startsHidden(path) === toggledColumns.has(path);
+  const isShown = (path: string) => shownByDefault.has(path) !== toggledColumns.has(path);
   let columns = $derived(allColumns.filter(isShown));
 
   const unfoldedPath = (path: string) => !startsHidden(path) || isShown(path);
 
-  function toggleColumn(path: string) {
-    if (toggledColumns.has(path)) toggledColumns.delete(path);
-    else toggledColumns.add(path);
+  function showFields(paths: string[], show: boolean) {
+    for (const path of paths) {
+      if (isShown(path) === show) continue;
+      if (toggledColumns.has(path)) toggledColumns.delete(path);
+      else toggledColumns.add(path);
+    }
   }
 
-  function showAllColumns() {
-    toggledColumns.clear();
-    for (const path of allColumns) if (startsHidden(path)) toggledColumns.add(path);
-  }
-
-  let columnsOpen = $state(false);
+  // The field choice is the reader's own, remembered per pipeline in this browser.
+  const fieldsKey = (pipeline: string) => `smeltr-workspace-fields:${pipeline}`;
+  let fieldsLoadedFor = '';
+  $effect(() => {
+    const key = fieldsKey(pipelineId);
+    if (fieldsLoadedFor === key) return;
+    fieldsLoadedFor = key;
+    untrack(() => {
+      toggledColumns.clear();
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(key) ?? '[]') as string[];
+        for (const path of saved) toggledColumns.add(path);
+      } catch {
+        // Nothing usable stored: the default stands.
+      }
+    });
+  });
+  $effect(() => {
+    const saved = JSON.stringify([...toggledColumns]);
+    try {
+      if (saved === '[]') window.localStorage.removeItem(untrack(() => fieldsKey(pipelineId)));
+      else
+        window.localStorage.setItem(
+          untrack(() => fieldsKey(pipelineId)),
+          saved,
+        );
+    } catch {
+      // Storage refused: the choice lasts as long as the page.
+    }
+  });
 
   // A record is a line until asked for, and any number can be open at once:
   // comparing two is reading down the page rather than remembering the last.
@@ -1303,28 +1362,129 @@
     `max(100%, calc(${columnWidths.reduce((a, b) => a + b, 2 + indexWidth)}ch + ${columns.length + 2}rem))`,
   );
 
-  const dictionarySort = new TableSort<'field' | 'type'>();
-  const sortDictionary = (fields: [string, string][]) =>
-    dictionarySort.apply(fields, { field: ([name]) => name, type: ([, type]) => type });
-
   // Keyed apart from the field paths: a record may carry a field named `row`, but
   // no field has an empty path.
   const ROW_KEY = '';
   const gridSort = new TableSort<string>();
-  // -- the Output tab's search ---------------------------------------------
+  // -- the find box ----------------------------------------------------------
   //
   // A keyword by default: a row stays when one of its shown cells holds the
   // text. Text with an operator or a call in it is tried as an expression over
   // the pipeline's output (`PreviewRequest.filter`). One that compiles to a
   // Bool filters the rows on the leader; anything else stays a keyword, so a
-  // bare word like `slow` is searched for rather than read as a field.
+  // bare word like `slow` is searched for rather than read as a field. Chips
+  // beside the text keep the rows that are failing, dropped, changed by a step
+  // or hold a field, each on top of the text and of each other.
 
-  let paneTab = $state<'output' | 'dictionary'>('output');
-  /** The record the steps write, from the last run that compiled: with no sample, a run that
-   * read no records. */
-  let dictionary = $derived(
-    (result?.ok ? result.dictionary : undefined) ?? lastGoodResult?.dictionary,
+  type FindChip = { kind: 'failing' | 'dropped' | 'changed' } | { kind: 'has'; path: string };
+  let chips = $state<FindChip[]>([]);
+  const chipKey = (c: FindChip) => (c.kind === 'has' ? `has ${c.path}` : c.kind);
+
+  function addChip(c: FindChip) {
+    if (!chips.some((x) => chipKey(x) === chipKey(c))) chips = [...chips, c];
+  }
+
+  function toggleChip(c: FindChip) {
+    if (chips.some((x) => chipKey(x) === chipKey(c)))
+      chips = chips.filter((x) => chipKey(x) !== chipKey(c));
+    else chips = [...chips, c];
+  }
+
+  // Whether a step changed a row, kept per run: it diffs every field of the
+  // row, so it is asked only of rows a chip or a count needs.
+  let changedRows = $derived.by(() => {
+    void rowsMaps;
+    return new Map<number, boolean>();
+  });
+  function rowChanged(i: number): boolean {
+    let known = changedRows.get(i);
+    if (known === undefined) {
+      const m = rowsMaps[i];
+      known = pathsOf([m.before, m.after]).some(
+        (p) => fieldAt(m.before, m.after, p)!.state !== 'unchanged',
+      );
+      changedRows.set(i, known);
+    }
+    return known;
+  }
+
+  function chipKeeps(c: FindChip, i: number): boolean {
+    if (c.kind === 'has') return rowsMaps[i].after.has(c.path);
+    const row = lastGoodResult!.rows[i];
+    if (c.kind === 'failing') return row.exceptions.length > 0;
+    if (c.kind === 'dropped') return row.json === null;
+    return rowChanged(i);
+  }
+
+  let failingCount = $derived(
+    (lastGoodResult?.rows ?? []).filter((r) => r.exceptions.length > 0).length,
   );
+
+  const CHIP_LABELS = {
+    failing: '⚠ Failing',
+    dropped: '⌫ Dropped',
+    changed: '~ Changed by a step',
+  } as const;
+
+  // What the find box offers: the kinds of row a chip keeps, with how many there are, and the
+  // expressions this pipeline was last filtered by, each narrowed to what is typed.
+  type FindItem =
+    | { kind: keyof typeof CHIP_LABELS; count: number; section?: undefined }
+    | { kind: 'recent'; expression: string; section: string };
+  let findItems = $derived.by((): FindItem[] => {
+    const rows = lastGoodResult?.rows ?? [];
+    const q = outputQuery.trim().toLowerCase();
+    const counts = {
+      failing: () => failingCount,
+      dropped: () => rows.filter((r) => r.json === null).length,
+      changed: () => rows.filter((_, i) => rowChanged(i)).length,
+    };
+    const kinds = (Object.keys(CHIP_LABELS) as (keyof typeof CHIP_LABELS)[])
+      .filter((kind) => !chips.some((c) => c.kind === kind))
+      .filter((kind) => CHIP_LABELS[kind].toLowerCase().includes(q))
+      .map((kind) => ({ kind, count: counts[kind]() }))
+      .filter((k) => k.count > 0);
+    const recent = recentExpressions
+      .filter((e) => e !== outputQuery.trim() && e.toLowerCase().includes(q))
+      .map((expression) => ({ kind: 'recent' as const, expression, section: 'Recent' }));
+    return [...kinds, ...recent];
+  });
+
+  function pickFind(item: FindItem): boolean {
+    if (item.kind === 'recent') outputQuery = item.expression;
+    else addChip({ kind: item.kind });
+    return true;
+  }
+
+  const RECENT_EXPRESSIONS = 5;
+  const expressionsKey = (pipeline: string) => `smeltr-workspace-expressions:${pipeline}`;
+  let recentExpressions = $state<string[]>([]);
+  $effect(() => {
+    const key = expressionsKey(pipelineId);
+    untrack(() => {
+      try {
+        recentExpressions = JSON.parse(window.localStorage.getItem(key) ?? '[]') as string[];
+      } catch {
+        recentExpressions = [];
+      }
+    });
+  });
+
+  /** Keeps the expression the rows are filtered by, once the box is left with it. */
+  function rememberExpression() {
+    const q = outputQuery.trim();
+    if (!q || expressionRows === null) return;
+    recentExpressions = [q, ...recentExpressions.filter((e) => e !== q)].slice(
+      0,
+      RECENT_EXPRESSIONS,
+    );
+    try {
+      window.localStorage.setItem(expressionsKey(pipelineId), JSON.stringify(recentExpressions));
+    } catch {
+      // Storage refused: they last as long as the page.
+    }
+  }
+
   let outputQuery = $state('');
   /** The row numbers the expression kept, or null while the search is a keyword. */
   let expressionRows = $state<Set<number> | null>(null);
@@ -1358,10 +1518,11 @@
   });
 
   function matches(i: number): boolean {
-    const q = outputQuery.trim().toLowerCase();
-    if (!q) return true;
     const row = lastGoodResult?.rows[i];
     if (!row) return false;
+    if (!chips.every((c) => chipKeeps(c, i))) return false;
+    const q = outputQuery.trim().toLowerCase();
+    if (!q) return true;
     if (expressionRows) return expressionRows.has(row.row);
     const m = rowsMaps[i];
     return columns.some(
@@ -1540,14 +1701,7 @@
 
           {#if selectedSample}
             <div class="sample-line">
-              <button
-                type="button"
-                class="compact"
-                onclick={() => {
-                  chooseSample('');
-                  paneTab = 'output';
-                }}>← Back</button
-              >
+              <button type="button" class="compact" onclick={() => chooseSample('')}>← Back</button>
               <span class="dim">Sample</span>
               <strong>{selectedSampleName}</strong>
               {#if lastGoodResult && lastSample === selectedSample}
@@ -1555,25 +1709,6 @@
               {/if}
             </div>
           {/if}
-
-          <div class="subtabs" role="tablist" aria-label="Output">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={paneTab === 'output'}
-              onclick={() => (paneTab = 'output')}
-              >Output{#if selectedSample && lastGoodResult}
-                <span class="pill">{lastGoodResult.rows.length}</span>{/if}</button
-            >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={paneTab === 'dictionary'}
-              onclick={() => (paneTab = 'dictionary')}
-              >Data dictionary{#if dictionary}
-                <span class="pill">{dictionary.compiled.fields.length}</span>{/if}</button
-            >
-          </div>
 
           {#if result && !result.ok}
             <!-- Above the grid, not instead of it: a syntax slip mid-edit
@@ -1602,53 +1737,23 @@
             {/if}
           {/if}
 
-          <div role="tabpanel" class="records">
-            {#if paneTab === 'dictionary'}
+          <div class="records">
+            {#if !selectedSample}
               {#if dictionary}
-                {@const d = dictionary}
-                {@const dict = includeSampled && d.sampled ? d.sampled : d.compiled}
-                <div class="dictionary">
-                  <div class="run-row">
-                    {#if d.sampled}<label class="inline-checkbox">
-                        <Toggle
-                          bind:checked={includeSampled}
-                          ariaLabel="include fields seen in the sample"
-                        />
-                        <span class="field-name">include fields seen in the sample</span>
-                      </label>{/if}
-                    <span class="grow"></span>
-                    <button type="button" onclick={() => copyMapping(dict.elasticsearch)}>
-                      {copiedMapping ? 'Copied' : 'Copy as Elasticsearch mapping'}
-                    </button>
-                    <Help label="Elasticsearch mapping">
-                      The mapping leaves out a <code>variant</code> field. Give the field a type to include
-                      it.
-                    </Help>
-                  </div>
-                  <table class="proposal-table">
-                    <thead>
-                      <tr>
-                        <th aria-sort={dictionarySort.aria('field')}
-                          ><SortButton sort={dictionarySort} key="field">Field</SortButton></th
-                        >
-                        <th aria-sort={dictionarySort.aria('type')}
-                          ><SortButton sort={dictionarySort} key="type">Type</SortButton></th
-                        >
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {#each sortDictionary(dict.fields) as [name, type]}
-                        <tr><td class="mono">{name}</td><td class="mono">{type}</td></tr>
-                      {/each}
-                    </tbody>
-                  </table>
-                  <details>
-                    <summary>Elasticsearch mapping</summary>
-                    <pre class="mono">{JSON.stringify(dict.elasticsearch, null, 2)}</pre>
-                  </details>
+                <!-- No records to count, but the steps compiled: what they declare. -->
+                <div class="output-search">
+                  <span class="grow"></span>
+                  <FieldsMenu
+                    fields={menuFields}
+                    records={null}
+                    shown={isShown}
+                    {dictionary}
+                    onshow={showFields}
+                    ondefault={() => toggledColumns.clear()}
+                    onhas={() => {}}
+                  />
                 </div>
               {/if}
-            {:else if !selectedSample}
               {#if samples.length === 0}
                 <p class="dim">
                   No samples yet. Capture one, or paste or upload records on the
@@ -1677,24 +1782,65 @@
 
               {#if lastGoodResult && lastGoodResult.rows.length > 0}
                 <div class="output-search">
-                  <label class="search"
-                    ><span aria-hidden="true">⌕</span><input
-                      type="search"
-                      class:mono={expressionRows !== null}
-                      bind:value={outputQuery}
-                      placeholder="Search the output, or filter with an expression such as status >= 500"
-                      aria-label="Search the output"
-                    />{#if outputQuery.trim()}<span
-                        class="mode"
-                        class:expression={expressionRows !== null}
-                        >{expressionRows !== null ? 'ƒ expression' : 'keyword'}</span
-                      >{/if}</label
+                  <SearchBox
+                    bind:query={outputQuery}
+                    items={findItems}
+                    onpick={pickFind}
+                    onleave={rememberExpression}
+                    id="find"
+                    label="Search the output"
+                    placeholder="Search the output, or filter with an expression such as status >= 500"
+                    mono={expressionRows !== null}
                   >
-                  {#if outputQuery.trim()}
+                    {#snippet before()}<span aria-hidden="true">⌕</span
+                      >{#each chips as c (chipKey(c))}<span class="find-chip"
+                          >{c.kind === 'has' ? `has ${c.path}` : CHIP_LABELS[c.kind]}<button
+                            type="button"
+                            aria-label={`remove ${chipKey(c)}`}
+                            onclick={() => toggleChip(c)}>✕</button
+                          ></span
+                        >{/each}{/snippet}
+                    {#snippet after()}{#if outputQuery.trim()}<span
+                          class="mode"
+                          class:expression={expressionRows !== null}
+                          >{expressionRows !== null ? 'ƒ expression' : 'keyword'}</span
+                        >{/if}{/snippet}
+                    {#snippet option(item)}
+                      {#if item.kind === 'recent'}
+                        <code>{item.expression}</code>
+                      {:else}
+                        <span>{CHIP_LABELS[item.kind]}</span>
+                        <span></span>
+                        <span class="dim">{item.count}</span>
+                      {/if}
+                    {/snippet}
+                  </SearchBox>
+                  {#if outputQuery.trim() || chips.length > 0}
                     <span class="dim count"
                       >{gridOrder.length} of {lastGoodResult.rows.length} rows</span
                     >
                   {/if}
+                  {#if failingCount > 0}
+                    <button
+                      type="button"
+                      class="failing"
+                      aria-pressed={chips.some((c) => c.kind === 'failing')}
+                      onclick={() => toggleChip({ kind: 'failing' })}
+                      >⚠ {failingCount} failing</button
+                    >
+                  {/if}
+                  <FieldsMenu
+                    fields={menuFields}
+                    records={lastGoodResult.rows.length}
+                    shown={isShown}
+                    {dictionary}
+                    onshow={showFields}
+                    ondefault={() => toggledColumns.clear()}
+                    onhas={(path) => {
+                      showFields([path], true);
+                      addChip({ kind: 'has', path });
+                    }}
+                  />
                 </div>
               {/if}
               <div class="output-actions">
@@ -1710,45 +1856,7 @@
                 <button type="button" onclick={() => (showTypes = !showTypes)}>
                   {showTypes ? 'Hide types' : 'Show types'}
                 </button>
-                {#if allColumns.length > 0}
-                  <ChipPicker
-                    kind="columns"
-                    align="left"
-                    bind:open={columnsOpen}
-                    ariaLabel="Choose columns"
-                  >
-                    {#snippet face()}
-                      Columns{#if columns.length < allColumns.length}
-                        <span class="dim">{columns.length} of {allColumns.length}</span>
-                      {/if}
-                    {/snippet}
-                    {#snippet children()}
-                      <div class="column-list">
-                        {#each allColumns as path (path)}
-                          {@const name = splitPath(path)}
-                          {@const shown = isShown(path)}
-                          <button
-                            type="button"
-                            class="pick"
-                            class:on={shown}
-                            aria-pressed={shown}
-                            onclick={() => toggleColumn(path)}
-                          >
-                            <span class="tick">{shown ? '✓' : ''}</span>
-                            <span class="mono"
-                              ><span class="path-prefix">{name.prefix}</span>{name.leaf}</span
-                            >
-                          </button>
-                        {/each}
-                      </div>
-                      {#if columns.length < allColumns.length}
-                        <button type="button" class="pick show-all" onclick={showAllColumns}>
-                          Show all {allColumns.length}
-                        </button>
-                      {/if}
-                    {/snippet}
-                  </ChipPicker>
-                {/if}
+
                 <span class="grow"></span>
                 {#if !readOnly}
                   <button
@@ -1935,11 +2043,6 @@
     color: var(--dim);
   }
 
-  code {
-    font-family: var(--mono);
-    font-size: 0.9em;
-  }
-
   .head {
     display: flex;
     align-items: center;
@@ -2095,10 +2198,6 @@
     margin: 0 0 0.35rem;
   }
 
-  .right-col label {
-    margin-top: 0;
-  }
-
   /* The label register: the field's name, weight 600. */
   .field-name {
     display: flex;
@@ -2115,68 +2214,11 @@
   }
 
   /* ChangeDetailPage's tabs. */
-  .subtabs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1.2rem;
-    margin: 0 0 0.9rem;
-    border-bottom: 1px solid var(--border);
-  }
-  .subtabs button {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    background: none;
-    padding: 0.35rem 0;
-    border-width: 0 0 3px;
-    border-radius: 0;
-    border-color: transparent;
-    color: var(--dim);
-    font-size: var(--text-body);
-  }
-  .subtabs button[aria-selected='true'] {
-    color: var(--ink);
-    font-weight: 600;
-    border-color: var(--accent);
-  }
-  .pill {
-    padding: 0 0.4rem;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--panel);
-    color: var(--dim);
-    font-size: var(--text-micro);
-    font-weight: 500;
-  }
 
   .output-search {
     display: flex;
     align-items: center;
     gap: 0.7rem;
-  }
-  /* ClusterPage's worker search. */
-  .search {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex: 1;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 0 0.7rem;
-    color: var(--dim);
-    font-weight: 400;
-  }
-  .search input {
-    width: 100%;
-    border: 0;
-    outline: 0;
-    background: transparent;
-    color: var(--ink);
-    font: inherit;
-    padding: 1px 2px;
-  }
-  .search input.mono {
-    font-family: var(--mono);
   }
   .mode {
     flex: none;
@@ -2197,30 +2239,39 @@
     white-space: nowrap;
   }
 
-  .proposal-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--text-label);
+  .find-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex: none;
+    padding: 0 0.2rem 0 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--ink);
+    font-size: var(--text-note);
+    white-space: nowrap;
   }
 
-  .proposal-table th,
-  .proposal-table td {
-    text-align: left;
-    padding: 0.35rem 0.5rem;
-    border-bottom: 1px solid var(--border);
-    vertical-align: top;
-  }
-
-  .proposal-table th {
+  .find-chip button {
+    border: none;
+    background: none;
+    padding: 0 0.2rem;
+    font: inherit;
     color: var(--dim);
-    font-weight: 700;
-    font-size: var(--text-micro);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    cursor: pointer;
   }
 
-  .proposal-table tbody tr:last-child td {
-    border-bottom: 0;
+  /* The failing rows are what to read first, so their count stands out until read. */
+  .failing {
+    flex: none;
+    border-color: var(--error);
+    color: var(--error);
+    font-weight: 600;
+  }
+
+  .failing[aria-pressed='true'] {
+    background: color-mix(in srgb, var(--error) 12%, transparent);
   }
 
   .add-small {
@@ -2537,21 +2588,6 @@
 
   /* A wide record has a column per field, so the list scrolls rather than
      running off the bottom of the window. */
-  .column-list {
-    max-height: 18rem;
-    overflow-y: auto;
-  }
-
-  .tick {
-    width: 0.7rem;
-    flex-shrink: 0;
-    color: var(--dim);
-  }
-
-  .show-all {
-    border-top: 1px solid var(--border);
-    color: var(--ink);
-  }
 
   .state-added {
     color: var(--added);
