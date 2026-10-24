@@ -3,7 +3,8 @@
 
 import { getContext, setContext } from 'svelte';
 import { tokenize, type Token } from '../../website/src/lib/highlight/highlight';
-import { RECORD_FIELDS, SIGNATURES } from '../../website/src/lib/reference';
+import reference from '../../website/src/lib/reference.json';
+import signatures from '../../website/src/lib/signatures.json';
 import { keySpans } from './names';
 
 /** Each field of a record by its name, as names spell it (`url.path`, `labels["a.b"]`), with its type as the engine
@@ -11,9 +12,9 @@ import { keySpans } from './names';
 export type FieldTypes = readonly (readonly [string, string])[];
 
 /** The fields every source sets on its record (`_raw`, `__source.*`). */
-export const SOURCE_FIELDS: FieldTypes = RECORD_FIELDS.filter((f) => f.setBy === 'source').map(
-  (f) => [f.name, f.type] as const,
-);
+export const SOURCE_FIELDS: FieldTypes = reference.recordFields
+  .filter((f) => f.setBy === 'source')
+  .map((f) => [f.name, f.type] as const);
 
 /** The lists as one, a later list's type winning for a field two lists name. */
 export function mergeFields(...lists: (FieldTypes | null | undefined)[]): FieldTypes {
@@ -191,6 +192,9 @@ export function memberBefore(
   }
   return { kind: 'unknown' };
 }
+
+/** Each function's typed rows, as the engine's table spells them (`just signatures`). */
+const SIGNATURES: Record<string, { params: string; result: string }[]> = signatures;
 
 const SPELLED = /^(str|i64|f64|bool|bytes|datetime|duration|array<.+>)$/;
 

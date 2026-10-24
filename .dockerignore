@@ -11,6 +11,7 @@ website
 !website/src/lib/foundry
 !website/src/lib/reference.json
 !website/src/lib/code-language.json
+!website/src/lib/signatures.json
 
 # This build's own output. Sending it back as context would grow with every build.
 handoff

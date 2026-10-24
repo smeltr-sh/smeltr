@@ -11,7 +11,7 @@ COPY gui-frontend/ ./
 # and controls are the website's too.
 COPY website/src/lib/highlight/ /src/website/src/lib/highlight/
 COPY website/src/lib/foundry/ /src/website/src/lib/foundry/
-COPY website/src/lib/reference.json website/src/lib/code-language.json /src/website/src/lib/
+COPY website/src/lib/reference.json website/src/lib/code-language.json website/src/lib/signatures.json /src/website/src/lib/
 RUN npm run build
 
 # ---- builder: the `smeltr` binary ------------------------------------------------------------------------------
