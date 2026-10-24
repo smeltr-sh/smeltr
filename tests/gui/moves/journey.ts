@@ -1396,10 +1396,10 @@ const pasteSample: Move = {
     await page.getByRole('button', { name: 'Add sample' }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Paste' }).click();
     // Found by what it holds: a branch prompt can open beside it.
-    const dialog = page.getByRole('dialog').filter({ has: page.getByLabel('Records') });
+    const dialog = page.getByRole('dialog').filter({ has: page.getByLabel(/^Records/) });
     await dialog.getByLabel('Name').fill(name);
     await dialog
-      .getByLabel('Records')
+      .getByLabel(/^Records/)
       .fill(
         Array.from({ length: records }, (_, i) => JSON.stringify({ id: i, total: i * 10 })).join(
           '\n',
@@ -1655,7 +1655,7 @@ const enrollInGroup: Move = {
     await openWorkersTab(page, 'Enrollment codes');
     await page.getByRole('button', { name: '+ Add enrollment code' }).click();
     const mint = page.getByRole('dialog', { name: 'new enrollment code' });
-    await mint.getByLabel('Group').selectOption({ label: group.replace('group-', 'Group ') });
+    await mint.getByLabel(/^Group/).selectOption({ label: group.replace('group-', 'Group ') });
     await mint.getByRole('button', { name: 'Mint' }).click();
     const lines = await page
       .locator('pre')
