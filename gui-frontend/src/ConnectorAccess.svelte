@@ -1,11 +1,12 @@
 <!--
-  How a client reaches an object store and signs in to it, per store: the
+  How a connector reaches a service and signs in to it, per kind: the
   credential, and the fields that say where and as whom. The object store
   destinations and the object sources (SQS/S3 and S3 as `s3`,
   Queue/Azure Blob and Azure Blob as `azureBlob`, Pub/Sub/GCS and
   GCS as `gcs`, SFTP as `sftp`), the Iceberg destination's storage
-  (`iceberg`), the Event Hubs source and destination (`eventHubs`) and the
-  Log Analytics destination (`logAnalytics`) draw the same block, so a config's access reads alike wherever it is written.
+  (`iceberg`), the Event Hubs source and destination (`eventHubs`), the
+  Log Analytics destination (`logAnalytics`) and the Elasticsearch destination
+  (`elasticsearch`) draw the same block, so a config's access reads alike wherever it is written.
 
   Mutates `value` in place, as `KafkaSecurity` does; the page's Save commits.
   `show` picks the half: the credential, which every form shows, or the rest,

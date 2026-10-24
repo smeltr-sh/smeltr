@@ -4,7 +4,7 @@
 // same thing earlier, in the field that caused it.
 
 import type { DestinationDto } from './api';
-import { accessModified } from './ObjectStoreAccess.svelte';
+import { accessModified } from './ConnectorAccess.svelte';
 
 export type DeltaDestination = Extract<DestinationDto, { type: 'delta' }>;
 

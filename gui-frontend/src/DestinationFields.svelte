@@ -7,7 +7,7 @@
   import KafkaSecurity from './KafkaSecurity.svelte';
   import { brokersWarning, SECTION_PROPS } from './kafka';
   import SecretRefInput from './SecretRefInput.svelte';
-  import ObjectStoreAccess, { accessModified } from './ObjectStoreAccess.svelte';
+  import ConnectorAccess, { accessModified } from './ConnectorAccess.svelte';
   import Advanced from './Advanced.svelte';
   import Help from './Help.svelte';
   import Field from './Field.svelte';
@@ -266,7 +266,7 @@
       {/snippet}
       <input type="text" bind:value={destination.defaultEventHub} />
     </Field>
-    <ObjectStoreAccess
+    <ConnectorAccess
       store="eventHubs"
       value={destination}
       show="credential"
@@ -283,7 +283,7 @@
       STREAM_LABELS,
     )}
     <Advanced label="Delivery" modified={eventHubsModified(destination)}>
-      <ObjectStoreAccess store="eventHubs" value={destination} show="advanced" />
+      <ConnectorAccess store="eventHubs" value={destination} show="advanced" />
       <Field field="compression" label="compression">
         {#snippet help()}
           Compresses each batch sent to Event Hubs, when the namespace takes gzip.
@@ -358,7 +358,7 @@
       {/snippet}
       <input type="text" bind:value={l.stream} placeholder="Custom-Events_CL" />
     </Field>
-    <ObjectStoreAccess store="logAnalytics" value={l} show="credential" {secrets} />
+    <ConnectorAccess store="logAnalytics" value={l} show="credential" {secrets} />
     <Advanced label="Advanced" modified={logAnalyticsModified(l)}>
       <IdentityPicker
         value={l.identity}
@@ -366,7 +366,7 @@
         farEnd="destination"
         onchange={(v) => (l.identity = v)}
       />
-      <ObjectStoreAccess store="logAnalytics" value={l} show="advanced" />
+      <ConnectorAccess store="logAnalytics" value={l} show="advanced" />
       <RequestDelivery value={l} sizeDefault={LIMITS.logAnalyticsRequestBytes.default}>
         {#snippet sizeHelp()}
           A request is sent as soon as it reaches this size. Keep it under the largest body the
@@ -396,7 +396,7 @@
         if (destination.type === 'elasticsearch') destination.identity = v;
       }}
     />
-    <ObjectStoreAccess store="elasticsearch" value={destination} show="credential" {secrets} />
+    <ConnectorAccess store="elasticsearch" value={destination} show="credential" {secrets} />
     <Field field="docId" label="duplicate documents">
       {#snippet help()}
         After a crash a document can be sent twice. Under <code>auto</code> that is a second copy;
@@ -784,7 +784,7 @@
         <input type="text" bind:value={o.container} />
       </Field>
     {:else if o.type === 'sftp'}
-      <ObjectStoreAccess store={o.type} value={o} show="credential" {secrets} />
+      <ConnectorAccess store={o.type} value={o} show="credential" {secrets} />
       <Field field="directory" label="directory">
         {#snippet help()}
           The directory it writes into: absolute, or under the user's home directory. Empty is the
@@ -805,7 +805,7 @@
       </Field>
     {/if}
     {#if o.type !== 'sftp'}
-      <ObjectStoreAccess store={o.type} value={o} show="credential" {secrets} />
+      <ConnectorAccess store={o.type} value={o} show="credential" {secrets} />
     {/if}
     <Field field="prefix" label="prefix">
       {#snippet help()}
@@ -861,7 +861,7 @@
       label={o.type === 'sftp' ? 'Delivery' : 'Endpoint and delivery'}
       modified={objectModified(o)}
     >
-      <ObjectStoreAccess store={o.type} value={o} show="advanced" />
+      <ConnectorAccess store={o.type} value={o} show="advanced" />
       {#if o.type === 's3'}
         <Field field="kmsKeyId" label="KMS key id">
           {#snippet help()}

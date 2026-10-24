@@ -6,7 +6,7 @@ import {
   setCredential,
   setField,
   shown,
-} from './ObjectStoreAccess.svelte';
+} from './ConnectorAccess.svelte';
 
 const azure = () => ({ id: 'a', type: 'azureBlob', account: 'acct', container: 'logs' });
 const sqs = (): Extract<SourceDto, { type: 's3Sqs' }> => ({
