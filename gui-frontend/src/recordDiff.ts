@@ -75,30 +75,52 @@ function leaves(value: unknown, prefix: string, into: Map<string, unknown>): voi
   }
 }
 
+/** A record's leaves by path: what the grid reads a cell from without diffing
+ * the record. */
+export function leafMap(record: unknown): Map<string, unknown> {
+  const into = new Map<string, unknown>();
+  leaves(record, '', into);
+  return into;
+}
+
+/** Every path any of `maps` has, alphabetically -- which lands siblings
+ * together for free, and keeps a column where it was last time, since the
+ * order a pipeline declares its fields in moves as its steps are edited. */
+export function pathsOf(maps: Iterable<Map<string, unknown>>): string[] {
+  const paths = new Set<string>();
+  for (const m of maps) for (const p of m.keys()) paths.add(p);
+  return [...paths].sort();
+}
+
+/** Whether two values draw the same. Most are the same scalar, which `===`
+ * settles without serializing either. */
+export function sameValue(a: unknown, b: unknown): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** One field, before and after a step, from each side's `leafMap`; undefined
+ * where neither side has it. */
+export function fieldAt(
+  before: Map<string, unknown>,
+  after: Map<string, unknown>,
+  path: string,
+): FieldLeaf | undefined {
+  const inB = before.has(path);
+  const inA = after.has(path);
+  if (!inA && !inB) return undefined;
+  if (!inA) return { path, state: 'removed', before: before.get(path) };
+  if (!inB) return { path, state: 'added', after: after.get(path) };
+  const bv = before.get(path);
+  const av = after.get(path);
+  return { path, state: sameValue(bv, av) ? 'unchanged' : 'changed', before: bv, after: av };
+}
+
 /** Every leaf path either side has, in path order, each said to be added,
  * removed, changed or untouched. */
 export function diffRecords(before: unknown, after: unknown): FieldLeaf[] {
-  const b = new Map<string, unknown>();
-  const a = new Map<string, unknown>();
-  leaves(before, '', b);
-  leaves(after, '', a);
-
-  const paths = [...new Set([...b.keys(), ...a.keys()])].sort();
-  return paths.map((path) => {
-    const inB = b.has(path);
-    const inA = a.has(path);
-    if (!inA) return { path, state: 'removed' as const, before: b.get(path) };
-    if (!inB) return { path, state: 'added' as const, after: a.get(path) };
-    const bv = b.get(path);
-    const av = a.get(path);
-    const same = JSON.stringify(bv) === JSON.stringify(av);
-    return {
-      path,
-      state: same ? ('unchanged' as const) : ('changed' as const),
-      before: bv,
-      after: av,
-    };
-  });
+  const b = leafMap(before);
+  const a = leafMap(after);
+  return pathsOf([b, a]).map((path) => fieldAt(b, a, path)!);
 }
 
 /** A type a pipeline declares, as the data dictionary spells it
@@ -310,7 +332,7 @@ function node(
       ? 'removed'
       : !b.has
         ? 'added'
-        : JSON.stringify(b.value) === JSON.stringify(a.value)
+        : sameValue(b.value, a.value)
           ? 'unchanged'
           : 'changed';
     if (state !== 'unchanged') marks[state]++;
@@ -345,6 +367,49 @@ function node(
     lines += c.lines;
   }
   return { key, path, kind, type, children, marks, lines };
+}
+
+/** Whether nothing of `n` is left after the step. */
+function gone(n: DiffNode): boolean {
+  return n.kind === 'leaf' ? n.leaf!.state === 'removed' : n.children.every(gone);
+}
+
+/** The tree with what the step removed lifted out of its structs, and what was
+ * lifted, a removed struct whole. A rename reads as its new name alone, and
+ * the old names wait on one line. An array keeps what it lost, since its
+ * elements say where in it they were. */
+export function withoutRemoved(root: DiffNode): { tree: DiffNode; removed: DiffNode[] } {
+  const removed: DiffNode[] = [];
+  const prune = (n: DiffNode): DiffNode => {
+    if (n.kind !== 'struct') return n;
+    const children: DiffNode[] = [];
+    for (const c of n.children) {
+      if (gone(c)) removed.push(c);
+      else children.push(prune(c));
+    }
+    const marks = { added: 0, changed: 0, removed: 0 };
+    let lines = 1;
+    for (const c of children) {
+      marks.added += c.marks.added;
+      marks.changed += c.marks.changed;
+      marks.removed += c.marks.removed;
+      lines += c.lines;
+    }
+    return { ...n, children, marks, lines };
+  };
+  return { tree: prune(root), removed };
+}
+
+/** Each leaf of `nodes`, by its whole path. */
+export function leafLines(nodes: DiffNode[]): RecordLine[] {
+  const out: RecordLine[] = [];
+  const walk = (n: DiffNode) => {
+    if (n.kind === 'leaf')
+      out.push({ ...n.leaf!, kind: 'field', depth: 0, label: n.path, type: n.type });
+    else n.children.forEach(walk);
+  };
+  nodes.forEach(walk);
+  return out;
 }
 
 /** About how many lines a page draws: a record opened, a struct or an array
@@ -460,41 +525,6 @@ export function changeFitsInline(
   return formatDiffValue(before).length + formatDiffValue(after).length + 3 <= budget;
 }
 
-/** A value drawn whole, or clamped with a control to open it. A raw line runs
- * to a thousand characters and would otherwise be the whole record, while
- * still being the thing a reader most often wants to look at. */
-export const CLAMP_BUDGET_CHARS = 110;
-
-export function valueFitsUnclamped(value: unknown, budget: number = CLAMP_BUDGET_CHARS): boolean {
-  return formatDiffValue(value).length <= budget;
-}
-
-/** A column of the folded view: one field, across every row. */
-export interface Column {
-  path: string;
-  /** What the step did to this field, when it did the same to every row that
-   * has it. Null where the rows disagree, which is not a fact about the field. */
-  state: FieldState | null;
-}
-
-/** Every field any row has, alphabetically -- which lands siblings together
- * for free, and keeps a column where it was last time, since the order a
- * pipeline declares its fields in moves as its steps are edited. */
-export function columnsFor(rows: FieldLeaf[][]): Column[] {
-  const states = new Map<string, Set<FieldState>>();
-  for (const row of rows) {
-    for (const field of row) {
-      const seen = states.get(field.path);
-      if (seen) seen.add(field.state);
-      else states.set(field.path, new Set([field.state]));
-    }
-  }
-  return [...states.keys()].sort().map((path) => {
-    const seen = states.get(path) as Set<FieldState>;
-    return { path, state: seen.size === 1 ? [...seen][0] : null };
-  });
-}
-
 /** A path split where a reader's eye should land: everything before the
  * last key carries the nesting and recedes, the last key is the field, as
  * the path spells it (`labels` and `["app.kubernetes.io/name"]`). */
@@ -502,12 +532,6 @@ export function splitPath(path: string): { prefix: string; leaf: string } {
   const spans = keySpans(path);
   const cut = spans.length === 0 ? 0 : spans[spans.length - 1].start;
   return { prefix: path.slice(0, cut), leaf: path.slice(cut) };
-}
-
-/** The value a folded row shows in one column: what the field became, or what
- * it was if the step took it away. */
-export function cellOf(row: FieldLeaf[], path: string): FieldLeaf | undefined {
-  return row.find((f) => f.path === path);
 }
 
 /** What a record's marks add up to, for the header of its block. */

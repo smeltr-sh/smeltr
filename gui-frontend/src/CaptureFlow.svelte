@@ -319,6 +319,7 @@
           bind:value={filter}
           placeholder={filterPlaceholder(at)}
           autocomplete="condition"
+          wrap
         />
       </Field>
       <Field label="At most" group>
