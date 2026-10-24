@@ -30,7 +30,9 @@
   const chosen = $derived(identities.find((i) => i.id === value));
 </script>
 
-<Field field="identity" label="identity">
+{#snippet edit()}<a href="#/build/identities">edit</a>{/snippet}
+
+<Field field="identity" label="identity" note={chosen && linked ? edit : undefined}>
   {#snippet help()}
     {#if farEnd === 'sender'}
       The certificate and key it serves TLS with. If the identity has authorities, every sender must
@@ -40,13 +42,6 @@
       Pick one when the {farEnd} requires a client certificate, or its own certificate comes from your
       organization's authority rather than a public one. None: no certificate, and the platform's public
       roots.
-    {/if}
-  {/snippet}
-  {#snippet note()}
-    {#if chosen && linked}
-      <a href="#/build/identities">edit</a>
-    {:else}
-      Default none.
     {/if}
   {/snippet}
   <select
