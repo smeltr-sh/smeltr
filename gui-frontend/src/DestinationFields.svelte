@@ -398,8 +398,7 @@
     />
     <Field field="auth" label="auth">
       {#snippet help()}
-        The secret holding the whole Authorization header value, <code>ApiKey &lt;base64&gt;</code>
-        or <code>Basic &lt;base64&gt;</code>.
+        The secret holding the API key.
       {/snippet}
       <SecretRefInput
         value={destination.auth}

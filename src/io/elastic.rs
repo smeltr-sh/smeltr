@@ -329,10 +329,36 @@ impl Protocol for Elastic {
     }
 }
 
+/// The `Authorization` header value the destination's credential stands for: the credential as it is when it names
+/// its scheme (`ApiKey <base64>`, `Basic <base64>`), and `ApiKey <credential>` when it is the bare key Elasticsearch
+/// hands out.
+pub fn authorization(credential: String) -> String {
+    if credential.contains(' ') {
+        credential
+    } else {
+        format!("ApiKey {credential}")
+    }
+}
+
 /// A transport to the cluster at `url`, e.g. `https://es.internal:9200`. `auth` is a complete `Authorization` header
-/// value (`ApiKey <base64>` or `Basic <base64>`), or `None` for a cluster with security disabled.
+/// value (`authorization`), or `None` for a cluster with security disabled.
 pub fn transport(url: &str, auth: Option<String>, config: &ureq::config::Config) -> HttpTransport {
     let headers = auth.map(|a| ("Authorization".to_string(), a)).into_iter().collect();
     // The Bulk API rejects `application/json`.
     HttpTransport::new(url, "application/x-ndjson", headers, config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bare_key_is_sent_as_an_api_key_and_a_named_scheme_as_it_is() {
+        assert_eq!(
+            authorization("VnVhQ2ZHY0JDZGJrUW0tZTVhT3g6dWkybHAyYXhUTm1zeWFrdzl0dk5udw==".into()),
+            "ApiKey VnVhQ2ZHY0JDZGJrUW0tZTVhT3g6dWkybHAyYXhUTm1zeWFrdzl0dk5udw=="
+        );
+        assert_eq!(authorization("ApiKey abc".into()), "ApiKey abc");
+        assert_eq!(authorization("Basic dXNlcjpwYXNz".into()), "Basic dXNlcjpwYXNz");
+    }
 }

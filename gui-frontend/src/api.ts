@@ -4763,6 +4763,8 @@ export interface RotationDto {
   /** When this leader signs under `incoming` on its own, whether or not the
    * fleet has taken it by then. */
   deadlineMillis: number;
+  /** The latest `deadlineMillis` can move to. */
+  latestDeadlineMillis: number;
   /** What the cutover puts in force: another authority of the leader's own,
    * an uploaded certificate, or the leader's own again. */
   installs: 'nextKey' | 'supplied' | 'own';
@@ -4771,6 +4773,8 @@ export interface RotationDto {
   /** Workers that verify this leader by an authority their operator gave
    * them, and so take none from it. The cutover does not wait for them. */
   notFollowing: string[];
+  /** Each worker the cutover waits for, and whether it holds `incoming` yet. */
+  workers: { id: string; holdsIncoming: boolean }[];
 }
 
 export interface CertificatesDto {
@@ -4804,11 +4808,10 @@ export const AUTHORITY_URL = '/api/authority';
 export function putCertificate(
   certificate: string,
   privateKey: string,
-  authority: string,
 ): Promise<CertificatesDto | AccountRefusal> {
   return accountCall('/api/settings/certificates', {
     method: 'PUT',
-    body: JSON.stringify({ certificate, privateKey, authority }),
+    body: JSON.stringify({ certificate, privateKey }),
   });
 }
 
@@ -4849,6 +4852,16 @@ export function beginRotation(
 export function cutOverRotation(): Promise<CertificatesDto | AccountRefusal> {
   return accountCall('/api/settings/certificates/rotation/cutover', {
     method: 'POST',
+  });
+}
+
+/** Moves when the open rotation cuts over without the fleet. */
+export function setRotationDeadline(
+  deadlineMillis: number,
+): Promise<CertificatesDto | AccountRefusal> {
+  return accountCall('/api/settings/certificates/rotation/deadline', {
+    method: 'PUT',
+    body: JSON.stringify({ deadlineMillis }),
   });
 }
 

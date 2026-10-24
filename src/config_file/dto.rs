@@ -1416,7 +1416,7 @@ pub enum DestinationKindDto {
         /// own roots -- which an internally-issued server certificate will not be under.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         identity: Option<String>,
-        /// The credential holding the `Authorization` header value, never the value itself.
+        /// The credential holding the API key or a whole `Authorization` header value, never the value itself.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         auth: Option<SecretRefDto>,
         /// `"auto"` (default), `"dedupe"`, or `"overwrite"`; see `plan::topology::DocIdPolicy`.

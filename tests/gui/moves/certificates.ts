@@ -8,6 +8,11 @@ import { openAdmin } from './admin';
 
 export type Pki = { certificate: string; privateKey: string; authority: string };
 
+/** What the Certificate field takes: the certificate, then the root that issued it. */
+export function fullChain(pki: Pki): string {
+  return pki.certificate.trimEnd() + '\n' + pki.authority;
+}
+
 /** The Leader certificate card, with the page open. */
 export async function openCertificates(page: Page): Promise<Locator> {
   await openAdmin(page, 'System');
@@ -42,9 +47,8 @@ async function publishing(served: Locator, heading: RegExp) {
 export async function switchToUploaded(page: Page, pki: Pki) {
   const served = await openCertificates(page);
   await source(served, 'Uploaded').click();
-  await served.getByRole('textbox', { name: 'Certificate', exact: true }).fill(pki.certificate);
+  await served.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
   await served.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
-  await served.getByRole('textbox', { name: 'Authority' }).fill(pki.authority);
   await served.getByRole('button', { name: 'Serve this certificate' }).click();
   await publishing(served, /^Switch to Uploaded in progress/);
   await inForce(served, 'Uploaded');

@@ -16,6 +16,8 @@
     title: string;
     /** Why, and what it costs. */
     body: string;
+    /** The long form of the body, behind a `?` beside it. */
+    help?: string;
     /** The answer's label. */
     action: string;
     /** The refusal's label, where "Cancel" would undersell what refusing
@@ -93,6 +95,7 @@
 
 <script lang="ts">
   import Dialog from './Dialog.svelte';
+  import Help from './Help.svelte';
   import JumpLinks from './JumpLinks.svelte';
 
   /* Escape and Cancel both land here saying no. The dialog stays open across a handover, so a
@@ -110,7 +113,11 @@
   onsubmit={() => answer(true)}
 >
   {#if pending}
-    <p>{pending.question.body}</p>
+    <p>
+      {pending.question.body}{#if pending.question.help}<Help label={pending.question.title}
+          >{pending.question.help}</Help
+        >{/if}
+    </p>
     {#if pending.question.links && pending.question.links.length > 0}
       <JumpLinks
         links={pending.question.links.map((link) => ({

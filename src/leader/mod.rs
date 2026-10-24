@@ -1482,23 +1482,23 @@ fn stream_conditions(data_dir: &std::path::Path, unmatched: &mut [series::Stored
 /// The worker id a leader's own logs are kept under, where no worker of its own carries them.
 pub const LEADER_LOGS: &str = "leader";
 
-/// How often a leader running no worker writes what it has logged into its store.
+/// How often a leader writes what it has logged into its store.
 const LEADER_LOGS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Write what this leader logs into its own store, where `GET /api/logs` reads the fleet's, for a leader running no
-/// worker of its own. Runs for the life of the process; [`crate::logs::keep_for_leader`] is what queues them.
+/// Write what this leader logs into its own store, where `GET /api/logs` reads the fleet's. Runs for the life of the
+/// process; [`crate::logs::mark_leader_thread`] is what queues them.
 pub async fn keep_own_logs(state: AppState) {
     loop {
         tokio::time::sleep(LEADER_LOGS_EVERY).await;
         let registry = state.registry.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            let events = crate::logs::pending_map(crate::heartbeat::LOGS_PER_HEARTBEAT, |event| {
+            let events = crate::logs::leader_pending_map(crate::heartbeat::LOGS_PER_HEARTBEAT, |event| {
                 crate::heartbeat::LogDto::from(event)
             });
             // Best-effort like a heartbeat's: a store that refuses them says so, and they are not held for a retry
             // that would refuse them again.
             registry.record_logs(LEADER_LOGS, crate::logs::boot_id(), None, &events);
-            crate::logs::delivered(events.len());
+            crate::logs::leader_delivered(events.len());
         })
         .await;
     }
@@ -1554,8 +1554,8 @@ pub struct LogRow {
 
 /// What `GET /api/logs` serves: what the fleet's workers and this leader have said, newest first.
 ///
-/// A leader running no worker writes its own under [`LEADER_LOGS`]; where one process runs both roles, its worker
-/// carries them (design doc, Observability).
+/// A leader writes its own under [`LEADER_LOGS`], whether or not a worker runs in the same process (design doc,
+/// Observability).
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogsResponse {
@@ -2855,18 +2855,8 @@ fn authority_to_hand(data_dir: &std::path::Path, held: &[String], takes_authorit
     String::from_utf8(materials.ca_pem).ok()
 }
 
-/// Signs under the incoming root once the fleet holds it, or once the operator's deadline says to stop waiting.
-///
-/// Called wherever the leader has a reason to look: the heartbeat that carries the evidence, and the page an
-/// operator watches it on -- a leader with no workers left has no beats and would otherwise wait out a deadline
-/// nobody is coming to satisfy.
-pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
-    let dir = tls::dir_of(&state.data_dir);
-    // Asked first, and cheaply: no rotation is the ordinary state, and everything below -- a roster read included
-    // -- is worth doing only while one is open.
-    let Ok(Some(rotation)) = tls::rotation(&dir) else {
-        return;
-    };
+/// Every worker an open rotation waits for, or `None` where the roster could not be read.
+async fn expected_workers(state: &AppState) -> Result<std::collections::HashSet<String>, String> {
     // Every worker enrolled, which is the roster rather than whoever has spoken: one that enrolled and has never
     // reported a thread, or has not beaten since this leader started, is exactly the worker a rotation must not
     // sign away from. Read here rather than kept, because an enrollment or a revocation during a rotation counts.
@@ -2878,7 +2868,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
     // only readiness: a store that stays unreadable would otherwise hold the rotation open past the deadline an
     // operator set for the case where waiting is not working, while the outgoing authority runs down.
     let credentials = match run_store(state.store.clone(), |s| s.list_worker_credentials()).await {
-        Ok(credentials) => Some(credentials),
+        Ok(credentials) => Ok(credentials),
         Err(e) => {
             tracing::warn!(
                 target: "leader.rotation_roster_unreadable",
@@ -2886,10 +2876,10 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
                 "could not read which workers are enrolled, so this leader cannot tell whether its fleet holds the \
                  authority it is rotating to. The deadline still decides"
             );
-            None
+            Err(format!("could not read which workers are enrolled: {e}"))
         }
     };
-    let holders = credentials.map(|credentials| {
+    credentials.map(|credentials| {
         let gone: std::collections::HashSet<&str> = credentials
             .iter()
             .filter(|c| c.revoked)
@@ -2908,8 +2898,38 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
                 .into_iter()
                 .filter(|worker| !gone.contains(worker.as_str())),
         );
-        state.registry.authorities_held(&expected)
-    });
+        expected
+    })
+}
+
+/// Each worker an open rotation waits for, by id, and whether it holds `incoming` yet. An error where the roster
+/// could not be read, which is not a fleet with nobody in it.
+pub async fn rotation_workers(state: &AppState, incoming: &str) -> Result<Vec<(String, bool)>, String> {
+    let expected = expected_workers(state).await?;
+    Ok(state
+        .registry
+        .holders(&expected)
+        .into_iter()
+        .map(|(worker, held)| (worker, held.iter().any(|root| root == incoming)))
+        .collect())
+}
+
+/// Signs under the incoming root once the fleet holds it, or once the operator's deadline says to stop waiting.
+///
+/// Called wherever the leader has a reason to look: the heartbeat that carries the evidence, and the page an
+/// operator watches it on -- a leader with no workers left has no beats and would otherwise wait out a deadline
+/// nobody is coming to satisfy.
+pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
+    let dir = tls::dir_of(&state.data_dir);
+    // Asked first, and cheaply: no rotation is the ordinary state, and everything below -- a roster read included
+    // -- is worth doing only while one is open.
+    let Ok(Some(rotation)) = tls::rotation(&dir) else {
+        return;
+    };
+    let holders = expected_workers(state)
+        .await
+        .ok()
+        .map(|expected| state.registry.authorities_held(&expected));
     let cut_over = match tls::cut_over_if_due(
         &dir,
         crate::startup_config::leader_certificate_names(&state.origin_hosts),
@@ -4005,6 +4025,29 @@ mod warnings_endpoint_tests {
             directives: Default::default(),
             data_dir,
         }
+    }
+
+    /// A roster the store cannot read is an error, never a fleet with nobody in it: that would show an operator
+    /// a rotation with nothing left to wait for.
+    #[tokio::test]
+    async fn an_unreadable_roster_is_an_error_not_an_empty_fleet() {
+        let dir = temp_dir("roster-unreadable");
+        let db = dir.join("leader.db");
+        let store = SqliteStore::open(&db, &dir.join("sealing.key")).unwrap();
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch("DROP TABLE worker_credentials")
+            .unwrap();
+        let state = AppState {
+            store: Arc::new(store),
+            ..state("roster-unreadable")
+        };
+        let read = rotation_workers(&state, "incoming").await;
+        assert!(
+            read.as_ref()
+                .is_err_and(|e| e.starts_with("could not read which workers are enrolled: ")),
+            "{read:?}"
+        );
     }
 
     #[tokio::test]

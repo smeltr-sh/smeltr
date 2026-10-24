@@ -57,10 +57,6 @@
     </table>
   </div>
   <p>
-    The leader keeps its own logs on its own console. Where one process runs both the leader and a
-    worker, the leader's logs reach the leader with that worker's heartbeat.
-  </p>
-  <p>
     The leader's copy is its operational view. Send logs and metrics you need to keep or search
     elsewhere to a destination.
   </p>

@@ -3998,7 +3998,7 @@
                 "version": 1
               }
             ],
-            "what": "The [credential](/docs/secrets) holding the whole `Authorization` header value, such as `ApiKey <encoded-key>`."
+            "what": "The [credential](/docs/secrets) holding the API key."
           },
           {
             "name": "docId",

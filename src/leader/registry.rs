@@ -389,15 +389,22 @@ impl Registry {
     /// out, so waiting on it is waiting for the deadline. [`Self::not_taking_authority`] names it to the operator
     /// instead, whose job the incoming root is.
     pub fn authorities_held(&self, expected: &HashSet<String>) -> Vec<Vec<String>> {
+        self.holders(expected).into_iter().map(|(_, held)| held).collect()
+    }
+
+    /// [`Self::authorities_held`], each list beside the worker it is for, in id order.
+    pub fn holders(&self, expected: &HashSet<String>) -> Vec<(String, Vec<String>)> {
         let held = self.authorities.lock().unwrap();
-        expected
+        let mut holders: Vec<(String, Vec<String>)> = expected
             .iter()
             .filter_map(|worker| match held.get(worker) {
                 Some((_, false)) => None,
-                Some((held, true)) => Some(held.clone()),
-                None => Some(Vec::new()),
+                Some((held, true)) => Some((worker.clone(), held.clone())),
+                None => Some((worker.clone(), Vec::new())),
             })
-            .collect()
+            .collect();
+        holders.sort();
+        holders
     }
 
     /// Every worker this leader has heard from since it started, whether or not it reported a thread.

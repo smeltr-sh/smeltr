@@ -1690,7 +1690,7 @@ pub struct ElasticDestinationConfig {
     pub zone_urls: std::collections::BTreeMap<String, String>,
     /// Used when a row has no live `__destination.index`.
     pub default_index: String,
-    /// The credential holding a complete `Authorization` header value (`ApiKey <base64>` or `Basic <base64>`).
+    /// The credential holding the API key, or a complete `Authorization` header value (`io::elastic::authorization`).
     /// `None` for a cluster with security disabled.
     pub auth: Option<SecretRef>,
     /// What this client connects under. `None` is no certificate and the platform's own roots -- which an

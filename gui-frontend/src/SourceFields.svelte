@@ -35,7 +35,8 @@
     type ListStart,
     type Framing,
   } from './api';
-  import { brokersWarning, SECTION_PROPS, fromLocalInput, toLocalInput } from './kafka';
+  import { brokersWarning, SECTION_PROPS } from './kafka';
+  import { fromLocalInput, toLocalInput } from './time';
   import { numberOrUnset } from './page';
   import { byteCount, exactBytes } from './bytes';
   import {

@@ -1105,6 +1105,104 @@ fn switch_deadline(
         .max(now_ms))
 }
 
+/// The latest an open rotation can wait: short of every expiry it depends on by [`CUTOVER_MARGIN`], the same
+/// bound each kind of rotation began under. [`deadline_may_move`] refuses a deadline past it.
+pub fn latest_deadline(dir: &Path, state: &Rotation) -> Result<i64, String> {
+    let _reading = changing();
+    latest_deadline_held(dir, state)
+}
+
+fn latest_deadline_held(dir: &Path, state: &Rotation) -> Result<i64, String> {
+    let (materials, served) = in_force_held(dir)?;
+    let incoming = describe(state.incoming_pem.as_bytes(), "the incoming authority")?;
+    match state.installs {
+        Installs::NextKey => {
+            let margin = CUTOVER_MARGIN.as_millis() as i64;
+            let outgoing = signing_root(&materials.ca_pem, &served)?;
+            Ok((outgoing.not_after_millis - margin).min(incoming.not_after_millis - margin))
+        }
+        Installs::Supplied => {
+            let chain = incoming_certificate(dir)?
+                .ok_or_else(|| format!("{INCOMING_DIR} holds no certificate for the rotation to put in force"))?;
+            switch_deadline(&served, &chain, &incoming, i64::MIN)
+        }
+        Installs::Own => {
+            let own_path = dir.join(SERVER_CERT);
+            let own = std::fs::read(&own_path).map_err(|e| format!("{}: {e}", own_path.display()))?;
+            switch_deadline(&served, &own, &incoming, i64::MIN)
+        }
+    }
+}
+
+/// Every reason the open rotation's deadline cannot move to `deadline_millis`, for a caller about to write down
+/// that it moved. [`set_deadline`] re-asks it under the lock that makes the answer binding.
+///
+/// A time already past is refused rather than taken as "now": cutting over at once is its own act, and an
+/// operator asks for it by name.
+pub fn deadline_may_move(dir: &Path, deadline_millis: i64, now_ms: i64) -> Result<Rotation, Refused> {
+    let state = rotation(dir)
+        .map_err(Refused::Unavailable)?
+        .ok_or_else(|| Refused::Conflict("no rotation is open, so there is no cutover to move.".to_string()))?;
+    if deadline_millis <= now_ms {
+        return Err(Refused::Conflict(
+            "that time has passed. Pick a later one, or cut over now.".to_string(),
+        ));
+    }
+    if deadline_millis > latest_deadline_held(dir, &state).map_err(Refused::Unavailable)? {
+        return Err(Refused::Conflict(
+            "that is later than this rotation can wait: 10 minutes before a certificate it depends on expires."
+                .to_string(),
+        ));
+    }
+    Ok(state)
+}
+
+/// Moves the open rotation's deadline, which [`cut_over_if_due`] reads afresh each time it asks.
+pub fn set_deadline(dir: &Path, deadline_millis: i64, now_ms: i64) -> Result<Rotation, Refused> {
+    let _changing = changing();
+    let mut state = deadline_may_move(dir, deadline_millis, now_ms)?;
+    state.deadline_millis = deadline_millis;
+    write_rotation(dir, &state).map_err(Refused::Unavailable)?;
+    Ok(state)
+}
+
+/// Splits an uploaded chain into what to serve and the root a worker is given.
+///
+/// The root is the self-signed authority the chain ends with, where it ends with one; else the one in `authority`
+/// that signed it; else the platform's. `None` is a chain none of these vouches for, which the caller words for its
+/// own form. A public authority's full chain leaves its root out, which is why the platform is asked at all.
+pub fn split_root(chain: &[u8], authority: &[u8]) -> Result<Option<(Vec<u8>, String)>, String> {
+    let mut certs = blocks(chain)?;
+    if certs.len() > 1
+        && let Some(last) = certs.last()
+        && self_signed_authority(last.as_bytes())?
+    {
+        let root = certs.pop().expect("more than one");
+        let served = certs.iter().map(|c| format!("{c}\n")).collect::<String>().into_bytes();
+        // The root was read from this chain, so it signed it unless the chain is not one: refused here rather than
+        // served with a root that vouches for nothing in it.
+        signing_root(root.as_bytes(), &served)?;
+        return Ok(Some((served, format!("{root}\n"))));
+    }
+    if !authority.iter().all(u8::is_ascii_whitespace)
+        && let Ok((_, pem)) = signing_root_pem(authority, chain)
+    {
+        return Ok(Some((chain.to_vec(), pem)));
+    }
+    let public = crate::io::trust::pem(None).map_err(|e| e.to_string())?;
+    Ok(signing_root_pem(public.as_bytes(), chain)
+        .ok()
+        .map(|(_, pem)| (chain.to_vec(), pem)))
+}
+
+/// Whether `pem` is an authority that signed itself: the end of a chain that carries its root.
+fn self_signed_authority(pem: &[u8]) -> Result<bool, String> {
+    let der = der(pem, "the certificate")?;
+    let (_, cert) = x509_parser::parse_x509_certificate(der.as_ref())
+        .map_err(|e| format!("the certificate is not one this can read: {e}"))?;
+    Ok(cert.is_ca() && cert.subject() == cert.issuer() && cert.verify_signature(None).is_ok())
+}
+
 /// The root `chain` is signed under, as the one PEM block of `ca` that holds it.
 pub(crate) fn signing_root_pem(ca: &[u8], chain: &[u8]) -> Result<(Described, String), String> {
     let root = signing_root(ca, chain)?;
@@ -3813,6 +3911,64 @@ mod tests {
         );
         assert!(cut_over_if_due(&dir, names(), A_YEAR, Some(&behind), state.deadline_millis).unwrap());
         assert_eq!(served(&dir), chain);
+    }
+
+    /// The deadline moves anywhere between now and the latest the switch could wait, and the cutover keeps it.
+    /// A time already past is refused, not taken as "cut over now".
+    #[test]
+    fn a_switch_deadline_moves_within_its_bounds() {
+        let dir = rotating("switch-moves");
+        let (chain, key, ca) = elsewhere("switch-moves-theirs", names());
+        let state = begin_supplied_rotation(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
+        let latest = state.deadline_millis;
+
+        assert!(matches!(set_deadline(&dir, NOW, NOW), Err(Refused::Conflict(_))));
+        assert!(matches!(set_deadline(&dir, latest + 1, NOW), Err(Refused::Conflict(_))));
+        assert_eq!(
+            rotation(&dir).unwrap().unwrap().deadline_millis,
+            latest,
+            "a refusal moved it"
+        );
+
+        let sooner = NOW + 60 * 60 * 1000;
+        assert_eq!(set_deadline(&dir, sooner, NOW).expect("moved").deadline_millis, sooner);
+        let behind = vec![vec![state.outgoing.clone()]];
+        assert!(!cut_over_if_due(&dir, names(), A_YEAR, Some(&behind), sooner - 1).unwrap());
+        assert!(cut_over_if_due(&dir, names(), A_YEAR, Some(&behind), sooner).unwrap());
+        assert!(
+            matches!(set_deadline(&dir, sooner + 1, NOW), Err(Refused::Conflict(_))),
+            "nothing is open"
+        );
+    }
+
+    /// One field takes the whole chain: a root at its end is the authority and is not served, and a chain under a
+    /// root nothing here holds is no upload at all.
+    #[test]
+    fn an_uploaded_chain_carries_its_own_root() {
+        let (chain, _, ca) = elsewhere("split-theirs", names());
+        let mut whole = chain.clone();
+        whole.extend_from_slice(&ca);
+        let (served, root) = split_root(&whole, b"").unwrap().expect("its own root");
+        assert_eq!(
+            describe_each(&served, SERVER_CERT).unwrap().len(),
+            1,
+            "the root was served"
+        );
+        assert_eq!(
+            describe(root.as_bytes(), CA_CERT).unwrap().fingerprint,
+            describe(&ca, CA_CERT).unwrap().fingerprint
+        );
+        assert!(
+            split_root(&chain, b"").unwrap().is_none(),
+            "no root was found and none was refused"
+        );
+        let (_, _, stranger) = elsewhere("split-stranger", names());
+        let mut wrong = chain.clone();
+        wrong.extend_from_slice(&stranger);
+        assert!(
+            split_root(&wrong, b"").is_err(),
+            "a root that signed nothing here was taken"
+        );
     }
 
     /// Abandoning a switch is the same as abandoning a rotation: the incoming root leaves the bundle, what was

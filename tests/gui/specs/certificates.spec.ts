@@ -17,6 +17,7 @@ import { Authority } from '../acme';
 import { openAdmin, workerRow } from '../moves/admin';
 import {
   acmeNewRoot,
+  fullChain,
   inForce,
   openCertificates,
   renewAcme,
@@ -112,11 +113,27 @@ test('a renewal is served while the switch back to Leader issued waits for a wor
     served.getByRole('heading', { name: /^Switch to Leader issued in progress/ }),
   ).toBeVisible();
 
+  // Each worker is listed with whether it holds the incoming authority, and the one gone quiet does not.
+  await expect(served.getByRole('listitem').filter({ hasText: 'w-away' })).toContainText('waiting');
+  // The deadline moves, and Discard and Save show only while it is being changed.
+  const picker = served.getByLabel('Cut over by');
+  const later = new Date(Date.now() + 3 * 60 * 60 * 1000);
+  later.setSeconds(0, 0);
+  const local = new Date(later.getTime() - later.getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 16);
+  await expect(served.getByRole('button', { name: 'Discard' })).toHaveCount(0);
+  await picker.fill(local);
+  await served.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(served.getByRole('button', { name: 'Discard' })).toHaveCount(0);
+  expect((await api.get('/api/settings/certificates')).rotation.deadlineMillis).toBe(
+    later.getTime(),
+  );
+
   // The upload form is still there under the switch, and a renewal under the uploaded root is served at once.
   await source(served, 'Uploaded').click();
-  await served.getByRole('textbox', { name: 'Certificate', exact: true }).fill(renewal.certificate);
+  await served.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(renewal));
   await served.getByRole('textbox', { name: 'Private key' }).fill(renewal.privateKey);
-  await served.getByRole('textbox', { name: 'Authority' }).fill(renewal.authority);
   await served.getByRole('button', { name: 'Serve this certificate' }).click();
   await expect(served.getByRole('status')).toHaveText(
     'this leader is serving the certificate you supplied',

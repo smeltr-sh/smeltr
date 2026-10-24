@@ -20,19 +20,6 @@ export type StartPosition =
 /** Where a source stops, exclusive. Absent is a stream that keeps reading. */
 export type StopPosition = { type: 'timestamp'; millis: number };
 
-/** Milliseconds as a `datetime-local` input takes them: the operator's own
- * clock, since that is the clock they read a time off. */
-export function toLocalInput(millis: number): string {
-  const d = new Date(millis - new Date(millis).getTimezoneOffset() * 60_000);
-  return d.toISOString().slice(0, 16);
-}
-
-/** What a `datetime-local` input holds, as milliseconds; `undefined` while it holds no whole time. */
-export function fromLocalInput(text: string): number | undefined {
-  const millis = new Date(text).getTime();
-  return Number.isNaN(millis) ? undefined : millis;
-}
-
 // -- security ---------------------------------------------------------------
 
 /** How a client reaches its brokers. Mirrors librdkafka's own names, which

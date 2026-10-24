@@ -90,7 +90,7 @@ test('a failed deploy opens a popup, which stays in the error bar once dismissed
   await admin.getByRole('button', { name: 'Approve & deploy' }).click();
   await admin
     .getByRole('dialog', { name: 'approve & deploy' })
-    .getByRole('button', { name: 'Approve & deploy' })
+    .getByRole('button', { name: 'Approve & deploy', exact: true })
     .click();
 
   const popup = admin.getByRole('dialog', { name: 'not deployed' });
