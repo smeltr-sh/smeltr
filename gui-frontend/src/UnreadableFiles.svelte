@@ -54,7 +54,7 @@
   async function remove(file: UnreadableFileDto) {
     const ok = await ask({
       title: 'delete file',
-      body: `Delete ${file.path}. Like any other edit, this is saved on your branch and reaches the fleet when it is deployed.`,
+      body: `Delete ${file.path}.`,
       action: 'Delete',
       danger: true,
     });
