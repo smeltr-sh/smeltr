@@ -2290,12 +2290,14 @@
       min-height: 0;
     }
 
-    .records {
+    /* Only what fills the pane scrolls: a scroller around the controls would clip their menus. */
+    .dictionary {
       overflow-y: auto;
+      min-height: 0;
     }
 
     .right-col > :not(.records),
-    .records > :not(.results) {
+    .records > :not(.results, .dictionary) {
       flex-shrink: 0;
     }
 
