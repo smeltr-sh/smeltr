@@ -7,7 +7,7 @@ import {
   type ObjectStore,
 } from './api';
 import { byteCount } from './bytes';
-import { accessModified } from './ObjectStoreAccess.svelte';
+import { accessModified } from './ConnectorAccess.svelte';
 import { requestDeliveryModified } from './RequestDelivery.svelte';
 import type { HeaderedDestination } from './http';
 import type { CatalogType } from './TypeCatalog.svelte';

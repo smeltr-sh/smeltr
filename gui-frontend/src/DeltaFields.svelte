@@ -12,7 +12,7 @@
   import Field from './Field.svelte';
   import UrlField from './UrlField.svelte';
   import IdentityPicker from './IdentityPicker.svelte';
-  import ObjectStoreAccess from './ObjectStoreAccess.svelte';
+  import ConnectorAccess from './ConnectorAccess.svelte';
   import SecretRefInput from './SecretRefInput.svelte';
   import TokenListInput from './TokenListInput.svelte';
   import type { IdentityDto, SecretDto } from './api';
@@ -149,7 +149,7 @@
   />
 </Field>
 {#if naming === 'location'}
-  <ObjectStoreAccess store="s3" value={d} show="credential" {secrets} />
+  <ConnectorAccess store="s3" value={d} show="credential" {secrets} />
 {/if}
 <IdentityPicker
   value={d.identity}
@@ -173,7 +173,7 @@
       {/snippet}
     </UrlField>
   {:else}
-    <ObjectStoreAccess
+    <ConnectorAccess
       store="s3"
       value={d}
       show="advanced"
