@@ -34,6 +34,7 @@
   import { ask } from './Confirm.svelte';
   import PageHeader from './PageHeader.svelte';
   import Help from './Help.svelte';
+  import Panel from './Panel.svelte';
   import FlowChart from './FlowChart.svelte';
   import Sparkline from './Sparkline.svelte';
   import { pipelineNamesAt, type PipelineNames } from './pipelineNames';
@@ -48,6 +49,7 @@
     getClusterStatus,
     getFlow,
     listWarnings,
+    history as mainHistory,
     restartWorker,
     conditionLabel,
     MAIN_BRANCH,
@@ -608,6 +610,26 @@
     ),
   );
   let fleetRollout = $derived(deploying ? rollout(workerRows, deploying) : null);
+  // The deployed commit's message, so the card names the change and not only its hash. History's
+  // first page: one deployed from further back shows its hash alone.
+  let deployingSubject = $state('');
+  $effect(() => {
+    const target = deploying;
+    deployingSubject = '';
+    if (!target) return;
+    let current = true;
+    mainHistory(50)
+      .then((h) => {
+        const found = h.commits.find(
+          (c) => c.commit.startsWith(target) || target.startsWith(c.commit),
+        );
+        if (current) deployingSubject = found?.subject ?? '';
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  });
   // Online and not yet running the commit being deployed.
   function behind(worker: WorkerRow): boolean {
     return !!deploying && worker.status === 'online' && !onCommit(worker, deploying);
@@ -703,15 +725,24 @@
     </header>
 
     {#if deploying && fleetRollout}
+      {@const done = fleetRollout.on === fleetRollout.of}
       <div class="rollout" role="status">
-        <span class="mono">{commitOrNone(deploying)}</span>
-        <meter min="0" max={Math.max(fleetRollout.of, 1)} value={fleetRollout.on}></meter>
-        <span
-          >{fleetRollout.on === fleetRollout.of
-            ? `on all ${fleetRollout.of} online ${fleetRollout.of === 1 ? 'worker' : 'workers'}`
-            : `${fleetRollout.on} of ${fleetRollout.of} online workers`}</span
-        >
-        <a class="rollout-close" href="#/status" aria-label="Stop following this deploy">&times;</a>
+        <Panel title={`${done ? 'Deployed' : 'Deploying'} ${commitOrNone(deploying)}`}>
+          {#snippet actions()}
+            <a class="rollout-close" href="#/status" aria-label="Stop following this deploy"
+              >&times;</a
+            >
+          {/snippet}
+          <div class="rollout-body">
+            {#if deployingSubject}<strong>{deployingSubject}</strong>{/if}
+            <meter min="0" max={Math.max(fleetRollout.of, 1)} value={fleetRollout.on}></meter>
+            <span
+              >{done
+                ? `on all ${fleetRollout.of} online ${fleetRollout.of === 1 ? 'worker' : 'workers'}`
+                : `${fleetRollout.on} of ${fleetRollout.of} online workers`}</span
+            >
+          </div>
+        </Panel>
       </div>
     {/if}
 
@@ -1173,17 +1204,18 @@
 
 <style>
   .rollout {
+    margin-bottom: 0.75rem;
+  }
+  .rollout-body {
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    margin-bottom: 0.75rem;
     font-size: var(--text-label);
   }
-  .rollout meter {
-    width: 10rem;
+  .rollout-body meter {
+    flex: 1;
   }
   .rollout-close {
-    margin-left: auto;
     color: var(--dim);
     text-decoration: none;
     font-size: 1.1rem;

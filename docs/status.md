@@ -114,7 +114,7 @@ document's systems.
 | Capture at a source and at a destination; route preview (Control plane, Runtime stages) | built. A reachability check is not built |
 | Routing what arrives (`gui-design.md`, Routing what arrives) | built: the map's tags and panel, the Routes page's new route, and the workspace's capture with its parser proposed (`leader::onboard`). A line of a format with no whole-line Grok pattern is not proposed |
 | Warnings (Control plane) | built (`leader::warnings`), with notices and a source's volume against its normal (`leader::throughput`). Not built: a weekly normal, which needs more history than the series keeps |
-| A newer release (Control plane, Upgrades) | built (`leader::updates`), a notice and Admin -> System -> General |
+| A newer release (Control plane, Upgrades) | built (`leader::updates`, through smeltr.sh's `website/worker`), a notice and Admin -> System -> General |
 | Metrics history (Control plane, E2) | built |
 | Streams: what each Parser produces and what arrives unmatched, summed on the leader (Observability) | built, `GET /api/streams`, which the map, the pipeline editor's declared fields and the drift warnings (`leader::warnings`) read. Retention in `leader::series` |
 | Lag (Control plane, E6) | built |

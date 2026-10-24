@@ -11,6 +11,7 @@
   import Advanced from './Advanced.svelte';
   import Help from './Help.svelte';
   import Field from './Field.svelte';
+  import Nested from './Nested.svelte';
   import UrlField from './UrlField.svelte';
   import KafkaPropsEditor from './KafkaPropsEditor.svelte';
   import PropsEditor from './PropsEditor.svelte';
@@ -416,21 +417,23 @@
       </select>
     </Field>
     {#if (destination.docId ?? 'auto') !== 'auto'}
-      <Field field="idField" label="id field">
-        {#snippet help()}
-          The row field that already holds each document's stable id. Leave it empty and the
-          pipeline must set <code>__destination.id</code>.
-        {/snippet}
-        <input
-          type="text"
-          value={destination.idField ?? ''}
-          oninput={(e) => {
-            if (destination.type === 'elasticsearch')
-              destination.idField = optional(e.currentTarget.value);
-          }}
-          placeholder="event.id"
-        />
-      </Field>
+      <Nested>
+        <Field field="idField" label="id field">
+          {#snippet help()}
+            The row field that already holds each document's stable id. Leave it empty and the
+            pipeline must set <code>__destination.id</code>.
+          {/snippet}
+          <input
+            type="text"
+            value={destination.idField ?? ''}
+            oninput={(e) => {
+              if (destination.type === 'elasticsearch')
+                destination.idField = optional(e.currentTarget.value);
+            }}
+            placeholder="event.id"
+          />
+        </Field>
+      </Nested>
     {/if}
     <Advanced label="Advanced" modified={elasticModified(destination)}>
       <RequestDelivery
@@ -687,15 +690,17 @@
         </Field>
         {#if h.format === 'text' || h.format === 'bytes'}
           {@const fieldDefault = h.format === 'text' ? '_raw' : '__source.bytes'}
-          <Field field="field" label={`${h.format} field`}>
-            {#snippet note()}Default <code>{fieldDefault}</code>.{/snippet}
-            <input
-              type="text"
-              value={h.field ?? ''}
-              oninput={(e) => (h.field = optional(e.currentTarget.value))}
-              placeholder={fieldDefault}
-            />
-          </Field>
+          <Nested>
+            <Field field="field" label={`${h.format} field`}>
+              {#snippet note()}Default <code>{fieldDefault}</code>.{/snippet}
+              <input
+                type="text"
+                value={h.field ?? ''}
+                oninput={(e) => (h.field = optional(e.currentTarget.value))}
+                placeholder={fieldDefault}
+              />
+            </Field>
+          </Nested>
         {/if}
       {/if}
     {/if}
@@ -826,26 +831,29 @@
     </Field>
     {@render formatFields(o, OBJECT_FORMATS, 'ndjson', objectFormatHelp, OBJECT_LABELS)}
     {#if o.format === 'bytes'}
-      <Field field="newlines" label="newlines">
-        {#snippet help()}
-          <code>escape</code>: <code>\</code>, newline and carriage return are written
-          <code>\\</code>, <code>\n</code> and <code>\r</code>, which an SQS/S3 source with framing
-          <code>escapedLines</code> reverses. <code>refuse</code>: a row holding a line break is
-          refused.
-        {/snippet}
-        {#snippet note()}Default <code>escape</code>.{/snippet}
-        <select
-          value={o.newlines ?? 'escape'}
-          onchange={(e) => {
-            const v = e.currentTarget.value;
-            if (v === 'refuse') o.newlines = v;
-            else delete o.newlines;
-          }}
-        >
-          <option value="escape">escape</option>
-          <option value="refuse">refuse</option>
-        </select>
-      </Field>
+      <Nested>
+        <Field field="newlines" label="newlines">
+          {#snippet help()}
+            <code>escape</code>: <code>\</code>, newline and carriage return are written
+            <code>\\</code>, <code>\n</code> and <code>\r</code>, which an SQS/S3 source with
+            framing
+            <code>escapedLines</code> reverses. <code>refuse</code>: a row holding a line break is
+            refused.
+          {/snippet}
+          {#snippet note()}Default <code>escape</code>.{/snippet}
+          <select
+            value={o.newlines ?? 'escape'}
+            onchange={(e) => {
+              const v = e.currentTarget.value;
+              if (v === 'refuse') o.newlines = v;
+              else delete o.newlines;
+            }}
+          >
+            <option value="escape">escape</option>
+            <option value="refuse">refuse</option>
+          </select>
+        </Field>
+      </Nested>
     {/if}
     {#if isCloud(o)}
       <IdentityPicker
@@ -1025,19 +1033,23 @@
     </select>
   </Field>
   {#if d.format === 'avro' && d.schemaRegistry}
-    <SchemaRegistryFields registry={d.schemaRegistry} {secrets} />
+    <Nested>
+      <SchemaRegistryFields registry={d.schemaRegistry} {secrets} />
+    </Nested>
   {/if}
   {#if d.format === 'text' || d.format === 'bytes'}
     {@const fieldDefault = d.format === 'text' ? '_raw' : '__source.bytes'}
-    <Field field="field" label={`${d.format} field`}>
-      {#snippet note()}Default <code>{fieldDefault}</code>.{/snippet}
-      <input
-        type="text"
-        value={d.field ?? ''}
-        oninput={(e) => (d.field = optional(e.currentTarget.value))}
-        placeholder={fieldDefault}
-      />
-    </Field>
+    <Nested>
+      <Field field="field" label={`${d.format} field`}>
+        {#snippet note()}Default <code>{fieldDefault}</code>.{/snippet}
+        <input
+          type="text"
+          value={d.field ?? ''}
+          oninput={(e) => (d.field = optional(e.currentTarget.value))}
+          placeholder={fieldDefault}
+        />
+      </Field>
+    </Nested>
   {/if}
 {/snippet}
 

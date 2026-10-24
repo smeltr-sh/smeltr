@@ -41,27 +41,56 @@ fn slow_pool(n: usize, delay: Duration) -> (Pool<Slow>, Arc<AtomicUsize>) {
     (Pool::new(senders, n), peak)
 }
 
+/// A sender that holds each delivery until `n` are in flight at once, or
+/// until a deadline, so overlap is observed directly rather than as wall time.
+struct Meeting {
+    n: usize,
+    concurrent: Arc<AtomicUsize>,
+    peak: Arc<AtomicUsize>,
+}
+
+impl Sender for Meeting {
+    type Job = u32;
+    fn send_one(&mut self, _job: u32) -> Result<Delivered, IoError> {
+        let now = self.concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        // Generous, so a loaded machine's late thread still arrives; a pool
+        // that serializes waits it out once per delivery and fails below.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while self.peak.load(Ordering::SeqCst) < self.n && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.concurrent.fetch_sub(1, Ordering::SeqCst);
+        Ok(Delivered {
+            rejections: Vec::new(),
+            throttled: false,
+        })
+    }
+}
+
 #[test]
 fn round_trips_actually_overlap() {
-    // The property the whole module exists for. Four 100ms deliveries
-    // through four senders must not take 400ms: if they do, the pool is a
-    // single background thread with extra steps, which buys nothing
-    // against a destination whose cost is one round trip.
-    let (mut pool, peak) = slow_pool(4, Duration::from_millis(100));
-    let t = Instant::now();
+    // The property the whole module exists for. Four deliveries through four
+    // senders must be in flight at once: if they are not, the pool is a
+    // single background thread with extra steps, which buys nothing against
+    // a destination whose cost is one round trip.
+    let concurrent = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let senders = (0..4)
+        .map(|_| Meeting {
+            n: 4,
+            concurrent: concurrent.clone(),
+            peak: peak.clone(),
+        })
+        .collect();
+    let mut pool = Pool::new(senders, 4);
     for b in 0..4u64 {
         pool.submit(b, b as u32).unwrap();
     }
     let done = pool.drain().unwrap();
-    let elapsed = t.elapsed();
 
     assert_eq!(done.len(), 4);
     assert_eq!(peak.load(Ordering::SeqCst), 4, "all four ran at once");
-    // Serialized, they take 400ms at least; the margin below that is for a loaded machine.
-    assert!(
-        elapsed < Duration::from_millis(390),
-        "four overlapping 100ms deliveries took {elapsed:?}; they are serialized"
-    );
 }
 
 #[test]
