@@ -12,7 +12,7 @@ import { RUN_DIR, recordPid } from '../run';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const TARGET = path.resolve(REPO, process.env.CARGO_TARGET_DIR ?? 'target');
-const SERVICE = path.join(TARGET, 'release', 'smeltr-demo');
+const SERVICE = path.join(TARGET, 'debug', 'smeltr-demo');
 const SITE = path.join(REPO, 'gui-frontend', 'dist-demo');
 const TYPES: Record<string, string> = {
   '.html': 'text/html',
