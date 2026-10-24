@@ -1745,7 +1745,7 @@
 
           {#if !selectedSample}{@render stageChips()}{/if}
 
-          <div>
+          <div class="records">
             {#if !selectedSample}
               {#if dictionary}
                 <!-- No records to count, but the steps compiled: what they declare. -->
@@ -2371,6 +2371,39 @@
     display: flex;
     flex-direction: column;
     gap: 0;
+  }
+
+  /* Beside the steps, the records scroll on their own: the 500th record and the step that set it
+     are on screen together. */
+  @media (min-width: 1001px) {
+    .right-col {
+      position: sticky;
+      top: 0;
+      max-height: 100vh;
+    }
+
+    /* The grid is what scrolls, so the controls above it and its header row stay put. */
+    .records,
+    .results {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .records {
+      overflow-y: auto;
+    }
+
+    .right-col > :not(.records),
+    .records > :not(.results) {
+      flex-shrink: 0;
+    }
+
+    .grid-wrap {
+      overflow: auto;
+      min-height: 0;
+    }
   }
 
   .output-actions {
