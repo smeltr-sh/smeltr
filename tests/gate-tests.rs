@@ -737,6 +737,56 @@ impl Leader {
     }
 }
 
+/// A self-signed certificate for `name` and its private key, in PEM.
+fn certificate_and_key(name: &str) -> (String, String) {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let params = rcgen::CertificateParams::new(vec![name.to_string()]).unwrap();
+    (params.self_signed(&key).unwrap().pem(), key.serialize_pem())
+}
+
+/// A certificate is uploaded to the list, kept out of the secrets, replaced by a new version and deleted. A key that
+/// is not the certificate's is refused before anything is stored.
+#[test]
+fn an_administrator_keeps_certificates_in_the_list() {
+    let leader = start("certificate-list");
+    let op = operator(&leader);
+    let (certificate, private_key) = certificate_and_key("receiver.example.com");
+    let (_, other_key) = certificate_and_key("other.example.com");
+
+    let upload = |key: &str| serde_json::json!({"name": "receiver", "certificate": certificate, "privateKey": key});
+    let (_, refused) = leader.post_as(&op, "/api/certificates", upload(&other_key));
+    assert_eq!(refused["ok"], false, "a key that is not the certificate's: {refused}");
+    let (_, created) = leader.post_as(&op, "/api/certificates", upload(&private_key));
+    assert_eq!(created["ok"], true, "{created}");
+
+    let (status, listed) = leader.get_as(&op.session, "/api/certificates");
+    assert_eq!(status, 200);
+    assert_eq!(listed[0]["name"], "receiver");
+    assert_eq!(listed[0]["chain"][0]["subject"], "rcgen self signed cert");
+    assert_eq!(listed[0]["served"], false);
+    let (_, secrets) = leader.get_as(&op.session, "/api/secrets");
+    assert!(
+        !secrets.to_string().contains("receiver"),
+        "a certificate is not listed with the secrets: {secrets}"
+    );
+    let (_, value) = leader.put_as(&op, "/api/secrets/receiver", serde_json::json!({"value": "x"}));
+    assert_eq!(
+        value["ok"], false,
+        "a certificate's value is not set as a secret's: {value}"
+    );
+
+    let (renewed, renewed_key) = certificate_and_key("receiver.example.com");
+    let body = serde_json::json!({"certificate": renewed, "privateKey": renewed_key});
+    let (_, replaced) = leader.put_as(&op, "/api/certificates/receiver", body);
+    assert_eq!(replaced["ok"], true, "{replaced}");
+    let (_, listed) = leader.get_as(&op.session, "/api/certificates");
+    assert_eq!(listed[0]["versions"].as_array().map(Vec::len), Some(2));
+
+    assert_eq!(leader.delete_as(&op, "/api/certificates/receiver"), 200);
+    let (_, listed) = leader.get_as(&op.session, "/api/certificates");
+    assert_eq!(listed, serde_json::json!([]));
+}
+
 /// The whole account lifecycle, from an administrator creating one to the new person using it.
 #[test]
 fn an_administrator_creates_an_account_that_can_then_sign_in() {

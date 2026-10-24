@@ -2050,6 +2050,12 @@ async fn run_leader() {
     ));
 
     let LeaderSetup { routes, tls, leader } = setup_leader(port, auth.clone(), store, registry).await;
+    // After `setup_leader`, which recovers an upload a crash interrupted, so what is listed is what is served.
+    if tls.is_some()
+        && let Err(e) = smeltr::leader::list_uploaded_certificate(leader.store.as_ref(), &leader.data_dir.join("tls"))
+    {
+        tracing::warn!(target: "leader.certificates", "the uploaded certificate the leader serves was not listed: {e}");
+    }
     let certificates = tls.as_ref().map(|(resolver, _)| {
         std::sync::Arc::new(certificates_api::Tls {
             // Spelled as the leader spells it, from the one absolute data directory. The certificate layer keeps

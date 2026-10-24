@@ -101,6 +101,11 @@ fn make_private(_path: &Path) -> Result<(), StoreError> {
 // -- schema -----------------------------------------------------------------
 
 /// Every step this file has taken, oldest first (`steps`). Append; never edit one that has shipped.
+/// What `secrets.kind` holds for a value of any kind but a certificate.
+const SECRET: &str = "secret";
+/// What `secrets.kind` holds for a certificate and its private key.
+const CERTIFICATE: &str = "certificate";
+
 pub(crate) const STEPS: &[&str] = &[
     // 1 -- the schema of the first release.
     "CREATE TABLE enrollment_codes (
@@ -313,6 +318,9 @@ pub(crate) const STEPS: &[&str] = &[
     "DROP TABLE agent_accounts;
      DELETE FROM agent_permissions WHERE user_id IN (SELECT id FROM users WHERE auth_source = 'agent');
      DELETE FROM users WHERE auth_source = 'agent';",
+    // 11 -- a secret that is a certificate and its key, listed on the Certificates page. Additive: an older build
+    // lists it among the secrets, which is all it can do with one.
+    "ALTER TABLE secrets ADD COLUMN kind TEXT NOT NULL DEFAULT 'secret';",
 ];
 
 fn conversation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationRecord> {
@@ -506,6 +514,53 @@ impl SqliteStore {
                 sealed.ciphertext(),
             ],
         )?;
+        Ok(())
+    }
+
+    /// Declares `name`, of `kind` ([`SECRET`] or [`CERTIFICATE`]), with its first value where it is leader-stored.
+    fn create(
+        &self,
+        name: &str,
+        custody: Custody,
+        kind: &str,
+        description: &str,
+        value: Option<&str>,
+    ) -> Result<(), StoreError> {
+        if !crate::config_file::is_safe_secret_name(name) {
+            return Err(StoreError(crate::config_file::unsafe_secret_name(name)));
+        }
+        // Sealed before the row is written, so a key that cannot be created leaves no half-made secret behind.
+        let sealed = match (custody, value) {
+            (Custody::LeaderStored, Some(value)) => Some(self.key_for_sealing()?.seal(name, value.as_bytes())),
+            (Custody::LeaderStored, None) => {
+                return Err(StoreError(format!(
+                    "secret {name:?} is leader-stored, so it needs a value"
+                )));
+            }
+            (Custody::WorkerLocal, None) => None,
+            (Custody::WorkerLocal, Some(_)) => {
+                return Err(StoreError(format!(
+                    "secret {name:?} is worker-local, so its value is never the leader's to hold"
+                )));
+            }
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        // One transaction: a secret that exists with no version would be a leader-stored credential the fleet can
+        // never obtain, and nothing would say why.
+        let tx = conn.transaction()?;
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO secrets (name, custody, description, next_version, kind) VALUES (?1, ?2, ?3, 1, ?4)",
+            (name, custody.as_str(), description, kind),
+        )?;
+        if inserted == 0 {
+            return Err(StoreError(format!("secret {name:?} already exists")));
+        }
+        if let Some(sealed) = &sealed {
+            let version = Self::take_version(&tx, name)?.expect("the row this transaction just inserted");
+            Self::insert_version(&tx, name, version, sealed)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -938,9 +993,15 @@ impl Store for SqliteStore {
         let key = self.key_if_any()?;
         let conn = self.conn.lock().unwrap();
 
-        let mut names = conn.prepare("SELECT name, description FROM secrets ORDER BY name")?;
+        let mut names = conn.prepare("SELECT name, description, kind FROM secrets ORDER BY name")?;
         let secrets = names
-            .query_map((), |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .query_map((), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)? == CERTIFICATE,
+                ))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut held =
@@ -966,10 +1027,11 @@ impl Store for SqliteStore {
 
         Ok(secrets
             .into_iter()
-            .map(|(name, description)| SecretRecord {
+            .map(|(name, description, certificate)| SecretRecord {
                 versions: by_name.remove(&name).unwrap_or_default(),
                 name,
                 description,
+                certificate,
             })
             .collect())
     }
@@ -981,42 +1043,28 @@ impl Store for SqliteStore {
         description: &str,
         value: Option<&str>,
     ) -> Result<(), StoreError> {
-        if !crate::config_file::is_safe_secret_name(name) {
-            return Err(StoreError(crate::config_file::unsafe_secret_name(name)));
-        }
-        // Sealed before the row is written, so a key that cannot be created leaves no half-made secret behind.
-        let sealed = match (custody, value) {
-            (Custody::LeaderStored, Some(value)) => Some(self.key_for_sealing()?.seal(name, value.as_bytes())),
-            (Custody::LeaderStored, None) => {
-                return Err(StoreError(format!(
-                    "secret {name:?} is leader-stored, so it needs a value"
-                )));
-            }
-            (Custody::WorkerLocal, None) => None,
-            (Custody::WorkerLocal, Some(_)) => {
-                return Err(StoreError(format!(
-                    "secret {name:?} is worker-local, so its value is never the leader's to hold"
-                )));
-            }
-        };
+        self.create(name, custody, SECRET, description, value)
+    }
 
-        let mut conn = self.conn.lock().unwrap();
-        // One transaction: a secret that exists with no version would be a leader-stored credential the fleet can
-        // never obtain, and nothing would say why.
-        let tx = conn.transaction()?;
-        let inserted = tx.execute(
-            "INSERT OR IGNORE INTO secrets (name, custody, description, next_version) VALUES (?1, ?2, ?3, 1)",
-            (name, custody.as_str(), description),
-        )?;
-        if inserted == 0 {
-            return Err(StoreError(format!("secret {name:?} already exists")));
+    fn create_certificate(&self, name: &str, description: &str, value: &str) -> Result<(), StoreError> {
+        self.create(name, Custody::LeaderStored, CERTIFICATE, description, Some(value))
+    }
+
+    fn certificate_value(&self, name: &str, version: i64) -> Result<Option<String>, StoreError> {
+        let Some(key) = self.key_if_any()? else {
+            return Ok(None);
+        };
+        let conn = self.conn.lock().unwrap();
+        let kind: Option<String> = conn
+            .query_row("SELECT kind FROM secrets WHERE name = ?1", [name], |row| row.get(0))
+            .optional()?;
+        if kind.as_deref() != Some(CERTIFICATE) {
+            return Ok(None);
         }
-        if let Some(sealed) = &sealed {
-            let version = Self::take_version(&tx, name)?.expect("the row this transaction just inserted");
-            Self::insert_version(&tx, name, version, sealed)?;
-        }
-        tx.commit()?;
-        Ok(())
+        let Some(sealed) = Self::sealed(&conn, name, version)? else {
+            return Ok(None);
+        };
+        Ok(key.open(name, &sealed).and_then(|value| String::from_utf8(value).ok()))
     }
 
     fn add_secret_version(&self, name: &str, value: &str) -> Result<i64, StoreError> {
@@ -2670,6 +2718,29 @@ mod tests {
         assert_eq!(current.version, 1);
         assert!(current.usable);
         assert!(current.set_at >= before);
+    }
+
+    /// A certificate is a stored secret the Secrets page leaves out, and its value is read only as a certificate.
+    #[test]
+    fn a_certificate_is_a_secret_marked_as_one() {
+        let s = store();
+        s.create_certificate("leader", "served", "chain and key").unwrap();
+        leader_stored(&s, "kafka-west-sasl", "hunter2");
+
+        let r = record(&s, "leader");
+        assert!(r.certificate);
+        assert_eq!(r.custody(), Custody::LeaderStored);
+        assert_eq!(r.current().map(|v| v.version), Some(1));
+        assert!(!record(&s, "kafka-west-sasl").certificate);
+        assert_eq!(
+            s.certificate_value("leader", 1).unwrap().as_deref(),
+            Some("chain and key")
+        );
+        assert_eq!(s.certificate_value("kafka-west-sasl", 1).unwrap(), None);
+        assert!(
+            s.create_certificate("kafka-west-sasl", "", "x").is_err(),
+            "one name space"
+        );
     }
 
     #[test]

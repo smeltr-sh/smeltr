@@ -2137,6 +2137,8 @@ async fn list_secrets(State(state): State<AppState>) -> Result<Json<Vec<SecretOu
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(
         rows.into_iter()
+            // Listed on their own page, and changed only through it.
+            .filter(|r| !r.certificate)
             .map(|r| {
                 let mut out = SecretOut::from(r);
                 out.deployed = deployed.remove(&out.name).unwrap_or_default();
@@ -2172,10 +2174,30 @@ async fn store_secret_value(
     Path(name): Path<String>,
     Json(req): Json<SecretValueRequest>,
 ) -> Json<Envelope> {
+    match is_certificate(&state, &name).await {
+        Ok(false) => store_value(state, name, req.value).await,
+        Ok(true) => Json(Envelope::failed_one(format!(
+            "{name:?} is a certificate; replace it on the Certificates page"
+        ))),
+        Err(e) => Json(Envelope::failed_one(e)),
+    }
+}
+
+/// Whether `name` is a certificate rather than a secret of any other kind.
+async fn is_certificate(state: &AppState, name: &str) -> Result<bool, StoreError> {
+    let name = name.to_string();
+    run_store(state.store.clone(), move |s| {
+        Ok(s.list_secrets()?.iter().any(|r| r.name == name && r.certificate))
+    })
+    .await
+}
+
+/// [`store_secret_value`] for a value already checked.
+async fn store_value(state: AppState, name: String, value: String) -> Json<Envelope> {
     let store = state.store.clone();
     let added = {
         let name = name.clone();
-        run_store(store, move |s| s.add_secret_version(&name, &req.value)).await
+        run_store(store, move |s| s.add_secret_version(&name, &value)).await
     };
     if let Err(e) = added {
         return Json(Envelope::failed_one(e));
@@ -2220,6 +2242,198 @@ async fn store_secret_value(
     match forgotten {
         // The value is stored either way; failing to forget an old one is not a failed rotation.
         Ok(()) => Json(Envelope::done()),
+        Err(e) => Json(Envelope::failed_one(e)),
+    }
+}
+
+// -- certificates ------------------------------------------------------------
+//
+// A certificate is a secret whose value is a chain and its private key (`io::trust::certificate_value`). It is
+// sealed, versioned, retained and delivered as every secret is; these routes are where one is added, replaced and
+// read about, since its value is never typed into the Secrets page.
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CertificateOut {
+    pub name: String,
+    pub description: String,
+    /// Every version still held, oldest first.
+    pub versions: Vec<SecretVersionOut>,
+    /// The newest version's chain, leaf first. Empty where this leader cannot open it.
+    pub chain: Vec<tls::Described>,
+    /// Whether the leader serves a copy of it.
+    pub served: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CertificateRequest {
+    /// The new certificate's name. Ignored when replacing one, which the path names.
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// PEM: the certificate, then any intermediates, then optionally the root.
+    pub certificate: String,
+    /// PEM, unencrypted.
+    pub private_key: String,
+}
+
+impl CertificateRequest {
+    /// The value to store, once the certificate reads as one and the key is its key.
+    fn checked(&self) -> Result<String, String> {
+        tls::describe_each(self.certificate.as_bytes(), "the certificate")?;
+        tls::is_pair(self.certificate.as_bytes(), self.private_key.as_bytes())?;
+        Ok(crate::io::trust::certificate_value(
+            &self.certificate,
+            &self.private_key,
+        ))
+    }
+}
+
+/// The newest chain and private key of the certificate `name`, `None` where it has none this leader can open.
+pub fn newest_certificate(store: &dyn Store, name: &str) -> Result<Option<(String, String)>, StoreError> {
+    let Some(current) = store
+        .list_secrets()?
+        .into_iter()
+        .find(|r| r.name == name && r.certificate)
+    else {
+        return Ok(None);
+    };
+    let Some(version) = current.current().map(|v| v.version) else {
+        return Ok(None);
+    };
+    Ok(store.certificate_value(name, version)?.and_then(|value| {
+        let (chain, key) = crate::io::trust::certificate_parts(&value).ok()?;
+        Some((chain.to_string(), key.to_string()))
+    }))
+}
+
+/// The name a certificate uploaded before the list existed is listed under.
+pub const UPLOADED_BEFORE_THE_LIST: &str = "leader";
+
+/// Lists the certificate an operator uploaded for the leader before certificates were kept in a list, so the
+/// Certificates page shows what the leader serves and it can be chosen again. Run at start; does nothing once the
+/// list holds it, or where the leader serves its own or an ordered certificate.
+pub fn list_uploaded_certificate(store: &dyn Store, tls_dir: &std::path::Path) -> Result<(), String> {
+    if acme::source(tls_dir)? != acme::Source::Upload {
+        return Ok(());
+    }
+    let (materials, served) = tls::in_force(tls_dir)?;
+    let fingerprint = tls::describe(&served, "the certificate")?.fingerprint;
+    for r in store.list_secrets().map_err(|e| e.to_string())? {
+        let listed = newest_certificate(store, &r.name).map_err(|e| e.to_string())?;
+        if listed.is_some_and(|(chain, _)| {
+            tls::describe(chain.as_bytes(), "the certificate").is_ok_and(|leaf| leaf.fingerprint == fingerprint)
+        }) {
+            return Ok(());
+        }
+    }
+    let key_path = &materials.server_key_path;
+    let key = std::fs::read_to_string(key_path).map_err(|e| format!("{}: {e}", key_path.display()))?;
+    let (_, root) = tls::signing_root_pem(&materials.ca_pem, &served)?;
+    let chain = format!("{}\n{root}", String::from_utf8_lossy(&served).trim_end());
+    let value = crate::io::trust::certificate_value(&chain, &key);
+    store
+        .create_certificate(UPLOADED_BEFORE_THE_LIST, "", &value)
+        .map_err(|e| e.to_string())
+}
+
+/// The fingerprint of the certificate the leader serves, where an operator chose it from the list rather than the
+/// leader's own authority signing it.
+fn served_from_list(data_dir: &std::path::Path) -> Option<String> {
+    let (materials, served) = tls::in_force(&data_dir.join("tls")).ok()?;
+    materials.supplied.then_some(())?;
+    tls::describe(&served, "the certificate")
+        .ok()
+        .map(|served| served.fingerprint)
+}
+
+async fn list_certificates(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<CertificateOut>>, (axum::http::StatusCode, String)> {
+    let data_dir = state.data_dir.clone();
+    run_store(state.store, move |s| {
+        let served = served_from_list(&data_dir);
+        let mut out = Vec::new();
+        for r in s.list_secrets()?.into_iter().filter(|r| r.certificate) {
+            let chain = newest_certificate(s, &r.name)?
+                .and_then(|(chain, _)| tls::describe_each(chain.as_bytes(), "the certificate").ok())
+                .unwrap_or_default();
+            let SecretOut {
+                name,
+                description,
+                versions,
+                ..
+            } = SecretOut::from(r);
+            let served = chain
+                .first()
+                .is_some_and(|leaf| served.as_ref() == Some(&leaf.fingerprint));
+            out.push(CertificateOut {
+                name,
+                description,
+                versions,
+                chain,
+                served,
+            });
+        }
+        Ok(out)
+    })
+    .await
+    .map(Json)
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn create_certificate(State(state): State<AppState>, Json(req): Json<CertificateRequest>) -> Json<Envelope> {
+    let value = match req.checked() {
+        Ok(value) => value,
+        Err(e) => return Json(Envelope::failed_one(e)),
+    };
+    match run_store(state.store, move |s| {
+        s.create_certificate(&req.name, &req.description, &value)
+    })
+    .await
+    {
+        Ok(()) => Json(Envelope::done()),
+        Err(e) => Json(Envelope::failed_one(e)),
+    }
+}
+
+/// Stores a new version of a certificate. What the leader serves is the copy it took when it was chosen, so a new
+/// version reaches it when it is chosen again, as one reaches a worker on its next deploy.
+async fn replace_certificate(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<CertificateRequest>,
+) -> Json<Envelope> {
+    let value = match req.checked() {
+        Ok(value) => value,
+        Err(e) => return Json(Envelope::failed_one(e)),
+    };
+    match is_certificate(&state, &name).await {
+        Ok(true) => store_value(state, name, value).await,
+        Ok(false) => Json(Envelope::failed_one(format!("no certificate named {name:?}"))),
+        Err(e) => Json(Envelope::failed_one(e)),
+    }
+}
+
+/// Deleting the certificate the leader serves is refused, as deleting a secret the fleet runs is: the leader would
+/// serve a certificate the list no longer shows.
+async fn delete_certificate(State(state): State<AppState>, Path(name): Path<String>) -> Json<Envelope> {
+    let data_dir = state.data_dir.clone();
+    let wanted = name.clone();
+    let served = run_store(state.store.clone(), move |s| {
+        let leaf = newest_certificate(s, &wanted)?
+            .and_then(|(chain, _)| tls::describe(chain.as_bytes(), "the certificate").ok())
+            .map(|leaf| leaf.fingerprint);
+        Ok(leaf.is_some() && leaf == served_from_list(&data_dir))
+    })
+    .await;
+    match served {
+        Ok(false) => delete_secret(State(state), Path(name)).await,
+        Ok(true) => Json(Envelope::failed_one(format!(
+            "the leader serves {name:?}; choose another certificate for it first"
+        ))),
         Err(e) => Json(Envelope::failed_one(e)),
     }
 }
@@ -3045,6 +3259,11 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/branches/:name/overwrite", post(remote::overwrite))
         .route("/api/secrets", get(list_secrets).post(create_secret))
         .route("/api/secrets/:name", put(store_secret_value).delete(delete_secret))
+        .route("/api/certificates", get(list_certificates).post(create_certificate))
+        .route(
+            "/api/certificates/:name",
+            put(replace_certificate).delete(delete_certificate),
+        )
         .route(
             "/api/secrets/:name/versions/:version",
             axum::routing::delete(forget_secret_version),
@@ -5193,5 +5412,62 @@ mod single_worker_tests {
         assert!(revoke_worker(State(state.clone()), Path("w1".to_string())).await.0.ok);
         assert_eq!(answer_as(&state, "w2", runs()).await.holds.len(), 1);
         assert_eq!(fetch(&state, "w1").await.0, StatusCode::NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
+mod certificate_list_tests {
+    use super::*;
+    use crate::leader::sqlite_store::SqliteStore;
+
+    const A_YEAR: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
+    fn names() -> Vec<String> {
+        vec!["localhost".to_string(), "127.0.0.1".to_string()]
+    }
+
+    /// A leader's TLS directory serving its own authority's certificate.
+    fn own(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("smeltr-certificate-list-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let tls_dir = dir.join("tls");
+        tls::ensure(&tls_dir, names(), A_YEAR, &[]).expect("an authority");
+        tls_dir
+    }
+
+    fn certificates(store: &dyn Store) -> Vec<String> {
+        let all = store.list_secrets().unwrap().into_iter();
+        all.filter(|r| r.certificate).map(|r| r.name).collect()
+    }
+
+    /// An upload from before the list is listed once, whole enough to be chosen and served again.
+    #[test]
+    fn an_uploaded_certificate_is_listed_once() {
+        let dir = own("uploaded");
+        let theirs = tls::ensure(&own("theirs"), names(), A_YEAR, &[]).unwrap();
+        let chain = std::fs::read(&theirs.server_cert_path).unwrap();
+        let key = std::fs::read(&theirs.server_key_path).unwrap();
+        tls::install(&dir, &chain, &key, &theirs.ca_pem, &names(), &[]).expect("an upload");
+        let store = SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("uploaded")).unwrap();
+
+        list_uploaded_certificate(&store, &dir).unwrap();
+        list_uploaded_certificate(&store, &dir).unwrap();
+
+        assert_eq!(certificates(&store), [UPLOADED_BEFORE_THE_LIST]);
+        let (listed, listed_key) = newest_certificate(&store, UPLOADED_BEFORE_THE_LIST).unwrap().unwrap();
+        assert_eq!(listed_key.as_bytes(), key);
+        let (served, root) = tls::split_root(listed.as_bytes(), b"")
+            .unwrap()
+            .expect("the chain ends at its root");
+        assert_eq!(served, chain);
+        assert_eq!(root.as_bytes(), theirs.ca_pem);
+    }
+
+    #[test]
+    fn the_leaders_own_certificate_is_not_listed() {
+        let dir = own("own");
+        let store = SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("own")).unwrap();
+        list_uploaded_certificate(&store, &dir).unwrap();
+        assert!(certificates(&store).is_empty());
     }
 }

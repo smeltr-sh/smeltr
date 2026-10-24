@@ -87,6 +87,9 @@ impl Custody {
 pub struct SecretRecord {
     pub name: String,
     pub description: String,
+    /// A certificate with its private key, rather than a value of any other kind. Listed on the Certificates page
+    /// and named by an identity; stored, sealed and delivered as every secret is.
+    pub certificate: bool,
     /// Every version still held, oldest first. Non-empty exactly when custody is [`Custody::LeaderStored`]: the
     /// leader either holds values and has these facts about them, or holds nothing and has none.
     ///
@@ -595,6 +598,14 @@ pub trait Store: Send + Sync {
         description: &str,
         value: Option<&str>,
     ) -> Result<(), StoreError>;
+
+    /// Declares `name` as a certificate: `value` is its chain and then its private key, PEM, and is leader-stored.
+    /// Errors if the name is taken or unusable as a name.
+    fn create_certificate(&self, name: &str, description: &str, value: &str) -> Result<(), StoreError>;
+
+    /// The chain and private key of the certificate `name` at `version`, PEM, for this leader to serve. `None` for an
+    /// unknown name, an unheld version, a secret that is not a certificate, and a row the leader's key cannot open.
+    fn certificate_value(&self, name: &str, version: i64) -> Result<Option<String>, StoreError>;
 
     /// Seals `value` as a new version of `name` and returns its number -- what a bundle quotes to run it. Errors
     /// for an unknown name and for worker-local custody.
