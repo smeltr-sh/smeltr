@@ -28,6 +28,7 @@
     unknownLookupTables,
     truncateSteps,
     flatSteps,
+    stepName,
     STEP_LABELS,
     stepsRun,
     parseInputFor,
@@ -767,6 +768,7 @@
     sample: string,
     atMicros?: number,
     filter?: string,
+    attribution?: boolean,
   ): Promise<PreviewResult> {
     const held = unfinished.hold(stepsSubset);
     const config = JSON.stringify(
@@ -787,6 +789,7 @@
       showInternal: true,
       atMicros,
       filter,
+      attribution,
     });
     return { ...res, errors: res.errors.map(held.restore) };
   }
@@ -1148,6 +1151,79 @@
   /** The rows the grid shows: the pause's, once run, or else the whole pipeline's. */
   let gridRows = $derived(pause && pauseRun ? pauseRun.after : (lastGoodResult?.rows ?? null));
 
+  // Which steps touched each field of a row, dropped it and raised its
+  // exceptions, for the records shown. The leader runs the pipeline once per
+  // step for it, so it is asked for once typing settles, and it stands only
+  // for the run it was asked about.
+  const ATTRIBUTE_MS = 1000;
+  let attributed = $state<{ rows: PreviewRow[]; byRow: Map<number, PreviewRow> } | null>(null);
+  $effect(() => {
+    const rows = gridRows;
+    const cut = pause && pauseRun ? pause.after : steps;
+    const sample = lastSample;
+    void signature;
+    if (!rows || rows.length === 0 || !sample) return;
+    let current = true;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetchPreview(cut, sample, undefined, undefined, true);
+        if (current && res.ok && res.rows.length === rows.length)
+          attributed = { rows, byRow: new Map(res.rows.map((r) => [r.row, r])) };
+      } catch {
+        // The records stand without it.
+      }
+    }, ATTRIBUTE_MS);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  });
+  let attribution = $derived(attributed && attributed.rows === gridRows ? attributed.byRow : null);
+
+  /** Each step by id, with its number in the step list. */
+  let stepNumbers = $derived(
+    new Map(flatSteps(steps).map((step, i) => [step.id, { step, number: i + 1 }])),
+  );
+
+  /** The steps that touched each field of `row`, in the order they ran. A
+   * list is compared whole, so a field inside one takes the list's. */
+  function touchedOn(row: number) {
+    const touched = attribution?.get(row)?.steps;
+    return (path: string) => {
+      let at = path;
+      while (touched && !(at in touched)) {
+        const up = at.replace(/(\.[^.[]*|\[[^\]]*\])$/, '');
+        if (up === at || up === '') break;
+        at = up;
+      }
+      return (touched?.[at] ?? []).flatMap((id) => {
+        const t = stepNumbers.get(id);
+        return t ? [t] : [];
+      });
+    };
+  }
+
+  /** How many of the records shown each step dropped and failed. */
+  let stepCounts = $derived.by(() => {
+    const counts = new Map<Step, { dropped: number; failed: number }>();
+    const of = (id: string | undefined) => {
+      const step = id ? stepNumbers.get(id)?.step : undefined;
+      if (!step) return null;
+      let c = counts.get(step);
+      if (!c) counts.set(step, (c = { dropped: 0, failed: 0 }));
+      return c;
+    };
+    for (const r of gridRows ?? []) {
+      for (const id of new Set(r.exceptions.map((e) => e.step))) {
+        const c = of(id);
+        if (c) c.failed++;
+      }
+      const c = of(attribution?.get(r.row)?.droppedBy);
+      if (c) c.dropped++;
+    }
+    return counts;
+  });
+
   // The pause's runs by row, so a row finds its sides without a search.
   let pausedByRow = $derived.by(() => {
     const d = pause ? pauseRun : null;
@@ -1467,9 +1543,27 @@
   // beside the text keep the rows that are failing, dropped, changed by a step
   // or hold a field, each on top of the text and of each other.
 
-  type FindChip = { kind: 'failing' | 'dropped' | 'changed' } | { kind: 'has'; path: string };
+  type FindChip =
+    | { kind: 'failing' | 'dropped' | 'changed' }
+    | { kind: 'has'; path: string }
+    | { kind: 'droppedBy' | 'failedAt'; step: string };
   let chips = $state<FindChip[]>([]);
-  const chipKey = (c: FindChip) => (c.kind === 'has' ? `has ${c.path}` : c.kind);
+  const chipKey = (c: FindChip) =>
+    c.kind === 'has'
+      ? `has ${c.path}`
+      : c.kind === 'droppedBy'
+        ? `dropped by ${c.step}`
+        : c.kind === 'failedAt'
+          ? `failed at ${c.step}`
+          : c.kind;
+  function chipLabel(c: FindChip): string {
+    if (c.kind === 'has') return `has ${c.path}`;
+    if (c.kind === 'droppedBy' || c.kind === 'failedAt') {
+      const number = stepNumbers.get(c.step)?.number ?? '?';
+      return c.kind === 'droppedBy' ? `⌫ Dropped by step ${number}` : `⚠ Failed at step ${number}`;
+    }
+    return CHIP_LABELS[c.kind];
+  }
 
   function addChip(c: FindChip) {
     if (!chips.some((x) => chipKey(x) === chipKey(c))) chips = [...chips, c];
@@ -1504,6 +1598,8 @@
     const row = gridRows![i];
     if (c.kind === 'failing') return row.exceptions.length > 0;
     if (c.kind === 'dropped') return row.json === null;
+    if (c.kind === 'droppedBy') return attribution?.get(row.row)?.droppedBy === c.step;
+    if (c.kind === 'failedAt') return row.exceptions.some((e) => e.step === c.step);
     return rowChanged(i);
   }
 
@@ -1785,6 +1881,13 @@
             parseInput={parseInputFor(sampleRows[0])}
             selectedStep={pause?.step ?? null}
             ran={pause?.run ?? null}
+            counts={stepCounts}
+            onCount={(step, kind) =>
+              addChip(
+                kind === 'dropped'
+                  ? { kind: 'droppedBy', step: step.id }
+                  : { kind: 'failedAt', step: step.id },
+              )}
             {onSelectStep}
             onPropose={readOnly ? undefined : proposeFields}
             proposal={openProposal}
@@ -1881,7 +1984,7 @@
                 >
                   {#snippet before()}<span aria-hidden="true">⌕</span
                     >{#each chips as c (chipKey(c))}<span class="find-chip"
-                        >{c.kind === 'has' ? `has ${c.path}` : CHIP_LABELS[c.kind]}<button
+                        >{chipLabel(c)}<button
                           type="button"
                           aria-label={`remove ${chipKey(c)}`}
                           onclick={() => toggleChip(c)}>✕</button
@@ -2092,7 +2195,16 @@
                                     {/if}
                                   </div>
                                   {#each row.exceptions as a}
-                                    <p class="exception">{a.message}</p>
+                                    {@const by = a.step ? stepNumbers.get(a.step) : undefined}
+                                    <p class="exception">
+                                      {#if by}<button
+                                          type="button"
+                                          class="exception-step"
+                                          onclick={() => (jumpToStepId = by.step.id)}
+                                          >{stepName(by.step, by.number)}</button
+                                        >:
+                                      {/if}{a.message}
+                                    </p>
                                   {/each}
                                 </div>
                                 <div
@@ -2106,6 +2218,8 @@
                                     declared={sides.declared}
                                     {changedOnly}
                                     {showTypes}
+                                    touched={touchedOn(row.row)}
+                                    onjump={(step) => (jumpToStepId = step.id)}
                                   />
                                 </div>
                               </td>
@@ -2645,6 +2759,16 @@
   }
 
   /* Why the row failed, under its head, in the words the step gave. */
+  .exception-step {
+    border: 0;
+    background: none;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    text-decoration: underline dotted;
+    cursor: pointer;
+  }
+
   .exception {
     position: sticky;
     left: 0.75rem;

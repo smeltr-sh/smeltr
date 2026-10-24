@@ -1026,6 +1026,64 @@ test('◎ pauses the records after a step', async ({ admin, leader, api }) => {
   await expect(dropped).toHaveClass(/dropped/);
 });
 
+// A3, which step did it. Once typing settles, a field carries the sign of the step that last touched it, held it
+// lists every step that did and jumps to one, an exception names its step, and a step's dropped and failed counts
+// filter the records to those it dropped or failed.
+test('A3: a field names the steps that touched it, and a step card counts what it dropped', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/pipelines/web${ON}`, {
+    id: 'web',
+    name: 'web',
+    steps: [
+      {
+        type: 'parser',
+        id: 'body',
+        input: '_raw',
+        kind: { type: 'json' },
+        declared: [
+          { name: 'status', type: 'i64' },
+          { name: 'path', type: 'str' },
+        ],
+      },
+      { type: 'drop', id: 'health', condition: 'path == "/health"' },
+      { type: 'code', id: 'calc', body: 'path = "web" + path;' },
+    ],
+  });
+  await api.put(`/api/samples${ON}`, {
+    id: 'web',
+    name: 'web hour',
+    records: [
+      { _raw: '{"status": 200, "path": "/a"}' },
+      { _raw: '{"status": "oops", "path": "/b"}' },
+      { _raw: '{"status": 200, "path": "/health"}' },
+    ],
+  });
+
+  await goto(admin, leader, '#/build/pipelines/web/for/web');
+  const grid = admin.getByRole('table');
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toBeVisible();
+  // The failing row opens first, and its exception names the parser.
+  await admin.getByRole('button', { name: 'Step 1 · Parser · _raw as JSON (2 declared)' }).click();
+  await expect(admin.locator('#step-body')).toBeInViewport();
+
+  // `path` was set by the parser and then by the code step: the sign is the last's, and the list has both.
+  const record = grid.getByRole('row', { name: /^record 1/ });
+  const last = record.getByRole('button', { name: /^Step 3 · Code/ });
+  await expect(last).toBeVisible();
+  await last.hover();
+  const list = last.locator('xpath=following-sibling::span[1]');
+  await expect(list.getByRole('button', { name: /^Step 1 · Parser/ })).toBeVisible();
+  await expect(list.getByRole('button', { name: /^Step 3 · Code/ })).toBeVisible();
+
+  await admin.locator('#step-health').getByRole('button', { name: '−1 dropped' }).click();
+  await expect(admin.getByRole('button', { name: 'remove dropped by health' })).toBeVisible();
+  await expect(admin.getByText('1 of 3 rows')).toBeVisible();
+  await expect(grid.getByRole('row', { name: /^row 2 / })).toBeVisible();
+});
+
 // A4, the whole trip. A refused save's errors stay on the steps until the next save; a preview error after it is
 // still written somewhere, in the error chip above the records.
 test('A4: after a refused save, a new compile error is still shown', async ({

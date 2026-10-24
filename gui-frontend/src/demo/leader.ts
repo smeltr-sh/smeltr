@@ -840,6 +840,7 @@ export class DemoLeader {
       show_internal: boolean;
       at_micros: number | null;
       filter: string | null;
+      attribution?: boolean;
     },
   ): Promise<Answer> {
     const branch = this.branch(name) ?? this.state.branches.main;
@@ -856,6 +857,7 @@ export class DemoLeader {
       showInternal: req.show_internal,
       atMicros: req.at_micros,
       filter: req.filter,
+      attribution: req.attribution ?? false,
     });
   }
 

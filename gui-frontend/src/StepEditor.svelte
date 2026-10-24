@@ -84,6 +84,8 @@
     parseInput = '_raw',
     selectedStep = null,
     ran = null,
+    counts = new Map(),
+    onCount = () => {},
     onSelectStep = () => {},
     onPropose = () => {},
     proposal = null,
@@ -103,6 +105,10 @@
     selectedStep?: Step | null;
     /** The steps the records have been through, while they are paused; the rest are dimmed. */
     ran?: Set<Step> | null;
+    /** How many records each step dropped and failed, in the records shown. */
+    counts?: Map<Step, { dropped: number; failed: number }>;
+    /** Filter the records to those the step dropped or failed. */
+    onCount?: (step: Step, kind: 'dropped' | 'failed') => void;
     onSelectStep?: (step: Step | null) => void;
     /** Ask the parser step to propose its declared fields from the sample. */
     onPropose?: (step: Step) => void;
@@ -152,6 +158,7 @@
   }
   let isSelected = $derived(selectedStep === step);
   // A broken step stays bright: its error is what to read.
+  let stepCounts = $derived(counts.get(step));
   let notRun = $derived(ran !== null && !ran.has(step) && stepErrors.length === 0);
   function toggleSelected() {
     onSelectStep(isSelected ? null : step);
@@ -645,6 +652,8 @@
           {parseInput}
           {selectedStep}
           {ran}
+          {counts}
+          {onCount}
           {onSelectStep}
           {onPropose}
           {proposal}
@@ -663,6 +672,8 @@
           {parseInput}
           {selectedStep}
           {ran}
+          {counts}
+          {onCount}
           {onSelectStep}
           {onPropose}
           {proposal}
@@ -706,6 +717,20 @@
           {@render glyph(stepErrors.length === 0)}
         {/if}
       </button>
+      {#if stepCounts && (stepCounts.dropped > 0 || stepCounts.failed > 0)}
+        <span class="counts">
+          {#if stepCounts.dropped > 0}
+            <button type="button" class="count" onclick={() => onCount(step, 'dropped')}
+              >&minus;{stepCounts.dropped} dropped</button
+            >
+          {/if}
+          {#if stepCounts.failed > 0}
+            <button type="button" class="count failed" onclick={() => onCount(step, 'failed')}
+              >{stepCounts.failed} failed</button
+            >
+          {/if}
+        </span>
+      {/if}
       {@render controls()}
     </div>
 
@@ -1660,6 +1685,28 @@
     font-style: italic;
   }
 
+  /* What the step did to the records shown, each a filter to those records. */
+  .counts {
+    display: flex;
+    flex: none;
+  }
+
+  .count {
+    flex: none;
+    border: 0;
+    background: none;
+    padding: 0 0.3rem;
+    font-size: var(--text-note);
+    color: var(--dim);
+    text-decoration: underline dotted;
+    cursor: pointer;
+  }
+
+  .count.failed {
+    color: var(--error);
+    font-weight: 600;
+  }
+
   .summary {
     flex: 1;
     font-family: var(--mono);
@@ -1694,6 +1741,13 @@
 
     .card:not(.open, .if-card) > .card-head {
       position: relative;
+    }
+
+    /* The counts step aside for the controls, rather than sit under them. */
+    .card:not(.open, .if-card)
+      > .card-head:is(:hover, :focus-within, :has(.active, [aria-expanded='true']))
+      > .counts {
+      margin-right: 10.6rem;
     }
 
     .card:not(.open, .if-card) > .card-head > .controls {
