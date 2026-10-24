@@ -933,11 +933,11 @@ async fn setup_leader(
     tokio::spawn(smeltr::leader::remote::poll(state.clone()));
     tokio::spawn(smeltr::leader::updates::poll(state.clone()));
     tokio::spawn(smeltr::leader::remote::push_saves(state.clone()));
-    // A worker in this process carries the leader's logs on its beat; without one, the leader keeps them itself.
+    // Without a worker in this process, what the leader's threads did not raise is the leader's too.
     if !smeltr::startup_config::worker_enabled() {
-        smeltr::logs::keep_for_leader();
-        tokio::spawn(smeltr::leader::keep_own_logs(state.clone()));
+        smeltr::logs::runs_no_worker();
     }
+    tokio::spawn(smeltr::leader::keep_own_logs(state.clone()));
 
     // A cutover changes the files and then withdraws the enrollment codes that named the root it retired. A process
     // that stopped between the two came back to a finished cutover with no rotation left to notice it, so the same
@@ -1583,7 +1583,10 @@ fn exit_after_stopping() {
 
 /// Runs the leader, GUI included, and never returns.
 fn run_as_leader() -> ! {
+    // Every thread the leader runs on, so its logs are stored as the leader's beside a worker in this process.
+    smeltr::logs::mark_leader_thread();
     tokio::runtime::Builder::new_multi_thread()
+        .on_thread_start(smeltr::logs::mark_leader_thread)
         .enable_all()
         .build()
         .expect("build tokio runtime")

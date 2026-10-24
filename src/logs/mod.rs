@@ -115,7 +115,8 @@ impl Relog {
 
 /// What the channel carries. `Stop` rides it so that it arrives behind every event already sent.
 enum Message {
-    Event(Event),
+    /// An event, and whether a thread of this process's leader raised it.
+    Event(Event, bool),
     Stop,
 }
 
@@ -132,14 +133,17 @@ static FLUSHED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
 static MAX_LEVEL: AtomicUsize = AtomicUsize::new(level_ord(Level::INFO));
 /// This process's worker id, once it has one. `start` runs before either role begins, so early events have none.
 static WORKER: OnceLock<String> = OnceLock::new();
-/// Whether this process's leader writes its own logs into its store: set by a leader running no worker, whose logs
-/// would otherwise reach nobody but its console.
-static LEADER_KEEPS: AtomicBool = AtomicBool::new(false);
+/// Whether this process runs a leader and no worker, so that what no thread of the leader's raised is the leader's
+/// all the same: a thread it spawned itself, or one before it started.
+static NO_WORKER: AtomicBool = AtomicBool::new(false);
 /// What the drain thread has written, by site. Whoever holds a registry publishes it; `logs` stays underneath
 /// `metrics` rather than depending on it. This is what says whether one site is drowning the rest.
 static WRITTEN: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Default::default);
 /// Written, and not yet acknowledged by the leader. Drained by the heartbeat, which drops only what landed.
 static PENDING: LazyLock<Mutex<VecDeque<Event>>> = LazyLock::new(Default::default);
+/// What this process's leader raised and has not yet written into its own store. Apart from [`PENDING`], so a
+/// worker in the same process never carries the leader's logs under its own name.
+static LEADER_PENDING: LazyLock<Mutex<VecDeque<Event>>> = LazyLock::new(Default::default);
 /// Where logs sources read: one queue per open [`Tap`], named by its number. Empty while none is open: nothing
 /// accumulates for a consumer that does not exist, which is the same reason a leader queues nothing.
 static LOGS: LazyLock<Mutex<Vec<Queue>>> = LazyLock::new(Default::default);
@@ -180,7 +184,7 @@ pub fn boot_id() -> u64 {
     *BOOT_ID
 }
 
-/// Events a full [`PENDING`] refused, for the life of the process. A worker out of contact for long enough loses
+/// Events a full [`PENDING`] or [`LEADER_PENDING`] refused, for the life of the process. A worker out of contact for long enough loses
 /// logs whatever it does; this says how many.
 static UNDELIVERED: AtomicU64 = AtomicU64::new(0);
 
@@ -239,7 +243,16 @@ pub fn dropped() -> u64 {
 /// Mapped rather than handed over: what rides the wire is a smaller thing than an `Event`, and materializing a
 /// batch of events only to convert and drop them would copy every message twice a beat.
 pub fn pending_map<T>(limit: usize, f: impl FnMut(&Event) -> T) -> Vec<T> {
-    PENDING
+    map_queue(&PENDING, limit, f)
+}
+
+/// [`pending_map`] for what this process's leader raised, which the leader writes into its own store.
+pub fn leader_pending_map<T>(limit: usize, f: impl FnMut(&Event) -> T) -> Vec<T> {
+    map_queue(&LEADER_PENDING, limit, f)
+}
+
+fn map_queue<T>(queue: &Mutex<VecDeque<Event>>, limit: usize, f: impl FnMut(&Event) -> T) -> Vec<T> {
+    queue
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
@@ -255,7 +268,16 @@ pub fn pending_len() -> usize {
 
 /// Drop the `count` oldest: the leader has them. Called only on a heartbeat the leader answered.
 pub fn delivered(count: usize) {
-    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    drop_oldest(&PENDING, count);
+}
+
+/// [`delivered`] for what the leader wrote into its own store.
+pub fn leader_delivered(count: usize) {
+    drop_oldest(&LEADER_PENDING, count);
+}
+
+fn drop_oldest(queue: &Mutex<VecDeque<Event>>, count: usize) {
+    let mut pending = queue.lock().unwrap_or_else(|e| e.into_inner());
     let take = count.min(pending.len());
     pending.drain(..take);
 }
@@ -380,6 +402,15 @@ thread_local! {
     /// Set while this thread is delivering logs. Read by the layer, which runs on the thread that records
     /// -- the drain thread is too late, because by then the thread that raised it is gone.
     static DELIVERING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set on every thread of this process's leader. Read by [`hand_off`] on the thread that records, for the same
+    /// reason as `DELIVERING`.
+    static LEADER_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Mark this thread as the leader's, so what it logs is stored under the leader rather than under a worker running
+/// in the same process. Called on the leader's main thread and on each thread its runtime starts.
+pub fn mark_leader_thread() {
+    LEADER_THREAD.with(|t| t.set(true));
 }
 
 /// Run `f` with everything this thread reports marked console-only.
@@ -414,23 +445,24 @@ fn worker() -> Option<&'static str> {
     WORKER.get().map(String::as_str)
 }
 
-/// Queue this process's logs for its own leader to write into its store, as a worker queues them for its
-/// heartbeat. Called once, by a leader running no worker of its own; one that runs one has them ride its beat.
-pub fn keep_for_leader() {
-    LEADER_KEEPS.store(true, Ordering::Relaxed);
+/// Queue what no thread of the leader's raised for the leader too, as it queues what they raised. Called once, by a
+/// leader running no worker of its own; in one that runs one, those are the worker's.
+pub fn runs_no_worker() {
+    NO_WORKER.store(true, Ordering::Relaxed);
 }
 
 /// Hand an event to the drain thread, or write it here where there is no thread to hand it to: before [`start`]
 /// -- a test, or anything before startup finished -- and after [`stop`], when the channel has no reader left. A
 /// log raised while shutting down is the last one to swallow.
 fn hand_off(event: Event) {
+    let leader = LEADER_THREAD.with(std::cell::Cell::get);
     match SENDER.get() {
         Some(sender) if !STOPPING.load(Ordering::Relaxed) => {
-            if sender.try_send(Message::Event(event)).is_err() {
+            if sender.try_send(Message::Event(event, leader)).is_err() {
                 DROPPED.fetch_add(1, Ordering::Relaxed);
             }
         }
-        _ => take(event),
+        _ => take(event, leader),
     }
 }
 
@@ -511,7 +543,7 @@ pub fn stop() {
 fn drain(receiver: Receiver<Message>) {
     loop {
         match receiver.recv() {
-            Ok(Message::Event(event)) => take(event),
+            Ok(Message::Event(event, leader)) => take(event, leader),
             // Behind every event already sent, so nothing recorded before a stop is left unwritten.
             Ok(Message::Stop) => break,
             // `SENDER` is a static and outlives every thread, so this cannot fire: `Stop` is what ends this
@@ -525,12 +557,12 @@ fn drain(receiver: Receiver<Message>) {
     wake.notify_all();
 }
 
-/// Write one event and count it against its site. The drain thread's job, and also the caller's own on the paths
+/// Write one event, raised by a thread of the leader's where `leader`, and count it against its site. The drain thread's job, and also the caller's own on the paths
 /// that have no drain thread to hand to.
 ///
 /// Counted after the write and only when it landed: a count of what was said is worth nothing if it also counts
 /// what nobody could hear.
-fn take(event: Event) {
+fn take(event: Event, leader: bool) {
     // Counted first, and against the console alone: whether the leader hears about this is a separate question
     // from whether anybody here did, and gating one on the other means a daemon with a closed stderr tells the
     // leader nothing -- the one shape where its console was already useless.
@@ -557,13 +589,16 @@ fn take(event: Event) {
     // Every open reader. Taken first because a reader is the consumer that can be told to stop.
     offer(LOGS.lock().unwrap_or_else(|e| e.into_inner()).iter_mut(), &event);
 
-    // A worker queues for the leader, whose heartbeat is the one path to one, and a leader with no worker queues
-    // for its own store. A process running both roles queues its leader's logs with its worker's -- they ride its
-    // own worker's beat into the store on the same machine, which is still local.
-    if worker().is_none() && !LEADER_KEEPS.load(Ordering::Relaxed) {
+    // A worker queues for the leader, whose heartbeat is the one path to one, and a leader queues for its own
+    // store. A process running both roles keeps the two apart, so each is stored under its own name.
+    let queue = if leader || (worker().is_none() && NO_WORKER.load(Ordering::Relaxed)) {
+        &LEADER_PENDING
+    } else if worker().is_some() {
+        &PENDING
+    } else {
         return;
-    }
-    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    };
+    let mut pending = queue.lock().unwrap_or_else(|e| e.into_inner());
     if pending.len() < PENDING_CAPACITY {
         pending.push_back(event);
     } else {
@@ -609,6 +644,52 @@ mod tests {
             local_only: false,
             seq,
         }
+    }
+
+    fn queued(queue: &Mutex<VecDeque<Event>>, site: &str) -> bool {
+        queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|e| e.site == site)
+    }
+
+    /// What a thread of the leader's raises is kept for the leader's own store and never rides a worker's beat,
+    /// though a worker runs in the same process; what any other thread raises is never the leader's.
+    #[test]
+    fn a_leader_thread_s_logs_are_kept_apart_from_a_worker_s() {
+        let leader_site = "leader_thread.marked.test";
+        let other_site = "leader_thread.unmarked.test";
+        std::thread::spawn(move || {
+            mark_leader_thread();
+            hand_off(Event {
+                site: leader_site.into(),
+                ..event(1)
+            });
+        })
+        .join()
+        .unwrap();
+        std::thread::spawn(move || {
+            hand_off(Event {
+                site: other_site.into(),
+                ..event(2)
+            });
+        })
+        .join()
+        .unwrap();
+
+        assert!(
+            queued(&LEADER_PENDING, leader_site),
+            "a leader thread's log was not kept for the leader"
+        );
+        assert!(
+            !queued(&PENDING, leader_site),
+            "a leader thread's log was queued for a worker's beat"
+        );
+        assert!(
+            !queued(&LEADER_PENDING, other_site),
+            "another thread's log was kept as the leader's"
+        );
     }
 
     /// A reader that takes more rows than its batch has room for hands the rest back, and they come out of the
