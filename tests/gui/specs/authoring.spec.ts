@@ -1422,10 +1422,18 @@ test('E8: a Kafka source is moved to now by changing its start, and the page say
   await goto(admin, leader, '#/build/sources');
   await expect(admin.getByRole('heading', { name: 'Sources' })).toBeVisible();
   await admin.getByRole('button', { name: /^orders\b/ }).click();
-  await expect(admin.getByText('Deploying this moves the source to the new position, so records are skipped or read again.')).toHaveCount(0);
+  await expect(
+    admin.getByText(
+      'Deploying this moves the source to the new position, so records are skipped or read again.',
+    ),
+  ).toHaveCount(0);
   const asked = Date.now();
   await admin.getByRole('combobox', { name: /^start at/ }).selectOption('timestamp');
-  await expect(admin.getByText('Deploying this moves the source to the new position, so records are skipped or read again.')).toBeVisible();
+  await expect(
+    admin.getByText(
+      'Deploying this moves the source to the new position, so records are skipped or read again.',
+    ),
+  ).toBeVisible();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
@@ -1433,7 +1441,11 @@ test('E8: a Kafka source is moved to now by changing its start, and the page say
   const [source] = saved.config.sources;
   expect(source.start.type).toBe('timestamp');
   expect(source.start.millis).toBeGreaterThanOrEqual(asked);
-  await expect(admin.getByText('Deploying this moves the source to the new position, so records are skipped or read again.')).toHaveCount(0);
+  await expect(
+    admin.getByText(
+      'Deploying this moves the source to the new position, so records are skipped or read again.',
+    ),
+  ).toHaveCount(0);
 });
 
 test('A10: an S3 source that lists its bucket is added from its form and saved as the leader accepts it', async ({
