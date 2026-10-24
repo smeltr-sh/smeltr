@@ -2401,8 +2401,8 @@ pub fn newest_certificate(store: &dyn Store, name: &str) -> Result<Option<(Strin
 }
 
 /// Which list entry each copy in `tls/` was taken from, by the copy's leaf fingerprint, as `acme` records which
-/// copies are its own. A replaced entry stays the one served until it is chosen again, so a name is never read off a
-/// fingerprint the list now holds.
+/// copies are its own. Read off the copy rather than the list's newest version: a version under another root is
+/// stored at once and served only once the fleet holds that root.
 const FROM_THE_LIST: &str = "from-the-list.json";
 
 /// The names of the list entries the leader serves, or is rotating to.

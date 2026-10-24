@@ -265,8 +265,8 @@ The key is a leader-stored secret, sealed, versioned and retained as any is;
 the certificate's chain is public and kept beside each version of it, so
 listing certificates opens nothing. The Certificates page lists them and the
 Secrets page leaves them out. The leader serves a copy of the one an operator
-chooses, taken when it is chosen, so a new version reaches what the leader
-serves when it is chosen again.
+chooses and records which entry the copy came from. A new version of that
+entry has to be one the leader can serve, and is served once stored.
 
 ### The secrets encryption key
 

@@ -73,8 +73,9 @@
     shown again.
   </p>
   <p>
-    <strong>Replace</strong> stores a new version. The leader keeps serving the copy it took until the
-    certificate is chosen again. The certificate the leader serves cannot be deleted.
+    To renew a certificate, choose <strong>Replace</strong> and paste the new version. If the leader
+    serves it, the leader switches to the new version; there's no need to choose it again. The
+    certificate the leader serves cannot be deleted.
   </p>
   <h2 id="source">Choose where the certificate comes from</h2>
   <p>
