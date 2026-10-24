@@ -41,6 +41,7 @@
   import SortButton from './SortButton.svelte';
   import FoldAllButton from './FoldAllButton.svelte';
   import Chips from './Chips.svelte';
+  import Segmented from './Segmented.svelte';
   import { TableSort } from './sort.svelte';
   import {
     errorText,
@@ -1024,16 +1025,11 @@
             >
           </h2>
         </div>
-        <div class="filters" role="group" aria-label="Chart window">
-          {#each FLOW_WINDOWS as w (w.minutes)}
-            <button
-              type="button"
-              class="filter"
-              class:on={windowMinutes === w.minutes}
-              onclick={() => chooseWindow(w.minutes)}>{w.label}</button
-            >
-          {/each}
-        </div>
+        <Segmented
+          label="Chart window"
+          options={FLOW_WINDOWS.map((w) => ({ value: String(w.minutes), label: w.label }))}
+          bind:value={() => String(windowMinutes), (v) => chooseWindow(Number(v))}
+        />
       </div>
       {#if flow === null}
         <p class="empty">Loading…</p>
@@ -1666,16 +1662,11 @@
     color: var(--warn);
   }
   .live-controls,
-  .worker-controls,
-  .filters {
+  .worker-controls {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 0.5rem;
-  }
-  .filter {
-    font: inherit;
-    font-size: var(--text-note);
   }
   .panel {
     border: 1px solid var(--border);
@@ -1786,28 +1777,6 @@
     color: var(--dim);
     font-size: var(--text-micro);
     line-height: 1.35;
-  }
-  .flow .filters {
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-    gap: 0;
-  }
-  .filter {
-    padding: 0.3rem 0.6rem;
-    color: var(--dim);
-    background: transparent;
-    border: 0;
-    border-right: 1px solid var(--border);
-    cursor: pointer;
-  }
-  .filter:last-child {
-    border-right: 0;
-  }
-  /* The accent belongs to the page's primary action; the chosen window is ink and bold. */
-  .filter.on {
-    color: var(--ink);
-    font-weight: 600;
   }
   .table-wrap {
     margin-top: 0.8rem;
