@@ -693,8 +693,7 @@ fn unread_writes(
         .chain(plan.tree.unclaimed_slots())
         .map(|(_, s)| s)
         .collect();
-    let spelled =
-        |n: &str| !n.is_empty() && !n.starts_with(['<', '#']) && !tree::is_internal(n) && !n.contains('*');
+    let spelled = |n: &str| !n.is_empty() && !n.starts_with(['<', '#']) && !tree::is_internal(n) && !n.contains('*');
     let mut written = Vec::new();
     every_eval(&plan.instrs, &mut |s| written.push(s));
     let mut out: Vec<CompileError> = Vec::new();
@@ -706,12 +705,21 @@ fn unread_writes(
         }
         // Each name the value was put at, from the slot after which a write of that name replaces it.
         let names: Vec<(&str, usize)> = std::iter::once((o.name.as_str(), slot + 1))
-            .chain(aliases.iter().filter(|(s, n, _)| *s == slot && spelled(n)).map(|(_, n, at)| (n.as_str(), *at)))
+            .chain(
+                aliases
+                    .iter()
+                    .filter(|(s, n, _)| *s == slot && spelled(n))
+                    .map(|(_, n, at)| (n.as_str(), *at)),
+            )
             .collect();
         let rewritten = names
             .iter()
             .filter_map(|&(name, from)| {
-                let again = plan.provenance.get(from..)?.iter().position(|later| later.name == name)?;
+                let again = plan
+                    .provenance
+                    .get(from..)?
+                    .iter()
+                    .position(|later| later.name == name)?;
                 Some((from + again, name))
             })
             .max();
@@ -4611,7 +4619,10 @@ mod tests {
         // The copy of `g` the unroll makes is the local's.
         assert_eq!(
             warnings("a = [1, 2]; let g = a; unroll(a, false); g = [3];"),
-            ["`g` is written again before anything reads it", "the local `g` is never read"]
+            [
+                "`g` is written again before anything reads it",
+                "the local `g` is never read"
+            ]
         );
         // A local written again is read after, but not its first value.
         assert_eq!(
