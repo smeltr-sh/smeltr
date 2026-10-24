@@ -180,6 +180,14 @@ const AUTHORITY_NOTICE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// is not. A tenth of a decade is a year, which is the pace this is for.
 const AUTHORITY_LAST_PART: f64 = 0.1;
 
+/// How long before a certificate good from `not_before_millis` to `not_after_millis` runs out it is said to be
+/// running out: the last part of its life or [`AUTHORITY_NOTICE`], whichever is longer, because a tenth of a
+/// short-lived one is hours, which is no notice at all. The GUI marks one by the same rule (`time.ts`).
+pub fn notice_millis(not_before_millis: i64, not_after_millis: i64) -> i64 {
+    let life = not_after_millis - not_before_millis;
+    ((life as f64 * AUTHORITY_LAST_PART) as i64).max(AUTHORITY_NOTICE.as_millis() as i64)
+}
+
 /// A named condition about one object: what the design calls a warning. [`derive`] recomputes the whole list on
 /// every call; nothing here is stored, and there is nothing to acknowledge.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -476,8 +484,7 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
     let mut out: Vec<Warning> = decisive
         .into_values()
         .filter_map(|certificate| {
-            let life = certificate.not_after_millis - certificate.not_before_millis;
-            let notice = ((life as f64 * AUTHORITY_LAST_PART) as i64).max(AUTHORITY_NOTICE.as_millis() as i64);
+            let notice = notice_millis(certificate.not_before_millis, certificate.not_after_millis);
             let remaining = certificate.not_after_millis - now_ms;
             // Not yet valid is a current failure, not a countdown, so it is reported whatever the notice window
             // says about a `not_after` still years off: a TLS peer rejects it today regardless of when it expires.
@@ -586,10 +593,9 @@ fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &R
     let Some(authority) = signing.filter(|_| !matches!(rotating, Rotating::UnderWay)) else {
         return Vec::new();
     };
-    let life = authority.not_after_millis - authority.not_before_millis;
-    // Whichever is longer. A tenth of a very short authority is hours, which is no notice at all, and a leader
-    // configured with one is a leader always about to lose it -- which is what saying so from the start means.
-    let notice = ((life as f64 * AUTHORITY_LAST_PART) as i64).max(AUTHORITY_NOTICE.as_millis() as i64);
+    // A leader configured with a very short authority is a leader always about to lose it -- which is what saying so
+    // from the start means.
+    let notice = notice_millis(authority.not_before_millis, authority.not_after_millis);
     let remaining = authority.not_after_millis - now_ms;
     if remaining > notice {
         return Vec::new();

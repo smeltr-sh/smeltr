@@ -25,7 +25,7 @@
     currentVersion,
     type CertificateDto,
   } from './api';
-  import { ago, expiry } from './time';
+  import { ago, expiringSoon, expiry } from './time';
 
   let { adding: startAdding = false }: { adding?: boolean } = $props();
 
@@ -204,10 +204,7 @@
             {#if c.description}<small class="note">{c.description}</small>{/if}
           </td>
           <td class="mono">{leaf(c)?.names.join(', ') || '--'}</td>
-          <td
-            class="one-line"
-            class:soon={leaf(c) && leaf(c).notAfterMillis - Date.now() < 30 * 86_400_000}
-          >
+          <td class="one-line" class:soon={leaf(c) && expiringSoon(leaf(c))}>
             {leaf(c) ? expiry(leaf(c).notAfterMillis) : '--'}
           </td>
           <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>

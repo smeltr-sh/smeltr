@@ -51,7 +51,14 @@
   import LeaderSecretField from './LeaderSecretField.svelte';
   import TokenListInput from './TokenListInput.svelte';
   import CertificatePicker from './CertificatePicker.svelte';
-  import { countdown, expiry, fromLocalInput, localDateTime, toLocalInput } from './time';
+  import {
+    countdown,
+    expiringSoon,
+    expiry,
+    fromLocalInput,
+    localDateTime,
+    toLocalInput,
+  } from './time';
   import { NOT_IN_DEMO } from './access';
 
   let certificates = $state<CertificatesDto | null>(null);
@@ -228,12 +235,6 @@
     const id = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(id);
   });
-
-  const DAY = 24 * 60 * 60 * 1000;
-
-  function expiringSoon(cert: DescribedCertificate): boolean {
-    return cert.notAfterMillis - Date.now() < 30 * DAY;
-  }
 
   function on(millis: number): string {
     return new Date(millis).toLocaleDateString(undefined, {
