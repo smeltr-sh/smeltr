@@ -74,6 +74,8 @@ pub struct SymbolTable {
     pub warnings: Vec<CompileError>,
     /// The slots bound to a local, rather than to the record's field.
     pub local_slots: HashSet<SlotId>,
+    /// The slots `delete` took out of the record.
+    pub deleted_slots: HashSet<SlotId>,
     /// Each open local, innermost last.
     open: Vec<Scope>,
     /// How many locals have been opened: the next one's serial.
@@ -152,6 +154,7 @@ impl SymbolTable {
                 .collect(),
             warnings: Vec::new(),
             local_slots: HashSet::new(),
+            deleted_slots: HashSet::new(),
             open: Vec::new(),
             opened: 0,
             nulls: HashSet::new(),
@@ -165,6 +168,7 @@ impl SymbolTable {
             origins: Vec::new(),
             warnings: Vec::new(),
             local_slots: HashSet::new(),
+            deleted_slots: HashSet::new(),
             open: Vec::new(),
             opened: 0,
             nulls: HashSet::new(),

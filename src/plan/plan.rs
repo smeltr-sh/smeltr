@@ -612,7 +612,7 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
             .clone()
     });
     plan.instrs = instrs;
-    let unread = unread_writes(&plan, &c.syms.local_slots);
+    let unread = unread_writes(&plan, &c.syms.local_slots, &c.syms.deleted_slots);
     plan.warnings.extend(unread);
     // A case that runs on into the next has the next one's statements copied into its branch, so a warning about
     // them comes twice.
@@ -675,7 +675,7 @@ fn same(a: &Ir, b: &Ir) -> bool {
 /// A warning for each value a statement writes that nothing reads: no instruction reads it and the record does not
 /// hold it at the end. A local is never read; a field is written again, or deleted, first. Only an expression's own
 /// write counts, under a name code can spell, so a parse's outputs and the engine's own slots are never named.
-fn unread_writes(plan: &Plan, locals: &HashSet<SlotId>) -> Vec<CompileError> {
+fn unread_writes(plan: &Plan, locals: &HashSet<SlotId>, deleted: &HashSet<SlotId>) -> Vec<CompileError> {
     let mut read = HashSet::new();
     every_read(&plan.instrs, &mut |s| {
         read.insert(s);
@@ -700,12 +700,15 @@ fn unread_writes(plan: &Plan, locals: &HashSet<SlotId>) -> Vec<CompileError> {
         if !spelled || read.contains(&slot) || held.contains(&slot) {
             continue;
         }
+        // A field `$ = {…}` or `unroll` cleared is neither written again nor deleted: nothing is said of it.
         let message = if locals.contains(&slot) {
             format!("the local `{}` is never read", o.name)
         } else if plan.provenance[slot + 1..].iter().any(|later| later.name == o.name) {
             format!("`{}` is written again before anything reads it", o.name)
-        } else {
+        } else if deleted.contains(&slot) {
             format!("`{}` is deleted before anything reads it", o.name)
+        } else {
+            continue;
         };
         out.push(CompileError::new(Some(f), message));
     }
@@ -1240,6 +1243,10 @@ impl Compiler<'_> {
         }
         let ty = self.syms.type_of(slot).clone();
         let copy = self.syms.alloc(place.to_string(), ty.clone(), Origin::Function(id));
+        // A copy of a local's value is the local's, so an unread one is said to be the local's.
+        if self.syms.is_local(place.name()) {
+            self.syms.local_slots.insert(copy);
+        }
         let ir = Ir::new(ty.clone(), Span::default(), IrKind::Field(slot));
         self.emit(Op::Eval { ir }, copy, ty, id);
         self.syms.put_place(place, copy);
@@ -3009,6 +3016,12 @@ impl Compiler<'_> {
             return;
         }
         self.open_path(name, id);
+        let gone: Vec<SlotId> = self
+            .places_at(name)
+            .iter()
+            .filter_map(|p| self.syms.slot_of(p))
+            .collect();
+        self.syms.deleted_slots.extend(gone);
         self.syms.unbind(name);
         let (parent, key) = tree::parent(name);
         self.syms.remove_key(parent, &key);
@@ -4576,6 +4589,11 @@ mod tests {
             warnings("x = 1; delete(x)"),
             ["`x` is deleted before anything reads it"]
         );
+        // The copy of `g` the unroll makes is the local's.
+        assert_eq!(
+            warnings("a = [1, 2]; let g = a; unroll(a, false); g = [3];"),
+            ["the local `g` is never read"]
+        );
         for body in [
             "let n = 1; x = n",
             "x = 1; x = x + 1",
@@ -4583,6 +4601,8 @@ mod tests {
             "let n = 0; for (let v of [1, 2]) { n = n + v } x = n",
             "x = [1, 2].map(v => v * 2)",
             "_raw = \"a\"",
+            // Replaced with the record, not deleted.
+            "x = 1; $ = {y: 2}",
         ] {
             assert_eq!(warnings(body), Vec::<String>::new(), "{body}");
         }
