@@ -44,6 +44,7 @@ multiple-versions = "warn"
 # matching is itself a warning, so each one leaves once upstream moves.
 skip = [
     { crate = "base64@0.22.1", reason = "gix-transport" },
+    { crate = "core-foundation@0.9.4", reason = "system-configuration 0.7, through hickory-resolver's system-config, on Apple only" },
     { crate = "digest@0.10.7", reason = "crc-fast, through object_store" },
     { crate = "crypto-common@0.1.7", reason = "digest 0.10, through crc-fast" },
     { crate = "generic-array@0.14.7", reason = "crypto-common 0.1, through crc-fast" },
