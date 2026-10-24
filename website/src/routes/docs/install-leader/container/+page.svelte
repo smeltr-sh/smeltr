@@ -102,7 +102,7 @@ key = "/run/secrets/smeltr/sealing.key"</code
   <p>
     For a standalone container, append <code>[worker]</code> with <code>enabled = true</code> and
     <code>group = "default"</code>. Its worker state stays within the leader-data mount. Leave the
-    sealing key file absent on a fresh installation.
+    secrets encryption key file absent on a fresh installation.
   </p>
   <pre><code
       >sudo install -o root -g 1000 -m 0640 ./container-smeltr.toml /srv/smeltr/smeltr.toml

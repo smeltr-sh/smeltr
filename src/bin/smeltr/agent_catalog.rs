@@ -785,6 +785,18 @@ pub const CATALOG: &[Route] = &[
         what: "On a branch, point every reference to this secret at one version and open a change. No query.",
         body: "{ version: number, branch: string (not main) }",
     },
+    Route {
+        method: "GET",
+        path: "/api/encryption-key",
+        what: "Whether the secrets encryption key is held, missing or mismatched, and which values it cannot open. No query.",
+        body: "",
+    },
+    Route {
+        method: "POST",
+        path: "/api/encryption-key/regenerate",
+        what: "Write a new secrets encryption key in place of a missing or mismatched one; every value it lists must then be entered again. No query.",
+        body: "",
+    },
     // -- certificates --
     Route {
         method: "GET",

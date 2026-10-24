@@ -15,8 +15,9 @@
 >
   <h1>Backup and recovery</h1>
   <p>
-    A complete recovery needs both the leader data and its matching <strong>sealing key</strong>,
-    which decrypts stored secrets. Keep separate, protected copies of both.
+    A complete recovery needs both the leader data and its matching <strong
+      >secrets encryption key</strong
+    >, which decrypts stored secrets. Keep separate, protected copies of both.
   </p>
   <h2 id="backup">Take a consistent offline backup</h2>
   <p>
@@ -62,8 +63,8 @@
     <li>Stop or isolate the original leader and prevent its automatic restart.</li>
     <li>
       On the replacement host, install the same binary version or container-image ID first. Restore
-      the complete data directory and matching sealing key to the configured paths, preserving
-      restrictive permissions.
+      the complete data directory and matching secrets encryption key to the configured paths,
+      preserving restrictive permissions.
     </li>
     <li>
       Restore the configuration and verify DNS, public origin, ports and certificate names. Do not

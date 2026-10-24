@@ -1705,6 +1705,29 @@ fn refuse_damaged_repo(
     std::process::exit(1);
 }
 
+/// Writes the secrets encryption key on a leader that has sealed nothing yet, so the first secret stored is sealed
+/// under a key that has already been announced. A leader holding values its key cannot open says so as loudly as it
+/// can, and goes on: everything but the secrets still works, and the fix is on the Secrets page.
+fn check_secrets_key(store: &dyn smeltr::leader::store::Store, path: &std::path::Path) {
+    use smeltr::leader::store::KeyState;
+    let standing = match store.key_standing() {
+        Ok(standing) => standing,
+        Err(e) => {
+            eprintln!("smeltr: refusing to start -- {e}");
+            std::process::exit(1);
+        }
+    };
+    if standing.key == KeyState::Absent
+        && let Err(e) = smeltr::leader::secrets::load_or_create(path)
+    {
+        eprintln!("smeltr: refusing to start -- {e}");
+        std::process::exit(1);
+    }
+    if let Some(problem) = standing.problem() {
+        tracing::error!(target: "secrets.key_unusable", path = %path.display(), "{problem}");
+    }
+}
+
 /// Make sure somebody can sign in, and say so on the console when a password was written.
 ///
 /// Two cases, both of them the operator's first minute with this leader. A store with no account at all gets one,
@@ -1828,9 +1851,9 @@ async fn run_leader() {
     };
 
     // Built here rather than in `setup_leader`, because seeding the default group needs it too, and seeding has to
-    // happen before `main` is read for the first time (above). The store reads the sealing key per operation rather
-    // than holding one, but a key file anyone can read is a startup problem: finding out when an admin first stores
-    // a secret is finding out too late.
+    // happen before `main` is read for the first time (above). The store reads the secrets encryption key per
+    // operation rather than holding one, but a key file anyone can read is a startup problem: finding out when an
+    // admin first stores a secret is finding out too late.
     let secret_key = smeltr::startup_config::leader_secret_key_path();
     if let Err(e) = smeltr::leader::secrets::load(&secret_key) {
         eprintln!("smeltr: refusing to start -- {e}");
@@ -1850,6 +1873,7 @@ async fn run_leader() {
         eprintln!("smeltr: refusing to start -- {e}");
         std::process::exit(1);
     });
+    check_secrets_key(store.as_ref(), &secret_key);
     let repo = smeltr::leader::git::repo_path(&data_dir);
     if let Err(damage) = smeltr::leader::git::check_repo(&repo) {
         refuse_damaged_repo(&repo, &damage, store.as_ref());
