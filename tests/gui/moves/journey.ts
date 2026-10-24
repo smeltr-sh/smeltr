@@ -1192,7 +1192,9 @@ const declareFromProduction: Move = {
     await page.getByRole('link', { name: pipeline, exact: true }).click();
     // The editor opens on the steps it opened last, so the Parser may be open already.
     const parser = page.getByRole('button', { name: /as JSON/ });
-    if ((await parser.getAttribute('aria-expanded')) !== 'true') await parser.click();
+    // At its start: on a narrow page the step's controls, arriving on hover, cover the head's middle.
+    if ((await parser.getAttribute('aria-expanded')) !== 'true')
+      await parser.click({ position: { x: 8, y: 8 } });
     const suggested = page.getByRole('group', { name: 'Suggested fields' });
     // Shown once a worker's heartbeat has carried what the parser read to the leader. Suggesting again reads again.
     await expect(async () => {
