@@ -66,6 +66,10 @@ test('every worker follows the certificate from Leader issued to Uploaded and ba
   const uploaded = await api.get('/api/settings/certificates');
   expect(uploaded.supplied).toBe(true);
   expect(uploaded.rotation).toBeNull();
+  // The tab names the entry it serves, chosen in its picker.
+  const served = await openCertificates(page);
+  await expect(served.getByRole('combobox', { name: 'Certificate' })).toHaveValue(uploaded.entry);
+  expect(uploaded.entry).toMatch(/^uploaded-/);
 
   await switchToLeaderIssued(page);
   await heard();
@@ -135,7 +139,7 @@ test('a renewal is served while the switch back to Leader issued waits for a wor
   served = await chooseUploaded(page, renewal);
   await served.getByRole('button', { name: 'Serve this certificate' }).click();
   await expect(served.getByRole('status')).toHaveText(
-    'this leader is serving the certificate you supplied',
+    /^this leader is serving the certificate "uploaded-\d+"$/,
   );
   await expect(
     served.getByRole('heading', { name: /^Switch to Leader issued in progress/ }),

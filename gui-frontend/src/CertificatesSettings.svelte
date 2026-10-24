@@ -189,6 +189,7 @@
     Promise.all([getCertificates(), getAcme()])
       .then(([c, a]) => {
         certificates = c;
+        chosen = c.entry ?? undefined;
         showAcme(a);
       })
       .catch((e) => {
@@ -294,7 +295,7 @@
   ) {
     return attempt(call, (c) => {
       certificates = c;
-      chosen = undefined;
+      chosen = c.entry ?? undefined;
       return typeof done === 'string' ? done : done(c);
     });
   }
@@ -489,9 +490,13 @@
           {#if inForce === 'acme'}
             Ordered from the certificate authority the ACME settings name, and ordered again by this
             leader two thirds of the way through its life.
+          {:else if supplied && certificates?.entry}
+            Serves the certificate "{certificates.entry}" from
+            <a href="#/admin/certificates">Admin → Certificates</a>. Replace it there to renew it.
           {:else if supplied}
-            Uploaded by an administrator, so this leader issues none of its own while it is in
-            force.
+            Serves a certificate uploaded before certificates were kept in
+            <a href="#/admin/certificates">Admin → Certificates</a>. It is not in the list; add it
+            there and choose it here to manage it.
           {:else}
             What this leader serves, signed by the current authority and issued afresh at every
             start.
@@ -733,7 +738,7 @@
               onclick={() =>
                 act(
                   () => putCertificate(chosen!),
-                  switched('this leader is serving the certificate you supplied'),
+                  switched(`this leader is serving the certificate "${chosen}"`),
                 )}
             >
               Serve this certificate

@@ -4868,6 +4868,8 @@ export interface CertificatesDto {
   /** Whether an operator supplied what is being served. */
   supplied: boolean;
   source: CertificateSource;
+  /** The name of the list entry an upload was copied from, where one is recorded. */
+  entry: string | null;
   /** Set when a certificate reached the leader's disk and its socket refused it.
    * Everything above is then what the disk holds rather than what a client is
    * shown, and only a restart closes the gap. */

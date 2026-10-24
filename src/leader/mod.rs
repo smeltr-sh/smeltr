@@ -2405,9 +2405,10 @@ pub fn newest_certificate(store: &dyn Store, name: &str) -> Result<Option<(Strin
 /// stored at once and served only once the fleet holds that root.
 const FROM_THE_LIST: &str = "from-the-list.json";
 
-/// The names of the list entries the leader serves, or is rotating to. None where it serves plain HTTP.
+/// The names of the list entries the leader serves, or is rotating to. None where it serves plain HTTP or holds no
+/// TLS folder.
 pub fn served_names(tls_dir: &std::path::Path) -> Result<Vec<String>, String> {
-    if !crate::startup_config::leader_tls_enabled() {
+    if !crate::startup_config::leader_tls_enabled() || !tls_dir.exists() {
         return Ok(Vec::new());
     }
     let copies = copies_from_the_list(tls_dir)?;
@@ -2415,6 +2416,16 @@ pub fn served_names(tls_dir: &std::path::Path) -> Result<Vec<String>, String> {
         .iter()
         .filter_map(|fingerprint| copies.get(fingerprint).cloned())
         .collect())
+}
+
+/// The name of the list entry the certificate in force was copied from, `None` where it came from no entry.
+pub fn entry_in_force(tls_dir: &std::path::Path) -> Result<Option<String>, String> {
+    let (materials, served) = tls::in_force(tls_dir)?;
+    if !materials.supplied {
+        return Ok(None);
+    }
+    let fingerprint = tls::describe(&served, "the certificate")?.fingerprint;
+    Ok(copies_from_the_list(tls_dir)?.remove(&fingerprint))
 }
 
 /// Records that the copy whose leaf is `fingerprint` was taken from the entry `name`. Before the copy is served, so
