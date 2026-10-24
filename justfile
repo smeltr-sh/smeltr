@@ -570,6 +570,11 @@ fmt: deps-gui deps-website
     npm --prefix gui-frontend run format
     npm --prefix website run format
 
+# `build-dev`'s binary, started.
+[group("dev")]
+run-dev: build-dev
+    cargo run --bin smeltr
+
 # Frontend, then an optimized binary, started.
 [unix]
 run: gui
