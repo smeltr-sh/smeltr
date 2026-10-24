@@ -448,13 +448,17 @@
 
 {#snippet stepMessage(message: string, warn: boolean)}
   <div class="step-error-msg" class:warn>
-    <svg class="error-glyph" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M12 3.5 L22 20.5 H2 Z" fill="currentColor" />
-      <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
-      <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
-    </svg>
+    {@render glyph(warn)}
     <span>{message}</span>
   </div>
+{/snippet}
+
+{#snippet glyph(warn: boolean)}
+  <svg class="error-glyph" class:warn viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M12 3.5 L22 20.5 H2 Z" fill="currentColor" />
+    <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
+    <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
+  </svg>
 {/snippet}
 
 {#snippet more()}
@@ -689,17 +693,7 @@
         </span>
         <span class="summary">{stepSummary(step)}</span>
         {#if stepErrors.length > 0 || stepWarningMessages.length > 0}
-          <svg
-            class="error-glyph"
-            class:warn={stepErrors.length === 0}
-            viewBox="0 0 24 24"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path d="M12 3.5 L22 20.5 H2 Z" fill="currentColor" />
-            <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
-            <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
-          </svg>
+          {@render glyph(stepErrors.length === 0)}
         {/if}
         <span class="chevron">{expanded ? '▾︎' : '▸︎'}</span>
       </button>
@@ -1741,8 +1735,7 @@
   }
 
   .step-error-msg.warn,
-  .error-glyph.warn,
-  .step-error-msg.warn .error-glyph {
+  .error-glyph.warn {
     color: var(--warn);
   }
 

@@ -306,9 +306,7 @@ pub fn parse_block_shaped(src: &str) -> Result<(Vec<Stmt>, Shape), ParseError> {
     let mut p = Parser::new(src)?;
     let mut out = Vec::new();
     while !p.at_eof() {
-        let from = out.len();
         p.stmt(&mut out)?;
-        p.shape.after(&out, from);
         while p.eat_punct(Punct::Semi) {}
     }
     if let Some((span, Some(message))) = p.open_tails.iter().find(|(_, refusal)| refusal.is_some()) {
@@ -544,9 +542,11 @@ impl<'s> Parser<'s> {
             return Err(self.too_deep());
         }
         let tails = self.open_tails.len();
+        let from = out.len();
         let r = self.stmt_inner(out);
         self.depth -= 1;
         if r.is_ok() {
+            self.shape.after(out, from);
             let last = self.last_span();
             let after_block = self.shape.blocks.last().is_some_and(|b| b.1 == last.start);
             let open_tail = self.open_tails.len() > tails
@@ -1144,7 +1144,6 @@ impl<'s> Parser<'s> {
             }
             let from = body.len();
             self.stmt(&mut body)?;
-            self.shape.after(&body, from);
             let not_a_loop = |s: &Stmt| !matches!(s, Stmt::For { .. } | Stmt::While { .. } | Stmt::Function { .. });
             if let Some(span) = Stmt::find_map(&body[from..], &not_a_loop, &mut |s| match s {
                 Stmt::Leave { to: Region::Loop, span } => Some(*span),
@@ -1490,9 +1489,7 @@ impl<'s> Parser<'s> {
             if self.at_eof() {
                 return Err(self.error("unterminated block, expected `}`"));
             }
-            let from = out.len();
             self.stmt(&mut out)?;
-            self.shape.after(&out, from);
             while self.eat_punct(Punct::Semi) {}
         }
         let close = self.advance().span; // `}`

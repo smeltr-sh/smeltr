@@ -1117,6 +1117,11 @@ impl Compiler<'_> {
         self.errors.push(CompileError::new(f, msg));
     }
 
+    /// Records what compiles in function `id` but is likely a mistake (`Plan::warnings`).
+    fn warn(&mut self, id: FunctionId, msg: impl Into<String>) {
+        self.syms.warnings.push(CompileError::new(Some(id), msg));
+    }
+
     /// Names every error recorded since `before` -- usually one, from the assignment currently being compiled -- as
     /// belonging to the assignment at `index`. `self.expr` and friends push straight onto `self.errors` several
     /// calls down, with no assignment in view by the time they do; catching it here, where the eval loop still
@@ -1802,8 +1807,7 @@ impl Compiler<'_> {
     /// Warns of a condition, written `text`, that holds on every row or on none.
     fn note_constant(&mut self, ir: &Ir, text: &str, id: FunctionId) {
         if let Some(holds) = always(ir) {
-            let warning = format!("`{}` is always {holds}", text.trim());
-            self.syms.warnings.push(CompileError::new(Some(id), warning));
+            self.warn(id, format!("`{}` is always {holds}", text.trim()));
         }
     }
 
@@ -3638,8 +3642,7 @@ impl Compiler<'_> {
         for stmt in stmts {
             if let Stmt::Let { name, .. } = stmt {
                 if !self.syms.is_local(name) && self.syms.node(name).is_some() {
-                    let warning = format!("the local `{name}` hides the field `{name}`");
-                    self.syms.warnings.push(CompileError::new(Some(id), warning));
+                    self.warn(id, format!("the local `{name}` hides the field `{name}`"));
                 }
                 scopes.push(self.syms.open_scope(name));
             }
@@ -4282,13 +4285,11 @@ impl Compiler<'_> {
                 match parse_block_shaped(body) {
                     Ok((stmts, shape)) => {
                         for ender in shape.unreachable {
-                            let warning = format!("nothing after `{ender}` in this block runs");
-                            self.syms.warnings.push(CompileError::new(Some(id), warning));
+                            self.warn(id, format!("nothing after `{ender}` in this block runs"));
                         }
                         for label in shape.fall_throughs {
                             let label = label.slice(body).trim();
-                            let warning = format!("{label} has no `break`, so the next case runs too");
-                            self.syms.warnings.push(CompileError::new(Some(id), warning));
+                            self.warn(id, format!("{label} has no `break`, so the next case runs too"));
                         }
                         self.code(&stmts, guard, id)
                     }
