@@ -50,6 +50,7 @@
   import PasswordField from './PasswordField.svelte';
   import LeaderSecretField from './LeaderSecretField.svelte';
   import TokenListInput from './TokenListInput.svelte';
+  import CertificatePicker from './CertificatePicker.svelte';
   import { countdown, expiry, fromLocalInput, localDateTime, toLocalInput } from './time';
   import { NOT_IN_DEMO } from './access';
 
@@ -72,8 +73,8 @@
   $effect(() => {
     source = inForce;
   });
-  let certificate = $state('');
-  let privateKey = $state('');
+  /** The certificate from the list to serve. */
+  let chosen = $state<string | undefined>(undefined);
   /** The deadline as the switch's picker holds it, local time, while somebody is changing it. */
   let cutOverBy = $state('');
   // Follows the deadline in force when it moves, and only then: the page re-reads it every few seconds, which
@@ -285,15 +286,14 @@
     }
   }
 
-  /** A change to what is served: takes the certificates it answers with, and the upload form is spent. */
+  /** A change to what is served: takes the certificates it answers with, and the choice is spent. */
   function act(
     call: () => Promise<CertificatesDto | AccountRefusal>,
     done: string | ((c: CertificatesDto) => string),
   ) {
     return attempt(call, (c) => {
       certificates = c;
-      certificate = '';
-      privateKey = '';
+      chosen = undefined;
       return typeof done === 'string' ? done : done(c);
     });
   }
@@ -714,17 +714,10 @@
         {/if}
       {:else if source === 'upload'}
         <div class="setting">
-          <Field
-            label="Certificate"
-            note="PEM, the full chain, carrying {certificates.served.names.join(
-              ' and ',
-            )}. For a private authority, end it with the root."
-          >
-            <textarea bind:value={certificate} rows="4" spellcheck="false"></textarea>
-          </Field>
-          <Field label="Private key" note="PEM">
-            <textarea bind:value={privateKey} rows="4" spellcheck="false"></textarea>
-          </Field>
+          <CertificatePicker
+            bind:value={chosen}
+            note="It must carry {certificates.served.names.join(' and ')}."
+          />
           {#if switching}
             <p class="dim">
               A switch to {switchingTo} is open. When it cuts over, it replaces this certificate.
@@ -735,10 +728,10 @@
             <button
               class="primary"
               type="button"
-              disabled={busy || !certificate || !privateKey}
+              disabled={busy || !chosen}
               onclick={() =>
                 act(
-                  () => putCertificate(certificate, privateKey),
+                  () => putCertificate(chosen!),
                   switched('this leader is serving the certificate you supplied'),
                 )}
             >

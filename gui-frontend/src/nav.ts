@@ -134,6 +134,7 @@ export type Route =
   | { tab: 'admin'; page: 'workers'; section: WorkersSection }
   | { tab: 'admin'; page: 'groups' }
   | { tab: 'admin'; page: 'secrets' }
+  | { tab: 'admin'; page: 'certificates'; adding?: boolean }
   // `section` is which tab of Accounts is showing.
   | { tab: 'admin'; page: 'accounts'; section: AccountsSection }
   // `section` is which tab of System is showing; the others arrive when their
@@ -256,6 +257,7 @@ const SECTIONS: Partial<Record<Tab, SectionItem[]>> = {
     { label: 'Workers', hash: '#/admin' },
     { label: 'Worker groups', hash: '#/admin/groups' },
     { label: 'Secrets', hash: '#/admin/secrets' },
+    { label: 'Certificates', hash: '#/admin/certificates' },
     { label: 'Accounts', hash: '#/admin/accounts' },
     { label: 'System', hash: '#/admin/system/general' },
   ],
@@ -332,6 +334,7 @@ const SECTION_OF: Record<Route['page'], string | null> = {
   workers: 'Workers',
   groups: 'Worker groups',
   secrets: 'Secrets',
+  certificates: 'Certificates',
   accounts: 'Accounts',
   system: 'System',
   'agent-permissions': null,
@@ -584,6 +587,10 @@ export function parseRoute(hash: string): Route {
     case 'admin':
       if (parts[1] === 'groups') return { tab: 'admin', page: 'groups' };
       if (parts[1] === 'secrets') return { tab: 'admin', page: 'secrets' };
+      if (parts[1] === 'certificates')
+        return parts[2] === 'new'
+          ? { tab: 'admin', page: 'certificates', adding: true }
+          : { tab: 'admin', page: 'certificates' };
       if (parts[1] === 'accounts') {
         const named = ACCOUNTS_SECTIONS.find((s) => s.section === parts[2]);
         return { tab: 'admin', page: 'accounts', section: named?.section ?? 'users' };
