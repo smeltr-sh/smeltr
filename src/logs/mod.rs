@@ -135,7 +135,7 @@ static MAX_LEVEL: AtomicUsize = AtomicUsize::new(level_ord(Level::INFO));
 static WORKER: OnceLock<String> = OnceLock::new();
 /// Whether this process runs a leader and no worker, so that what no thread of the leader's raised is the leader's
 /// all the same: a thread it spawned itself, or one before it started.
-static LEADER_KEEPS: AtomicBool = AtomicBool::new(false);
+static NO_WORKER: AtomicBool = AtomicBool::new(false);
 /// What the drain thread has written, by site. Whoever holds a registry publishes it; `logs` stays underneath
 /// `metrics` rather than depending on it. This is what says whether one site is drowning the rest.
 static WRITTEN: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Default::default);
@@ -184,7 +184,7 @@ pub fn boot_id() -> u64 {
     *BOOT_ID
 }
 
-/// Events a full [`PENDING`] refused, for the life of the process. A worker out of contact for long enough loses
+/// Events a full [`PENDING`] or [`LEADER_PENDING`] refused, for the life of the process. A worker out of contact for long enough loses
 /// logs whatever it does; this says how many.
 static UNDELIVERED: AtomicU64 = AtomicU64::new(0);
 
@@ -447,8 +447,8 @@ fn worker() -> Option<&'static str> {
 
 /// Queue what no thread of the leader's raised for the leader too, as it queues what they raised. Called once, by a
 /// leader running no worker of its own; in one that runs one, those are the worker's.
-pub fn keep_for_leader() {
-    LEADER_KEEPS.store(true, Ordering::Relaxed);
+pub fn runs_no_worker() {
+    NO_WORKER.store(true, Ordering::Relaxed);
 }
 
 /// Hand an event to the drain thread, or write it here where there is no thread to hand it to: before [`start`]
@@ -591,7 +591,7 @@ fn take(event: Event, leader: bool) {
 
     // A worker queues for the leader, whose heartbeat is the one path to one, and a leader queues for its own
     // store. A process running both roles keeps the two apart, so each is stored under its own name.
-    let queue = if leader || (worker().is_none() && LEADER_KEEPS.load(Ordering::Relaxed)) {
+    let queue = if leader || (worker().is_none() && NO_WORKER.load(Ordering::Relaxed)) {
         &LEADER_PENDING
     } else if worker().is_some() {
         &PENDING

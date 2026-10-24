@@ -935,7 +935,7 @@ async fn setup_leader(
     tokio::spawn(smeltr::leader::remote::push_saves(state.clone()));
     // Without a worker in this process, what the leader's threads did not raise is the leader's too.
     if !smeltr::startup_config::worker_enabled() {
-        smeltr::logs::keep_for_leader();
+        smeltr::logs::runs_no_worker();
     }
     tokio::spawn(smeltr::leader::keep_own_logs(state.clone()));
 
