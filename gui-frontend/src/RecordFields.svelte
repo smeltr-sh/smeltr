@@ -197,7 +197,8 @@
 {#if lines.length === 0 && split.removed.length === 0}
   <span class="dim">no change at this step</span>
 {:else}
-  <div class="fields" style:--name-w={`${nameCh}ch`} style:--type-w={`${typeCh}ch`}>
+  <!-- A character's slack, so a name that just fits does not wrap on a rounding. -->
+  <div class="fields" style:--name-w={`${nameCh + 1}ch`} style:--type-w={`${typeCh}ch`}>
     {#each lines as line (line.kind + line.path + line.depth)}
       {#if line.kind === 'group'}
         <button
