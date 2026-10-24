@@ -4,7 +4,7 @@
 //! holds its name and configuration. Its color is the one thing about it kept here instead. Live heartbeat state is `registry`'s, in memory.
 //!
 //! Password verifiers live here too, so this file is the reason `leader.db` needs the filesystem protection the
-//! sealing key already has: a copy of it can be attacked offline.
+//! secrets encryption key already has: a copy of it can be attacked offline.
 
 use crate::heartbeat::{LedgerEntry, SourceKey};
 use crate::io::Progress;

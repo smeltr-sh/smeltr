@@ -1,7 +1,7 @@
 //! `Store` on one SQLite file, one connection behind a `Mutex`. Every write is an operator action, never a
 //! per-heartbeat one, but a single-worker source's hold and progress: those are what its holder's heartbeat says.
 //!
-//! The sealing key is not in this file and not in the leader's data directory (`secrets`). It is read per operation
+//! The secrets encryption key is not in this file and not in the leader's data directory (`secrets`). It is read per operation
 //! rather than held: operator actions are rare, and a key that is not resident is not in a core dump.
 
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use rusqlite::{Connection, ErrorCode, OptionalExtension};
 
 use super::access::{AgentPermissions, Level, Role};
-use super::secrets::{self, Sealed, SealingKey};
+use super::secrets::{self, EncryptionKey, Sealed};
 use super::store::{
     AccountError, AuthSource, ConversationRecord, Custody, EnrollmentCodeRecord, HeldSource, KeyStanding, KeyState,
     LocalCredentialRecord, NewEnrollmentCode, NewLocalUser, OidcIdentityRecord, OidcSignIn, SecretRecord,
@@ -96,7 +96,7 @@ fn set_mode_if_looser(path: &Path, wanted: u32) -> std::io::Result<()> {
 /// `std::fs::set_permissions` cannot close this: on Windows it toggles the read-only flag and says nothing about
 /// who may read. Doing it properly means writing a DACL that grants the owner and the SYSTEM account only, which needs the
 /// Win32 API rather than `std::fs`. Until that exists this is a no-op that returns `Ok`, and saying so is the
-/// point -- the sealing key has the same hole (`secrets.rs`), and neither should read as though it were handled.
+/// point -- the secrets encryption key has the same hole (`secrets.rs`), and neither should read as though it were handled.
 #[cfg(not(unix))]
 fn make_private(_path: &Path) -> Result<(), StoreError> {
     Ok(())
@@ -465,7 +465,7 @@ impl SqliteStore {
 
     /// The key, writing one if there is none and nothing is sealed yet. Refused while the key is broken: a value
     /// sealed then is one the restored key could not open.
-    fn key_for_sealing(&self) -> Result<SealingKey, StoreError> {
+    fn key_for_sealing(&self) -> Result<EncryptionKey, StoreError> {
         if let Some(problem) = self.key_standing()?.problem() {
             return Err(StoreError(problem));
         }
@@ -515,7 +515,7 @@ impl SqliteStore {
 
     /// The key if there is one. Absent means every stored value is unusable, which is a fact to report rather than
     /// an error, and never a reason to write a key.
-    fn key_if_any(&self) -> Result<Option<SealingKey>, StoreError> {
+    fn key_if_any(&self) -> Result<Option<EncryptionKey>, StoreError> {
         Ok(secrets::load(&self.secret_key)?)
     }
 
@@ -1176,7 +1176,11 @@ impl Store for SqliteStore {
         let opens = |id: &String| matches!(&state, KeyState::Held { key_id } if key_id == id);
         Ok(KeyStanding {
             path: self.secret_key.clone(),
-            unopenable: sealed.into_iter().filter(|(_, id)| !opens(id)).map(|(what, _)| what).collect(),
+            unopenable: sealed
+                .into_iter()
+                .filter(|(_, id)| !opens(id))
+                .map(|(what, _)| what)
+                .collect(),
             key: state,
         })
     }
@@ -2937,14 +2941,23 @@ mod tests {
         assert_eq!(standing.key, KeyState::Missing);
         assert_eq!(
             standing.unopenable,
-            vec![secret("kafka-west-sasl"), Unopenable::Setting("git.remote.token".to_string())]
+            vec![
+                secret("kafka-west-sasl"),
+                Unopenable::Setting("git.remote.token".to_string())
+            ]
         );
         let problem = standing.problem().expect("a broken key is a problem");
-        assert!(problem.contains("is missing, so the 2 stored secrets cannot be opened"), "{problem}");
+        assert!(
+            problem.contains("is missing, so the 2 stored secrets cannot be opened"),
+            "{problem}"
+        );
 
         let refused = s.add_secret_version("kafka-west-sasl", "hunter3").unwrap_err();
         assert_eq!(refused.0, problem);
-        assert!(s.create_secret("es-auth", Custody::LeaderStored, "", Some("x")).is_err());
+        assert!(
+            s.create_secret("es-auth", Custody::LeaderStored, "", Some("x"))
+                .is_err()
+        );
         assert!(s.sealed_setting("agents.api_key", "sk-1").is_err());
         assert!(!key.exists(), "a refused write does not write a key either");
         s.create_secret("pg-replica", Custody::WorkerLocal, "", None)
@@ -2960,8 +2973,18 @@ mod tests {
         let other = secrets::load_or_create(&key).unwrap();
 
         let standing = s.key_standing().unwrap();
-        assert_eq!(standing.key, KeyState::Mismatched { key_id: other.key_id().to_string() });
-        assert!(standing.problem().unwrap().contains("does not match the stored secrets"));
+        assert_eq!(
+            standing.key,
+            KeyState::Mismatched {
+                key_id: other.key_id().to_string()
+            }
+        );
+        assert!(
+            standing
+                .problem()
+                .unwrap()
+                .contains("does not match the stored secrets")
+        );
         assert!(s.add_secret_version("kafka-west-sasl", "hunter3").is_err());
     }
 
@@ -2978,12 +3001,20 @@ mod tests {
         assert!(matches!(standing.key, KeyState::Held { .. }), "{:?}", standing.key);
         assert_eq!(standing.unopenable, vec![secret("es-auth"), secret("kafka-west-sasl")]);
         assert!(key.exists());
-        assert!(!record(&s, "es-auth").current().unwrap().usable, "the old value stays, unusable");
+        assert!(
+            !record(&s, "es-auth").current().unwrap().usable,
+            "the old value stays, unusable"
+        );
 
-        s.add_secret_version("es-auth", "changeme2").expect("sealing works again");
+        s.add_secret_version("es-auth", "changeme2")
+            .expect("sealing works again");
         assert_eq!(s.key_standing().unwrap().unopenable, vec![secret("kafka-west-sasl")]);
         assert_eq!(
-            s.list_security_events(10).unwrap().iter().filter(|e| e.action == "key-regenerate").count(),
+            s.list_security_events(10)
+                .unwrap()
+                .iter()
+                .filter(|e| e.action == "key-regenerate")
+                .count(),
             1,
             "the regeneration is audited"
         );

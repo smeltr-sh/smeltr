@@ -2223,7 +2223,9 @@ impl From<store::KeyStanding> for EncryptionKeyOut {
     }
 }
 
-async fn encryption_key(State(state): State<AppState>) -> Result<Json<EncryptionKeyOut>, (axum::http::StatusCode, String)> {
+async fn encryption_key(
+    State(state): State<AppState>,
+) -> Result<Json<EncryptionKeyOut>, (axum::http::StatusCode, String)> {
     run_store(state.store, |s| s.key_standing())
         .await
         .map(|standing| Json(standing.into()))
@@ -2236,7 +2238,12 @@ async fn regenerate_encryption_key(
     axum::Extension(actor): axum::Extension<store::Actor>,
 ) -> Json<Envelope<EncryptionKeyOut>> {
     let event = accounts::event_for(&actor, "key-regenerate", "", "ok");
-    Json(run_store(state.store, move |s| s.regenerate_key(&event)).await.map(EncryptionKeyOut::from).into())
+    Json(
+        run_store(state.store, move |s| s.regenerate_key(&event))
+            .await
+            .map(EncryptionKeyOut::from)
+            .into(),
+    )
 }
 
 /// Stores a new value and forgets what retention no longer keeps.
@@ -3149,7 +3156,7 @@ pub fn router(state: AppState) -> Router {
     )
 }
 
-/// Where a store would write its sealing key. No fixture below stores a secret, so nothing is written -- but two
+/// Where a store would write its secrets encryption key. No fixture below stores a secret, so nothing is written -- but two
 /// must not name one file between them if one ever does.
 #[cfg(test)]
 mod identity_expiry_tests {

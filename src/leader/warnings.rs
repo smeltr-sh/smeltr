@@ -2372,7 +2372,12 @@ pub fn encryption_key_warnings(standing: &KeyStanding, starts: &HashMap<FactKey,
             };
             Warning {
                 subject_kind,
-                ..leader(Condition::SecretNeedsValue, unopenable_id(u), Severity::Warning, message)
+                ..leader(
+                    Condition::SecretNeedsValue,
+                    unopenable_id(u),
+                    Severity::Warning,
+                    message,
+                )
             }
         })
         .collect()
@@ -6394,15 +6399,27 @@ mod tests {
         assert_eq!(said[0].severity, Severity::Failed);
         assert_eq!(said[0].subject_kind, SubjectKind::Leader);
         assert_eq!(said[0].since_millis, Some(NOW));
-        assert!(said[0].message.contains("is missing, so the 2 stored secrets cannot be opened"), "{}", said[0].message);
-        assert!(said[0].message.contains("Secrets, Encryption key"), "{}", said[0].message);
+        assert!(
+            said[0]
+                .message
+                .contains("is missing, so the 2 stored secrets cannot be opened"),
+            "{}",
+            said[0].message
+        );
+        assert!(
+            said[0].message.contains("Secrets, Encryption key"),
+            "{}",
+            said[0].message
+        );
     }
 
     /// After a regeneration each value to enter again is its own warning, named where it is entered.
     #[test]
     fn each_value_a_regenerated_key_cannot_open_is_its_own_warning() {
         let held = standing(
-            crate::leader::store::KeyState::Held { key_id: "5be1a09c44d7f312".to_string() },
+            crate::leader::store::KeyState::Held {
+                key_id: "5be1a09c44d7f312".to_string(),
+            },
             vec![
                 Unopenable::Secret("es-auth".to_string()),
                 Unopenable::Setting(crate::leader::oidc::CLIENT_SECRET_KEY.to_string()),
@@ -6410,13 +6427,34 @@ mod tests {
         );
         let said = encryption_key_warnings(&held, &HashMap::new());
         assert_eq!(said.len(), 2);
-        assert!(said.iter().all(|w| w.condition == Condition::SecretNeedsValue && w.severity == Severity::Warning));
-        assert_eq!((said[0].subject_kind, said[0].subject_id.as_str()), (SubjectKind::Secret, "es-auth"));
+        assert!(
+            said.iter()
+                .all(|w| w.condition == Condition::SecretNeedsValue && w.severity == Severity::Warning)
+        );
+        assert_eq!(
+            (said[0].subject_kind, said[0].subject_id.as_str()),
+            (SubjectKind::Secret, "es-auth")
+        );
         assert!(said[0].message.ends_with("Store a new version"));
-        assert_eq!((said[1].subject_kind, said[1].subject_id.as_str()), (SubjectKind::Leader, "OIDC client secret"));
-        assert!(said[1].message.ends_with("Enter it again under Accounts, Single sign-on"), "{}", said[1].message);
+        assert_eq!(
+            (said[1].subject_kind, said[1].subject_id.as_str()),
+            (SubjectKind::Leader, "OIDC client secret")
+        );
+        assert!(
+            said[1]
+                .message
+                .ends_with("Enter it again under Accounts, Single sign-on"),
+            "{}",
+            said[1].message
+        );
         assert!(said.iter().all(|w| w.group.is_none()), "an administrator's to act on");
 
-        assert!(encryption_key_warnings(&standing(crate::leader::store::KeyState::Absent, vec![]), &HashMap::new()).is_empty());
+        assert!(
+            encryption_key_warnings(
+                &standing(crate::leader::store::KeyState::Absent, vec![]),
+                &HashMap::new()
+            )
+            .is_empty()
+        );
     }
 }

@@ -723,7 +723,7 @@ fn check_width(row: usize, fields: usize, width: usize) -> Result<(), LookupErro
 /// A lookup table's `path` is an arbitrary string in the config file, and the file's contents come straight back out
 /// through the table's output fields. Without this, anyone who can write a pipeline could read any file the process
 /// can — `/etc/passwd` parses as a perfectly good colon-delimited table — turning "can edit a pipeline" into "can
-/// read the sealing key, the TLS key, and every other tenant's config".
+/// read the secrets encryption key, the TLS key, and every other tenant's config".
 ///
 /// The file travels in the repository beside the config naming it, so the same text has to work at whatever absolute
 /// path the leader and each worker checked the commit out to. It resolves against `at` -- the directory of the

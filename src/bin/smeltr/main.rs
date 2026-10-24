@@ -1863,7 +1863,7 @@ async fn run_leader() {
     };
 
     // Built here rather than in `setup_leader`, because seeding the default group needs it too, and seeding has to
-    // happen before `main` is read for the first time (above). The store reads the sealing key per operation rather
+    // happen before `main` is read for the first time (above). The store reads the secrets encryption key per operation rather
     // than holding one, but a key file anyone can read is a startup problem: finding out when an admin first stores
     // a secret is finding out too late.
     let secret_key = smeltr::startup_config::leader_secret_key_path();
