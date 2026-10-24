@@ -2008,6 +2008,53 @@ test('A10: an SFTP destination is added from its form and saved as the leader ac
   );
 });
 
+// A10, sources and destinations from a form. An Elasticsearch destination signs in with a username and password in
+// place of an API key, and choosing it clears the other.
+test('A10: an Elasticsearch destination signs in with a username and password', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.post('/api/secrets', {
+    name: 'es-password',
+    custody: 'leader-stored',
+    description: 'the writer',
+    value: 'changeme',
+  });
+
+  await goto(admin, leader, '#/build/destinations');
+  await admin.getByRole('button', { name: '+ Add destination' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+  await dialog.getByRole('textbox', { name: /^id/ }).fill('search');
+  await dialog.getByRole('textbox', { name: 'url' }).fill('https://es.example.com:9200');
+  await dialog.getByRole('textbox', { name: 'default index' }).fill('logs');
+  const credential = dialog.getByRole('combobox', { name: /^credential/ });
+  await expect(credential).toHaveValue('none');
+  await credential.selectOption('apiKey');
+  await expect(dialog.getByRole('combobox', { name: 'API key source' })).toBeVisible();
+  await credential.selectOption('basic');
+  await expect(dialog.getByRole('combobox', { name: 'API key source' })).toBeHidden();
+  await dialog.getByRole('textbox', { name: /^username/ }).fill('smeltr_writer');
+  await dialog.getByRole('combobox', { name: 'password source' }).selectOption('es-password');
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+
+  const saved = await api.get(`/api/config${ON}`);
+  expect(saved.config.destinations).toEqual([
+    {
+      id: 'search',
+      type: 'elasticsearch',
+      url: 'https://es.example.com:9200',
+      defaultIndex: 'logs',
+      username: 'smeltr_writer',
+      password: { secret: 'es-password', version: 1 },
+    },
+  ]);
+});
+
 // A10, sources and destinations from a form. A Delta table's root is checked as it is typed; its partition columns
 // are chips.
 test('A10: a Delta destination is added from its form and saved as the leader accepts it', async ({

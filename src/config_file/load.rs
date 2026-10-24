@@ -2356,22 +2356,59 @@ pub fn check_shared_group_starts(groups: &[(String, &TopologyConfig)]) -> Vec<Va
     errors
 }
 
-/// Refuses a registry with no address, and a username or a password without the other.
+/// Refuses a Basic sign-in where it does not hold: a username without a password or the other way round, and a blank
+/// username. `fields` names the username's and the password's; `whom` says what signs in, as the message's subject.
+fn check_basic(
+    username: &Option<String>,
+    password: &Option<crate::config_file::dto::SecretRefDto>,
+    fields: (&'static str, &'static str),
+    whom: &str,
+    errors: &mut ItemErrors<'_>,
+) {
+    match (username, password) {
+        (Some(_), None) => errors
+            .at(fields.1)
+            .push(format!("{whom} with a username but no password")),
+        (None, Some(_)) => errors
+            .at(fields.0)
+            .push(format!("{whom} with a password but no username")),
+        (Some(u), Some(_)) if u.trim().is_empty() => errors.at(fields.0).push(format!("{whom} as a blank username")),
+        _ => {}
+    }
+}
+
+/// Refuses an Elasticsearch destination's sign-in where it does not hold: `check_basic`'s, and a password beside
+/// `auth`.
+fn check_elastic_sign_in(
+    id: &str,
+    auth: &Option<crate::config_file::dto::SecretRefDto>,
+    username: &Option<String>,
+    password: &Option<crate::config_file::dto::SecretRefDto>,
+    errors: &mut ItemErrors<'_>,
+) {
+    let whom = format!("destination {id:?} signs in");
+    check_basic(username, password, ("username", "password"), &whom, errors);
+    if auth.is_some() && password.is_some() {
+        errors.at("auth").push(format!(
+            "destination {id:?} signs in with both an API key and a password; keep one"
+        ));
+    }
+}
+
+/// Refuses a registry with no address, and a sign-in `check_basic` refuses.
 fn check_registry(dto: &crate::config_file::dto::SchemaRegistryDto, what: &str, errors: &mut ItemErrors<'_>) {
     if dto.url.trim().is_empty() {
         errors
             .at("schemaRegistry.url")
             .push(format!("{what} names a schema registry but not its address"));
     }
-    match (&dto.username, &dto.password) {
-        (Some(_), None) => errors.at("schemaRegistry.password").push(format!(
-            "{what} signs in to its schema registry with a username but no password"
-        )),
-        (None, Some(_)) => errors.at("schemaRegistry.username").push(format!(
-            "{what} signs in to its schema registry with a password but no username"
-        )),
-        _ => {}
-    }
+    check_basic(
+        &dto.username,
+        &dto.password,
+        ("schemaRegistry.username", "schemaRegistry.password"),
+        &format!("{what} signs in to its schema registry"),
+        errors,
+    );
 }
 
 /// Refuses how a source reads its payloads where it does not hold: a stream's Avro read without a registry, an
@@ -3453,8 +3490,12 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 stall_after_secs,
                 sniff,
                 zone_attribute,
+                auth,
+                username,
+                password,
                 ..
             } => {
+                check_elastic_sign_in(&d.id, auth, username, password, errors);
                 match zone_attribute {
                     Some(_) if !sniff => errors.at("zoneAttribute").push(format!(
                         "destination {:?} names a zone attribute but does not sniff; turn sniffing on, or take \
@@ -5186,6 +5227,8 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             default_index,
             identity,
             auth,
+            username,
+            password,
             doc_id,
             id_field,
             in_flight,
@@ -5208,6 +5251,8 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             zone_urls: zone_urls.clone(),
             default_index: default_index.clone(),
             auth: auth.as_ref().map(to_secret_ref),
+            // Validation refused a username without a password, and a password without a username.
+            basic: username.clone().zip(password.as_ref().map(to_secret_ref)),
             doc_id: match doc_id {
                 crate::config_file::dto::DocIdPolicyDto::Auto => DocIdPolicy::Auto,
                 crate::config_file::dto::DocIdPolicyDto::Dedupe => DocIdPolicy::Dedupe,

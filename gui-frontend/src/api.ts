@@ -596,6 +596,9 @@ export type DestinationDto =
       /** The identity this client connects under, by id. */
       identity?: string;
       auth?: SecretRef;
+      /** Basic auth, in place of `auth`: `username` and `password` together. */
+      username?: string;
+      password?: SecretRef;
       docId?: DocIdPolicy;
       idField?: string;
       inFlight?: number;

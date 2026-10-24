@@ -16,8 +16,9 @@
   import { SFTP_PORT, type ObjectStore } from './api';
 
   /** Whose access the block draws: an object store's, an Iceberg table's S3 storage, which names no credential
-   * of its own when the catalog vends one, an Event Hubs namespace's, or a data collection rule's. */
-  export type AccessKind = ObjectStore | 'iceberg' | 'eventHubs' | 'logAnalytics';
+   * of its own when the catalog vends one, an Event Hubs namespace's, a data collection rule's, or an
+   * Elasticsearch cluster's. */
+  export type AccessKind = ObjectStore | 'iceberg' | 'eventHubs' | 'logAnalytics' | 'elasticsearch';
 
   const fields = (d: object) => d as Record<string, unknown>;
 
@@ -28,6 +29,7 @@
     gcs: {},
     azureBlob: { authEndpoint: 'clientSecret' },
     sftp: {},
+    elasticsearch: {},
     iceberg: { externalId: 'roleArn', authEndpoint: 'roleArn' },
     eventHubs: { authEndpoint: 'clientSecret' },
     logAnalytics: { authEndpoint: 'clientSecret' },
@@ -129,6 +131,20 @@
         fields: [{ key: 'privateKey', name: 'private key', secret: true }],
       },
     },
+    elasticsearch: {
+      none: { label: 'none', fields: [] },
+      apiKey: {
+        label: 'an API key',
+        fields: [{ key: 'auth', name: 'API key', secret: true }],
+      },
+      basic: {
+        label: 'a username and password',
+        fields: [
+          { key: 'username', name: 'username', secret: false },
+          { key: 'password', name: 'password', secret: true },
+        ],
+      },
+    },
     eventHubs: {
       host: AZURE_HOST,
       managedIdentity: AZURE_MANAGED_IDENTITY,
@@ -228,6 +244,7 @@
       AZURE_AUTH_ENDPOINT,
     ],
     sftp: [],
+    elasticsearch: [],
     eventHubs: [AZURE_AUTH_ENDPOINT],
     logAnalytics: [AZURE_AUTH_ENDPOINT],
     iceberg: [
@@ -341,6 +358,8 @@
     {#snippet help()}
       {#if store === 'sftp'}
         What the user signs in with: a password, or an unencrypted private key in OpenSSH's format.
+      {:else if store === 'elasticsearch'}
+        What the client signs in with. A cluster with security off needs none.
       {:else if store === 'iceberg'}
         What the table's storage is signed with. A catalog that vends credentials needs nothing
         named here, nor does the host's own. A role ARN is assumed in place of what the catalog

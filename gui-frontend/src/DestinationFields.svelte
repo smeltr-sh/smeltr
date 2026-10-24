@@ -396,19 +396,7 @@
         if (destination.type === 'elasticsearch') destination.identity = v;
       }}
     />
-    <Field field="auth" label="auth">
-      {#snippet help()}
-        The secret holding the API key.
-      {/snippet}
-      <SecretRefInput
-        value={destination.auth}
-        {secrets}
-        label="auth"
-        onchange={(v) => {
-          if (destination.type === 'elasticsearch') destination.auth = v;
-        }}
-      />
-    </Field>
+    <ObjectStoreAccess store="elasticsearch" value={destination} show="credential" {secrets} />
     <Field field="docId" label="duplicate documents">
       {#snippet help()}
         After a crash a document can be sent twice. Under <code>auto</code> that is a second copy;
