@@ -465,6 +465,7 @@
           aria-selected={i === highlighted}
           class:highlighted={i === highlighted}
           class:misfit={!!fn.warning}
+          class:after-fields={!fn.field && suggestions[i - 1]?.field}
           onmousedown={(e) => e.preventDefault()}
           onclick={() => pick(fn)}
           onkeydown={(e) => e.key === 'Enter' && pick(fn)}
@@ -798,6 +799,13 @@
     -webkit-line-clamp: 3;
     line-clamp: 3;
     overflow: hidden;
+  }
+
+  /* Fields first, then functions: a rule between them, as the eye skims. */
+  .suggestions li.after-fields {
+    margin-top: 0.25rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.45rem;
   }
 
   /* A function that does not take the type before the dot: offered, below every one that does. */

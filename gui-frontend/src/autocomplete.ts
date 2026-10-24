@@ -97,6 +97,17 @@ export function rankedSuggestions(
     .map(({ f }) => f);
 }
 
+/** The most types a warning names before it names only the mismatch: a longer list wraps in a narrow list. */
+const MOST_TYPES_NAMED = 3;
+
+/** Why a function does not fit the `type` before its dot: the types it works on, from its signature (`takes`), or
+ * the kind its reference writes it on (`object.keys()`). */
+function misfitWarning(takes: string, signature: string, type: string): string {
+  if (!takes) return `works on ${signature.split('.')[0]}s, not ${type}`;
+  if (takes.split('/').length > MOST_TYPES_NAMED) return `doesn't work on ${type}`;
+  return `works on ${takes}, not ${type}`;
+}
+
 /** What may follow a dot, best first: an object's fields, then the functions that take what is before the dot, then
  * every other function, each with a warning naming what it takes. Within each, as `rankedSuggestions` orders them.
  * Only a function written on a value (`value.sign()`) can follow a dot. Where `member` is unknown, every such
@@ -135,12 +146,7 @@ export function memberSuggestions(
     const known = takes(f.name, type);
     const fits = known.fits ?? (kind !== null && f.signature.startsWith(`${kind}.`));
     if (fits) fit.push(f);
-    else
-      misfit.push({
-        ...f,
-        // Without a signature, the kind its reference writes it on: `object.keys()` takes an object.
-        warning: `takes ${known.takes || f.signature.split('.')[0]}, not ${type}`,
-      });
+    else misfit.push({ ...f, warning: misfitWarning(known.takes, f.signature, type) });
   }
   return [...fields, ...fit, ...misfit];
 }

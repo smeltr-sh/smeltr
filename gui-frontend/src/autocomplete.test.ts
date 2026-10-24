@@ -147,9 +147,18 @@ describe('memberSuggestions', () => {
     const got = memberSuggestions({ kind: 'value', type: 'str' }, functions, '');
     expect(got.map((f) => [f.name, f.warning])).toEqual([
       ['length', undefined],
-      ['sign', 'takes i64/f64, not str'],
-      ['keys', 'takes object, not str'],
+      ['sign', 'works on i64/f64, not str'],
+      ['keys', 'works on objects, not str'],
     ]);
+  });
+
+  it('names only the mismatch when a function works on many types', () => {
+    const got = memberSuggestions(
+      { kind: 'value', type: 'array<str>' },
+      [fn('toString', 'value.toString()')],
+      '',
+    );
+    expect(got[0].warning).toBe("doesn't work on array<str>");
   });
 
   it("offers an object's fields first", () => {
