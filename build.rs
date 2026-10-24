@@ -13,29 +13,30 @@ fn main() {
     let dist = manifest.join("gui-frontend/dist");
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("embedded_assets.rs");
 
-    // Vite content-hashes its output names, so watching the directory is what catches a rename. The sources are watched
-    // for the staleness check. `dist` is made empty when absent, since only a path that exists can be watched: the
-    // bundler's first build is then a change to a directory already watched.
-    let _ = std::fs::create_dir(&dist);
-    for watched in ["dist", "src", "public", "index.html", "package.json"] {
-        watch(&manifest.join("gui-frontend").join(watched));
-    }
-    for watched in [
-        "website/src/lib/highlight",
-        "website/src/lib/foundry",
-        "website/src/lib/reference.json",
-        "website/src/lib/code-language.json",
-    ] {
-        watch(&manifest.join(watched));
-    }
-
     // `just check` builds the GUI on its own, beside this build, so its binary embeds the placeholder and says nothing.
     println!("cargo:rerun-if-env-changed=SMELTR_NO_GUI");
     // A checkout that shares `target/` with another would otherwise take the other's build as fresh: cargo keys this
     // crate's build by file times, not by where its sources are. `.cargo/config.toml` sets it per checkout.
     println!("cargo:rerun-if-env-changed=SMELTR_CHECKOUT");
     let no_gui = std::env::var("SMELTR_NO_GUI").is_ok_and(|v| !v.is_empty());
+
+    // Vite content-hashes its output names, so watching the directory is what catches a rename. The sources are watched
+    // for the staleness check. `dist` is made empty when absent, since only a path that exists can be watched: the
+    // bundler's first build is then a change to a directory already watched. A build without the GUI watches none of
+    // it, so a GUI edit does not rebuild the crate for the tests and clippy.
+    let _ = std::fs::create_dir(&dist);
     if !no_gui {
+        for watched in ["dist", "src", "public", "index.html", "package.json"] {
+            watch(&manifest.join("gui-frontend").join(watched));
+        }
+        for watched in [
+            "website/src/lib/highlight",
+            "website/src/lib/foundry",
+            "website/src/lib/reference.json",
+            "website/src/lib/code-language.json",
+        ] {
+            watch(&manifest.join(watched));
+        }
         warn_if_stale(&manifest, &dist);
     }
     let edits = uncommitted(&manifest);
