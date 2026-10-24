@@ -1130,10 +1130,12 @@ const addStep: Move = {
       .getByRole('dialog', { name: 'add step' })
       .getByRole('button', { name: 'Eval', exact: true })
       .click();
-    // The new step is the open one with nothing in it yet.
-    const step = page
+    // The new step is the open one with nothing in it yet. Held by its id, since filling it ends that.
+    const id = await page
       .locator('.card.open')
-      .filter({ has: page.locator('input[placeholder="target field"]:placeholder-shown') });
+      .filter({ has: page.locator('input[placeholder="target field"]:placeholder-shown') })
+      .getAttribute('id');
+    const step = page.locator(`[id="${id}"]`);
     await step.getByPlaceholder('target field').fill(field);
     await step.getByPlaceholder('expression').fill(`"${field}"`);
     await save(j, () => expect(page.getByText('Saved.')).toBeVisible());
