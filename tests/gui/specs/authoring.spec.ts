@@ -1239,15 +1239,16 @@ test('A8: while authoring, a row that fails to parse is shown failing, with why'
   // The grid carries each exception in the row itself, and an opened row unfolds it.
   await expect(grid.getByRole('cell', { name: /"kind":"UnparsableField"/ })).toBeVisible();
   await expect(grid.getByRole('cell', { name: /"kind":"Unparsable"/ })).toBeVisible();
-  // Under the row's head, and as the unfolded exception's message.
-  await expect(
-    admin.getByText('_raw.id is "two", which could not parse as i64 in id', { exact: true }),
-  ).toHaveCount(2);
+  // Under the row's head, after the step that raised it, and as the unfolded exception's message.
+  const why = (message: string) => async () => {
+    await expect(admin.getByText(message, { exact: true })).toHaveCount(1);
+    await expect(grid.locator('.exception', { hasText: message })).toHaveText(
+      /^\s*Step \d+ · Parser · .*: /,
+    );
+  };
+  await why('_raw.id is "two", which could not parse as i64 in id')();
   await admin.getByRole('button', { name: 'row 2', exact: true }).click();
-  // Under the row's head, and as the unfolded exception's message.
-  await expect(
-    admin.getByText('_raw is "not json", which json could not parse', { exact: true }),
-  ).toHaveCount(2);
+  await why('_raw is "not json", which json could not parse')();
 });
 
 // A8, bad rows go somewhere.

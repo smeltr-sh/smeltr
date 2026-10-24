@@ -2202,8 +2202,7 @@
                                           class="exception-step"
                                           onclick={() => (jumpToStepId = by.step.id)}
                                           >{stepName(by.step, by.number)}</button
-                                        >:
-                                      {/if}{a.message}
+                                        >{': '}{/if}{a.message}
                                     </p>
                                   {/each}
                                 </div>
