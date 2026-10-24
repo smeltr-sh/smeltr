@@ -30,6 +30,7 @@
     putAcme,
     orderAcme,
     type AcmeChallenge,
+    type AcmeDnsProvider,
     type AcmeDto,
     type AcmeSettings,
     type AccountRefusal,
@@ -46,6 +47,7 @@
   import Segmented from './Segmented.svelte';
   import Advanced from './Advanced.svelte';
   import PasswordField from './PasswordField.svelte';
+  import LeaderSecretField from './LeaderSecretField.svelte';
   import TokenListInput from './TokenListInput.svelte';
   import { countdown, expiry, fromLocalInput, localDateTime, toLocalInput } from './time';
   import { NOT_IN_DEMO } from './access';
@@ -107,6 +109,9 @@
   let acmeAuthority = $state('');
   let eabKeyId = $state('');
   let eabHmac = $state('');
+  let dnsProvider = $state<AcmeDnsProvider>('cloudflare');
+  let cloudflareToken = $state('');
+  let replacingToken = $state(false);
   const directory = $derived(preset === OTHER ? directoryUrl.trim() : preset);
   const terms = $derived(ACME_DIRECTORIES.find((d) => d.value === preset)?.terms ?? null);
   /** What an order needs, as the leader will ask for it. */
@@ -140,6 +145,9 @@
     acmeAuthority = stored.authority;
     eabKeyId = stored.eabKeyId;
     eabHmac = '';
+    dnsProvider = stored.dnsProvider;
+    cloudflareToken = '';
+    replacingToken = false;
   }
 
   function acmeSettings(): AcmeSettings {
@@ -155,6 +163,8 @@
       // Typed, it replaces the stored key; left empty, the stored key is kept, unless its id went, which is
       // what removes both.
       eabHmac: eabHmac !== '' ? eabHmac : keyId === '' && acme?.eabHmacSet ? '' : null,
+      dnsProvider,
+      cloudflareToken: cloudflareToken !== '' ? cloudflareToken : null,
     };
   }
 
@@ -780,18 +790,41 @@
           </label>
           <Advanced modified={advancedChanged}>
             <div class="acme-advanced">
-              <Field
-                label="Challenge"
-                note={challenge === 'http-01'
-                  ? `The authority asks on port 80; this leader answers on port ${acme.httpPort}.`
-                  : undefined}
-              >
-                {#snippet help()}How the certificate authority checks this leader holds the names.{/snippet}
-                <select bind:value={challenge}>
-                  <option value="tls-alpn-01">TLS-ALPN-01</option>
-                  <option value="http-01">HTTP-01</option>
-                </select>
-              </Field>
+              <div class="challenge-group">
+                <Field
+                  label="Challenge"
+                  note={challenge === 'http-01'
+                    ? `The authority asks on port 80; this leader answers on port ${acme.httpPort}.`
+                    : undefined}
+                >
+                  {#snippet help()}How the certificate authority checks this leader holds the names.{/snippet}
+                  <select bind:value={challenge}>
+                    <option value="tls-alpn-01">TLS-ALPN-01</option>
+                    <option value="http-01">HTTP-01</option>
+                    <option value="dns-01">DNS-01</option>
+                  </select>
+                </Field>
+                {#if challenge === 'dns-01'}
+                  <div class="dns-fields">
+                    <Field label="DNS provider">
+                      <select bind:value={dnsProvider}>
+                        <option value="cloudflare">Cloudflare</option>
+                      </select>
+                    </Field>
+                    <Field
+                      label="API token"
+                      note="Needs Zone · Zone · Read and Zone · DNS · Edit on the zones that hold the names."
+                    >
+                      <LeaderSecretField
+                        bind:value={cloudflareToken}
+                        bind:replacing={replacingToken}
+                        stored={acme.cloudflareTokenSet}
+                        ariaLabel="API token"
+                      />
+                    </Field>
+                  </div>
+                {/if}
+              </div>
               <Field
                 label="Authority"
                 note="Optional. PEM, the root a private authority issues under, where the platform does not trust it."
@@ -813,7 +846,12 @@
               </Field>
             </div>
           </Advanced>
-          {#if inForce !== 'acme'}
+          {#if inForce !== 'acme' && challenge === 'dns-01'}
+            <p class="critical">
+              The zones that hold {nameList.join(', ') || 'the names above'} must be in this Cloudflare
+              account.
+            </p>
+          {:else if inForce !== 'acme'}
             <p class="critical">
               Port {challenge === 'tls-alpn-01' ? 443 : 80} on {nameList.join(', ') ||
                 'the names above'} must reach this leader.
@@ -990,6 +1028,20 @@
   .acme-advanced {
     display: grid;
     gap: 0.85rem;
+  }
+
+  .challenge-group {
+    display: grid;
+    gap: 0.85rem;
+  }
+
+  /* What only DNS-01 asks for, under the challenge that asks for it. */
+  .dns-fields {
+    display: grid;
+    gap: 0.85rem;
+    margin-left: 0.6rem;
+    padding-left: 0.75rem;
+    border-left: 2px solid var(--border);
   }
 
   .rotation-settings {

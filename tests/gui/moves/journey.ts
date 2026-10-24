@@ -30,6 +30,7 @@ import { avro, avroFile, type FakeS3 } from '../buckets';
 import {
   acmeNewRoot,
   renewAcme,
+  refuseDns01,
   switchToAcme,
   switchToLeaderIssued,
   switchToUploaded,
@@ -2132,6 +2133,18 @@ const renewAcmeCertificate: Move = {
   },
 };
 
+const acmeDns01Refused: Move = {
+  name: 'acme-dns-01-refused',
+  weight: (w) => (w.acme ? 1 : 0),
+  run: async (j) => {
+    const before = await (await j.truth()).get('/api/settings/acme');
+    await refuseDns01(j.page, `cf-${j.rng.below(1_000_000)}`, LEADER_NAME);
+    // Refused whole: neither the challenge nor the token was stored.
+    expect(await (await j.truth()).get('/api/settings/acme')).toEqual(before);
+    return `DNS-01 refused for ${LEADER_NAME}, an IP address`;
+  },
+};
+
 const acmeUnderNewRoot: Move = {
   name: 'acme-new-root',
   weight: (w) => (w.acme ? 1 : 0),
@@ -2376,6 +2389,7 @@ export const MOVES: readonly Move[] = [
   withdrawCertificate,
   orderAcme,
   renewAcmeCertificate,
+  acmeDns01Refused,
   acmeUnderNewRoot,
   refusedRemote,
   closeChange,

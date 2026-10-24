@@ -23,6 +23,7 @@
     type TestSummary,
     type CommentAnchor,
     type TimelineEvent,
+    type UndoTarget,
   } from './api';
   import {
     LOOKUPS,
@@ -36,6 +37,7 @@
     objectChanges,
     scopeOf,
     testsCovering,
+    undoTarget,
     type FileSides,
     type ObjectChange,
     type RowChange,
@@ -286,7 +288,7 @@
     return `${c.scope} ${c.section} ${c.id}`;
   }
 
-  async function undo(c: SectionChange) {
+  async function undo(c: ObjectChange, what: UndoTarget) {
     const ok = await ask({
       title: 'undo changes',
       body: `Undo the changes to ${c.label}, as a new save on ${branch.name}.`,
@@ -298,7 +300,7 @@
     undoing = key;
     undoErrors = { ...undoErrors, [key]: '' };
     try {
-      const res = await undoChanges(branch.name, c.scope, c.section, c.id, branch.head);
+      const res = await undoChanges(branch.name, c.scope, what, branch.head);
       if (res.ok) {
         onundone();
       } else {
@@ -525,6 +527,7 @@
     {#each changes as c (keyOf(c))}
       {@const key = keyOf(c)}
       {@const tests = span.whole ? testsOf(c) : null}
+      {@const target = undoTarget(c)}
       <div class="card">
         <div class="obj-head">
           <span class="badge {c.status}">{c.status}</span>
@@ -557,17 +560,16 @@
             >JSON</button
           >
           <!-- A group's own card is read only: neither undo nor a comment names a manifest. -->
-          {#if isSectionChange(c)}
-            {#if span.whole && canEdit(c.scope)}
-              <button
-                type="button"
-                class="compact"
-                disabled={undoing !== null}
-                onclick={() => undo(c)}>{undoing === key ? 'Undoing…' : 'Undo changes'}</button
-              >
-            {/if}
-            {@render commentButton(c, c.label)}
+          {#if target && span.whole && canEdit(c.scope)}
+            <button
+              type="button"
+              class="compact"
+              disabled={undoing !== null}
+              onclick={() => undo(c, target)}
+              >{undoing === key ? 'Undoing…' : 'Undo changes'}</button
+            >
           {/if}
+          {#if isSectionChange(c)}{@render commentButton(c, c.label)}{/if}
         </div>
         {#if undoErrors[key]}<div class="card-note">
             <InlineError message={undoErrors[key]} />

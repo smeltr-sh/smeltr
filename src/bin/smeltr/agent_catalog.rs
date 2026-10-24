@@ -686,7 +686,7 @@ pub const CATALOG: &[Route] = &[
         method: "PUT",
         path: "/api/settings/acme",
         what: "Set ordering the leader's certificate over ACME. No query.",
-        body: "{ enabled: boolean, directory: url, contact?: string, names?: string[], challenge: 'tls-alpn-01'|'http-01', authority?: pem, eabKeyId?: string, eabHmac?: string (absent keeps, '' removes) }",
+        body: "{ enabled: boolean, directory: url, contact?: string, names?: string[], challenge: 'tls-alpn-01'|'http-01'|'dns-01', authority?: pem, eabKeyId?: string, eabHmac?: string (absent keeps, '' removes), dnsProvider?: 'cloudflare' (absent keeps), cloudflareToken?: string (absent keeps, '' removes) }",
     },
     Route {
         method: "POST",

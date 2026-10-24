@@ -60,8 +60,10 @@ would change the root waits for the open rotation to finish or be abandoned. A
 certificate the leader orders for itself from a certificate authority over
 ACME (RFC 8555) arrives the same way, under the root that signed it, so a
 worker is given that root as it would be given an uploaded one; the leader
-proves it holds each name on the port it serves (TLS-ALPN-01) or on port 80
-(HTTP-01), listened on only while an order is open, and orders again two
+proves it holds each name on the port it serves (TLS-ALPN-01), on port 80
+(HTTP-01), listened on only while an order is open, or with a TXT record
+published through the zone's DNS provider (DNS-01), removed when the order is
+over, and orders again two
 thirds of the way through the certificate's life, for as long as what it
 issued is what is served. The account it holds at
 the authority lives beside its certificates and outlives them. A worker gone quiet is still expected: what it last
