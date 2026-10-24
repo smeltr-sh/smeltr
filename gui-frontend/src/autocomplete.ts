@@ -71,7 +71,8 @@ function usageBonus(uses: number): number {
  * often the bundle calls a name (`usage`) adds a little. Grok macro names are
  * typed directly and their descriptions are prose, so `matchDescription` is off
  * there, or "row" and "with" would surface half the catalog. An empty `word`
- * is the whole list in its own order: the browse-everything case. */
+ * matches every name, so the whole list ranks the same way: shorter and more
+ * used first. */
 export function rankedSuggestions(
   entries: StdFuncEntry[],
   word: string,
@@ -80,7 +81,6 @@ export function rankedSuggestions(
     usage = new Map(),
   }: { matchDescription?: boolean; usage?: ReadonlyMap<string, number> } = {},
 ): StdFuncEntry[] {
-  if (word.length === 0) return entries;
   const lower = word.toLowerCase();
   // A description match ranks below every name match, whatever its use.
   const scored: { f: StdFuncEntry; byName: boolean; score: number }[] = [];
