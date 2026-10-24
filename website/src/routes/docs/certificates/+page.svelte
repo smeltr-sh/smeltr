@@ -121,8 +121,8 @@
   <h3>Before you start</h3>
   <ul>
     <li>
-      Every name on the certificate points at this leader in DNS. A public authority such as Let's
-      Encrypt won't issue for <code>localhost</code> or a private address.
+      Every name on the certificate points at this leader in DNS, unless you use DNS-01. A public
+      authority such as Let's Encrypt won't issue for <code>localhost</code> or a private address.
     </li>
     <li>
       With the TLS-ALPN-01 challenge, the default, port 443 on each name must reach this leader.
@@ -131,6 +131,11 @@
       With the HTTP-01 challenge, port 80 on each name must reach this leader. The leader listens on
       leader.tls.acme_http_port only while it orders. That setting is 80 unless something forwards
       80 to another port.
+    </li>
+    <li>
+      With the DNS-01 challenge, nothing has to reach this leader, so it works for a leader on a
+      private network. The zones that hold the names must be in your Cloudflare account. DNS-01
+      can't prove an IP address.
     </li>
     <li>
       If this leader runs its own worker, set worker.leader.url to one of the certificate's names.
@@ -172,7 +177,11 @@
   <h3>Advanced settings</h3>
   <p>Under <strong>Advanced</strong>:</p>
   <ul>
-    <li><strong>Challenge</strong> picks TLS-ALPN-01 or HTTP-01.</li>
+    <li>
+      <strong>Challenge</strong> picks TLS-ALPN-01, HTTP-01 or DNS-01. For DNS-01,
+      <strong>API token</strong> takes a Cloudflare token with Zone · Zone · Read and Zone · DNS · Edit
+      on those zones. The leader stores it encrypted and never shows it again.
+    </li>
     <li>
       <strong>Authority</strong> takes the root a private authority issues under, as PEM. It is needed
       only when the platform does not already trust that root.
