@@ -119,7 +119,7 @@ test('a visitor captures a sample, saves it on a branch and previews a pipeline 
     .locator("label:has(> .name:text-is('Capture target')) select")
     .selectOption('panw-firewalls');
   await dialog
-    .locator("label:has(> .name:text-is('Keep records where')) input")
+    .locator("label:has(> .name:text-is('Keep records where')) textarea")
     .fill('_raw.includes("TRAFFIC")');
   await dialog.locator("input[aria-label='records']").fill('50');
   await dialog.locator('button[type=submit]', { hasText: 'Start' }).click();

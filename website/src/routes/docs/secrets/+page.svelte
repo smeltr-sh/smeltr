@@ -3,6 +3,7 @@
   import examples from '#lib/connector-examples.json';
   const sections = [
     { id: 'secrets', title: 'Create and rotate a secret' },
+    { id: 'encryption-key', title: 'Encryption key' },
     { id: 'identities', title: 'Connection identities' },
     { id: 'kafka', title: 'Kafka security' },
   ];
@@ -47,14 +48,29 @@
   <p>
     <strong>Check</strong> tests a candidate value without revealing the stored value. Keep old external
     credentials valid until deployments and rollback requirements no longer need them. Keep secrets that
-    deployed configurations still use. Change a secret through New value; replacing the sealing key would
-    stop the leader from decrypting existing values.
+    deployed configurations still use. Change a secret through New value; replacing the secrets encryption
+    key would stop the leader from decrypting existing values.
   </p>
   <p>
     A stored value belongs to no branch. The leader keeps the newest values of each secret, as many
     as <code>leader.secrets.versions</code> allows, whichever branch you were working on. Deleting a branch
     does not remove a value stored while working on it: an older value it pushed out is gone, and a rollback
     to a deployment that used that value fails, unless a running deployment still uses it.
+  </p>
+  <h2 id="encryption-key">Encryption key</h2>
+  <p>
+    Admin → Secrets → <strong>Encryption key</strong> shows the key the leader encrypts stored secrets
+    with, and the file it reads it from. The leader encrypts each value with AES-256-GCM. It also encrypts
+    the Git remote token, the single sign-on client secret and the AI agents API key. Keep a backup of
+    the file: without it, a restored leader cannot open the stored secrets. Kept apart from the leader
+    data, a stolen data backup reveals no secret.
+  </p>
+  <p>
+    If the file is missing, or is not the one that encrypted the stored secrets, the leader cannot
+    open them. Issues shows the secrets encryption key as failed, and no secret can be stored or
+    changed. Restore the original file and restart the leader. If it is lost for good, choose
+    <strong>Regenerate key</strong>: Issues then lists each secret and setting to enter again, and
+    each clears once you store a new value for it.
   </p>
   <h2 id="identities">Connection identities</h2>
   <p>

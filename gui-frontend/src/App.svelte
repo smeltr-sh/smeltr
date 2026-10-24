@@ -707,7 +707,7 @@
     {:else if route.page === 'secrets'}
       {#if pages.secrets}
         {@const SecretsPage = pages.secrets}
-        <Locked refusedInDemo><SecretsPage /></Locked>
+        <Locked refusedInDemo><SecretsPage section={route.section} /></Locked>
       {/if}
     {:else if route.page === 'accounts'}
       {#if pages.accounts}

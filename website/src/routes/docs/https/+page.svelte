@@ -44,7 +44,8 @@ key = "/etc/smeltr/secrets/sealing.key"</code
     to listen on a port below 1024 (see
     <a href="https://man7.org/linux/man-pages/man7/capabilities.7.html">capabilities</a>). Keep the
     leader under a dedicated, non-root service account. Provision these directories for the service
-    account. Keep the sealing key separate from ordinary data backups. The hostname and port must
+    account. Back up the secrets encryption key as
+    <a href="/docs/secrets#encryption-key">Encryption key</a> describes. The hostname and port must
     match the URL users actually open. Trust the generated public CA through your organization's
     browser/OS trust procedure before signing in; see
     <a href="/docs/certificates">Certificates</a>. Setting public_origin does not create DNS, open a
