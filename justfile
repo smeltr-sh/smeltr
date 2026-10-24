@@ -23,6 +23,14 @@ default:
 build: gui
     cargo build --release --bin smeltr
 
+# What the GUI tests and screenshots run: the frontend, the demo site and unoptimized binaries embedding them. They
+# share `target/debug` with the Rust tests, so the dependencies build once, and a GUI edit rebuilds in less than half
+# of the time `build` takes.
+[group("dev")]
+build-dev: gui
+    npm --prefix gui-frontend run build:demo
+    cargo build --bin smeltr --bin smeltr-demo
+
 # The website demo: the GUI over the leader its page plays, in
 # gui-frontend/dist-demo, and the preview service it asks.
 [group("dev")]
@@ -256,7 +264,7 @@ check-fuzz: && fuzz-gui fuzz-journey
 # `check-gui` gives it: 64. `SMELTR_FUZZ_SEED=n` replays one.
 [doc("The GUI fuzzer, over many seeds.")]
 [env("SMELTR_FUZZ_SEEDS", "64")]
-fuzz-gui: build
+fuzz-gui: build-dev
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project fuzz-coverage
 
@@ -266,7 +274,7 @@ fuzz-gui: build
 [doc("The admin journey fuzzer, over many seeds.")]
 [env("SMELTR_FUZZ_SEEDS", "16")]
 [env("SMELTR_JOURNEY_MOVES", "52")]
-fuzz-journey: build
+fuzz-journey: build-dev
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project journey-coverage
 
@@ -577,11 +585,11 @@ run: gui
 # Each test starts its own leader and workers from empty data directories, so
 # they run side by side. Arguments go to Playwright: a file, `-g <title>`,
 # `--headed`. A failure leaves a trace and a screenshot in `tests/gui/results`.
-[doc("Every user story the GUI serves, driven in Chromium against the release binary.")]
+[doc("Every user story the GUI serves, driven in Chromium against the debug binary.")]
 [group("dev")]
 [unix]
 [positional-arguments]
-check-gui *args: build demo
+check-gui *args: build-dev
     npm --prefix tests/gui install
     npm --prefix tests/gui run format:check
     cd tests/gui && npx playwright test "$@"

@@ -74,7 +74,8 @@ nowhere.
 
 After a change to the GUI or the API it calls, also run `just check-gui`. While building, run only the specs the change
 touches (`just check-gui specs/<name>.spec.ts`), and the whole of it once, before the PR leaves draft. A base merged
-into a branch without a conflict needs only `just check`.
+into a branch without a conflict needs only `just check`. Screenshots of the GUI come from `just build-dev`'s
+`target/debug/smeltr`.
 
 A machine builds into one `target/`, the main checkout's. A worktree or second clone sets `CARGO_TARGET_DIR` to
 it, so dependencies build once and a new checkout recompiles only smeltr. Cargo commands on one `target/` run one
