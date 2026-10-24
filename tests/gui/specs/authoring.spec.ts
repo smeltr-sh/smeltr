@@ -824,8 +824,9 @@ test('A3: the proposal says which fields some rows lack and where rows disagree 
 });
 
 // A2, choosing what to run over. The editor opens on no sample, still compiling the steps, and the samples a test
-// of this pipeline locks are marked. The output is searched by keyword, or filtered by an expression.
-test('A2: a sample is picked from a table, its output searched by keyword or expression, and Back puts it away', async ({
+// of this pipeline locks come first in the Sample menu, marked. The output is searched by keyword, or filtered by an
+// expression.
+test('A2: a sample is picked from the Sample menu, its output searched by keyword or expression', async ({
   admin,
   leader,
   api,
@@ -847,18 +848,19 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
   });
 
   await goto(admin, leader, '#/build/pipelines/orders');
-  const picker = admin.getByRole('table').filter({ hasText: 'Captured' });
-  // The locked sample first, though `other` sorts before it by name.
-  await expect(picker.getByRole('row').nth(1)).toContainText('orders');
-  await expect(picker.getByTitle('Locked by the test orders parse')).toBeVisible();
+  const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
   // No sample, but the steps compiled: the Fields menu lists what they declare.
   await admin.getByRole('button', { name: 'Choose fields' }).click();
   const fields = admin.getByRole('group', { name: 'Fields' });
   await expect(fields.getByText('total', { exact: true })).toBeVisible();
   await admin.keyboard.press('Escape');
 
-  await picker.getByRole('button', { name: 'orders', exact: true }).click();
-  const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
+  // The locked sample first, though `other` sorts before it by name.
+  await sampleMenu.click();
+  const saved = admin.getByRole('listbox', { name: 'Saved samples' });
+  await expect(saved.getByRole('option').first()).toContainText('orders');
+  await expect(saved.getByTitle('Locked by the test orders parse')).toBeVisible();
+  await saved.getByRole('option', { name: /\borders 3$/ }).click();
   await expect(sampleMenu).toContainText('3 records');
   const search = admin.getByRole('combobox', { name: 'Search the output' });
   await search.fill('SPRING');
@@ -884,8 +886,6 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
 
   // Another sample, from the menu: the locked one first, and the search starts over.
   await sampleMenu.click();
-  const saved = admin.getByRole('listbox', { name: 'Saved samples' });
-  await expect(saved.getByRole('option').first()).toContainText('orders');
   await saved.getByRole('option', { name: /^other/ }).click();
   await expect(sampleMenu).toContainText('1 record');
   await expect(search).toHaveValue('');
