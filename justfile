@@ -26,6 +26,7 @@ build: gui
 # What the GUI tests and screenshots run: the frontend, the demo site and unoptimized binaries embedding them. They
 # share `target/debug` with the Rust tests, so the dependencies build once, and a GUI edit rebuilds in less than half
 # of the time `build` takes.
+[doc("Frontend and demo, then unoptimized binaries embedding them: what the GUI tests run.")]
 [group("dev")]
 build-dev: gui
     npm --prefix gui-frontend run build:demo
