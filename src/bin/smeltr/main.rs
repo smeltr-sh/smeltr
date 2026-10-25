@@ -2476,7 +2476,8 @@ mod tests {
         assert_eq!(previewed.rows[1].dropped_by.as_deref(), Some("gone"));
     }
 
-    /// A called pipeline's steps are the call's doing, and a write to an object's field is a change to that field.
+    /// A called pipeline's steps are the call's doing, its exceptions included, and a write to an object's field is a
+    /// change to that field.
     #[test]
     fn attribution_names_a_call_for_what_its_pipeline_changed() {
         let config = r#"{"version":1,"sources":[],"destinations":[],"routes":[],
@@ -2485,7 +2486,7 @@ mod tests {
                     {"id":"use_q","type":"call","pipeline":"q"},
                     {"id":"nest","type":"code","body":"o.x = n; o.y = 2;"},
                     {"id":"again","type":"code","body":"o.x = n + 1;"}]},
-                {"id":"q","name":"q","steps":[{"id":"inner","type":"code","body":"c = 1;"}]}]}"#;
+                {"id":"q","name":"q","steps":[{"id":"inner","type":"code","body":"c = 1; z = 1 / 0;"}]}]}"#;
         let previewed = super::run_preview(
             super::PreviewRequest {
                 config: config.to_string(),
@@ -2510,6 +2511,7 @@ mod tests {
             serde_json::to_value(&previewed.rows[0].steps).unwrap(),
             serde_json::json!({"c": ["use_q"], "o.x": ["nest", "again"], "o.y": ["nest"]})
         );
+        assert_eq!(previewed.rows[0].exceptions[0].step.as_deref(), Some("use_q"));
     }
 
     /// An exception names the step that raised it.

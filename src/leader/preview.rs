@@ -3,13 +3,13 @@
 //! everything it reads as arguments -- the config, the sample and where its lookup tables resolve -- so the leader's
 //! routes, its test runner and the demo's preview service give one answer.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::config_file::{self, Verdict};
 use crate::core::batch::Batch;
 use crate::core::bits;
 use crate::core::buffer::{self, BufferPool};
-use crate::core::column::{Column, DataType};
+use crate::core::column::{Column, DataType, Validity};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind};
 use crate::core::id::{FunctionId, SlotId};
@@ -900,6 +900,11 @@ pub fn run_preview(
         }
     };
 
+    // A called pipeline's steps are the call's: the call is the step this pipeline's author sees.
+    let calls = serde_json::from_str::<serde_json::Value>(&req.config)
+        .ok()
+        .and_then(|config| calls_of(&config, req.pipeline.as_deref()))
+        .unwrap_or_default();
     let mut rows: Vec<(RowOut, bool)> = preview_rows
         .into_iter()
         .map(|r| {
@@ -911,7 +916,11 @@ pub fn run_preview(
                 exceptions: r
                     .exceptions
                     .into_iter()
-                    .map(|(answer, message, step)| ExceptionOut { answer, message, step })
+                    .map(|(answer, message, step)| ExceptionOut {
+                        answer,
+                        message,
+                        step: step.map(|id| calls.get(&id).cloned().unwrap_or(id)),
+                    })
                     .collect(),
                 steps: None,
                 dropped_by: None,
@@ -920,7 +929,7 @@ pub fn run_preview(
         })
         .collect();
     if let Some(touched) = touched {
-        attribute(&req.config, req.pipeline.as_deref(), &plan, touched, &mut rows);
+        attribute(&calls, &plan, touched, &mut rows);
     }
 
     let parsers = tally
@@ -987,20 +996,19 @@ fn keep_bindings(plan: &mut Plan) {
 /// What each step did to each row, read from a run of a plan `keep_bindings` kept: a step that binds a name changed it
 /// on a row where the new value differs from the one bound before, and a step that binds `__live` dropped a row it
 /// turns false. A value is compared whole, so a step that changes one field of an object changed the object.
-struct Touched {
+struct Touched<'p> {
     /// Per row, each name a step changed, with the step, in the order they ran.
-    changed: Vec<Vec<(String, FunctionId)>>,
+    changed: Vec<Vec<(&'p str, FunctionId)>>,
     dropped_by: Vec<Option<FunctionId>>,
 }
 
-fn touched(plan: &Plan, batch: &Batch) -> Touched {
+fn touched<'p>(plan: &'p Plan, batch: &Batch) -> Touched<'p> {
     let rows = batch.rows();
     let mut changed = vec![Vec::new(); rows];
     let mut dropped_by = vec![None; rows];
-    let unbound = Column::empty(DataType::Null, rows);
     // Every binding of a name in the order the compiler made it: a copy, made when there were `at` slots, comes
     // before the slot numbered `at`.
-    let mut bindings: Vec<(usize, &str, SlotId, Option<FunctionId>)> = plan
+    let mut bindings: Vec<(usize, &'p str, SlotId, Option<FunctionId>)> = plan
         .provenance
         .iter()
         .filter(|o| !o.name.starts_with('<'))
@@ -1040,26 +1048,81 @@ fn touched(plan: &Plan, batch: &Batch) -> Touched {
             }
             continue;
         }
-        // Unclaimed fields serialize as an object's own keys, under no name.
-        let field = if name.ends_with('*') { tree::UNCLAIMED } else { "v" };
-        let was = RecordView::from_named([(field, before.map_or(&unbound, |s| batch.peek(s)))]);
-        let now = RecordView::from_named([(field, batch.peek(slot))]);
-        for (row, changed) in changed.iter_mut().enumerate() {
-            if was.row(row) != now.row(row) {
-                changed.push((name.to_string(), step));
+        let now = batch.peek(slot);
+        let differs = match before.map(|s| batch.peek(s)) {
+            // A first binding changed the rows it gives a value. An object's every row is one.
+            None if !matches!(now.data_type(), DataType::Struct(..)) => {
+                (0..rows).map(|row| now.is_valid(row)).collect()
             }
+            None => vec![true; rows],
+            Some(was) => differs(was, now).unwrap_or_else(|| {
+                // Unclaimed fields serialize as an object's own keys, under no name.
+                let field = if name.ends_with('*') { tree::UNCLAIMED } else { "v" };
+                let (was, now) = (
+                    RecordView::from_named([(field, was)]),
+                    RecordView::from_named([(field, now)]),
+                );
+                (0..rows).map(|row| was.row(row) != now.row(row)).collect()
+            }),
+        };
+        for (changed, _) in changed.iter_mut().zip(differs).filter(|(_, differs)| *differs) {
+            changed.push((name, step));
         }
     }
     Touched { changed, dropped_by }
 }
 
+/// Per row, whether `was` and `now` hold different values, read straight from two columns of one type held row by
+/// row. `None` for any other pair, which only their JSON can compare.
+fn differs(was: &Column, now: &Column) -> Option<Vec<bool>> {
+    fn by_row(a: &Validity, b: &Validity, len: usize, same: impl Fn(usize) -> bool) -> Vec<bool> {
+        (0..len)
+            .map(|row| match (a.is_valid(row), b.is_valid(row)) {
+                (true, true) => !same(row),
+                (a, b) => a != b,
+            })
+            .collect()
+    }
+    let len = now.len();
+    if was.data_type() != now.data_type() {
+        return None;
+    }
+    Some(match now.data_type() {
+        DataType::Bool => {
+            let (a, b) = (was.bool().ok()?, now.bool().ok()?);
+            by_row(a.validity, b.validity, len, |r| {
+                bits::get_row(a.values, r) == bits::get_row(b.values, r)
+            })
+        }
+        DataType::I64 => {
+            let (a, b) = (was.i64().ok()?, now.i64().ok()?);
+            by_row(a.validity, b.validity, len, |r| a.values[r] == b.values[r])
+        }
+        DataType::DateTime => {
+            let (a, b) = (was.datetime().ok()?, now.datetime().ok()?);
+            by_row(a.validity, b.validity, len, |r| a.values[r] == b.values[r])
+        }
+        DataType::Duration => {
+            let (a, b) = (was.duration().ok()?, now.duration().ok()?);
+            by_row(a.validity, b.validity, len, |r| a.values[r] == b.values[r])
+        }
+        DataType::F64 => {
+            let (a, b) = (was.f64().ok()?, now.f64().ok()?);
+            by_row(a.validity, b.validity, len, |r| {
+                a.values[r].to_bits() == b.values[r].to_bits()
+            })
+        }
+        DataType::Str | DataType::Bytes => {
+            let (a, b) = (was.var().ok()?, now.var().ok()?);
+            by_row(a.validity, b.validity, len, |r| a.get(r) == b.get(r))
+        }
+        _ => return None,
+    })
+}
+
 /// `touched` written onto `rows`, each name spread over the leaves of the row at it as the editor names them, and each
-/// step named by the step of `config`'s pipeline it is in: a called pipeline's steps by the call.
-fn attribute(config: &str, pipeline: Option<&str>, plan: &Plan, touched: Touched, rows: &mut [(RowOut, bool)]) {
-    let calls = serde_json::from_str::<serde_json::Value>(config)
-        .ok()
-        .and_then(|config| calls_of(&config, pipeline))
-        .unwrap_or_default();
+/// step named by the step of the pipeline it is in: a called pipeline's steps by the call (`calls_of`).
+fn attribute(calls: &HashMap<String, String>, plan: &Plan, touched: Touched<'_>, rows: &mut [(RowOut, bool)]) {
     let step = |f: FunctionId| {
         let id = plan.step_ids.get(f as usize)?;
         Some(calls.get(id).unwrap_or(id).clone())
@@ -1078,10 +1141,11 @@ fn attribute(config: &str, pipeline: Option<&str>, plan: &Plan, touched: Touched
             };
             let (prefix, unclaimed) = match name.strip_suffix('*') {
                 Some(object) => (object.trim_end_matches('.'), true),
-                None => (name.as_str(), false),
+                None => (name, false),
             };
             let at = leaves
-                .keys()
+                .range::<str, _>((std::ops::Bound::Included(prefix), std::ops::Bound::Unbounded))
+                .take_while(|leaf| leaf.starts_with(prefix))
                 .filter(|leaf| under(leaf, prefix) && !(unclaimed && claimed.contains(*leaf)));
             for leaf in at {
                 let ids = steps.entry(leaf.clone()).or_default();
@@ -1137,10 +1201,10 @@ fn calls_of(config: &serde_json::Value, pipeline: Option<&str>) -> Option<HashMa
 
 const CALL: &str = "call";
 
-/// A record's leaves by name, as the editor names them: what a cut is compared on. An empty object or an array is
-/// one leaf, as the editor draws it.
-fn leaves(record: &serde_json::Value) -> BTreeMap<String, serde_json::Value> {
-    fn walk(value: &serde_json::Value, path: &mut String, into: &mut BTreeMap<String, serde_json::Value>) {
+/// A record's leaves by name, as the editor names them. An empty object or an array is one leaf, as the editor draws
+/// it.
+fn leaves(record: &serde_json::Value) -> BTreeSet<String> {
+    fn walk(value: &serde_json::Value, path: &mut String, into: &mut BTreeSet<String>) {
         match value {
             serde_json::Value::Object(object) if !object.is_empty() => {
                 for (key, value) in object {
@@ -1151,12 +1215,12 @@ fn leaves(record: &serde_json::Value) -> BTreeMap<String, serde_json::Value> {
                 }
             }
             _ if !path.is_empty() => {
-                into.insert(path.clone(), value.clone());
+                into.insert(path.clone());
             }
             _ => {}
         }
     }
-    let mut into = BTreeMap::new();
+    let mut into = BTreeSet::new();
     walk(record, &mut String::new(), &mut into);
     into
 }
