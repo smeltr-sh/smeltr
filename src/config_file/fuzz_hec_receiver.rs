@@ -89,18 +89,6 @@ const IDENTITIES: &[Declared] = &[
         serves: false,
         vouches: true,
     },
-    // A certificate whose Extended Key Usage is client authentication alone.
-    Declared {
-        id: "client",
-        serves: false,
-        vouches: false,
-    },
-    // A certificate whose Key Usage leaves out the digital signature a handshake is signed with.
-    Declared {
-        id: "unsigning",
-        serves: false,
-        vouches: false,
-    },
 ];
 
 /// One generated source, and what the loader must make of it.
@@ -335,41 +323,29 @@ fn garbage(rng: &mut Rng) -> Case {
     Case { source, refused: None }
 }
 
-/// PEM for each identity's certificate and key, and for an authority to trust.
+/// PEM for an authority to trust. A certificate an identity presents is a list entry the bundle names, so the
+/// loader reads no PEM for it.
 struct Pems {
-    plain: String,
-    client: String,
-    unsigning: String,
     authority: String,
 }
 
 impl Pems {
     fn new() -> Pems {
-        use rcgen::{CertificateParams, ExtendedKeyUsagePurpose, KeyPair, KeyUsagePurpose};
-
-        let issue = |edit: fn(&mut CertificateParams)| {
-            let key = KeyPair::generate().unwrap();
-            let mut params = CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
-            edit(&mut params);
-            params.self_signed(&key).unwrap().pem()
-        };
         Pems {
-            plain: issue(|_| {}),
-            client: issue(|p| p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth]),
-            unsigning: issue(|p| p.key_usages = vec![KeyUsagePurpose::KeyEncipherment]),
-            authority: issue(|_| {}),
+            authority: rcgen::generate_simple_self_signed(vec!["smeltr-test".to_string()])
+                .unwrap()
+                .cert
+                .pem(),
         }
     }
 
-    /// The declared identity named `named`, as the file declares it. One no connector names is held to what a
-    /// connector connecting out presents, so the file declares only the one the receiver names.
+    /// The declared identity named `named`, as the file declares it.
     fn identities(&self, named: Option<&str>) -> Value {
-        let key = json!({ "secret": "receiver-key", "version": 1 });
-        let declare = |certificate: Option<&str>, authorities: Option<&str>| {
+        let listed = json!({ "secret": "receiver", "version": 1 });
+        let declare = |presents: bool, authorities: Option<&str>| {
             let mut identity = json!({});
-            if let Some(certificate) = certificate {
-                identity["certificate"] = certificate.into();
-                identity["key"] = key.clone();
+            if presents {
+                identity["certificate"] = listed.clone();
             }
             if let Some(authorities) = authorities {
                 identity["authorities"] = authorities.into();
@@ -378,11 +354,9 @@ impl Pems {
         };
         let all = IDENTITIES.iter().filter(|d| Some(d.id) == named).map(|declared| {
             let mut identity = match declared.id {
-                "served" => declare(Some(&self.plain), None),
-                "vouching" => declare(Some(&self.plain), Some(&self.authority)),
-                "trusting" => declare(None, Some(&self.authority)),
-                "client" => declare(Some(&self.client), None),
-                _ => declare(Some(&self.unsigning), None),
+                "served" => declare(true, None),
+                "vouching" => declare(true, Some(&self.authority)),
+                _ => declare(false, Some(&self.authority)),
             };
             identity["id"] = declared.id.into();
             identity

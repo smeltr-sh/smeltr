@@ -32,7 +32,12 @@ fn hand(dest: &mut dyn Destination, rows: &[OutgoingRecord<'_>]) {
 }
 
 /// The name the key is held under. An identity names a credential like every other connector does.
-const KEY: &str = "smeltr-tls-client-key";
+const CERTIFICATE: &str = "smeltr-tls-client";
+
+const CLIENT: smeltr::plan::topology::PresentedAs = smeltr::plan::topology::PresentedAs {
+    client: true,
+    server: false,
+};
 
 /// What `up.sh` wrote, as an identity and the secrets a worker would hold for it.
 ///
@@ -48,16 +53,21 @@ fn rig(test_name: &str) -> Option<(String, Identity, HeldSecrets)> {
     let authorities = read("KAFKA_TLS_CA")?;
 
     let mut secrets = HeldSecrets::default();
-    secrets.set_stored([(KEY.to_string(), 1, key)]);
+    secrets.take([smeltr::heartbeat::SecretDelivery {
+        name: CERTIFICATE.to_string(),
+        version: 1,
+        value: key,
+        chain: Some(certificate),
+    }]);
     let identity = Identity {
         id: "acme".to_string(),
-        certificate: Some(certificate),
-        key: Some(SecretRef::LeaderStored {
-            name: KEY.to_string(),
+        certificate: Some(SecretRef::LeaderStored {
+            name: CERTIFICATE.to_string(),
             version: 1,
         }),
         authorities: Some(authorities),
         trust_public: true,
+        presented: CLIENT,
     };
     Some((brokers, identity, secrets))
 }
@@ -185,9 +195,9 @@ fn an_identity_that_presents_nothing_is_refused_by_a_broker_that_demands_one() {
     let trust_only = Identity {
         id: "trust-only".to_string(),
         certificate: None,
-        key: None,
         authorities: identity.authorities,
         trust_public: true,
+        presented: CLIENT,
     };
 
     assert_eq!(

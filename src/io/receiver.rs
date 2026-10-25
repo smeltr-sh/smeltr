@@ -3789,16 +3789,24 @@ mod tests {
             .self_signed(&key)
             .unwrap();
         let mut secrets = HeldSecrets::default();
-        secrets.set_stored([("receiver-key".to_string(), 1, key.serialize_pem())]);
+        secrets.take([crate::heartbeat::SecretDelivery {
+            name: "receiver".into(),
+            version: 1,
+            value: key.serialize_pem(),
+            chain: Some(certificate.pem()),
+        }]);
         let identity = Identity {
             id: "receiver".into(),
-            certificate: Some(certificate.pem()),
-            key: Some(SecretRef::LeaderStored {
-                name: "receiver-key".into(),
+            certificate: Some(SecretRef::LeaderStored {
+                name: "receiver".into(),
                 version: 1,
             }),
             authorities: None,
             trust_public: true,
+            presented: crate::plan::topology::PresentedAs {
+                client: false,
+                server: true,
+            },
         };
         let tls = server_tls(&identity, &secrets).unwrap();
         assert!(tls.alpn_protocols.is_empty(), "a stream offers no application protocol");

@@ -167,7 +167,7 @@ pub struct StartSpec {
     pub memory: Option<usize>,
     pub worker_id: String,
     /// Only what this commit names. A runtime is not given credentials its own bundle does not quote.
-    pub secrets: Vec<(String, i64, String)>,
+    pub secrets: Vec<crate::heartbeat::SecretDelivery>,
     /// Which incarnation this is. Echoed on every frame the child sends, so a message from one the supervisor has
     /// replaced is recognized and dropped rather than attributed to its successor.
     pub incarnation: u64,
@@ -459,16 +459,7 @@ pub fn run_runtime_child() -> ! {
     let captures = Arc::new(super::capture::Captures::default());
     let held = Arc::new(super::held::Held::default());
     let mut secrets = crate::plan::topology::HeldSecrets::default();
-    secrets.take(
-        spec.secrets
-            .iter()
-            .map(|(name, version, value)| crate::heartbeat::SecretDelivery {
-                name: name.clone(),
-                version: *version,
-                value: value.clone(),
-            })
-            .collect::<Vec<_>>(),
-    );
+    secrets.take(spec.secrets.clone());
 
     // Started before the deployment it serves, not after: a supervisor that dies while startup is stalled shows
     // up only as end of file on the pipe this thread reads, and nothing else arms the deadline that ends an
@@ -1493,7 +1484,12 @@ mod tests {
     fn a_start_carrying_a_large_secret_set_is_not_refused() {
         let mut spec = spec();
         spec.secrets = (0..4)
-            .map(|i| (format!("s{i}"), 1, "x".repeat(3 * 1024 * 1024)))
+            .map(|i| crate::heartbeat::SecretDelivery {
+                name: format!("s{i}"),
+                version: 1,
+                value: "x".repeat(3 * 1024 * 1024),
+                chain: None,
+            })
             .collect();
         let mut written = Vec::new();
         send(&mut written, &ToRuntime::Start(Box::new(spec))).expect("a start with large secrets fits its frame");

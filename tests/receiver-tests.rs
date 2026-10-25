@@ -303,7 +303,12 @@ fn tls_send(at: SocketAddr, pki: &Pki, with_certificate: bool) -> (u16, String) 
 fn a_receiver_with_authorities_admits_only_a_sender_they_vouch_for() {
     let pki = pki();
     let mut secrets = HeldSecrets::default();
-    secrets.set_stored([("receiver-key".to_string(), 1, pki.server.1.clone())]);
+    secrets.take([smeltr::heartbeat::SecretDelivery {
+        name: "receiver".into(),
+        version: 1,
+        value: pki.server.1.clone(),
+        chain: Some(pki.server.0.clone()),
+    }]);
     let at = free_port();
     let mut source = open(
         ReceiverConfig {
@@ -315,13 +320,16 @@ fn a_receiver_with_authorities_admits_only_a_sender_they_vouch_for() {
             tokens: Vec::new(),
             identity: Some(Arc::new(Identity {
                 id: "receiver".into(),
-                certificate: Some(pki.server.0.clone()),
-                key: Some(SecretRef::LeaderStored {
-                    name: "receiver-key".into(),
+                certificate: Some(SecretRef::LeaderStored {
+                    name: "receiver".into(),
                     version: 1,
                 }),
                 authorities: Some(pki.ca.clone()),
                 trust_public: true,
+                presented: smeltr::plan::topology::PresentedAs {
+                    client: false,
+                    server: true,
+                },
             })),
             max_request_bytes: 1024,
         },

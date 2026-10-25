@@ -1053,9 +1053,8 @@ pub async fn put_destinations(
     .await
 }
 
-/// Identities, with the one check that needs more than the bundle: a certificate is committed here and its key is
-/// not, so nothing but the leader can say whether the two belong together. A worker-local key is on a host the
-/// leader never sees, so there is nothing to check and nothing is refused.
+/// Identities, with the one check that needs more than the bundle: whether each certificate an identity names is a
+/// version the leader's certificate list holds.
 pub async fn put_identities(
     State(state): State<smeltr::leader::AppState>,
     Extension(actor): Extension<Actor>,
@@ -1065,7 +1064,7 @@ pub async fn put_identities(
 ) -> Json<Envelope<Save>> {
     let store = state.store.clone();
     let checked = identities.clone();
-    let mismatched = match blocking(move || unpaired_identities(store.as_ref(), &checked)).await {
+    let mismatched = match blocking(move || unlisted_certificates(store.as_ref(), &checked)).await {
         Ok(mismatched) => mismatched,
         Err(e) => return Json(Envelope::failed_one(e)),
     };
@@ -1119,24 +1118,24 @@ pub async fn describe_certificates(Json(req): Json<DescribeRequest>) -> Json<Des
     }
 }
 
-/// Which of `identities` names a private key that is not its certificate's, as ready-to-print lines.
-fn unpaired_identities(
+/// Which of `identities` names a certificate the list does not hold at that version, as ready-to-print lines.
+fn unlisted_certificates(
     store: &dyn smeltr::leader::store::Store,
     identities: &[IdentityDto],
 ) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     for i in identities {
-        let (Some(certificate), Some(config_file::SecretRefDto::LeaderStored(key))) = (&i.certificate, &i.key) else {
+        let Some(listed) = i.listed_certificate() else {
             continue;
         };
-        let matches = store
-            .certificate_matches(&key.secret, key.version, certificate)
+        let chain = store
+            .certificate_chain(&listed.secret, listed.version)
             .map_err(|e| e.to_string())?;
-        if !matches {
+        if chain.is_none() {
             out.push(format!(
-                "identity {:?} names a private key that does not belong to its certificate. Store the key the \
-                 certificate was issued for, or paste the certificate that key signs for",
-                i.id
+                "identity {:?} names {:?} at version {}, which the certificate list does not hold. Choose a \
+                 certificate from the list",
+                i.id, listed.secret, listed.version
             ));
         }
     }
@@ -1687,7 +1686,7 @@ pub enum UndoRequest {
 
 /// Puts one object, or one file no section owns, back the way it was where the branch left `main`, as one save on
 /// the branch.
-/// An identity put back is held to `put_identities`'s pairing check, which is why this needs `AppState`.
+/// An identity put back is held to `put_identities`'s check of the list, which is why this needs `AppState`.
 pub async fn undo(
     State(state): State<smeltr::leader::AppState>,
     Extension(actor): Extension<Actor>,
@@ -1697,8 +1696,8 @@ pub async fn undo(
 ) -> Json<Envelope<Save>> {
     let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
     blocking_save(move || {
-        let unpaired = |identities: &[IdentityDto]| unpaired_identities(state.store.as_ref(), identities);
-        undo_in(&leader_data_dir(), &branch, base, &scope, req, &actor, unpaired)
+        let unlisted = |identities: &[IdentityDto]| unlisted_certificates(state.store.as_ref(), identities);
+        undo_in(&leader_data_dir(), &branch, base, &scope, req, &actor, unlisted)
     })
     .await
 }
@@ -1780,7 +1779,7 @@ fn undo_in(
     scope: &str,
     req: UndoRequest,
     author: &Actor,
-    unpaired: impl FnOnce(&[IdentityDto]) -> Result<Vec<String>, String>,
+    unlisted: impl FnOnce(&[IdentityDto]) -> Result<Vec<String>, String>,
 ) -> Envelope<Save> {
     let writing = match Writing::open_in(data_dir, branch, base.as_deref(), scope) {
         Ok(writing) => writing,
@@ -1857,7 +1856,7 @@ fn undo_in(
     }
 
     if let Section::Identities = section {
-        match unpaired(&file.identities) {
+        match unlisted(&file.identities) {
             Ok(mismatched) if mismatched.is_empty() => {}
             Ok(mismatched) => return Envelope::failed(mismatched.into_iter().map(ApiError::new).collect()),
             Err(e) => return Envelope::failed_one(e),
@@ -4215,9 +4214,9 @@ mod tests {
         undo_in(data, "work", None, "shared", req, &Actor::system(), |_| Ok(vec![]))
     }
 
-    /// An identity put back is checked for a key that is not its certificate's, as a save of identities is.
+    /// An identity put back is checked for a certificate the list does not hold, as a save of identities is.
     #[test]
-    fn an_identity_put_back_is_held_to_the_pairing_check() {
+    fn an_identity_put_back_is_held_to_the_list_check() {
         let data = main_with_routes("undo-identity");
         let key = rcgen::KeyPair::generate().unwrap();
         let ca = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
@@ -4240,12 +4239,12 @@ mod tests {
         let refused = undo_in(&data, "work", None, "shared", req, &Actor::system(), |identities| {
             checked = identities.iter().map(|i| i.id.clone()).collect();
             Ok(vec![
-                "identity \"i1\" names a private key that does not belong to its certificate".to_string(),
+                "identity \"i1\" names \"c\" at version 1, which the certificate list does not hold".to_string(),
             ])
         });
         assert_eq!(checked, ["i1"], "the section as the undo leaves it");
         assert!(
-            !refused.ok && refused.errors[0].message.contains("does not belong"),
+            !refused.ok && refused.errors[0].message.contains("does not hold"),
             "{refused:?}"
         );
         assert_eq!(
