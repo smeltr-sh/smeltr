@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::config_file::{DataTypeDto, FieldDto, ParserKindDto, StepDto};
 use crate::core::column::DataType;
+use crate::format::grok_pattern::unfold;
 use crate::format::grok_scan::Matcher;
 use crate::format::spread::sniff_scalar;
 use crate::format::tag::{Suggestion, Tag};
@@ -248,7 +249,8 @@ pub struct Proposal {
 /// is one, and "column_1" onward where it is not, each typed from its values. A source sends a file's header row as a
 /// record of its own, which the CSV parser would read as data, so a Drop step ahead of the parser takes it out. CEF
 /// has no Parser kind, so it gets a Code step that spreads `cef()` into the record. A syslog or access-log line gets a
-/// Grok Parser on the built-in pattern for the whole line, whose fields are that pattern's.
+/// Grok Parser on the built-in pattern for the whole line, written out (`grok_pattern::unfold`) so each field it fills
+/// shows in the step.
 ///
 /// The format is read from the first [`PROPOSED_FROM`] records, which is plenty to tell one; the condition holds of
 /// every record `filed` says where it was filed (each one's `__source`), and of `records` where it is `None`.
@@ -295,7 +297,7 @@ pub fn propose(records: &[RecordObject], filed: Option<&[serde_json::Value]>) ->
                 .find(|(f, _)| f == format)
                 .expect("a line format is one of LINES");
             let kind = ParserKindDto::Grok {
-                patterns: line_config(pattern).patterns,
+                patterns: line_config(pattern).patterns.iter().map(|p| unfold(p)).collect(),
                 custom_patterns: Vec::new(),
                 split_dots: None,
             };
@@ -537,7 +539,7 @@ mod tests {
         for (line, format, pattern) in cases {
             let p = propose(&raw(&[line, line]), None);
             assert_eq!((p.format, p.read, p.of), (Some(format), 2, 2), "{line}");
-            let want = vec![format!("^%{{{pattern}}}$")];
+            let want = vec![unfold(&format!("^%{{{pattern}}}$"))];
             assert!(
                 matches!(p.steps.as_slice(), [StepDto::Parser { kind: ParserKindDto::Grok { patterns, .. }, .. }]
                     if *patterns == want),

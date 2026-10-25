@@ -70,7 +70,8 @@
       else root.scrollIntoView({ block: 'center' });
     });
   });
-  // A screen reader hears this rather than the `*`. A group's first control is not the group, so it gets none.
+  // A screen reader hears this rather than the `*`. A group's first control is not the group, so it gets
+  // none: the control that is takes `required` where the group writes it.
   $effect(() => {
     const c = control();
     if (!c || group) return;
