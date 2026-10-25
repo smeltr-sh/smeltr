@@ -91,3 +91,20 @@ body {
   border-radius: 2px;
   background: oklch(var(--scope-l) var(--scope-c) var(--scope-h));
 }
+
+/* Text colored by a highlighter (`highlight`, `highlightGrok`), shown rather than edited. */
+.tokens .tok-keyword {
+  color: var(--tok-keyword);
+}
+.tokens .tok-function {
+  color: var(--tok-function);
+}
+.tokens .tok-string {
+  color: var(--tok-string);
+}
+.tokens .tok-literal {
+  color: var(--tok-literal);
+}
+.tokens .tok-key {
+  color: var(--tok-key);
+}
