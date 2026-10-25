@@ -327,6 +327,11 @@
     </section>
   {/if}
 
+  <!-- Above the readings, so they cannot move it as they arrive. -->
+  {#if footer}
+    <div class="footer">{@render footer()}</div>
+  {/if}
+
   <div class="tabs">
     <SecondaryTabs
       tabs={tabs.map((t) => ({ label: t.label, hash: tabHash(t.tab) }))}
@@ -651,9 +656,6 @@
         <p class="dim small">{rows(source.unmatched)} of {rows(source.polled)} met Unmatched.</p>
       {/if}
     </section>
-  {/if}
-  {#if footer}
-    <div class="footer">{@render footer()}</div>
   {/if}
 </MapPanel>
 
