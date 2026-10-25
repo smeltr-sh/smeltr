@@ -3517,6 +3517,8 @@ export type CertificateDto = {
   chain: DescribedCertificate[];
   /** Whether the leader serves a copy of it. */
   served: boolean;
+  /** The names this leader issues it for, where this leader issued it and renews it. */
+  issuedFor?: string[];
 };
 
 export function listCertificates(): Promise<CertificateDto[]> {
@@ -3534,6 +3536,19 @@ export function createCertificate(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, description, certificate, privateKey }),
+  });
+}
+
+/** Has this leader issue a certificate for `names` under its own authority, which it then renews. */
+export function issueCertificate(
+  name: string,
+  description: string,
+  names: string[],
+): Promise<AdminActionResult> {
+  return apiJson('/api/certificates/issued', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description, names }),
   });
 }
 

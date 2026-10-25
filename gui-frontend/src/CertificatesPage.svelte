@@ -13,12 +13,14 @@
   import PageHeader from './PageHeader.svelte';
   import Field from './Field.svelte';
   import Dialog from './Dialog.svelte';
+  import Segmented from './Segmented.svelte';
   import { ask } from './Confirm.svelte';
   import SortButton from './SortButton.svelte';
   import { TableSort } from './sort.svelte';
   import {
     listCertificates,
     createCertificate,
+    issueCertificate,
     replaceCertificate,
     pointSecretNow,
     deleteSecret,
@@ -54,6 +56,19 @@
   let pem = $state('');
   let privateKey = $state('');
   let saving = $state(false);
+  /** How a new certificate arrives: pasted, or issued by this leader. */
+  let origin = $state<'upload' | 'issued'>('upload');
+  const ORIGINS = [
+    { value: 'upload' as const, label: 'Upload' },
+    { value: 'issued' as const, label: 'Issued by this leader' },
+  ];
+  let issuedNames = $state('');
+  const namesAsked = $derived(
+    issuedNames
+      .split(/[\s,]+/)
+      .map((n) => n.trim())
+      .filter((n) => n !== ''),
+  );
 
   function open(name: string | null) {
     editing = { name };
@@ -62,15 +77,18 @@
     newDescription = '';
     pem = '';
     privateKey = '';
+    origin = 'upload';
+    issuedNames = '';
   }
 
   const nameProblem = (name: string): string | null =>
     certificates.some((c) => c.name === name.trim()) ? `${name.trim()} is taken` : null;
 
+  const issuing = $derived(editing?.name === null && origin === 'issued');
+
   const canSave = $derived(
     !saving &&
-      pem.trim() !== '' &&
-      privateKey.trim() !== '' &&
+      (issuing ? namesAsked.length > 0 : pem.trim() !== '' && privateKey.trim() !== '') &&
       (editing?.name != null || (newName.trim() !== '' && nameProblem(newName) === null)),
   );
 
@@ -85,8 +103,9 @@
     if (!canSave || !editing) return;
     saving = true;
     try {
-      const res =
-        editing.name === null
+      const res = issuing
+        ? await issueCertificate(newName.trim(), newDescription.trim(), namesAsked)
+        : editing.name === null
           ? await createCertificate(newName.trim(), newDescription.trim(), pem, privateKey)
           : await replaceCertificate(editing.name, pem, privateKey);
       if (!res.ok) return;
@@ -179,20 +198,31 @@
   >
     <div class="form-body">
       {#if editing?.name === null}
+        <Segmented label="How it arrives" options={ORIGINS} bind:value={origin} />
         <Field required label="Name" error={nameProblem(newName)}>
           <input bind:value={newName} placeholder="receiver-tls" class="mono" />
         </Field>
       {/if}
-      <Field
-        required
-        label="Certificate"
-        note="PEM, the full chain. For a private authority, end it with the root."
-      >
-        <textarea bind:value={pem} rows="5" spellcheck="false"></textarea>
-      </Field>
-      <Field required label="Private key" note="PEM. Stored encrypted and never shown again.">
-        <textarea bind:value={privateKey} rows="5" spellcheck="false"></textarea>
-      </Field>
+      {#if issuing}
+        <Field
+          required
+          label="Issued for"
+          note="DNS names and IP addresses, one per line. This leader signs it with its own authority, which whatever connects to it must trust. Before it expires the leader renews it and opens a change for you to deploy."
+        >
+          <textarea bind:value={issuedNames} rows="3" spellcheck="false"></textarea>
+        </Field>
+      {:else}
+        <Field
+          required
+          label="Certificate"
+          note="PEM, the full chain. For a private authority, end it with the root."
+        >
+          <textarea bind:value={pem} rows="5" spellcheck="false"></textarea>
+        </Field>
+        <Field required label="Private key" note="PEM. Stored encrypted and never shown again.">
+          <textarea bind:value={privateKey} rows="5" spellcheck="false"></textarea>
+        </Field>
+      {/if}
       {#if editing?.name === null}
         <Field optional label="Description">
           <input bind:value={newDescription} />
@@ -236,6 +266,11 @@
               <td>
                 <span class="mono">{c.name}</span>
                 {#if c.served}<span class="badge">leader</span>{/if}
+                {#if c.issuedFor}<span
+                    class="badge"
+                    title="Issued by this leader, which renews it itself, so it has no Replace button. To use your own certificate, add one under another name."
+                    >issued</span
+                  >{/if}
                 {#if c.description}<small class="note">{c.description}</small>{/if}
               </td>
               <td class="mono">{leaf(c)?.names.join(', ') || '--'}</td>
@@ -244,7 +279,9 @@
               </td>
               <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
               <td class="row-actions">
-                <button type="button" onclick={() => open(c.name)}>Replace</button>
+                {#if !c.issuedFor}
+                  <button type="button" onclick={() => open(c.name)}>Replace</button>
+                {/if}
                 <button type="button" onclick={() => remove(c)}>Delete</button>
               </td>
             </tr>
