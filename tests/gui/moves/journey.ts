@@ -1353,8 +1353,6 @@ const writeInto: Move = {
   run: async (j) => {
     const { page, leader, rng, world } = j;
     const pipeline = rng.pick(parsing(world));
-    // An object of its own, or the record again.
-    const into = rng.chance(4) ? '$' : `o${world.made++}`;
     await goto(page, leader, '#/build/pipelines');
     await page.getByRole('link', { name: pipeline, exact: true }).click();
     const parser = page.getByRole('button', { name: /as JSON/ });
@@ -1363,6 +1361,8 @@ const writeInto: Move = {
     const box = page.getByRole('textbox', { name: 'write into' });
     // Advanced is open where it holds something set.
     if (!(await box.isVisible())) await page.getByRole('button', { name: /^Advanced/ }).click();
+    // An object of its own, or the record again: never the one it writes into now, which leaves nothing to save.
+    const into = (await box.inputValue()) !== '$' && rng.chance(4) ? '$' : `o${world.made++}`;
     await box.fill(into);
     await expect(parser).toContainText(into === '$' ? /as JSON( \(|$)/ : `as JSON into ${into}`);
     await save(j, () => expect(page.getByText('Saved.')).toBeVisible());
