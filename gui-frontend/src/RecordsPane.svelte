@@ -38,6 +38,7 @@
   import FoldAllButton from './FoldAllButton.svelte';
   import { TableSort } from './sort.svelte';
   import { formatDiffValue } from './diff';
+  import InlineError from './InlineError.svelte';
   import {
     countStates,
     fieldAt,
@@ -49,6 +50,7 @@
   } from './recordDiff';
   import {
     isInternal,
+    previewFailure,
     sampleSource,
     type PreviewResult,
     type PreviewRow,
@@ -597,23 +599,40 @@
   /** The row numbers the expression kept, or null while the search is a keyword. */
   let expressionRows = $state<Set<number> | null>(null);
   const looksLikeExpression = (q: string) => /[=<>!&|()]/.test(q);
+  /** How the reader said the text is read, by the mode beside it, over what it looks like. Cleared with the text. */
+  let readAs = $state<'keyword' | 'expression' | null>(null);
+  /** Why the text does not compile, while it is read as an expression it is not. */
+  let expressionError = $state('');
+  $effect(() => {
+    if (!outputQuery.trim()) readAs = null;
+  });
+  /** What the mode beside the box says: the reader's choice at once, else the guess the preview confirmed. */
+  let asExpression = $derived(readAs ? readAs === 'expression' : expressionRows !== null);
 
   $effect(() => {
-    const [q, sample] = [outputQuery.trim(), lastSample];
+    const [q, sample, as] = [outputQuery.trim(), lastSample, readAs];
     void signature;
     // Paused, the expression reads the records where they stand.
     const cut = pause?.after;
-    if (!q || !sample || !looksLikeExpression(q)) {
+    expressionError = '';
+    if (!q || !sample || as === 'keyword' || (as === null && !looksLikeExpression(q))) {
       expressionRows = null;
       return;
     }
+    // Asked for, an expression that does not compile keeps no rows and says why; guessed, it stays a keyword.
+    const failed = (error: string) => {
+      expressionRows = as === 'expression' ? new Set() : null;
+      expressionError = as === 'expression' ? error : '';
+    };
     let current = true;
     const timer = setTimeout(async () => {
       try {
         const res = await preview(cut ?? untrack(() => steps), sample, q);
-        if (current) expressionRows = res.ok ? new Set(res.rows.map((r) => r.row)) : null;
-      } catch {
-        if (current) expressionRows = null;
+        if (!current) return;
+        if (res.ok) expressionRows = new Set(res.rows.map((r) => r.row));
+        else failed(previewFailure(res));
+      } catch (e) {
+        if (current) failed(String(e));
       }
     }, RECOMPUTE_MS);
     return () => {
@@ -699,10 +718,12 @@
                 onremove={() => toggleChip(c)}
                 ><span class="find-chip">{chipLabel(c)}</span></RemovableChip
               >{/each}{/snippet}
-          {#snippet after()}{#if outputQuery.trim()}<span
+          {#snippet after()}{#if outputQuery.trim()}<button
+                type="button"
                 class="mode"
-                class:expression={expressionRows !== null}
-                >{expressionRows !== null ? 'ƒ expression' : 'keyword'}</span
+                class:expression={asExpression}
+                onclick={() => (readAs = asExpression ? 'keyword' : 'expression')}
+                >{asExpression ? 'ƒ expression' : 'keyword'}</button
               >{/if}{/snippet}
           {#snippet option(item)}
             {#if item.kind === 'recent'}
@@ -732,6 +753,7 @@
         {@render fieldsMenu(null)}
       {/if}
     </div>
+    <InlineError message={expressionError} />
     {#if selectedSample}
       {@render stage()}
       <div class="output-actions">
@@ -931,6 +953,9 @@
   }
   .mode {
     flex: none;
+    background: none;
+    cursor: pointer;
+    font: inherit;
     font-size: var(--text-note);
     color: var(--dim);
     border: 1px solid var(--border);

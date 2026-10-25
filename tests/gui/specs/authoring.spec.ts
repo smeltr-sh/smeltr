@@ -920,6 +920,18 @@ test('A2: a sample is picked from the Sample menu, its output searched by keywor
   // One that does not compile to a Bool is a keyword.
   await search.fill('total +');
   await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
+  // Read as an expression on asking, it keeps no rows and says why, until it is fixed.
+  await admin.getByRole('button', { name: 'keyword', exact: true }).click();
+  await expect(admin.getByRole('alert')).toBeVisible();
+  await expect(admin.getByText('0 of 3 rows')).toBeVisible();
+  await search.fill('total > 15');
+  await expect(admin.getByText('2 of 3 rows')).toBeVisible();
+  await expect(admin.getByRole('alert')).toBeHidden();
+  // And an expression is searched for as text on asking.
+  await admin.getByRole('button', { name: 'ƒ expression' }).click();
+  await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
+  await expect(admin.getByText('0 of 3 rows')).toBeVisible();
+  await search.fill('');
   // Left with an expression in it, the box offers it again, under the kinds of row a chip keeps.
   await search.fill('total > 15');
   await expect(admin.getByText('ƒ expression')).toBeVisible();
