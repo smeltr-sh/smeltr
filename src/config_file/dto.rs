@@ -960,7 +960,7 @@ pub struct SourcetypeDto {
     pub line_breaker: Option<String>,
 }
 
-fn record() -> String {
+fn root() -> String {
     crate::plan::tree::ROOT.to_string()
 }
 
@@ -3179,7 +3179,7 @@ pub enum StepDto {
         disabled: bool,
         input: String,
         /// The object the parse writes into. A step written before it reads `$`, the record.
-        #[serde(default = "record")]
+        #[serde(default = "root")]
         into: String,
         kind: ParserKindDto,
         #[serde(default)]
