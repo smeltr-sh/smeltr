@@ -1118,7 +1118,7 @@
             {/if}
 
             <Advanced values={advancedValues(ps)} errors={advancedErrors(ps)}>
-              <Field optional label="input field">
+              <Field required label="input field">
                 <ValidatedField
                   bind:value={ps.input}
                   errors={stepErrorMessages}
