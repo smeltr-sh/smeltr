@@ -59,6 +59,7 @@
     leafMap,
     pathsOf,
     splitPath,
+    typeAt,
     type Declared,
   } from './recordDiff';
   import {
@@ -1253,6 +1254,19 @@
     };
   }
 
+  /** Each column's type, from the side the grid's cells show: after the step, or before where
+   * the step removed the field. */
+  let columnTypes = $derived.by(() => {
+    const declared =
+      pausedByRow && pauseRun ? pauseRun.declared : { before: sampleDeclared, after: runDeclared };
+    return new Map(
+      columns.map((path) => {
+        const after = typeAt(declared.after, path);
+        return [path, after === 'undeclared' ? (typeAt(declared.before, path) ?? after) : after];
+      }),
+    );
+  });
+
   // Each row's leaves, both sides, by path: what a cell, the search and the
   // sort read, without diffing a row nobody is looking at. The sample's side
   // is read once per sample rather than once per run.
@@ -2048,7 +2062,7 @@
                   aria-pressed={changedOnly}
                   onclick={() => (changedOnly = !changedOnly)}
                 >
-                  Changed only
+                  Show only changed fields
                 </button>
                 <button type="button" onclick={() => (showTypes = !showTypes)}>
                   {showTypes ? 'Hide types' : 'Show types'}
@@ -2104,6 +2118,9 @@
                               ><SortButton sort={gridSort} key={path}
                                 ><span class="head-name"
                                   ><span class="path-prefix">{name.prefix}</span>{name.leaf}</span
+                                >{#if showTypes && columnTypes.get(path)}{' '}<span
+                                    class="head-type">{columnTypes.get(path)}</span
+                                  >{/if}
                                 ></SortButton
                               ></th
                             >
@@ -2784,6 +2801,12 @@
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .head-type {
+    font-family: var(--mono);
+    opacity: 0.7;
+    white-space: nowrap;
   }
 
   /* The head of an open record follows the left edge rather than scrolling
