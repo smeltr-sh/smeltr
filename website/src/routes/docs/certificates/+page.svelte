@@ -85,9 +85,9 @@
     under <strong>Valid for</strong>, and choose <strong>Add</strong>. The leader signs it with its
     own authority, so a client verifies it against the leader's
     <a href="#download">ca.pem</a>. Two thirds of the way through its life, or after you
-    <a href="#rotation">rotate the authority</a>, the leader issues the next version, valid as long
-    again, and opens a change that points the connection identities presenting it at that version.
-    Deploy that change before the old version expires.
+    <a href="#rotation">rotate the authority</a>, the leader issues the next version, valid for the
+    same length of time, and opens a change that points the connection identities presenting it at
+    that version. Deploy that change before the old version expires.
   </p>
   <h2 id="names">Names a certificate must cover</h2>
   <p>

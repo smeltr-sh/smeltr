@@ -3553,7 +3553,7 @@ export function issueCertificate(
   });
 }
 
-/** The lifetimes offered for a certificate this leader issues. Each renewal lasts as long again. */
+/** The lifetimes offered for a certificate this leader issues. Each renewal lasts the same. */
 export const ISSUED_VALIDITY_DAYS = [90, 365, 2 * 365, 3 * 365] as const;
 
 /** Stores a new version, which the leader serves too where it serves this certificate. */

@@ -214,7 +214,10 @@
         >
           <textarea bind:value={issuedNames} rows="3" spellcheck="false"></textarea>
         </Field>
-        <Field label="Valid for" note="Each renewal is valid as long again.">
+        <Field
+          label="Valid for"
+          note="Each renewal is valid for the same length of time. A certificate never outlasts this leader's authority: if the authority expires first, so does the certificate."
+        >
           <select bind:value={validityDays}>
             {#each ISSUED_VALIDITY_DAYS as days}
               <option value={days}
