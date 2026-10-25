@@ -2399,7 +2399,7 @@ pub struct CertificateOut {
     pub chain: Vec<tls::Described>,
     /// Whether the leader serves a copy of it.
     pub served: bool,
-    /// The names this leader issues it for, where this leader issued it and renews it.
+    /// The names it is issued for, where this leader issued it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issued_for: Option<Vec<String>>,
 }
@@ -2576,7 +2576,7 @@ fn a_year() -> i64 {
     365
 }
 
-/// Lists a certificate this leader's own authority issues for the names asked, and renews.
+/// Lists a certificate this leader's own authority issues for the names asked.
 async fn issue_certificate(State(state): State<AppState>, Json(req): Json<IssueRequest>) -> Json<Envelope> {
     let names: Vec<String> = (req.names.iter().map(|n| n.trim().to_string()))
         .filter(|n| !n.is_empty())
@@ -2589,21 +2589,12 @@ async fn issue_certificate(State(state): State<AppState>, Json(req): Json<IssueR
     if req.validity_days < 1 {
         return Json(Envelope::failed_one("a certificate must be valid for at least a day"));
     }
-    let dir = tls::dir_of(&state.data_dir);
-    if !crate::startup_config::leader_tls_enabled() || !dir.exists() {
-        return Json(Envelope::failed_one(
-            "this leader serves plain HTTP, so it cannot issue certificates. Set leader.tls.enabled = true and restart \
-             it first",
-        ));
-    }
     let issued = Issued {
         names,
         validity_days: req.validity_days,
     };
-    let asked = issued.clone();
-    let issued = blocking(move || tls::issue(&dir, asked.names.clone(), asked.validity()).map(|i| (asked, i))).await;
-    let (issued, (chain, key)) = match issued {
-        Ok(issued) => issued,
+    let (chain, key) = match sign_under_authority(&state, &issued).await {
+        Ok(signed) => signed,
         Err(e) => return Json(Envelope::failed_one(e)),
     };
     match run_store(state.store, move |s| {
@@ -2614,6 +2605,24 @@ async fn issue_certificate(State(state): State<AppState>, Json(req): Json<IssueR
         Ok(()) => Json(Envelope::done()),
         Err(e) => Json(Envelope::failed_one(e)),
     }
+}
+
+/// A new version of a certificate this leader issues: a chain under its authority for `issued`, and the key.
+async fn sign_under_authority(state: &AppState, issued: &Issued) -> Result<(String, String), String> {
+    let dir = tls::dir_of(&state.data_dir);
+    if !crate::startup_config::leader_tls_enabled() || !dir.exists() {
+        return Err(
+            "this leader serves plain HTTP, so it cannot issue certificates. Set leader.tls.enabled = true and \
+                    restart it first"
+                .to_string(),
+        );
+    }
+    let issued = issued.clone();
+    blocking(move || {
+        let validity = issued.validity();
+        tls::issue(&dir, issued.names, validity)
+    })
+    .await
 }
 
 /// The certificates this leader issued that are due for renewal, as warnings ([`warnings::issued_certificates_due`]).
@@ -2654,9 +2663,8 @@ async fn renew_certificate(State(state): State<AppState>, Path(name): Path<Strin
         }
         Err(e) => return Json(Envelope::failed_one(e)),
     };
-    let dir = tls::dir_of(&state.data_dir);
-    let (chain, key) = match blocking(move || tls::issue(&dir, issued.names.clone(), issued.validity())).await {
-        Ok(issued) => issued,
+    let (chain, key) = match sign_under_authority(&state, &issued).await {
+        Ok(signed) => signed,
         Err(e) => return Json(Envelope::failed_one(e)),
     };
     match run_store(state.store, move |s| s.add_certificate_version(&name, &chain, &key)).await {
@@ -2683,7 +2691,7 @@ pub async fn replace_certificate(
     {
         Ok(true) => {
             return Json(Envelope::failed_one(format!(
-                "this leader issues {name:?} and renews it itself, so it cannot be replaced. To use your own certificate, \
+                "this leader issued {name:?}, so it is renewed, not replaced. To use your own certificate, \
                  add one under another name and choose it where this one is used"
             )));
         }
@@ -5841,7 +5849,7 @@ mod certificate_list_tests {
         all.into_iter().map(|c| c.name).collect()
     }
 
-    /// The leader holds its key and renews it, so nobody else's certificate takes its place under its name.
+    /// The leader holds its key and issues each version, so nobody else's certificate takes its place under its name.
     #[tokio::test]
     async fn an_issued_certificate_is_not_replaced() {
         let state = issuing("issue-replace");
@@ -5860,7 +5868,11 @@ mod certificate_list_tests {
         .await
         .0;
         assert!(!out.ok);
-        assert!(out.errors[0].message.contains("renews it itself"), "{:?}", out.errors);
+        assert!(
+            out.errors[0].message.contains("renewed, not replaced"),
+            "{:?}",
+            out.errors
+        );
     }
 
     async fn renew(state: &AppState, name: &str) -> Envelope {
