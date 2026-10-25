@@ -15,12 +15,15 @@
     replacing = $bindable(false),
     stored,
     ariaLabel,
+    required = false,
   }: {
     value: string;
     replacing?: boolean;
     /** Whether the leader holds one that a save would keep. */
     stored: boolean;
     ariaLabel: string;
+    /** As `PasswordField`'s. */
+    required?: boolean;
   } = $props();
 </script>
 
@@ -33,7 +36,7 @@
   </div>
 {:else}
   <div class="row">
-    <span class="input"><PasswordField bind:value {ariaLabel} /></span>
+    <span class="input"><PasswordField bind:value {ariaLabel} {required} /></span>
     {#if stored}
       <button
         type="button"
