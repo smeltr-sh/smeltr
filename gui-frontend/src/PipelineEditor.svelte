@@ -74,6 +74,8 @@
     SHARED_SCOPE,
     previewFailure,
     previewPipeline,
+    afterDot,
+    type AskAt,
     errorText,
     type ApiError,
     errorMessage,
@@ -770,6 +772,27 @@
     });
     return { ...res, errors: res.errors.map(held.restore) };
   }
+
+  /** Asks the engine what may follow a dot in a step's expression, over the steps as they are being written and the
+   * sample's columns. */
+  const askAt: AskAt = (at) => (text, dot) =>
+    afterDot({
+      config: JSON.stringify(
+        buildFileConfig(
+          pipelineId,
+          pipelineName,
+          unfinished.hold(steps).steps,
+          ownPipelines,
+          ownLookupTables,
+          ownGrokPatterns,
+        ),
+      ),
+      pipeline: pipelineId,
+      sample: lastSample || undefined,
+      at,
+      text,
+      dot,
+    });
 
   async function run() {
     running = true;
@@ -1482,6 +1505,7 @@
             {onSelectStep}
             onPropose={readOnly ? undefined : proposeFields}
             proposal={openProposal}
+            {askAt}
           />
         </div>
 

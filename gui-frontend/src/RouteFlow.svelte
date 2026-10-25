@@ -14,6 +14,7 @@
   same way, or, where the caller offers it, made in the pipeline editor (`onnewpipeline`).
 -->
 <script lang="ts">
+  import type { AskAt } from './api';
   import { tick, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import Help from './Help.svelte';
@@ -69,9 +70,12 @@
     onnewdest,
     onnewpipeline,
     onnewsource,
+    askAt,
   }: {
     /** The card's routes: every route of one source. */
     routes: RouteDto[];
+    /** Asks the engine what may follow a dot in an expression at `at` (`afterDot`). */
+    askAt?: AskAt;
     sourceIds: string[];
     pipelineIds: string[];
     destinationIds: string[];
@@ -819,6 +823,7 @@
     <div class="expr" onfocusout={(e) => leaveCondition(e, route)}>
       <ValidatedField
         ariaLabel="takes rows where"
+        ask={askAt?.({ source: route.source })}
         bind:value={() => route.condition ?? '', (v) => setCondition(route, v)}
         forced={validation?.message(route.id, 'condition') ?? null}
         autocomplete="condition"
@@ -895,6 +900,7 @@
     <div class="expr" onfocusout={(e) => leaveWhen(e, route, rule)}>
       <ValidatedField
         ariaLabel="sends rows where"
+        ask={askAt?.({ when: route.id })}
         bind:value={() => rule.when ?? '', (v) => setWhen(route, rule, v)}
         forced={whenError(rule)}
         autocomplete="condition"

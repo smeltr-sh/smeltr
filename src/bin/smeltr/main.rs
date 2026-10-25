@@ -2415,6 +2415,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                after_dot: None,
             },
             Default::default(),
             &[
@@ -2471,6 +2472,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                after_dot: None,
             },
             Default::default(),
             columns,
@@ -2491,6 +2493,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: Some(filter.to_string()),
+                after_dot: None,
             },
             Default::default(),
             &[],
@@ -2545,6 +2548,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                after_dot: None,
             },
             Default::default(),
             &[],
@@ -2940,6 +2944,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                after_dot: None,
             },
         );
 
@@ -2972,6 +2977,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                after_dot: None,
             },
         );
         assert!(!response.ok, "{} rows", response.rows.len());

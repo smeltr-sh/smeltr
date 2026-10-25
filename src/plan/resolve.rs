@@ -732,32 +732,14 @@ fn resolve_object_op(
         };
         let ir = resolve(pairs, syms, res)?;
         refuse_variant(&ir, pairs, syms)?;
-        let entry = |e: &DataType| match e {
-            DataType::Null => true,
-            DataType::Struct(fields, _) => {
-                let of = |n: &str| fields.iter().find(|(k, _)| k == n).map(|(_, t)| t);
-                matches!(
-                    (of("key"), of("value")),
-                    (Some(DataType::Str | DataType::Null), Some(_))
-                )
-            }
-            _ => false,
-        };
-        match &ir.ty {
-            DataType::Null => {}
-            DataType::Array(e) if entry(e) => {}
-            DataType::Array(e) => {
-                return fail(format!(
-                    "`fromEntries` takes `{{key: str, value}}` objects, found {}",
-                    e.spell()
-                ));
-            }
-            t => {
-                return fail(format!(
+        if !op.accepts(&ir.ty) {
+            return fail(match &ir.ty {
+                DataType::Array(e) => format!("`fromEntries` takes `{{key: str, value}}` objects, found {}", e.spell()),
+                t => format!(
                     "`fromEntries` takes an array of `{{key, value}}` objects, found {}",
                     t.spell()
-                ));
-            }
+                ),
+            });
         }
         let ty = DataType::Struct(Vec::new(), true);
         return Ok(Ir::new(ty, span, IrKind::ObjectOp { op, args: vec![ir] }));
@@ -767,8 +749,11 @@ fn resolve_object_op(
     };
     let ir = resolve(object, syms, res)?;
     refuse_variant(&ir, object, syms)?;
-    let DataType::Struct(fields, open) = ir.ty.clone() else {
+    if !op.accepts(&ir.ty) {
         return fail(format!("`{word}` takes an object, found {}", ir.ty.spell()));
+    }
+    let DataType::Struct(fields, open) = ir.ty.clone() else {
+        unreachable!("`accepts` takes only an object here");
     };
     match op {
         ObjectOp::Keys | ObjectOp::Entries if !keys.is_empty() => fail(format!("`{word}` takes one object")),

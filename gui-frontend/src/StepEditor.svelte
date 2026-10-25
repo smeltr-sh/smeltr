@@ -20,6 +20,7 @@
 </script>
 
 <script lang="ts">
+  import type { AskAt } from './api';
   import InlineError from './InlineError.svelte';
   import StepList from './StepList.svelte';
   import ValidatedField from './ValidatedField.svelte';
@@ -86,6 +87,7 @@
     onSelectStep = () => {},
     onPropose = () => {},
     proposal = null,
+    askAt,
   }: {
     steps: Step[];
     index: number;
@@ -105,6 +107,8 @@
     onPropose?: (step: Step) => void;
     /** The field proposal open on some parser step, shown in that step's card. */
     proposal?: OpenProposal | null;
+    /** Asks the engine what may follow a dot in an expression at `at` (`afterDot`). */
+    askAt?: AskAt;
   } = $props();
 
   const readOnly = !editable();
@@ -619,6 +623,7 @@
             errors={stepErrorMessages}
             warnings={stepWarningMessages}
             autocomplete="condition"
+            ask={askAt?.({ step: step.id })}
             wrap
           />
         </Locked>
@@ -642,6 +647,7 @@
           {onSelectStep}
           {onPropose}
           {proposal}
+          {askAt}
         />
       </div>
       <div class="branch">
@@ -659,6 +665,7 @@
           {onSelectStep}
           {onPropose}
           {proposal}
+          {askAt}
         />
       </div>
     </div>
@@ -717,6 +724,7 @@
                 errors={stepErrorMessages}
                 warnings={stepWarningMessages}
                 autocomplete="condition"
+                ask={askAt?.({ step: step.id })}
                 wrap
               />
             </Field>
@@ -757,6 +765,7 @@
                       warnings={stepWarningMessages}
                       forced={assignmentError?.message ?? null}
                       autocomplete="assignment"
+                      ask={askAt?.({ step: step.id })}
                     />
                   </Locked>
                   {#if !readOnly}
@@ -789,6 +798,7 @@
                 errors={stepErrorMessages}
                 warnings={stepWarningMessages}
                 autocomplete="code"
+                ask={askAt?.({ step: step.id })}
               />
             </Field>
           {:else if step.type === 'drop'}
@@ -799,6 +809,7 @@
                 errors={stepErrorMessages}
                 warnings={stepWarningMessages}
                 autocomplete="condition"
+                ask={askAt?.({ step: step.id })}
                 wrap
               />
             </Field>
@@ -1102,6 +1113,7 @@
                   errors={stepErrorMessages}
                   warnings={stepWarningMessages}
                   autocomplete="condition"
+                  ask={askAt?.({ step: step.id })}
                   wrap
                 />
               </Field>
