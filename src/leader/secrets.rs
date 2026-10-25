@@ -162,6 +162,9 @@ pub fn load(path: &Path) -> Result<Option<EncryptionKey>, KeyError> {
 /// The key at `path`, generating one there if it does not exist. A leader writes it at startup while it has sealed
 /// nothing, so the key exists before the first value needs it.
 pub fn load_or_create(path: &Path) -> Result<EncryptionKey, KeyError> {
+    // Two stores at once on a leader with no key would each write one; there is only ever one key.
+    static CREATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = CREATING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(key) = load(path)? {
         return Ok(key);
     }
@@ -175,17 +178,8 @@ fn create(path: &Path) -> Result<EncryptionKey, KeyError> {
         private_file::create_dir(parent).map_err(|e| KeyError(format!("{}: {e}", parent.display())))?;
     }
     let material = auth::generate_secret();
-    // Whole or not at all: every store reads the key from disk, and one reading an empty file would fail.
-    match private_file::create_with(path, material.as_bytes()) {
-        Ok(()) => {}
-        // Somebody wrote it between the caller's `load` and here -- two secrets stored at once, on a leader that
-        // had none. There is only ever one key, and theirs is as good as this one, so read it rather than failing
-        // a store over which call arrived first.
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            return load(path)?.ok_or_else(|| KeyError(format!("{}: {e}", path.display())));
-        }
-        Err(e) => return Err(KeyError(format!("{}: {e}", path.display()))),
-    }
+    // Renamed into place whole: every store reads the key from disk, and one reading it half written would fail.
+    private_file::replace(path, material.as_bytes()).map_err(|e| KeyError(format!("{}: {e}", path.display())))?;
     tracing::info!(
         target: "secrets.key_created",
         path = %path.display(),
@@ -311,15 +305,18 @@ mod tests {
         assert!(!path.exists());
     }
 
-    /// The losing half of two stores racing on a leader with no key yet: `create` finds the file already there and
-    /// reads it, rather than failing over which call arrived first. Written directly, since the race itself is not
-    /// reproducible on demand.
+    /// Stores racing on a leader with no key yet all get the one key, rather than each writing its own.
     #[test]
-    fn a_key_that_appeared_since_the_caller_looked_is_read_rather_than_refused() {
+    fn stores_racing_on_a_leader_with_no_key_share_one() {
         let path = temp_path("raced");
-        let winner = load_or_create(&path).expect("write a key");
-        let loser = create(&path).expect("the file is already there");
-        assert_eq!(winner.key_id(), loser.key_id());
+        let ids: std::collections::BTreeSet<String> = std::thread::scope(|s| {
+            let racers: Vec<_> = (0..8)
+                .map(|_| s.spawn(|| load_or_create(&path).expect("a key").key_id().to_string()))
+                .collect();
+            racers.into_iter().map(|r| r.join().unwrap()).collect()
+        });
+        assert_eq!(ids.len(), 1, "{ids:?}");
+        assert_eq!(load(&path).unwrap().unwrap().key_id(), ids.first().unwrap().as_str());
     }
 
     #[test]

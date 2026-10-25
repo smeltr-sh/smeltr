@@ -39,30 +39,6 @@ pub fn create(path: &Path) -> std::io::Result<fs::File> {
     fs::OpenOptions::new().write(true).create_new(true).open(path)
 }
 
-/// Puts `contents` at `path`, owner-only, unless a file is already there: then `AlreadyExists`, as [`create`].
-///
-/// Written beside and linked into place, so a reader never finds the file empty or half written, and two callers
-/// racing still cannot both win. Each caller writes beside under a name of its own, so neither clobbers the other's.
-pub fn create_with(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let mut beside = path.as_os_str().to_owned();
-    beside.push(format!(
-        ".{}-{}.new",
-        std::process::id(),
-        WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    let beside = PathBuf::from(beside);
-
-    let mut file = create(&beside)?;
-    let linked = file
-        .write_all(contents)
-        .and_then(|()| file.sync_all())
-        .and_then(|()| fs::hard_link(&beside, path));
-    let _ = fs::remove_file(&beside);
-    linked?;
-    sync_parent(path)
-}
-
 /// Puts `contents` at `path`, owner-only, replacing whatever is there.
 ///
 /// Written beside and renamed over, so an interrupted write leaves the previous file rather than half of this one,
@@ -147,20 +123,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         create_dir(&dir).expect("a scratch directory");
         dir
-    }
-
-    #[test]
-    fn a_created_file_is_whole_owner_only_and_never_created_twice() {
-        let dir = scratch("create-with");
-        let path = dir.join("sealing.key");
-
-        create_with(&path, b"first").expect("write it");
-        let again = create_with(&path, b"second").expect_err("one is there");
-
-        assert_eq!(again.kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(fs::read(&path).unwrap(), b"first");
-        assert!(check(&path, "a key").is_ok());
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "nothing left beside it");
     }
 
     #[test]
