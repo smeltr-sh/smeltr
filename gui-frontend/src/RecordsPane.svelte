@@ -606,6 +606,8 @@
   $effect(() => {
     if (!outputQuery.trim()) readAs = null;
   });
+  /** What the mode beside the box says: the reader's choice at once, else the guess the preview confirmed. */
+  let asExpression = $derived(readAs ? readAs === 'expression' : expressionRows !== null);
 
   $effect(() => {
     const [q, sample, as] = [outputQuery.trim(), lastSample, readAs];
@@ -719,9 +721,9 @@
           {#snippet after()}{#if outputQuery.trim()}<button
                 type="button"
                 class="mode"
-                class:expression={expressionRows !== null}
-                onclick={() => (readAs = expressionRows !== null ? 'keyword' : 'expression')}
-                >{expressionRows !== null ? 'ƒ expression' : 'keyword'}</button
+                class:expression={asExpression}
+                onclick={() => (readAs = asExpression ? 'keyword' : 'expression')}
+                >{asExpression ? 'ƒ expression' : 'keyword'}</button
               >{/if}{/snippet}
           {#snippet option(item)}
             {#if item.kind === 'recent'}
