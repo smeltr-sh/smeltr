@@ -11,6 +11,9 @@
   export function saveExpanded(id: string, value: boolean) {
     store(STEP_EXPANDED_KEY_PREFIX + id, value ? '1' : '0');
   }
+
+  /** The step a jump asks to open. Its card opens itself and clears this. */
+  export const opening = $state<{ id: string | null }>({ id: null });
 </script>
 
 <script lang="ts">
@@ -186,6 +189,12 @@
   // override for as long as the error stands.
   $effect(() => {
     if (stepErrors.length > 0) expanded = true;
+  });
+
+  $effect(() => {
+    if (opening.id !== step.id) return;
+    setExpanded(true);
+    opening.id = null;
   });
 
   // -- lookup: column pickers ----------------------------------------------

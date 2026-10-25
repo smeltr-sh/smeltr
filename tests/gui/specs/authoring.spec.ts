@@ -1186,6 +1186,13 @@ test('A3: a field names the steps that touched it, a step card counts what it dr
   const list = last.locator('xpath=following-sibling::span[1]');
   await expect(list.getByRole('button', { name: /^Step 1 · Parser/ })).toBeVisible();
   await expect(list.getByRole('button', { name: /^Step 3 · Code/ })).toBeVisible();
+  // The sign takes you to its step, open.
+  await record.locator('button.by-glyph[aria-label^="Step 3 · Code"]').click();
+  await expect(admin.locator('#step-calc .card-head [aria-expanded]').first()).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+  await expect(admin.locator('#step-calc')).toBeInViewport();
 
   await admin.locator('#step-health').getByRole('button', { name: '−1 dropped' }).click();
   await expect(admin.getByRole('button', { name: 'remove dropped by health' })).toBeVisible();

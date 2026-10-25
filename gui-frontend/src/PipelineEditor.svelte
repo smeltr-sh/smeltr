@@ -11,7 +11,8 @@
 -->
 <script lang="ts">
   import InlineError from './InlineError.svelte';
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
+  import { opening } from './StepEditor.svelte';
   import { store, stored, storedJson } from './stored';
   import StepList from './StepList.svelte';
   import Connections from './Connections.svelte';
@@ -493,10 +494,15 @@
     // A step's id is a string like any other and a hand-edited pipeline can
     // legally give one "" -- null, not falsy, is what "nothing to jump to" means.
     if (jumpToStepId === null) return;
-    document
-      .getElementById(`step-${jumpToStepId}`)
-      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const id = jumpToStepId;
     jumpToStepId = null;
+    // Opened first, so the scroll lands on the card as it will stand.
+    opening.id = id;
+    void tick().then(() =>
+      document
+        .getElementById(`step-${id}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
+    );
   });
 
   /** Reverts to what was last loaded or saved, dropping every edit since --
