@@ -112,6 +112,48 @@ pub fn ensure_own(dir: &Path, sans: Vec<String>, validity: Duration) -> Result<M
     own(dir, sans, validity)
 }
 
+/// A certificate this leader's authority issues for `names`, as a chain ending at that root and its private key,
+/// both PEM. For an entry of the certificate list, which a receiver serves and an identity presents, so it permits
+/// both server and client authentication. Never outlives the authority, as the leader's own certificate never does.
+pub fn issue(dir: &Path, names: Vec<String>, validity: Duration) -> Result<(String, String), String> {
+    let _reading = changing();
+    let ca_pem = std::fs::read(dir.join(CA_CERT)).map_err(|e| format!("{}: {e}", dir.join(CA_CERT).display()))?;
+    let ca_key_path = dir.join(CA_KEY);
+    private_file::check(&ca_key_path, "the certificate authority's private key")?;
+    let ca_key_pem = std::fs::read_to_string(&ca_key_path).map_err(|e| format!("{}: {e}", ca_key_path.display()))?;
+    let authority = root_of_key(&ca_pem, &ca_key_pem)?;
+
+    let mut params =
+        CertificateParams::new(names).map_err(|e| format!("those names cannot be put in a certificate: {e}"))?;
+    params.is_ca = IsCa::NoCa;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth, ExtendedKeyUsagePurpose::ClientAuth];
+    params.use_authority_key_identifier_extension = true;
+    (params.not_before, params.not_after) = window(validity)?;
+    let ceiling = OffsetDateTime::from_unix_timestamp(authority.not_after_millis / 1000)
+        .map_err(|e| format!("{CA_CERT} expires at a time no calendar holds: {e}"))?;
+    params.not_after = params.not_after.min(ceiling);
+
+    let ca_key = KeyPair::from_pem(&ca_key_pem).map_err(|e| format!("read the authority's private key: {e}"))?;
+    let issuer = Issuer::new(authority_params(Duration::ZERO)?, ca_key);
+    let key = KeyPair::generate().map_err(|e| format!("generate the certificate's key: {e}"))?;
+    let leaf = params
+        .signed_by(&key, &issuer)
+        .map_err(|e| format!("sign the certificate: {e}"))?
+        .pem();
+    let (_, root) = signing_root_pem(&ca_pem, leaf.as_bytes())?;
+    Ok((format!("{}\n{root}", leaf.trim_end()), key.serialize_pem()))
+}
+
+/// The fingerprint of the root [`issue`] signs under now: after a rotation's cutover, the incoming one.
+pub fn signing_root_fingerprint(dir: &Path) -> Result<String, String> {
+    let _reading = changing();
+    let ca_pem = std::fs::read(dir.join(CA_CERT)).map_err(|e| format!("{}: {e}", dir.join(CA_CERT).display()))?;
+    let ca_key_path = dir.join(CA_KEY);
+    let ca_key_pem = std::fs::read_to_string(&ca_key_path).map_err(|e| format!("{}: {e}", ca_key_path.display()))?;
+    Ok(root_of_key(&ca_pem, &ca_key_pem)?.fingerprint)
+}
+
 /// [`ensure_own`] for a caller already holding [`CHANGING`]. Issuing a certificate is replacing what is in force,
 /// so it is serialized with every other replacement -- and a cutover, which holds the lock across the promotion
 /// that must not be read half-done, calls this rather than taking it twice.

@@ -327,6 +327,13 @@ pub(crate) const STEPS: &[&str] = &[
          chain   TEXT NOT NULL,
          PRIMARY KEY (name, version)
      );",
+    // 12 -- the names a certificate this leader issues is issued for, as a JSON array, which are what each renewal
+    // issues it for again. A certificate with a row here is the leader's to renew. Additive: an older build lists it
+    // as the certificate it also is, and never renews it.
+    "CREATE TABLE issued_certificates (
+         name  TEXT PRIMARY KEY,
+         names TEXT NOT NULL
+     );",
 ];
 
 fn conversation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationRecord> {
@@ -589,6 +596,7 @@ impl SqliteStore {
         description: &str,
         value: Option<&str>,
         chain: Option<&str>,
+        issued_for: Option<&[String]>,
     ) -> Result<(), StoreError> {
         if !crate::config_file::is_safe_secret_name(name) {
             return Err(StoreError(crate::config_file::unsafe_secret_name(name)));
@@ -623,6 +631,13 @@ impl SqliteStore {
         if let Some(sealed) = &sealed {
             let version = Self::take_version(&tx, name)?.expect("the row this transaction just inserted");
             Self::insert_version(&tx, name, version, sealed, chain)?;
+        }
+        if let Some(names) = issued_for {
+            let names = serde_json::to_string(names).map_err(|e| StoreError(e.to_string()))?;
+            tx.execute(
+                "INSERT INTO issued_certificates (name, names) VALUES (?1, ?2)",
+                (name, names),
+            )?;
         }
         tx.commit()?;
         Ok(())
@@ -1124,11 +1139,42 @@ impl Store for SqliteStore {
         description: &str,
         value: Option<&str>,
     ) -> Result<(), StoreError> {
-        self.create(name, custody, description, value, None)
+        self.create(name, custody, description, value, None, None)
     }
 
     fn create_certificate(&self, name: &str, description: &str, chain: &str, key: &str) -> Result<(), StoreError> {
-        self.create(name, Custody::LeaderStored, description, Some(key), Some(chain))
+        self.create(name, Custody::LeaderStored, description, Some(key), Some(chain), None)
+    }
+
+    fn create_issued_certificate(
+        &self,
+        name: &str,
+        description: &str,
+        names: &[String],
+        chain: &str,
+        key: &str,
+    ) -> Result<(), StoreError> {
+        self.create(
+            name,
+            Custody::LeaderStored,
+            description,
+            Some(key),
+            Some(chain),
+            Some(names),
+        )
+    }
+
+    fn issued_certificates(&self) -> Result<std::collections::BTreeMap<String, Vec<String>>, StoreError> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn.prepare("SELECT name, names FROM issued_certificates")?;
+        let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        let mut out = std::collections::BTreeMap::new();
+        for row in rows {
+            let (name, names) = row?;
+            let names = serde_json::from_str(&names).map_err(|e| StoreError(format!("{name:?}'s names: {e}")))?;
+            out.insert(name, names);
+        }
+        Ok(out)
     }
 
     fn add_secret_version(&self, name: &str, value: &str) -> Result<i64, StoreError> {
@@ -1155,6 +1201,7 @@ impl Store for SqliteStore {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM certificate_chains WHERE name = ?1", (name,))?;
+        tx.execute("DELETE FROM issued_certificates WHERE name = ?1", (name,))?;
         tx.execute("DELETE FROM secret_versions WHERE name = ?1", (name,))?;
         let gone = tx.execute("DELETE FROM secrets WHERE name = ?1", (name,))? > 0;
         tx.commit()?;
@@ -2850,6 +2897,23 @@ mod tests {
         assert_eq!(current.version, 1);
         assert!(current.usable);
         assert!(current.set_at >= before);
+    }
+
+    /// An issued certificate keeps the names it is issued for until it is deleted; an uploaded one has none.
+    #[test]
+    fn an_issued_certificate_keeps_its_names_until_deleted() {
+        let s = store();
+        let names = ["a.example.com".to_string(), "10.0.0.7".to_string()];
+        s.create_issued_certificate("issued", "", &names, "chain", "key").unwrap();
+        s.create_certificate("uploaded", "", "chain", "key").unwrap();
+        assert_eq!(
+            s.issued_certificates().unwrap(),
+            [("issued".to_string(), names.to_vec())].into_iter().collect()
+        );
+        assert!(record(&s, "issued").certificate);
+
+        s.delete_secret("issued").unwrap();
+        assert!(s.issued_certificates().unwrap().is_empty());
     }
 
     /// A certificate is a stored secret the Secrets page leaves out, and its value is read only as a certificate.

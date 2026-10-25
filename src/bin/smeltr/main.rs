@@ -944,6 +944,7 @@ async fn setup_leader(
         smeltr::logs::runs_no_worker();
     }
     tokio::spawn(smeltr::leader::keep_own_logs(state.clone()));
+    tokio::spawn(smeltr::leader::renew_issued_certificates(state.clone()));
 
     // A cutover changes the files and then withdraws the enrollment codes that named the root it retired. A process
     // that stopped between the two came back to a finished cutover with no rotation left to notice it, so the same

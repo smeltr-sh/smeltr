@@ -2390,6 +2390,9 @@ pub struct CertificateOut {
     pub chain: Vec<tls::Described>,
     /// Whether the leader serves a copy of it.
     pub served: bool,
+    /// The names this leader issues it for, where this leader issued it and renews it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issued_for: Option<Vec<String>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -2503,6 +2506,7 @@ async fn list_certificates(
     run_store(state.store, move |s| {
         // Only a badge, so a TLS folder that cannot be read shows none rather than hiding the list. Deleting refuses.
         let served = served_names(&tls::dir_of(&data_dir)).unwrap_or_default();
+        let mut issued = s.issued_certificates()?;
         let mut out = Vec::new();
         for r in s.list_secrets()?.into_iter().filter(|r| r.certificate) {
             let chain = newest_chain(s, &r.name)?
@@ -2515,12 +2519,14 @@ async fn list_certificates(
                 ..
             } = SecretOut::from(r);
             let served = served.contains(&name);
+            let issued_for = issued.remove(&name);
             out.push(CertificateOut {
                 name,
                 description,
                 versions,
                 chain,
                 served,
+                issued_for,
             });
         }
         Ok(out)
@@ -2544,6 +2550,135 @@ async fn create_certificate(State(state): State<AppState>, Json(req): Json<Certi
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IssueRequest {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// The DNS names and IP addresses it is issued for.
+    pub names: Vec<String>,
+}
+
+/// Lists a certificate this leader's own authority issues for the names asked, and renews.
+async fn issue_certificate(State(state): State<AppState>, Json(req): Json<IssueRequest>) -> Json<Envelope> {
+    let names: Vec<String> = (req.names.iter().map(|n| n.trim().to_string()))
+        .filter(|n| !n.is_empty())
+        .collect();
+    if names.is_empty() {
+        return Json(Envelope::failed_one(
+            "name at least one DNS name or IP address to issue it for",
+        ));
+    }
+    let dir = tls::dir_of(&state.data_dir);
+    if !crate::startup_config::leader_tls_enabled() || !dir.exists() {
+        return Json(Envelope::failed_one(
+            "this leader serves plain HTTP and holds no authority to issue a certificate with",
+        ));
+    }
+    let issued = blocking(move || {
+        tls::issue(&dir, names.clone(), crate::startup_config::leader_ca_validity()).map(|i| (names, i))
+    })
+    .await;
+    let (names, (chain, key)) = match issued {
+        Ok(issued) => issued,
+        Err(e) => return Json(Envelope::failed_one(e)),
+    };
+    match run_store(state.store, move |s| {
+        s.create_issued_certificate(&req.name, &req.description, &names, &chain, &key)
+    })
+    .await
+    {
+        Ok(()) => Json(Envelope::done()),
+        Err(e) => Json(Envelope::failed_one(e)),
+    }
+}
+
+/// How often the leader looks for a certificate it issued that is due for renewal.
+const RENEWAL_TICK: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Renews, for as long as the leader runs, each certificate it issued once it is due ([`renew_issued_due`]).
+pub async fn renew_issued_certificates(state: AppState) {
+    loop {
+        tokio::time::sleep(RENEWAL_TICK).await;
+        renew_issued_due(&state, crate::leader::warnings::now_millis()).await;
+    }
+}
+
+/// Issues the next version of each certificate this leader issued that is two thirds of the way through its life,
+/// or whose root the leader no longer signs with -- a rotation cut over -- and drafts the change that points what
+/// names it at that version. The change is reviewed and deployed like any other; until it is, workers present the
+/// version they have.
+pub async fn renew_issued_due(state: &AppState, now_ms: i64) {
+    let dir = tls::dir_of(&state.data_dir);
+    let due = {
+        let dir = dir.clone();
+        run_store(state.store.clone(), move |s| {
+            if !dir.exists() {
+                return Ok(Vec::new());
+            }
+            let signing = tls::signing_root_fingerprint(&dir).map_err(StoreError)?;
+            let mut due = Vec::new();
+            for (name, names) in s.issued_certificates()? {
+                let chain = newest_chain(s, &name)?.map(|(_, chain)| chain).unwrap_or_default();
+                if renewal_due(&chain, &signing, now_ms) {
+                    due.push((name, names));
+                }
+            }
+            Ok(due)
+        })
+        .await
+    };
+    let due = match due {
+        Ok(due) => due,
+        Err(e) => {
+            tracing::warn!(target: "leader.issued_unread", error = %e, "could not read which issued certificates are due");
+            return;
+        }
+    };
+    for (name, names) in due {
+        if let Err(e) = renew_issued(state, &dir, &name, names).await {
+            tracing::warn!(
+                target: "leader.issued_not_renewed",
+                certificate = %name,
+                error = %e,
+                "this leader could not renew a certificate it issued, and tries again within the hour"
+            );
+        }
+    }
+}
+
+/// Whether the certificate whose newest chain is `chain` is due: two thirds of the way through its leaf's life, as
+/// an ordered one is, or ending at a root other than `signing`. One that cannot be read is due.
+fn renewal_due(chain: &str, signing: &str, now_ms: i64) -> bool {
+    let Ok(described) = tls::describe_each(chain.as_bytes(), "the certificate") else {
+        return true;
+    };
+    let (Some(leaf), Some(root)) = (described.first(), described.last()) else {
+        return true;
+    };
+    let renew_after = leaf.not_before_millis + (leaf.not_after_millis - leaf.not_before_millis) * 2 / 3;
+    now_ms >= renew_after || root.fingerprint != signing
+}
+
+async fn renew_issued(state: &AppState, dir: &std::path::Path, name: &str, names: Vec<String>) -> Result<(), String> {
+    let dir = dir.to_path_buf();
+    let (chain, key) = blocking(move || tls::issue(&dir, names, crate::startup_config::leader_ca_validity())).await?;
+    let wanted = name.to_string();
+    let version = run_store(state.store.clone(), move |s| {
+        s.add_certificate_version(&wanted, &chain, &key)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let data_dir = state.data_dir.clone();
+    let name = name.to_string();
+    blocking(move || {
+        let branch = format!("renew-{name}-v{version}");
+        draft_pointing(&data_dir, &branch, &name, version, &store::Actor::system()).map(|_| ())
+    })
+    .await
+}
+
 /// Stores a new version of a certificate. The route is the binary's, which serves the new version too where the
 /// leader serves the certificate; a worker gets it on its next deploy.
 pub async fn replace_certificate(
@@ -2553,6 +2688,20 @@ pub async fn replace_certificate(
 ) -> Json<Envelope> {
     if let Err(e) = req.check() {
         return Json(Envelope::failed_one(e));
+    }
+    let wanted = name.clone();
+    match run_store(state.store.clone(), move |s| {
+        Ok(s.issued_certificates()?.contains_key(&wanted))
+    })
+    .await
+    {
+        Ok(true) => {
+            return Json(Envelope::failed_one(format!(
+                "this leader issues {name:?} and renews it itself; add a certificate of your own to replace it"
+            )));
+        }
+        Ok(false) => {}
+        Err(e) => return Json(Envelope::failed_one(e)),
     }
     match is_certificate(&state, &name).await {
         Ok(true) => store_value(state, name, req.private_key, Some(req.certificate)).await,
@@ -2893,29 +3042,7 @@ async fn point_secret(
     }
 
     let data_dir = state.data_dir.clone();
-    let drafted = blocking(move || {
-        let done = point_secret_references(&data_dir, &req.branch, &name, req.version, &actor)?;
-        // Nothing moved, so there is no change to open.
-        if done.commit.is_none() {
-            return Ok((done, false));
-        }
-        let repo = git::repo_path(&data_dir);
-        let already_open = git::read_change(&repo, &req.branch)
-            .map_err(|e| e.to_string())?
-            .is_some_and(|c| c.state == git::ChangeState::Open);
-        if !already_open {
-            let title = format!("Point {name} at version {}", req.version);
-            let description = format!(
-                "{} reference{} across {}.",
-                done.references,
-                if done.references == 1 { "" } else { "s" },
-                done.groups.join(", ")
-            );
-            git::open_change(&repo, &req.branch, &title, &description, &actor).map_err(|e| e.to_string())?;
-        }
-        Ok::<_, String>((done, !already_open))
-    })
-    .await;
+    let drafted = blocking(move || draft_pointing(&data_dir, &req.branch, &name, req.version, &actor)).await;
 
     match drafted {
         Ok((done, opened_change)) => Json(Envelope::ok(PointedSecret {
@@ -2927,6 +3054,37 @@ async fn point_secret(
         })),
         Err(e) => Json(Envelope::failed_one(e)),
     }
+}
+
+/// Points `name`'s references on `branch` at `version` and opens a change over them, or joins the one open there.
+/// Also whether this opened the change.
+fn draft_pointing(
+    data_dir: &std::path::Path,
+    branch: &str,
+    name: &str,
+    version: i64,
+    actor: &store::Actor,
+) -> Result<(Repointed, bool), String> {
+    let done = point_secret_references(data_dir, branch, name, version, actor)?;
+    // Nothing moved, so there is no change to open.
+    if done.commit.is_none() {
+        return Ok((done, false));
+    }
+    let repo = git::repo_path(data_dir);
+    let already_open = git::read_change(&repo, branch)
+        .map_err(|e| e.to_string())?
+        .is_some_and(|c| c.state == git::ChangeState::Open);
+    if !already_open {
+        let title = format!("Point {name} at version {version}");
+        let description = format!(
+            "{} reference{} across {}.",
+            done.references,
+            if done.references == 1 { "" } else { "s" },
+            done.groups.join(", ")
+        );
+        git::open_change(&repo, branch, &title, &description, actor).map_err(|e| e.to_string())?;
+    }
+    Ok((done, !already_open))
 }
 
 /// Forgets one version on purpose -- what answers a leak, rather than waiting for retention to reach it.
@@ -3349,6 +3507,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/secrets", get(list_secrets).post(create_secret))
         .route("/api/secrets/:name", put(store_secret_value).delete(delete_secret))
         .route("/api/certificates", get(list_certificates).post(create_certificate))
+        .route("/api/certificates/issued", post(issue_certificate))
         .route(
             "/api/secrets/:name/versions/:version",
             axum::routing::delete(forget_secret_version),
@@ -5612,5 +5771,154 @@ mod certificate_list_tests {
 
         tls::uninstall(&dir).unwrap();
         assert!(served_names(&dir).unwrap().is_empty());
+    }
+
+    // -- certificates this leader issues ----------------------------------
+
+    /// A leader with an authority and a bundle whose identity presents the certificate `acme`.
+    fn issuing(label: &str) -> AppState {
+        let state = super::secrets_delivery_tests::state(label);
+        tls::ensure(&tls::dir_of(&state.data_dir), names(), A_YEAR, &[]).expect("an authority");
+        let repo = git::repo_path(&state.data_dir);
+        let head = git::main_head(&repo).unwrap();
+        let edits = [git::FileEdit {
+            path: "groups/g/identities.json".to_string(),
+            content: Some(br#"[{"id":"receiver","certificate":{"secret":"acme","version":1}}]"#.to_vec()),
+        }];
+        git::commit_edits(
+            &repo,
+            git::MAIN_BRANCH,
+            &head,
+            Some(&head),
+            &edits,
+            "an identity",
+            &store::Actor::system(),
+        )
+        .unwrap();
+        state
+    }
+
+    async fn issue(state: &AppState, name: &str, names: &[&str]) -> Envelope {
+        issue_certificate(
+            State(state.clone()),
+            Json(IssueRequest {
+                name: name.to_string(),
+                description: String::new(),
+                names: names.iter().map(|n| n.to_string()).collect(),
+            }),
+        )
+        .await
+        .0
+    }
+
+    /// What the list says of `name`.
+    async fn listed(state: &AppState, name: &str) -> CertificateOut {
+        let Ok(Json(all)) = list_certificates(State(state.clone())).await else {
+            panic!("the list did not read");
+        };
+        all.into_iter().find(|c| c.name == name).expect("listed")
+    }
+
+    /// An issued certificate is an entry like an upload: its chain carries the names asked, ends at the leader's
+    /// root, may be presented either way, and its key is its key.
+    #[tokio::test]
+    async fn the_leader_issues_a_certificate_for_the_names_asked() {
+        let state = issuing("issue");
+        let out = issue(&state, "acme", &["receiver.example.com", "10.0.0.7"]).await;
+        assert!(out.ok, "{:?}", out.errors);
+
+        let entry = listed(&state, "acme").await;
+        assert_eq!(
+            entry.issued_for.as_deref(),
+            Some(&["receiver.example.com".to_string(), "10.0.0.7".to_string()][..])
+        );
+        assert_eq!(entry.chain[0].names, ["receiver.example.com", "10.0.0.7"]);
+        let signing = tls::signing_root_fingerprint(&tls::dir_of(&state.data_dir)).unwrap();
+        assert_eq!(entry.chain.last().unwrap().fingerprint, signing);
+
+        let (chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
+        tls::is_pair(chain.as_bytes(), key.as_bytes()).expect("the key is the certificate's");
+        crate::io::trust::refuse_unless_usable(&chain, crate::io::trust::Side::Server).expect("serves");
+        crate::io::trust::refuse_unless_usable(&chain, crate::io::trust::Side::Client).expect("presents as a client");
+    }
+
+    #[tokio::test]
+    async fn issuing_for_no_names_is_refused() {
+        let state = issuing("issue-no-names");
+        let out = issue(&state, "acme", &[" "]).await;
+        assert!(!out.ok);
+        assert!(listed_names(&state).await.is_empty());
+    }
+
+    async fn listed_names(state: &AppState) -> Vec<String> {
+        let Ok(Json(all)) = list_certificates(State(state.clone())).await else {
+            panic!("the list did not read");
+        };
+        all.into_iter().map(|c| c.name).collect()
+    }
+
+    /// The leader holds its key and renews it, so nobody else's certificate takes its place under its name.
+    #[tokio::test]
+    async fn an_issued_certificate_is_not_replaced() {
+        let state = issuing("issue-replace");
+        assert!(issue(&state, "acme", &["receiver.example.com"]).await.ok);
+        let (chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
+        let out = replace_certificate(
+            State(state.clone()),
+            Path("acme".to_string()),
+            Json(CertificateRequest {
+                name: String::new(),
+                description: String::new(),
+                certificate: chain,
+                private_key: key,
+            }),
+        )
+        .await
+        .0;
+        assert!(!out.ok);
+        assert!(out.errors[0].message.contains("renews it itself"), "{:?}", out.errors);
+    }
+
+    /// Not yet due, nothing happens; two thirds of the way through, the next version is issued and a change
+    /// drafted pointing the identity at it.
+    #[tokio::test]
+    async fn a_certificate_due_is_renewed_and_a_change_drafted() {
+        let state = issuing("renew");
+        assert!(issue(&state, "acme", &["receiver.example.com"]).await.ok);
+        let leaf = listed(&state, "acme").await.chain[0].clone();
+
+        renew_issued_due(&state, leaf.not_before_millis + 1).await;
+        assert_eq!(listed(&state, "acme").await.versions.len(), 1, "not yet due");
+
+        let due = leaf.not_before_millis + (leaf.not_after_millis - leaf.not_before_millis) * 2 / 3;
+        renew_issued_due(&state, due).await;
+        let renewed = listed(&state, "acme").await;
+        assert_eq!(renewed.versions.len(), 2);
+        assert_ne!(renewed.chain[0].fingerprint, leaf.fingerprint);
+
+        let repo = git::repo_path(&state.data_dir);
+        let change = git::read_change(&repo, "renew-acme-v2")
+            .unwrap()
+            .expect("a change is drafted");
+        assert_eq!(change.state, git::ChangeState::Open);
+        let tip = git::branch_tip(&repo, "renew-acme-v2").unwrap();
+        let bytes = git::read_blobs(&repo, &tip, &["groups/g/identities.json".to_string()])
+            .unwrap()
+            .pop()
+            .flatten()
+            .unwrap();
+        assert!(String::from_utf8(bytes).unwrap().contains(r#""version": 2"#));
+    }
+
+    /// One issued under a root the leader no longer signs with is renewed at once, whatever its age.
+    #[test]
+    fn a_certificate_under_another_root_is_due() {
+        let dir = own("renew-root");
+        let (chain, _) = tls::issue(&dir, vec!["a.example.com".to_string()], A_YEAR).unwrap();
+        let signing = tls::signing_root_fingerprint(&dir).unwrap();
+        let now = tls::describe(chain.as_bytes(), "c").unwrap().not_before_millis + 1;
+        assert!(!renewal_due(&chain, &signing, now));
+        assert!(renewal_due(&chain, "another root", now));
+        assert!(renewal_due("not a chain", &signing, now));
     }
 }
