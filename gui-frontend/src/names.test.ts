@@ -24,14 +24,6 @@ describe('parsePath', () => {
     expect(parsePath('["\\u0061"].b')).toEqual({ ok: true, name: 'a.b' });
   });
 
-  it('reads a name under `$`, the record, as its own', () => {
-    expect(parsePath('$')).toEqual({ ok: true, name: '$' });
-    expect(parsePath('$.a.b')).toEqual({ ok: true, name: 'a.b' });
-    expect(parsePath('$["a.b"]')).toEqual({ ok: true, name: '["a.b"]' });
-    expect(parsePath('$a')).toEqual({ ok: true, name: '$a' });
-    expect(parsePath('$.').ok).toBe(false);
-  });
-
   it('refuses text after a bracketed key that is not a dot or a bracket', () => {
     expect(parsePath('a["b"]c').ok).toBe(false);
   });

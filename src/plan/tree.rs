@@ -264,9 +264,6 @@ pub fn ancestors(name: &str) -> impl Iterator<Item = &str> {
 /// that is not plain as a JSON string in brackets. The error says what is wrong with it.
 pub fn parse_name(text: &str) -> Result<String, String> {
     let mut out = String::new();
-    if text == ROOT {
-        return Ok(ROOT.to_string());
-    }
     let mut rest = under_record(text);
     while !rest.is_empty() {
         if let Some(quoted) = rest.strip_prefix('[') {
