@@ -258,9 +258,6 @@
         marks the row when it guessed. <code>none</code> decodes nothing, and the record is
         <code>__source.bytes</code> alone.
       {/snippet}
-      {#snippet note()}
-        Default <code>auto</code>.
-      {/snippet}
       <input
         type="text"
         placeholder="auto"
@@ -282,9 +279,6 @@
         <code>object</code>: the whole object is one record, for a JSON document a pipeline unrolls.
         <code>escapedLines</code>: one record per line, unescaped as a <code>bytes</code> object destination
         wrote it.
-      {/snippet}
-      {#snippet note()}
-        Default <code>lines</code>.
       {/snippet}
       <select
         value={source.framing ?? 'lines'}
@@ -384,7 +378,6 @@
         from the first poll on, <code>new</code>. Later polls resume where the last one every
         destination took left off.
       {/snippet}
-      {#snippet note()}Default <code>everything</code>.{/snippet}
       <select
         value={source.start ?? 'everything'}
         onchange={(e) => {
@@ -397,11 +390,7 @@
       </select>
     </Field>
   {/if}
-  <Field
-    field="pollIntervalSecs"
-    label="poll interval seconds"
-    note="Default {LIMITS.pollIntervalSecs.default}."
-  >
+  <Field field="pollIntervalSecs" label="poll interval seconds">
     {#snippet help()}
       Seconds from the start of one poll to the start of the next.
     {/snippet}
@@ -432,7 +421,6 @@
       How it asks: a GET, or a POST of a fixed JSON body, for an API that is asked by what it is
       sent.
     {/snippet}
-    {#snippet note()}Default <code>GET</code>.{/snippet}
     <select
       value={source.method ?? 'GET'}
       onchange={(e) => {
@@ -490,7 +478,6 @@
       Where an answer's records are: the whole answer is one record, each line is one, or each
       element of a JSON array is one.
     {/snippet}
-    {#snippet note()}Default <code>body</code>.{/snippet}
     <select
       value={source.records ?? 'body'}
       onchange={(e) => {
@@ -528,7 +515,6 @@
       Whether a poll follows each answer's <code>Link: rel="next"</code> to the next page, on the same
       host only.
     {/snippet}
-    {#snippet note()}Default one page.{/snippet}
     <select
       value={source.followLinks ? 'follow' : 'one'}
       onchange={(e) => (source.followLinks = e.currentTarget.value === 'follow' || undefined)}
@@ -588,7 +574,7 @@
       </Field>
     {/if}
     {#if source.sinceParam !== undefined}
-      <Field field="sinceOverlapSecs" label="overlap seconds" note="Default 0.">
+      <Field field="sinceOverlapSecs" label="overlap seconds">
         {#snippet help()}
           How far before the last poll's start the since parameter asks from, for an API that
           records events late. What falls in the overlap is read twice.
@@ -856,21 +842,18 @@
   />
 {/snippet}
 
+{#snippet moves()}Deploying this moves the source to the new position, so records are skipped or
+  read again.{/snippet}
+
 <!-- Where a stream source starts and stops reading. -->
 {#snippet positions(source: StreamSource)}
   <div class="start">
-    <StartAt bind:start={source.start} label="start at" fallback="earliest">
-      {#snippet help()}
-        Where this source reads from. Changing it will move offsets to the new position.
-      {/snippet}
-      {#snippet note()}
-        {#if startMoves(source)}
-          Deploying this moves the source.
-        {:else}
-          Default <code>earliest</code>.
-        {/if}
-      {/snippet}
-    </StartAt>
+    <StartAt
+      bind:start={source.start}
+      label="start at"
+      fallback="earliest"
+      note={startMoves(source) ? moves : undefined}
+    />
   </div>
 
   <div class="pair">
@@ -878,16 +861,13 @@
       {#snippet help()}
         Each partition stops reading at this point and goes idle.
       {/snippet}
-      {#snippet note()}
-        Default <code>never</code>.
-      {/snippet}
       <select value={stopKind(source)} onchange={(e) => setStop(source, e.currentTarget.value)}>
         <option value="never">never &mdash; keep reading</option>
         <option value="timestamp">at a time</option>
       </select>
     </Field>
     {#if source.stop?.type === 'timestamp'}
-      <Field label="until" note="Exclusive.">
+      <Field label="until" help="Reading stops just before this time.">
         <input
           type="datetime-local"
           value={toLocalInput(source.stop.millis)}
@@ -948,7 +928,6 @@
         What it takes: log records, metric data points or spans, each a record. To take more than
         one, add a receiver for each on the same port.
       {/snippet}
-      {#snippet note()}Default <code>logs</code>.{/snippet}
       <select
         value={source.signal ?? 'logs'}
         onchange={(e) => {
@@ -969,7 +948,6 @@
         What senders send over. Over UDP each datagram is a message, served without TLS. A UDP
         receiver can't slow a sender, so what arrives while it is full is dropped.
       {/snippet}
-      {#snippet note()}Default <code>tcp</code>.{/snippet}
       <select
         value={source.transport ?? 'tcp'}
         onchange={(e) => {
@@ -1062,7 +1040,6 @@
         Where a request's records are: the whole body is one record, each line is one, or each
         element of a JSON array is one.
       {/snippet}
-      {#snippet note()}Default <code>body</code>.{/snippet}
       <select
         value={source.records ?? 'body'}
         onchange={(e) => {
@@ -1114,11 +1091,7 @@
         {/snippet}
       </ReceiverSourcetypes>
     {/if}
-    <Field
-      field="maxRequestBytes"
-      label="request size"
-      note="Default {exactBytes(LIMITS.receiverRequestBytes.default)}."
-    >
+    <Field field="maxRequestBytes" label="request size">
       {#snippet help()}
         {#if source.type === 's2sReceiver'}
           The largest frame it reads, and the most one record holds, at most
@@ -1180,11 +1153,7 @@
           <input type="text" bind:value={source.groupId} placeholder={defaultGroupId()} />
         </Field>
       {/if}
-      <Field
-        field="fetchBytes"
-        label="fetch buffer"
-        note="Default {exactBytes(LIMITS.fetchBytes.default)}."
-      >
+      <Field field="fetchBytes" label="fetch buffer">
         {#snippet help()}
           The most fetched but not yet processed data this source holds on a worker, across all its
           partitions.
@@ -1274,7 +1243,7 @@
       {/if}
       <ConnectorAccess {store} value={source} show="advanced" />
       {@render encodingField(source)}
-      <Field field="visibilitySecs" label="visibility seconds" note="Default {limit.default}.">
+      <Field field="visibilitySecs" label="visibility seconds">
         {#snippet help()}
           How long a received message stays hidden from every other worker. A worker that dies
           holding one hands it on after this long. At most {limit.max}.
@@ -1288,11 +1257,7 @@
         />
       </Field>
       {#if source.type === 'azureBlobQueue'}
-        <Field
-          field="maxDeliveries"
-          label="max deliveries"
-          note="Default {LIMITS.maxDeliveries.default}."
-        >
+        <Field field="maxDeliveries" label="max deliveries">
           {#snippet help()}
             Times a message is received before it is moved to the queue named after this one with
             <code>-poison</code> added.
@@ -1332,9 +1297,6 @@
       {#snippet help()}
         The lowest severity this source carries. Below the worker's own <code>SMELTR_LOG_LEVEL</code
         >, <code>info</code> unless set, it gets nothing more.
-      {/snippet}
-      {#snippet note()}
-        Default <code>info</code>.
       {/snippet}
       <select
         value={source.minLevel ?? DEFAULT_LEVEL}

@@ -26,7 +26,7 @@ test('an enrollment code minted under Enrollment codes brings a worker in', asyn
   await openWorkersTab(admin, 'Enrollment codes');
   await admin.getByRole('button', { name: '+ Add enrollment code' }).click();
   const mint = admin.getByRole('dialog', { name: 'new enrollment code' });
-  await expect(mint.getByLabel('Group')).toHaveValue('default');
+  await expect(mint.getByLabel(/^Group/)).toHaveValue('default');
   await mint.getByRole('button', { name: 'Mint' }).click();
 
   await expect(admin.getByText('Copy this enrollment code now')).toBeVisible();

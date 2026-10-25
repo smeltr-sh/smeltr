@@ -173,10 +173,10 @@
     />
   </Field>
 
-  <Field field="certificate" label="presents" note="PEM, with any intermediates after it.">
+  <Field field="certificate" label="presents">
     {#snippet help()}
       The client certificate this worker shows the far end, needed only when the far end requires
-      one.
+      one. PEM, with any intermediates after it.
     {/snippet}
     <textarea
       rows="4"
@@ -199,10 +199,10 @@
     />
   </Field>
 
-  <Field field="authorities" label="trusts" note="PEM, one or more certificates.">
+  <Field field="authorities" label="trusts">
     {#snippet help()}
       Authorities a far end's certificate may chain to, added to the public roots. A receiver admits
-      a sender whose certificate chains to these alone.
+      a sender whose certificate chains to these alone. PEM, one or more certificates.
     {/snippet}
     <textarea
       rows="4"
@@ -212,7 +212,7 @@
   </Field>
   {@render describedCertificate(identity.authorities)}
   <Advanced label="Advanced" modified={identity.trustPublic === false}>
-    <Field field="trustPublic" label="trust public roots" note="Default on.">
+    <Field field="trustPublic" label="trust public roots">
       {#snippet help()}
         Whether a source or destination under it also trusts Mozilla's roots and this host's own.
         Off trusts only the authorities above, so a certificate from any other authority cannot
