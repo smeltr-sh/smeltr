@@ -1000,10 +1000,7 @@ fn resolve_call(
                 "`Object.assign` is a statement that writes its first argument; it has no value to read".to_string(),
             ));
         }
-        return Err(CompileError::new(
-            None,
-            format!("function `{name}` is not implemented (stdlib pending)"),
-        ));
+        return Err(CompileError::new(None, format!("`{method}` is not a function")));
     };
     // `x[i]` and `at(x, i)` are the same call, so they are the same resolution: a struct field by literal key and an
     // element of an array of objects are typed from the key, which no table row can express.
@@ -2721,7 +2718,7 @@ mod tests {
     fn method_call_on_a_dotted_receiver_naming_an_unknown_method_is_an_error() {
         let mut t = with_fields(&[("x", DataType::Str)]);
         let e = lower("x.notAFunction()", &mut t).unwrap_err();
-        assert!(e.message.contains("not implemented"), "{}", e.message);
+        assert_eq!(e.message, "`notAFunction` is not a function");
     }
 
     /// Moved from the parser to the type checker: dot on an expression is member access now, so a forgotten `()` is no
