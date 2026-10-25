@@ -1795,6 +1795,13 @@ export function deletePipeline(id: string): Promise<MutationResult> {
  * again when the sample is read. */
 export type SampleRecordDto = Record<string, unknown>;
 
+/** Whether the root key of `path`, a field's path, is internal: smeltr's own, starting `__`, as
+ * `plan::tree::is_internal` reads one. A root key the path has to quote
+ * (`["__a.b"]`) counts as well. */
+export function isInternal(path: string): boolean {
+  return path.startsWith('__') || path.startsWith('["__');
+}
+
 /** The fields a sample record's source set, if it was read from one. */
 export function sampleSource(record: SampleRecordDto): Record<string, unknown> | undefined {
   const source = record.__source;
