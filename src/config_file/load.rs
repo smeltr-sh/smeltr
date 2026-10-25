@@ -1334,7 +1334,7 @@ const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
     ),
     (
         "queue.buffering.max.messages",
-        "smeltr bounds the producer's queue itself, from this destination's own `bufferBytes` field",
+        "set to its maximum so the producer's half of this destination's own `bufferBytes` field bounds its queue",
     ),
     (
         "batch.size",
