@@ -5038,10 +5038,9 @@ mod tests {
         let validity = Duration::from_secs(3600);
         let first = crate::leader::tls::ensure(&tls_dir, names.clone(), validity, &[]).expect("an authority, created");
         let ca_pem = first.ca_pem.clone();
-        let materials = crate::leader::tls::ensure(&tls_dir, names, validity, &[]).expect("a certificate, reissued");
+        crate::leader::tls::ensure(&tls_dir, names, validity, &[]).expect("a certificate, reissued");
         crate::leader::tls::socket_took(&tls_dir, crate::leader::tls::disk_generation(&tls_dir));
-        let cert_pem = std::fs::read(&materials.server_cert_path).unwrap();
-        let key_pem = std::fs::read(&materials.server_key_path).unwrap();
+        let (_, cert_pem, key_pem) = crate::leader::tls::to_serve(&tls_dir).unwrap();
 
         let sealing_dir = temp_dir("fetch-tls-e2e-sealing");
         std::fs::create_dir_all(&sealing_dir).unwrap();

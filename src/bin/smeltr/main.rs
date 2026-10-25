@@ -713,9 +713,18 @@ async fn leader_tls_config(
     // above replaced what is served, so until this says so the two have parted -- which at a start is exactly
     // true, there being no socket at all until the line between these two.
     let generation = smeltr::leader::tls::disk_generation(&tls_dir);
-    let resolver = smeltr::leader::resolver::Resolver::load(&materials.server_cert_path, &materials.server_key_path)
-        .expect("load the leader's own certificate and key, just written");
-    smeltr::leader::tls::socket_took(&tls_dir, generation);
+    let (_, chain, key) = smeltr::leader::tls::to_serve(&tls_dir).unwrap_or_else(|e| {
+        eprintln!("smeltr: refusing to start -- {e}");
+        std::process::exit(1);
+    });
+    let resolver = smeltr::leader::resolver::Resolver::load(&chain, &key).unwrap_or_else(|e| {
+        eprintln!("smeltr: refusing to start -- {e}");
+        std::process::exit(1);
+    });
+    // Where the entry named could not be served, the socket presents the leader's own and the two stay parted.
+    if smeltr::leader::tls::unserved(&tls_dir).is_none() {
+        smeltr::leader::tls::socket_took(&tls_dir, generation);
+    }
     Some((resolver, materials.ca_pem))
 }
 
@@ -918,6 +927,8 @@ async fn setup_leader(
     )
     .expect("write the roots the remote's fetch trusts");
 
+    // Before TLS: a certificate the leader serves from the list is read from it.
+    smeltr::leader::tls::read_list(&smeltr::leader::tls::dir_of(&data_dir), store.clone());
     let hosts = origin_hosts(&auth.origin);
     let tls = leader_tls_config(&data_dir, &hosts).await;
     let state = smeltr::leader::AppState {

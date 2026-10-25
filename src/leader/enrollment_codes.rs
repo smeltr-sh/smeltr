@@ -254,10 +254,10 @@ impl Presenting {
             Err(_) => return Presenting::Unreadable,
             Ok(true) => {}
         }
-        let Ok((materials, served, rotation)) = tls::in_force_and_rotation(dir) else {
+        let Ok((materials, rotation)) = tls::current_and_rotation(dir) else {
             return Presenting::Unreadable;
         };
-        let Ok(root) = tls::signing_root(&materials.ca_pem, &served) else {
+        let Ok(root) = tls::signing_root(&materials.ca_pem, &materials.served) else {
             return Presenting::Unreadable;
         };
         if materials.supplied {
@@ -379,7 +379,7 @@ fn authority_of(state: &AppState) -> Result<(Authority, Option<i64>), String> {
     // and an enrollment code minted from the disk would pin a worker to a root no handshake presents -- which that
     // worker reads as permanent. Asked as one answer, because an upload swapping whole directories between the question
     // and the read pairs one set's authority with another's certificate.
-    let (materials, served) = tls::in_force_if_agreed(&dir).map_err(|e| match e {
+    let materials = tls::current_if_agreed(&dir).map_err(|e| match e {
         tls::Refused::Conflict(_) => "this leader is still serving the certificate before the last one, which is not \
              what is on disk. An enrollment code minted now would pin a worker to an authority no handshake presents. \
              Restart this leader first."
@@ -389,7 +389,7 @@ fn authority_of(state: &AppState) -> Result<(Authority, Option<i64>), String> {
     // The root that signs what this leader serves, of however many the file holds. An enrollment code names one
     // fingerprint and a worker keeps the certificate matching it; during a rollover, naming the wrong one of two would
     // pin a worker to a root that vouches for nothing this leader presents.
-    let root = tls::signing_root(&materials.ca_pem, &served)?;
+    let root = tls::signing_root(&materials.ca_pem, &materials.served)?;
     Ok((Authority::Pinned(root.fingerprint), Some(root.not_after_millis)))
 }
 

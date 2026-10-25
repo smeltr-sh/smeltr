@@ -72,8 +72,18 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
     )
     .expect("an authority and a certificate it signed");
     let ca_pem = materials.ca_pem.clone();
-    let cert_pem = std::fs::read(&materials.server_cert_path).unwrap();
-    let key_pem = std::fs::read(&materials.server_key_path).unwrap();
+    let tls_dir = smeltr::leader::tls::dir_of(&data_dir);
+    let (_, cert_pem, key_pem) = smeltr::leader::tls::to_serve(&tls_dir).unwrap();
+    // The list a served certificate is an entry of, as `main` opens it.
+    let store = Arc::new(
+        SqliteStore::open(
+            std::path::Path::new(":memory:"),
+            &temp_dir("leader-key").join("sealing.key"),
+        )
+        .unwrap(),
+    );
+    smeltr::leader::tls::read_list(&tls_dir, store.clone());
+    LISTS.lock().unwrap().push((tls_dir, store.clone()));
     // What `main` says once it has built the socket from these files. `ensure` above replaced what is served, and
     // until this the two have parted -- which before a socket exists is exactly right, and afterward is not.
     socket_caught_up(&smeltr::leader::tls::dir_of(&returned_data_dir));
@@ -81,13 +91,8 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let store = SqliteStore::open(
-                std::path::Path::new(":memory:"),
-                &temp_dir("leader-key").join("sealing.key"),
-            )
-            .unwrap();
             let state = AppState {
-                store: Arc::new(store),
+                store,
                 registry: Arc::new(Registry::default()),
                 throughput: Default::default(),
                 captures: Arc::new(smeltr::leader::capture::Captures::default()),
@@ -124,6 +129,34 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
     )
 }
 
+/// The certificate lists of these leaders, by their TLS directory.
+static LISTS: std::sync::Mutex<Vec<(std::path::PathBuf, Arc<SqliteStore>)>> = std::sync::Mutex::new(Vec::new());
+
+/// `chain` and `key` as the newest version of the entry `theirs` in the list of the leader serving from `dir`.
+fn listed(dir: &std::path::Path, chain: &[u8], key: &[u8], ca: &[u8]) -> smeltr::leader::tls::Entry {
+    use smeltr::leader::store::Store;
+    let list = LISTS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(d, _)| d == dir)
+        .map(|(_, list)| list.clone())
+        .expect("a leader serving from this directory");
+    let (chain, key) = (std::str::from_utf8(chain).unwrap(), std::str::from_utf8(key).unwrap());
+    let version = match list.add_certificate_version("theirs", chain, key) {
+        Ok(version) => version,
+        Err(_) => {
+            list.create_certificate("theirs", "", chain, key).unwrap();
+            1
+        }
+    };
+    smeltr::leader::tls::Entry {
+        name: "theirs".to_string(),
+        version,
+        ca: String::from_utf8(ca.to_vec()).unwrap(),
+    }
+}
+
 /// The sockets these leaders serve, by their TLS directory, so a replacement on disk reaches the one presenting it.
 static SOCKETS: std::sync::Mutex<Vec<(std::path::PathBuf, axum_server::tls_rustls::RustlsConfig)>> =
     std::sync::Mutex::new(Vec::new());
@@ -147,12 +180,12 @@ fn follow_disk(dir: &std::path::Path, config: axum_server::tls_rustls::RustlsCon
             // Off this thread: the replacement holds the lock `to_serve` takes.
             let dir = dir.to_path_buf();
             std::thread::spawn(move || {
-                let Ok((generation, materials)) = smeltr::leader::tls::to_serve(&dir) else {
+                let Ok((generation, chain, key)) = smeltr::leader::tls::to_serve(&dir) else {
                     return;
                 };
                 let took = tokio::runtime::Runtime::new()
                     .unwrap()
-                    .block_on(config.reload_from_pem_file(&materials.server_cert_path, &materials.server_key_path));
+                    .block_on(config.reload_from_pem(chain, key));
                 if took.is_ok() {
                     smeltr::leader::tls::socket_took(&dir, generation);
                 }
@@ -163,18 +196,16 @@ fn follow_disk(dir: &std::path::Path, config: axum_server::tls_rustls::RustlsCon
 
 /// A certificate, key and authority from somebody else's PKI, carrying the names these leaders answer to.
 fn external_pki(tag: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let dir = smeltr::leader::tls::dir_of(&temp_dir(tag));
     let materials = smeltr::leader::tls::ensure(
-        &smeltr::leader::tls::dir_of(&temp_dir(tag)),
+        &dir,
         vec!["localhost".to_string(), "127.0.0.1".to_string()],
         Duration::from_secs(60 * 60),
         &[],
     )
     .expect("their authority");
-    (
-        std::fs::read(&materials.server_cert_path).unwrap(),
-        std::fs::read(&materials.server_key_path).unwrap(),
-        materials.ca_pem,
-    )
+    let (_, chain, key) = smeltr::leader::tls::to_serve(&dir).unwrap();
+    (chain, key, materials.ca_pem)
 }
 
 /// Waits until the worker keeps `fingerprint` among the roots it verifies by.
@@ -906,22 +937,10 @@ fn an_enrollment_code_says_it_names_an_authority_that_was_replaced_under_it() {
 
     // What an operator does when they bring their own certificate.
     let names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
-    let theirs = smeltr::leader::tls::ensure(
-        &smeltr::leader::tls::dir_of(&temp_dir("their-pki")),
-        names.clone(),
-        Duration::from_secs(60 * 60),
-        &[],
-    )
-    .unwrap();
-    smeltr::leader::tls::install(
-        &smeltr::leader::tls::dir_of(&data_dir),
-        &std::fs::read(&theirs.server_cert_path).unwrap(),
-        &std::fs::read(&theirs.server_key_path).unwrap(),
-        &theirs.ca_pem,
-        &names,
-        &[],
-    )
-    .expect("an operator's own certificate");
+    let (chain, key, theirs) = external_pki("their-pki");
+    let dir = smeltr::leader::tls::dir_of(&data_dir);
+    smeltr::leader::tls::serve(&dir, &listed(&dir, &chain, &key, &theirs), &names, &[])
+        .expect("an operator's own certificate");
     socket_caught_up(&smeltr::leader::tls::dir_of(&data_dir));
 
     // The connection is still the old one's, which is the point: replacing what is served does not end a session.
@@ -1123,22 +1142,18 @@ fn what_is_in_force_is_refused_whole_while_the_socket_has_not_taken_it() {
     smeltr::leader::tls::ensure(&dir, names.clone(), a_year, &[]).expect("an authority");
     socket_caught_up(&dir);
 
-    assert!(smeltr::leader::tls::in_force_if_agreed(&dir).is_ok(), "the two agree");
     assert!(smeltr::leader::tls::current_if_agreed(&dir).is_ok(), "the two agree");
 
     smeltr::leader::tls::ensure_own(&dir, names, a_year).expect("a reissue");
-    let whole = smeltr::leader::tls::in_force_if_agreed(&dir);
-    let paths = smeltr::leader::tls::current_if_agreed(&dir);
+    let whole = smeltr::leader::tls::current_if_agreed(&dir);
     // Put back before asserting: two numbers for the whole process, shared with every test in this file.
     socket_caught_up(&dir);
 
     let whole = whole.expect_err("the socket has not taken it");
-    let paths = paths.expect_err("the socket has not taken it");
     assert!(
         matches!(whole, smeltr::leader::tls::Refused::Conflict(_)),
         "a restart is the remedy, not a retry"
     );
-    assert_eq!(whole.message(), paths.message(), "one condition, two answers");
 }
 
 /// An enrollment code names its root inside the value an operator pastes, so it cannot be re-pointed at what a rotation
@@ -1223,8 +1238,8 @@ fn a_worker_follows_the_certificate_to_an_uploaded_one_and_back() {
 
     let (chain, key, theirs) = external_pki("follows-theirs");
     let now_ms = smeltr::leader::warnings::now_millis();
-    let state = smeltr::leader::tls::begin_supplied_rotation(&dir, &chain, &key, &theirs, &names, &[], now_ms)
-        .expect("a switch");
+    let entry = listed(&dir, &chain, &key, &theirs);
+    let state = smeltr::leader::tls::begin_supplied_rotation(&dir, &entry, &names, &[], now_ms).expect("a switch");
     assert!(
         holds(&state_dir, &state.incoming, Duration::from_secs(20)),
         "the worker never took the uploaded certificate's root"
@@ -1233,7 +1248,7 @@ fn a_worker_follows_the_certificate_to_an_uploaded_one_and_back() {
         finished(&dir, Duration::from_secs(20)),
         "the fleet held the root and the leader never served the uploaded certificate"
     );
-    assert_eq!(std::fs::read(dir.join("supplied").join("cert.pem")).unwrap(), chain);
+    assert_eq!(smeltr::leader::tls::served(&dir).unwrap(), Some(entry));
     // The shortened bundle reaches it on the beat after: a beat made over the uploaded certificate, which only
     // the root it was handed verifies.
     assert!(
@@ -1257,7 +1272,7 @@ fn a_worker_follows_the_certificate_to_an_uploaded_one_and_back() {
         finished(&dir, Duration::from_secs(20)),
         "the leader never withdrew the uploaded certificate"
     );
-    assert!(!dir.join("supplied").exists());
+    assert_eq!(smeltr::leader::tls::served(&dir).unwrap(), None);
     assert!(
         holds_only(&state_dir, &back.incoming, Duration::from_secs(20)),
         "the worker was not handed the bundle without the uploaded certificate's root"
