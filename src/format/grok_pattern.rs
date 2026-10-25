@@ -305,7 +305,10 @@ pub fn unfold(pattern: &str) -> String {
                 let inner = unfold(def);
                 match field {
                     Some(f) => out.push_str(&format!("(?P<{f}>{inner})")),
-                    None if is_one_atom(def) => out.push_str(&inner),
+                    // A quantifier after the macro would bind to the definition's last atom alone.
+                    None if concatenates(def) && !rest[at + len + 1..].starts_with(['?', '*', '+', '{']) => {
+                        out.push_str(&inner)
+                    }
                     None => out.push_str(&format!("(?:{inner})")),
                 }
             }
@@ -327,9 +330,9 @@ fn captures(def: &str) -> bool {
     expand(def, &none).is_ok_and(|e| e.contains("(?P<"))
 }
 
-/// Whether `def` can be written in place of its macro with no group around it: it has no top-level `|` to split the
-/// pattern around it, and no top-level inline flag such as `(?i)` to reach the text after it.
-fn is_one_atom(def: &str) -> bool {
+/// Whether `def` can be concatenated with the text around its macro with no group around it: it has no top-level `|`
+/// to split the pattern around it, and no top-level inline flag such as `(?i)` to reach the text after it.
+fn concatenates(def: &str) -> bool {
     let bytes = def.as_bytes();
     let (mut depth, mut i, mut class) = (0usize, 0, false);
     while i < bytes.len() {
@@ -581,6 +584,11 @@ mod tests {
         for kept in ["%{WORD:w} %{INT}", "%{NOPE} x", r"\%{"] {
             assert_eq!(unfold(kept), kept);
         }
+        let quantified = unfold("%{SYSLOGLINE}?");
+        assert!(
+            quantified.starts_with("(?:") && quantified.ends_with(")?"),
+            "{quantified}"
+        );
         assert_eq!(
             unfold("%{SYSLOGLINE:line}"),
             format!("(?P<line>{})", unfold("%{SYSLOGLINE}"))
@@ -589,12 +597,12 @@ mod tests {
 
     /// A definition goes in place of its macro bare only where nothing in it can reach past it.
     #[test]
-    fn one_atom_is_free_of_top_level_alternation_and_flags() {
+    fn concatenating_is_free_of_top_level_alternation_and_flags() {
         for atom in ["ab", "(?:a|b)c", "[|]", r"\|", "(?i:a)b", "(?P<x>a|b)", r"(?-u:\b)a"] {
-            assert!(is_one_atom(atom), "{atom}");
+            assert!(concatenates(atom), "{atom}");
         }
         for split in ["a|b", "(?i)ab", "x(?-u)y"] {
-            assert!(!is_one_atom(split), "{split}");
+            assert!(!concatenates(split), "{split}");
         }
     }
 
