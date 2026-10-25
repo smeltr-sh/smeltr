@@ -259,8 +259,8 @@ before every worker that held such rows when it opened has reported. A worker
 holding them takes no other row for the capture, and reports nothing, until it
 has shown them. Once a capture
 is over at the leader, what the leader holds of it is final. What it holds,
-saved, is a **sample**: a saved sample and a test built from it are bundle
-files that travel with the configuration they belong to.
+saved, is a **sample**: a bundle file on the branch it was saved to, which
+reaches `main` with the test built from it (`config-plane.md`).
 
 ## Warnings
 

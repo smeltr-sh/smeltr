@@ -52,6 +52,12 @@ A repository holds one bundle per group under its subtree and one `shared/`
 bundle several draw on; a group is checked merged with `shared/` before it is
 committed. Samples and tests sit beside the bundle and no worker reads them.
 
+A sample reaches `main` only when a test beside it names it. Deploying a change
+leaves out every sample it adds or changes that no test names, and its review
+sets those apart as left out. They stay on the branch, and go with it. A
+sample removed is removed, and a bundle holding a test that does not read keeps
+every sample, since what that test names cannot be known.
+
 ## Bringing a change current
 
 A change behind `main` is brought current by merging `main` into its branch,

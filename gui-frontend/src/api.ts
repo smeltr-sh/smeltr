@@ -4282,6 +4282,8 @@ export type BranchDto = {
   commits: number;
   behind: number;
   touches: string[];
+  /** Those of `touches` that are samples no test names, which a deploy leaves out. */
+  leftOut?: string[];
   change?: ChangeDto;
   /** Present only while a git remote is set. */
   push?: PushDto;
