@@ -377,36 +377,33 @@ async fn order_once(
 
 /// How often a renewal is looked for. A certificate is renewed two thirds through its life, which is weeks away
 /// for any authority's; an hour is for the retry after a failure.
-const RENEWAL_TICK: Duration = Duration::from_secs(60 * 60);
+pub(crate) const RENEWAL_TICK: Duration = Duration::from_secs(60 * 60);
 
-/// Orders a renewal whenever one is due, for as long as this leader runs. Nothing while ordering is off, or while a
-/// renewal would have to wait for a rotation to finish.
-pub async fn renew_due(auth: Auth, serving: Arc<Tls>) {
-    loop {
-        tokio::time::sleep(RENEWAL_TICK).await;
-        let settings = match settings(&auth).await {
-            Ok(settings) => settings,
-            Err(e) => {
-                tracing::warn!(target: "leader.acme_settings_unreadable", error = %e, "could not read the ACME settings");
-                continue;
-            }
-        };
-        if !settings.enabled || acme::orderable(&settings.directory, &settings.names).is_err() {
-            continue;
+/// Orders a renewal where one is due. Nothing while ordering is off, or while a renewal would have to wait for a
+/// rotation to finish.
+pub(crate) async fn renew_if_due(auth: &Auth, serving: &Arc<Tls>) {
+    let settings = match settings(auth).await {
+        Ok(settings) => settings,
+        Err(e) => {
+            tracing::warn!(target: "leader.acme_settings_unreadable", error = %e, "could not read the ACME settings");
+            return;
         }
-        let _ordered = auth.settings_writes.lock().await;
-        let now_ms = smeltr::leader::warnings::now_millis();
-        let due = match (acme::state(&serving.dir), acme::source(&serving.dir)) {
-            (Ok(state), Ok(source)) => acme::renews(&state, source, now_ms),
-            (Err(e), _) | (_, Err(e)) => {
-                tracing::warn!(target: "leader.acme_state_unreadable", error = %e, "could not read what the last order left");
-                continue;
-            }
-        };
-        if !due {
-            continue;
-        }
-        let required: Vec<String> = serving.from_inside.iter().cloned().collect();
-        let _ = run(&auth, &serving, &settings, &Actor::system(), &required).await;
+    };
+    if !settings.enabled || acme::orderable(&settings.directory, &settings.names).is_err() {
+        return;
     }
+    let _ordered = auth.settings_writes.lock().await;
+    let now_ms = smeltr::leader::warnings::now_millis();
+    let due = match (acme::state(&serving.dir), acme::source(&serving.dir)) {
+        (Ok(state), Ok(source)) => acme::renews(&state, source, now_ms),
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::warn!(target: "leader.acme_state_unreadable", error = %e, "could not read what the last order left");
+            return;
+        }
+    };
+    if !due {
+        return;
+    }
+    let required: Vec<String> = serving.from_inside.iter().cloned().collect();
+    let _ = run(auth, serving, &settings, &Actor::system(), &required).await;
 }

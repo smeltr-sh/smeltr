@@ -396,6 +396,74 @@ async fn serve(state: &Certificates, actor: &Actor, serving: &Arc<Tls>, name: &s
     serve_what_is_on_disk(state, serving).await
 }
 
+/// Keeps what this leader issues and orders up to date, for as long as it runs. Each hour it renews each certificate
+/// it issued that is due, serving the new version where it serves that one, then orders over ACME where that is due.
+/// Nothing it does reaches a worker: an identity moves to a new version when an admin points it there.
+pub async fn keep_renewed(auth: Auth, serving: Arc<Tls>, leader: smeltr::leader::AppState) {
+    let state = Certificates {
+        auth: auth.clone(),
+        tls: Some(serving.clone()),
+        leader,
+    };
+    loop {
+        tokio::time::sleep(crate::acme_api::RENEWAL_TICK).await;
+        renew_issued(&state, &serving).await;
+        crate::acme_api::renew_if_due(&auth, &serving).await;
+    }
+}
+
+/// One pass of [`keep_renewed`] over the certificates this leader issued.
+async fn renew_issued(state: &Certificates, serving: &Arc<Tls>) {
+    let _ordered = state.auth.settings_writes.lock().await;
+    let now_ms = smeltr::leader::warnings::now_millis();
+    let tried = match smeltr::leader::renew_issued(&state.leader, now_ms).await {
+        Ok(tried) => tried,
+        Err(e) => {
+            tracing::warn!(target: "leader.certificate_renewal_failed", error = %e, "could not read the certificates to renew");
+            return;
+        }
+    };
+    let served = smeltr::leader::served_names(&serving.dir).unwrap_or_default();
+    for (name, outcome) in tried {
+        let outcome = match outcome {
+            Ok(()) if served.contains(&name) => serve_newest(state, serving, &name).await,
+            outcome => outcome,
+        };
+        match outcome {
+            Ok(()) => {
+                tracing::info!(target: "leader.certificate_renewed", certificate = %name, "renewed a certificate this leader issued")
+            }
+            Err(e) => tracing::warn!(
+                target: "leader.certificate_renewal_failed",
+                certificate = %name,
+                error = %e,
+                "could not renew a certificate this leader issued"
+            ),
+        }
+    }
+}
+
+/// Serves the newest version of the list entry `name`, as choosing it does, for the leader rather than a request.
+async fn serve_newest(state: &Certificates, serving: &Arc<Tls>, name: &str) -> Result<(), String> {
+    let store = state.auth.store.clone();
+    let wanted = name.to_string();
+    let (certificate, key) = blocking(move || smeltr::leader::newest_certificate(store.as_ref(), &wanted))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("there is no certificate named {name:?}"))?;
+    let served = match checked(serving, &axum::http::HeaderMap::new(), &certificate, &key) {
+        Ok(checked) => serve(state, &Actor::system(), serving, name, checked).await,
+        Err(response) => *response,
+    };
+    if served.status().is_success() {
+        return Ok(());
+    }
+    let body = axum::body::to_bytes(served.into_body(), 64 * 1024)
+        .await
+        .unwrap_or_default();
+    Err(String::from_utf8_lossy(&body).into_owned())
+}
+
 /// `PUT /api/certificates/:name`: a new version of a certificate in the list. Where the leader serves it, the new
 /// version has to be one it can serve, and it is served once stored.
 async fn replace(
