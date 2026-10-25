@@ -732,32 +732,14 @@ fn resolve_object_op(
         };
         let ir = resolve(pairs, syms, res)?;
         refuse_variant(&ir, pairs, syms)?;
-        let entry = |e: &DataType| match e {
-            DataType::Null => true,
-            DataType::Struct(fields, _) => {
-                let of = |n: &str| fields.iter().find(|(k, _)| k == n).map(|(_, t)| t);
-                matches!(
-                    (of("key"), of("value")),
-                    (Some(DataType::Str | DataType::Null), Some(_))
-                )
-            }
-            _ => false,
-        };
-        match &ir.ty {
-            DataType::Null => {}
-            DataType::Array(e) if entry(e) => {}
-            DataType::Array(e) => {
-                return fail(format!(
-                    "`fromEntries` takes `{{key: str, value}}` objects, found {}",
-                    e.spell()
-                ));
-            }
-            t => {
-                return fail(format!(
+        if !op.accepts(&ir.ty) {
+            return fail(match &ir.ty {
+                DataType::Array(e) => format!("`fromEntries` takes `{{key: str, value}}` objects, found {}", e.spell()),
+                t => format!(
                     "`fromEntries` takes an array of `{{key, value}}` objects, found {}",
                     t.spell()
-                ));
-            }
+                ),
+            });
         }
         let ty = DataType::Struct(Vec::new(), true);
         return Ok(Ir::new(ty, span, IrKind::ObjectOp { op, args: vec![ir] }));
@@ -767,8 +749,11 @@ fn resolve_object_op(
     };
     let ir = resolve(object, syms, res)?;
     refuse_variant(&ir, object, syms)?;
-    let DataType::Struct(fields, open) = ir.ty.clone() else {
+    if !op.accepts(&ir.ty) {
         return fail(format!("`{word}` takes an object, found {}", ir.ty.spell()));
+    }
+    let DataType::Struct(fields, open) = ir.ty.clone() else {
+        unreachable!("`accepts` takes only an object here");
     };
     match op {
         ObjectOp::Keys | ObjectOp::Entries if !keys.is_empty() => fail(format!("`{word}` takes one object")),
@@ -1000,10 +985,7 @@ fn resolve_call(
                 "`Object.assign` is a statement that writes its first argument; it has no value to read".to_string(),
             ));
         }
-        return Err(CompileError::new(
-            None,
-            format!("function `{name}` is not implemented (stdlib pending)"),
-        ));
+        return Err(CompileError::new(None, format!("`{method}` is not a function")));
     };
     // `x[i]` and `at(x, i)` are the same call, so they are the same resolution: a struct field by literal key and an
     // element of an array of objects are typed from the key, which no table row can express.
@@ -2721,7 +2703,7 @@ mod tests {
     fn method_call_on_a_dotted_receiver_naming_an_unknown_method_is_an_error() {
         let mut t = with_fields(&[("x", DataType::Str)]);
         let e = lower("x.notAFunction()", &mut t).unwrap_err();
-        assert!(e.message.contains("not implemented"), "{}", e.message);
+        assert_eq!(e.message, "`notAFunction` is not a function");
     }
 
     /// Moved from the parser to the type checker: dot on an expression is member access now, so a forgotten `()` is no

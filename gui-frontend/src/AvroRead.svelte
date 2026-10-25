@@ -112,7 +112,6 @@
       <code>avro</code>: each object is an Avro file, which holds its own schema.
     {/if}
   {/snippet}
-  {#snippet note()}Default <code>text</code>.{/snippet}
   <select
     value={value.format ?? 'text'}
     onchange={(e) => setFormat(value, e.currentTarget.value as 'text' | 'avro', stream)}
@@ -132,8 +131,8 @@
   <Field field="fields" label="Avro fields, as fields of the record" group>
     {#snippet help()}
       Each field to read, with a type. Name a nested field with dots, such as <code>user.id</code>.
+      Top-level fields you don't list are kept.
     {/snippet}
-    {#snippet note()}Top-level fields you don't list are kept.{/snippet}
     <div class="rows">
       {#each value.fields ?? [] as f, i (i)}
         <div class="row">

@@ -85,8 +85,8 @@ test('A1: a pasted sample is saved under its name and is there to come back to',
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Paste' }).click();
   await dialog.getByLabel('Name').fill('orders, an ordinary hour');
-  await dialog.getByLabel('Source it stands for').fill('orders-west');
-  await dialog.getByLabel('Records').fill('{"id":1,"total":20}\n{"id":2,"total":35}\n');
+  await dialog.getByLabel(/^Source it stands for/).fill('orders-west');
+  await dialog.getByLabel(/^Records/).fill('{"id":1,"total":20}\n{"id":2,"total":35}\n');
   await expect(dialog.getByText('2 records')).toBeVisible();
   await dialog.getByRole('button', { name: 'Save sample' }).click();
   await expect(dialog).toBeHidden();
@@ -111,7 +111,7 @@ test('A1: an uploaded file becomes a sample, one record per line', async ({
   await admin.getByRole('button', { name: 'Add sample' }).click();
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Upload' }).click();
-  await dialog.getByLabel('File').setInputFiles(file);
+  await dialog.getByLabel(/^File/).setInputFiles(file);
   await expect(dialog.getByLabel('Name')).toHaveValue('checkout');
   await expect(dialog.getByText('3 records')).toBeVisible();
   await dialog.getByRole('button', { name: 'Save sample' }).click();
@@ -1146,7 +1146,7 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await admin.getByRole('button', { name: 'Add step' }).click();
   await admin.getByRole('dialog').getByRole('button', { name: 'Drop', exact: true }).click();
-  await admin.getByLabel('drop when this is true').fill('id == 2');
+  await admin.getByLabel(/^drop when this is true/).fill('id == 2');
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Saved.')).toBeVisible();
 
@@ -1486,10 +1486,18 @@ test('E8: a Kafka source is moved to now by changing its start, and the page say
   await goto(admin, leader, '#/build/sources');
   await expect(admin.getByRole('heading', { name: 'Sources' })).toBeVisible();
   await admin.getByRole('button', { name: /^orders\b/ }).click();
-  await expect(admin.getByText('Deploying this moves the source.')).toHaveCount(0);
+  await expect(
+    admin.getByText(
+      'Deploying this moves the source to the new position, so records are skipped or read again.',
+    ),
+  ).toHaveCount(0);
   const asked = Date.now();
   await admin.getByRole('combobox', { name: /^start at/ }).selectOption('timestamp');
-  await expect(admin.getByText('Deploying this moves the source.')).toBeVisible();
+  await expect(
+    admin.getByText(
+      'Deploying this moves the source to the new position, so records are skipped or read again.',
+    ),
+  ).toBeVisible();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
@@ -1497,7 +1505,11 @@ test('E8: a Kafka source is moved to now by changing its start, and the page say
   const [source] = saved.config.sources;
   expect(source.start.type).toBe('timestamp');
   expect(source.start.millis).toBeGreaterThanOrEqual(asked);
-  await expect(admin.getByText('Deploying this moves the source.')).toHaveCount(0);
+  await expect(
+    admin.getByText(
+      'Deploying this moves the source to the new position, so records are skipped or read again.',
+    ),
+  ).toHaveCount(0);
 });
 
 test('A10: an S3 source that lists its bucket is added from its form and saved as the leader accepts it', async ({

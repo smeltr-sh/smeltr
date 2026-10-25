@@ -26,7 +26,7 @@ test('an enrollment code minted under Enrollment codes brings a worker in', asyn
   await openWorkersTab(admin, 'Enrollment codes');
   await admin.getByRole('button', { name: '+ Add enrollment code' }).click();
   const mint = admin.getByRole('dialog', { name: 'new enrollment code' });
-  await expect(mint.getByLabel('Group')).toHaveValue('default');
+  await expect(mint.getByLabel(/^Group/)).toHaveValue('default');
   await mint.getByRole('button', { name: 'Mint' }).click();
 
   await expect(admin.getByText('Copy this enrollment code now')).toBeVisible();
@@ -179,7 +179,10 @@ test('the session deadlines are changed under System, and an impossible pair is 
 test('the leader certificate is reissued under System', async ({ admin }) => {
   // S6
   await openAdmin(admin, 'System');
-  await admin.getByRole('link', { name: 'Certificates', exact: true }).click();
+  await admin
+    .getByRole('navigation', { name: 'System settings' })
+    .getByRole('link', { name: 'Leader certificate', exact: true })
+    .click();
   await expect(admin.getByRole('heading', { name: /Current authority/ })).toBeVisible();
   await expect(admin.getByRole('link', { name: 'Download ca.pem' })).toBeVisible();
 

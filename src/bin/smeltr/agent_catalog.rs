@@ -703,8 +703,8 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "PUT",
         path: "/api/settings/certificates",
-        what: "Serve a certificate an operator supplies. No query.",
-        body: "{ certificate: pem (the full chain, ending with its root unless the platform holds it), privateKey: pem }",
+        what: "Serve a copy of a certificate from /api/certificates. No query.",
+        body: "{ certificate: string (the certificate's name) }",
     },
     Route {
         method: "POST",
@@ -764,7 +764,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "DELETE",
         path: "/api/secrets/:name",
-        what: "Delete a secret; refused while the deployed bundle or main's head names it. No query.",
+        what: "Delete a secret or a certificate; refused while the deployed bundle or main's head names it, or the leader serves it. No query.",
         body: "",
     },
     Route {
@@ -796,6 +796,25 @@ pub const CATALOG: &[Route] = &[
         path: "/api/encryption-key/regenerate",
         what: "Write a new secrets encryption key in place of a missing or mismatched one; every value it lists must then be entered again. No query.",
         body: "",
+    },
+    // -- certificates --
+    Route {
+        method: "GET",
+        path: "/api/certificates",
+        what: "Certificates: name, description, versions, and the newest version's chain described; never a key. No query.",
+        body: "",
+    },
+    Route {
+        method: "POST",
+        path: "/api/certificates",
+        what: "Add a certificate and its private key. No query.",
+        body: "{ name: string, description?: string, certificate: pem, privateKey: pem }",
+    },
+    Route {
+        method: "PUT",
+        path: "/api/certificates/:name",
+        what: "Store a new version of a certificate and its private key; where the leader serves it, the version must be one the leader can serve, and it serves it. No query.",
+        body: "{ certificate: pem, privateKey: pem }",
     },
 ];
 

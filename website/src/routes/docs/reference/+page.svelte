@@ -38,6 +38,7 @@
   </p>
   <h2 id="settings">Settings</h2>
   <SettingsTable
+    anchored
     settings={data.settings.map((s) => ({
       name: s.key,
       env: s.env,
@@ -86,7 +87,7 @@
           ><td>When workers adopt the deployment</td></tr
         >
         <tr
-          ><td>Certificates</td><td>Admin → System → Certificates</td><td
+          ><td>Leader certificate</td><td>Admin → System → Leader certificate</td><td
             >On reload; restart if the UI reports failure</td
           ></tr
         >

@@ -22,8 +22,8 @@
     /** What an absent `start` reads from. */
     fallback: 'earliest' | 'latest';
     /** The label's `?`. */
-    help: Snippet;
-    /** Under the field, in place of the default it reads from. */
+    help?: Snippet;
+    /** Under the field: what must be known about the position chosen. */
     note?: Snippet;
   } = $props();
 
@@ -38,14 +38,7 @@
 </script>
 
 <div class="pair">
-  <Field {label} {help}>
-    {#snippet note()}
-      {#if said}
-        {@render said()}
-      {:else}
-        Default <code>{fallback}</code>.
-      {/if}
-    {/snippet}
+  <Field {label} {help} note={said}>
     <select value={kind} onchange={(e) => choose(e.currentTarget.value)}>
       <option value="earliest">earliest</option>
       <option value="latest">latest</option>
@@ -53,7 +46,7 @@
     </select>
   </Field>
   {#if start?.type === 'timestamp'}
-    <Field label="from" note="Your own clock.">
+    <Field label="from" help="The time is read in your browser's time zone.">
       <input
         type="datetime-local"
         value={toLocalInput(start.millis)}

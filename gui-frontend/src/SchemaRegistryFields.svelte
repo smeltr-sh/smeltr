@@ -32,7 +32,7 @@
   <input type="text" bind:value={registry.url} placeholder="https://registry.example.com" />
 </Field>
 <Field field="schemaRegistry.username" label="registry username">
-  {#snippet note()}Only if the registry needs a sign-in.{/snippet}
+  {#snippet help()}Needed only if the registry requires a sign-in.{/snippet}
   <input
     type="text"
     value={registry.username ?? ''}

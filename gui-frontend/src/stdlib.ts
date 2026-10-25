@@ -11,6 +11,10 @@ export interface StdFuncEntry {
   description: string;
   /** Where the website's language reference documents it. */
   docs?: string;
+  /** A field of the object before the dot, not a function: it is written as it is named, with no call. */
+  field?: boolean;
+  /** Why it does not fit where it would be written: the function does not take the type before the dot. */
+  warning?: string;
 }
 
 const REFERENCE = 'https://smeltr.sh/docs/code-reference';

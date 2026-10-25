@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  expiringSoon,
   ago,
   clockTime,
   count,
@@ -142,6 +143,15 @@ describe('isPipelinePath', () => {
     expect(isPipelinePath('pipelines/pipeline-x7k2m9q1.json')).toBe(true);
     expect(isPipelinePath('groups/west/sources.json')).toBe(false);
     expect(isPipelinePath('groups/west/pipelines/notes.txt')).toBe(false);
+  });
+});
+
+describe('expiringSoon', () => {
+  const DAY = 86_400_000;
+  it('gives a certificate the last tenth of its life', () => {
+    const cert = { notBeforeMillis: 0, notAfterMillis: 90 * DAY };
+    expect(expiringSoon(cert, 80 * DAY)).toBe(false);
+    expect(expiringSoon(cert, 81 * DAY)).toBe(true);
   });
 });
 
