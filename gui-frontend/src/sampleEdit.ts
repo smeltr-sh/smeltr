@@ -200,5 +200,12 @@ export function pastedRecords(
 /** Whether `record` holds `query`, in any of its own fields or where it was read from. Case does not count. */
 export function matches(record: SampleRecordDto, query: string): boolean {
   const q = query.trim().toLowerCase();
-  return q === '' || JSON.stringify(record).toLowerCase().includes(q);
+  return q === '' || holds(record, q);
+}
+
+/** Whether a value, or any value inside it, holds `q` as its text reads: not as JSON, where `\` and `"` are escaped. */
+function holds(value: unknown, q: string): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'object') return Object.values(value).some((v) => holds(v, q));
+  return String(value).toLowerCase().includes(q);
 }

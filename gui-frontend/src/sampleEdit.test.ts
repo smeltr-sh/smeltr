@@ -209,4 +209,11 @@ describe('matches', () => {
     expect(matches(sql.records[1], 'paid')).toBe(false);
     expect(matches(sql.records[1], ' ')).toBe(true);
   });
+
+  it('reads a value as its text, not as JSON', () => {
+    const record = { _raw: 'user acme\\mgarcia said "hi"', __source: { offset: 18233 } };
+    expect(matches(record, 'acme\\mgarcia')).toBe(true);
+    expect(matches(record, 'said "hi"')).toBe(true);
+    expect(matches(record, '18233')).toBe(true);
+  });
 });
