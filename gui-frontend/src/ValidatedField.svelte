@@ -26,7 +26,8 @@
   `[data-wrap-room]`, the room is that element's width, and the box (`[data-wrap-box]`) shrinks to the longest line.
 -->
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
+  import { follow, type Anchor } from './float';
   import {
     ASSIGNMENT_FUNCTIONS,
     CODE_FUNCTIONS,
@@ -304,66 +305,50 @@
     inputEl?.focus();
   }
 
-  /** The most the list shows before it scrolls. */
-  const LIST_HEIGHT = 280;
   /** The least room under the word the list takes before it goes over it: about three items. */
   const LIST_FLOOR = 160;
 
   /** The line box of the word being typed, on screen, held inside the field where the word is scrolled out of it.
    * The painted copy is laid out and scrolled as the field is, so a range over it finds the word. A field with no
    * painted copy gives its own box. */
-  function wordBox(): { top: number; bottom: number; left: number } | undefined {
+  function wordBox(): Anchor | undefined {
     if (!inputEl) return undefined;
     const field = inputEl.getBoundingClientRect();
     if (!paintEl) return field;
-    let left = currentWord().start;
+    let rest = currentWord().start;
     const walk = document.createTreeWalker(paintEl, NodeFilter.SHOW_TEXT);
     for (let n = walk.nextNode(); n; n = walk.nextNode()) {
       const length = n.textContent?.length ?? 0;
-      if (left > length) {
-        left -= length;
+      if (rest > length) {
+        rest -= length;
         continue;
       }
       const range = document.createRange();
-      range.setStart(n, left);
-      range.setEnd(n, Math.min(left + 1, length));
+      range.setStart(n, rest);
+      range.setEnd(n, Math.min(rest + 1, length));
       const word = range.getClientRects()[0] ?? range.getBoundingClientRect();
       const top = Math.min(Math.max(word.top, field.top), field.bottom);
       const bottom = Math.max(Math.min(word.bottom, field.bottom), field.top);
-      return { top, bottom, left: Math.min(Math.max(word.left, field.left), field.right) };
+      const left = Math.min(Math.max(word.left, field.left), field.right);
+      return { top, bottom, left, right: left };
     }
     return field;
   }
 
-  /** Places the open list at the word being typed. Set while the list is open. */
+  /** Places the open list at the word being typed again. Set while the list is open. */
   let placeList: (() => void) | undefined;
 
-  /** Shows the list in the top layer, so no box that scrolls or clips cuts it off, under the word being typed, or
-   * over it where there is too little room under it and more over it. It follows the word as the caret moves and as
-   * anything around the field scrolls. */
-  const float: Attachment<HTMLElement> = (list) => {
-    list.showPopover();
-    const place = () => {
-      const r = wordBox();
-      if (!r) return;
-      const below = window.innerHeight - r.bottom - 12;
-      const above = r.top - 12;
-      const under = below >= Math.min(LIST_FLOOR, list.scrollHeight) || below >= above;
-      list.style.maxHeight = `${Math.min(LIST_HEIGHT, under ? below : above)}px`;
-      list.style.top = under ? `${r.bottom + 4}px` : 'auto';
-      list.style.bottom = under ? 'auto' : `${window.innerHeight - r.top + 4}px`;
-      list.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - list.offsetWidth - 8))}px`;
-    };
-    place();
-    placeList = place;
-    window.addEventListener('scroll', place, true);
-    window.addEventListener('resize', place);
-    return () => {
-      placeList = undefined;
-      window.removeEventListener('scroll', place, true);
-      window.removeEventListener('resize', place);
-    };
-  };
+  /** Shows the list floating at the word being typed, which it follows as the caret moves. */
+  const floatList: Attachment<HTMLElement> = (list) =>
+    untrack(() => {
+      list.showPopover();
+      const { place, stop } = follow(list, wordBox, { floor: LIST_FLOOR });
+      placeList = place;
+      return () => {
+        placeList = undefined;
+        stop();
+      };
+    });
 
   function onKeydown(e: KeyboardEvent) {
     // A `wrap` field is one line of text in a textarea: the box wraps it, a key does not.
@@ -484,7 +469,7 @@
     </button>
   {/if}
   {#if showDropdown}
-    <ul class="suggestions" role="listbox" popover="manual" {@attach float}>
+    <ul class="suggestions" role="listbox" popover="manual" {@attach floatList}>
       {#if suggestions.length === 0}
         <li class="no-match">
           <span class="fn-desc">
@@ -770,13 +755,11 @@
     transform: none;
   }
 
-  /* Placed by `float`; `inset: auto` drops the rule that centres a popover. */
   .suggestions {
-    position: fixed;
-    inset: auto;
+    color: var(--ink);
     min-width: 260px;
     max-width: min(380px, calc(100vw - 2rem));
-    overflow-y: auto;
+    max-height: 280px;
     margin: 0;
     padding: 0.25rem;
     list-style: none;
