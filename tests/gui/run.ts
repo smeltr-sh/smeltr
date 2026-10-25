@@ -54,6 +54,21 @@ function sweep(runDir: string) {
   fs.rmSync(runDir, { recursive: true, force: true });
 }
 
+/** Records what one seed of `fuzzer` reached, for its coverage spec to judge once every seed has run. */
+export function recordReached(fuzzer: string, seed: number, reached: Iterable<string>) {
+  const dir = path.join(process.env[RUN_DIR] ?? '', fuzzer);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `${seed}.json`), JSON.stringify([...reached]));
+}
+
+/** What each seed of `fuzzer` that ran recorded with `recordReached`. */
+export function reached(fuzzer: string): string[][] {
+  const dir = path.join(process.env[RUN_DIR] ?? '', fuzzer);
+  return (fs.existsSync(dir) ? fs.readdirSync(dir) : []).map(
+    (f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) as string[],
+  );
+}
+
 export async function globalSetup() {
   fs.mkdirSync(ROOT, { recursive: true });
   // A run whose Playwright process is gone left these; one still running is another run's.

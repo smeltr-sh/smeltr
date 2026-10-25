@@ -32,8 +32,7 @@
   import ChipPicker from './ChipPicker.svelte';
   import MoreIcon from './MoreIcon.svelte';
   import DisableIcon from './DisableIcon.svelte';
-  import { flip } from 'svelte/animate';
-  import { glide } from './glide';
+  import { glideTo } from './glide';
   import FieldRow from './FieldRow.svelte';
   import TypePicker from './TypePicker.svelte';
   import DatetimeFormat from './DatetimeFormat.svelte';
@@ -1001,7 +1000,7 @@
                 >
               {/if}
               {#each ps.declared as field, i (field)}
-                <div class="glide-row" animate:flip={{ duration: glide() }}>
+                <div class="glide-row" animate:glideTo>
                   {#snippet fieldActions()}
                     {#if isCsv}
                       <button
@@ -1760,9 +1759,10 @@
     flex-shrink: 0;
   }
 
-  /* Controls arrive when wanted: on the head's hover or focus, while the
-     step is open, and while one of them is on or has its menu open. On the
-     head, not the card, so a step nested in an if does not wake the if's.
+  /* Controls arrive when wanted: on the head's hover or keyboard focus,
+     while the step is open, and while their menu is open; dimming and the
+     pause chip show a lit one. On the head, so a step in an if does not wake
+     the if's.
      Where nothing hovers they stay, since the More menu only takes their
      place when the card is narrow. A closed step's summary runs the head's
      whole width, and its controls arrive over the summary's end, fading in
@@ -1770,7 +1770,7 @@
      away. An if's head keeps them in line, since its condition is a field. */
   @media (hover: hover) {
     .card:not(.open)
-      > .card-head:not(:hover, :focus-within, :has(.active, [aria-expanded='true']))
+      > .card-head:not(:hover, :has(:focus-visible, [aria-expanded='true']))
       > .controls {
       opacity: 0;
       pointer-events: none;
@@ -1782,7 +1782,7 @@
 
     /* The counts step aside for the controls, rather than sit under them. */
     .card:not(.open, .if-card)
-      > .card-head:is(:hover, :focus-within, :has(.active, [aria-expanded='true']))
+      > .card-head:is(:hover, :has(:focus-visible, [aria-expanded='true']))
       > .counts {
       margin-right: 10.6rem;
     }
