@@ -1713,7 +1713,6 @@ pub fn cut_over_began(dir: &Path) -> Result<bool, String> {
 /// For the leader's own authority that is `ca-key.pem` holding the incoming key -- the outgoing key is renamed
 /// over, not kept. For a switch of source it is [`SERVED`] naming what the rotation installs. Either way this is
 /// what says which half of a cutover has run, for a retry, an abandonment and a start alike.
-
 fn promoted(dir: &Path, state: &Rotation) -> Result<bool, String> {
     match state.installs {
         Installs::NextKey => {
