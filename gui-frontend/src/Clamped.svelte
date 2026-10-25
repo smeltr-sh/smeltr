@@ -4,21 +4,27 @@
   its clamp offers to open.
 -->
 <script lang="ts">
+  import type { Snippet } from 'svelte';
+
   let {
     text,
     open,
     ontoggle,
     label,
     gone = false,
+    children,
   }: {
+    /** The value, whose length the link to open it gives. */
     text: string;
     /** Whether the reader has opened it. The caller keeps this, so it outlives a redraw. */
     open: boolean;
     ontoggle: () => void;
-    /** What the value is, for the button that opens it. */
+    /** What the value is, for the button that opens it: `the value of x`. */
     label: string;
     /** Struck through: a value that is no longer there. */
     gone?: boolean;
+    /** The value drawn with markup of its own, in place of `text`. */
+    children?: Snippet;
   } = $props();
 
   let overflowing = $state(false);
@@ -36,15 +42,20 @@
 </script>
 
 <span class="clamp">
-  <span class="value" class:gone class:clamped={!open} use:watch={text}>{text}</span>
+  <span class="value" class:gone class:clamped={!open} use:watch={text}
+    >{#if children}{@render children()}{:else}{text}{/if}</span
+  >
   {#if open || overflowing}
     <button
       type="button"
       class="more"
       aria-expanded={open}
-      aria-label={`${open ? 'collapse' : 'expand'} the value of ${label}`}
-      onclick={ontoggle}
-      >{open ? 'less' : `Show all ${text.length.toLocaleString('en-US')} characters`}</button
+      aria-label={`${open ? 'collapse' : 'expand'} ${label}`}
+      onclick={(e) => {
+        // Opening the value is all the click does, inside a row or an option that a click would choose.
+        e.stopPropagation();
+        ontoggle();
+      }}>{open ? 'less' : `Show all ${text.length.toLocaleString('en-US')} characters`}</button
     >
   {/if}
 </span>

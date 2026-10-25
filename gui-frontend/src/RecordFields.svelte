@@ -211,7 +211,7 @@
         text={body}
         open={opened.has(line.path)}
         ontoggle={() => toggleLong(line.path)}
-        label={line.path}
+        label={`the value of ${line.path}`}
         gone={line.state === 'removed'}
       />
     {/if}
