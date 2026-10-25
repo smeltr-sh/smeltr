@@ -2645,16 +2645,17 @@ async fn issued_certificates_due(state: &AppState, now_ms: i64) -> Result<Vec<wa
     .await
 }
 
+/// What this leader issued `name` for, or `None` where it did not issue it.
+async fn issued_as(state: &AppState, name: &str) -> Result<Option<Issued>, StoreError> {
+    let name = name.to_string();
+    run_store(state.store.clone(), move |s| Ok(s.issued_certificates()?.remove(&name))).await
+}
+
 /// Issues the next version of a certificate this leader issued, for the names and lifetime it was issued with. What
 /// an admin does when [`warnings::issued_certificates_due`] says one is due; the caller then points what names it at
 /// the new version, as after a replace.
 async fn renew_certificate(State(state): State<AppState>, Path(name): Path<String>) -> Json<Envelope> {
-    let wanted = name.clone();
-    let issued = match run_store(state.store.clone(), move |s| {
-        Ok(s.issued_certificates()?.remove(&wanted))
-    })
-    .await
-    {
+    let issued = match issued_as(&state, &name).await {
         Ok(Some(issued)) => issued,
         Ok(None) => {
             return Json(Envelope::failed_one(format!(
@@ -2683,12 +2684,7 @@ pub async fn replace_certificate(
     if let Err(e) = req.check() {
         return Json(Envelope::failed_one(e));
     }
-    let wanted = name.clone();
-    match run_store(state.store.clone(), move |s| {
-        Ok(s.issued_certificates()?.contains_key(&wanted))
-    })
-    .await
-    {
+    match issued_as(&state, &name).await.map(|i| i.is_some()) {
         Ok(true) => {
             return Json(Envelope::failed_one(format!(
                 "this leader issued {name:?}, so renew it instead of replacing it. To use your own certificate, \

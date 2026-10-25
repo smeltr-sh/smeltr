@@ -3531,7 +3531,7 @@ export type CertificateDto = {
   chain: DescribedCertificate[];
   /** Whether the leader serves a copy of it. */
   served: boolean;
-  /** The names this leader issues it for, where this leader issued it and renews it. */
+  /** The names this leader issues it for, where this leader issued it. */
   issuedFor?: string[];
 };
 
@@ -3553,7 +3553,7 @@ export function createCertificate(
   });
 }
 
-/** Has this leader issue a certificate for `names` under its own authority, which it then renews. */
+/** Has this leader issue a certificate for `names` under its own authority. */
 export function issueCertificate(
   name: string,
   description: string,
