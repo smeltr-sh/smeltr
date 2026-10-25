@@ -54,7 +54,7 @@ pub enum SubjectKind {
     Pipeline,
     /// A leader-stored secret, by name.
     Secret,
-    /// A certificate in the list, by name.
+    /// A certificate in the leader's list, by name.
     Certificate,
 }
 
@@ -2546,6 +2546,11 @@ pub fn encryption_key_warnings(standing: &KeyStanding, starts: &HashMap<FactKey,
                     SubjectKind::Secret,
                     "encrypted with a key this leader no longer has. Store a new version".to_string(),
                 ),
+                Unopenable::Certificate(_) => (
+                    SubjectKind::Certificate,
+                    "encrypted with a key this leader no longer has. Replace the certificate under Certificates"
+                        .to_string(),
+                ),
                 Unopenable::Setting(key) => (
                     SubjectKind::Leader,
                     format!(
@@ -2569,7 +2574,7 @@ pub fn encryption_key_warnings(standing: &KeyStanding, starts: &HashMap<FactKey,
 
 fn unopenable_id(u: &Unopenable) -> String {
     match u {
-        Unopenable::Secret(name) => name.clone(),
+        Unopenable::Secret(name) | Unopenable::Certificate(name) => name.clone(),
         Unopenable::Setting(key) => sealed_setting_place(key).0.to_string(),
     }
 }
@@ -6733,10 +6738,11 @@ mod tests {
             vec![
                 Unopenable::Secret("es-auth".to_string()),
                 Unopenable::Setting(crate::leader::oidc::CLIENT_SECRET_KEY.to_string()),
+                Unopenable::Certificate("ingest-tls".to_string()),
             ],
         );
         let said = encryption_key_warnings(&held, &HashMap::new());
-        assert_eq!(said.len(), 2);
+        assert_eq!(said.len(), 3);
         assert!(
             said.iter()
                 .all(|w| w.condition == Condition::SecretNeedsValue && w.severity == Severity::Warning)
@@ -6756,6 +6762,15 @@ mod tests {
                 .ends_with("Enter it again under Accounts, Single sign-on"),
             "{}",
             said[1].message
+        );
+        assert_eq!(
+            (said[2].subject_kind, said[2].subject_id.as_str()),
+            (SubjectKind::Certificate, "ingest-tls")
+        );
+        assert!(
+            said[2].message.ends_with("Replace the certificate under Certificates"),
+            "{}",
+            said[2].message
         );
         assert!(said.iter().all(|w| w.group.is_none()), "an administrator's to act on");
 

@@ -231,6 +231,14 @@ function typeLabel(d: DeclaredAt): string | null {
   return `array<${typeLabel(d.of)}>`;
 }
 
+/** The type `declared` gives the field at `path`, as a line shows it; null when `declared` is. */
+export function typeAt(declared: Declared | null, path: string): string | null {
+  let d: DeclaredAt = declared ?? 'unknown';
+  // An unquoted `[3]` is an index, which `keySpans` leaves its bracket on.
+  for (const { key } of keySpans(path)) d = declaredChild(d, key.startsWith('[') ? null : key);
+  return typeLabel(d);
+}
+
 /** One part of a record, both sides of a step at once. A leaf is a scalar, an
  * empty struct or array, or a value whose shape the step changed, which reads
  * best whole. */

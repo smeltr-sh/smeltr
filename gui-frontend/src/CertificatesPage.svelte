@@ -255,11 +255,11 @@
         <Field
           required
           label="Certificate"
-          note="PEM, the full chain. For a private authority, end it with the root."
+          help="PEM, the full chain. For a private authority, end it with the root."
         >
           <textarea bind:value={pem} rows="5" spellcheck="false"></textarea>
         </Field>
-        <Field required label="Private key" note="PEM. Stored encrypted and never shown again.">
+        <Field required label="Private key" help="PEM. Stored encrypted and never shown again.">
           <textarea bind:value={privateKey} rows="5" spellcheck="false"></textarea>
         </Field>
       {/if}

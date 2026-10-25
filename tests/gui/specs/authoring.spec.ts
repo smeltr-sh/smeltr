@@ -1138,7 +1138,7 @@ test('◎ pauses the records after a step', async ({ admin, leader, api }) => {
 // A3, which step did it. Once typing settles, a field carries the sign of the step that last touched it, held it
 // lists every step that did and jumps to one, an exception names its step, and a step's dropped and failed counts
 // filter the records to those it dropped or failed.
-test('A3: a field names the steps that touched it, and a step card counts what it dropped', async ({
+test('A3: a field names the steps that touched it, a step card counts what it dropped, a column its type', async ({
   admin,
   leader,
   api,
@@ -1186,11 +1186,24 @@ test('A3: a field names the steps that touched it, and a step card counts what i
   const list = last.locator('xpath=following-sibling::span[1]');
   await expect(list.getByRole('button', { name: /^Step 1 · Parser/ })).toBeVisible();
   await expect(list.getByRole('button', { name: /^Step 3 · Code/ })).toBeVisible();
+  // The sign takes you to its step, open.
+  await record.locator('button.by-glyph[aria-label^="Step 3 · Code"]').click();
+  await expect(admin.locator('#step-calc .card-head [aria-expanded]').first()).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+  await expect(admin.locator('#step-calc')).toBeInViewport();
 
   await admin.locator('#step-health').getByRole('button', { name: '−1 dropped' }).click();
   await expect(admin.getByRole('button', { name: 'remove dropped by health' })).toBeVisible();
   await expect(admin.getByText('1 of 3 rows')).toBeVisible();
   await expect(grid.getByRole('row', { name: /^row 2 / })).toBeVisible();
+
+  // A column's head names its type, until types are hidden.
+  const head = grid.getByRole('button', { name: /^status\b/ });
+  await expect(head).toHaveText(/^status: i64/);
+  await admin.getByRole('button', { name: 'Show types' }).click();
+  await expect(head).not.toContainText('i64');
 });
 
 // A4, the whole trip. A refused save's errors stay on the steps until the next save; a preview error after it is

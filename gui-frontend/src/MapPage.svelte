@@ -15,6 +15,7 @@
 <script lang="ts">
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
+  import { store, stored } from './stored';
   import PageHeader from './PageHeader.svelte';
   import {
     getConfig,
@@ -647,7 +648,7 @@
   let lastRange = $state(storedRange());
   function storedRange(): string {
     try {
-      return chartRange(localStorage.getItem(RANGE_KEY) ?? undefined).range;
+      return chartRange(stored(RANGE_KEY) ?? undefined).range;
     } catch {
       return DEFAULT_CHART_RANGE;
     }
@@ -656,11 +657,7 @@
     if (!stats || stats.stack || stats.range === undefined) return;
     const shown = chartRange(stats.range).range;
     lastRange = shown;
-    try {
-      localStorage.setItem(RANGE_KEY, shown);
-    } catch {
-      // A blocked store forgets the range on a reload, which is all it was for.
-    }
+    store(RANGE_KEY, shown);
   });
 
   function hashOf(n: MapNode, panel?: FocusTab, range: string = lastRange): string {

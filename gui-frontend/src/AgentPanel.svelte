@@ -6,6 +6,7 @@
 <script lang="ts">
   import Conversation from './Conversation.svelte';
   import { reported } from './errors.svelte';
+  import { store, stored } from './stored';
   import { firstLineText } from './markdown';
   import { listConversations, refused, type ConversationSummaryDto } from './api';
 
@@ -19,8 +20,8 @@
   const LEAST = 0.15;
   const MOST = 0.8;
 
-  let open = $state(sessionStorage.getItem(OPEN_KEY) ?? '');
-  let height = $state(Number(localStorage.getItem(HEIGHT_KEY)) || HEIGHT);
+  let open = $state(stored(OPEN_KEY, 'session') ?? '');
+  let height = $state(Number(stored(HEIGHT_KEY)) || HEIGHT);
   let conversations = $state<ConversationSummaryDto[]>([]);
   let body = $state<HTMLElement>();
 
@@ -40,7 +41,7 @@
   });
 
   $effect(() => {
-    sessionStorage.setItem(OPEN_KEY, open);
+    store(OPEN_KEY, open, 'session');
   });
 
   // A chat reads from its newest message: whatever the conversation grows by keeps the panel at its end.
@@ -73,7 +74,7 @@
     };
     const up = () => {
       handle.removeEventListener('pointermove', move);
-      localStorage.setItem(HEIGHT_KEY, String(height));
+      store(HEIGHT_KEY, String(height));
     };
     handle.addEventListener('pointermove', move);
     handle.addEventListener('pointerup', up, { once: true });

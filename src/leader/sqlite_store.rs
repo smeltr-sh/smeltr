@@ -495,12 +495,22 @@ impl SqliteStore {
     fn sealed_by(&self) -> Result<Vec<(Unopenable, String)>, StoreError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut newest = conn.prepare(
-            "SELECT v.name, v.key_id FROM secret_versions v
+            "SELECT v.name, v.key_id,
+                    EXISTS (SELECT 1 FROM certificate_chains c WHERE c.name = v.name AND c.version = v.version)
+               FROM secret_versions v
               WHERE v.version = (SELECT MAX(version) FROM secret_versions WHERE name = v.name)
               ORDER BY v.name",
         )?;
         let mut out = newest
-            .query_map((), |row| Ok((Unopenable::Secret(row.get(0)?), row.get(1)?)))?
+            .query_map((), |row| {
+                let name = row.get(0)?;
+                let value = if row.get(2)? {
+                    Unopenable::Certificate(name)
+                } else {
+                    Unopenable::Secret(name)
+                };
+                Ok((value, row.get(1)?))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         // A sealed setting is told apart by its shape: nothing else a setting holds is a key id, a nonce of the
         // one length a sealed value carries, and hex, separated by colons.
@@ -3186,11 +3196,19 @@ mod tests {
         let s = store_with_key(&key);
         leader_stored(&s, "kafka-west-sasl", "hunter2");
         leader_stored(&s, "es-auth", "changeme");
+        s.create_certificate("ingest-tls", "", "chain", "key").unwrap();
         std::fs::remove_file(&key).unwrap();
 
         let standing = s.regenerate_key(&regenerated()).unwrap();
         assert!(matches!(standing.key, KeyState::Held { .. }), "{:?}", standing.key);
-        assert_eq!(standing.unopenable, vec![secret("es-auth"), secret("kafka-west-sasl")]);
+        assert_eq!(
+            standing.unopenable,
+            vec![
+                secret("es-auth"),
+                Unopenable::Certificate("ingest-tls".to_string()),
+                secret("kafka-west-sasl")
+            ]
+        );
         assert!(key.exists());
         assert!(
             !record(&s, "es-auth").current().unwrap().usable,
@@ -3199,6 +3217,7 @@ mod tests {
 
         s.add_secret_version("es-auth", "changeme2")
             .expect("sealing works again");
+        s.add_certificate_version("ingest-tls", "chain2", "key2").unwrap();
         assert_eq!(s.key_standing().unwrap().unopenable, vec![secret("kafka-west-sasl")]);
         assert_eq!(
             s.list_security_events(10)
