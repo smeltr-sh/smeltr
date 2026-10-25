@@ -247,7 +247,11 @@
         </Field>
       {/if}
       {#if editing?.name === null}
-        <Field optional label="Description">
+        <Field
+          optional
+          label="Description"
+          help="A note shown under the certificate's name in the list, to say what it is for."
+        >
           <input bind:value={newDescription} />
         </Field>
       {/if}
