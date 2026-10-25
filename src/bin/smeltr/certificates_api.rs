@@ -99,8 +99,8 @@ struct CertificatesDto {
     /// Set when a certificate reached the disk and the socket refused it. Everything above is then what `dir`
     /// holds rather than what a client is shown, and only a restart closes the gap.
     restart_required: bool,
-    /// Why the list entry above is not what clients are shown: a start could not serve it, and serves this leader's
-    /// own certificate until it is served again (`tls::unserved`).
+    /// Set while the list entry above is not what clients are shown: a start could not serve it, and serves this
+    /// leader's own certificate until one is served again (`tls::unserved`). Says why, and what to do.
     unserved: Option<String>,
     /// The authority this leader is rotating to, while it is doing so. Workers are being given it beside the one
     /// above; nothing is signed under it until they have.

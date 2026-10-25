@@ -2716,7 +2716,8 @@ async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) 
     match served_names(&tls::dir_of(&state.data_dir)) {
         Ok(served) if served.contains(&name) => {
             return Json(Envelope::failed_one(format!(
-                "the leader serves {name:?}; choose another certificate for it first"
+                "the leader serves {name:?}; choose another certificate under Admin → System → Leader certificate \
+                 first"
             )));
         }
         Ok(_) => {}
@@ -3091,7 +3092,8 @@ async fn forget_secret_version(
                 .any(|entry| entry.name == name && entry.version == version) =>
         {
             return Json(Envelope::failed_one(format!(
-                "the leader serves {name:?} v{version}; choose another certificate for it first"
+                "the leader serves {name:?} v{version}; choose another certificate under Admin → System → Leader \
+                 certificate first"
             )));
         }
         Ok(_) => {}

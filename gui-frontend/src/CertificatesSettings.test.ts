@@ -317,7 +317,8 @@ describe('uploading during a switch', () => {
 
 describe('a certificate a start could not serve', () => {
   it('says why, and that the leader serves its own', async () => {
-    const why = '"theirs" cannot be served because the certificate has already expired';
+    const why =
+      'This leader is serving a "Leader issued" certificate instead of "theirs", which cannot be served because the certificate has already expired. Choose a certificate under Source.';
     await show(
       {
         ...CERTIFICATES,
@@ -329,9 +330,7 @@ describe('a certificate a start could not serve', () => {
       },
       'Serve this certificate',
     );
-    expect(target.textContent).toContain(
-      `a Leader issued certificate instead of the one chosen. ${why}.`,
-    );
+    expect(target.textContent).toContain(why);
     expect(target.textContent).not.toContain('Restart the leader');
   });
 });

@@ -4999,8 +4999,8 @@ export interface CertificatesDto {
    * Everything above is then what the disk holds rather than what a client is
    * shown, and only a restart closes the gap. */
   restartRequired: boolean;
-  /** Why the entry above is not what clients are shown: a start could not serve it, so this leader serves its
-   * own until a certificate is served again. */
+  /** Set while the entry above is not what clients are shown: a start could not serve it, so this leader serves
+   * its own until a certificate is served again. Says why, and what to do. */
   unserved: string | null;
   /** Set while this leader is rotating to a new authority. */
   rotation: RotationDto | null;

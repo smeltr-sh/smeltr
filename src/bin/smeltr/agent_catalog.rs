@@ -703,7 +703,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "PUT",
         path: "/api/settings/certificates",
-        what: "Serve a copy of a certificate from /api/certificates. No query.",
+        what: "Serve a certificate from /api/certificates. No query.",
         body: "{ certificate: string (the certificate's name) }",
     },
     Route {

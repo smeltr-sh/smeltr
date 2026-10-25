@@ -117,20 +117,20 @@ pub fn ensure(dir: &Path, sans: Vec<String>, validity: Duration, required: &[Str
     let why = match served(dir)? {
         Some(entry) => match entry_serves(dir, &entry, &sans, required) {
             Ok(()) => return current(dir),
-            Err(e) => format!("{:?} cannot be served because {e}. Choose a certificate under Source", entry.name),
+            Err(e) => format!(
+                "This leader is serving a \"Leader issued\" certificate instead of {:?}, which cannot be served \
+                 because {e}. Choose a certificate under Source.",
+                entry.name
+            ),
         },
         None if dir.join(SUPPLIED_BEFORE_THE_LIST).exists() => format!(
-            "The certificate in {} is not in the certificate list. Add it under Admin → Certificates, then \
-             choose it under Source",
+            "This leader is serving a \"Leader issued\" certificate instead of the one in {}, which is not in the \
+             certificate list. Add it under Admin → Certificates, then choose it under Source.",
             dir.join(SUPPLIED_BEFORE_THE_LIST).display()
         ),
         None => return Ok(own),
     };
-    tracing::warn!(
-        target: "leader.certificate_unserved",
-        reason = %why,
-        "this leader serves its own certificate instead of the one chosen"
-    );
+    tracing::warn!(target: "leader.certificate_unserved", "{why}");
     // Parted until something is served again: everything that reads what is in force waits for that.
     with_generations(dir, |held| {
         held.disk += 1;
@@ -139,8 +139,8 @@ pub fn ensure(dir: &Path, sans: Vec<String>, validity: Duration, required: &[Str
     Ok(Materials { supplied: false, ..own })
 }
 
-/// Why the list entry this leader serves is not what its socket presents, since the start that found it could not
-/// serve it. Cleared by the next replacement of what is served.
+/// What an admin is told while the list entry this leader serves is not what its socket presents, since the start
+/// that found it could not serve it: why, and what to do. Cleared by the next replacement of what is served.
 pub fn unserved(dir: &Path) -> Option<String> {
     let held = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
     held.as_ref()
@@ -179,7 +179,7 @@ fn entry_chain(dir: &Path, entry: &Entry) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())?
         .ok_or_else(|| {
             format!(
-                "version {} of the certificate {:?} is not in the list",
+                "version {} of the certificate {:?} is not in the certificate list",
                 entry.version, entry.name
             )
         })?;
@@ -1377,7 +1377,7 @@ pub fn cut_over(dir: &Path, sans: Vec<String>, validity: Duration) -> Result<(),
                 socket_agrees(dir)?;
                 let entry = incoming_serves(dir, &state)?;
                 entry_serves(dir, &entry, &sans, &[]).map_err(|e| {
-                    format!("the certificate this leader was switching to cannot be served because {e}. Choose Abandon switch, then choose it again under Source.")
+                    format!("the certificate this leader was switching to cannot be served because {e}. Choose Abandon switch, then choose the certificate again under Source.")
                 })?;
                 write_served(dir, Some(&entry))?;
             }
@@ -1422,7 +1422,7 @@ fn incoming_serves(dir: &Path, state: &Rotation) -> Result<Entry, String> {
         .clone()
         .ok_or_else(|| "the rotation names no certificate to put in force".to_string())?;
     let chain = entry_chain(dir, &entry).map_err(|e| {
-        format!("the certificate this leader was switching to cannot be served because {e}. Choose Abandon switch, then choose it again under Source.")
+        format!("the certificate this leader was switching to cannot be served because {e}. Choose Abandon switch, then choose the certificate again under Source.")
     })?;
     let now = OffsetDateTime::now_utc().unix_timestamp() * 1000;
     if describe(&chain, "the incoming certificate")?.not_after_millis <= now {
@@ -2605,7 +2605,11 @@ pub(crate) mod tests {
         assert_eq!(materials.ca_pem, own.ca_pem);
         assert!(unserved(&dir).is_some_and(|why| why.contains("supplied")));
         assert_eq!(served(&dir).unwrap(), Some(entry), "the entry was forgotten");
-        assert_eq!(current(&dir).unwrap().ca_pem, own.ca_pem, "nothing reads what is served");
+        assert_eq!(
+            current(&dir).unwrap().ca_pem,
+            own.ca_pem,
+            "nothing reads what is served"
+        );
         assert!(
             !socket_has_what_is_on_disk(&dir),
             "what workers are given is not what the socket presents"
