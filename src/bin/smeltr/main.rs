@@ -713,14 +713,12 @@ async fn leader_tls_config(
     // above replaced what is served, so until this says so the two have parted -- which at a start is exactly
     // true, there being no socket at all until the line between these two.
     let generation = smeltr::leader::tls::disk_generation(&tls_dir);
-    let (_, chain, key) = smeltr::leader::tls::to_serve(&tls_dir).unwrap_or_else(|e| {
-        eprintln!("smeltr: refusing to start -- {e}");
-        std::process::exit(1);
-    });
-    let resolver = smeltr::leader::resolver::Resolver::load(&chain, &key).unwrap_or_else(|e| {
-        eprintln!("smeltr: refusing to start -- {e}");
-        std::process::exit(1);
-    });
+    let resolver = smeltr::leader::tls::to_serve(&tls_dir)
+        .and_then(|(_, chain, key)| smeltr::leader::resolver::Resolver::load(&chain, &key))
+        .unwrap_or_else(|e| {
+            eprintln!("smeltr: refusing to start -- {e}");
+            std::process::exit(1);
+        });
     // Where the entry named could not be served, the socket presents the leader's own and the two stay parted.
     if smeltr::leader::tls::unserved(&tls_dir).is_none() {
         smeltr::leader::tls::socket_took(&tls_dir, generation);
