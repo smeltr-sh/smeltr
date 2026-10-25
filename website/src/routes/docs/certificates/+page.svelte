@@ -82,9 +82,10 @@
   <p>
     A certificate this leader serves must cover the name your browser reaches it by. If this leader
     runs its own worker, it must also cover the address that worker reaches it by: 127.0.0.1, unless
-    worker.leader.url says otherwise. Public authorities don't issue certificates for 127.0.0.1, so
-    to serve a public certificate, set worker.leader.url to a URL on one of the certificate's names,
-    such as <code>https://smeltr.example.com</code>, then restart.
+    <a href="/docs/reference#worker.leader.url">worker.leader.url</a> says otherwise. Public
+    authorities don't issue certificates for 127.0.0.1, so to serve a public certificate, set
+    worker.leader.url to a URL on one of the certificate's names, such as
+    <code>https://smeltr.example.com</code>, then restart.
   </p>
   <h2 id="source">Choose where the certificate comes from</h2>
   <p>

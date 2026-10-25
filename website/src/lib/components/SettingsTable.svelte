@@ -11,7 +11,9 @@
     env?: string;
     examples?: unknown[];
   };
-  let { settings }: { settings: Row[] } = $props();
+  /** `anchored` gives each block its setting's name as its id, so a guide can link to one. Only for a page that
+   * shows one table, where every name is unique. */
+  let { settings, anchored = false }: { settings: Row[]; anchored?: boolean } = $props();
   /** A name in pieces that each end after a dot or an underscore, so it wraps only there. */
   const pieces = (name: string) => name.split(/(?<=[._])/);
   /** A value as a bundle would spell it, spaced so an object can wrap. */
@@ -47,7 +49,7 @@
 
 <div class="settings">
   {#each settings as s (s.name)}
-    <div class="setting">
+    <div class="setting" id={anchored ? s.name : undefined}>
       <p class="head">
         <code class="name"
           >{#each pieces(s.name) as p, i (i)}{p}<wbr />{/each}</code

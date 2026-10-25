@@ -38,6 +38,7 @@
   </p>
   <h2 id="settings">Settings</h2>
   <SettingsTable
+    anchored
     settings={data.settings.map((s) => ({
       name: s.key,
       env: s.env,
