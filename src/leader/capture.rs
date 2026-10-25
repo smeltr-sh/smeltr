@@ -518,21 +518,33 @@ impl Captures {
                 _ => None,
             })
             .collect();
+        use crate::core::column::DataType;
         let text = |v: &str| serde_json::Value::String(v.to_string());
+        let failure = DataType::Struct(
+            vec![
+                ("worker".to_string(), DataType::Str),
+                ("reason".to_string(), DataType::Str),
+            ],
+            false,
+        );
         [
-            ("timestamp", "datetime", Some(text(&timestamp))),
+            ("timestamp", DataType::DateTime, Some(text(&timestamp))),
             (
                 "source",
-                "str",
+                DataType::Str,
                 s.invitation.source.as_ref().map(|source| text(&source.id)),
             ),
-            ("destination", "str", s.invitation.destination.as_deref().map(text)),
-            ("group", "str", Some(text(&s.invitation.group))),
-            ("filter", "str", s.invitation.filter.as_deref().map(text)),
-            ("config", "str", s.config.as_deref().map(text)),
+            (
+                "destination",
+                DataType::Str,
+                s.invitation.destination.as_deref().map(text),
+            ),
+            ("group", DataType::Str, Some(text(&s.invitation.group))),
+            ("filter", DataType::Str, s.invitation.filter.as_deref().map(text)),
+            ("config", DataType::Str, s.config.as_deref().map(text)),
             (
                 "failed",
-                "array<{worker: str, reason: str}>",
+                DataType::Array(Box::new(failure)),
                 (!failed.is_empty()).then_some(serde_json::Value::Array(failed)),
             ),
         ]
@@ -540,7 +552,7 @@ impl Captures {
         .filter_map(|(name, ty, value)| {
             let column = crate::heartbeat::CaptureColumn {
                 name: format!("__capture.{name}"),
-                ty: ty.to_string(),
+                ty: ty.spell(),
             };
             value.map(|v| (column, v))
         })
