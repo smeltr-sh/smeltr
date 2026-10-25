@@ -29,6 +29,34 @@
       }
     ]
   },
+  "into": {
+    "steps": [
+      {
+        "id": "parse",
+        "type": "parser",
+        "input": "_raw",
+        "into": "app",
+        "kind": {
+          "type": "json"
+        },
+        "declared": [
+          {
+            "name": "status",
+            "type": "i64"
+          }
+        ]
+      }
+    ],
+    "input": ["{\"service\":\"checkout\",\"status\":200}"],
+    "output": [
+      {
+        "app": {
+          "service": "checkout",
+          "status": 200
+        }
+      }
+    ]
+  },
   "csv": {
     "steps": [
       {

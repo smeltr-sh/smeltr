@@ -229,6 +229,8 @@ export type Step =
   | (FunctionCommon & {
       type: 'parser';
       input: string;
+      /** The object the parse writes into; `$`, the record. */
+      into: string;
       kind: ParserKind;
       declared: FieldSpec[];
     })
@@ -314,6 +316,7 @@ export function newStep(type: StepType, parseInput = '_raw'): Step {
         filter: '',
         disabled: false,
         input: parseInput,
+        into: '$',
         kind: { type: 'json' },
         declared: [],
       };
@@ -408,6 +411,7 @@ export function stepToDto(step: Step): unknown {
         type: 'parser',
         ...functionFields(step),
         input: step.input,
+        into: step.into.trim(),
         kind: parserKindDto(step.kind),
         declared: step.declared.map((f) => ({ name: f.name, type: dataTypeDto(f.ty) })),
       };
@@ -596,6 +600,13 @@ export function stepsRun(steps: Step[], target: Step, includeTarget: boolean): S
   return run;
 }
 
+/** The object a parser's `into` names, as its header and its Advanced show it: none for `$`, where every parser
+ * writes unless told otherwise, nor for a blank box, which names nothing. */
+export function shownInto(into: string): string | null {
+  const name = into.trim();
+  return name === '' || name === '$' ? null : name;
+}
+
 /** A step as the records name it: its number in the step list, its type and
  * what it does. */
 export function stepName(step: Step, number: number): string {
@@ -621,7 +632,7 @@ export function stepSummary(step: Step): string {
         ? step.pairs.map((p) => `${p.from || '…'} → ${p.to || '…'}`).join(', ')
         : '(no pairs)';
     case 'parser':
-      return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
+      return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${shownInto(step.into) ? ` into ${shownInto(step.into)}` : ''}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
     case 'lookup':
       return `${step.input || '…'} → ${step.outputs.map((o) => o.field || '…').join(', ') || '(no outputs)'}`;
     case 'unroll':
@@ -858,6 +869,7 @@ function dtoToStep(dto: unknown, where: string): Step {
         type: 'parser',
         ...common(id),
         input: str(o, 'input', where),
+        into: typeof o.into === 'string' ? o.into : '$',
         kind: dtoToParserKind(o.kind, `${where}.kind`),
         declared: optArr(o, 'declared').map((f) => {
           const fo = rec(f, `${where}.declared`);
