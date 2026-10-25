@@ -194,6 +194,7 @@
 
   /* Detached overlay, so it may cast a shadow where a surface may not. */
   .picker {
+    padding: 0;
     min-width: 20rem;
     max-width: calc(100vw - 3rem);
     background: var(--panel);

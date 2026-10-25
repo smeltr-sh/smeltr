@@ -31,6 +31,8 @@ export function follow(
   at: () => Anchor | undefined,
   options: FloatOptions = {},
 ): { place: () => void; stop: () => void } {
+  // The cap its own style sets, not the room a last open left on it.
+  el.style.maxHeight = '';
   const cap = getComputedStyle(el).maxHeight;
   Object.assign(el.style, { position: 'fixed', inset: 'auto', margin: '0', overflowY: 'auto' });
   const place = () => {
@@ -68,14 +70,20 @@ export function follow(
 }
 
 /** `follow` for a `popover="manual"` drawn only while it is open: shown as it is attached. What `at` reads does not
- * attach it again. */
+ * attach it again. `held` is given `place` while it is attached, and `undefined` after. */
 export function float(
   at: () => Anchor | undefined,
   options: FloatOptions = {},
+  held?: (place: (() => void) | undefined) => void,
 ): Attachment<HTMLElement> {
   return (el) =>
     untrack(() => {
       if (!el.matches(':popover-open')) el.showPopover();
-      return follow(el, at, options).stop;
+      const { place, stop } = follow(el, at, options);
+      held?.(place);
+      return () => {
+        held?.(undefined);
+        stop();
+      };
     });
 }

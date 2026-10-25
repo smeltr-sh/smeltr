@@ -26,8 +26,8 @@
   `[data-wrap-room]`, the room is that element's width, and the box (`[data-wrap-box]`) shrinks to the longest line.
 -->
 <script lang="ts">
-  import { tick, untrack } from 'svelte';
-  import { follow, type Anchor } from './float';
+  import { tick } from 'svelte';
+  import { float, type Anchor } from './float';
   import {
     ASSIGNMENT_FUNCTIONS,
     CODE_FUNCTIONS,
@@ -408,18 +408,6 @@
   /** Places the open list at the word being typed again. Set while the list is open. */
   let placeList: (() => void) | undefined;
 
-  /** Shows the list floating at the word being typed, which it follows as the caret moves. */
-  const floatList: Attachment<HTMLElement> = (list) =>
-    untrack(() => {
-      list.showPopover();
-      const { place, stop } = follow(list, wordBox, { floor: LIST_FLOOR });
-      placeList = place;
-      return () => {
-        placeList = undefined;
-        stop();
-      };
-    });
-
   function onKeydown(e: KeyboardEvent) {
     // A `wrap` field is one line of text in a textarea: the box wraps it, a key does not.
     if (wrap && e.key === 'Enter' && !showDropdown) e.preventDefault();
@@ -539,7 +527,12 @@
     </button>
   {/if}
   {#if showDropdown}
-    <ul class="suggestions" role="listbox" popover="manual" {@attach floatList}>
+    <ul
+      class="suggestions"
+      role="listbox"
+      popover="manual"
+      {@attach float(wordBox, { floor: LIST_FLOOR }, (place) => (placeList = place))}
+    >
       {#if suggestions.length === 0}
         <li class="no-match">
           <span class="fn-desc">
