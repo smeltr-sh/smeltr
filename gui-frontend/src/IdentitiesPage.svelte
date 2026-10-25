@@ -4,8 +4,8 @@
 
   An identity is two halves and either may be empty: what this worker presents
   to a source or a destination, and which authorities it verifies that far end
-  against. The certificate is committed here because it is public and benefits
-  from review; its private key is a credential and is only named.
+  against. What it presents is a certificate from the list on
+  Admin -> Certificates, named by name and version like a stored secret.
 -->
 <script lang="ts">
   import InlineError from './InlineError.svelte';
@@ -22,7 +22,7 @@
   import HeldEdit from './HeldEdit.svelte';
   import { SectionEditor } from './sectionEditor.svelte';
   import PencilIcon from './PencilIcon.svelte';
-  import SecretRefInput from './SecretRefInput.svelte';
+  import CertificatePicker from './CertificatePicker.svelte';
   import Help from './Help.svelte';
   import Field from './Field.svelte';
   import Advanced from './Advanced.svelte';
@@ -33,11 +33,13 @@
   import {
     sharedConfig,
     putIdentities,
-    listSecrets,
+    listCertificates,
+    currentVersion,
+    isLeaderStored,
     describeCertificates,
     errorMessage,
     type IdentityDto,
-    type SecretDto,
+    type CertificateDto,
     type DescribedCertificate,
   } from './api';
   import { expiry } from './time';
@@ -71,11 +73,26 @@
 
   void editor.load();
 
-  /** The secret catalog, so a key can be pointed at one the leader holds. */
-  let secrets: SecretDto[] = $state([]);
-  listSecrets()
-    .then((s) => (secrets = s))
-    .catch(() => (secrets = []));
+  /** The certificate list, so a pick names the version it is at now. */
+  let certificates: CertificateDto[] = $state([]);
+  listCertificates()
+    .then((c) => (certificates = c))
+    .catch(() => (certificates = []));
+
+  /** Names `name` at the version it is at now: a reference written today presents today's certificate, and
+   * replacing it on the list is what moves the reference. A pick takes out what a pasted certificate left. */
+  function choose(identity: IdentityDto, name: string | undefined) {
+    delete identity.key;
+    if (name === undefined) {
+      delete identity.certificate;
+      return;
+    }
+    const entry = certificates.find((c) => c.name === name);
+    identity.certificate = {
+      secret: name,
+      version: (entry && currentVersion(entry)?.version) ?? 1,
+    };
+  }
 
   /** A row at rest, in one line. */
   function summary(i: IdentityDto): string {
@@ -110,10 +127,7 @@
   }
 
   $effect(() => {
-    for (const i of adding ? [...identities, adding] : identities) {
-      describe(i.certificate);
-      describe(i.authorities);
-    }
+    for (const i of adding ? [...identities, adding] : identities) describe(i.authorities);
   });
 
   const readBack = (pem: string | undefined): Described =>
@@ -173,31 +187,21 @@
     />
   </Field>
 
-  <Field field="certificate" label="presents">
+  <CertificatePicker
+    label="presents"
+    field="certificate"
+    optional
+    bind:value={
+      () => (isLeaderStored(identity.certificate) ? identity.certificate.secret : undefined),
+      (name) => choose(identity, name)
+    }
+    version={isLeaderStored(identity.certificate) ? identity.certificate.version : undefined}
+  >
     {#snippet help()}
       The client certificate this worker shows the far end, needed only when the far end requires
-      one. PEM, with any intermediates after it.
+      one, from the list on <a href="#/admin/certificates">Admin &rarr; Certificates</a>.
     {/snippet}
-    <textarea
-      rows="4"
-      spellcheck="false"
-      value={identity.certificate ?? ''}
-      oninput={(e) => (identity.certificate = optional(e.currentTarget.value))}></textarea>
-  </Field>
-  {@render describedCertificate(identity.certificate)}
-
-  <Field field="key" label="private key">
-    {#snippet help()}
-      The key for the certificate in presents, as an unencrypted PEM. Store it on
-      <a href="#/admin/secrets">Admin &rarr; Secrets</a>, then name it here.
-    {/snippet}
-    <SecretRefInput
-      value={identity.key}
-      {secrets}
-      label="private key"
-      onchange={(v) => (identity.key = v)}
-    />
-  </Field>
+  </CertificatePicker>
 
   <Field field="authorities" label="trusts">
     {#snippet help()}

@@ -1,7 +1,7 @@
 // What a system administrator does to smeltr itself: bring workers in and take them out, see what each runs,
 // configure the service, and hold its credentials. Each test drives the Admin and Status pages of a fleet of
 // its own; the API only arranges what a test is not about.
-import { test, expect, type Api } from '../fleet';
+import { test, expect, goto, type Api } from '../fleet';
 import { FakeModel, MODEL_KEY, request, say } from '../model';
 import {
   described,
@@ -13,6 +13,7 @@ import {
   workerRowOf,
 } from '../moves/admin';
 import { conversationLink, openAgent } from '../moves/agent';
+import { fullChain } from '../moves/certificates';
 
 test('an enrollment code minted under Enrollment codes brings a worker in', async ({
   admin,
@@ -328,6 +329,54 @@ test('a new value for a secret nothing names asks for no branch and drafts no ch
   await expect(row.getByRole('cell', { name: 'v2', exact: true })).toBeVisible();
   await expect(admin.getByRole('dialog', { name: 'branch required' })).toHaveCount(0);
   expect((await api.get('/api/branches')).branches).toEqual([]);
+});
+
+test('an identity presents a certificate from the list, and replacing it points the identity at the new version', async ({
+  admin,
+  api,
+  fleet,
+  leader,
+}) => {
+  const pki = await fleet.externalPki();
+  await api.post('/api/certificates', {
+    name: 'client-tls',
+    description: '',
+    certificate: fullChain(pki),
+    privateKey: pki.privateKey,
+  });
+  const identities = async () =>
+    (await api.get('/api/config?branch=work&scope=shared')).config.identities;
+
+  await goto(admin, leader, '#/build/identities');
+  await admin.getByRole('button', { name: '+ Add identity' }).click();
+  const dialog = admin.getByRole('dialog', { name: 'new identity' });
+  await dialog.getByRole('textbox', { name: 'id' }).fill('acme');
+  const presents = dialog.getByRole('combobox', { name: /^presents/ });
+  await presents.selectOption('client-tls');
+  await expect(dialog.getByText(/^v1/)).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('identity-presents.png') });
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect
+    .poll(identities)
+    .toEqual([{ id: 'acme', certificate: { secret: 'client-tls', version: 1 } }]);
+
+  await openAdmin(admin, 'Certificates');
+  const row = admin.getByRole('row').filter({ hasText: 'client-tls' });
+  await row.getByRole('button', { name: 'Replace' }).click();
+  const replace = admin.getByRole('dialog', { name: /^replace / });
+  await replace.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
+  await replace.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
+  await replace.getByRole('button', { name: 'Replace', exact: true }).click();
+  await expect(
+    admin.getByText(
+      'Replaced, and pointed 1 identity across shared at it. It deploys when the change does.',
+    ),
+  ).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('certificate-replaced.png') });
+  expect(await identities()).toEqual([
+    { id: 'acme', certificate: { secret: 'client-tls', version: 2 } },
+  ]);
 });
 
 test('the git remote form takes an http or https URL, and warns about a credential in plain text', async ({
