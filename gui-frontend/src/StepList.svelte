@@ -15,6 +15,7 @@
   import { editable } from './access';
   import TypeCatalog, { type CatalogType } from './TypeCatalog.svelte';
   import { STEP_GLYPHS } from './stepGlyphs';
+  import { flip } from 'svelte/animate';
 
   let {
     steps,
@@ -82,31 +83,38 @@
     steps.splice(addingAt ?? steps.length, 0, step);
     addingAt = null;
   }
+
+  /** How long a step glides to its new place when the list reorders, so the eye follows a move; none where the
+   * reader asked for less motion. */
+  const glide = () => (matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 250);
 </script>
 
 <div class="step-list">
   {#each steps as step, i (step)}
-    {#if editable()}
-      <div class="insert">
-        <button type="button" onclick={() => (addingAt = i)} aria-label="Insert step">+ step</button
-        >
-      </div>
-    {/if}
-    <StepEditor
-      {steps}
-      index={i}
-      {errorsByStep}
-      {warningsByStep}
-      {pipelineIds}
-      {pipelineNames}
-      {lookupTables}
-      {grokPatterns}
-      {parseInput}
-      {selectedStep}
-      {onSelectStep}
-      {onPropose}
-      {proposal}
-    />
+    <div class="slot" animate:flip={{ duration: glide() }}>
+      {#if editable()}
+        <div class="insert">
+          <button type="button" onclick={() => (addingAt = i)} aria-label="Insert step"
+            >+ step</button
+          >
+        </div>
+      {/if}
+      <StepEditor
+        {steps}
+        index={i}
+        {errorsByStep}
+        {warningsByStep}
+        {pipelineIds}
+        {pipelineNames}
+        {lookupTables}
+        {grokPatterns}
+        {parseInput}
+        {selectedStep}
+        {onSelectStep}
+        {onPropose}
+        {proposal}
+      />
+    </div>
   {/each}
 
   {#if editable()}
@@ -132,20 +140,26 @@
     gap: 0.6rem;
   }
 
+  /* A step with the gap above it, one box, so the pair glides together when the list reorders. */
+  .slot {
+    display: flex;
+    flex-direction: column;
+  }
+
   .add-row {
     display: flex;
     gap: 0.5rem;
     align-items: center;
   }
 
-  /* The gap above a step, where a step can go in. It takes none of the list's height: its negative margins give
-     back what it fills, so it lies over the gap the list leaves, and above the first step, over the list's edge.
+  /* The gap above a step, where a step can go in. It takes none of the list's height: its negative top margin
+     gives back what it fills, so it lies over the gap the list leaves, and above the first step, over the list's edge.
      It shows on hover or focus. Where nothing hovers it would be an invisible target, so it is not there at all,
      and + step at the end still adds. */
   .insert {
     position: relative;
     height: 0.6rem;
-    margin: -0.6rem 0;
+    margin-top: -0.6rem;
     display: flex;
     align-items: center;
     justify-content: center;
