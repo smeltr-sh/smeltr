@@ -806,6 +806,8 @@
     text-decoration: underline wavy var(--error);
     text-decoration-thickness: 1.5px;
     text-underline-offset: 2px;
+    /* Unbroken under a descender: a gap reads as two marks. */
+    text-decoration-skip-ink: none;
   }
 
   input.whole-warn,
@@ -814,6 +816,7 @@
     text-decoration: underline wavy var(--warn);
     text-decoration-thickness: 1.5px;
     text-underline-offset: 2px;
+    text-decoration-skip-ink: none;
   }
 
   .marks {

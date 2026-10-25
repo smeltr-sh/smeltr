@@ -71,9 +71,17 @@
     </li>
   </ol>
   <p>
-    The filter runs before the pipeline. It can read <code>_raw</code> and fields the source
-    provides; fields your parser creates are not available yet. The filter does not support array
-    <code>map</code> and <code>filter</code> calls.
+    At a source, the filter runs before the pipeline. It can read <code>_raw</code> and fields the source
+    provides; fields your parser creates are not available yet.
+  </p>
+  <p>
+    When you capture at a destination, the filter reads each record as the route's pipeline
+    delivered it, so it can use fields your parsers created. When several routes deliver there, the
+    capture keeps records only from routes where the filter can run. Before you start, the dialog
+    lists the other routes and why each is skipped.
+  </p>
+  <p>
+    The filter does not support array <code>map</code> and <code>filter</code> calls.
   </p>
   <ProductScreenshot
     source="capture-running"
@@ -106,6 +114,10 @@
       Read the reason shown for each worker. Check its connection and credentials if it failed.
     </li>
     <li>Try without a filter, send a known record, and capture again.</li>
+    <li>
+      At a destination, read the message under the filter. If it says no route can use the filter,
+      change or clear the filter.
+    </li>
     <li>
       Check that the selected group has online workers and that the source has records available
       during the capture window.
