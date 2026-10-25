@@ -3,8 +3,9 @@
   and written with `PUT /api/identities`, plus the raw-JSON page.
 
   An identity is two halves and either may be empty: what this worker presents
-  to a source or a destination, and which authorities it verifies that far end
-  against. What it presents is a certificate from the list on
+  to the far end, and which authorities it verifies that far end against. A source
+  or destination presents a client certificate; a receiver serves its certificate
+  and verifies its senders. What it presents is a certificate from the list on
   Admin -> Certificates, named by name and version like a stored secret.
 -->
 <script lang="ts">
@@ -184,9 +185,9 @@
     version={isLeaderStored(identity.certificate) ? identity.certificate.version : undefined}
   >
     {#snippet help()}
-      The client certificate this worker shows the far end, chosen from the list on
-      <a href="#/admin/certificates">Admin &rarr; Certificates</a>. Needed only when the far end
-      requires one.
+      The certificate this worker shows the far end, chosen from the list on
+      <a href="#/admin/certificates">Admin &rarr; Certificates</a>: a client certificate when it
+      connects out, and the certificate a receiver serves.
     {/snippet}
   </CertificatePicker>
 
@@ -235,8 +236,9 @@
   <SectionShell>
     <PageHeader title="Connection identities">
       {#snippet help()}
-        An identity is the TLS setup a source or destination names: the certificate this worker
-        presents, and the authorities it trusts the far end against.
+        An identity is the TLS setup a connector names: the certificate this worker presents, and
+        the authorities it trusts the far end against. A source or destination names it as its
+        client identity, and a receiver as its server identity.
       {/snippet}
     </PageHeader>
     <SecondaryTabs tabs={resourcesTabs()} active="#/build/identities" ariaLabel="Resources" />

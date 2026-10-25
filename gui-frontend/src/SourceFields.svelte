@@ -1001,7 +1001,7 @@
           a sender, and a UDP sender's address can be spoofed.
         {:else}
           The networks a sender may connect from, each a CIDR block. Syslog carries no token, so the
-          receiver needs these networks, an identity with authorities, or both. With both, a sender
+          receiver needs these networks, a server identity that trusts authorities, or both. With both, a sender
           must connect from a listed network and present a certificate.
         {/if}
       {/snippet}
@@ -1032,7 +1032,7 @@
           Each token a sender may present as <code>Authorization: Bearer &lt;token&gt;</code>, by
           name.
         {/if}
-        With no token, the receiver needs an identity with authorities.
+        With no token, the receiver needs a server identity that trusts authorities.
       {/snippet}
     </ReceiverTokens>
   {/if}

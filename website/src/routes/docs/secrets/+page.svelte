@@ -74,11 +74,12 @@
   </p>
   <h2 id="identities">Connection identities</h2>
   <p>
-    A connection identity contains the certificates a worker trusts when connecting to a data system
-    and, when needed, the client certificate it uses to identify itself. Create it under Build →
-    Resources → Connection identities, then select it in the source or destination's <strong
-      >identity</strong
-    > field.
+    A connection identity contains the certificate a worker presents and the authorities it trusts.
+    Create it under Build → Resources → Connection identities. A source or destination selects it as
+    its <strong>client identity</strong>: the worker connects out, trusts the far end's certificate
+    by it, and presents its certificate when the far end asks for one. A receiver selects it as its
+    <strong>server identity</strong>: the receiver serves TLS with its certificate and admits only
+    senders whose certificates chain to its authorities.
   </p>
   <ul>
     <li>
@@ -91,14 +92,15 @@
       A receiver always admits by its identity's authorities alone.
     </li>
     <li>
-      For client authentication, add the client certificate and its private key under Admin →
+      For the certificate it presents, add the certificate and its private key under Admin →
       <a href="/docs/certificates#list">Certificates</a>, then choose it in
       <strong>presents</strong>. The identity names the version you chose. Replacing the certificate
       points every identity that presents it at the new version, in a change you review and deploy.
     </li>
     <li>
-      An identity can contain trust authorities, a client certificate, or both. With no identity
-      selected, the connector trusts the public roots and presents no client certificate.
+      An identity can contain trust authorities, a certificate, or both. A server identity needs a
+      certificate. With no client identity selected, the connector trusts the public roots and
+      presents no client certificate.
     </li>
   </ul>
   <p>
