@@ -2293,16 +2293,18 @@ mod tests {
         );
     }
 
-    /// Why a held record blocked is shown with it and saved in its sample, but is not the record's: a preview of the
-    /// sample neither reads it nor warns that it was captured and is left out.
+    /// Why a held record blocked and how it was captured are saved in its sample, but are not the record's: a preview
+    /// of the sample neither reads them nor warns that they were captured and are left out.
     #[test]
-    fn a_sample_s_exception_message_is_not_part_of_its_records() {
+    fn what_a_sample_says_about_a_record_is_not_part_of_it() {
         let (mut columns, mut records) = captured();
         columns.push(column(smeltr::worker::capture::EXCEPTION_MESSAGE, "str"));
+        columns.push(column("__capture.group", "str"));
         records[0].insert(
             "__exception".to_string(),
             serde_json::json!({"message": "matched no route"}),
         );
+        records[0].insert("__capture".to_string(), serde_json::json!({"group": "west"}));
         for meta in [
             smeltr::plan::topology::SourceMeta::of_columns(
                 &smeltr::leader::preview::replayed(&columns).cloned().collect::<Vec<_>>(),
@@ -2322,6 +2324,7 @@ mod tests {
             } = smeltr::leader::preview::read_sample(&meta, &columns, &records).unwrap();
             assert!(warnings.is_empty(), "{warnings:?}");
             assert!(!meta.record_object(&read[0], "").contains_key("__exception"));
+            assert!(!meta.record_object(&read[0], "").contains_key("__capture"));
         }
     }
 
@@ -2933,7 +2936,6 @@ mod tests {
             source: None,
             records: vec![smeltr::io::raw_object("{}".to_string())],
             columns: Vec::new(),
-            capture: None,
         };
         seed_west_over_shared(&data, &group, &sample);
 
@@ -3016,7 +3018,6 @@ mod tests {
             source: Some("orders".to_string()),
             records: vec![smeltr::io::raw_object("{}".to_string())],
             columns: Vec::new(),
-            capture: None,
         };
         seed_west_over_shared(&data, &group, &sample);
 
@@ -3393,7 +3394,6 @@ mod tests {
             source: Some("orders".to_string()),
             records: vec![smeltr::io::raw_object("{}".to_string())],
             columns: Vec::new(),
-            capture: None,
         };
         let at = config_file::BundleAt::Dir(std::path::PathBuf::from("."));
         let declared_at = super::single_origin_declared_at(config, &at);

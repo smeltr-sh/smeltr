@@ -3544,7 +3544,6 @@ mod tests {
             source: Some("orders-west".to_string()),
             records: vec![smeltr::io::raw_object(r#"{"order_id":"A-88120"}"#.to_string())],
             columns: Vec::new(),
-            capture: None,
         };
 
         let writing = Writing::open_in(&data, "work", None, "shared").unwrap();
@@ -3615,7 +3614,6 @@ mod tests {
             source: None,
             records: vec![],
             columns: Vec::new(),
-            capture: None,
         }
     }
 

@@ -716,7 +716,6 @@ mod tests {
             source: source.map(str::to_string),
             records: vec![smeltr::io::raw_object("{}".to_string())],
             columns: Vec::new(),
-            capture: None,
         }
     }
 

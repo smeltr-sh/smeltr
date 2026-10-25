@@ -1827,11 +1827,10 @@ export interface SampleDto {
    * A pasted sample has none. */
   columns?: { name: string; type: string }[];
   records: SampleRecordDto[];
-  /** How the records were captured. A pasted or uploaded sample has none. */
-  capture?: SampleCapture;
 }
 
-/** How a sample's records were captured (`config_file::SampleCapture`). */
+/** How a captured record was taken: its `__capture` fields
+ * (`leader::capture::Captures::capture_fields`). */
 export interface SampleCapture {
   /** When the capture opened, UTC, RFC 3339. */
   timestamp: string;
@@ -1860,6 +1859,7 @@ export interface SampleSummary {
   records: number;
   /** Unix seconds: when the leader last wrote the sample. */
   captured?: number;
+  /** The first record's `__capture` fields. A pasted or uploaded sample has none. */
   capture?: SampleCapture;
 }
 

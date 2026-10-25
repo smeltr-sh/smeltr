@@ -362,13 +362,15 @@ pub struct RoutePreviewDocument {
     pub destination: std::collections::BTreeMap<&'static str, String>,
 }
 
-/// What a record a block held says about why, beside its fields (`worker::capture::EXCEPTION_MESSAGE`).
-const EXCEPTION: &str = "__exception";
+/// What a sample says about each record beside its fields, which no pipeline reads: why a block held it
+/// (`worker::capture::EXCEPTION_MESSAGE`) and how its capture was taken (`leader::capture::Captures::capture_fields`).
+const ABOUT: [&str; 2] = ["__exception", "__capture"];
 
-/// The columns of a sample that are its records' own: not why a record blocked, which is about the record and no
-/// pipeline reads.
+/// The columns of a sample that are its records' own, not what the sample says about them (`ABOUT`).
 pub fn replayed(columns: &[crate::heartbeat::CaptureColumn]) -> impl Iterator<Item = &crate::heartbeat::CaptureColumn> {
-    columns.iter().filter(|c| c.name.split('.').next() != Some(EXCEPTION))
+    columns
+        .iter()
+        .filter(|c| !c.name.split('.').next().is_some_and(|head| ABOUT.contains(&head)))
 }
 
 /// A sample's records as a source's meta reads them.
@@ -443,7 +445,9 @@ pub fn read_sample(
             if from_source {
                 object.remove("__source");
             }
-            object.remove(EXCEPTION);
+            for about in ABOUT {
+                object.remove(about);
+            }
             for name in &gone {
                 remove_at(&mut object, name);
             }

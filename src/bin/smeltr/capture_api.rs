@@ -497,15 +497,21 @@ pub async fn save_capture(
             ));
         }
     };
-    let columns = sample_columns(&status.batches);
-    let records = status.batches.iter().flat_map(sample_records).collect();
+    let mut columns = sample_columns(&status.batches);
+    let mut records: Vec<smeltr::io::RecordObject> = status.batches.iter().flat_map(sample_records).collect();
+    // How it was taken, on every record as its `__source` fields are.
+    for (column, value) in state.captures.capture_fields(&session) {
+        for record in &mut records {
+            put_path(record, &column.name, value.clone());
+        }
+        columns.push(column);
+    }
     let sample = config_file::SampleDto {
         id: request.sample_id(),
         name: request.name,
         source,
         columns,
         records,
-        capture: state.captures.sample_capture(&session),
     };
     let records = sample.records.len();
 

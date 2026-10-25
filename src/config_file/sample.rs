@@ -64,53 +64,18 @@ pub struct SampleDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     /// The columns the records were captured under, each named and typed once: the record's fields, then its
-    /// `__source` fields, and at a destination its `__destination` fields. A sample with none is `_raw` text, as a
-    /// paste is.
+    /// `__source` fields, at a destination its `__destination` fields, and then its `__capture` fields. A sample with
+    /// none is `_raw` text, as a paste is.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub columns: Vec<crate::heartbeat::CaptureColumn>,
     /// Each record as the root object a pipeline reads, `$`: every field its source produced, and under `__source`
     /// every field the source it was read from set (`plan::topology::SourceMeta`). A byte source's record is
     /// `{"_raw": text}`. A pasted record is that, and was read from nowhere, so it has no `__source`. A record captured
-    /// at a destination is the row its pipeline finished, with its `__destination` fields. A value that failed its
+    /// at a destination is the row its pipeline finished, with its `__destination` fields. A captured record has under
+    /// `__capture` how its capture was taken (`leader::capture::Captures::capture_fields`), which no pipeline reads. A value that failed its
     /// type is stored as the source spelled it, its field listed under `io::MISTYPED_FIELDS` (`io::take_mistyped`), and
     /// fails again when the sample is read.
     pub records: Vec<crate::io::RecordObject>,
-    /// How the records were captured. Absent from a sample pasted or uploaded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capture: Option<SampleCapture>,
-}
-
-/// How a sample's records were captured, as the capture was asked for and as it went: what a person needs to tell one
-/// capture from the next, and to take it again.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SampleCapture {
-    /// When the capture opened, in UTC, as RFC 3339.
-    pub timestamp: String,
-    /// The source it read, by name. A capture reads one source or one destination.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    /// The destination whose rows it read, by name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub destination: Option<String>,
-    /// The group it ran in, where its source or destination is named.
-    pub group: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub filter: Option<String>,
-    /// The commit the fleet ran when the capture opened. Absent where nothing was deployed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config: Option<String>,
-    /// Each worker that stopped capturing on an error, and why. What it caught before is in the records.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub failed: Vec<CaptureFailure>,
-}
-
-/// A worker that stopped capturing on an error.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CaptureFailure {
-    pub worker: String,
-    pub reason: String,
 }
 
 /// `record`'s `__source` fields, empty for a record read from nowhere.
@@ -134,8 +99,10 @@ pub struct SampleSummary {
     /// fills it from `config.git`'s history; a sample is not stored with it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub captured: Option<i64>,
+    /// The first record's `__capture` fields: how a sample saved from a capture was taken. A sample pasted or
+    /// uploaded has none.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub capture: Option<SampleCapture>,
+    pub capture: Option<serde_json::Map<String, serde_json::Value>>,
     /// The file it was read from, within its bundle.
     #[serde(skip)]
     pub path: String,
@@ -149,7 +116,10 @@ impl SampleDto {
             source: self.source.clone(),
             records: self.records.len(),
             captured: None,
-            capture: self.capture.clone(),
+            capture: match self.records.first().and_then(|r| r.get("__capture")) {
+                Some(serde_json::Value::Object(capture)) => Some(capture.clone()),
+                _ => None,
+            },
             path: String::new(),
         }
     }
@@ -282,24 +252,13 @@ mod tests {
             source: Some("orders-west".to_string()),
             records: vec![
                 serde_json::json!({"_raw": r#"{"a":1}"#, "__source": {"name": "orders-west",
-                    "topic": "orders", "offset": 4_120_880, "headers": {"trace": "t1"}}})
+                    "topic": "orders", "offset": 4_120_880, "headers": {"trace": "t1"}},
+                    "__capture": {"timestamp": "2026-10-25T13:57:12.000000Z", "source": "orders-west", "group": "west"}})
                 .as_object()
                 .unwrap()
                 .clone(),
             ],
             columns: Vec::new(),
-            capture: Some(SampleCapture {
-                timestamp: "2026-10-25T13:57:12.000000Z".to_string(),
-                source: Some("orders-west".to_string()),
-                destination: None,
-                group: "west".to_string(),
-                filter: Some("_raw.includes(\"a\")".to_string()),
-                config: Some("54bf84a1".to_string()),
-                failed: vec![CaptureFailure {
-                    worker: "w2".to_string(),
-                    reason: "the broker refused the credential".to_string(),
-                }],
-            }),
         };
         let path = sample_path(&sample.id).unwrap();
         std::fs::write(dir.join(&path), sample_bytes(&sample)).unwrap();
@@ -310,7 +269,11 @@ mod tests {
         assert_eq!(read.name, sample.name);
         assert_eq!(read.source.as_deref(), Some("orders-west"));
         assert_eq!(read.records[0], sample.records[0]);
-        assert_eq!(read.capture, sample.capture);
+        assert_eq!(
+            read.summary().capture.unwrap()["timestamp"],
+            "2026-10-25T13:57:12.000000Z",
+            "a listing says when a captured sample was taken"
+        );
     }
 
     /// A record is stored as `$` is, and a pasted one was read from nowhere, so it has no `__source` at all.

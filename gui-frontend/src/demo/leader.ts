@@ -8,7 +8,14 @@
 // and sample it is about. Everything else is what the staged fleet answered when `just demo-fixtures` recorded it,
 // moved to the visitor's now.
 
-import type { ApiError, CaptureBatchDto, CaptureEndDto, CaptureStatusDto, SampleDto } from '../api';
+import type {
+  ApiError,
+  CaptureBatchDto,
+  CaptureEndDto,
+  CaptureStatusDto,
+  SampleCapture,
+  SampleDto,
+} from '../api';
 import { CHANGED_EVENT } from './guide';
 import { bareError } from '../errors.svelte';
 
@@ -542,7 +549,7 @@ export class DemoLeader {
           name: s.name,
           source: s.source,
           records: s.records.length,
-          capture: s.capture,
+          capture: s.records[0]?.__capture as SampleCapture | undefined,
         }));
         return ok({ samples, commit: branch.commit });
       }
@@ -1058,21 +1065,28 @@ export class DemoLeader {
       ]);
     }
     const arrived = this.held(capture).batches.reduce((n, b) => n + b.rows.length, 0);
-    const records = capture.kept.slice(0, arrived).map((i) => pool.records[i]);
+    // How it was taken, on every record as its `__source` fields are (`Captures::capture_fields`).
+    const taken: Record<string, [string, string]> = {
+      timestamp: ['datetime', new Date(capture.startedAt).toISOString()],
+      ...(capture.source ? { source: ['str', capture.source] } : {}),
+      ...(capture.destination ? { destination: ['str', capture.destination] } : {}),
+      group: ['str', capture.group],
+      ...(capture.filter ? { filter: ['str', capture.filter] } : {}),
+      config: ['str', this.state.branches.main.commit],
+    };
+    const fields = Object.fromEntries(Object.entries(taken).map(([k, [, v]]) => [k, v]));
+    const records = capture.kept
+      .slice(0, arrived)
+      .map((i) => ({ ...pool.records[i], __capture: fields }));
     const sample: SampleDto = {
       id: req.id,
       name: req.name,
       source: req.source,
-      columns: pool.columns,
+      columns: [
+        ...(pool.columns ?? []),
+        ...Object.entries(taken).map(([k, [type]]) => ({ name: `__capture.${k}`, type })),
+      ],
       records,
-      capture: {
-        timestamp: new Date(capture.startedAt).toISOString(),
-        ...(capture.source ? { source: capture.source } : {}),
-        ...(capture.destination ? { destination: capture.destination } : {}),
-        group: capture.group,
-        ...(capture.filter ? { filter: capture.filter } : {}),
-        config: this.state.branches.main.commit,
-      },
     };
     const saved = await this.write(name, scope, `samples/${sample.id}.json`, (_, { samples }) => {
       samples[sample.id] = sample;

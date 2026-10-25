@@ -499,31 +499,52 @@ impl Captures {
         self.0.lock().unwrap().get(session).map(|s| s.status(session))
     }
 
-    /// How `session` was captured, as a sample saved from it records it.
-    pub fn sample_capture(&self, session: &str) -> Option<crate::config_file::SampleCapture> {
+    /// How `session` was taken, as the `__capture` fields a sample saved from it carries on every record: when it
+    /// opened, what it read, in which group, under which filter, on which commit, and each worker that failed with
+    /// why. A field with nothing to say is left out.
+    pub fn capture_fields(&self, session: &str) -> Vec<(crate::heartbeat::CaptureColumn, serde_json::Value)> {
         let sessions = self.0.lock().unwrap();
-        let s = sessions.get(session)?;
+        let Some(s) = sessions.get(session) else {
+            return Vec::new();
+        };
         let mut timestamp = Vec::new();
         crate::ops::datetime::write_iso8601_micros_bare(s.opened_micros, &mut timestamp);
-        Some(crate::config_file::SampleCapture {
-            timestamp: String::from_utf8(timestamp).expect("an instant is written as ASCII"),
-            source: s.invitation.source.as_ref().map(|source| source.id.clone()),
-            destination: s.invitation.destination.clone(),
-            group: s.invitation.group.clone(),
-            filter: s.invitation.filter.clone(),
-            config: s.config.clone(),
-            failed: s
-                .ended
-                .iter()
-                .filter_map(|(worker, end)| match end {
-                    CaptureEnd::Failed(reason) => Some(crate::config_file::CaptureFailure {
-                        worker: worker.clone(),
-                        reason: reason.clone(),
-                    }),
-                    _ => None,
-                })
-                .collect(),
+        let timestamp = String::from_utf8(timestamp).expect("an instant is written as ASCII");
+        let failed: Vec<serde_json::Value> = s
+            .ended
+            .iter()
+            .filter_map(|(worker, end)| match end {
+                CaptureEnd::Failed(reason) => Some(serde_json::json!({"worker": worker, "reason": reason})),
+                _ => None,
+            })
+            .collect();
+        let text = |v: &str| serde_json::Value::String(v.to_string());
+        [
+            ("timestamp", "datetime", Some(text(&timestamp))),
+            (
+                "source",
+                "str",
+                s.invitation.source.as_ref().map(|source| text(&source.id)),
+            ),
+            ("destination", "str", s.invitation.destination.as_deref().map(text)),
+            ("group", "str", Some(text(&s.invitation.group))),
+            ("filter", "str", s.invitation.filter.as_deref().map(text)),
+            ("config", "str", s.config.as_deref().map(text)),
+            (
+                "failed",
+                "array<{worker: str, reason: str}>",
+                (!failed.is_empty()).then_some(serde_json::Value::Array(failed)),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, ty, value)| {
+            let column = crate::heartbeat::CaptureColumn {
+                name: format!("__capture.{name}"),
+                ty: ty.to_string(),
+            };
+            value.map(|v| (column, v))
         })
+        .collect()
     }
 
     /// The group `session` was opened against, which is the area whoever follows it must edit.
@@ -671,24 +692,31 @@ mod tests {
             ..progress_report("s1", "w2", &[])
         });
 
-        let taken = captures.sample_capture("s1").unwrap();
-        assert!(
-            taken.timestamp.ends_with('Z') && taken.timestamp.contains('T'),
-            "{}",
-            taken.timestamp
-        );
-        assert_eq!(taken.source.as_deref(), Some("orders"));
-        assert_eq!(taken.destination, None);
-        assert_eq!(taken.group, "prod-west");
-        assert_eq!(taken.filter.as_deref(), Some("_raw.includes(\"x\")"));
-        assert_eq!(taken.config.as_deref(), Some("54bf84a1"));
+        let taken = captures.capture_fields("s1");
+        let field = |name: &str| {
+            taken
+                .iter()
+                .find(|(c, _)| c.name == format!("__capture.{name}"))
+                .map(|(_, v)| v.clone())
+        };
+        let timestamp = field("timestamp").unwrap();
+        let timestamp = timestamp.as_str().unwrap();
+        assert!(timestamp.ends_with('Z') && timestamp.contains('T'), "{timestamp}");
+        assert_eq!(field("source"), Some(serde_json::json!("orders")));
+        assert_eq!(field("destination"), None);
+        assert_eq!(field("group"), Some(serde_json::json!("prod-west")));
+        assert_eq!(field("filter"), Some(serde_json::json!("_raw.includes(\"x\")")));
+        assert_eq!(field("config"), Some(serde_json::json!("54bf84a1")));
         assert_eq!(
-            taken.failed,
-            [crate::config_file::CaptureFailure {
-                worker: "w2".to_string(),
-                reason: "the broker refused the credential".to_string(),
-            }],
+            field("failed"),
+            Some(serde_json::json!([{"worker": "w2", "reason": "the broker refused the credential"}])),
             "a worker that finished is not a failure"
+        );
+        let columns: Vec<_> = taken.into_iter().map(|(c, _)| c).collect();
+        assert_eq!(
+            crate::leader::preview::replayed(&columns).count(),
+            0,
+            "how a record was captured is not the record's"
         );
     }
 
