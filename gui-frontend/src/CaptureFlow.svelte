@@ -214,14 +214,27 @@
   let check = $derived(checks.get(checkKey) ?? null);
   let skipErrors = $derived(check?.skips.map((s) => s.error) ?? []);
   let readsNone = $derived(!!check && check.reads === 0 && check.skips.length > 0);
+  /** One line for each of `skips`, `line` spelling it, to the first few; past them, how many more. */
+  function skipLines(
+    skips: CaptureFilterCheck['skips'],
+    line: (route: string, error: string) => string,
+  ): string {
+    const shown = skips.slice(0, SKIPS_SHOWN).map((s) => line(s.route, s.error));
+    const more = skips.length - shown.length;
+    return [
+      ...shown,
+      ...(more > 0 ? [`…and ${more} more ${more === 1 ? 'route' : 'routes'}.`] : []),
+    ].join('\n');
+  }
+  const SKIPS_SHOWN = 3;
   let filterError = $derived(
     readsNone
-      ? `Reads no route here. ${check!.skips.map((s) => `On route ${s.route}: ${s.error}.`).join(' ')}`
+      ? `No route can use this filter, so nothing would be captured.\n${skipLines(check!.skips, (r, e) => `Route ${r}: ${e}.`)}`
       : null,
   );
   let filterWarning = $derived(
     !readsNone && check && check.skips.length > 0
-      ? check.skips.map((s) => `Skips route ${s.route}: ${s.error}.`).join(' ')
+      ? skipLines(check.skips, (r, e) => `Records from route ${r} are not captured: ${e}.`)
       : null,
   );
   /** What the filter reads: a source's record, or a destination's row. */

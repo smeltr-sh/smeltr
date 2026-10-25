@@ -183,6 +183,7 @@
   .warning {
     color: var(--warn);
     font-size: var(--text-note);
+    white-space: pre-line;
   }
 
   .error {
