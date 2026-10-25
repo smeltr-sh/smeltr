@@ -39,6 +39,7 @@
   import DatetimeFormat from './DatetimeFormat.svelte';
   import {
     STEP_LABELS,
+    shownInto,
     stepSummary,
     MATCH_KINDS,
     MULTIPLICITIES,
@@ -235,6 +236,7 @@
       case 'parser':
         return [
           step.input,
+          step.into,
           ...(step.kind.type === 'csv' || step.kind.type === 'grok'
             ? []
             : step.declared.map((d) => d.name)),
@@ -394,6 +396,8 @@
     const kind = ps.kind;
     const values: { label: string; value: string }[] = [];
     if (ps.input !== parseInput) values.push({ label: 'input', value: ps.input });
+    const into = shownInto(ps.into);
+    if (into) values.push({ label: 'into', value: into });
     if (ps.filter.trim() !== '') values.push({ label: 'filter', value: ps.filter });
     if (kind.type === 'grok' && kind.customPatterns.length > 0)
       values.push({ label: 'pattern definitions', value: String(kind.customPatterns.length) });
@@ -411,8 +415,9 @@
   /** How many of a parser's Advanced boxes mark an error, as each box would. */
   function advancedErrors(ps: ParserStep): number {
     const input = fieldError(ps.input, stepErrorMessages, nameError(ps.input));
+    const into = fieldError(ps.into, stepErrorMessages, nameError(ps.into));
     const filter = fieldError(ps.filter, stepErrorMessages, null);
-    return (input ? 1 : 0) + (filter ? 1 : 0);
+    return (input ? 1 : 0) + (into ? 1 : 0) + (filter ? 1 : 0);
   }
 
   /** Whether the open field proposal is this step's. */
@@ -1135,12 +1140,24 @@
             {/if}
 
             <Advanced values={advancedValues(ps)} errors={advancedErrors(ps)}>
-              <Field optional label="input field">
+              <Field required label="input field">
                 <ValidatedField
                   bind:value={ps.input}
                   errors={stepErrorMessages}
                   warnings={stepWarningMessages}
                   forced={nameError(ps.input)}
+                />
+              </Field>
+              <Field
+                required
+                label="write into"
+                help="The object the parsed fields go under, such as app. Leave it as $ to put them at the top level of the record."
+              >
+                <ValidatedField
+                  bind:value={ps.into}
+                  errors={stepErrorMessages}
+                  warnings={stepWarningMessages}
+                  forced={nameError(ps.into)}
                 />
               </Field>
               <Field optional label="filter">

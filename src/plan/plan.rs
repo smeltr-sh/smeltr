@@ -4425,7 +4425,12 @@ impl Compiler<'_> {
                 lower::Lowered::from(lower::drop(cond))
             }
             FunctionKind::Rename { pairs } => lower::Lowered::from(lower::rename(pairs)),
-            FunctionKind::Parser { input, kind, declared } => lower::parser(input, kind, declared, |n| self.held(n)),
+            FunctionKind::Parser {
+                input,
+                into,
+                kind,
+                declared,
+            } => lower::parser(input, into, kind, declared, |n| self.held(n)),
             FunctionKind::Lookup {
                 input,
                 table,
@@ -4498,6 +4503,8 @@ impl Compiler<'_> {
     fn held(&self, name: &str) -> lower::Held {
         match self.syms.node(name) {
             Some(node) => lower::Held::Bound(node_type(&self.syms, node)),
+            // `$` is the record, which the tree names `""`.
+            None if name == tree::ROOT => lower::Held::Bound(node_type(&self.syms, &Node::Object(self.syms.record()))),
             None if self.record_key(name, Span::default()).is_some() => lower::Held::Key,
             None => lower::Held::Free,
         }
@@ -4767,6 +4774,7 @@ mod tests {
                 0,
                 FunctionKind::Parser {
                     input: "_raw".into(),
+                    into: tree::ROOT.to_string(),
                     kind: ParserKind::Json { split_dots: false },
                     declared: vec![field("srcip"), field("service")],
                 },

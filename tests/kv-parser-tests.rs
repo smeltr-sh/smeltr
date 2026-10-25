@@ -182,6 +182,7 @@ fn a_kv_step_with_escapes_reads_an_escaped_pair_separator() {
     });
     let step = FunctionKind::Parser {
         input: "_raw".into(),
+        into: "$".into(),
         kind,
         declared: Vec::new(),
     };

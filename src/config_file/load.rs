@@ -5966,6 +5966,7 @@ fn to_step(
             filter,
             disabled,
             input,
+            into,
             kind,
             declared,
         } => {
@@ -5977,6 +5978,7 @@ fn to_step(
                 *disabled,
                 FunctionKind::Parser {
                     input: input.clone(),
+                    into: into.clone(),
                     kind: parser_kind,
                     declared,
                 },
