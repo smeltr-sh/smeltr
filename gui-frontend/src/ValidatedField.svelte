@@ -208,7 +208,11 @@
   let whole = $derived(!!matched && runs.length === 0);
   // Laid out, the text breaks before its operators: the names are marked where they land in its lines.
   let restRuns = $derived(
-    named.length > 0 ? markRuns(restText, named) : colored && warned.length > 0 ? markRuns(restText, warned) : [],
+    named.length > 0
+      ? markRuns(restText, named)
+      : colored && warned.length > 0
+        ? markRuns(restText, warned)
+        : [],
   );
   // A name box has no painted copy to mark a run in, so a warning that names it marks all of it, as an error does.
   let wholeWarn = $derived(!colored && warned.length > 0);
@@ -457,7 +461,8 @@
     ></span>
     {#if restRuns.length > 0}
       <span class="wrapview restmarks" aria-hidden="true"
-        >{#each restRuns as r}{#if r.mark}<span class="squiggle" class:warn={!matched}>{r.text}</span
+        >{#each restRuns as r}{#if r.mark}<span class="squiggle" class:warn={!matched}
+              >{r.text}</span
             >{:else}{r.text}{/if}{/each}</span
       >
     {/if}
