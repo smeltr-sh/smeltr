@@ -125,7 +125,7 @@ struct Session {
     invitation: CaptureInvitation,
     started: Instant,
     /// When it opened, in microseconds since the epoch, and the commit the fleet ran then: what a sample saved from
-    /// it records ([`Captures::sample_capture`]).
+    /// it records ([`Captures::capture_fields`]).
     opened_micros: i64,
     config: Option<String>,
     /// Set by [`Captures::stop`] on a capture still running. Nothing more is folded in and nobody more is invited.
