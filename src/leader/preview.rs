@@ -1603,6 +1603,7 @@ mod tests {
                     show_internal: false,
                     at_micros: None,
                     filter: None,
+                    attribution: false,
                     after_dot: None,
                     capture_filter: Some(CaptureFilterRequest {
                         text: text.into(),
