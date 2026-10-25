@@ -21,6 +21,7 @@
     listCertificates,
     createCertificate,
     issueCertificate,
+    ISSUED_VALIDITY_DAYS,
     replaceCertificate,
     pointSecretNow,
     deleteSecret,
@@ -63,6 +64,7 @@
     { value: 'issued' as const, label: 'Issued by this leader' },
   ];
   let issuedNames = $state('');
+  let validityDays = $state(365);
   const namesAsked = $derived(
     issuedNames
       .split(/[\s,]+/)
@@ -79,6 +81,7 @@
     privateKey = '';
     origin = 'upload';
     issuedNames = '';
+    validityDays = 365;
   }
 
   const nameProblem = (name: string): string | null =>
@@ -104,7 +107,7 @@
     saving = true;
     try {
       const res = issuing
-        ? await issueCertificate(newName.trim(), newDescription.trim(), namesAsked)
+        ? await issueCertificate(newName.trim(), newDescription.trim(), namesAsked, validityDays)
         : editing.name === null
           ? await createCertificate(newName.trim(), newDescription.trim(), pem, privateKey)
           : await replaceCertificate(editing.name, pem, privateKey);
@@ -210,6 +213,19 @@
           note="DNS names and IP addresses, one per line. This leader signs it with its own authority, which whatever connects to it must trust. Before it expires the leader renews it and opens a change for you to deploy."
         >
           <textarea bind:value={issuedNames} rows="3" spellcheck="false"></textarea>
+        </Field>
+        <Field label="Valid for" note="Each renewal is valid as long again.">
+          <select bind:value={validityDays}>
+            {#each ISSUED_VALIDITY_DAYS as days}
+              <option value={days}
+                >{days < 365
+                  ? `${days} days`
+                  : days === 365
+                    ? '1 year'
+                    : `${days / 365} years`}</option
+              >
+            {/each}
+          </select>
         </Field>
       {:else}
         <Field

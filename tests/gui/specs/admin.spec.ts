@@ -390,6 +390,9 @@ test('the leader issues a certificate for the names given, and an identity prese
   await dialog.getByRole('button', { name: 'Issued by this leader' }).click();
   await dialog.getByRole('textbox', { name: 'Name' }).fill('receiver-tls');
   await dialog.getByRole('textbox', { name: 'Issued for' }).fill('receiver.example.com\n10.0.0.7');
+  const validFor = dialog.getByRole('combobox', { name: /^Valid for/ });
+  await expect(validFor).toHaveValue('365');
+  await validFor.selectOption({ label: '2 years' });
   await admin.screenshot({ path: test.info().outputPath('certificate-issue.png') });
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
 
@@ -398,11 +401,15 @@ test('the leader issues a certificate for the names given, and an identity prese
   await expect(row.getByText('receiver.example.com, 10.0.0.7')).toBeVisible();
   await expect(row.getByRole('button', { name: 'Replace' })).toHaveCount(0);
   await admin.screenshot({ path: test.info().outputPath('certificate-issued.png') });
-  const listed = (await api.get('/api/certificates')) as { name: string; issuedFor?: string[] }[];
-  expect(listed.find((c) => c.name === 'receiver-tls')?.issuedFor).toEqual([
-    'receiver.example.com',
-    '10.0.0.7',
-  ]);
+  const listed = (await api.get('/api/certificates')) as {
+    name: string;
+    issuedFor?: string[];
+    chain: { notBeforeMillis: number; notAfterMillis: number }[];
+  }[];
+  const issued = listed.find((c) => c.name === 'receiver-tls');
+  expect(issued?.issuedFor).toEqual(['receiver.example.com', '10.0.0.7']);
+  const leaf = issued!.chain[0];
+  expect(Math.floor((leaf.notAfterMillis - leaf.notBeforeMillis) / 86_400_000)).toBe(730);
 
   await goto(admin, leader, '#/build/identities');
   await admin.getByRole('button', { name: '+ Add identity' }).click();

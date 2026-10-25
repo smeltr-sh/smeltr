@@ -3544,13 +3544,17 @@ export function issueCertificate(
   name: string,
   description: string,
   names: string[],
+  validityDays: number,
 ): Promise<AdminActionResult> {
   return apiJson('/api/certificates/issued', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, names }),
+    body: JSON.stringify({ name, description, names, validityDays }),
   });
 }
+
+/** The lifetimes offered for a certificate this leader issues. Each renewal lasts as long again. */
+export const ISSUED_VALIDITY_DAYS = [90, 365, 2 * 365, 3 * 365] as const;
 
 /** Stores a new version, which the leader serves too where it serves this certificate. */
 export function replaceCertificate(

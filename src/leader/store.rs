@@ -83,6 +83,21 @@ impl Custody {
     }
 }
 
+/// What a certificate this leader issued is issued for, and what each renewal issues it for again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Issued {
+    /// The DNS names and IP addresses it covers.
+    pub names: Vec<String>,
+    /// How long each version is valid, in days. Never past the leader's authority.
+    pub validity_days: i64,
+}
+
+impl Issued {
+    pub fn validity(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.validity_days.max(1) as u64 * 24 * 60 * 60)
+    }
+}
+
 /// What the leader knows about a secret. Never its value.
 pub struct SecretRecord {
     pub name: String,
@@ -661,18 +676,18 @@ pub trait Store: Send + Sync {
     /// version. PEM both.
     fn create_certificate(&self, name: &str, description: &str, chain: &str, key: &str) -> Result<(), StoreError>;
 
-    /// [`Store::create_certificate`] for one this leader issued for `names`, which it renews.
+    /// [`Store::create_certificate`] for one this leader issued as `issued` says, which it renews the same way.
     fn create_issued_certificate(
         &self,
         name: &str,
         description: &str,
-        names: &[String],
+        issued: &Issued,
         chain: &str,
         key: &str,
     ) -> Result<(), StoreError>;
 
-    /// The certificates this leader issued, each with the names it issues it for.
-    fn issued_certificates(&self) -> Result<std::collections::BTreeMap<String, Vec<String>>, StoreError>;
+    /// The certificates this leader issued, each with what it issues it for.
+    fn issued_certificates(&self) -> Result<std::collections::BTreeMap<String, Issued>, StoreError>;
 
     /// [`Store::add_secret_version`] for a certificate: `key` sealed as the new version, `chain` beside it.
     fn add_certificate_version(&self, name: &str, chain: &str, key: &str) -> Result<i64, StoreError>;

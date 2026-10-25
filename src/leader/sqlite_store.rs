@@ -12,8 +12,8 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension};
 use super::access::{AgentPermissions, Level, Role};
 use super::secrets::{self, EncryptionKey, Sealed};
 use super::store::{
-    AccountError, AuthSource, ConversationRecord, Custody, EnrollmentCodeRecord, HeldSource, KeyStanding, KeyState,
-    LocalCredentialRecord, NewEnrollmentCode, NewLocalUser, OidcIdentityRecord, OidcSignIn, SecretRecord,
+    AccountError, AuthSource, ConversationRecord, Custody, EnrollmentCodeRecord, HeldSource, Issued, KeyStanding,
+    KeyState, LocalCredentialRecord, NewEnrollmentCode, NewLocalUser, OidcIdentityRecord, OidcSignIn, SecretRecord,
     SecurityEvent, SourceHold, Spend, Store, StoreError, StoredValue, Unopenable, UsableEnrollmentCode, UserRecord,
     WorkerCredentialRecord, WorkerKind,
 };
@@ -327,12 +327,13 @@ pub(crate) const STEPS: &[&str] = &[
          chain   TEXT NOT NULL,
          PRIMARY KEY (name, version)
      );",
-    // 12 -- the names a certificate this leader issues is issued for, as a JSON array, which are what each renewal
-    // issues it for again. A certificate with a row here is the leader's to renew. Additive: an older build lists it
-    // as the certificate it also is, and never renews it.
+    // 12 -- the names a certificate this leader issues is issued for, as a JSON array, and how many days each version
+    // is valid for, which are what each renewal issues it with again. A certificate with a row here is the leader's
+    // to renew. Additive: an older build lists it as the certificate it also is, and never renews it.
     "CREATE TABLE issued_certificates (
-         name  TEXT PRIMARY KEY,
-         names TEXT NOT NULL
+         name          TEXT PRIMARY KEY,
+         names         TEXT NOT NULL,
+         validity_days INTEGER NOT NULL
      );",
 ];
 
@@ -596,7 +597,7 @@ impl SqliteStore {
         description: &str,
         value: Option<&str>,
         chain: Option<&str>,
-        issued_for: Option<&[String]>,
+        issued_for: Option<&Issued>,
     ) -> Result<(), StoreError> {
         if !crate::config_file::is_safe_secret_name(name) {
             return Err(StoreError(crate::config_file::unsafe_secret_name(name)));
@@ -632,11 +633,11 @@ impl SqliteStore {
             let version = Self::take_version(&tx, name)?.expect("the row this transaction just inserted");
             Self::insert_version(&tx, name, version, sealed, chain)?;
         }
-        if let Some(names) = issued_for {
-            let names = serde_json::to_string(names).map_err(|e| StoreError(e.to_string()))?;
+        if let Some(issued) = issued_for {
+            let names = serde_json::to_string(&issued.names).map_err(|e| StoreError(e.to_string()))?;
             tx.execute(
-                "INSERT INTO issued_certificates (name, names) VALUES (?1, ?2)",
-                (name, names),
+                "INSERT INTO issued_certificates (name, names, validity_days) VALUES (?1, ?2, ?3)",
+                (name, names, issued.validity_days),
             )?;
         }
         tx.commit()?;
@@ -1150,7 +1151,7 @@ impl Store for SqliteStore {
         &self,
         name: &str,
         description: &str,
-        names: &[String],
+        issued: &Issued,
         chain: &str,
         key: &str,
     ) -> Result<(), StoreError> {
@@ -1160,19 +1161,25 @@ impl Store for SqliteStore {
             description,
             Some(key),
             Some(chain),
-            Some(names),
+            Some(issued),
         )
     }
 
-    fn issued_certificates(&self) -> Result<std::collections::BTreeMap<String, Vec<String>>, StoreError> {
+    fn issued_certificates(&self) -> Result<std::collections::BTreeMap<String, Issued>, StoreError> {
         let conn = self.conn.lock().unwrap();
-        let mut statement = conn.prepare("SELECT name, names FROM issued_certificates")?;
-        let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        let mut statement = conn.prepare("SELECT name, names, validity_days FROM issued_certificates")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
         let mut out = std::collections::BTreeMap::new();
         for row in rows {
-            let (name, names) = row?;
+            let (name, names, validity_days) = row?;
             let names = serde_json::from_str(&names).map_err(|e| StoreError(format!("{name:?}'s names: {e}")))?;
-            out.insert(name, names);
+            out.insert(name, Issued { names, validity_days });
         }
         Ok(out)
     }
@@ -2903,13 +2910,16 @@ mod tests {
     #[test]
     fn an_issued_certificate_keeps_its_names_until_deleted() {
         let s = store();
-        let names = ["a.example.com".to_string(), "10.0.0.7".to_string()];
-        s.create_issued_certificate("issued", "", &names, "chain", "key")
+        let issued = Issued {
+            names: vec!["a.example.com".to_string(), "10.0.0.7".to_string()],
+            validity_days: 90,
+        };
+        s.create_issued_certificate("issued", "", &issued, "chain", "key")
             .unwrap();
         s.create_certificate("uploaded", "", "chain", "key").unwrap();
         assert_eq!(
             s.issued_certificates().unwrap(),
-            [("issued".to_string(), names.to_vec())].into_iter().collect()
+            [("issued".to_string(), issued)].into_iter().collect()
         );
         assert!(record(&s, "issued").certificate);
 

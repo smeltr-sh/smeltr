@@ -74,7 +74,7 @@ use axum::routing::{get, post, put};
 use crate::heartbeat::{HeartbeatRequest, HeartbeatResponse, ThreadKind};
 use envelope::Envelope;
 use registry::{Registry, ThreadHealth};
-use store::{Spend, Store, StoreError};
+use store::{Issued, Spend, Store, StoreError};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -2519,7 +2519,7 @@ async fn list_certificates(
                 ..
             } = SecretOut::from(r);
             let served = served.contains(&name);
-            let issued_for = issued.remove(&name);
+            let issued_for = issued.remove(&name).map(|i| i.names);
             out.push(CertificateOut {
                 name,
                 description,
@@ -2558,6 +2558,13 @@ pub struct IssueRequest {
     pub description: String,
     /// The DNS names and IP addresses it is issued for.
     pub names: Vec<String>,
+    /// How long each version is valid, at most until the leader's authority expires.
+    #[serde(default = "a_year")]
+    pub validity_days: i64,
+}
+
+fn a_year() -> i64 {
+    365
 }
 
 /// Lists a certificate this leader's own authority issues for the names asked, and renews.
@@ -2570,6 +2577,9 @@ async fn issue_certificate(State(state): State<AppState>, Json(req): Json<IssueR
             "Issued for needs at least one DNS name or IP address",
         ));
     }
+    if req.validity_days < 1 {
+        return Json(Envelope::failed_one("a certificate must be valid for at least a day"));
+    }
     let dir = tls::dir_of(&state.data_dir);
     if !crate::startup_config::leader_tls_enabled() || !dir.exists() {
         return Json(Envelope::failed_one(
@@ -2577,16 +2587,18 @@ async fn issue_certificate(State(state): State<AppState>, Json(req): Json<IssueR
              it first",
         ));
     }
-    let issued = blocking(move || {
-        tls::issue(&dir, names.clone(), crate::startup_config::leader_ca_validity()).map(|i| (names, i))
-    })
-    .await;
-    let (names, (chain, key)) = match issued {
+    let issued = Issued {
+        names,
+        validity_days: req.validity_days,
+    };
+    let asked = issued.clone();
+    let issued = blocking(move || tls::issue(&dir, asked.names.clone(), asked.validity()).map(|i| (asked, i))).await;
+    let (issued, (chain, key)) = match issued {
         Ok(issued) => issued,
         Err(e) => return Json(Envelope::failed_one(e)),
     };
     match run_store(state.store, move |s| {
-        s.create_issued_certificate(&req.name, &req.description, &names, &chain, &key)
+        s.create_issued_certificate(&req.name, &req.description, &issued, &chain, &key)
     })
     .await
     {
@@ -2620,10 +2632,10 @@ pub async fn renew_issued_due(state: &AppState, now_ms: i64) {
             }
             let signing = tls::signing_root_fingerprint(&dir).map_err(StoreError)?;
             let mut due = Vec::new();
-            for (name, names) in s.issued_certificates()? {
+            for (name, issued) in s.issued_certificates()? {
                 let chain = newest_chain(s, &name)?.map(|(_, chain)| chain).unwrap_or_default();
                 if renewal_due(&chain, &signing, now_ms) {
-                    due.push((name, names));
+                    due.push((name, issued));
                 }
             }
             Ok(due)
@@ -2637,8 +2649,8 @@ pub async fn renew_issued_due(state: &AppState, now_ms: i64) {
             return;
         }
     };
-    for (name, names) in due {
-        if let Err(e) = renew_issued(state, &dir, &name, names).await {
+    for (name, issued) in due {
+        if let Err(e) = renew_issued(state, &dir, &name, issued).await {
             tracing::warn!(
                 target: "leader.issued_not_renewed",
                 certificate = %name,
@@ -2662,9 +2674,9 @@ fn renewal_due(chain: &str, signing: &str, now_ms: i64) -> bool {
     now_ms >= renew_after || root.fingerprint != signing
 }
 
-async fn renew_issued(state: &AppState, dir: &std::path::Path, name: &str, names: Vec<String>) -> Result<(), String> {
+async fn renew_issued(state: &AppState, dir: &std::path::Path, name: &str, issued: Issued) -> Result<(), String> {
     let dir = dir.to_path_buf();
-    let (chain, key) = blocking(move || tls::issue(&dir, names, crate::startup_config::leader_ca_validity())).await?;
+    let (chain, key) = blocking(move || tls::issue(&dir, issued.names.clone(), issued.validity())).await?;
     let wanted = name.to_string();
     let version = run_store(state.store.clone(), move |s| {
         s.add_certificate_version(&wanted, &chain, &key)
@@ -5806,12 +5818,17 @@ mod certificate_list_tests {
     }
 
     async fn issue(state: &AppState, name: &str, names: &[&str]) -> Envelope {
+        issue_lasting(state, name, names, 365).await
+    }
+
+    async fn issue_lasting(state: &AppState, name: &str, names: &[&str], validity_days: i64) -> Envelope {
         issue_certificate(
             State(state.clone()),
             Json(IssueRequest {
                 name: name.to_string(),
                 description: String::new(),
                 names: names.iter().map(|n| n.to_string()).collect(),
+                validity_days,
             }),
         )
         .await
@@ -5850,10 +5867,10 @@ mod certificate_list_tests {
     }
 
     #[tokio::test]
-    async fn issuing_for_no_names_is_refused() {
+    async fn issuing_for_no_names_or_no_time_is_refused() {
         let state = issuing("issue-no-names");
-        let out = issue(&state, "acme", &[" "]).await;
-        assert!(!out.ok);
+        assert!(!issue(&state, "acme", &[" "]).await.ok);
+        assert!(!issue_lasting(&state, "acme", &["a.example.com"], 0).await.ok);
         assert!(listed_names(&state).await.is_empty());
     }
 
@@ -5886,13 +5903,15 @@ mod certificate_list_tests {
         assert!(out.errors[0].message.contains("renews it itself"), "{:?}", out.errors);
     }
 
-    /// Not yet due, nothing happens; two thirds of the way through, the next version is issued and a change
-    /// drafted pointing the identity at it.
+    /// Not yet due, nothing happens; two thirds of the way through, the next version is issued for as long as the
+    /// first and a change drafted pointing the identity at it.
     #[tokio::test]
     async fn a_certificate_due_is_renewed_and_a_change_drafted() {
         let state = issuing("renew");
-        assert!(issue(&state, "acme", &["receiver.example.com"]).await.ok);
+        assert!(issue_lasting(&state, "acme", &["receiver.example.com"], 90).await.ok);
         let leaf = listed(&state, "acme").await.chain[0].clone();
+        let lifetime = |c: &tls::Described| (c.not_after_millis - c.not_before_millis) / (24 * 60 * 60 * 1000);
+        assert_eq!(lifetime(&leaf), 90);
 
         renew_issued_due(&state, leaf.not_before_millis + 1).await;
         assert_eq!(listed(&state, "acme").await.versions.len(), 1, "not yet due");
@@ -5902,6 +5921,7 @@ mod certificate_list_tests {
         let renewed = listed(&state, "acme").await;
         assert_eq!(renewed.versions.len(), 2);
         assert_ne!(renewed.chain[0].fingerprint, leaf.fingerprint);
+        assert_eq!(lifetime(&renewed.chain[0]), 90);
 
         let repo = git::repo_path(&state.data_dir);
         let change = git::read_change(&repo, "renew-acme-v2")
