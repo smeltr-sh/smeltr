@@ -1146,7 +1146,7 @@ fn live_seed(seed: u64, brokers: &str, reached: &mut Reached, pki: &Pki) -> Resu
         drop(d);
         destination::check_refused(&sent, &refused, |s| s.topic.is_none())?;
         let read = read_back(brokers, &[&default_topic, &other_topic], &marker)?;
-        check_held(&sent, &read, false)
+        check_held(&sent, &read, c.acks == Acks::None)
     })();
     checked.map_err(|e| format!("{e}\n{json}"))
 }

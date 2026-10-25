@@ -1311,12 +1311,12 @@ const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
     ),
     (
         "max.in.flight.requests.per.connection",
-        "derived from this destination's `bufferBytes` and its link, as many requests as the buffer holds batches",
+        "set from this destination's own `bufferBytes` field and its link",
     ),
     (
         "max.in.flight",
-        "librdkafka's other spelling of `max.in.flight.requests.per.connection`, which smeltr derives from this \
-         destination's `bufferBytes` and its link",
+        "librdkafka's other spelling of `max.in.flight.requests.per.connection`, which is set from this destination's \
+         own `bufferBytes` field and its link",
     ),
     (
         "queued.max.messages.kbytes",
@@ -1370,7 +1370,7 @@ const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
     ),
     (
         "enable.idempotence",
-        "off, so the producer keeps as many requests in flight as its link needs: an idempotent producer keeps at most five",
+        "smeltr runs the producer with it off: an idempotent producer keeps at most five requests in flight, too few for a far link",
     ),
     (
         "transactional.id",
