@@ -672,7 +672,8 @@ fn after_dot(
                 .function_id(step)
                 .ok_or_else(|| format!("this pipeline has no step {step:?}"))?;
             let meta = SourceMeta::of_columns(&replayed(columns).cloned().collect::<Vec<_>>())?;
-            expr.and_then(|e| plan::plan::type_at(p, &meta, step, &e))
+            let cut = plan::dot::cut_at(&asked.text, asked.dot);
+            expr.and_then(|e| plan::plan::type_at(p, &meta, step, &e, cut))
         }
         DotAt::Source(id) => {
             let source = (system.topology.sources.iter())
@@ -1163,6 +1164,15 @@ mod tests {
         );
         assert!(method(&answer, "keys").fits);
         assert!(!method(&answer, "sign").fits);
+    }
+
+    /// A code step reads the names its own statements before the dot bind, `let`s among them.
+    #[test]
+    fn a_step_reads_what_its_own_statements_before_the_dot_bind() {
+        let local = after("let v = parseUrl(_raw); w = v.path.", DotAt::Step("s".into())).unwrap();
+        assert_eq!(local.ty.as_deref(), Some("str"));
+        let inner = after("if (n == 1) { let v = [1]; x = v.", DotAt::Step("s".into())).unwrap();
+        assert_eq!(inner.ty.as_deref(), Some("array<i64>"));
     }
 
     /// A source's record is what it gives as it arrives; a `when`, and a destination's filter, the pipeline's output.

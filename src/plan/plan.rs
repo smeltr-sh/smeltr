@@ -518,13 +518,22 @@ enum Resolved {
 }
 
 /// The type `expr` has where step `step` of `p` begins: what the names in it read there, every step before it run.
-/// `None` where it does not resolve, or `step` is not one the pipeline reaches. The pipeline need not compile: an
-/// error elsewhere, the half-typed expression the question is about among them, leaves the names before `step` bound.
-pub fn type_at(p: &PipelineConfig, meta: &SourceMeta, step: FunctionId, expr: &Expr) -> Option<DataType> {
+/// Given a `cut` of a code step, the type of the statement it puts at `cut.at`, read where the cut body has it, its
+/// `let`s bound; where the cut body does not compile that far, where the step begins. `None` where it does not
+/// resolve, or `step` is not one the pipeline reaches. The pipeline need not compile: an error elsewhere, the
+/// half-typed expression the question is about among them, leaves the names before `step` bound.
+pub fn type_at(
+    p: &PipelineConfig,
+    meta: &SourceMeta,
+    step: FunctionId,
+    expr: &Expr,
+    cut: Option<crate::plan::dot::Cut>,
+) -> Option<DataType> {
     let ingest = ingest_fields(meta);
     let probe = std::rc::Rc::new(Probe {
         step,
         expr: expr.clone(),
+        cut,
         found: std::cell::RefCell::new(None),
     });
     let mut c = Compiler::new(p, &ingest, Some(probe.clone()));
@@ -537,6 +546,8 @@ pub fn type_at(p: &PipelineConfig, meta: &SourceMeta, step: FunctionId, expr: &E
 struct Probe {
     step: FunctionId,
     expr: Expr,
+    /// Compiled in place of the step's body, where the step is a code step.
+    cut: Option<crate::plan::dot::Cut>,
     found: std::cell::RefCell<Option<DataType>>,
 }
 
@@ -566,9 +577,26 @@ impl<'p> Compiler<'p> {
 
     /// Answer the probe, where `step` is the one it asks about.
     fn answer_probe(&self, step: FunctionId) {
-        let Some(probe) = self.probe.clone().filter(|p| p.step == step) else {
-            return;
-        };
+        if let Some(probe) = self.probe.as_ref().filter(|p| p.step == step) {
+            self.answer(probe);
+        }
+    }
+
+    /// The cut body to compile for code step `step`, where the probe asks about it.
+    fn probe_cut(&self, step: FunctionId) -> Option<String> {
+        let probe = self.probe.as_ref().filter(|p| p.step == step)?;
+        probe.cut.as_ref().map(|c| c.body.clone())
+    }
+
+    /// Answer the probe again, where `e`, in step `step`, is the statement its cut put there.
+    fn answer_cut(&self, e: &Expr, step: FunctionId) {
+        let probe = self.probe.as_ref().filter(|p| p.step == step);
+        if let Some(probe) = probe.filter(|p| p.cut.as_ref().is_some_and(|c| c.at == e.span.start)) {
+            self.answer(probe);
+        }
+    }
+
+    fn answer(&self, probe: &Probe) {
         let mut syms = self.syms.clone();
         let ty = resolve(&probe.expr, &mut syms, &mut ResourceBuilder::default())
             .ok()
@@ -3797,6 +3825,7 @@ impl Compiler<'_> {
                 Stmt::Declare { name, ty } => self.declare(name, ty, id),
                 // Checked, then discarded: there are no side effects.
                 Stmt::Expr(e) => {
+                    self.answer_cut(e, id);
                     self.expr_ast(e, id);
                 }
                 // A computed key writes a position of an array, or a key of an open object. A literal key is a name the
@@ -4364,6 +4393,8 @@ impl Compiler<'_> {
                 return;
             }
             FunctionKind::Code { body } => {
+                let cut = self.probe_cut(id);
+                let body = cut.as_deref().unwrap_or(body);
                 match parse_block_shaped(body) {
                     Ok((stmts, shape)) => {
                         for ender in shape.unreachable {

@@ -853,8 +853,9 @@ export class DemoLeader {
     return this.ask('/preview', {
       ...this.bundleOf(branch, scope, JSON.parse(req.config)),
       pipeline: req.pipeline,
-      // What follows a dot reads the sample's columns, never its records: they need not cross the network.
-      sample: sample && req.after_dot ? { ...sample, records: [] } : sample,
+      // What follows a dot reads the sample's columns, never its records: only the one a sample must hold crosses
+      // the network.
+      sample: sample && req.after_dot ? { ...sample, records: sample.records.slice(0, 1) } : sample,
       showInternal: req.show_internal,
       atMicros: req.at_micros,
       filter: req.filter,
