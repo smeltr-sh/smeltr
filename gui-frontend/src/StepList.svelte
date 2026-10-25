@@ -17,6 +17,7 @@
   import TypeCatalog, { type CatalogType } from './TypeCatalog.svelte';
   import { STEP_GLYPHS } from './stepGlyphs';
   import { flip } from 'svelte/animate';
+  import { glide } from './glide';
 
   let {
     steps,
@@ -87,10 +88,6 @@
     steps.splice(addingAt ?? steps.length, 0, step);
     addingAt = null;
   }
-
-  /** How long a step glides to its new place when the list reorders, so the eye follows a move; none where the
-   * reader asked for less motion. */
-  const glide = () => (matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 250);
 </script>
 
 <div class="step-list">
