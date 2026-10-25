@@ -241,6 +241,7 @@
             bind:replacing={replacingKey}
             stored={keyKept}
             ariaLabel="API key"
+            required
           />
         </Field>
       </div>

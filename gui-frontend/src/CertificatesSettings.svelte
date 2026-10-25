@@ -813,7 +813,7 @@
             group
             help="Press Enter or type a comma after each name. A wildcard such as *.example.com needs DNS-01, and DNS-01 cannot prove an IP address."
           >
-            <TokenListInput bind:values={nameList} placeholder="leader.example.com" />
+            <TokenListInput bind:values={nameList} placeholder="leader.example.com" required />
           </Field>
           <Field optional label="Contact email">
             {#snippet help()}Where the certificate authority sends notices about this account.{/snippet}
