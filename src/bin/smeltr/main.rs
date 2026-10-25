@@ -2438,8 +2438,8 @@ mod tests {
         );
     }
 
-    /// With attribution, each row says which steps changed each field, in the order they ran, and which step dropped
-    /// it: a step in an `if` branch the row did not take changed nothing on it.
+    /// With attribution, each row says which steps changed each of its fields, in the order they ran, and which step
+    /// dropped it: a step in an `if` branch the row did not take changed nothing on it, and a dropped row has no fields.
     #[test]
     fn attribution_names_the_steps_that_changed_each_field_and_dropped_each_row() {
         let config = r#"{"version":1,"sources":[],"destinations":[],"routes":[],
@@ -2470,13 +2470,48 @@ mod tests {
             previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
         let steps = |row: usize| serde_json::to_value(&previewed.rows[row].steps).unwrap();
-        assert_eq!(
-            steps(0),
-            serde_json::json!({"a": ["set", "bump"], "b": ["set", "trim"]})
-        );
+        assert_eq!(steps(0), serde_json::json!({"a": ["set", "bump"]}));
         assert_eq!(previewed.rows[0].dropped_by, None);
-        assert_eq!(steps(1), serde_json::json!({"a": ["set"], "b": ["set"]}));
+        assert_eq!(steps(1), serde_json::Value::Null);
         assert_eq!(previewed.rows[1].dropped_by.as_deref(), Some("gone"));
+    }
+
+    /// A called pipeline's steps are the call's doing, its exceptions included, and a write to an object's field is a
+    /// change to that field.
+    #[test]
+    fn attribution_names_a_call_for_what_its_pipeline_changed() {
+        let config = r#"{"version":1,"sources":[],"destinations":[],"routes":[],
+            "pipelines":[
+                {"id":"p","name":"p","steps":[
+                    {"id":"use_q","type":"call","pipeline":"q"},
+                    {"id":"nest","type":"code","body":"o.x = n; o.y = 2;"},
+                    {"id":"again","type":"code","body":"o.x = n + 1;"}]},
+                {"id":"q","name":"q","steps":[{"id":"inner","type":"code","body":"c = 1; z = 1 / 0;"}]}]}"#;
+        let previewed = super::run_preview(
+            super::PreviewRequest {
+                config: config.to_string(),
+                pipeline: Some("p".to_string()),
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: true,
+                after_dot: None,
+            },
+            Default::default(),
+            &[column("n", "i64")],
+            serde_json::from_value(serde_json::json!([{"n": 2}])).unwrap(),
+        );
+        assert!(
+            previewed.ok,
+            "{:?}",
+            previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            serde_json::to_value(&previewed.rows[0].steps).unwrap(),
+            serde_json::json!({"c": ["use_q"], "o.x": ["nest", "again"], "o.y": ["nest"]})
+        );
+        assert_eq!(previewed.rows[0].exceptions[0].step.as_deref(), Some("use_q"));
     }
 
     /// An exception names the step that raised it.
