@@ -214,7 +214,9 @@ if (process.argv.includes('--leader') || process.argv.includes('--check')) {
   // A section to a line, so a diff shows the section that changed rather than its whole page.
   const page = (p) => {
     const head = JSON.stringify({ path: p.path, title: p.title });
-    const body = sections(p).map((s) => JSON.stringify(s)).join(',\n');
+    const body = sections(p)
+      .map((s) => JSON.stringify(s))
+      .join(',\n');
     return `${head.slice(0, -1)},"sections":[\n${body}\n]}`;
   };
   const json = `[\n${all.map(page).join(',\n')}\n]\n`;
