@@ -182,6 +182,12 @@ impl LoadedSystem {
         }
     }
 
+    /// The pipeline the file names `id`.
+    pub fn pipeline(&self, id: &str) -> Option<&PipelineConfig> {
+        let index = self.pipeline_ids.iter().position(|p| p == id)?;
+        self.pipelines.iter().find(|p| p.id == index)
+    }
+
     /// The step a `CompileError`'s `pipeline`/`function` indices name, by its own string id. `function` is a
     /// position local to one pipeline and, once a `call` step has inlined another pipeline's steps into it, no
     /// longer lines up with document order the way it did before expansion; the id does not move. `None` when

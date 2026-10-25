@@ -50,7 +50,6 @@
     sizeLabel = 'request size',
     sizeDefault,
     sizeHelp,
-    sizeNote,
     requests = 'Requests',
     concurrent = true,
     bufferHelp,
@@ -61,7 +60,6 @@
     sizeLabel?: string;
     sizeDefault: number;
     sizeHelp: Snippet;
-    sizeNote: Snippet;
     /** What is in flight, as "Requests" or "Bulk requests". */
     requests?: string;
     /** Whether the destination sends more than one request at once; one that does not has no concurrency to set. */
@@ -78,7 +76,6 @@
     {#snippet help()}
       {requests} in flight at once when the destination starts, per worker; it adapts from there.
     {/snippet}
-    {#snippet note()}Default {LIMITS.inFlight.default}.{/snippet}
     <input
       type="number"
       min={LIMITS.inFlight.min}
@@ -88,7 +85,7 @@
     />
   </Field>
 {/if}
-<Field field={size} label={sizeLabel} help={sizeHelp} note={sizeNote}>
+<Field field={size} label={sizeLabel} help={sizeHelp}>
   <BytesInput value={d[size]} fallback={sizeDefault} onchange={(n) => (d[size] = n)} />
 </Field>
 <Field field="bufferBytes" label="delivery buffer">
@@ -97,7 +94,6 @@
     {#if bufferHelp}{@render bufferHelp()}{:else}Divided by the {sizeLabel}, it is the most requests
       in flight.{/if}
   {/snippet}
-  {#snippet note()}Default {exactBytes(LIMITS.bufferBytes.default)}.{/snippet}
   <BytesInput
     value={d.bufferBytes}
     fallback={LIMITS.bufferBytes.default}
@@ -108,7 +104,6 @@
   {#snippet help()}
     How long one batch may take to deliver, {including}, before this destination counts as stalled.
   {/snippet}
-  {#snippet note()}Default {LIMITS.stallAfterSecs.default}.{/snippet}
   <input
     type="number"
     min={LIMITS.stallAfterSecs.min}

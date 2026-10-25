@@ -255,7 +255,6 @@
         </Field>
         <Advanced modified={groupsClaim.trim() !== DEFAULT_GROUPS_CLAIM}>
           <Field label="Groups claim" error={claimProblem || null}>
-            {#snippet note()}Default <code class="mono">{DEFAULT_GROUPS_CLAIM}</code>.{/snippet}
             <input bind:value={groupsClaim} class="mono" />
           </Field>
         </Advanced>

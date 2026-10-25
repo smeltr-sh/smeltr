@@ -71,7 +71,7 @@
     <span class="eye" style="background: oklch(var(--scope-l) var(--scope-c) {value});"></span>
   </div>
   <div class="degrees">
-    <Field label="degrees" note="Any hue. The three the app already uses are marked on the wheel.">
+    <Field label="degrees" help="Any hue. The three the app already uses are marked on the wheel.">
       <input type="number" min="0" max="359" bind:value aria-label="{label} hue in degrees" />
     </Field>
   </div>

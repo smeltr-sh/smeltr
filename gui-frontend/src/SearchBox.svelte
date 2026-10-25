@@ -5,6 +5,7 @@
 -->
 <script lang="ts" generics="T extends { section?: string }">
   import type { Snippet } from 'svelte';
+  import { float } from './float';
 
   let {
     query = $bindable(),
@@ -44,6 +45,7 @@
   } = $props();
 
   let input: HTMLInputElement | undefined = $state();
+  let field: HTMLLabelElement | undefined = $state();
   let open = $state(false);
   let active = $state(0);
 
@@ -80,7 +82,7 @@
 </script>
 
 <div class="search-wrap">
-  <label class="field">
+  <label class="field" bind:this={field}>
     {@render before?.()}
     <input
       bind:this={input}
@@ -127,6 +129,8 @@
       id="{id}-list"
       role="listbox"
       aria-label="Suggestions"
+      popover="manual"
+      {@attach float(() => field?.getBoundingClientRect(), { matchWidth: true })}
       onmousedown={(e) => e.preventDefault()}
     >
       {#each items as item, i (i)}
@@ -156,7 +160,6 @@
 
 <style>
   .search-wrap {
-    position: relative;
     flex: 1;
     min-width: 0;
   }
@@ -202,15 +205,10 @@
     cursor: pointer;
   }
 
+  /* Placed by `float`, over whatever box holds the search. */
   .suggestions {
-    position: absolute;
-    z-index: 21;
-    top: calc(100% + 4px);
-    left: 0;
-    right: 0;
+    color: var(--ink);
     max-height: 26rem;
-    overflow-y: auto;
-    margin: 0;
     padding: 0.25rem;
     list-style: none;
     background: var(--panel);

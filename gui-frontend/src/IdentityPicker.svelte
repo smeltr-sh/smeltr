@@ -28,42 +28,26 @@
 
   const linked = !insideDialog();
   const chosen = $derived(identities.find((i) => i.id === value));
-
-  /** What the chosen one does, so the field says more than a name. */
-  const says = (i: IdentityDto): string =>
-    farEnd === 'sender'
-      ? [
-          i.certificate ? 'serves TLS' : 'serves no certificate',
-          i.authorities ? 'senders need a certificate' : 'senders need none',
-        ].join(' · ')
-      : [
-          i.certificate ? 'presents a certificate' : 'presents nothing',
-          i.trustPublic === false
-            ? 'trusts its own authorities only'
-            : i.authorities
-              ? 'trusts the public roots and its own authorities'
-              : 'trusts the public roots',
-        ].join(' · ');
 </script>
 
-<Field field="identity" label="identity">
+{#snippet edit()}<a href="#/build/identities">edit</a>{/snippet}
+
+<Field
+  field="identity"
+  label="identity"
+  note={chosen && linked ? edit : undefined}
+  warning={!chosen && farEnd === 'sender'
+    ? 'With none, it serves plain HTTP, and tokens cross the network in the clear.'
+    : null}
+>
   {#snippet help()}
     {#if farEnd === 'sender'}
       The certificate and key it serves TLS with. If the identity has authorities, every sender must
       present a certificate that chains to one of them.
     {:else}
       Pick one when the {farEnd} requires a client certificate, or its own certificate comes from your
-      organization's authority rather than a public one.
-    {/if}
-  {/snippet}
-  {#snippet note()}
-    {#if chosen}
-      {says(chosen)}{#if linked}
-        &mdash; <a href="#/build/identities">edit</a>{/if}
-    {:else if farEnd === 'sender'}
-      None: plain HTTP, and tokens cross the network in the clear.
-    {:else}
-      None: no certificate, and the platform's public roots.
+      organization's authority rather than a public one. With none, this client presents no certificate
+      and trusts the public roots.
     {/if}
   {/snippet}
   <select
