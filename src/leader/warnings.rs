@@ -6707,7 +6707,11 @@ mod tests {
             (said[2].subject_kind, said[2].subject_id.as_str()),
             (SubjectKind::Leader, "ingest-tls")
         );
-        assert!(said[2].message.ends_with("Replace it under Certificates"), "{}", said[2].message);
+        assert!(
+            said[2].message.ends_with("Replace it under Certificates"),
+            "{}",
+            said[2].message
+        );
         assert!(said.iter().all(|w| w.group.is_none()), "an administrator's to act on");
 
         assert!(

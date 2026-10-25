@@ -496,7 +496,11 @@ impl SqliteStore {
         let mut out = newest
             .query_map((), |row| {
                 let name = row.get(0)?;
-                let value = if row.get(2)? { Unopenable::Certificate(name) } else { Unopenable::Secret(name) };
+                let value = if row.get(2)? {
+                    Unopenable::Certificate(name)
+                } else {
+                    Unopenable::Secret(name)
+                };
                 Ok((value, row.get(1)?))
             })?
             .collect::<Result<Vec<_>, _>>()?;
