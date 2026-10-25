@@ -86,10 +86,11 @@
     own authority, so a client verifies it against the leader's
     <a href="#download">ca.pem</a>. When a third of its life remains (30 days of 90, about four
     months of a year), or after you <a href="#rotation">rotate the authority</a>, the leader issues
-    the next version on its own, valid for the same length of time. Workers keep the old version until
-    you move them: the Issues page lists each connection identity presenting an older version. Choose
-    <strong>Update identities</strong> on the certificate's row, which opens a change that points them at
-    the newest version, and deploy that change before the old version expires.
+    the next version on its own, valid for the same length of time. Workers keep the old version
+    until you update the identities: the Issues page lists each connection identity presenting an
+    older version. Choose
+    <strong>Update identities</strong> on the certificate's row, which opens a change that points them
+    at the newest version, and deploy that change before the old version expires.
   </p>
   <h2 id="names">Names a certificate must cover</h2>
   <p>
@@ -152,7 +153,8 @@
     Let's Encrypt and other certificate authorities issue certificates automatically over ACME. The
     authority checks that each name on the certificate reaches this leader, then issues it. The
     leader renews it on its own. Each order is a new version of the <strong>acme</strong> entry in
-    Admin → Certificates, which connection identities can present too; move them to a new version with
+    Admin → Certificates, which connection identities can present too; move them to a new version
+    with
     <strong>Update identities</strong>, as for an issued certificate.
   </p>
   <h3>Before you start</h3>

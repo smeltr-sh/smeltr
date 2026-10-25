@@ -2479,8 +2479,8 @@ pub fn identities_behind(deployed: &[DeployedCertificate], newest: &HashMap<Stri
                 severity: Severity::Warning,
                 since_millis: Some(since),
                 message: format!(
-                    "presents version {version} of the certificate {name:?}, and version {newest} is newer. Update \
-                     its identities in {CERTIFICATE_LIST} and deploy the change it opens"
+                    "presents version {version} of the certificate {name:?}, and the newest is version {newest}. \
+                     Update it in {CERTIFICATE_LIST} and deploy the change it opens"
                 ),
             }
         })
@@ -2553,7 +2553,7 @@ pub fn issued_certificates_not_renewed(
             },
             since_millis: Some(since),
             message: format!(
-                "{when}, and this leader has not renewed it. The leader's log says why \
+                "{when}, and this leader has not renewed it. The leader's log says why: Status → Logs \
                  (leader.certificate_renewal_failed)"
             ),
         });
@@ -3568,7 +3568,7 @@ mod tests {
         assert!(
             said[0]
                 .message
-                .starts_with("presents version 1 of the certificate \"receiver-tls\", and version 2")
+                .starts_with("presents version 1 of the certificate \"receiver-tls\", and the newest is version 2")
         );
         assert!(identities_behind(&on(2), &newest).is_empty());
         assert!(identities_behind(&on(1), &HashMap::new()).is_empty());

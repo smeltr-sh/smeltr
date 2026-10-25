@@ -138,7 +138,11 @@
     if (version === undefined) return;
     const pointed = await pointSecretNow(name, version);
     if (!pointed.ok) {
-      replacedNote = `${done}, but no identity could be updated to use it: ${errorText(pointed.errors) || 'the change was not drafted'}`;
+      const why = errorText(pointed.errors) || 'the change was not drafted';
+      replacedNote =
+        done === 'Updated'
+          ? `No identity could be updated: ${why}`
+          : `${done}, but no identity could be updated to use it: ${why}`;
     } else if (pointed.references === 0) {
       replacedNote = done === 'Updated' ? 'No identity needed updating.' : `${done}.`;
     } else {

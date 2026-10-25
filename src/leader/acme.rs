@@ -399,8 +399,8 @@ pub fn list(store: &dyn Store, tls_dir: &Path, issued: &Issued) -> Result<(), St
         Some(Kept::Acme) => store.add_certificate_version(ENTRY, &chain, &key).map(|_| ()),
         _ if known => {
             return Err(format!(
-                "the certificate list already holds {ENTRY:?}, which this leader does not order. Delete it, or \
-                 rename it by adding it again under another name, then order again"
+                "a certificate named {ENTRY:?} is already in the list and this leader did not order it. Delete \
+                 it, then order again"
             ));
         }
         _ => store.create_kept_certificate(ENTRY, "Ordered over ACME", &Kept::Acme, &chain, &key),
@@ -1361,7 +1361,7 @@ mod tests {
             .block_on(order(&other, &ordered, &issuer, &proving, &names(), &[]))
             .unwrap();
         let refused = list(&taken, &other, &issued).unwrap_err();
-        assert!(refused.contains("which this leader does not order"), "{refused}");
+        assert!(refused.contains("this leader did not order it"), "{refused}");
     }
 
     /// An authority that must not be asked.
