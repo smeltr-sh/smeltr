@@ -180,6 +180,12 @@ const AUTHORITY_NOTICE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// is not. A tenth of a decade is a year, which is the pace this is for.
 const AUTHORITY_LAST_PART: f64 = 0.1;
 
+/// How long before a certificate good from `not_before_millis` to `not_after_millis` runs out it is said to be
+/// running out: the last part of its life. The GUI marks one by the same rule (`time.ts`).
+pub fn notice_millis(not_before_millis: i64, not_after_millis: i64) -> i64 {
+    ((not_after_millis - not_before_millis) as f64 * AUTHORITY_LAST_PART) as i64
+}
+
 /// A named condition about one object: what the design calls a warning. [`derive`] recomputes the whole list on
 /// every call; nothing here is stored, and there is nothing to acknowledge.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -420,7 +426,7 @@ pub struct DeployedCertificate {
 ///
 /// A date rather than something observed, like the two authority entries: the leader reads it off the bundle, so
 /// the warning knows exactly when it began and needs nothing remembered. Notice is a tenth of that certificate's
-/// own life or thirty days, whichever is longer, because a tenth of a short-lived one is no notice at all.
+/// own life.
 ///
 /// One warning per identity per half, because an identity holds more than one certificate and they do not fail
 /// together. A presented chain is only as good as its soonest part. A trust store holds several roots on purpose --
@@ -476,8 +482,7 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
     let mut out: Vec<Warning> = decisive
         .into_values()
         .filter_map(|certificate| {
-            let life = certificate.not_after_millis - certificate.not_before_millis;
-            let notice = ((life as f64 * AUTHORITY_LAST_PART) as i64).max(AUTHORITY_NOTICE.as_millis() as i64);
+            let notice = notice_millis(certificate.not_before_millis, certificate.not_after_millis);
             let remaining = certificate.not_after_millis - now_ms;
             // Not yet valid is a current failure, not a countdown, so it is reported whatever the notice window
             // says about a `not_after` still years off: a TLS peer rejects it today regardless of when it expires.
@@ -515,7 +520,7 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
                 },
                 // Clamped to the certificate's own start: one shorter-lived than the notice window would otherwise
                 // read as having warned before it existed.
-                since_millis: Some((certificate.not_after_millis - notice).max(certificate.not_before_millis)),
+                since_millis: Some(certificate.not_after_millis - notice),
                 message: match (certificate.half, not_yet_valid, expired) {
                     (Half::Presented, true, _) => format!(
                         "the certificate identity {id:?} presents is not valid yet, so every source and \
@@ -586,10 +591,7 @@ fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &R
     let Some(authority) = signing.filter(|_| !matches!(rotating, Rotating::UnderWay)) else {
         return Vec::new();
     };
-    let life = authority.not_after_millis - authority.not_before_millis;
-    // Whichever is longer. A tenth of a very short authority is hours, which is no notice at all, and a leader
-    // configured with one is a leader always about to lose it -- which is what saying so from the start means.
-    let notice = ((life as f64 * AUTHORITY_LAST_PART) as i64).max(AUTHORITY_NOTICE.as_millis() as i64);
+    let notice = notice_millis(authority.not_before_millis, authority.not_after_millis);
     let remaining = authority.not_after_millis - now_ms;
     if remaining > notice {
         return Vec::new();
@@ -3251,15 +3253,6 @@ mod tests {
         assert_eq!(said[0].since_millis, Some(year.not_after_millis - notice));
     }
 
-    /// The thirty-day floor on notice is longer than a two-day certificate's whole life, so the naive start
-    /// predates the certificate itself. Clamped to when the certificate actually began.
-    #[test]
-    fn a_short_certificates_warning_never_begins_before_it_did() {
-        let short = carried("acme", Half::Presented, 2, 1);
-        let said = identity_expiring(std::slice::from_ref(&short), NOW);
-        assert_eq!(said[0].since_millis, Some(short.not_before_millis));
-    }
-
     /// A chain is only as good as its soonest part: an intermediate that has run out breaks it whatever the leaf
     /// says about itself.
     #[test]
@@ -3326,8 +3319,8 @@ mod tests {
     fn two_commits_carrying_the_same_untouched_certificate_are_one_warning() {
         let said = identity_expiring(
             &[
-                on_commit("acme", Half::Trusted, 30, 5, "old"),
-                on_commit("acme", Half::Trusted, 30, 5, "new"),
+                on_commit("acme", Half::Trusted, 30, 2, "old"),
+                on_commit("acme", Half::Trusted, 30, 2, "new"),
             ],
             NOW,
         );
@@ -3380,14 +3373,6 @@ mod tests {
         assert_eq!(said.len(), 1, "a tenth of a decade left and nothing said");
         assert_eq!(said[0].severity, Severity::Warning);
         assert_eq!(said[0].subject_kind, SubjectKind::Leader);
-    }
-
-    /// A tenth of a very short authority is no notice at all, and a leader configured with one is always about to
-    /// lose it. Saying so from the start is what that means.
-    #[test]
-    fn a_short_lived_authority_is_never_out_of_its_last_part() {
-        let brief = authority(2, 1);
-        assert_eq!(authority_aging(Some(&brief), &Rotating::None, NOW).len(), 1);
     }
 
     /// The answer is already under way, and a warning nobody can clear is one an operator learns to ignore.

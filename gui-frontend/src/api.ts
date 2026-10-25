@@ -3338,7 +3338,8 @@ export type SecretDto = {
 };
 
 /** The newest version held, which is what a reference written today quotes. */
-export const currentVersion = (s: SecretDto): SecretVersionDto | undefined => s.versions.at(-1);
+export const currentVersion = (s: { versions: SecretVersionDto[] }): SecretVersionDto | undefined =>
+  s.versions.at(-1);
 
 export function listSecrets(): Promise<SecretDto[]> {
   return apiJson('/api/secrets');
@@ -3435,6 +3436,49 @@ export async function pointSecretNow(name: string, version: number): Promise<Poi
  * and those workers could not get it back. */
 export function deleteSecret(name: string): Promise<AdminActionResult> {
   return apiJson(`/api/secrets/${encodeURIComponent(name)}`, { method: 'DELETE' });
+}
+
+/** One certificate in the list: a chain and its private key, kept like a leader-stored secret. */
+export type CertificateDto = {
+  name: string;
+  description: string;
+  /** Every version still held, oldest first. */
+  versions: SecretVersionDto[];
+  /** The newest version's chain, leaf first. Empty where this leader cannot open it. */
+  chain: DescribedCertificate[];
+  /** Whether the leader serves a copy of it. */
+  served: boolean;
+};
+
+export function listCertificates(): Promise<CertificateDto[]> {
+  return apiJson('/api/certificates');
+}
+
+/** `certificate` is PEM, leaf first, ending with its root for a private authority; `privateKey` is its PEM key. */
+export function createCertificate(
+  name: string,
+  description: string,
+  certificate: string,
+  privateKey: string,
+): Promise<AdminActionResult> {
+  return apiJson('/api/certificates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description, certificate, privateKey }),
+  });
+}
+
+/** Stores a new version, which the leader serves too where it serves this certificate. */
+export function replaceCertificate(
+  name: string,
+  certificate: string,
+  privateKey: string,
+): Promise<AdminActionResult> {
+  return apiJson(`/api/certificates/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ certificate, privateKey }),
+  });
 }
 
 /** Whether a candidate is the stored value -- what answers "does this still
@@ -4824,6 +4868,12 @@ export interface CertificatesDto {
   /** Whether an operator supplied what is being served. */
   supplied: boolean;
   source: CertificateSource;
+  /** The name of the list entry an upload was copied from, where one is recorded. */
+  entry: string | null;
+  /** The names this leader answers to. A supplied certificate covers at least one. */
+  names: string[];
+  /** The name the worker inside this leader reaches it by, where one runs. A supplied certificate covers it. */
+  workerName: string | null;
   /** Set when a certificate reached the leader's disk and its socket refused it.
    * Everything above is then what the disk holds rather than what a client is
    * shown, and only a restart closes the gap. */
@@ -4841,13 +4891,11 @@ export function getCertificates(): Promise<CertificatesDto> {
  * worker holding an enrollment code fetches the same bytes with no session. */
 export const AUTHORITY_URL = '/api/authority';
 
-export function putCertificate(
-  certificate: string,
-  privateKey: string,
-): Promise<CertificatesDto | AccountRefusal> {
+/** Serves a copy of the certificate `name` from the list. */
+export function putCertificate(name: string): Promise<CertificatesDto | AccountRefusal> {
   return accountCall('/api/settings/certificates', {
     method: 'PUT',
-    body: JSON.stringify({ certificate, privateKey }),
+    body: JSON.stringify({ certificate: name }),
   });
 }
 
