@@ -919,6 +919,7 @@
                           bind:value={grokKind.patterns[i]}
                           autocomplete="grok"
                           grokNamed={sharedGrokSuggestions(grokPatterns)}
+                          wrap
                         />
                       </Locked>
                       {#if !readOnly}
@@ -1169,6 +1170,7 @@
                             bind:value={grokKind.customPatterns[i].pattern}
                             autocomplete="grok"
                             grokNamed={sharedGrokSuggestions(grokPatterns)}
+                            wrap
                           />
                         </Locked>
                       </div>

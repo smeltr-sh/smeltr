@@ -57,3 +57,24 @@ export function wrapCondition(src: string, cols: number): string[] {
   };
   return fit(0, src.length);
 }
+
+/** `src` cut into lines of at most `cols` characters at its spaces, packed greedily; a run with no space that is
+ * longer than `cols` is cut every `cols` characters. */
+export function wrapWords(src: string, cols: number): string[] {
+  const out: string[] = [];
+  let cur = '';
+  for (let word of src.trim().split(/ +/)) {
+    if (cur && cur.length + 1 + word.length <= cols) {
+      cur += ' ' + word;
+      continue;
+    }
+    if (cur) out.push(cur);
+    while (word.length > cols) {
+      out.push(word.slice(0, cols));
+      word = word.slice(cols);
+    }
+    cur = word;
+  }
+  if (cur) out.push(cur);
+  return out;
+}

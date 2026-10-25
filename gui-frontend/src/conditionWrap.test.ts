@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { wrapCondition } from './conditionWrap';
+import { wrapCondition, wrapWords } from './conditionWrap';
 
 describe('wrapCondition', () => {
   it('leaves a condition that fits on one line', () => {
@@ -48,5 +48,12 @@ describe('wrapCondition', () => {
     for (const cols of [4, 10, 20, 40, 80]) {
       expect(wrapCondition(src, cols).join(' ')).toBe(src);
     }
+  });
+});
+
+describe('wrapWords', () => {
+  it('packs words into lines at spaces, and cuts a word longer than a line', () => {
+    expect(wrapWords('%{IP:a} %{WORD:b} %{INT:c}', 17)).toEqual(['%{IP:a} %{WORD:b}', '%{INT:c}']);
+    expect(wrapWords('abcdefghij k', 4)).toEqual(['abcd', 'efgh', 'ij k']);
   });
 });

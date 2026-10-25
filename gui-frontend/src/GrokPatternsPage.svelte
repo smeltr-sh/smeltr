@@ -222,6 +222,7 @@
                       bind:value={p.pattern}
                       autocomplete="grok"
                       grokNamed={sharedGrokSuggestions(others(n))}
+                      wrap
                     />
                   </Field>
                 </td>

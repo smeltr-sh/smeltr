@@ -274,3 +274,37 @@ export function grokNameProblem(name: string, taken: Iterable<string>): string |
 export function builtinRegex(entry: StdFuncEntry): string | null {
   return /Regex: `(.*)`$/s.exec(entry.description)?.[1] ?? null;
 }
+
+const escape = (text: string) =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/** A macro, a named group's opening, a character class, an escape, a group's flags, or an operator. */
+const GROK_TOKEN =
+  /%\{([A-Za-z0-9_]+)(?::([^}]*))?\}|\(\?P?<([^>]*)>|\[\^?\]?(?:\\.|[^\]\\])*\]|\\.|\(\?[A-Za-z-]*:?|[?*+|^$]|\{\d+(?:,\d*)?\}/g;
+
+/** `text`, a grok pattern, as escaped HTML: each macro's name as a function and its field as a key, a named group's
+ * name as a key, a character class as a string, an escape as a literal, and a quantifier, alternation, anchor or
+ * group flag as a keyword. */
+export function highlightGrok(text: string): string {
+  const span = (kind: string, s: string) => `<span class="tok-${kind}">${escape(s)}</span>`;
+  let out = '';
+  let from = 0;
+  for (const m of text.matchAll(GROK_TOKEN)) {
+    const at = m.index ?? 0;
+    out += escape(text.slice(from, at));
+    const [token, macro, field, group] = m;
+    if (macro !== undefined)
+      out +=
+        '%{' +
+        span('function', macro) +
+        (field !== undefined ? ':' + span('key', field) : '') +
+        '}';
+    else if (group !== undefined)
+      out += escape(token.slice(0, token.length - group.length - 1)) + span('key', group) + '&gt;';
+    else if (token.startsWith('[')) out += span('string', token);
+    else if (token.startsWith('\\')) out += span('literal', token);
+    else out += span('keyword', token);
+    from = at + token.length;
+  }
+  return out + escape(text.slice(from));
+}
