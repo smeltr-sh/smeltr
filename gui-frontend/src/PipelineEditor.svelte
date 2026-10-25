@@ -11,7 +11,8 @@
 -->
 <script lang="ts">
   import InlineError from './InlineError.svelte';
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
+  import { opening } from './StepEditor.svelte';
   import { store, stored, storedJson } from './stored';
   import StepList from './StepList.svelte';
   import Connections from './Connections.svelte';
@@ -61,6 +62,7 @@
     leafMap,
     pathsOf,
     splitPath,
+    typeAt,
     type Declared,
   } from './recordDiff';
   import {
@@ -492,10 +494,15 @@
     // A step's id is a string like any other and a hand-edited pipeline can
     // legally give one "" -- null, not falsy, is what "nothing to jump to" means.
     if (jumpToStepId === null) return;
-    document
-      .getElementById(`step-${jumpToStepId}`)
-      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const id = jumpToStepId;
     jumpToStepId = null;
+    // Opened first, so the scroll lands on the card as it will stand.
+    opening.id = id;
+    void tick().then(() =>
+      document
+        .getElementById(`step-${id}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
+    );
   });
 
   /** Reverts to what was last loaded or saved, dropping every edit since --
@@ -1281,6 +1288,21 @@
     };
   }
 
+  /** Each column's type, from the side the grid's cells show: after the step, or before where
+   * the step removed the field. The head shows it as a declaration does, `status: i64`, so
+   * a field nothing declares shows none. */
+  let columnTypes = $derived.by(() => {
+    const declared =
+      pausedByRow && pauseRun ? pauseRun.declared : { before: sampleDeclared, after: runDeclared };
+    return new Map(
+      columns.map((path) => {
+        const after = typeAt(declared.after, path);
+        const type = after === 'undeclared' ? typeAt(declared.before, path) : after;
+        return [path, type === 'undeclared' ? null : type];
+      }),
+    );
+  });
+
   // Each row's leaves, both sides, by path: what a cell, the search and the
   // sort read, without diffing a row nobody is looking at. The sample's side
   // is read once per sample rather than once per run.
@@ -1519,8 +1541,8 @@
     return { start, end, above: tops[start], below: tops[n] - tops[end] };
   });
 
-  // Widths fixed per column, from the values a column holds, so a column does
-  // not jump as rows scroll past. Read off the first rows of the run rather
+  // Widths fixed per column, from its head and the values it holds, so a column
+  // does not jump as rows scroll past. Read off the first rows of the run rather
   // than all of them: enough to size by, and the same whichever are drawn.
   const COLUMN_CH = 28;
   const COLUMN_MIN_CH = 6;
@@ -1528,7 +1550,9 @@
   let columnWidths = $derived.by(() => {
     const sized = rowsMaps.slice(0, SIZED_ROWS);
     return columns.map((path) => {
-      let w = COLUMN_MIN_CH;
+      const type = showTypes ? columnTypes.get(path) : null;
+      // The name, `: ` and its type, and the sort arrow.
+      let w = Math.max(COLUMN_MIN_CH, path.length + (type ? type.length + 2 : 0) + 2);
       for (const m of sized) {
         if (w >= COLUMN_CH) break;
         if (m.after.has(path) || m.before.has(path))
@@ -2059,10 +2083,16 @@
                   aria-pressed={changedOnly}
                   onclick={() => (changedOnly = !changedOnly)}
                 >
-                  Changed only
+                  Show only changed fields
                 </button>
-                <button type="button" onclick={() => (showTypes = !showTypes)}>
-                  {showTypes ? 'Hide types' : 'Show types'}
+                <button
+                  type="button"
+                  class="toggle"
+                  class:on={showTypes}
+                  aria-pressed={showTypes}
+                  onclick={() => (showTypes = !showTypes)}
+                >
+                  Show types
                 </button>
                 <span class="grow"></span>
                 {#if !readOnly}
@@ -2115,7 +2145,9 @@
                               ><SortButton sort={gridSort} key={path}
                                 ><span class="head-name"
                                   ><span class="path-prefix">{name.prefix}</span>{name.leaf}</span
-                                ></SortButton
+                                >{#if showTypes && columnTypes.get(path)}<span class="head-type"
+                                    >{': '}{columnTypes.get(path)}</span
+                                  >{/if}</SortButton
                               ></th
                             >
                           {/each}
@@ -2179,7 +2211,11 @@
                               aria-label={`record ${row.row}`}
                               bind:offsetHeight={openHeights[row.row]}
                             >
-                              <td class="expanded-cell" colspan={columns.length + 2}>
+                              <td
+                                class="expanded-cell"
+                                colspan={columns.length + 2}
+                                style:--pane-width={`${paneWidth}px`}
+                              >
                                 <div class="row-head-wrap">
                                   <div class="row-head">
                                     <span class="row-index">row {row.row}</span>
@@ -2212,10 +2248,7 @@
                                     </p>
                                   {/each}
                                 </div>
-                                <div
-                                  class="record-body"
-                                  style:max-width={`calc(${paneWidth}px - 1.5rem)`}
-                                >
+                                <div class="record-body">
                                   <RecordFields
                                     before={sides.before}
                                     after={sides.after}
@@ -2574,9 +2607,7 @@
 
   /* A rule under it, not just a gap, so the row it names and the fields
      below it read as three things -- the folded row above, this head, the
-     record -- rather than one tinted block. On the wrapper, not `.row-head`
-     itself, so it spans the cell's full width rather than shrinking to the
-     sticky content's `width: max-content`. */
+     record -- rather than one tinted block. */
   .row-head-wrap {
     padding: 0.4rem 0;
     margin-bottom: 0.4rem;
@@ -2648,7 +2679,7 @@
     font-size: var(--text-micro);
     position: sticky;
     top: 0;
-    /* Above the open record's body, which is sticky too and later in the page. */
+    /* Above the rows scrolling under it, which come later in the page. */
     z-index: 1;
     background: var(--bg);
   }
@@ -2693,11 +2724,11 @@
     padding: 0.5rem 0.5rem 0.5rem 0.75rem;
   }
 
-  /* The record follows the left edge as the grid scrolls sideways, and wraps
-     to what shows of it rather than to the width of every column. */
+  /* The record moves with its row as the grid scrolls sideways, and wraps to
+     the pane's width rather than to the width of every column. */
+  .row-head-wrap,
   .record-body {
-    position: sticky;
-    left: 0.75rem;
+    max-width: calc(var(--pane-width) - 1.5rem);
   }
 
   /* A row that failed is the one to read, so it is the one that stands out. */
@@ -2716,8 +2747,6 @@
 
   /* Why the row failed, under its head, in the words the step gave. */
   .exception {
-    position: sticky;
-    left: 0.75rem;
     width: max-content;
     max-width: 100%;
     margin: 0.3rem 0 0;
@@ -2740,14 +2769,18 @@
     text-overflow: ellipsis;
   }
 
-  /* The head of an open record follows the left edge rather than scrolling
-     away: this cell is as wide as the whole table. A floor rather than
-     shrink-to-fit, so the row's own identity and its summary have room to
-     sit at opposite ends instead of crowding together on the left. */
-  .expanded-cell .row-head {
-    position: sticky;
-    left: 0.75rem;
-    width: max-content;
+  /* In a column too narrow for both, the type gives way before the name. Its
+     colon sits against the name, as a declaration writes it, inside the sort
+     button's gap. */
+  .head-type {
+    margin-left: -0.25rem;
+    min-width: 0;
+    flex-shrink: 10;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--mono);
+    opacity: 0.7;
+    white-space: nowrap;
   }
 
   /* The nesting recedes so the eye lands on the field's own name. */
