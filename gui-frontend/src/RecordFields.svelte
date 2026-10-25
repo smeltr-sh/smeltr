@@ -22,6 +22,7 @@
   import { formatDiffValue } from './diff';
   import { stepName, type Step } from './pipeline';
   import StepGlyph from './StepGlyph.svelte';
+  import Clamped from './Clamped.svelte';
   import { float } from './float';
   import {
     changedLines,
@@ -124,30 +125,8 @@
     else revealed.add(path);
   }
 
-  // Which clamped values the reader has opened, by path, and which run past
-  // their clamp: only those offer to open.
+  // Which clamped values the reader has opened, by path.
   let opened = $state(new SvelteSet<string>());
-  let overflowing = $state(new SvelteSet<string>());
-
-  /** Says whether a clamped value is cut short, as its width changes. */
-  function clampWatch(node: HTMLElement, path: string) {
-    let at = path;
-    const check = () => {
-      if (!node.classList.contains('clamped')) return;
-      const over = node.scrollHeight > node.clientHeight + 1;
-      if (over && !overflowing.has(at)) overflowing.add(at);
-      else if (!over && overflowing.has(at)) overflowing.delete(at);
-    };
-    const observer = new ResizeObserver(check);
-    observer.observe(node);
-    return {
-      update(next: string) {
-        at = next;
-        check();
-      },
-      destroy: () => observer.disconnect(),
-    };
-  }
 
   function toggleLong(path: string) {
     if (opened.has(path)) opened.delete(path);
@@ -228,25 +207,13 @@
         <span class="arrow">&rarr;</span>{formatDiffValue(line.after)}
       </span>
     {:else}
-      {@const open = opened.has(line.path)}
-      <span class="value-col">
-        <span
-          class="value"
-          class:gone={line.state === 'removed'}
-          class:clamped={!open}
-          use:clampWatch={line.path}>{body}</span
-        >
-        {#if open || overflowing.has(line.path)}
-          <button
-            type="button"
-            class="more"
-            aria-expanded={open}
-            aria-label={`${open ? 'collapse' : 'expand'} the value of ${line.path}`}
-            onclick={() => toggleLong(line.path)}
-            >{open ? 'less' : `Show all ${body.length.toLocaleString('en-US')} characters`}</button
-          >
-        {/if}
-      </span>
+      <Clamped
+        text={body}
+        open={opened.has(line.path)}
+        ontoggle={() => toggleLong(line.path)}
+        label={line.path}
+        gone={line.state === 'removed'}
+      />
     {/if}
   </div>
   {#if line.state === 'changed' && !inline}
@@ -468,31 +435,12 @@
     font-weight: 400;
   }
 
-  /* Every value starts here, whatever its key's depth. Wrapped rather than
-     clipped: a value the panel is too narrow for is still one someone has to
-     read, and the field cannot be scrolled sideways. */
-  .value-col {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    min-width: 0;
-  }
-
+  /* Wrapped rather than clipped: a value the panel is too narrow for is still
+     one someone has to read, and the field cannot be scrolled sideways. */
   .value {
     min-width: 0;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
-  }
-
-  /* Three lines is enough to recognize a value by; past that it is opened
-     deliberately, so one long field cannot push the rest of the record off
-     the panel. */
-  .clamped {
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    line-clamp: 3;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
   }
 
   .more {

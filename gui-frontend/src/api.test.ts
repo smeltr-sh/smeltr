@@ -29,6 +29,15 @@ describe('recordsFromText', () => {
     expect(recordsFromText(text)).toEqual([{ _raw: '{"a":1,"b":2}' }]);
   });
 
+  it('takes an object with a `_raw` field as a whole record', () => {
+    const text = '{"_raw":"a","__capture":{"group":"g"}}\nplain';
+    expect(recordsFromText(text)).toEqual([
+      { _raw: 'a', __capture: { group: 'g' } },
+      { _raw: 'plain' },
+    ]);
+    expect(recordsFromText('[{"_raw":"a"},{"b":2}]')).toEqual([{ _raw: 'a' }, { _raw: '{"b":2}' }]);
+  });
+
   it('takes a JSON array as one record per element', () => {
     const text = '[{"a":1},{"b":2},{"c":3}]';
     expect(recordsFromText(text)).toEqual([
