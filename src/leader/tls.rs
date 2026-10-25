@@ -14,6 +14,11 @@
 //!   key.pem      the server's private key     --  owner-only
 //! ```
 //!
+//! The leader can serve a certificate from the certificate list instead. `served.json` names the entry and version,
+//! and the certificate and key are read from the list each time the socket loads them; nothing of the entry is
+//! copied here but the root a worker is given for it. The leader's own authority stays beneath, untouched, so
+//! removing `served.json` is the whole of going back.
+//!
 //! The authority is written once and kept; losing `ca-key.pem` means a new authority and a visit to every worker.
 //! The server certificate is issued at every start instead. Nobody holds a copy of it, so a fresh one costs
 //! nothing, a name added to the configuration takes effect on restart, and the path that rotates it is the path
@@ -30,6 +35,7 @@ use rcgen::{
 use time::OffsetDateTime;
 
 use super::private_file;
+use super::store::Store;
 
 /// The authority's certificate. The file an operator copies to every worker.
 pub const CA_CERT: &str = "ca.pem";
@@ -45,9 +51,11 @@ const ROTATION: &str = "rotation.json";
 const SERVER_CERT: &str = "cert.pem";
 const SERVER_KEY: &str = "key.pem";
 
-/// Where a certificate an operator supplied lives, holding the same three names. A directory rather than three
-/// differently-named files, so what is in force is answered by one thing existing and going back is removing it.
-pub const SUPPLIED_DIR: &str = "supplied";
+/// Which entry of the certificate list is served, where one is ([`Entry`]).
+const SERVED: &str = "served.json";
+
+/// Where a certificate was supplied as files, before the list kept certificates. Read only to say it is not served.
+const SUPPLIED_BEFORE_THE_LIST: &str = "supplied";
 
 /// The authority's subject, and so the issuer named in every certificate it signs. It is on-disk format: signing
 /// for an authority already on disk means naming it exactly as that certificate does.
@@ -74,32 +82,136 @@ const BACKDATE: Duration = Duration::from_secs(60 * 60);
 pub struct Materials {
     /// The authority's certificate, PEM. A worker verifies the leader against this.
     pub ca_pem: Vec<u8>,
-    pub server_cert_path: PathBuf,
-    pub server_key_path: PathBuf,
+    /// The certificate a client is shown, PEM, with any intermediates after it.
+    pub served: Vec<u8>,
     /// Set when this call created the authority: the one moment an operator has to be told to copy `ca.pem`.
     pub authority_created: bool,
-    /// Whether an operator supplied this, rather than it being the leader's own.
-    ///
-    /// Not `supplied/` existing: for the length of an upload's two renames the set in force sits under the other
-    /// name, and a caller reading the directory would call a supplied certificate the leader's own.
+    /// Whether this is an entry of the certificate list, rather than the leader's own.
     pub supplied: bool,
+}
+
+/// A version of an entry of the certificate list, as the leader serves it or rotates to it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Entry {
+    pub name: String,
+    pub version: i64,
+    /// The root a worker is given to verify it, PEM. Fixed when the entry is chosen: where the chain leaves its root
+    /// out, the platform's roots supplied it, and what workers are handed must not move when those do.
+    pub ca: String,
 }
 
 /// Prepares `dir` to serve TLS, and reports what a worker needs.
 ///
 /// `sans` are the names the server certificate carries. `validity` is how long a certificate written here lives;
 /// an authority already on disk keeps the period it was created with.
+///
+/// A list entry that cannot be served -- its key no longer opens, or it no longer passes [`check_supplied`] -- does
+/// not stop a start. The leader serves its own certificate and [`unserved`] says why, while `served.json` still
+/// names the entry: workers keep verifying by its root, and serving it again brings them back. A certificate
+/// supplied as files, before the list kept certificates, is one of these.
 pub fn ensure(dir: &Path, sans: Vec<String>, validity: Duration, required: &[String]) -> Result<Materials, String> {
     private_file::create_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    recover(dir)?;
+    recover_rotation(dir)?;
+    let own = ensure_own(dir, sans.clone(), validity)?;
+    let why = match served(dir)? {
+        Some(entry) => match entry_serves(dir, &entry, &sans, required) {
+            Ok(()) => return current(dir),
+            Err(e) => format!(
+                "This leader is serving a \"Leader issued\" certificate instead of {:?}, which cannot be served \
+                 because {e}. Choose a certificate under Source.",
+                entry.name
+            ),
+        },
+        None if dir.join(SUPPLIED_BEFORE_THE_LIST).exists() => format!(
+            "This leader is serving a \"Leader issued\" certificate instead of the one in {}, which is not in the \
+             certificate list. Add it under Admin → Certificates, then choose it under Source.",
+            dir.join(SUPPLIED_BEFORE_THE_LIST).display()
+        ),
+        None => return Ok(own),
+    };
+    tracing::warn!(target: "leader.certificate_unserved", "{why}");
+    // Parted until something is served again: everything that reads what is in force waits for that.
+    with_generations(dir, |held| {
+        held.disk += 1;
+        held.unserved = Some(why);
+    });
+    Ok(Materials { supplied: false, ..own })
+}
 
-    // An operator's own certificate wins while it is there, and the leader's authority is left untouched beneath
-    // it, so removing `supplied/` is the whole of going back. Checked again here rather than trusted from the
-    // upload: a renewal can replace these files while this leader is stopped, and nothing else reads them.
-    if let Some(supplied) = checked_supplied(dir, &sans, required)? {
-        return Ok(supplied);
-    }
-    ensure_own(dir, sans, validity)
+/// What an admin is told while the list entry this leader serves is not what its socket presents, since the start
+/// that found it could not serve it: why, and what to do. Cleared by the next replacement of what is served.
+pub fn unserved(dir: &Path) -> Option<String> {
+    let held = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    held.as_ref()
+        .and_then(|all| all.get(dir))
+        .and_then(|held| held.unserved.clone())
+}
+
+/// Reads the certificate list for `dir`, which a served [`Entry`] is a version of. Registered by whatever opened
+/// the list, before [`ensure`].
+pub fn read_list(dir: &Path, list: std::sync::Arc<dyn Store>) {
+    LISTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(dir.to_path_buf(), list);
+}
+
+/// Per directory, the certificate list its entries come from. A process holding several leaders, as a test binary
+/// does, holds one each.
+static LISTS: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, std::sync::Arc<dyn Store>>>> =
+    std::sync::Mutex::new(None);
+
+fn list_of(dir: &Path) -> Result<std::sync::Arc<dyn Store>, String> {
+    LISTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|all| all.get(dir).cloned())
+        .ok_or_else(|| format!("no certificate list is open for {}", dir.display()))
+}
+
+/// The chain `entry` serves, PEM, without its root.
+fn entry_chain(dir: &Path, entry: &Entry) -> Result<Vec<u8>, String> {
+    let chain = list_of(dir)?
+        .certificate_chain(&entry.name, entry.version)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "version {} of the certificate {:?} is not in the certificate list",
+                entry.version, entry.name
+            )
+        })?;
+    let (served, _) = split_root(chain.as_bytes(), entry.ca.as_bytes())?.ok_or_else(|| {
+        format!(
+            "the certificate {:?} is not signed under the root it was served with",
+            entry.name
+        )
+    })?;
+    Ok(served)
+}
+
+/// [`entry_chain`], and the private key: both PEM.
+fn entry_pair(dir: &Path, entry: &Entry) -> Result<(Vec<u8>, Vec<u8>), String> {
+    // The chain first: a version gone from the list is said as that, not as a key that does not open.
+    let chain = entry_chain(dir, entry)?;
+    let opened = (list_of(dir)?)
+        .secrets_for_delivery(&[(entry.name.clone(), entry.version)], &[])
+        .map_err(|e| e.to_string())?;
+    let key = opened.into_iter().next().ok_or_else(|| {
+        format!(
+            "the key of version {} of the certificate {:?} does not open",
+            entry.version, entry.name
+        )
+    })?;
+    Ok((chain, key.value.into_bytes()))
+}
+
+/// Everything serving `entry` has to satisfy, asked of it as the list holds it now.
+fn entry_serves(dir: &Path, entry: &Entry, names: &[String], required: &[String]) -> Result<(), String> {
+    let (chain, key) = entry_pair(dir, entry)?;
+    check_supplied(&chain, &key, entry.ca.as_bytes(), names, required)
 }
 
 /// This leader's own authority and a current certificate under it, whatever is supplied on top.
@@ -165,10 +277,9 @@ fn own(dir: &Path, sans: Vec<String>, validity: Duration) -> Result<Materials, S
     let authority_created = !(ca_cert_path.exists() && ca_key_path.exists());
 
     match prepare(dir, sans, validity, authority_created) {
-        Ok(ca_pem) => Ok(Materials {
+        Ok((ca_pem, served)) => Ok(Materials {
             ca_pem,
-            server_cert_path: dir.join(SERVER_CERT),
-            server_key_path: dir.join(SERVER_KEY),
+            served,
             authority_created,
             supplied: false,
         }),
@@ -185,20 +296,54 @@ fn own(dir: &Path, sans: Vec<String>, validity: Duration) -> Result<Materials, S
     }
 }
 
-/// What is on disk now, writing nothing. [`ensure`] is what puts it there and issues a certificate doing so;
+/// What is in force now, writing nothing. [`ensure`] is what puts it there and issues a certificate doing so;
 /// anything that only wants to look reaches for this, or looking would change what is being looked at.
 pub fn current(dir: &Path) -> Result<Materials, String> {
-    if let Some(supplied) = supplied(dir)? {
-        return Ok(supplied);
+    let _reading = changing();
+    current_held(dir)
+}
+
+/// [`current`], for a caller already holding [`changing`].
+fn current_held(dir: &Path) -> Result<Materials, String> {
+    if let Some(entry) = served(dir)?
+        // An entry gone from the list is one a start already fell back from: what it serves is all there is.
+        && let Some(served) = entry_chain(dir, &entry).map(Some).or_else(|e| match unserved(dir) {
+            Some(_) => Ok(None),
+            None => Err(e),
+        })?
+    {
+        // The entry's root, and during a rotation the incoming one beside it: what every worker is given is
+        // derived, so a rotation's overlap is published by writing its intent and gone with it.
+        let ca_pem = match rotation(dir)? {
+            Some(state) => with_incoming(entry.ca.as_bytes(), &state)?,
+            None => entry.ca.into_bytes(),
+        };
+        return Ok(Materials {
+            ca_pem,
+            served,
+            authority_created: false,
+            supplied: true,
+        });
     }
-    let ca_cert_path = dir.join(CA_CERT);
+    let read = |name: &str| std::fs::read(dir.join(name)).map_err(|e| format!("{}: {e}", dir.join(name).display()));
     Ok(Materials {
-        ca_pem: std::fs::read(&ca_cert_path).map_err(|e| format!("{}: {e}", ca_cert_path.display()))?,
-        server_cert_path: dir.join(SERVER_CERT),
-        server_key_path: dir.join(SERVER_KEY),
+        ca_pem: read(CA_CERT)?,
+        served: read(SERVER_CERT)?,
         authority_created: false,
         supplied: false,
     })
+}
+
+/// The entry of the certificate list this leader serves, where it serves one.
+pub fn served(dir: &Path) -> Result<Option<Entry>, String> {
+    let path = dir.join(SERVED);
+    match std::fs::read(&path) {
+        Ok(raw) => serde_json::from_slice(&raw)
+            .map(Some)
+            .map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
 }
 
 /// Where a leader keeps what it serves TLS with, under its data directory. Read wherever the material is written
@@ -232,16 +377,26 @@ static CHANGING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// builds no socket, and needs nothing to notice that it has no socket at all.
 static GENERATIONS: std::sync::Mutex<Option<Generations>> = std::sync::Mutex::new(None);
 
-/// Per directory: the state its files are in, and the state of them the socket loaded.
-type Generations = std::collections::HashMap<PathBuf, (u64, u64)>;
+type Generations = std::collections::HashMap<PathBuf, Held>;
+
+/// Per directory: the state its files are in, the state of them the socket loaded, and why the two parted at a
+/// start that could not serve the list entry named.
+#[derive(Clone, Default)]
+struct Held {
+    disk: u64,
+    socket: u64,
+    unserved: Option<String>,
+}
 
 /// The state of `dir` on disk, and the state of it the socket loaded.
 fn generations(dir: &Path) -> (u64, u64) {
     let held = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
-    held.as_ref().and_then(|all| all.get(dir).copied()).unwrap_or((0, 0))
+    held.as_ref()
+        .and_then(|all| all.get(dir))
+        .map_or((0, 0), |held| (held.disk, held.socket))
 }
 
-fn with_generations<T>(dir: &Path, change: impl FnOnce(&mut (u64, u64)) -> T) -> T {
+fn with_generations<T>(dir: &Path, change: impl FnOnce(&mut Held) -> T) -> T {
     let mut held = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
     change(
         held.get_or_insert_with(Default::default)
@@ -294,7 +449,7 @@ pub fn reload(dir: &Path) {
 /// awaited, and claiming the latest would report the socket holding material it never saw. A reload that failed
 /// says nothing at all, leaving the socket on the older state it still serves.
 pub fn socket_took(dir: &Path, generation: u64) {
-    with_generations(dir, |pair| pair.1 = generation);
+    with_generations(dir, |held| held.socket = generation);
 }
 
 /// Says what this leader presents has been replaced, and asks for the socket to catch up.
@@ -304,7 +459,10 @@ pub fn socket_took(dir: &Path, generation: u64) {
 /// built then settles. Asking for the reload here is what makes the two numbers meet again -- without it a
 /// replacement could leave the leader refusing every authority read with nothing scheduled to put it right.
 fn replaced_what_is_served(dir: &Path) {
-    with_generations(dir, |pair| pair.0 += 1);
+    with_generations(dir, |held| {
+        held.disk += 1;
+        held.unserved = None;
+    });
     reload(dir);
 }
 
@@ -312,37 +470,17 @@ fn changing() -> std::sync::MutexGuard<'static, ()> {
     CHANGING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// What is in force, and the certificate it serves: the pair, read together.
-///
-/// Anything deciding what this leader presents needs both, and needs them from one set. [`current`] answers the
-/// first alone, for a caller that only wants the paths.
-pub fn in_force(dir: &Path) -> Result<(Materials, Vec<u8>), String> {
-    let _reading = changing();
-    in_force_held(dir)
-}
-
-/// [`in_force`], for a caller already holding [`changing`].
-fn in_force_held(dir: &Path) -> Result<(Materials, Vec<u8>), String> {
-    let materials = current(dir)?;
-    let served = std::fs::read(&materials.server_cert_path)
-        .map_err(|e| format!("{}: {e}", materials.server_cert_path.display()))?;
-    Ok((materials, served))
-}
-
-/// Whether a certificate of this leader's own is on disk, under any of the three names an upload's two renames
-/// can leave it under.
+/// Whether a certificate of this leader's own is on disk, or a list entry is named to serve.
 ///
 /// Checked without the lock a replacement holds, for a caller deciding whether to look further rather than one
-/// asking what is in force -- but `supplied/` sits empty for the length of one rename during an upload, with the
-/// set it is replacing waiting under [`PREVIOUS_DIR`], so a check that stopped at `supplied/` and [`CA_CERT`]
-/// would read a leader mid-upload as having none.
+/// asking what is in force.
 ///
 /// `Err` where a name could not be checked -- a permission error, or the directory itself gone missing -- rather than
 /// folded into `false`. `exists()` makes that same fold, and a caller reading its `false` as "no certificate" would
 /// mint an enrollment code naming no root, or spend one that names none, for a leader a moment's read failure never
 /// actually asked.
 pub fn has_own_material(dir: &Path) -> Result<bool, String> {
-    for name in [CA_CERT, SUPPLIED_DIR, PREVIOUS_DIR] {
+    for name in [CA_CERT, SERVED] {
         let path = dir.join(name);
         if path.try_exists().map_err(|e| format!("{}: {e}", path.display()))? {
             return Ok(true);
@@ -357,42 +495,41 @@ pub fn has_own_material(dir: &Path) -> Result<bool, String> {
 /// replacement takes. Asked apart, a caller can be handed the certificate from before a cutover and the rotation
 /// from after it -- `None` where a moment ago it was `Some` -- and a root read that way is one this leader had
 /// already stopped signing under by the time it was named.
-pub fn in_force_and_rotation(dir: &Path) -> Result<(Materials, Vec<u8>, Option<Rotation>), String> {
+pub fn current_and_rotation(dir: &Path) -> Result<(Materials, Option<Rotation>), String> {
     let _reading = changing();
-    let (materials, served) = in_force_held(dir)?;
-    let rotation = rotation(dir)?;
-    Ok((materials, served, rotation))
+    Ok((current_held(dir)?, rotation(dir)?))
 }
 
 /// What is in force, and nothing at all while the socket is not presenting it.
 ///
-/// One answer rather than two. A caller that asks whether the socket agrees and then reads the files can be told
-/// yes, have an upload swap whole directories underneath, and hand back an authority no handshake presents -- which
-/// is a worker pinning a root its next request refuses. Both come from inside the lock a replacement takes.
-pub fn in_force_if_agreed(dir: &Path) -> Result<(Materials, Vec<u8>), Refused> {
-    let _reading = changing();
-    presenting_what_is_read(dir)?;
-    in_force_held(dir).map_err(Refused::Unavailable)
-}
-
-/// [`in_force_if_agreed`] for a caller that wants only what is in force, not the certificate it serves.
+/// One answer rather than two. A caller that asks whether the socket agrees and then reads what is in force can be
+/// told yes, have a replacement land underneath, and hand back an authority no handshake presents -- which is a
+/// worker pinning a root its next request refuses. Both come from inside the lock a replacement takes.
 pub fn current_if_agreed(dir: &Path) -> Result<Materials, Refused> {
     let _reading = changing();
     presenting_what_is_read(dir)?;
-    current(dir).map_err(Refused::Unavailable)
+    current_held(dir).map_err(Refused::Unavailable)
 }
 
-/// What the socket should load, and the state of the disk it belongs to.
+/// What the socket should load, as a chain and its private key, and the state of the disk it belongs to.
 ///
 /// The two together, under the lock, because what comes back is what [`socket_took`] will be told the socket has.
-/// Read apart, a replacement landing between them pairs one state's number with another's files, and the socket is
-/// recorded as holding material it never saw.
-pub fn to_serve(dir: &Path) -> Result<(u64, Materials), String> {
+/// Read apart, a replacement landing between them pairs one state's number with another's certificate, and the
+/// socket is recorded as holding material it never saw.
+pub fn to_serve(dir: &Path) -> Result<(u64, Vec<u8>, Vec<u8>), String> {
     let _reading = changing();
-    Ok((disk_generation(dir), current(dir)?))
+    let generation = disk_generation(dir);
+    if let Some(entry) = served(dir)?
+        && unserved(dir).is_none()
+    {
+        let (chain, key) = entry_pair(dir, &entry)?;
+        return Ok((generation, chain, key));
+    }
+    let read = |name: &str| std::fs::read(dir.join(name)).map_err(|e| format!("{}: {e}", dir.join(name).display()));
+    Ok((generation, read(SERVER_CERT)?, read(SERVER_KEY)?))
 }
 
-/// The same condition [`socket_agrees`] asks, answered for somebody reading these files rather than moving a
+/// The same condition [`socket_agrees`] asks, answered for somebody reading what is in force rather than moving a
 /// rotation: what they would be handed is not what a handshake would show them, and the remedy is the same.
 fn presenting_what_is_read(dir: &Path) -> Result<(), Refused> {
     if socket_has_what_is_on_disk(dir) {
@@ -405,71 +542,32 @@ fn presenting_what_is_read(dir: &Path) -> Result<(), Refused> {
     ))
 }
 
-/// Where a supplied set is assembled before it replaces the one in force.
-const STAGING_DIR: &str = "supplied.staging";
-/// Where the set in force waits while the new one takes its place, so one whole set always exists.
-const PREVIOUS_DIR: &str = "supplied.previous";
-/// Where a withdrawn set waits to be removed, out of the path a start reads.
-const DISCARD_DIR: &str = "supplied.discarded";
-/// Where an uploaded set waits while the rotation that will put it in force runs. Its root is published to the
-/// fleet from here; nothing serves it until the cutover moves it to [`SUPPLIED_DIR`].
-const INCOMING_DIR: &str = "supplied.incoming";
-
-/// Puts back a set that an upload interrupted between its two renames left under the other name, and drops what an
-/// interrupted withdrawal left behind. What makes "one whole set always exists" hold across a restart as well as
-/// within one.
-///
-/// A start, before anything serves. Renaming while the leader is running would race an upload's own renames.
-fn recover(dir: &Path) -> Result<(), String> {
-    let in_force = dir.join(SUPPLIED_DIR);
-    let previous = dir.join(PREVIOUS_DIR);
-    if in_force.exists() {
-        // An upload that finished but died before its own cleanup. Kept, `supplied/` would one day be withdrawn
-        // and this set would answer in its place, putting back the certificate an operator had just replaced.
-        remove_durably(&previous)?;
-    } else if previous.exists() {
-        rename_durably(&previous, &in_force)?;
-    }
-    recover_rotation(dir)?;
-    // A withdrawn private key nothing reads is one nothing should keep. It sits outside the path a start reads,
-    // so one that will not go is worth saying rather than refusing to start over.
-    if let Err(e) = remove_durably(&dir.join(DISCARD_DIR)) {
-        tracing::warn!(
-            target: "leader.withdrawn_certificate_kept",
-            error = %e,
-            "a withdrawn certificate's private key could not be removed and is still on disk"
-        );
-    }
-    Ok(())
-}
-
 /// Settles a rotation interrupted between any two of its steps.
 ///
-/// A rotation stages what it installs, then writes its intent, then the bundle, and cuts over by installing it
-/// and dropping the intent. Every gap in that order leaves one of four states, and which one it is can be read
-/// off the disk: whether what is in force is signed under the incoming root says whether the cutover ran
-/// ([`promoted`]), and whether what it installs is still there whole says whether it still could.
+/// A rotation of the leader's own authority writes its next key, then its intent, then the bundle, and cuts over by
+/// promoting the key and dropping the intent; one to or from a list entry writes only the intent, which publishes
+/// the overlap by itself, and cuts over by writing or removing [`SERVED`]. Every gap in that order leaves a state
+/// that can be read off the disk: whether what is in force is what the rotation installs says whether the cutover
+/// ran ([`promoted`]), and whether what it installs is still there says whether it still could.
 ///
-/// A start, with [`recover`], before anything serves.
+/// A start, before anything serves.
 fn recover_rotation(dir: &Path) -> Result<(), String> {
     let next_key_path = dir.join(NEXT_CA_KEY);
-    let incoming_dir = dir.join(INCOMING_DIR);
     let Some(state) = rotation(dir)? else {
         // Written before the intent that claims it, so one left without an intent is from a beginning that died
         // and belongs to an authority no bundle holds: the bundle is written last.
-        if next_key_path.exists() || incoming_dir.exists() {
+        if next_key_path.exists() {
             tracing::warn!(
                 target: "leader.rotation_abandoned",
                 "a certificate authority rotation did not get far enough to be resumed, and was dropped"
             );
             remove_file_durably(&next_key_path)?;
-            remove_durably(&incoming_dir)?;
         }
         return Ok(());
     };
 
-    // The cutover installs, then drops the intent. What is in force being signed under the incoming root already
-    // is what says the installing took, whatever else is still lying about.
+    // The cutover installs, then drops the intent. What is in force being what it installs already is what says
+    // the installing took, whatever else is still lying about.
     if promoted(dir, &state)? {
         // Where a cutover interrupted between the two lands. Asked unconditionally: the root is already gone on
         // the ordinary path, and dropping one that is not there writes nothing.
@@ -479,19 +577,17 @@ fn recover_rotation(dir: &Path) -> Result<(), String> {
             Installs::Own => {}
         }
         remove_rotation(dir)?;
-        remove_file_durably(&next_key_path)?;
-        remove_durably(&incoming_dir)?;
-        return Ok(());
+        return remove_file_durably(&next_key_path);
     }
 
     // Not cut over, and nothing left to cut over with. Serving the outgoing root is what this leader has been
     // doing all along, so going back to it alone strands nobody.
-    let can_still = match state.installs {
-        Installs::NextKey => next_key_path.exists(),
-        Installs::Supplied => staged(dir, INCOMING_DIR),
-        Installs::Own => dir.join(CA_CERT).exists() && dir.join(CA_KEY).exists(),
+    let can_still = match (&state.installs, &state.entry) {
+        (Installs::NextKey, _) => next_key_path.exists(),
+        (Installs::Supplied, Some(entry)) => entry_pair(dir, entry).is_ok(),
+        (Installs::Supplied, None) => false,
+        (Installs::Own, _) => dir.join(CA_CERT).exists() && dir.join(CA_KEY).exists(),
     };
-    let bundle_path = published_path(dir)?;
     if !can_still {
         tracing::warn!(
             target: "leader.rotation_abandoned",
@@ -499,107 +595,28 @@ fn recover_rotation(dir: &Path) -> Result<(), String> {
             "what this leader was rotating to is gone, so the rotation was dropped"
         );
         retire_overlap(dir, &state)?;
-        remove_durably(&incoming_dir)?;
         return remove_rotation(dir);
     }
 
-    // Mid-overlap. The bundle is the step after the intent, so this is where a beginning that died between them
-    // is finished -- from the copy the intent carries, which is why it carries one.
-    let serving = std::fs::read(&bundle_path).map_err(|e| format!("{}: {e}", bundle_path.display()))?;
-    if !describe_each(&serving, CA_CERT)?
-        .iter()
-        .any(|d| d.fingerprint == state.incoming)
-    {
-        publish_bundle(&bundle_path, &serving, &state)?;
+    // Mid-overlap. Where the leader's own bundle is what workers are given, the bundle is the step after the
+    // intent, so this is where a beginning that died between them is finished -- from the copy the intent
+    // carries, which is why it carries one.
+    if served(dir)?.is_none() {
+        let bundle_path = dir.join(CA_CERT);
+        let serving = std::fs::read(&bundle_path).map_err(|e| format!("{}: {e}", bundle_path.display()))?;
+        if !describe_each(&serving, CA_CERT)?
+            .iter()
+            .any(|d| d.fingerprint == state.incoming)
+        {
+            publish_bundle(&bundle_path, &serving, &state)?;
+        }
     }
     Ok(())
 }
 
-/// The certificate an operator supplied, where there is one. `None` leaves [`ensure`] to the leader's own.
-///
-/// Checked on every start rather than only on upload: the files can be replaced under a stopped leader, and one
-/// that served an expired certificate because it was told to once is one nobody can reach.
-fn supplied(dir: &Path) -> Result<Option<Materials>, String> {
-    let supplied = supplied_dir(dir);
-    let cert_path = supplied.join(SERVER_CERT);
-    let key_path = supplied.join(SERVER_KEY);
-    let ca_path = supplied.join(CA_CERT);
-    let present = [&cert_path, &key_path, &ca_path].iter().filter(|p| p.exists()).count();
-    if present == 0 {
-        return Ok(None);
-    }
-    // Some of a set is not the absence of one. Falling back to this leader's own authority here would serve a
-    // certificate no worker pinned to the supplied one will accept, quietly, where refusing says what to repair.
-    if present < 3 {
-        return Err(format!(
-            "{} holds only part of a certificate set. It needs {SERVER_CERT}, {SERVER_KEY} and {CA_CERT}; put the \
-             missing ones back, or remove the directory to go back to this leader's own authority.",
-            supplied.display()
-        ));
-    }
-
-    Ok(Some(Materials {
-        ca_pem: std::fs::read(&ca_path).map_err(|e| format!("{}: {e}", ca_path.display()))?,
-        server_cert_path: cert_path,
-        server_key_path: key_path,
-        authority_created: false,
-        supplied: true,
-    }))
-}
-
-/// Where the supplied set in force is, whether or not there is one.
-///
-/// For the length of an upload's two renames the set in force sits under its other name. Reading it there answers
-/// with what is still being served, and leaves those renames alone: a read that put the set back would make the
-/// upload's own rename land on a directory that exists, failing a replacement nothing was wrong with.
-fn supplied_dir(dir: &Path) -> PathBuf {
-    let in_force = dir.join(SUPPLIED_DIR);
-    if in_force.exists() || !dir.join(PREVIOUS_DIR).exists() {
-        in_force
-    } else {
-        dir.join(PREVIOUS_DIR)
-    }
-}
-
-/// The file every worker is handed: the authority of the set in force. During a rotation it holds the incoming
-/// root beside the one signing what is served, whichever set that is.
-fn published_path(dir: &Path) -> Result<PathBuf, String> {
-    Ok(if supplied(dir)?.is_some() {
-        supplied_dir(dir).join(CA_CERT)
-    } else {
-        dir.join(CA_CERT)
-    })
-}
-
-/// [`supplied`], having satisfied everything the upload had to. For the path that is about to serve it, where
-/// [`supplied`] alone is for the page that only shows what is there.
-fn checked_supplied(dir: &Path, names: &[String], required: &[String]) -> Result<Option<Materials>, String> {
-    let Some(materials) = supplied(dir)? else {
-        return Ok(None);
-    };
-    // An upload writes this key 0600. A renewal copied in under a stopped leader arrives however `cp` left it, and
-    // nothing else looks at the file again -- the same reason the authority's own key is checked on every start.
-    private_file::check(
-        &materials.server_key_path,
-        "the private key of the certificate this leader serves",
-    )?;
-    let chain = std::fs::read(&materials.server_cert_path)
-        .map_err(|e| format!("{}: {e}", materials.server_cert_path.display()))?;
-    let key = std::fs::read(&materials.server_key_path)
-        .map_err(|e| format!("{}: {e}", materials.server_key_path.display()))?;
-    check_supplied(&chain, &key, &materials.ca_pem, names, required).map_err(|e| {
-        format!(
-            "the certificate under {} cannot be served: {e}. Replace those files, or remove that directory to go \
-             back to this leader's own authority.",
-            dir.join(SUPPLIED_DIR).display()
-        )
-    })?;
-    Ok(Some(materials))
-}
-
 /// Everything [`ensure`] undoes on failure when it was the call that created the authority. Answers the
-/// authority's certificate.
-fn prepare(dir: &Path, sans: Vec<String>, validity: Duration, create: bool) -> Result<Vec<u8>, String> {
+/// authority's certificate and the one it just signed.
+fn prepare(dir: &Path, sans: Vec<String>, validity: Duration, create: bool) -> Result<(Vec<u8>, Vec<u8>), String> {
     // The name the finished certificate is checked against below, and the first a client would be given.
     let name = sans
         .first()
@@ -624,7 +641,7 @@ fn prepare(dir: &Path, sans: Vec<String>, validity: Duration, create: bool) -> R
     let server_cert_path = dir.join(SERVER_CERT);
     let served = std::fs::read(&server_cert_path).map_err(|e| format!("{}: {e}", server_cert_path.display()))?;
     verify(&ca_pem, &served, &name)?;
-    Ok(ca_pem)
+    Ok((ca_pem, served))
 }
 
 /// Refuses an authority that does not vouch for the certificate just signed with it.
@@ -667,112 +684,38 @@ fn verify(ca_pem: &[u8], server_cert_pem: &[u8], name: &str) -> Result<(), Strin
     Ok(())
 }
 
-/// Takes a certificate an operator supplied, in place of one from this leader's own authority.
+/// Serves `entry` of the certificate list in place of this leader's own certificate.
 ///
-/// `chain` is the certificate the leader will serve, with any intermediates after it. `ca` is what a worker must
-/// be given to verify it -- the leader's own authority says nothing about somebody else's certificate, so an
-/// upload that did not carry its own root would leave every worker unable to verify anything, including the
-/// worker inside this process.
+/// For an entry under the root workers already verify by; one under another is reached by
+/// [`begin_supplied_rotation`]. `entry.ca` is what a worker must be given to verify it -- the leader's own authority
+/// says nothing about somebody else's certificate, so an entry that did not carry its own root would leave every
+/// worker unable to verify anything, including the worker inside this process.
 ///
 /// `names` are the names this leader is reached by. A certificate that carries none of them verifies perfectly
-/// and is still a leader nobody can open, over the same connection the upload arrived on.
-pub fn install(
-    dir: &Path,
-    chain: &[u8],
-    key: &[u8],
-    ca: &[u8],
-    names: &[String],
-    required: &[String],
-) -> Result<(), String> {
-    check_supplied(chain, key, ca, names, required)?;
-
-    // Staged whole and moved into place, so a write that fails part way never leaves a new key beside an old
-    // certificate. The worst a failure can leave is no supplied set at all, which is this leader serving its own
-    // authority -- a state it knows how to be in.
+/// and is still a leader nobody can open, over the same connection the request arrived on.
+pub fn serve(dir: &Path, entry: &Entry, names: &[String], required: &[String]) -> Result<(), String> {
     let _replacing = changing();
-    let staging = stage(dir, STAGING_DIR, chain, key, ca)?;
-    take(dir, &staging)?;
-    // A renewal under the root in force arrives while a rotation is open. The set it replaced carried the
-    // overlap in its bundle, and the one now in force carries only its own root: published again from here, or
-    // the next beat hands every worker a bundle without the incoming root, and the rotation waits on a fleet
-    // that was just told to drop it.
-    if let Some(state) = rotation(dir)? {
-        publish_bundle(&published_path(dir)?, ca, &state)?;
-    }
-    Ok(())
+    entry_serves(dir, entry, names, required)?;
+    write_served(dir, Some(entry))
 }
 
-/// Writes a supplied set whole under `dir/under`, replacing whatever was there. Nothing serves it yet.
-fn stage(dir: &Path, under: &str, chain: &[u8], key: &[u8], ca: &[u8]) -> Result<PathBuf, String> {
-    let staging = dir.join(under);
-    remove_durably(&staging)?;
-    private_file::create_dir(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
-    private_file::replace(&staging.join(SERVER_KEY), key).map_err(|e| format!("{}: {e}", SERVER_KEY))?;
-    write_durably(&staging.join(SERVER_CERT), chain).map_err(|e| format!("{}: {e}", SERVER_CERT))?;
-    write_durably(&staging.join(CA_CERT), ca).map_err(|e| format!("{}: {e}", CA_CERT))?;
-    Ok(staging)
-}
-
-/// The certificate an open rotation to a supplied set puts in force, while one is open.
-pub(crate) fn incoming_certificate(dir: &Path) -> Result<Option<Vec<u8>>, String> {
-    let path = dir.join(INCOMING_DIR).join(SERVER_CERT);
-    match std::fs::read(&path) {
-        Ok(pem) => Ok(Some(pem)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    }
-}
-
-/// Whether `dir/under` holds a whole supplied set.
-fn staged(dir: &Path, under: &str) -> bool {
-    let staging = dir.join(under);
-    [SERVER_CERT, SERVER_KEY, CA_CERT]
-        .iter()
-        .all(|name| staging.join(name).exists())
-}
-
-/// Moves the set under `staging` into force, for a caller holding [`CHANGING`].
-fn take(dir: &Path, staging: &Path) -> Result<(), String> {
-    let supplied = dir.join(SUPPLIED_DIR);
-    // The set in force is moved aside rather than removed, and only let go once the new one is in place. A crash
-    // in between leaves one whole set under one of two names, which the next start finds; removing first would
-    // leave a window where a worker pinned to the supplied authority has nothing to come back to.
-    let previous = dir.join(PREVIOUS_DIR);
-    remove_durably(&previous)?;
-    let had_one = supplied.exists();
-    // What is served starts moving here. Staging changed nothing a handshake reaches, and an upload refused
-    // before this point leaves the socket and the disk still describing the same leader.
+/// Names `entry` as what is served, or with `None` goes back to this leader's own certificate, for a caller holding
+/// [`CHANGING`]. One file written whole, so a crash leaves what was served or what replaces it.
+fn write_served(dir: &Path, entry: Option<&Entry>) -> Result<(), String> {
+    // What is served starts moving here. Everything before it changed nothing a handshake reaches.
     replaced_what_is_served(dir);
-    if had_one {
-        rename_durably(&supplied, &previous)?;
-    }
-    if let Err(e) = rename_durably(staging, &supplied) {
-        // Put back what was serving, so a failed upload changes nothing. A failure here leaves the leader with no
-        // supplied set until the next start, which finds this one under the other name and puts it back.
-        if had_one && let Err(e) = rename_durably(&previous, &supplied) {
-            tracing::error!(
-                target: "leader.certificate_not_put_back",
-                error = %e,
-                "an upload failed and the certificate it replaced could not be put back in force; the next start \
-                 does it"
-            );
+    let path = dir.join(SERVED);
+    match entry {
+        Some(entry) => {
+            let json = serde_json::to_vec_pretty(entry).map_err(|e| e.to_string())?;
+            write_durably(&path, &json).map_err(|e| format!("{}: {e}", path.display()))
         }
-        return Err(e);
+        None => remove_file_durably(&path),
     }
-    // The upload is in force from here, so a leftover is not a failed upload. The next start finds `supplied/`
-    // and removes this one.
-    if let Err(e) = remove_durably(&previous) {
-        tracing::warn!(
-            target: "leader.replaced_certificate_kept",
-            error = %e,
-            "the certificate this upload replaced could not be removed and is still on disk"
-        );
-    }
-    Ok(())
 }
 
-/// Everything a supplied set has to satisfy. Run on the upload, and again at every start: the files can be
-/// replaced by a renewal while this leader is stopped, and nothing else would look at them again.
+/// Everything a list entry has to satisfy to be served. Run when it is chosen, and again at every start and at a
+/// cutover: a certificate passes its expiry while it waits, and nothing else would look at it again.
 pub fn check_supplied(
     chain: &[u8],
     key: &[u8],
@@ -869,39 +812,11 @@ pub fn check_supplied(
     Ok(())
 }
 
-/// Gives back the leader's own authority, by removing what an operator supplied. The authority was never touched,
-/// so there is nothing to restore.
+/// Gives back the leader's own authority, by no longer serving the list entry. The authority was never touched, so
+/// there is nothing to restore.
 pub fn uninstall(dir: &Path) -> Result<(), String> {
     let _replacing = changing();
-    withdraw(dir)
-}
-
-/// [`uninstall`] for a caller holding [`CHANGING`].
-fn withdraw(dir: &Path) -> Result<(), String> {
-    let supplied = dir.join(SUPPLIED_DIR);
-    let discard = dir.join(DISCARD_DIR);
-    remove_durably(&discard)?;
-    // Withdrawing means no supplied set under either name. A set left under the other one by an upload that died
-    // before its own cleanup is what the next start puts back, so a withdrawal that cannot clear it has not
-    // withdrawn anything and says so instead.
-    remove_durably(&dir.join(PREVIOUS_DIR))?;
-    replaced_what_is_served(dir);
-    if supplied.exists() {
-        // Moved out of the path a start reads before a single file is removed. A delete that fails part way
-        // through `supplied/` would leave some of a set, which a start refuses to serve and refuses to replace --
-        // a withdrawal that stops the leader coming back.
-        rename_durably(&supplied, &discard)?;
-    }
-    // The withdrawal has taken from here. What is left sits outside the path a start reads, and the next start
-    // removes it.
-    if let Err(e) = remove_durably(&discard) {
-        tracing::warn!(
-            target: "leader.withdrawn_certificate_kept",
-            error = %e,
-            "a withdrawn certificate's private key could not be removed and is still on disk"
-        );
-    }
-    Ok(())
+    write_served(dir, None)
 }
 
 // -- rotating the authority workers verify by ------------------------------------
@@ -936,6 +851,9 @@ pub struct Rotation {
     /// Absent from files written before a cutover could install anything but the next key.
     #[serde(default)]
     pub installs: Installs,
+    /// The list entry the cutover serves, for [`Installs::Supplied`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<Entry>,
 }
 
 /// What cutting over puts in force. The overlap before it, and the recovery around it, do not depend on this.
@@ -945,9 +863,9 @@ pub enum Installs {
     /// `ca-next-key.pem`, promoted to `ca-key.pem`: another authority of this leader's own.
     #[default]
     NextKey,
-    /// The uploaded set under `supplied.incoming/`.
+    /// The list entry [`Rotation::entry`] names.
     Supplied,
-    /// This leader's own authority, by withdrawing the supplied set over it.
+    /// This leader's own authority, by no longer serving the list entry over it.
     Own,
 }
 
@@ -1006,7 +924,7 @@ pub fn rotation_may_begin(dir: &Path, installs: Installs) -> Result<(), Refused>
             "this leader is already rotating its authority. Cut that one over, or abandon it, first.".to_string(),
         ));
     }
-    let supplied = supplied(dir).map_err(Refused::Unavailable)?.is_some();
+    let supplied = served(dir).map_err(Refused::Unavailable)?.is_some();
     match installs {
         // A root minted under a supplied certificate would be one nothing served is signed under: the fleet would
         // move to it and verify nothing by it.
@@ -1026,7 +944,9 @@ pub fn rotation_may_begin(dir: &Path, installs: Installs) -> Result<(), Refused>
     }
     // What the socket presents is not what `ca.pem` describes, so the root a rotation would move away from is not
     // the one any worker is verifying by. Minting against the file would publish an overlap the fleet never sees.
-    if !socket_has_what_is_on_disk(dir) {
+    // Going back to the leader's own from an entry a start could not serve is the exception: no worker verifying
+    // by that entry's root reaches this leader to be given an overlap, so it goes back at once.
+    if !socket_has_what_is_on_disk(dir) && !(installs == Installs::Own && unserved(dir).is_some()) {
         return Err(Refused::Conflict(
             "this leader is presenting a certificate other than the one on disk, so what its workers verify by \
              is not what a rotation would move them off. Restart it first."
@@ -1073,6 +993,7 @@ pub fn begin_rotation(dir: &Path, validity: Duration, deadline_millis: i64, now_
         started_millis: now_ms,
         deadline_millis,
         installs: Installs::NextKey,
+        entry: None,
     };
 
     // Key, then intent, then the bundle every worker is given. Each step is what makes the next one's absence
@@ -1081,7 +1002,7 @@ pub fn begin_rotation(dir: &Path, validity: Duration, deadline_millis: i64, now_
     let next_key_path = dir.join(NEXT_CA_KEY);
     private_file::replace(&next_key_path, key.serialize_pem().as_bytes())
         .map_err(|e| format!("{}: {e}", next_key_path.display()))?;
-    if let Err(e) = open(dir, &ca_cert_path, &serving, &state, now_ms) {
+    if let Err(e) = open(dir, &state, now_ms) {
         // A rotation whose root reached no file is one nothing can finish: promoting its key would leave
         // `ca-key.pem` signing for an authority `ca.pem` does not hold, and every path out of that reads the same
         // way. Nothing was promised to anybody yet, so the whole of it goes back.
@@ -1091,9 +1012,10 @@ pub fn begin_rotation(dir: &Path, validity: Duration, deadline_millis: i64, now_
     Ok(state)
 }
 
-/// Writes the intent, then publishes the incoming root beside `serving` at `bundle_path`. The two steps every
-/// rotation opens with, in the order [`recover_rotation`] relies on: an intent whose root never reached the bundle
-/// puts it there from the copy it carries.
+/// Writes the intent, then publishes the incoming root beside the outgoing one. The two steps every rotation opens
+/// with, in the order [`recover_rotation`] relies on: an intent whose root never reached the bundle puts it there
+/// from the copy it carries. Where a list entry is served, the intent is the publishing: what workers are given
+/// for it is derived ([`current`]).
 ///
 /// Every root this leader has ever rotated away from would otherwise stay in every worker's trust store for
 /// good. rustls does not read a trust anchor's expiry, so one of them is a root that goes on vouching for whoever
@@ -1101,10 +1023,16 @@ pub fn begin_rotation(dir: &Path, validity: Duration, deadline_millis: i64, now_
 /// wholesale, so it is where they go. Never the one still being served.
 ///
 /// Nothing is promised to anybody until the bundle is written, so a failure takes the intent back with it.
-fn open(dir: &Path, bundle_path: &Path, serving: &[u8], state: &Rotation, now_ms: i64) -> Result<(), String> {
+fn open(dir: &Path, state: &Rotation, now_ms: i64) -> Result<(), String> {
     write_rotation(dir, state)?;
-    let published =
-        retire_expired(serving, &state.outgoing, now_ms).and_then(|kept| publish_bundle(bundle_path, &kept, state));
+    if served(dir)?.is_some() {
+        return Ok(());
+    }
+    let bundle_path = dir.join(CA_CERT);
+    let published = std::fs::read(&bundle_path)
+        .map_err(|e| format!("{}: {e}", bundle_path.display()))
+        .and_then(|serving| retire_expired(&serving, &state.outgoing, now_ms))
+        .and_then(|kept| publish_bundle(&bundle_path, &kept, state));
     if let Err(e) = published {
         let _ = remove_rotation(dir);
         return Err(e);
@@ -1138,25 +1066,30 @@ pub fn latest_deadline(dir: &Path, state: &Rotation) -> Result<i64, String> {
 }
 
 fn latest_deadline_held(dir: &Path, state: &Rotation) -> Result<i64, String> {
-    let (materials, served) = in_force_held(dir)?;
+    let materials = current_held(dir)?;
     let incoming = describe(state.incoming_pem.as_bytes(), "the incoming authority")?;
     match state.installs {
         Installs::NextKey => {
             let margin = CUTOVER_MARGIN.as_millis() as i64;
-            let outgoing = signing_root(&materials.ca_pem, &served)?;
+            let outgoing = signing_root(&materials.ca_pem, &materials.served)?;
             Ok((outgoing.not_after_millis - margin).min(incoming.not_after_millis - margin))
         }
-        Installs::Supplied => {
-            let chain = incoming_certificate(dir)?
-                .ok_or_else(|| format!("{INCOMING_DIR} holds no certificate for the rotation to put in force"))?;
-            switch_deadline(&served, &chain, &incoming, i64::MIN)
-        }
+        Installs::Supplied => switch_deadline(&materials.served, &incoming_chain(dir, state)?, &incoming, i64::MIN),
         Installs::Own => {
             let own_path = dir.join(SERVER_CERT);
             let own = std::fs::read(&own_path).map_err(|e| format!("{}: {e}", own_path.display()))?;
-            switch_deadline(&served, &own, &incoming, i64::MIN)
+            switch_deadline(&materials.served, &own, &incoming, i64::MIN)
         }
     }
+}
+
+/// The chain the open rotation's list entry serves.
+fn incoming_chain(dir: &Path, state: &Rotation) -> Result<Vec<u8>, String> {
+    let entry = state
+        .entry
+        .as_ref()
+        .ok_or_else(|| "the rotation names no certificate to put in force".to_string())?;
+    entry_chain(dir, entry)
 }
 
 /// Every reason the open rotation's deadline cannot move to `deadline_millis`, for a caller about to write down
@@ -1241,21 +1174,22 @@ pub(crate) fn signing_root_pem(ca: &[u8], chain: &[u8]) -> Result<(Described, St
         .into_iter()
         .next()
         .ok_or_else(|| format!("{CA_CERT} does not hold the root it was just read from"))?;
-    Ok((root, pem))
+    Ok((root, format!("{pem}\n")))
 }
 
-/// Whether serving an upload would change the root workers verify by, which is what decides between serving it
+/// Whether serving a certificate would change the root workers verify by, which is what decides between serving it
 /// at once and rotating to it.
 pub fn supplying_changes_root(dir: &Path, chain: &[u8], ca: &[u8]) -> Result<bool, String> {
-    let (materials, served) = in_force(dir)?;
-    Ok(signing_root(ca, chain)?.fingerprint != signing_root(&materials.ca_pem, &served)?.fingerprint)
+    let materials = current(dir)?;
+    Ok(signing_root(ca, chain)?.fingerprint != signing_root(&materials.ca_pem, &materials.served)?.fingerprint)
 }
 
-/// Whether withdrawing the supplied set would change the root workers verify by. The leader's own authority is
-/// on disk: [`ensure_own`] ran first, as a withdrawal always has it.
+/// Whether going back from the list entry served to the leader's own would change the root workers verify by. The
+/// leader's own authority is on disk: [`ensure_own`] ran first, as going back always has it.
 pub fn withdrawing_changes_root(dir: &Path) -> Result<bool, String> {
     let _reading = changing();
-    let (materials, served) = in_force_held(dir)?;
+    let materials = current_held(dir)?;
+    let served = materials.served;
     if !materials.supplied {
         return Ok(false);
     }
@@ -1266,61 +1200,55 @@ pub fn withdrawing_changes_root(dir: &Path) -> Result<bool, String> {
     Ok(root_of_key(&own_ca, &own_key)?.fingerprint != signing_root(&materials.ca_pem, &served)?.fingerprint)
 }
 
-/// Takes an uploaded set in under a rotation: its root goes out to the fleet beside the one in force, and what
-/// is served does not move until [`cut_over`] installs it.
+/// Takes a list entry in under a rotation: its root goes out to the fleet beside the one in force, and what is
+/// served does not move until [`cut_over`] serves it.
 ///
-/// For an upload whose root is not the one in force. One under the same root is a renewal, which [`install`]
-/// serves at once: every worker already verifies by it.
+/// For an entry whose root is not the one in force. One under the same root is a renewal, which [`serve`] serves at
+/// once: every worker already verifies by it.
 pub fn begin_supplied_rotation(
     dir: &Path,
-    chain: &[u8],
-    key: &[u8],
-    ca: &[u8],
+    entry: &Entry,
     names: &[String],
     required: &[String],
     now_ms: i64,
 ) -> Result<Rotation, String> {
     let _changing = changing();
     rotation_may_begin(dir, Installs::Supplied).map_err(|e| e.message().to_string())?;
-    check_supplied(chain, key, ca, names, required)?;
+    entry_serves(dir, entry, names, required)?;
+    let chain = entry_chain(dir, entry)?;
 
-    let (materials, served) = in_force_held(dir)?;
-    let outgoing = signing_root(&materials.ca_pem, &served)?;
-    let (incoming, incoming_pem) = signing_root_pem(ca, chain)?;
+    let materials = current_held(dir)?;
+    let outgoing = signing_root(&materials.ca_pem, &materials.served)?;
+    let (incoming, incoming_pem) = signing_root_pem(entry.ca.as_bytes(), &chain)?;
     if incoming.fingerprint == outgoing.fingerprint {
         return Err("this certificate is signed under the authority already in force, so it can be served at once rather than rotated to.".to_string());
     }
 
     let state = Rotation {
-        deadline_millis: switch_deadline(&served, chain, &incoming, now_ms)?,
+        deadline_millis: switch_deadline(&materials.served, &chain, &incoming, now_ms)?,
         incoming_pem,
         incoming: incoming.fingerprint,
         outgoing: outgoing.fingerprint,
         started_millis: now_ms,
         installs: Installs::Supplied,
+        entry: Some(entry.clone()),
     };
-    // The set, then the intent, then the bundle: the same order as the leader's own, with the staged set in the
-    // place of the key.
-    stage(dir, INCOMING_DIR, chain, key, ca)?;
-    let bundle_path = published_path(dir)?;
-    if let Err(e) = open(dir, &bundle_path, &materials.ca_pem, &state, now_ms) {
-        let _ = remove_durably(&dir.join(INCOMING_DIR));
-        return Err(e);
-    }
+    open(dir, &state, now_ms)?;
     Ok(state)
 }
 
-/// Withdraws a supplied set under a rotation: this leader's own root goes out to the fleet beside the supplied
-/// one, and the supplied set keeps serving until [`cut_over`] withdraws it.
+/// Goes back from the list entry served to the leader's own authority under a rotation: this leader's own root goes
+/// out to the fleet beside the entry's, and the entry keeps serving until [`cut_over`] stops serving it.
 ///
 /// This leader's own authority and a certificate under it are already on disk: the caller minted them with
-/// [`ensure_own`] while the supplied set was still there to keep serving, as a withdrawal always has. For a
-/// supplied set signed under the leader's own authority there is nothing to rotate; [`uninstall`] is at once.
+/// [`ensure_own`] while the entry was still there to keep serving, as going back always has. For an entry signed
+/// under the leader's own authority there is nothing to rotate; [`uninstall`] is at once.
 pub fn begin_own_rotation(dir: &Path, now_ms: i64) -> Result<Rotation, String> {
     let _changing = changing();
     rotation_may_begin(dir, Installs::Own).map_err(|e| e.message().to_string())?;
 
-    let (materials, served) = in_force_held(dir)?;
+    let materials = current_held(dir)?;
+    let served = materials.served;
     let outgoing = signing_root(&materials.ca_pem, &served)?;
     let own_cert_path = dir.join(SERVER_CERT);
     let own_served = std::fs::read(&own_cert_path).map_err(|e| format!("{}: {e}", own_cert_path.display()))?;
@@ -1338,9 +1266,9 @@ pub fn begin_own_rotation(dir: &Path, now_ms: i64) -> Result<Rotation, String> {
         outgoing: outgoing.fingerprint,
         started_millis: now_ms,
         installs: Installs::Own,
+        entry: None,
     };
-    let bundle_path = published_path(dir)?;
-    open(dir, &bundle_path, &materials.ca_pem, &state, now_ms)?;
+    open(dir, &state, now_ms)?;
     Ok(state)
 }
 
@@ -1368,7 +1296,7 @@ pub fn cut_over_if_due(
     // An operator's certificate arrived over a rotation of this leader's own authority. What it serves is signed
     // by an authority this leader does not hold, so signing under the incoming root would change nothing a client
     // sees and close a rotation whose work never reached the fleet.
-    if state.installs == Installs::NextKey && supplied(dir)?.is_some() {
+    if state.installs == Installs::NextKey && served(dir)?.is_some() {
         return Ok(false);
     }
     // No worker has been handed the incoming root while this holds: `leader::authority_to_hand` withholds the
@@ -1447,13 +1375,15 @@ pub fn cut_over(dir: &Path, sans: Vec<String>, validity: Duration) -> Result<(),
         Installs::Supplied => {
             if !promoted(dir, &state)? {
                 socket_agrees(dir)?;
-                staged_serves(dir)?;
-                staged_checked(dir, &sans)?;
-                take(dir, &dir.join(INCOMING_DIR))?;
+                let entry = incoming_serves(dir, &state)?;
+                entry_serves(dir, &entry, &sans, &[]).map_err(|e| {
+                    format!("the certificate this leader was switching to cannot be served because {e}. Choose Abandon switch, then choose the certificate again under Source.")
+                })?;
+                write_served(dir, Some(&entry))?;
             }
-            // The outgoing set went with its bundle. What is left to retire is the copy of the incoming root that
-            // the leader's own bundle carried through the overlap, where the outgoing set was the leader's own:
-            // left there, it would be handed out again the day the leader's own came back into force.
+            // The outgoing bundle was derived and went with it. What is left to retire is the copy of the incoming
+            // root that the leader's own bundle carried through the overlap, where what went out was the leader's
+            // own: left there, it would be handed out again the day the leader's own came back into force.
             retire(&dir.join(CA_CERT), &state.incoming)?;
         }
         Installs::Own => {
@@ -1461,7 +1391,7 @@ pub fn cut_over(dir: &Path, sans: Vec<String>, validity: Duration) -> Result<(),
                 socket_agrees(dir)?;
                 // Under the names this leader answers to now, which may have moved since the rotation opened.
                 own(dir, sans, validity)?;
-                withdraw(dir)?;
+                write_served(dir, None)?;
             }
         }
     }
@@ -1469,14 +1399,12 @@ pub fn cut_over(dir: &Path, sans: Vec<String>, validity: Duration) -> Result<(),
     Ok(())
 }
 
-/// Refuses a staged set that would not serve: one not there whole, or one whose certificate has run out while the
-/// fleet was being waited for.
-/// Refuses to promote the leader's own next key while an uploaded set is in force. What is served is signed by
-/// an authority this leader does not hold, so promoting the key would close a rotation whose work never reached
-/// the fleet and leave both roots in the bundle with nothing to retire one. [`cut_over_if_due`] waits for the
-/// same reason; the rotation resumes once the set is withdrawn.
+/// Refuses to promote the leader's own next key while a list entry is served. What is served is signed by an
+/// authority this leader does not hold, so promoting the key would close a rotation whose work never reached the
+/// fleet and leave both roots in the bundle with nothing to retire one. [`cut_over_if_due`] waits for the same
+/// reason; the rotation resumes once the entry is no longer served.
 fn parked_under_supplied(dir: &Path) -> Result<(), String> {
-    if supplied(dir)?.is_some() {
+    if served(dir)?.is_some() {
         return Err(
             "this leader serves a certificate an operator supplied, so the rotation of its own authority waits. \
              Withdraw that certificate first."
@@ -1486,37 +1414,25 @@ fn parked_under_supplied(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Everything the upload had to satisfy, asked again of the staged files as they are now. They were checked when
-/// they arrived, and they have sat on disk since, through however many stops; a key or chain replaced under a
-/// stopped leader would otherwise be moved into force and refused by the socket that reloads it.
-fn staged_checked(dir: &Path, names: &[String]) -> Result<(), String> {
-    let staging = dir.join(INCOMING_DIR);
-    let read =
-        |name: &str| std::fs::read(staging.join(name)).map_err(|e| format!("{}: {e}", staging.join(name).display()));
-    check_supplied(&read(SERVER_CERT)?, &read(SERVER_KEY)?, &read(CA_CERT)?, names, &[]).map_err(|e| {
-        format!("the certificate this leader was switching to no longer serves: {e}. Abandon the switch and upload it again.")
-    })
-}
-
-fn staged_serves(dir: &Path) -> Result<(), String> {
-    if !staged(dir, INCOMING_DIR) {
-        return Err(
-            "the certificate this leader was switching to is no longer on disk whole, so it cannot be served. \
-             Abandon the switch and upload it again."
-                .to_string(),
-        );
-    }
-    let cert_path = dir.join(INCOMING_DIR).join(SERVER_CERT);
-    let chain = std::fs::read(&cert_path).map_err(|e| format!("{}: {e}", cert_path.display()))?;
+/// The list entry the open rotation serves, refused where it would not serve: gone from the list, or run out while
+/// the fleet was being waited for.
+fn incoming_serves(dir: &Path, state: &Rotation) -> Result<Entry, String> {
+    let entry = state
+        .entry
+        .clone()
+        .ok_or_else(|| "the rotation names no certificate to put in force".to_string())?;
+    let chain = entry_chain(dir, &entry).map_err(|e| {
+        format!("the certificate this leader was switching to cannot be served because {e}. Choose Abandon switch, then choose the certificate again under Source.")
+    })?;
     let now = OffsetDateTime::now_utc().unix_timestamp() * 1000;
     if describe(&chain, "the incoming certificate")?.not_after_millis <= now {
         return Err(
             "the certificate this leader was switching to has expired while the fleet was being waited for. \
-             Abandon the switch and upload a current one."
+             Abandon the switch and choose a current one."
                 .to_string(),
         );
     }
-    Ok(())
+    Ok(entry)
 }
 
 /// Drops the incoming root and goes back to serving what was already being served.
@@ -1561,10 +1477,9 @@ pub fn abandon_rotation(dir: &Path, expected_incoming: &str) -> Result<(), Refus
         remove_rotation(dir)?;
         match state.installs {
             Installs::NextKey => remove_file_durably(&dir.join(NEXT_CA_KEY)),
-            Installs::Supplied => remove_durably(&dir.join(INCOMING_DIR)),
-            // The leader's own authority and certificate stay: they were there before, and a start reissues the
-            // certificate anyway.
-            Installs::Own => Ok(()),
+            // The entry stays in the list, and the leader's own authority and certificate stay: they were there
+            // before, and a start reissues the certificate anyway.
+            Installs::Supplied | Installs::Own => Ok(()),
         }
     };
     undo().map_err(Refused::Unavailable)
@@ -1598,7 +1513,7 @@ pub fn cut_over_is_possible(dir: &Path) -> Result<(), Refused> {
                 .map_err(Refused::Unavailable)?;
             still_signs(&state, super::warnings::now_millis()).map_err(Refused::Conflict)
         }
-        Installs::Supplied => staged_serves(dir).map_err(Refused::Conflict),
+        Installs::Supplied => incoming_serves(dir, &state).map(|_| ()).map_err(Refused::Conflict),
         Installs::Own => {
             private_file::check(&dir.join(CA_KEY), "the certificate authority's private key")
                 .map_err(Refused::Unavailable)?;
@@ -1693,35 +1608,38 @@ fn retire(bundle_path: &Path, fingerprint: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Drops a rotation's incoming root from every bundle it was published to: the leader's own and a supplied
-/// set's. A rotation publishes its overlap to whichever set is in force, and a set that comes into force under it
-/// is published to as well, so a root abandoned has to leave both -- left in the one not handed out today, it is
-/// handed out again the day that set comes back into force, with no rotation to retire it.
+/// Drops a rotation's incoming root from the leader's own bundle, where the overlap was published while the
+/// leader's own was served. What a list entry is given is derived, and loses the root with the intent.
 ///
 /// A rotation back to the leader's own authority is the one whose incoming root belongs in the leader's own
 /// bundle: that root signs it, and was never an overlap there.
 fn retire_overlap(dir: &Path, state: &Rotation) -> Result<(), String> {
-    if state.installs != Installs::Own {
-        retire(&dir.join(CA_CERT), &state.incoming)?;
+    if state.installs == Installs::Own {
+        return Ok(());
     }
-    retire(&supplied_dir(dir).join(CA_CERT), &state.incoming)
+    retire(&dir.join(CA_CERT), &state.incoming)
 }
 
 /// The bundle at `bundle_path` as `serving` plus the rotation's incoming root, written whole.
 fn publish_bundle(bundle_path: &Path, serving: &[u8], state: &Rotation) -> Result<(), String> {
+    let bundle = with_incoming(serving, state)?;
+    write_durably(bundle_path, &bundle).map_err(|e| format!("{}: {e}", bundle_path.display()))
+}
+
+/// `serving` with the incoming root of `state` after it, unless it carries that root already.
+fn with_incoming(serving: &[u8], state: &Rotation) -> Result<Vec<u8>, String> {
     let mut bundle = serving.to_vec();
-    // Already carrying it: a bundle that was itself published once, uploaded back as a supplied set.
     if describe_each(serving, CA_CERT)?
         .iter()
         .any(|root| root.fingerprint == state.incoming)
     {
-        return write_durably(bundle_path, &bundle).map_err(|e| format!("{}: {e}", bundle_path.display()));
+        return Ok(bundle);
     }
     if !bundle.ends_with(b"\n") {
         bundle.push(b'\n');
     }
     bundle.extend_from_slice(state.incoming_pem.as_bytes());
-    write_durably(bundle_path, &bundle).map_err(|e| format!("{}: {e}", bundle_path.display()))
+    Ok(bundle)
 }
 
 /// Each certificate block of `pem`, exactly as it was written.
@@ -1793,9 +1711,8 @@ pub fn cut_over_began(dir: &Path) -> Result<bool, String> {
 /// Whether the cutover's one irreversible step has run: what is in force is signed under the incoming root.
 ///
 /// For the leader's own authority that is `ca-key.pem` holding the incoming key -- the outgoing key is renamed
-/// over, not kept. For a switch of source it is the set in force having changed, which is a rename of whole
-/// directories. Either way this is what says which half of a cutover has run, for a retry, an abandonment and a
-/// start alike.
+/// over, not kept. For a switch of source it is [`SERVED`] naming what the rotation installs. Either way this is
+/// what says which half of a cutover has run, for a retry, an abandonment and a start alike.
 fn promoted(dir: &Path, state: &Rotation) -> Result<bool, String> {
     match state.installs {
         Installs::NextKey => {
@@ -1805,10 +1722,8 @@ fn promoted(dir: &Path, state: &Rotation) -> Result<bool, String> {
             let key_pem = std::fs::read_to_string(&key_path).map_err(|e| format!("{}: {e}", key_path.display()))?;
             Ok(root_of_key(&ca_pem, &key_pem)?.fingerprint == state.incoming)
         }
-        Installs::Supplied | Installs::Own => {
-            let (materials, served) = in_force_held(dir)?;
-            Ok(signing_root(&materials.ca_pem, &served)?.fingerprint == state.incoming)
-        }
+        Installs::Supplied => Ok(served(dir)? == state.entry),
+        Installs::Own => Ok(served(dir)?.is_none()),
     }
 }
 
@@ -2083,15 +1998,13 @@ pub(crate) fn write_durably(path: &Path, contents: &[u8]) -> std::io::Result<()>
 
 /// Renames `from` to `to` and persists the new name.
 ///
-/// Without the sync a crash can leave a set under neither name: gone from the one it was read under, and not yet
+/// Without the sync a crash can leave the file under neither name: gone from the one it was read under, and not yet
 /// durably under the one that would find it.
 fn rename_durably(from: &Path, to: &Path) -> Result<(), String> {
     std::fs::rename(from, to).map_err(|e| format!("{}: {e}", to.display()))?;
     // The move is the result. A sync that fails after it leaves the new name in place and only its survival of a
-    // crash in doubt, and a caller told the rename failed would roll back a move that already took: an upload
-    // whose rollback lands on a directory that now exists, a withdrawal that returns without reloading although
-    // the set it withdrew is gone. What a crash here costs is this change, which the next start puts back under
-    // the name it came from.
+    // crash in doubt, and a caller told the rename failed would go back over a move that already took. What a crash
+    // here costs is this change, which the next start reads off the disk as it finds it.
     warn_unsynced(to, private_file::sync_parent(to));
     Ok(())
 }
@@ -2102,33 +2015,19 @@ fn warn_unsynced(path: &Path, synced: std::io::Result<()>) {
             target: "leader.certificate_move_not_durable",
             path = %path.display(),
             error = %e,
-            "a certificate directory was moved and the move was not made durable, so a crash before the \
+            "a certificate file was moved or removed and that was not made durable, so a crash before the \
              filesystem writes it back undoes it"
         );
     }
 }
 
-/// Removes a directory and everything under it, and persists its absence. A path that is not there is already
-/// removed. Answers for the removal, not the sync: see [`rename_durably`].
-fn remove_durably(path: &Path) -> Result<(), String> {
-    match std::fs::remove_dir_all(path) {
-        // The removal is the result, for the reason the rename above gives.
-        Ok(()) => {
-            warn_unsynced(path, private_file::sync_parent(path));
-            Ok(())
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    }
-}
-
 /// A new server certificate and key under `dir`, signed by the authority whose key is `ca_key_pem`.
 fn issue_server_cert(dir: &Path, server: CertificateParams, ca_key_pem: &str) -> Result<(), String> {
-    // Only where this certificate is the one presented. A withdrawal writes this one while the supplied set is
-    // still in force, and the socket goes on presenting that set: saying it was replaced would have every reader
-    // refuse until a reload that changes nothing has run -- the rotation the withdrawal opens next among them,
-    // on a leader whose reload waits for the handler that asked.
-    if supplied(dir)?.is_none() {
+    // Only where this certificate is the one presented. Going back from a list entry writes this one while the
+    // entry is still served, and the socket goes on presenting it: saying it was replaced would have every reader
+    // refuse until a reload that changes nothing has run -- the rotation going back opens next among them, on a
+    // leader whose reload waits for the handler that asked.
+    if served(dir)?.is_none() {
         replaced_what_is_served(dir);
     }
     let (cert, key) = sign(server, ca_key_pem, "the server certificate")?;
@@ -2231,14 +2130,78 @@ fn window(validity: Duration) -> Result<(OffsetDateTime, OffsetDateTime), String
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    pub(super) fn scratch(tag: &str) -> PathBuf {
+    pub(crate) fn scratch(tag: &str) -> PathBuf {
         socket_follows();
         let dir = std::env::temp_dir().join(format!("smeltr-tls-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        dir.join("tls")
+        let dir = dir.join("tls");
+        std::fs::create_dir_all(&dir).unwrap();
+        listing(&dir);
+        dir
+    }
+
+    /// Gives `dir` an empty certificate list of its own.
+    pub(crate) fn listing(dir: &Path) {
+        let key = dir.with_extension("key");
+        let _ = std::fs::remove_file(&key);
+        let list = crate::leader::sqlite_store::SqliteStore::open(Path::new(":memory:"), &key).expect("a list");
+        read_list(dir, std::sync::Arc::new(list));
+    }
+
+    /// The certificate list [`listing`] gave `dir`.
+    pub(crate) fn list_in(dir: &Path) -> std::sync::Arc<dyn Store> {
+        list_of(dir).expect("a list")
+    }
+
+    /// `chain` and `key` as the newest version of the entry `supplied` in `dir`'s list, served with the root in `ca`
+    /// that signs it, as the upload form chooses it.
+    pub(crate) fn listed(dir: &Path, chain: &[u8], key: &[u8], ca: &[u8]) -> Entry {
+        let list = list_of(dir).expect("a list");
+        let (chain, key) = (std::str::from_utf8(chain).unwrap(), std::str::from_utf8(key).unwrap());
+        let version = match list.add_certificate_version("supplied", chain, key) {
+            Ok(version) => version,
+            Err(_) => {
+                list.create_certificate("supplied", "", chain, key).expect("an entry");
+                1
+            }
+        };
+        let ca = match split_root(chain.as_bytes(), ca) {
+            Ok(Some((_, root))) => root,
+            _ => String::from_utf8(ca.to_vec()).unwrap(),
+        };
+        Entry {
+            name: "supplied".to_string(),
+            version,
+            ca,
+        }
+    }
+
+    /// Lists `chain` and serves it.
+    pub(crate) fn install(
+        dir: &Path,
+        chain: &[u8],
+        key: &[u8],
+        ca: &[u8],
+        names: &[String],
+        required: &[String],
+    ) -> Result<(), String> {
+        serve(dir, &listed(dir, chain, key, ca), names, required)
+    }
+
+    /// Lists `chain` and rotates to it.
+    pub(crate) fn rotate_to(
+        dir: &Path,
+        chain: &[u8],
+        key: &[u8],
+        ca: &[u8],
+        names: &[String],
+        required: &[String],
+        now_ms: i64,
+    ) -> Result<Rotation, String> {
+        begin_supplied_rotation(dir, &listed(dir, chain, key, ca), names, required, now_ms)
     }
 
     /// A stand-in socket that takes every replacement the moment it is made.
@@ -2405,8 +2368,8 @@ mod tests {
     fn a_supplied_certificate_is_not_this_leaders_authority_to_rotate() {
         let dir = scratch("supplied-rotate");
         let materials = ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
-        let chain = std::fs::read(&materials.server_cert_path).unwrap();
-        let key = std::fs::read(&materials.server_key_path).unwrap();
+        let chain = materials.served.clone();
+        let key = std::fs::read(dir.join(SERVER_KEY)).unwrap();
         install(&dir, &chain, &key, &materials.ca_pem, &names(), &[]).expect("a supplied set");
 
         let refused = begin_rotation(&dir, A_YEAR, A_WEEK_OUT, NOW).expect_err("not this leader's to rotate");
@@ -2531,15 +2494,15 @@ mod tests {
     fn the_authority_is_kept_across_starts_and_the_certificate_is_not() {
         let dir = scratch("kept");
         let first = ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
-        let first_cert = std::fs::read(&first.server_cert_path).unwrap();
-        let first_key = std::fs::read(&first.server_key_path).unwrap();
+        let first_cert = first.served.clone();
+        let first_key = std::fs::read(dir.join(SERVER_KEY)).unwrap();
 
         let second = ensure(&dir, names(), A_YEAR, &[]).expect("a certificate, reissued");
 
         assert!(!second.authority_created);
         assert_eq!(second.ca_pem, first.ca_pem);
-        assert_ne!(std::fs::read(&second.server_cert_path).unwrap(), first_cert);
-        assert_ne!(std::fs::read(&second.server_key_path).unwrap(), first_key);
+        assert_ne!(second.served.clone(), first_cert);
+        assert_ne!(std::fs::read(dir.join(SERVER_KEY)).unwrap(), first_key);
     }
 
     /// Half an authority is none: a certificate whose key is gone can sign nothing, and a key whose certificate is
@@ -2587,7 +2550,7 @@ mod tests {
     fn the_certificate_does_not_verify_for_a_name_it_does_not_carry() {
         let dir = scratch("wrong-name");
         let materials = ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
-        let served = std::fs::read(&materials.server_cert_path).unwrap();
+        let served = materials.served.clone();
 
         assert!(verify(&materials.ca_pem, &served, "leader.elsewhere").is_err());
     }
@@ -2598,8 +2561,8 @@ mod tests {
         let dir = scratch(tag);
         let materials = ensure(&dir, names, A_YEAR, &[]).expect("an authority of their own");
         (
-            std::fs::read(&materials.server_cert_path).unwrap(),
-            std::fs::read(&materials.server_key_path).unwrap(),
+            materials.served.clone(),
+            std::fs::read(dir.join(SERVER_KEY)).unwrap(),
             materials.ca_pem,
         )
     }
@@ -2617,12 +2580,61 @@ mod tests {
             materials.ca_pem, ca,
             "a worker is given the authority that vouches for what is served"
         );
-        assert_eq!(std::fs::read(&materials.server_cert_path).unwrap(), chain);
+        assert_eq!(materials.served.clone(), chain);
         assert!(!materials.authority_created);
 
         uninstall(&dir).expect("give it back");
         let back = ensure(&dir, names(), A_YEAR, &[]).expect("a start with none supplied");
         assert_eq!(back.ca_pem, own.ca_pem, "the leader's own authority was never touched");
+    }
+
+    /// A list entry that can no longer be served does not stop a start. The leader serves its own and says why,
+    /// and still names the entry, so workers keep its root until it is served again.
+    #[test]
+    fn a_start_whose_entry_cannot_be_served_serves_the_leaders_own() {
+        let dir = scratch("unserved");
+        let own = ensure(&dir, names(), A_YEAR, &[]).expect("the leader's own");
+        let (chain, key, ca) = elsewhere("unserved-theirs", names());
+        let entry = listed(&dir, &chain, &key, &ca);
+        serve(&dir, &entry, &names(), &[]).expect("served");
+        list_in(&dir).delete_secret_version(&entry.name, entry.version).unwrap();
+
+        let materials = ensure(&dir, names(), A_YEAR, &[]).expect("a start with its entry gone");
+        assert!(!materials.supplied);
+        assert_eq!(materials.ca_pem, own.ca_pem);
+        assert!(unserved(&dir).is_some_and(|why| why.contains("supplied")));
+        assert_eq!(served(&dir).unwrap(), Some(entry), "the entry was forgotten");
+        assert_eq!(
+            current(&dir).unwrap().ca_pem,
+            own.ca_pem,
+            "nothing reads what is served"
+        );
+        assert!(
+            !socket_has_what_is_on_disk(&dir),
+            "what workers are given is not what the socket presents"
+        );
+        let (_, presented, _) = to_serve(&dir).unwrap();
+        assert_eq!(presented, std::fs::read(dir.join(SERVER_CERT)).unwrap());
+
+        install(&dir, &chain, &key, &ca, &names(), &[]).expect("served again");
+        assert!(unserved(&dir).is_none());
+        assert!(current(&dir).unwrap().supplied);
+    }
+
+    /// A certificate supplied as files before the list is not served, and the start says where it goes.
+    #[test]
+    fn a_certificate_supplied_before_the_list_is_not_served() {
+        let dir = scratch("before-the-list");
+        let own = ensure(&dir, names(), A_YEAR, &[]).expect("the leader's own");
+        std::fs::create_dir_all(dir.join(SUPPLIED_BEFORE_THE_LIST)).unwrap();
+
+        let materials = ensure(&dir, names(), A_YEAR, &[]).expect("a start");
+        assert_eq!(materials.ca_pem, own.ca_pem);
+        assert!(unserved(&dir).is_some_and(|why| why.contains("is not in the certificate list")));
+        assert!(
+            !socket_has_what_is_on_disk(&dir),
+            "workers were handed the leader's own root"
+        );
     }
 
     /// The failure that matters: it verifies, and it still leaves a leader nobody can open -- over the connection
@@ -2635,7 +2647,10 @@ mod tests {
 
         let refused = install(&dir, &chain, &key, &ca, &names(), &[]).expect_err("a certificate for another host");
         assert!(refused.contains("elsewhere.internal"), "{refused}");
-        assert!(!dir.join(SUPPLIED_DIR).exists(), "a refused upload was written anyway");
+        assert!(
+            served(&dir).unwrap().is_none(),
+            "a refused certificate was served anyway"
+        );
     }
 
     #[test]
@@ -2647,7 +2662,7 @@ mod tests {
 
         let refused = install(&dir, &chain, &other_key, &ca, &names(), &[]).expect_err("a key from somewhere else");
         assert!(refused.contains("does not belong"), "{refused}");
-        assert!(!dir.join(SUPPLIED_DIR).exists());
+        assert!(served(&dir).unwrap().is_none());
     }
 
     #[test]
@@ -2658,8 +2673,8 @@ mod tests {
         let (_, _, other_ca) = elsewhere("supplied-wrong-ca-b", names());
 
         let refused = install(&dir, &chain, &key, &other_ca, &names(), &[]).expect_err("an unrelated authority");
-        assert!(refused.contains("signed what this leader would serve"), "{refused}");
-        assert!(!dir.join(SUPPLIED_DIR).exists());
+        assert!(refused.contains("not signed under the root"), "{refused}");
+        assert!(served(&dir).unwrap().is_none());
     }
 
     /// A trust store is a list, and a rotation is the moment it holds two. Reading only the first would report
@@ -2696,7 +2711,7 @@ mod tests {
         neither.extend_from_slice(&second);
 
         let refused = install(&dir, &chain, &key, &neither, &names(), &[]).expect_err("two unrelated roots");
-        assert!(refused.contains("signed what this leader would serve"), "{refused}");
+        assert!(refused.contains("not signed under the root"), "{refused}");
     }
 
     /// A file with nothing in it is not a certificate that happens to say nothing.
@@ -2712,12 +2727,12 @@ mod tests {
     fn looking_at_what_is_served_does_not_replace_it() {
         let dir = scratch("current");
         let materials = ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
-        let served = std::fs::read(&materials.server_cert_path).unwrap();
+        let served = materials.served.clone();
 
         for _ in 0..3 {
             let now = current(&dir).expect("what is on disk");
             assert_eq!(now.ca_pem, materials.ca_pem);
-            assert_eq!(std::fs::read(&now.server_cert_path).unwrap(), served);
+            assert_eq!(now.served.clone(), served);
         }
     }
 
@@ -2727,9 +2742,10 @@ mod tests {
     fn a_certificate_the_embedded_worker_cannot_use_is_refused() {
         let dir = scratch("public-only");
         let public_only = vec!["leader.example.com".to_string()];
-        let theirs = ensure(&scratch("public-only-pki"), public_only.clone(), A_YEAR, &[]).expect("their pki");
-        let chain = std::fs::read(&theirs.server_cert_path).unwrap();
-        let key = std::fs::read(&theirs.server_key_path).unwrap();
+        let pki = scratch("public-only-pki");
+        let theirs = ensure(&pki, public_only.clone(), A_YEAR, &[]).expect("their pki");
+        let chain = theirs.served.clone();
+        let key = std::fs::read(pki.join(SERVER_KEY)).unwrap();
 
         // A leader reached at that name and running no worker of its own: nothing wrong with it.
         install(&dir, &chain, &key, &theirs.ca_pem, &public_only, &[]).expect("a leader with no worker inside");
@@ -2755,9 +2771,10 @@ mod tests {
         ];
         // A certificate for the loopback names alone, which satisfies `names` through either of them.
         let loopback_only = vec!["localhost".to_string(), "127.0.0.1".to_string()];
-        let theirs = ensure(&scratch("drops-the-uploader-pki"), loopback_only, A_YEAR, &[]).expect("their pki");
-        let chain = std::fs::read(&theirs.server_cert_path).unwrap();
-        let key = std::fs::read(&theirs.server_key_path).unwrap();
+        let pki = scratch("drops-the-uploader-pki");
+        let theirs = ensure(&pki, loopback_only, A_YEAR, &[]).expect("their pki");
+        let chain = theirs.served.clone();
+        let key = std::fs::read(pki.join(SERVER_KEY)).unwrap();
 
         install(&dir, &chain, &key, &theirs.ca_pem, &reached_at, &[]).expect("nothing requires the outside name");
 
@@ -2765,98 +2782,6 @@ mod tests {
         let refused = install(&dir, &chain, &key, &theirs.ca_pem, &reached_at, &uploading_from)
             .expect_err("a certificate that ends the session uploading it");
         assert!(refused.contains("leader.example.com"), "{refused}");
-    }
-
-    /// Some of a set is not the absence of one. Falling back would serve a certificate no worker pinned to the
-    /// supplied authority will accept, and say nothing about why.
-    #[test]
-    fn a_half_written_supplied_set_is_refused_rather_than_ignored() {
-        let dir = scratch("half-supplied");
-        let materials = ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
-        let chain = std::fs::read(&materials.server_cert_path).unwrap();
-        let key = std::fs::read(&materials.server_key_path).unwrap();
-        install(&dir, &chain, &key, &materials.ca_pem, &names(), &[]).expect("a supplied set");
-
-        std::fs::remove_file(dir.join(SUPPLIED_DIR).join(CA_CERT)).unwrap();
-
-        let refused = ensure(&dir, names(), A_YEAR, &[]).expect_err("an incomplete set");
-        assert!(refused.contains("only part of"), "{refused}");
-        assert!(refused.contains(CA_CERT), "{refused}");
-    }
-
-    /// A failed upload leaves the set in force exactly as it was. Removing it first and writing after would put
-    /// a worker pinned to the supplied authority in front of a leader with nothing to serve it.
-    #[test]
-    fn an_upload_that_fails_leaves_what_was_serving_alone() {
-        let dir = scratch("install-keeps");
-        let first = ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
-        let chain = std::fs::read(&first.server_cert_path).unwrap();
-        let key = std::fs::read(&first.server_key_path).unwrap();
-        install(&dir, &chain, &key, &first.ca_pem, &names(), &[]).expect("a first supplied set");
-        let in_force = std::fs::read(dir.join(SUPPLIED_DIR).join(SERVER_CERT)).unwrap();
-
-        // An upload whose key belongs to another certificate: refused at the last check `install` makes.
-        let other = ensure(&scratch("install-keeps-other"), names(), A_YEAR, &[]).expect("another");
-        let wrong_key = std::fs::read(&other.server_key_path).unwrap();
-        install(&dir, &chain, &wrong_key, &first.ca_pem, &names(), &[]).expect_err("a key that is not its own");
-
-        assert_eq!(
-            std::fs::read(dir.join(SUPPLIED_DIR).join(SERVER_CERT)).unwrap(),
-            in_force,
-            "the refused upload disturbed what was serving"
-        );
-        assert!(
-            !dir.join(PREVIOUS_DIR).exists(),
-            "it left the set aside under the other name"
-        );
-    }
-
-    /// An upload interrupted between the two renames left one whole set under the other name. The next start
-    /// finds it rather than silently falling back to an authority no worker was given.
-    #[test]
-    fn a_set_left_mid_swap_is_picked_up_again() {
-        let dir = scratch("install-interrupted");
-        let materials = ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
-        let chain = std::fs::read(&materials.server_cert_path).unwrap();
-        let key = std::fs::read(&materials.server_key_path).unwrap();
-        install(&dir, &chain, &key, &materials.ca_pem, &names(), &[]).expect("a supplied set");
-
-        // What a crash between the two renames leaves behind.
-        std::fs::rename(dir.join(SUPPLIED_DIR), dir.join(PREVIOUS_DIR)).unwrap();
-
-        let found = ensure(&dir, names(), A_YEAR, &[]).expect("the set it was left with");
-        assert!(
-            found.server_cert_path.starts_with(dir.join(SUPPLIED_DIR)),
-            "it fell back to its own authority instead of the supplied set: {}",
-            found.server_cert_path.display()
-        );
-        assert!(dir.join(SUPPLIED_DIR).exists());
-    }
-
-    /// A leader bootstrapped with only an operator's certificate has no `ca.pem` -- `supplied/` is the whole of
-    /// what it has of its own. An upload replacing it sits it under `supplied.previous` for the length of one
-    /// rename, and a caller deciding whether to look further has to read that the same as `supplied/` itself.
-    #[test]
-    fn a_set_waiting_mid_swap_still_counts_as_this_leaders_own() {
-        let source = ensure(&scratch("has-material-source"), names(), A_YEAR, &[]).expect("an authority to supply");
-        let chain = std::fs::read(&source.server_cert_path).unwrap();
-        let key = std::fs::read(&source.server_key_path).unwrap();
-
-        let dir = scratch("has-material-supplied-only");
-        std::fs::create_dir_all(&dir).unwrap();
-        install(&dir, &chain, &key, &source.ca_pem, &names(), &[]).expect("a supplied set");
-        assert!(
-            !dir.join(CA_CERT).exists(),
-            "this leader never created an authority of its own to have installed over"
-        );
-        assert!(has_own_material(&dir).unwrap());
-
-        // What the middle of a second upload's two renames leaves behind.
-        std::fs::rename(dir.join(SUPPLIED_DIR), dir.join(PREVIOUS_DIR)).unwrap();
-        assert!(
-            has_own_material(&dir).unwrap(),
-            "a set waiting under its other name while an upload finishes is still this leader's own"
-        );
     }
 
     /// A name that cannot be resolved is not the same fact as a name that is not there. Folded into the same
@@ -2876,75 +2801,8 @@ mod tests {
         );
     }
 
-    /// An upload finishes with a best-effort cleanup, so a crash can leave the replaced set under the other name.
-    /// Kept, it would answer for the withdrawn one and put back the certificate an operator had just replaced.
-    #[test]
-    fn a_withdrawal_leaves_nothing_under_either_name() {
-        let dir = scratch("withdraw-leftover");
-        let own = ensure(&dir, names(), A_YEAR, &[]).expect("the leader's own");
-        let (first, first_key, first_ca) = elsewhere("withdraw-leftover-first", names());
-        install(&dir, &first, &first_key, &first_ca, &names(), &[]).expect("a supplied set");
-        let (second, second_key, second_ca) = elsewhere("withdraw-leftover-second", names());
-        install(&dir, &second, &second_key, &second_ca, &names(), &[]).expect("a replacement");
-
-        // What an upload that died before its own cleanup leaves behind.
-        std::fs::create_dir_all(dir.join(PREVIOUS_DIR)).unwrap();
-        for f in [SERVER_CERT, SERVER_KEY, CA_CERT] {
-            std::fs::copy(dir.join(SUPPLIED_DIR).join(f), dir.join(PREVIOUS_DIR).join(f)).unwrap();
-        }
-
-        uninstall(&dir).expect("give it back");
-        let back = ensure(&dir, names(), A_YEAR, &[]).expect("a start after the withdrawal");
-        assert_eq!(back.ca_pem, own.ca_pem, "the withdrawn certificate came back");
-        assert!(!dir.join(PREVIOUS_DIR).exists());
-    }
-
-    /// The recovery rename belongs to a start. Running it from a read would put the set back mid-upload, so the
-    /// upload's own rename would land on a directory that exists and fail a rotation nothing was wrong with.
-    #[test]
-    fn looking_at_a_set_mid_swap_does_not_move_it() {
-        let dir = scratch("read-mid-swap");
-        let own = ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
-        let (chain, key, ca) = elsewhere("read-mid-swap-theirs", names());
-        install(&dir, &chain, &key, &ca, &names(), &[]).expect("a supplied set");
-
-        // What an upload leaves on disk between its two renames.
-        std::fs::rename(dir.join(SUPPLIED_DIR), dir.join(PREVIOUS_DIR)).unwrap();
-
-        let seen = current(&dir).expect("what is still being served");
-        assert_eq!(
-            seen.ca_pem, ca,
-            "a read answered with the leader's own rather than what is serving"
-        );
-        assert_ne!(seen.ca_pem, own.ca_pem);
-        assert!(
-            !dir.join(SUPPLIED_DIR).exists(),
-            "a read put the set back, which is what makes the upload's rename fail"
-        );
-        assert!(dir.join(PREVIOUS_DIR).exists());
-    }
-
-    /// A renewal copied in under a stopped leader arrives however `cp` left it, and nothing else reads the file
-    /// again.
-    #[cfg(unix)]
-    #[test]
-    fn a_supplied_key_anyone_can_read_is_refused() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = scratch("supplied-key-mode");
-        ensure(&dir, names(), A_YEAR, &[]).expect("the leader's own");
-        let (chain, key, ca) = elsewhere("supplied-key-mode-theirs", names());
-        install(&dir, &chain, &key, &ca, &names(), &[]).expect("a supplied set");
-
-        let key_path = dir.join(SUPPLIED_DIR).join(SERVER_KEY);
-        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
-
-        let refused = ensure(&dir, names(), A_YEAR, &[]).expect_err("a world-readable key was served");
-        assert!(refused.contains("chmod 600"), "{refused}");
-    }
-
     /// A rollover is the moment a trust store holds two roots. The file's order is not what decides which one
-    /// signed the certificate, and a worker given both keeps verifying across the change.
+    /// signed the certificate, and a worker is given the one that does.
     #[test]
     fn a_rollover_bundle_is_accepted_either_way_round() {
         for (tag, incoming_first) in [("bundle-incoming-first", true), ("bundle-outgoing-first", false)] {
@@ -2970,7 +2828,15 @@ mod tests {
             assert_eq!(found.fingerprint, signed_by.fingerprint, "{tag} named the wrong root");
 
             let materials = ensure(&dir, names(), A_YEAR, &[]).expect("a start with the bundle supplied");
-            assert_eq!(materials.ca_pem, bundle, "a worker is given every root the file holds");
+            assert_eq!(
+                describe_each(&materials.ca_pem, CA_CERT).unwrap().len(),
+                1,
+                "a worker is given a root that signs nothing it is shown"
+            );
+            assert_eq!(
+                describe(&materials.ca_pem, CA_CERT).unwrap().fingerprint,
+                signed_by.fingerprint
+            );
         }
     }
 
@@ -3012,8 +2878,8 @@ mod tests {
         let dir = scratch("supplied-midway");
         let materials = ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
         let state = begin_rotation(&dir, A_YEAR, A_WEEK_OUT, NOW).expect("a rotation");
-        let chain = std::fs::read(&materials.server_cert_path).unwrap();
-        let key = std::fs::read(&materials.server_key_path).unwrap();
+        let chain = materials.served.clone();
+        let key = std::fs::read(dir.join(SERVER_KEY)).unwrap();
         install(&dir, &chain, &key, &materials.ca_pem, &names(), &[]).expect("a supplied set");
 
         let ready = vec![vec![state.outgoing.clone(), state.incoming.clone()]];
@@ -3284,9 +3150,8 @@ mod tests {
         // What an operator pastes having reached for the file their tooling calls the CA.
         let ca_and_its_key = [ca.as_slice(), key.as_slice()].concat();
 
-        let refused = install(&dir, &chain, &key, &ca_and_its_key, &names(), &[]).expect_err("a key was accepted");
+        let refused = check_supplied(&chain, &key, &ca_and_its_key, &names(), &[]).expect_err("a key was accepted");
         assert!(refused.contains("private key"), "{refused}");
-        assert!(!dir.join(SUPPLIED_DIR).exists(), "a refused upload was written anyway");
     }
 
     /// The same mistake in the other field: a chain is served to every client that opens a connection.
@@ -3298,68 +3163,8 @@ mod tests {
 
         let chain_and_its_key = [chain.as_slice(), key.as_slice()].concat();
 
-        let refused = install(&dir, &chain_and_its_key, &key, &ca, &names(), &[]).expect_err("a key was accepted");
+        let refused = check_supplied(&chain_and_its_key, &key, &ca, &names(), &[]).expect_err("a key was accepted");
         assert!(refused.contains("private key"), "{refused}");
-        assert!(!dir.join(SUPPLIED_DIR).exists(), "a refused upload was written anyway");
-    }
-
-    /// Removing the files where they lie could leave some of a set, which a start refuses to serve and refuses to
-    /// replace. The set is moved out of the path a start reads before anything is removed.
-    #[test]
-    fn an_interrupted_withdrawal_leaves_nothing_a_start_refuses() {
-        let dir = scratch("uninstall-interrupted");
-        let own = ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
-        let (chain, key, ca) = elsewhere("uninstall-interrupted-theirs", names());
-        install(&dir, &chain, &key, &ca, &names(), &[]).expect("a supplied set");
-
-        // What a crash between the rename and the delete leaves behind.
-        std::fs::rename(dir.join(SUPPLIED_DIR), dir.join(DISCARD_DIR)).unwrap();
-
-        let back = ensure(&dir, names(), A_YEAR, &[]).expect("a start after an interrupted withdrawal");
-        assert_eq!(back.ca_pem, own.ca_pem, "the withdrawal did not take");
-        assert!(!dir.join(DISCARD_DIR).exists(), "a withdrawn private key was kept");
-    }
-
-    /// The reissue and withdrawal guards ask whether a supplied set is in force. For the length of an upload's two
-    /// renames it is in force under the other name, where a reissue would replace it and a withdrawal would miss
-    /// it and mint a certificate nobody asked for.
-    #[test]
-    fn a_set_mid_swap_is_still_a_supplied_one() {
-        let dir = scratch("mid-swap-supplied");
-        ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
-        let (chain, key, ca) = elsewhere("mid-swap-supplied-theirs", names());
-        install(&dir, &chain, &key, &ca, &names(), &[]).expect("a supplied set");
-        assert!(current(&dir).expect("what is on disk").supplied);
-
-        // Where an upload that died between its two renames leaves the set in force.
-        std::fs::rename(dir.join(SUPPLIED_DIR), dir.join(PREVIOUS_DIR)).unwrap();
-        assert!(
-            current(&dir).expect("what is on disk mid-swap").supplied,
-            "a supplied set mid-swap read as this leader's own"
-        );
-
-        uninstall(&dir).expect("a withdrawal that reaches the set under either name");
-        assert!(!current(&dir).expect("the leader's own").supplied);
-    }
-
-    /// A `supplied.previous/` is what the next start puts back. A withdrawal that could not clear one and
-    /// reported success would be undone by that start, serving again the certificate an operator withdrew.
-    #[test]
-    fn a_withdrawal_that_cannot_clear_the_previous_set_refuses() {
-        let dir = scratch("uninstall-previous");
-        ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
-        let (chain, key, ca) = elsewhere("uninstall-previous-theirs", names());
-        install(&dir, &chain, &key, &ca, &names(), &[]).expect("a supplied set");
-
-        // A `supplied.previous` the filesystem will not give up.
-        std::fs::write(dir.join(PREVIOUS_DIR), b"not a directory").unwrap();
-
-        let refused = uninstall(&dir).expect_err("a withdrawal the next start undoes");
-        assert!(refused.contains(PREVIOUS_DIR), "{refused}");
-        assert!(
-            dir.join(SUPPLIED_DIR).exists(),
-            "a withdrawal that failed took the set in force away anyway"
-        );
     }
 
     #[test]
@@ -3372,7 +3177,7 @@ mod tests {
         assert!(authority.names.is_empty(), "an authority is reached by no name");
         assert_eq!(authority.fingerprint.len(), 64, "sha-256 in hex");
 
-        let served = describe(&std::fs::read(&materials.server_cert_path).unwrap(), SERVER_CERT).expect("served");
+        let served = describe(&materials.served.clone(), SERVER_CERT).expect("served");
         assert_eq!(served.subject, SERVER_SUBJECT);
         assert_eq!(served.names, names(), "the names it was issued for, in order");
         assert_ne!(served.fingerprint, authority.fingerprint);
@@ -3389,7 +3194,7 @@ mod tests {
         let authority = describe(&first.ca_pem, CA_CERT).expect("the authority");
 
         let materials = ensure(&dir, names(), A_YEAR, &[]).expect("a certificate asked for a year");
-        let served = describe(&std::fs::read(&materials.server_cert_path).unwrap(), SERVER_CERT).expect("served");
+        let served = describe(&materials.served.clone(), SERVER_CERT).expect("served");
 
         assert_eq!(
             served.not_after_millis, authority.not_after_millis,
@@ -3665,7 +3470,7 @@ mod tests {
         ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
 
         // What a reload is handed, and what lands while it is still awaited.
-        let (loading, _) = to_serve(&dir).expect("what the socket would load");
+        let (loading, _, _) = to_serve(&dir).expect("what the socket would load");
         ensure_own(&dir, names(), A_YEAR).expect("a replacement during the reload");
 
         socket_took(&dir, loading);
@@ -3682,28 +3487,40 @@ mod tests {
 
     /// The root signing what is in force, whichever set that is.
     fn in_force_signing(dir: &Path) -> String {
-        let (materials, served) = in_force(dir).expect("what is in force");
-        signing_root(&materials.ca_pem, &served).expect("a signer").fingerprint
+        let materials = current(dir).expect("what is in force");
+        signing_root(&materials.ca_pem, &materials.served)
+            .expect("a signer")
+            .fingerprint
     }
 
-    /// The roots every worker is handed: those of the authority file of the set in force.
+    /// The roots every worker is handed.
     fn published(dir: &Path) -> Vec<String> {
-        let path = published_path(dir).expect("a bundle");
-        describe_each(&std::fs::read(path).expect("the bundle"), CA_CERT)
+        describe_each(&current(dir).expect("what is in force").ca_pem, CA_CERT)
             .expect("readable")
             .into_iter()
             .map(|d| d.fingerprint)
             .collect()
     }
 
-    fn served(dir: &Path) -> Vec<u8> {
-        let (materials, served) = in_force(dir).expect("what is in force");
-        assert_eq!(
-            served,
-            std::fs::read(&materials.server_cert_path).unwrap(),
-            "the pair was not read together"
-        );
-        served
+    fn what_is_served(dir: &Path) -> Vec<u8> {
+        current(dir).expect("what is in force").served
+    }
+
+    /// What a cutover to or from a list entry leaves when it dies after serving what it installs.
+    pub(super) fn torn_cutover(dir: &Path, state: &Rotation) {
+        let _changing = changing();
+        write_served(
+            dir,
+            state.entry.as_ref().filter(|_| state.installs == Installs::Supplied),
+        )
+        .expect("served");
+    }
+
+    /// The entry a rotation installs, gone from the list.
+    pub(super) fn lose_entry(dir: &Path, mut state: Rotation) {
+        let entry = state.entry.as_mut().expect("a rotation to an entry");
+        entry.version += 1000;
+        write_rotation(dir, &state).expect("written");
     }
 
     /// An upload under another root is the leader's own rotation with the uploaded set in the key's place: its
@@ -3712,11 +3529,11 @@ mod tests {
     fn an_upload_under_another_root_is_published_before_it_is_served() {
         let dir = rotating("switch-up");
         let own = signing(&dir);
-        let before = served(&dir);
+        let before = what_is_served(&dir);
         let (chain, key, ca) = elsewhere("switch-up-theirs", names());
         assert!(supplying_changes_root(&dir, &chain, &ca).unwrap());
 
-        let state = begin_supplied_rotation(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
+        let state = rotate_to(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
 
         assert_eq!(state.installs, Installs::Supplied);
         assert_eq!(state.outgoing, own);
@@ -3726,7 +3543,7 @@ mod tests {
             vec![own.clone(), state.incoming.clone()],
             "workers are given both"
         );
-        assert_eq!(served(&dir), before, "what this leader serves moved");
+        assert_eq!(what_is_served(&dir), before, "what this leader serves moved");
         assert_eq!(in_force_signing(&dir), own);
         assert!(!current(&dir).unwrap().supplied, "the upload is in force already");
         ensure(&dir, names(), A_YEAR, &[]).expect("a start mid-overlap");
@@ -3738,7 +3555,11 @@ mod tests {
 
         cut_over(&dir, names(), A_YEAR).expect("a cutover");
 
-        assert_eq!(served(&dir), chain, "the uploaded certificate is not what is served");
+        assert_eq!(
+            what_is_served(&dir),
+            chain,
+            "the uploaded certificate is not what is served"
+        );
         assert_eq!(in_force_signing(&dir), state.incoming);
         assert_eq!(
             published(&dir),
@@ -3747,7 +3568,6 @@ mod tests {
         );
         assert_eq!(roots(&dir), vec![own], "the leader's own bundle kept the uploaded root");
         assert!(rotation(&dir).unwrap().is_none());
-        assert!(!dir.join(INCOMING_DIR).exists());
         let materials = ensure(&dir, names(), A_YEAR, &[]).expect("a start after the switch");
         assert!(materials.supplied);
     }
@@ -3766,18 +3586,17 @@ mod tests {
                 .join("tls");
             let materials = ensure(&theirs, names(), A_YEAR, &[]).expect("a renewal");
             (
-                std::fs::read(&materials.server_cert_path).unwrap(),
-                std::fs::read(&materials.server_key_path).unwrap(),
+                materials.served.clone(),
+                std::fs::read(theirs.join(SERVER_KEY)).unwrap(),
                 materials.ca_pem,
             )
         };
         assert!(!supplying_changes_root(&dir, &renewed, &ca).unwrap());
-        let refused = begin_supplied_rotation(&dir, &renewed, &renewed_key, &ca, &names(), &[], NOW)
-            .expect_err("nothing to rotate");
+        let refused = rotate_to(&dir, &renewed, &renewed_key, &ca, &names(), &[], NOW).expect_err("nothing to rotate");
         assert!(refused.contains("at once"), "{refused}");
 
         install(&dir, &renewed, &renewed_key, &ca, &names(), &[]).expect("a renewal");
-        assert_eq!(served(&dir), renewed);
+        assert_eq!(what_is_served(&dir), renewed);
         assert!(rotation(&dir).unwrap().is_none());
     }
 
@@ -3806,7 +3625,7 @@ mod tests {
             vec![theirs.clone(), own.clone()],
             "workers are given both"
         );
-        assert_eq!(served(&dir), chain, "what this leader serves moved");
+        assert_eq!(what_is_served(&dir), chain, "what this leader serves moved");
         assert!(current(&dir).unwrap().supplied);
         ensure(&dir, names(), A_YEAR, &[]).expect("a start mid-overlap");
         assert_eq!(
@@ -3821,7 +3640,7 @@ mod tests {
         assert_eq!(in_force_signing(&dir), own);
         assert_eq!(published(&dir), vec![own], "the outgoing root is still handed out");
         assert!(rotation(&dir).unwrap().is_none());
-        assert!(!dir.join(SUPPLIED_DIR).exists() && !dir.join(DISCARD_DIR).exists());
+        assert!(served(&dir).unwrap().is_none());
         ensure(&dir, names(), A_YEAR, &[]).expect("a start after the switch");
     }
 
@@ -3853,8 +3672,8 @@ mod tests {
     fn withdrawing_a_set_under_the_leaders_own_authority_rotates_nothing() {
         let dir = rotating("switch-down-same");
         let materials = current(&dir).unwrap();
-        let chain = std::fs::read(&materials.server_cert_path).unwrap();
-        let key = std::fs::read(&materials.server_key_path).unwrap();
+        let chain = materials.served.clone();
+        let key = std::fs::read(dir.join(SERVER_KEY)).unwrap();
         install(&dir, &chain, &key, &materials.ca_pem, &names(), &[]).expect("a supplied set");
         ensure_own(&dir, names(), A_YEAR).expect("the leader's own");
         assert!(!withdrawing_changes_root(&dir).unwrap());
@@ -3873,16 +3692,15 @@ mod tests {
         let a = in_force_signing(&dir);
         let (chain_b, key_b, ca_b) = elsewhere("switch-across-b", names());
 
-        let state = begin_supplied_rotation(&dir, &chain_b, &key_b, &ca_b, &names(), &[], NOW).expect("a rotation");
+        let state = rotate_to(&dir, &chain_b, &key_b, &ca_b, &names(), &[], NOW).expect("a rotation");
         assert_eq!(published(&dir), vec![a.clone(), state.incoming.clone()]);
-        assert_eq!(served(&dir), chain_a);
+        assert_eq!(what_is_served(&dir), chain_a);
 
         let ready = vec![vec![a, state.incoming.clone()]];
         assert!(cut_over_if_due(&dir, names(), A_YEAR, Some(&ready), NOW).unwrap());
-        assert_eq!(served(&dir), chain_b);
+        assert_eq!(what_is_served(&dir), chain_b);
         assert_eq!(published(&dir), vec![state.incoming]);
         assert_eq!(roots(&dir), own, "the leader's own bundle changed");
-        assert!(!dir.join(PREVIOUS_DIR).exists());
     }
 
     /// An upload under the leader's own root while its key rotation is open parks the rotation: the automatic
@@ -3930,13 +3748,13 @@ mod tests {
                 .join("tls");
             let materials = ensure(&theirs, names(), A_YEAR, &[]).expect("a renewal");
             (
-                std::fs::read(&materials.server_cert_path).unwrap(),
-                std::fs::read(&materials.server_key_path).unwrap(),
+                materials.served.clone(),
+                std::fs::read(theirs.join(SERVER_KEY)).unwrap(),
             )
         };
         assert!(!supplying_changes_root(&dir, &renewed, &ca).unwrap());
         install(&dir, &renewed, &renewed_key, &ca, &names(), &[]).expect("a renewal during the switch");
-        assert_eq!(served(&dir), renewed);
+        assert_eq!(what_is_served(&dir), renewed);
         assert_eq!(
             rotation(&dir).unwrap().map(|s| s.incoming),
             Some(state.incoming.clone())
@@ -3955,8 +3773,8 @@ mod tests {
     fn a_switch_waits_for_the_fleet_until_the_served_certificate_runs_out() {
         let dir = rotating("switch-waits");
         let (chain, key, ca) = elsewhere("switch-waits-theirs", names());
-        let state = begin_supplied_rotation(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
-        let served_until = describe(&served(&dir), SERVER_CERT).unwrap().not_after_millis;
+        let state = rotate_to(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
+        let served_until = describe(&what_is_served(&dir), SERVER_CERT).unwrap().not_after_millis;
         assert_eq!(state.deadline_millis, served_until - CUTOVER_MARGIN.as_millis() as i64);
 
         let behind = vec![vec![state.outgoing.clone()]];
@@ -3966,7 +3784,7 @@ mod tests {
             "an unreadable roster read as ready"
         );
         assert!(cut_over_if_due(&dir, names(), A_YEAR, Some(&behind), state.deadline_millis).unwrap());
-        assert_eq!(served(&dir), chain);
+        assert_eq!(what_is_served(&dir), chain);
     }
 
     /// The deadline moves anywhere between now and the latest the switch could wait, and the cutover keeps it.
@@ -3975,7 +3793,7 @@ mod tests {
     fn a_switch_deadline_moves_within_its_bounds() {
         let dir = rotating("switch-moves");
         let (chain, key, ca) = elsewhere("switch-moves-theirs", names());
-        let state = begin_supplied_rotation(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
+        let state = rotate_to(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
         let latest = state.deadline_millis;
 
         assert!(matches!(set_deadline(&dir, NOW, NOW), Err(Refused::Conflict(_))));
@@ -4032,14 +3850,13 @@ mod tests {
     #[test]
     fn abandoning_a_switch_leaves_what_is_in_force_alone() {
         let dir = rotating("switch-abandon-up");
-        let before = served(&dir);
+        let before = what_is_served(&dir);
         let own = roots(&dir);
         let (chain, key, ca) = elsewhere("switch-abandon-up-theirs", names());
-        let state = begin_supplied_rotation(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
+        let state = rotate_to(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
         abandon_rotation(&dir, &state.incoming).expect("abandoned");
         assert_eq!(published(&dir), own);
-        assert_eq!(served(&dir), before);
-        assert!(!dir.join(INCOMING_DIR).exists(), "the staged set was kept");
+        assert_eq!(what_is_served(&dir), before);
         assert!(rotation(&dir).unwrap().is_none());
         ensure(&dir, names(), A_YEAR, &[]).expect("a start after abandoning");
 
@@ -4050,7 +3867,7 @@ mod tests {
         let state = begin_own_rotation(&dir, NOW).expect("a rotation");
         abandon_rotation(&dir, &state.incoming).expect("abandoned");
         assert_eq!(published(&dir), vec![state.outgoing]);
-        assert_eq!(served(&dir), chain);
+        assert_eq!(what_is_served(&dir), chain);
         assert!(current(&dir).unwrap().supplied);
         assert!(rotation(&dir).unwrap().is_none());
         let materials = ensure(&dir, names(), A_YEAR, &[]).expect("a start after abandoning");
@@ -4062,9 +3879,9 @@ mod tests {
     fn a_switch_past_its_installing_cannot_be_abandoned() {
         let dir = rotating("switch-final");
         let (chain, key, ca) = elsewhere("switch-final-theirs", names());
-        let state = begin_supplied_rotation(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
-        // The renames ran, and nothing after them.
-        take(&dir, &dir.join(INCOMING_DIR)).expect("installed");
+        let state = rotate_to(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
+        // The entry is served, and nothing after that ran.
+        torn_cutover(&dir, &state);
         assert!(cut_over_began(&dir).unwrap());
         assert!(matches!(
             abandon_rotation(&dir, &state.incoming),
@@ -4082,16 +3899,10 @@ mod tests {
     /// Each gap in the order a switch is written, settled by the next start, as the leader's own rotation is.
     #[test]
     fn a_switch_interrupted_at_any_step_is_settled_by_the_next_start() {
-        // A staged set nothing claims: the beginning died before its intent.
-        let dir = rotating("switch-torn-stage");
-        let (chain, key, ca) = elsewhere("switch-torn-theirs", names());
-        stage(&dir, INCOMING_DIR, &chain, &key, &ca).expect("staged");
-        ensure(&dir, names(), A_YEAR, &[]).expect("a start");
-        assert!(!dir.join(INCOMING_DIR).exists(), "a set no rotation claims was kept");
-
-        // Between the intent and the bundle: the root was staged and never published.
+        // Between the intent and the bundle: the root was never published.
         let dir = rotating("switch-torn-bundle");
-        let state = begin_supplied_rotation(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
+        let (chain, key, ca) = elsewhere("switch-torn-theirs", names());
+        let state = rotate_to(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
         let outgoing_only = without(&std::fs::read(dir.join(CA_CERT)).unwrap(), &state.incoming).unwrap();
         write_durably(&dir.join(CA_CERT), &outgoing_only).unwrap();
         ensure(&dir, names(), A_YEAR, &[]).expect("a start");
@@ -4100,10 +3911,10 @@ mod tests {
             "the switch stalled with nothing published"
         );
 
-        // The staged set lost while the intent stands: nothing left to install.
-        let dir = rotating("switch-lost-stage");
-        let state = begin_supplied_rotation(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
-        std::fs::remove_file(dir.join(INCOMING_DIR).join(SERVER_KEY)).unwrap();
+        // The entry gone from the list while the intent stands: nothing left to serve.
+        let dir = rotating("switch-lost-entry");
+        let state = rotate_to(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
+        lose_entry(&dir, state.clone());
         ensure(&dir, names(), A_YEAR, &[]).expect("a start");
         assert!(
             rotation(&dir).unwrap().is_none(),
@@ -4113,13 +3924,12 @@ mod tests {
             !published(&dir).contains(&state.incoming),
             "a root nothing serves was left published"
         );
-        assert!(!dir.join(INCOMING_DIR).exists());
 
-        // Between the renames and dropping the intent: the switch already happened.
+        // Between serving the entry and dropping the intent: the switch already happened.
         let dir = rotating("switch-torn-cutover");
         let own = signing(&dir);
-        let state = begin_supplied_rotation(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
-        take(&dir, &dir.join(INCOMING_DIR)).expect("installed");
+        let state = rotate_to(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
+        torn_cutover(&dir, &state);
         let materials = ensure(&dir, names(), A_YEAR, &[]).expect("a start");
         assert!(materials.supplied);
         assert!(rotation(&dir).unwrap().is_none(), "a finished switch was left open");
@@ -4140,12 +3950,12 @@ mod tests {
         );
         assert!(!published(&dir).contains(&state.incoming));
 
-        // And a withdrawal interrupted after the supplied set went.
+        // And a withdrawal interrupted after the entry stopped being served.
         let dir = rotating("switch-torn-withdrawal");
         install(&dir, &chain, &key, &ca, &names(), &[]).expect("a supplied set");
         ensure_own(&dir, names(), A_YEAR).expect("the leader's own");
         let state = begin_own_rotation(&dir, NOW).expect("a rotation");
-        withdraw(&dir).expect("withdrawn");
+        torn_cutover(&dir, &state);
         let materials = ensure(&dir, names(), A_YEAR, &[]).expect("a start");
         assert!(!materials.supplied);
         assert!(rotation(&dir).unwrap().is_none(), "a finished switch was left open");
@@ -4198,7 +4008,9 @@ mod tests {
 /// restart nothing is left that no rotation claims.
 #[cfg(test)]
 mod certificate_fuzz {
-    use super::tests::{A_WEEK_OUT, A_YEAR, NOW, elsewhere, names, scratch};
+    use super::tests::{
+        A_WEEK_OUT, A_YEAR, NOW, elsewhere, install, lose_entry, names, rotate_to, scratch, torn_cutover,
+    };
     use super::*;
     use crate::fuzz::{Coverage, Rng, run};
 
@@ -4243,22 +4055,20 @@ mod certificate_fuzz {
         fn issue(&self) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
             let materials = ensure(&self.dir, names(), A_YEAR, &[]).expect("their authority");
             (
-                std::fs::read(&materials.server_cert_path).unwrap(),
-                std::fs::read(&materials.server_key_path).unwrap(),
+                materials.served.clone(),
+                std::fs::read(self.dir.join(SERVER_KEY)).unwrap(),
                 materials.ca_pem,
             )
         }
     }
 
     fn in_force_signing(dir: &Path) -> Result<String, String> {
-        let (materials, served) = in_force(dir)?;
-        Ok(signing_root(&materials.ca_pem, &served)?.fingerprint)
+        let materials = current(dir)?;
+        Ok(signing_root(&materials.ca_pem, &materials.served)?.fingerprint)
     }
 
     fn published(dir: &Path) -> Result<Vec<String>, String> {
-        let path = published_path(dir)?;
-        let bundle = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(describe_each(&bundle, CA_CERT)?
+        Ok(describe_each(&current(dir)?.ca_pem, CA_CERT)?
             .into_iter()
             .map(|d| d.fingerprint)
             .collect())
@@ -4267,8 +4077,8 @@ mod certificate_fuzz {
     /// What must hold after every step: what is served verifies against what workers are handed, and an open
     /// rotation hands them both roots.
     fn serves(dir: &Path) -> Result<(), String> {
-        let (materials, served) = in_force(dir)?;
-        verify(&materials.ca_pem, &served, "localhost")?;
+        let materials = current(dir)?;
+        verify(&materials.ca_pem, &materials.served, "localhost")?;
         if let Some(state) = rotation(dir)? {
             let bundle = published(dir)?;
             if !bundle.contains(&state.incoming) || !bundle.contains(&state.outgoing) {
@@ -4286,10 +4096,8 @@ mod certificate_fuzz {
         serves(dir)?;
         match rotation(dir)? {
             None => {
-                for stray in [NEXT_CA_KEY, INCOMING_DIR, STAGING_DIR, PREVIOUS_DIR, DISCARD_DIR] {
-                    if dir.join(stray).exists() {
-                        return Err(format!("{stray} was left behind with no rotation claiming it"));
-                    }
+                if dir.join(NEXT_CA_KEY).exists() {
+                    return Err(format!("{NEXT_CA_KEY} was left behind with no rotation claiming it"));
                 }
                 let bundle = published(dir)?;
                 if bundle.len() != 1 {
@@ -4344,7 +4152,7 @@ mod certificate_fuzz {
                 };
                 let rotates = supplying_changes_root(dir, &chain, &ca)?;
                 if open.is_some() && rotates {
-                    let refused = begin_supplied_rotation(dir, &chain, &key, &ca, &names(), &[], NOW)
+                    let refused = rotate_to(dir, &chain, &key, &ca, &names(), &[], NOW)
                         .err()
                         .ok_or("an upload began a second rotation")?;
                     coverage.reach("refused-while-open");
@@ -4357,7 +4165,7 @@ mod certificate_fuzz {
                     return Ok("upload under the root in force, during a rotation".to_string());
                 }
                 if rotates {
-                    begin_supplied_rotation(dir, &chain, &key, &ca, &names(), &[], NOW)?;
+                    rotate_to(dir, &chain, &key, &ca, &names(), &[], NOW)?;
                     coverage.reach("upload-rotates");
                     Ok("upload under another root".to_string())
                 } else {
@@ -4479,7 +4287,11 @@ mod certificate_fuzz {
                 let Some(state) = open else {
                     return Ok("nothing to tear".to_string());
                 };
-                retire(&published_path(dir)?, &state.incoming)?;
+                // Under a list entry the overlap is derived from the intent, and there is no bundle to tear.
+                if served(dir)?.is_some() {
+                    return Ok("nothing to tear: the overlap is derived".to_string());
+                }
+                retire(&dir.join(CA_CERT), &state.incoming)?;
                 coverage.reach(step);
                 restart(dir)?;
                 if !published(dir)?.contains(&state.incoming) {
@@ -4493,7 +4305,7 @@ mod certificate_fuzz {
                 };
                 match state.installs {
                     Installs::NextKey => remove_file_durably(&dir.join(NEXT_CA_KEY))?,
-                    Installs::Supplied => remove_durably(&dir.join(INCOMING_DIR))?,
+                    Installs::Supplied => lose_entry(dir, state.clone()),
                     Installs::Own => remove_file_durably(&dir.join(CA_KEY))?,
                 }
                 coverage.reach(step);
@@ -4509,8 +4321,7 @@ mod certificate_fuzz {
                 };
                 match state.installs {
                     Installs::NextKey => rename_durably(&dir.join(NEXT_CA_KEY), &dir.join(CA_KEY))?,
-                    Installs::Supplied => take(dir, &dir.join(INCOMING_DIR))?,
-                    Installs::Own => withdraw(dir)?,
+                    Installs::Supplied | Installs::Own => torn_cutover(dir, &state),
                 }
                 coverage.reach(step);
                 restart(dir)?;
@@ -4523,12 +4334,7 @@ mod certificate_fuzz {
                 if open.is_some() {
                     return Ok("nothing stray while a rotation is open".to_string());
                 }
-                let (chain, key, ca) = rng.pick(pkis).issue();
-                if rng.chance(2) {
-                    stage(dir, INCOMING_DIR, &chain, &key, &ca)?;
-                } else {
-                    write_durably(&dir.join(NEXT_CA_KEY), b"a key nothing claims").map_err(|e| e.to_string())?;
-                }
+                write_durably(&dir.join(NEXT_CA_KEY), b"a key nothing claims").map_err(|e| e.to_string())?;
                 coverage.reach(step);
                 restart(dir)?;
                 Ok("a beginning that died before its intent, then a start".to_string())

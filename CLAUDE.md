@@ -99,13 +99,17 @@ and `npm audit`, and after a change to anything a fuzzer exercises: a source, a 
 compiler. The live one is a live test like any other: it takes its service
 from `tests/live`, so it skips without one, and it gets its own line in `just check-live`.
 
-The GUI has two fuzzers, seeded the same way (`tests/gui/fuzz.ts` ports `src/fuzz.rs`), and both check after every
+The GUI has three fuzzers, seeded the same way (`tests/gui/fuzz.ts` ports `src/fuzz.rs`), and each checks after every
 step that what is on screen works (`tests/gui/onscreen.ts`). `tests/gui/specs/gui-fuzz.spec.ts` walks the GUI as
 each kind of person, by what is on screen. `tests/gui/specs/journey-fuzz.spec.ts` takes an administrator from a
 fresh install to rows flowing and on, by moves (`tests/gui/moves/journey.ts`) each checked against the leader's API,
-the workers and the rows that arrive. A new thing an administrator does is a new move. `just check-gui` runs a seed
-for each kind of person and one journey, which makes only some of the moves; `just fuzz-gui` and `just fuzz-journey`
-run enough seeds to reach everything, and `just check-fuzz` runs both after the crate's fuzzers.
+the workers and the rows that arrive. A new thing an administrator does is a new move.
+`tests/gui/specs/pipeline-fuzz.spec.ts` edits one pipeline's steps for many moves in a row
+(`tests/gui/moves/pipeline.ts`), and after each the steps on screen must be its model's, and after a save the
+leader's too. A new thing an author does to steps is a new move. `just check-gui` runs a seed for each kind of
+person, one journey and one pipeline journey, which make only some of the moves; `just fuzz-gui`, `just fuzz-journey`
+and `just fuzz-pipeline` run enough seeds to reach everything, and `just check-fuzz` runs them after the crate's
+fuzzers.
 
 ## Pull requests
 

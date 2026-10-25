@@ -16,8 +16,7 @@
   import { editable } from './access';
   import TypeCatalog, { type CatalogType } from './TypeCatalog.svelte';
   import { STEP_GLYPHS } from './stepGlyphs';
-  import { flip } from 'svelte/animate';
-  import { glide } from './glide';
+  import { glideTo } from './glide';
 
   let {
     steps,
@@ -100,7 +99,7 @@
 
 <div class="step-list">
   {#each steps as step, i (step)}
-    <div class="slot" animate:flip={{ duration: glide() }}>
+    <div class="slot" animate:glideTo>
       {#if editable()}
         <div class="insert">
           <button type="button" onclick={() => (addingAt = i)} aria-label="Insert step"

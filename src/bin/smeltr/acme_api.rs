@@ -59,8 +59,7 @@ struct AcmeDto {
     cloudflare_token_set: bool,
     /// Where an authority's HTTP-01 challenge is answered, for a page saying what has to reach this leader.
     http_port: u16,
-    /// The certificate the last order installed, by fingerprint, and its dates.
-    issued: Option<String>,
+    /// The dates of the certificate the last order stored.
     not_after_millis: Option<i64>,
     renew_after_millis: Option<i64>,
     last_attempt_millis: Option<i64>,
@@ -92,7 +91,6 @@ async fn read(state: &Acme) -> Result<AcmeDto, String> {
         dns_provider: settings.dns_provider,
         cloudflare_token_set: settings.cloudflare_token.is_some(),
         http_port: smeltr::startup_config::acme_http_port(),
-        issued: issued.fingerprint,
         not_after_millis: issued.not_after_millis,
         renew_after_millis: issued.renew_after_millis,
         last_attempt_millis: issued.last_attempt_millis,
@@ -309,23 +307,25 @@ async fn order(State(state): State<Acme>, actor: axum::Extension<Actor>, headers
         return refuse(StatusCode::BAD_REQUEST, &e);
     }
     let required = certificates_api::must_serve(&serving, &headers);
-    match run(&state.auth, &serving, &settings, &actor, &required).await {
+    match run(&state.auth, &serving, &settings, &actor, &required, true).await {
         Ok(()) => certificates_api::answer_in_force(&serving).await,
         Err(e) => refuse(StatusCode::BAD_REQUEST, &e),
     }
 }
 
-/// One order, start to finish, under `settings_writes`: ordered, recorded, served or rotated to, and the socket
-/// reloaded where it is served at once. A failure is recorded in the state the page reads.
+/// One order, start to finish, under `settings_writes`: ordered, recorded, stored in the list, and where `serve`
+/// says to, served or rotated to, with the socket reloaded where it is served at once. A failure is recorded in the
+/// state the page reads.
 async fn run(
     auth: &Auth,
     serving: &Arc<Tls>,
     settings: &acme::Settings,
     actor: &Actor,
     required: &[String],
+    serve: bool,
 ) -> Result<(), String> {
     let now_ms = smeltr::leader::warnings::now_millis();
-    let outcome = order_once(auth, serving, settings, actor, required, now_ms).await;
+    let outcome = order_once(auth, serving, settings, actor, required, serve, now_ms).await;
     if let Err(e) = &outcome {
         tracing::warn!(target: "leader.acme_order_failed", error = %e, "the certificate authority did not issue a certificate");
         acme::failed(&serving.dir, now_ms, e)?;
@@ -339,6 +339,7 @@ async fn order_once(
     settings: &acme::Settings,
     actor: &Actor,
     required: &[String],
+    serve: bool,
     now_ms: i64,
 ) -> Result<(), String> {
     let issuer = acme::Directory::new(settings.clone(), &serving.dir);
@@ -350,7 +351,8 @@ async fn order_once(
         }
         acme::Challenge::TlsAlpn01 | acme::Challenge::Http01 => serving.proving.as_ref(),
     };
-    let issued = acme::order(&serving.dir, settings, &issuer, prover, &serving.names, required).await?;
+    let mut issued = acme::order(&serving.dir, settings, &issuer, prover, &serving.names, required).await?;
+    issued.rotates &= serve;
     // Recorded before anything is served, as an upload is: a switch of root as the rotation it begins, against
     // the root being left; a certificate served at once against itself.
     let (what, subject) = if issued.rotates {
@@ -363,13 +365,21 @@ async fn order_once(
     };
     certificates_api::record(auth, actor, what, &subject).await?;
     let store = auth.store.clone();
-    let dir = serving.dir.clone();
     let listed = issued.clone();
-    tokio::task::spawn_blocking(move || acme::list(store.as_ref(), &dir, &listed))
+    let entry = tokio::task::spawn_blocking(move || acme::list(store.as_ref(), &listed))
         .await
         .map_err(|e| e.to_string())??;
-    acme::take(&serving.dir, settings, &issued, &serving.names, required, now_ms)?;
-    if !issued.rotates {
+    acme::take(
+        &serving.dir,
+        settings,
+        &issued,
+        &entry,
+        serve,
+        &serving.names,
+        required,
+        now_ms,
+    )?;
+    if serve && !issued.rotates {
         certificates_api::reload_socket(serving)?;
     }
     Ok(())
@@ -394,16 +404,21 @@ pub(crate) async fn renew_if_due(auth: &Auth, serving: &Arc<Tls>) {
     }
     let _ordered = auth.settings_writes.lock().await;
     let now_ms = smeltr::leader::warnings::now_millis();
-    let due = match (acme::state(&serving.dir), acme::source(&serving.dir)) {
-        (Ok(state), Ok(source)) => acme::renews(&state, source, now_ms),
+    let (due, served) = match (acme::state(&serving.dir), acme::source(&serving.dir)) {
+        (Ok(state), Ok(source)) => (acme::renews(&state, now_ms), source == acme::Source::Acme),
         (Err(e), _) | (_, Err(e)) => {
             tracing::warn!(target: "leader.acme_state_unreadable", error = %e, "could not read what the last order left");
             return;
         }
     };
-    if !due {
+    // An order a regenerated key cannot open is ordered again at once, as an issued certificate is issued again.
+    let store = auth.store.clone();
+    let unopenable = blocking(move || store.key_standing()).await.is_ok_and(|standing| {
+        (standing.unopenable).contains(&smeltr::leader::store::Unopenable::Certificate(acme::ENTRY.to_string()))
+    });
+    if !due && !unopenable {
         return;
     }
     let required: Vec<String> = serving.from_inside.iter().cloned().collect();
-    let _ = run(auth, serving, &settings, &Actor::system(), &required).await;
+    let _ = run(auth, serving, &settings, &Actor::system(), &required, served).await;
 }

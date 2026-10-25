@@ -33,5 +33,11 @@ export default defineConfig({
       testMatch: /journey-fuzz-coverage\.spec\.ts/,
       dependencies: ['journey'],
     },
+    { name: 'pipeline', testMatch: /pipeline-fuzz\.spec\.ts/, use: { actionTimeout: 10_000 } },
+    {
+      name: 'pipeline-coverage',
+      testMatch: /pipeline-fuzz-coverage\.spec\.ts/,
+      dependencies: ['pipeline'],
+    },
   ],
 });

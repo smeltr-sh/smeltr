@@ -174,8 +174,7 @@ fn start_leader_tls() -> (
     smeltr::leader::tls::socket_took(&tls_dir, smeltr::leader::tls::disk_generation(&tls_dir));
     let ca_pem = materials.ca_pem.clone();
     let returned_ca_pem = ca_pem.clone();
-    let cert_pem = std::fs::read(&materials.server_cert_path).unwrap();
-    let key_pem = std::fs::read(&materials.server_key_path).unwrap();
+    let (_, cert_pem, key_pem) = smeltr::leader::tls::to_serve(&tls_dir).unwrap();
 
     // The caller's way to stop this leader. `axum_server` holds its own clone, so a caller that never shuts down can
     // drop theirs; without one, a test that means to take the leader away only stops talking to it.

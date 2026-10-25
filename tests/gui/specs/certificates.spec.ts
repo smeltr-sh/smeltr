@@ -177,8 +177,8 @@ test('every worker follows the certificate to ACME, through a renewal and on to 
     expect(first.rotation).toBeNull();
     expect(first.served.names).toContain('127.0.0.1');
     expect(authority.issued).toBe(1);
+    expect(first.entry).toBe('acme');
     const acme = await api.get('/api/settings/acme');
-    expect(acme.issued).toBe(first.served.fingerprint);
     expect(acme.lastError).toBeNull();
     expect(acme.renewAfterMillis).toBeLessThan(acme.notAfterMillis);
 
