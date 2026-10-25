@@ -1008,10 +1008,10 @@ async fn setup_leader(
             get(worker_groups_api::list_worker_groups).post(worker_groups_api::create_worker_group),
         )
         .route("/api/worker-groups/:id/hue", put(worker_groups_api::set_group_hue))
-        // Not on `app` below with the rest of the config routes: saving an identity asks the secret store whether
-        // its certificate and the key it names are a pair, which needs `State<AppState>`.
+        // Not on `app` below with the rest of the config routes: saving an identity asks the certificate list
+        // whether it holds the certificate named, which needs `State<AppState>`.
         .route("/api/identities", put(config_api::put_identities))
-        // Here for the same reason: undoing an identity runs the same pairing check.
+        // Here for the same reason: undoing an identity runs the same check.
         .route("/api/undo", post(config_api::undo))
         // Not on `app` below with the rest of the config routes: retention after an upload keeps what the fleet runs,
         // which the registry knows. A lookup file is streamed to disk, so the limit is what a disk takes rather than

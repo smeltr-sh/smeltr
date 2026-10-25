@@ -332,8 +332,8 @@ fn random_system(rng: &mut Rng, authority: &str) -> (String, Vec<String>) {
     if d.get("version") == Some(&json!("2.0")) {
         set.push("version 2.0".into());
     }
-    // An identity trusting an authority, alone or beside one presenting a certificate with no key, one trusting what
-    // is no certificate, or none.
+    // An identity trusting an authority, alone or beside one with a certificate pasted into the bundle, one trusting
+    // what is no certificate, or none.
     let identities = match rng.below(4) {
         0 => json!([{"id": "acme", "authorities": authority}]),
         1 => json!([{"id": "acme", "authorities": authority}, {"id": "bare", "certificate": authority}]),

@@ -2102,10 +2102,11 @@ fn validate_identities(file: &FileConfig, attributed: &mut Vec<ValidationError>)
             ),
             _ => {}
         }
-        if i.key.is_some() {
-            errors.at("key").push(format!(
-                "{what} names a private key of its own. A certificate from the list holds its key, so choose the \
-                 certificate and take the key out"
+        // A pasted certificate's message covers the key beside it: choosing a certificate takes both out.
+        if i.key.is_some() && !matches!(i.certificate, Some(SecretRefDto::WorkerLocal(_))) {
+            errors.at("certificate").push(format!(
+                "{what} names a private key of its own. A certificate from the list holds its key: choose one \
+                 here, which takes the key out"
             ));
         }
 
@@ -7158,23 +7159,30 @@ mod tests {
     const TLS: &str = r#", "properties": {"security.protocol": "SSL"}, "identity": "acme""#;
 
     /// A bundle written before identities named a certificate from the list pasted the certificate and named its
-    /// key. It still parses, so it loads to say what to choose, and each old field is refused where the fix goes.
+    /// key. It still parses, so it loads to say what to choose, once, where the choice is made.
     #[test]
-    fn a_pasted_certificate_and_its_key_parse_and_are_refused() {
+    fn a_pasted_certificate_and_its_key_parse_and_are_refused_once() {
         let identity = format!(
             r#"{{"id": "acme", "certificate": {}, "key": {{"secret": "acme-key", "version": 1}}}}"#,
             serde_json::to_string(&a_certificate()).unwrap()
         );
         let errors = validation_errors(with_identity(&identity, TLS));
-        let at = |field: &str| {
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].field, Some("certificate"));
+        assert!(errors[0].message.contains("pasted"), "{errors:?}");
+    }
+
+    /// A key beside a certificate from the list is one the list already holds.
+    #[test]
+    fn a_key_beside_a_listed_certificate_is_refused() {
+        let errors = validation_errors(with_identity(
+            r#"{"id": "acme", "certificate": {"secret": "acme", "version": 1}, "key": "ACME_KEY"}"#,
+            TLS,
+        ));
+        assert!(
             errors
                 .iter()
-                .find(|e| e.field == Some(field))
-                .map(|e| e.message.clone())
-        };
-        assert!(at("certificate").is_some_and(|e| e.contains("pasted")), "{errors:?}");
-        assert!(
-            at("key").is_some_and(|e| e.contains("private key of its own")),
+                .any(|e| e.field == Some("certificate") && e.contains("private key of its own")),
             "{errors:?}"
         );
     }

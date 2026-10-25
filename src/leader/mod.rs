@@ -2298,7 +2298,7 @@ async fn store_secret_value(
 }
 
 /// Refuses a secret route that means nothing for a certificate's key: its value is set with its chain, and nothing
-/// verifies or points at it as a secret.
+/// verifies it as a secret.
 async fn not_a_certificate(state: &AppState, name: &str) -> Result<(), String> {
     match is_certificate(state, name).await {
         Ok(false) => Ok(()),
@@ -2875,9 +2875,6 @@ async fn point_secret(
     Path(name): Path<String>,
     Json(req): Json<PointSecretRequest>,
 ) -> Json<Envelope<PointedSecret>> {
-    if let Err(e) = not_a_certificate(&state, &name).await {
-        return Json(Envelope::failed_one(e));
-    }
     let held = {
         let wanted = name.clone();
         let version = req.version;
@@ -4072,6 +4069,59 @@ mod secrets_delivery_tests {
                 version: 1,
             }),
             "main did not move"
+        );
+    }
+
+    /// A replaced certificate is a new version of it, and the identities naming it move to that version the same
+    /// way a secret's references do.
+    #[tokio::test]
+    async fn pointing_a_certificate_moves_the_identities_naming_it() {
+        let state = state("point-certificate");
+        let repo = git::repo_path(&state.data_dir);
+        let head = git::main_head(&repo).unwrap();
+        let edits = [git::FileEdit {
+            path: "groups/g/identities.json".to_string(),
+            content: Some(br#"[{"id":"acme","certificate":{"secret":"acme-client","version":1}}]"#.to_vec()),
+        }];
+        git::commit_edits(
+            &repo,
+            git::MAIN_BRANCH,
+            &head,
+            Some(&head),
+            &edits,
+            "an identity",
+            &store::Actor::system(),
+        )
+        .unwrap();
+        state
+            .store
+            .create_certificate("acme-client", "", "chain 1", "key 1")
+            .unwrap();
+        state
+            .store
+            .add_certificate_version("acme-client", "chain 2", "key 2")
+            .unwrap();
+
+        let out = point(&state, "acme-client", 2, "renew-acme").await;
+        assert!(out.ok, "{:?}", out.errors);
+        assert_eq!(out.references, 1);
+        assert_eq!(out.files, vec!["groups/g/identities.json".to_string()]);
+
+        let tip = git::branch_tip(&repo, "renew-acme").expect("the branch exists");
+        let bytes = git::read_blobs(&repo, &tip, &["groups/g/identities.json".to_string()])
+            .unwrap()
+            .pop()
+            .flatten()
+            .expect("the file is there");
+        let identities: Vec<crate::config_file::IdentityDto> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            identities[0].certificate,
+            Some(crate::config_file::SecretRefDto::LeaderStored(
+                crate::config_file::LeaderSecretDto {
+                    secret: "acme-client".to_string(),
+                    version: 2,
+                }
+            ))
         );
     }
 
