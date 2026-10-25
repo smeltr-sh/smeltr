@@ -183,7 +183,7 @@
     />
   {/if}
 </Advanced>
-<TableDelivery value={d} calls="the store" commit="a version the table's log keeps" />
+<TableDelivery value={d} calls="the store" commit="a version to the table's log" />
 
 <style>
   input,

@@ -32,16 +32,22 @@
 
 {#snippet edit()}<a href="#/build/identities">edit</a>{/snippet}
 
-<Field field="identity" label="identity" note={chosen && linked ? edit : undefined}>
+<Field
+  field="identity"
+  label="identity"
+  note={chosen && linked ? edit : undefined}
+  warning={!chosen && farEnd === 'sender'
+    ? 'With none, it serves plain HTTP, and tokens cross the network in the clear.'
+    : null}
+>
   {#snippet help()}
     {#if farEnd === 'sender'}
       The certificate and key it serves TLS with. If the identity has authorities, every sender must
-      present a certificate that chains to one of them. None: plain HTTP, and tokens cross the
-      network in the clear.
+      present a certificate that chains to one of them.
     {:else}
       Pick one when the {farEnd} requires a client certificate, or its own certificate comes from your
-      organization's authority rather than a public one. None: no certificate, and the platform's public
-      roots.
+      organization's authority rather than a public one. With none, this client presents no certificate
+      and trusts the public roots.
     {/if}
   {/snippet}
   <select

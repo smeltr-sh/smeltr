@@ -855,7 +855,7 @@
       note={startMoves(source) ? moves : undefined}
     >
       {#snippet help()}
-        Where this source reads from. Changing it will move offsets to the new position.
+        Where this source reads from.
       {/snippet}
     </StartAt>
   </div>

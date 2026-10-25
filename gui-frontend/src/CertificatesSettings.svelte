@@ -770,11 +770,7 @@
               <input type="url" bind:value={directoryUrl} spellcheck="false" />
             </Field>
           {/if}
-          <Field
-            label="Names"
-            group
-            help="What the certificate carries, and where the authority reaches this leader."
-          >
+          <Field label="Names" group help="The host names the certificate is for.">
             <TokenListInput bind:values={nameList} placeholder="leader.example.com" />
           </Field>
           <Field label="Contact email">

@@ -213,11 +213,7 @@
     errors={{ region: regionRefusal(d) }}
   />
 </Advanced>
-<TableDelivery
-  value={d}
-  calls="the store or the catalog"
-  commit="a snapshot the table keeps until it is expired"
-/>
+<TableDelivery value={d} calls="the store or the catalog" commit="a snapshot" />
 
 <style>
   /* The namespace beside the table it holds. */

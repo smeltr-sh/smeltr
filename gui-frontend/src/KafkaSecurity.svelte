@@ -103,8 +103,8 @@
       {#snippet help()}
         How this client logs in. <code>GSSAPI</code> (Kerberos) is listed only in a build linked
         with a Kerberos provider.{#if !known}
-          This leader did not say which mechanisms its build carries, so this is what the file says
-          and there is nothing to choose from.{/if}
+          This leader did not say which mechanisms its build carries, so this shows the value saved
+          in the config repository, and there is nothing to choose from.{/if}
       {/snippet}
       <select
         value={security.mechanism ?? ''}

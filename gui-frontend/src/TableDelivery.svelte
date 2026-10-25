@@ -50,7 +50,7 @@
     value: TableDelivery;
     /** What one call may be made to, as "the store". */
     calls: string;
-    /** What one commit makes of the table, as "a version the table's log keeps". */
+    /** What one commit adds to the table, as "a version to the table's log". */
     commit: string;
   } = $props();
 </script>
@@ -120,9 +120,10 @@
   </Field>
   <Field field="fileIntervalSecs" label="file interval (seconds)">
     {#snippet help()}
-      The longest records wait before they are committed to the table. Each commit is {commit};
-      records are acknowledged only once committed, so every source feeding this destination is held
-      open for up to this long.
+      The longest records wait before they are committed to the table. Each commit adds {commit}, so
+      a short interval makes many. Sources feeding this destination are held open until their
+      records are committed, for up to this long. Between {LIMITS.tableFileIntervalSecs.min} and
+      {LIMITS.tableFileIntervalSecs.max} seconds.
     {/snippet}
     <input
       type="number"

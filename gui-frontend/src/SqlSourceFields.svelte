@@ -526,7 +526,7 @@
                     {#snippet help()}
                       A batch can end between two rows with the same <code>{mode.position[0]}</code
                       >. This column puts them in a fixed order, so the next poll resumes exactly
-                      there. Needed: {mode.position[0]} can repeat, it has no unique index.
+                      there. This is needed because {mode.position[0]} can repeat: it has no unique index.
                     {/snippet}
                     <span class="controls">
                       <select
@@ -572,12 +572,13 @@
                 {/if}
                 <Field field="mode.start" label="start from">
                   {#snippet help()}
-                    Where a source with no progress begins. One with progress resumes from it.
-                    {mode.start === 'from'
-                      ? positionIsTime
-                        ? 'A time with its offset.'
-                        : 'An integer.'
-                      : 'Or the beginning, or a value you give.'}
+                    Where a source with no progress begins: now, the beginning, or a value you give.
+                    A source with progress resumes from it.
+                    {#if mode.start === 'from'}
+                      {positionIsTime
+                        ? 'The value is a time with its offset.'
+                        : 'The value is an integer.'}
+                    {/if}
                   {/snippet}
                   <span class="controls">
                     <select

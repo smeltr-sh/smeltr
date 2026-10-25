@@ -364,8 +364,7 @@
       <ConnectorAccess store="logAnalytics" value={l} show="advanced" />
       <RequestDelivery value={l} sizeDefault={LIMITS.logAnalyticsRequestBytes.default}>
         {#snippet sizeHelp()}
-          A request is sent as soon as it reaches this size. Keep it under the largest body the
-          service accepts, or it refuses the request. At most {exactBytes(
+          A request is sent as soon as it reaches this size. The service refuses a request over {exactBytes(
             LIMITS.logAnalyticsRequestBytes.default,
           )}.
         {/snippet}
