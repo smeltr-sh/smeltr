@@ -8,6 +8,10 @@ import { RUN_DIR } from '../run';
 import { MOVES, PIPELINE_SEEDS } from '../moves/pipeline';
 
 test('the pipeline fuzzer made every move', () => {
+  test.skip(
+    seeds(PIPELINE_SEEDS).length === 1,
+    'one journey makes only some of the moves: `just fuzz-pipeline` runs enough to make them all',
+  );
   const dir = path.join(process.env[RUN_DIR] ?? '', 'pipeline');
   const files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
   test.skip(files.length === 0, 'no seed ran');
