@@ -2567,13 +2567,14 @@ async fn issue_certificate(State(state): State<AppState>, Json(req): Json<IssueR
         .collect();
     if names.is_empty() {
         return Json(Envelope::failed_one(
-            "name at least one DNS name or IP address to issue it for",
+            "Issued for needs at least one DNS name or IP address",
         ));
     }
     let dir = tls::dir_of(&state.data_dir);
     if !crate::startup_config::leader_tls_enabled() || !dir.exists() {
         return Json(Envelope::failed_one(
-            "this leader serves plain HTTP and holds no authority to issue a certificate with",
+            "this leader serves plain HTTP, so it cannot issue certificates. Set leader.tls.enabled = true and restart \
+             it first",
         ));
     }
     let issued = blocking(move || {
@@ -2674,7 +2675,8 @@ async fn renew_issued(state: &AppState, dir: &std::path::Path, name: &str, names
     let name = name.to_string();
     blocking(move || {
         let branch = format!("renew-{name}-v{version}");
-        draft_pointing(&data_dir, &branch, &name, version, &store::Actor::system()).map(|_| ())
+        let title = format!("This leader renewed {name}: point it at version {version}");
+        draft_pointing(&data_dir, &branch, &name, version, &title, &store::Actor::system()).map(|_| ())
     })
     .await
 }
@@ -2697,7 +2699,8 @@ pub async fn replace_certificate(
     {
         Ok(true) => {
             return Json(Envelope::failed_one(format!(
-                "this leader issues {name:?} and renews it itself; add a certificate of your own to replace it"
+                "this leader issues {name:?} and renews it itself, so it cannot be replaced. To use your own certificate, \
+                 add one under another name and choose it where this one is used"
             )));
         }
         Ok(false) => {}
@@ -3042,7 +3045,11 @@ async fn point_secret(
     }
 
     let data_dir = state.data_dir.clone();
-    let drafted = blocking(move || draft_pointing(&data_dir, &req.branch, &name, req.version, &actor)).await;
+    let drafted = blocking(move || {
+        let title = format!("Point {name} at version {}", req.version);
+        draft_pointing(&data_dir, &req.branch, &name, req.version, &title, &actor)
+    })
+    .await;
 
     match drafted {
         Ok((done, opened_change)) => Json(Envelope::ok(PointedSecret {
@@ -3056,13 +3063,14 @@ async fn point_secret(
     }
 }
 
-/// Points `name`'s references on `branch` at `version` and opens a change over them, or joins the one open there.
-/// Also whether this opened the change.
+/// Points `name`'s references on `branch` at `version` and opens a change titled `title` over them, or joins the one
+/// open there. Also whether this opened the change.
 fn draft_pointing(
     data_dir: &std::path::Path,
     branch: &str,
     name: &str,
     version: i64,
+    title: &str,
     actor: &store::Actor,
 ) -> Result<(Repointed, bool), String> {
     let done = point_secret_references(data_dir, branch, name, version, actor)?;
@@ -3075,14 +3083,13 @@ fn draft_pointing(
         .map_err(|e| e.to_string())?
         .is_some_and(|c| c.state == git::ChangeState::Open);
     if !already_open {
-        let title = format!("Point {name} at version {version}");
         let description = format!(
             "{} reference{} across {}.",
             done.references,
             if done.references == 1 { "" } else { "s" },
             done.groups.join(", ")
         );
-        git::open_change(&repo, branch, &title, &description, actor).map_err(|e| e.to_string())?;
+        git::open_change(&repo, branch, title, &description, actor).map_err(|e| e.to_string())?;
     }
     Ok((done, !already_open))
 }

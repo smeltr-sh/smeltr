@@ -2904,7 +2904,8 @@ mod tests {
     fn an_issued_certificate_keeps_its_names_until_deleted() {
         let s = store();
         let names = ["a.example.com".to_string(), "10.0.0.7".to_string()];
-        s.create_issued_certificate("issued", "", &names, "chain", "key").unwrap();
+        s.create_issued_certificate("issued", "", &names, "chain", "key")
+            .unwrap();
         s.create_certificate("uploaded", "", "chain", "key").unwrap();
         assert_eq!(
             s.issued_certificates().unwrap(),
