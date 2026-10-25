@@ -1687,7 +1687,7 @@ impl Transform {
             }
             let key = |idx: usize| (at.session.clone(), at.admission, idx);
             if !filters.contains_key(&key(route_idx)) {
-                let mut errors = Vec::new();
+                let (mut errors, mut compiles) = (Vec::new(), false);
                 for (idx, route) in topology.routes.iter().enumerate() {
                     if !delivers_to(route, target.id) {
                         continue;
@@ -1713,10 +1713,9 @@ impl Transform {
                         },
                         RouteFilter::Keeps,
                     );
+                    compiles |= matches!(filter, RouteFilter::Keeps(_));
                     filters.insert(key(idx), filter);
                 }
-                let compiles = (filters.iter())
-                    .any(|((s, a, _), f)| *s == at.session && *a == at.admission && matches!(f, RouteFilter::Keeps(_)));
                 if let (false, Some(captures)) = (compiles, captures) {
                     captures.fail_at(at, errors.join("; "));
                 }
