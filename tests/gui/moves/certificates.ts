@@ -61,7 +61,7 @@ export async function chooseUploaded(
   await served.getByRole('link', { name: 'add a certificate' }).click();
   const dialog = page.getByRole('dialog', { name: 'new certificate' });
   await dialog.getByRole('textbox', { name: 'Name' }).fill(name);
-  await dialog.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
+  await dialog.getByRole('textbox', { name: /^Certificate\b/ }).fill(fullChain(pki));
   await dialog.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   served = page.getByRole('region', { name: /^Leader certificate/ });
@@ -92,7 +92,7 @@ export async function replaceCertificate(page: Page, text: string, pki: Pki) {
   const row = page.getByRole('row').filter({ has: page.getByText(text, { exact: true }) });
   await row.getByRole('button', { name: 'Replace' }).click();
   const dialog = page.getByRole('dialog', { name: /^replace / });
-  await dialog.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
+  await dialog.getByRole('textbox', { name: /^Certificate\b/ }).fill(fullChain(pki));
   await dialog.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
   await dialog.getByRole('button', { name: 'Replace', exact: true }).click();
   await expect(dialog).toHaveCount(0);
