@@ -175,6 +175,13 @@ impl Condition {
     }
 }
 
+/// Where an operator manages what this leader serves and the authority it signs under, as a message names it. One
+/// name in every message, so a renamed page is renamed everywhere.
+const LEADER_CERTIFICATE_TAB: &str = "Admin → System → Leader certificate";
+
+/// Where certificates are kept and replaced, as a message names it.
+const CERTIFICATE_LIST: &str = "Admin → Certificates";
+
 /// How long before an authority expires this starts saying so. Long enough to copy a new one to every worker at
 /// a normal pace, which is the work it is warning about.
 const AUTHORITY_NOTICE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
@@ -619,18 +626,19 @@ fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &R
             // naming that would send them to a page that turns them away.
             (_, Rotating::Stuck(why) | Rotating::Unreadable(why)) => format!(
                 "this leader's certificate authority {} and the rotation meant to replace it cannot finish: {why} \
-                 Put that right, or abandon the rotation in Admin → System → Leader certificate and start another",
+                 Put that right, or abandon the rotation in {LEADER_CERTIFICATE_TAB} and start another",
                 if expired {
                     "has expired".to_string()
                 } else {
                     format!("expires in {days} days")
                 }
             ),
-            (true, _) => "this leader's certificate authority has expired, and no worker given it can verify this \
-                 leader any more. Rotate it in Admin → System → Leader certificate"
-                .to_string(),
+            (true, _) => format!(
+                "this leader's certificate authority has expired, and no worker given it can verify this leader any \
+                 more. Rotate it in {LEADER_CERTIFICATE_TAB}"
+            ),
             (false, _) => format!(
-                "this leader's certificate authority expires in {days} days. Rotate it in Admin → System → Leader certificate: \
+                "this leader's certificate authority expires in {days} days. Rotate it in {LEADER_CERTIFICATE_TAB}: \
                  every worker has to take the new one before this leader signs under it"
             ),
         },
@@ -678,12 +686,12 @@ pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
             let message = if expired {
                 format!(
                     "this leader could not renew its certificate, and the certificate has expired. Check the ACME \
-                     settings in Admin → System → Leader certificate. Last error: {error}"
+                     settings in {LEADER_CERTIFICATE_TAB}. Last error: {error}"
                 )
             } else {
                 format!(
                     "this leader could not renew its certificate. It tries again every hour, and the certificate \
-                     {when}. Check the ACME settings in Admin → System → Leader certificate. Last error: {error}"
+                     {when}. Check the ACME settings in {LEADER_CERTIFICATE_TAB}. Last error: {error}"
                 )
             };
             (Condition::AcmeRenewalFailing, due, message)
@@ -697,15 +705,14 @@ pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
             }
             let message = match (source, &serving.entry) {
                 (crate::leader::acme::Source::Acme, _) => format!(
-                    "this leader's certificate {when}, and ACME is not renewing it. Check the ACME settings in Admin \
-                     → System → Leader certificate"
+                    "this leader's certificate {when}, and ACME is not renewing it. Check the ACME settings in {LEADER_CERTIFICATE_TAB}"
                 ),
                 (crate::leader::acme::Source::Upload, Some(entry)) => format!(
-                    "this leader's certificate {entry:?} {when}. Replace it in Admin → Certificates, and the leader \
+                    "this leader's certificate {entry:?} {when}. Replace it in {CERTIFICATE_LIST}, and the leader \
                      serves the new version"
                 ),
                 _ => {
-                    format!("this leader's certificate {when}. Issue a new one in Admin → System → Leader certificate")
+                    format!("this leader's certificate {when}. Issue a new one in {LEADER_CERTIFICATE_TAB}")
                 }
             };
             (
