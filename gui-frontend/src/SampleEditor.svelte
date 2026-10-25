@@ -12,7 +12,16 @@
   import Field from './Field.svelte';
   import Clamped from './Clamped.svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { getSample, putSample, type SampleDto, type SampleRecordDto } from './api';
+  import FindBox, { type FindFilter } from './FindBox.svelte';
+  import InlineError from './InlineError.svelte';
+  import {
+    getSample,
+    previewPipeline,
+    putSample,
+    type SampleDto,
+    type SampleRecordDto,
+  } from './api';
+  import { buildFileConfig } from './pipeline';
   import {
     cellMistyped,
     cellText,
@@ -51,6 +60,8 @@
   let selected: Set<number> = $state(new Set());
   let editing: number | null = $state(null);
   let query = $state('');
+  let find = $state<FindFilter>({ kind: 'none' });
+  let findError = $state('');
   let showAll = $state(false);
   let pasted = $state('');
   let saving = $state(false);
@@ -74,7 +85,22 @@
   }
   load();
 
-  let found = $derived(rows.filter((r) => matches(r.record, query)));
+  // An expression runs over the sample as saved, through no steps: its rows are the saved records' places, which are
+  // the draft's keys until the draft changes a record or drops one.
+  const config = JSON.stringify(buildFileConfig('sample', 'sample', [], [], []));
+  const evaluate = (expression: string) =>
+    previewPipeline({ config, sample: id, showInternal: true, filter: expression });
+  let drafted = $derived(
+    !!sample &&
+      (rows.length !== sample.records.length ||
+        rows.some((r) => r.changed) ||
+        pasted.trim() !== ''),
+  );
+  const keeps = (r: Row) =>
+    find.kind === 'expression'
+      ? find.rows.has(r.key)
+      : find.kind !== 'keyword' || matches(r.record, find.text);
+  let found = $derived(rows.filter(keeps));
   let shown = $derived(showAll ? found : found.slice(0, SHOWN));
   let adding = $derived(pastedRecords(pasted, columns));
   let pasteError = $derived('error' in adding ? adding.error : '');
@@ -160,13 +186,19 @@
 
     <Field label="Records" group>
       <div class="actions">
-        <input
-          class="search"
-          type="search"
-          aria-label="Search records"
-          placeholder="Search records"
-          bind:value={query}
-        />
+        <div class="search">
+          <FindBox
+            bind:query
+            bind:filter={find}
+            bind:error={findError}
+            {evaluate}
+            paused={drafted}
+            remember={`smeltr-sample-expressions:${id}`}
+            id="find-records"
+            label="Search records"
+            placeholder="Search records"
+          />
+        </div>
         <span class="count">{selected.size} of {rows.length} selected</span>
         <span class="spacer"></span>
         <button
@@ -182,6 +214,10 @@
           onclick={() => keepTicked(false)}>Remove selected</button
         >
       </div>
+      <InlineError message={findError} />
+      {#if find.kind === 'paused'}
+        <p class="dim">Save first: an expression filters the saved records.</p>
+      {/if}
       <div class="table-wrap">
         <table>
           <thead>
@@ -332,7 +368,9 @@
     flex-grow: 1;
   }
   .search {
-    max-width: 18rem;
+    display: flex;
+    flex: 1;
+    max-width: 24rem;
   }
   .count {
     color: var(--dim);

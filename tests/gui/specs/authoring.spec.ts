@@ -686,6 +686,15 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
   await expect(records.getByRole('row', { name: /coupon.*SPRING.*orders 0 100/ })).toBeVisible();
   await expect(admin.getByText('Re-lock after saving: orders parse')).toBeVisible();
 
+  // An expression filters the records as saved.
+  const find = records.getByRole('combobox', { name: 'Search records' });
+  const ticks = records.getByRole('checkbox', { name: /^Select record \d/ });
+  await find.fill('__source.offset > 100');
+  await expect(records.getByRole('button', { name: 'ƒ expression' })).toBeVisible();
+  await expect(ticks).toHaveCount(2);
+  await find.fill('');
+  await expect(ticks).toHaveCount(3);
+
   // Keep the first and last, fix the last, and paste one more.
   await records.getByRole('checkbox', { name: 'Select record 1' }).check();
   await records.getByRole('checkbox', { name: 'Select record 3' }).check();
@@ -694,6 +703,13 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
   await expect(records.getByRole('textbox')).toHaveCount(0);
   await records.getByRole('button', { name: 'Keep only selected' }).click();
   await expect(records.getByRole('checkbox', { name: 'Select record 2' })).toHaveCount(0);
+  // Once the draft differs from what is saved, an expression waits on the save and keeps every record.
+  await find.fill('__source.offset > 100');
+  await expect(
+    records.getByText('Save first: an expression filters the saved records.'),
+  ).toBeVisible();
+  await expect(ticks).toHaveCount(2);
+  await find.fill('');
   await records.getByRole('cell', { name: /"id":3/ }).click();
   await records.getByRole('textbox', { name: '_raw, record 3' }).fill('{"id":3,"total":13}');
   // Enter settles the cell; it does not save the sample.
