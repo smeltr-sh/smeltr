@@ -231,7 +231,7 @@ pub async fn start(
     }
     let job = Job::Message(message);
     if let Err(refused) = begin(&auth, &actor, &headers, &conversation.id, job, request.picked(), any).await {
-        return refused;
+        return *refused;
     }
     (
         StatusCode::ACCEPTED,
@@ -261,7 +261,7 @@ pub async fn add_message(
     }
     let job = Job::Message(message);
     if let Err(refused) = begin(&auth, &actor, &headers, &id, job, request.picked(), any).await {
-        return refused;
+        return *refused;
     }
     (StatusCode::ACCEPTED, no_store(Envelope::done())).into_response()
 }
@@ -290,7 +290,7 @@ pub async fn context(
             .then_some("nothing has been said since the conversation began again")
     };
     if let Err(refused) = begin(&auth, &actor, &headers, &id, job, Picked::default(), said_nothing).await {
-        return refused;
+        return *refused;
     }
     (StatusCode::ACCEPTED, no_store(Envelope::done())).into_response()
 }
@@ -310,13 +310,16 @@ async fn begin(
     job: Job,
     picked: Picked,
     refusal: fn(&[Turn]) -> Option<&'static str>,
-) -> Result<(), Response> {
+) -> Result<(), Box<Response>> {
     let stop = Arc::new(AtomicBool::new(false));
     let (chats, store, read, flag) = (auth.chats.clone(), auth.store.clone(), id.to_string(), stop.clone());
     let begun = store_call(move || {
         let mut runs = chats.runs();
         if runs.get(&read).is_some_and(|r| r.running) {
-            return Ok(Err(refuse(StatusCode::CONFLICT, "the agent is still answering")));
+            return Ok(Err(Box::new(refuse(
+                StatusCode::CONFLICT,
+                "the agent is still answering",
+            ))));
         }
         let turns = store.turns_of(&read)?;
         let turns: Result<Vec<Turn>, _> = turns.iter().map(|t| serde_json::from_str(t)).collect();
@@ -324,11 +327,11 @@ async fn begin(
             Ok(turns) => turns,
             Err(e) => {
                 let why = format!("a turn of this conversation cannot be read: {e}");
-                return Ok(Err(refuse(StatusCode::INTERNAL_SERVER_ERROR, &why)));
+                return Ok(Err(Box::new(refuse(StatusCode::INTERNAL_SERVER_ERROR, &why))));
             }
         };
         if let Some(why) = refusal(&turns) {
-            return Ok(Err(refuse(StatusCode::CONFLICT, why)));
+            return Ok(Err(Box::new(refuse(StatusCode::CONFLICT, why))));
         }
         let run = Run {
             stop: flag,
@@ -344,7 +347,7 @@ async fn begin(
     let turns = match begun {
         Ok(Ok(turns)) => turns,
         Ok(Err(refused)) => return Err(refused),
-        Err(response) => return Err(*response),
+        Err(response) => return Err(response),
     };
     let host = Turned {
         auth: auth.clone(),
