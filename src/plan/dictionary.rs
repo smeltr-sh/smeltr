@@ -61,9 +61,9 @@ fn json_type(v: &serde_json::Value) -> DataType {
     }
 }
 
-/// Where two seen values' types meet: `DataType::unify`, except that a disagreement is a variant at that field
-/// alone, so one field's mixed kinds do not take its object's other fields with it.
-fn meet(a: DataType, b: &DataType) -> DataType {
+/// Where two types meet as the type of a value that is either: `DataType::unify`, except that a disagreement is a
+/// variant at that field alone, so one field's mixed kinds do not take its object's other fields with it.
+pub(crate) fn meet(a: DataType, b: &DataType) -> DataType {
     match (a, b) {
         (DataType::Struct(mut fa, oa), DataType::Struct(fb, ob)) => {
             for (key, y) in fb {

@@ -692,19 +692,16 @@ fn after_dot(
             let dest = (system.topology.destinations.iter())
                 .find(|d| d.name == *id)
                 .ok_or_else(|| format!("this config has no destination {id:?}"))?;
-            // A filter there compiles once for each route that delivers to it (`runtime`), so a name has a type
-            // only where every one of them gives it one, and holds what all of those have in common.
+            // A filter there runs on each route delivering to it that it compiles on (`runtime`), so a name has
+            // what any of them gives it.
             let delivers = |r: &&plan::topology::RouteConfig| {
                 r.deliver.iter().any(|rule| rule.to.contains(&dest.id))
                     || r.on_exception.answers.iter().any(|a| a.targets().contains(&dest.id))
             };
-            let mut types = system
-                .topology
-                .routes
-                .iter()
+            (system.topology.routes.iter())
                 .filter(delivers)
-                .map(|r| over_output(r, expr.as_ref()?));
-            (types.next().flatten()).and_then(|first| types.try_fold(first, |t, other| plan::dot::common(&t, &other?)))
+                .filter_map(|r| over_output(r, expr.as_ref()?))
+                .reduce(|a, b| plan::dictionary::meet(a, &b))
         }
     };
     Ok(Some(match ty {
@@ -1196,14 +1193,17 @@ mod tests {
         assert!(after("n.", DotAt::Source("in".into())).unwrap().ty.is_none());
     }
 
-    /// A destination fed by routes of different types reads what all of them have in common.
+    /// A destination fed by routes of different types reads what any of them gives.
     #[test]
-    fn a_destination_reads_what_every_route_delivering_there_has_in_common() {
+    fn a_destination_reads_what_any_route_delivering_there_gives() {
         let at = || DotAt::Destination("both".into());
         assert_eq!(after("n.", at()).unwrap().ty.as_deref(), Some("f64"));
         let u = after("u.", at()).unwrap();
-        assert_eq!(u.fields, vec![("path".to_string(), "str".to_string())]);
-        assert_eq!(after("x.", at()).unwrap().ty, None);
+        assert!(u.fields.contains(&("path".into(), "str".into())), "{:?}", u.fields);
+        assert!(u.fields.contains(&("domain".into(), "str".into())), "{:?}", u.fields);
+        assert!(u.fields.contains(&("seen".into(), "bool".into())), "{:?}", u.fields);
+        assert_eq!(after("x.", at()).unwrap().ty.as_deref(), Some("i64"));
+        assert_eq!(after("nope.", at()).unwrap().ty, None);
     }
 
     /// A dot in a string follows no value; an id the bundle does not hold fails.

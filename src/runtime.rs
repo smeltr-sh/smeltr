@@ -509,7 +509,7 @@ pub struct Transform {
     captures: Option<Arc<crate::worker::capture::Captures>>,
     /// Each capture at a destination's filter, compiled against each route feeding it, by session, admission and route
     /// index. Compiled once per session rather than per batch: a parser has no place on the hot path.
-    capture_filters: HashMap<(String, u64, usize), Option<Arc<OutputFilter>>>,
+    capture_filters: HashMap<(String, u64, usize), RouteFilter>,
     /// Recent refusals every destination this thread hands batches to gave, for the heartbeat. Shared with the reader
     /// threads of the same lanes; a fresh, private ring until [`Transform::with_refusals`] injects a deployment-wide
     /// one.
@@ -1580,10 +1580,8 @@ impl Transform {
                 self.captures.as_deref(),
                 &self.destinations,
                 &at_destinations,
-                &self.topology.routes[route_idx],
+                &self.topology,
                 route_idx,
-                plan,
-                &lane.meta,
             );
             // The one batch this interval describes for the leader (`streams::Streams::due`): its Parsers tally
             // what they produce, which every other batch skips. A batch the route took no row of is not it.
@@ -1660,24 +1658,22 @@ impl Transform {
         Ok(None)
     }
 
-    /// What route `route_idx`, running `plan` over `meta`'s records, copies for each capture in `at`: those at a
-    /// destination of this thread's the route delivers to, each with its filter compiled against the route's output.
-    /// A filter that will not compile there ends its capture, saying which route. `filters` keeps each compiled filter.
-    #[allow(clippy::too_many_arguments)]
+    /// What route `route_idx` copies for each capture in `at`: those at a destination of this thread's the route
+    /// delivers to, each with its filter compiled against the route's output. A filter runs on each route delivering
+    /// there that it compiles on, since those routes may give the destination rows of different shapes; one that
+    /// compiles on none of them ends its capture, saying why for each. `filters` keeps what each route makes of it.
     fn route_taps(
-        filters: &mut HashMap<(String, u64, usize), Option<Arc<OutputFilter>>>,
+        filters: &mut HashMap<(String, u64, usize), RouteFilter>,
         captures: Option<&crate::worker::capture::Captures>,
         destinations: &[DestinationTarget],
         at: &[crate::worker::capture::AtDestination],
-        route: &CompiledRoute,
+        topology: &CompiledTopology,
         route_idx: usize,
-        plan: &Plan,
-        meta: &SourceMeta,
     ) -> Vec<RouteTap> {
         if at.is_empty() {
             return Vec::new();
         }
-        let delivers_to = |dest: DestId| {
+        let delivers_to = |route: &CompiledRoute, dest: DestId| {
             route.deliver.iter().any(|rule| rule.to.contains(&dest))
                 || route.on_exception.answers.iter().any(|a| a.targets().contains(&dest))
         };
@@ -1686,12 +1682,19 @@ impl Transform {
             let Some(target) = destinations.iter().find(|t| t.name == at.destination) else {
                 continue;
             };
-            if !delivers_to(target.id) {
+            if !delivers_to(&topology.routes[route_idx], target.id) {
                 continue;
             }
-            let filter = match filters.get(&(at.session.clone(), at.admission, route_idx)) {
-                Some(filter) => filter.clone(),
-                None => {
+            let key = |idx: usize| (at.session.clone(), at.admission, idx);
+            if !filters.contains_key(&key(route_idx)) {
+                let mut errors = Vec::new();
+                for (idx, route) in topology.routes.iter().enumerate() {
+                    if !delivers_to(route, target.id) {
+                        continue;
+                    }
+                    let plan = topology
+                        .plan_for(route.source, route.pipeline)
+                        .expect("compile_topology validated every route's pipeline id");
                     let compiled = match &at.filter {
                         None => Ok(None),
                         Some(src) => crate::plan::topology::output_condition(
@@ -1699,29 +1702,33 @@ impl Transform {
                             "a capture filter",
                             plan,
                             &route.on_exception.tag_field,
-                            meta,
+                            &topology.meta_for(route.source),
                         )
                         .map(|(ir, patterns)| Some(Arc::new(OutputFilter { ir, patterns }))),
                     };
-                    match compiled {
-                        Ok(filter) => {
-                            filters.insert((at.session.clone(), at.admission, route_idx), filter.clone());
-                            filter
-                        }
-                        Err(e) => {
-                            if let Some(captures) = captures {
-                                captures.fail_at(at, format!("on route {:?}: {e}", route.id));
-                            }
-                            continue;
-                        }
-                    }
+                    let filter = compiled.map_or_else(
+                        |e| {
+                            errors.push(format!("on route {:?}: {e}", route.id));
+                            RouteFilter::Skips
+                        },
+                        RouteFilter::Keeps,
+                    );
+                    filters.insert(key(idx), filter);
                 }
+                let compiles = (filters.iter())
+                    .any(|((s, a, _), f)| *s == at.session && *a == at.admission && matches!(f, RouteFilter::Keeps(_)));
+                if let (false, Some(captures)) = (compiles, captures) {
+                    captures.fail_at(at, errors.join("; "));
+                }
+            }
+            let RouteFilter::Keeps(filter) = &filters[&key(route_idx)] else {
+                continue;
             };
             taps.push(RouteTap {
                 at: i,
                 dest: target.id,
                 placement: target.placement,
-                filter,
+                filter: filter.clone(),
                 wanted: at.wanted,
                 room: at.room,
             });
@@ -2802,6 +2809,14 @@ struct Egress<'a> {
 struct OutputFilter {
     ir: crate::expr::ir::Ir,
     patterns: Vec<crate::core::ctx::CompiledPattern>,
+}
+
+/// A capture at a destination's filter, as one route delivering there makes of it.
+enum RouteFilter {
+    /// `None` keeps every row bound there.
+    Keeps(Option<Arc<OutputFilter>>),
+    /// It does not compile against the route's output: the route copies nothing for it.
+    Skips,
 }
 
 /// One capture at a destination, as one route run copies rows for it.
