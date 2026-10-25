@@ -122,6 +122,7 @@ interface Capture {
   pool: string | null;
   source: string | null;
   destination: string | null;
+  filter: string | null;
   maxMatches: number;
   deadlineSecs: number;
   startedAt: number;
@@ -541,6 +542,7 @@ export class DemoLeader {
           name: s.name,
           source: s.source,
           records: s.records.length,
+          captured: (s.records[0]?.__capture as { timestamp?: string } | undefined)?.timestamp,
         }));
         return ok({ samples, commit: branch.commit });
       }
@@ -959,6 +961,7 @@ export class DemoLeader {
       pool,
       source: (req.source?.id as string | undefined) ?? null,
       destination: req.destination ?? null,
+      filter: req.filter?.trim() || null,
       maxMatches,
       deadlineSecs,
       startedAt: this.now(),
@@ -1057,12 +1060,27 @@ export class DemoLeader {
       ]);
     }
     const arrived = this.held(capture).batches.reduce((n, b) => n + b.rows.length, 0);
-    const records = capture.kept.slice(0, arrived).map((i) => pool.records[i]);
+    // How it was taken, on every record as its `__source` fields are (`Captures::capture_fields`).
+    const taken: Record<string, [string, string]> = {
+      timestamp: ['datetime', new Date(capture.startedAt).toISOString()],
+      ...(capture.source ? { source: ['str', capture.source] } : {}),
+      ...(capture.destination ? { destination: ['str', capture.destination] } : {}),
+      group: ['str', capture.group],
+      ...(capture.filter ? { filter: ['str', capture.filter] } : {}),
+      config: ['str', this.state.branches.main.commit],
+    };
+    const fields = Object.fromEntries(Object.entries(taken).map(([k, [, v]]) => [k, v]));
+    const records = capture.kept
+      .slice(0, arrived)
+      .map((i) => ({ ...pool.records[i], __capture: fields }));
     const sample: SampleDto = {
       id: req.id,
       name: req.name,
       source: req.source,
-      columns: pool.columns,
+      columns: [
+        ...(pool.columns ?? []),
+        ...Object.entries(taken).map(([k, [type]]) => ({ name: `__capture.${k}`, type })),
+      ],
       records,
     };
     const saved = await this.write(name, scope, `samples/${sample.id}.json`, (_, { samples }) => {

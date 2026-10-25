@@ -47,7 +47,13 @@
     typeAt,
     type Declared,
   } from './recordDiff';
-  import { sampleSource, type PreviewResult, type PreviewRow, type SampleRecordDto } from './api';
+  import {
+    isInternal,
+    sampleSource,
+    type PreviewResult,
+    type PreviewRow,
+    type SampleRecordDto,
+  } from './api';
 
   let {
     pipelineId,
@@ -244,10 +250,9 @@
   // the fields most records hold, up to a grid's worth, so it moves with the
   // step and sample shown; a choice does not. A field under a `__`
   // key is internal, smeltr's own and never delivered, so it starts hidden,
-  // and an unfolded row shows it only while its column is shown. A root key
-  // the path has to quote (`["__a.b"]`) counts as well.
+  // and an unfolded row shows it only while its column is shown.
   const DEFAULT_FIELDS = 50;
-  const startsHidden = (path: string) => path.startsWith('__') || path.startsWith('["__');
+  const startsHidden = isInternal;
   let shownByDefault = $derived(
     new Set(
       menuFields
