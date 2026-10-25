@@ -4,6 +4,7 @@
     { id: 'model', title: 'Choose the trust model' },
     { id: 'download', title: 'Obtain and verify the public CA' },
     { id: 'list', title: 'Keep certificates in the list' },
+    { id: 'names', title: 'Names a certificate must cover' },
     { id: 'source', title: 'Choose where the certificate comes from' },
     { id: 'acme', title: 'Order a certificate over ACME' },
     { id: 'rotation', title: 'Rotate the authority' },
@@ -77,6 +78,14 @@
     it, the leader switches to the new version; there's no need to choose it again. The certificate the
     leader serves cannot be deleted.
   </p>
+  <h2 id="names">Names a certificate must cover</h2>
+  <p>
+    A certificate this leader serves must cover the name your browser reaches it by. If this leader
+    runs its own worker, it must also cover the address that worker reaches it by: 127.0.0.1, unless
+    worker.leader.url says otherwise. Public authorities don't issue certificates for 127.0.0.1, so
+    to serve a public certificate, set worker.leader.url to a URL on one of the certificate's names,
+    such as <code>https://smeltr.example.com</code>, then restart.
+  </p>
   <h2 id="source">Choose where the certificate comes from</h2>
   <p>
     Admin → System → Leader certificate shows the authority and the certificate this leader serves,
@@ -96,8 +105,8 @@
           ><th>Uploaded</th><td
             >An administrator picks a certificate from <strong>Admin → Certificates</strong>, or
             adds one there with <strong>add a certificate</strong>, and selects
-            <strong>Serve this certificate</strong>. The certificate must cover every name the page
-            lists.</td
+            <strong>Serve this certificate</strong>. See
+            <a href="#names">Names a certificate must cover</a>.</td
           ></tr
         >
         <tr
@@ -150,9 +159,8 @@
       can't prove an IP address.
     </li>
     <li>
-      If this leader runs its own worker, set worker.leader.url to one of the certificate's names.
-      That worker otherwise reaches the leader at localhost, and the leader refuses a certificate
-      that doesn't cover it.
+      If this leader runs its own worker, read
+      <a href="#names">Names a certificate must cover</a> first.
     </li>
   </ul>
   <h3>Order it</h3>

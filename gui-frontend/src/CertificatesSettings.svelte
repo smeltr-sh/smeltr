@@ -290,11 +290,15 @@
 
   /** What a supplied certificate has to cover, as the leader checks it (`tls::check_supplied`): the names the worker
    * inside this leader and this browser reach it by, or failing both, one of its names. */
-  function mustCover(c: CertificatesDto, hostname: string): string {
+  function mustCover(
+    c: CertificatesDto,
+    hostname: string,
+  ): { names: string; loopback: string | null } {
     const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
     const browser = c.names.find((n) => n.toLowerCase() === host);
     const worker = c.workerName;
-    if (!worker && !browser) return `It must cover one of ${listed(c.names, 'or')}.`;
+    if (!worker && !browser)
+      return { names: `It must cover one of ${listed(c.names, 'or')}.`, loopback: null };
     const roles =
       worker && browser && worker.toLowerCase() === browser.toLowerCase()
         ? [`${worker} (used by the worker inside this leader and by your browser)`]
@@ -303,13 +307,7 @@
             ...(browser ? [`${browser} (used by your browser)`] : []),
           ];
     const loopback = worker && ['localhost', '127.0.0.1', '::1'].includes(worker.toLowerCase());
-    return (
-      `It must cover ${roles.join(' and ')}.` +
-      (loopback
-        ? ` Public authorities don't issue certificates for ${worker}. To use a public certificate, set` +
-          ` SMELTR_LEADER_URL to a name this leader is reached by, then restart.`
-        : '')
-    );
+    return { names: `It must cover ${roles.join(' and ')}.`, loopback: loopback ? worker : null };
   }
 
   /** `a`, `a or b`, `a, b or c`. */
@@ -751,10 +749,18 @@
         {/if}
       {:else if source === 'upload'}
         <div class="setting">
-          <CertificatePicker
-            bind:value={chosen}
-            note={mustCover(certificates, location.hostname)}
-          />
+          <CertificatePicker bind:value={chosen} note={coverNote} />
+          {#snippet coverNote()}
+            {@const cover = mustCover(certificates!, location.hostname)}
+            {cover.names}
+            {#if cover.loopback}
+              Public authorities don't issue certificates for {cover.loopback}. To use a public
+              certificate, see
+              <a href="https://smeltr.sh/docs/certificates#names" target="_blank" rel="noopener"
+                >Names a certificate must cover</a
+              >.
+            {/if}
+          {/snippet}
           {#if switching}
             <p class="dim">
               A switch to {switchingTo} is open. When it cuts over, it replaces this certificate.

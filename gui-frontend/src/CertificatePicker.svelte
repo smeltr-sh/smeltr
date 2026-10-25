@@ -3,6 +3,7 @@
   link opens the upload there and comes back here once it is added.
 -->
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import Field from './Field.svelte';
   import { reported } from './errors.svelte';
   import { listCertificates, type CertificateDto } from './api';
@@ -16,7 +17,7 @@
     value: string | undefined;
     label?: string;
     /** What the chosen certificate must carry, for the page that knows. */
-    note?: string;
+    note?: string | Snippet;
   } = $props();
 
   let certificates: CertificateDto[] = $state([]);
@@ -31,6 +32,8 @@
   {#snippet note()}
     {#if chosen}
       {chosen.names.join(', ') || chosen.subject} · {expiry(chosen.notAfterMillis)}
+    {:else if typeof note === 'function'}
+      {@render note()}
     {:else if note}
       {note}
     {/if}
