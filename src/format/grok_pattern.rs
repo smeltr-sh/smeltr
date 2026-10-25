@@ -282,6 +282,83 @@ fn expand_at_depth<'a>(
     Ok(out)
 }
 
+/// `pattern` with every built-in that captures a field written out as its definition, recursively, so each field it
+/// fills shows where an author can edit it; a built-in that captures nothing, such as `%{NOTSPACE:host}`, stays a
+/// name. It reads the same rows into the same fields as `pattern`. A name that is not a built-in stays as it is.
+pub fn unfold(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    let mut rest = pattern;
+    while let Some(at) = rest.find("%{") {
+        out.push_str(&rest[..at]);
+        let Some(len) = rest[at..].find('}') else {
+            out.push_str(&rest[at..]);
+            return out;
+        };
+        let body = &rest[at + 2..at + len];
+        let (name, field) = match body.split_once(':') {
+            Some((n, f)) => (n, Some(f)),
+            None => (body, None),
+        };
+        let def = BUILTINS.iter().find(|(n, _)| *n == name).map(|(_, d)| *d);
+        match def.filter(|d| captures(d)) {
+            Some(def) => {
+                let inner = unfold(def);
+                match field {
+                    Some(f) => out.push_str(&format!("(?P<{f}>{inner})")),
+                    // A quantifier after the macro would bind to the definition's last atom alone.
+                    None if concatenates(def) && !rest[at + len + 1..].starts_with(['?', '*', '+', '{']) => {
+                        out.push_str(&inner)
+                    }
+                    None => out.push_str(&format!("(?:{inner})")),
+                }
+            }
+            None => out.push_str(&rest[at..=at + len]),
+        }
+        rest = &rest[at + len + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether a built-in's definition captures a field, itself or through a built-in it names.
+fn captures(def: &str) -> bool {
+    let none = GrokConfig {
+        patterns: Vec::new(),
+        custom_patterns: Vec::new(),
+        split_dots: false,
+    };
+    expand(def, &none).is_ok_and(|e| e.contains("(?P<"))
+}
+
+/// Whether `def` can be concatenated with the text around its macro with no group around it: it has no top-level `|`
+/// to split the pattern around it, and no top-level inline flag such as `(?i)` to reach the text after it.
+fn concatenates(def: &str) -> bool {
+    let bytes = def.as_bytes();
+    let (mut depth, mut i, mut class) = (0usize, 0, false);
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 1,
+            b'[' if !class => class = true,
+            b']' if class => class = false,
+            _ if class => {}
+            b'(' => {
+                if depth == 0 && bytes.get(i + 1) == Some(&b'?') {
+                    let flags = def[i + 2..].find([':', ')', '<', 'P', '=', '!']);
+                    if flags.is_some_and(|f| bytes[i + 2 + f] == b')') {
+                        return false;
+                    }
+                }
+                depth += 1;
+            }
+            b')' => depth = depth.saturating_sub(1),
+            b'|' if depth == 0 => return false,
+            _ => {}
+        }
+        i += 1;
+    }
+    true
+}
+
 /// The names from the outermost to `next`, as an author follows them: `A → B → A`.
 fn path(chain: &[(&str, Defined)], next: &str) -> String {
     chain
@@ -475,12 +552,15 @@ mod tests {
             ),
         ];
         for (name, line, fields) in cases {
-            let m = matcher(&format!("^%{{{name}}}$"));
-            let got = m
-                .match_row(line)
-                .unwrap_or_else(|| panic!("%{{{name}}} does not match {line:?}"));
-            for (field, want) in *fields {
-                assert_eq!(got.name(field), *want, "%{{{name}}} on {line:?}: {field}");
+            let folded = format!("^%{{{name}}}$");
+            for pattern in [unfold(&folded), folded] {
+                let m = matcher(&pattern);
+                let got = m
+                    .match_row(line)
+                    .unwrap_or_else(|| panic!("{pattern} does not match {line:?}"));
+                for (field, want) in *fields {
+                    assert_eq!(got.name(field), *want, "{pattern} on {line:?}: {field}");
+                }
             }
         }
         assert!(
@@ -490,6 +570,40 @@ mod tests {
         );
         let common = r#"127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] "GET / HTTP/1.1" 200 1"#;
         assert!(matcher("^%{COMBINEDAPACHELOG}$").match_row(common).is_none());
+    }
+
+    /// Unfolding writes out every built-in that captures, nested ones too, and leaves the rest named: the fields are
+    /// the folded pattern's.
+    #[test]
+    fn unfolding_writes_out_what_captures() {
+        let folded = "^%{COMBINEDAPACHELOG}$";
+        let unfolded = unfold(folded);
+        assert!(!unfolded.contains("APACHELOG"), "{unfolded}");
+        assert!(unfolded.starts_with("^%{IPORHOST:source.address} "), "{unfolded}");
+        assert_eq!(matcher(&unfolded).capture_names(), matcher(folded).capture_names());
+        for kept in ["%{WORD:w} %{INT}", "%{NOPE} x", r"\%{"] {
+            assert_eq!(unfold(kept), kept);
+        }
+        let quantified = unfold("%{SYSLOGLINE}?");
+        assert!(
+            quantified.starts_with("(?:") && quantified.ends_with(")?"),
+            "{quantified}"
+        );
+        assert_eq!(
+            unfold("%{SYSLOGLINE:line}"),
+            format!("(?P<line>{})", unfold("%{SYSLOGLINE}"))
+        );
+    }
+
+    /// A definition goes in place of its macro bare only where nothing in it can reach past it.
+    #[test]
+    fn concatenating_is_free_of_top_level_alternation_and_flags() {
+        for atom in ["ab", "(?:a|b)c", "[|]", r"\|", "(?i:a)b", "(?P<x>a|b)", r"(?-u:\b)a"] {
+            assert!(concatenates(atom), "{atom}");
+        }
+        for split in ["a|b", "(?i)ab", "x(?-u)y"] {
+            assert!(!concatenates(split), "{split}");
+        }
     }
 
     #[test]
@@ -955,7 +1069,8 @@ mod tests {
 }
 
 /// The GUI's grok autocomplete and Grok patterns page (`gui-frontend/src/grokPatterns.ts`) carry a hand-written copy
-/// of `BUILTINS`, with a use and an example for each; this keeps its names equal to the engine's.
+/// of `BUILTINS`, with a use and an example for each and the definition last; this keeps its names and definitions
+/// equal to the engine's.
 #[cfg(test)]
 mod gui_grok_sync {
     #[test]
@@ -966,5 +1081,19 @@ mod gui_grok_sync {
             re.captures_iter(source).map(|c| c.get(1).unwrap().as_str()).collect();
         let engine: std::collections::BTreeSet<&str> = super::BUILTINS.iter().map(|(n, _)| *n).collect();
         assert_eq!(gui, engine, "grokPatterns.ts's names differ from BUILTINS");
+    }
+
+    /// Each definition is quoted as a TypeScript string in either quote writes it.
+    #[test]
+    fn the_gui_quotes_every_builtin_definition() {
+        let source = include_str!("../../gui-frontend/src/grokPatterns.ts");
+        for (name, def) in super::BUILTINS {
+            let escaped = def.replace('\\', r"\\");
+            let in_quote = |q: char| format!("Regex: `{}`{q},", escaped.replace(q, &format!("\\{q}")));
+            assert!(
+                source.contains(&in_quote('\'')) || source.contains(&in_quote('"')),
+                "grokPatterns.ts does not quote {name}'s definition as BUILTINS has it"
+            );
+        }
     }
 }
