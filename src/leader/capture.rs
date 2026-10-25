@@ -713,10 +713,13 @@ mod tests {
             "a worker that finished is not a failure"
         );
         let columns: Vec<_> = taken.into_iter().map(|(c, _)| c).collect();
-        assert_eq!(
-            crate::leader::preview::replayed(&columns).count(),
-            0,
-            "how a record was captured is not the record's"
+        let meta =
+            crate::plan::topology::SourceMeta::of_columns(&columns).expect("a sample reads its `__capture` columns");
+        assert!(
+            meta.record()
+                .iter()
+                .any(|(name, _)| name.as_ref() == "__capture.config"),
+            "a pipeline reads them"
         );
     }
 

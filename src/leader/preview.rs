@@ -362,15 +362,13 @@ pub struct RoutePreviewDocument {
     pub destination: std::collections::BTreeMap<&'static str, String>,
 }
 
-/// What a sample says about each record beside its fields, which no pipeline reads: why a block held it
-/// (`worker::capture::EXCEPTION_MESSAGE`) and how its capture was taken (`leader::capture::Captures::capture_fields`).
-const ABOUT: [&str; 2] = ["__exception", "__capture"];
+/// What a record a block held says about why, beside its fields (`worker::capture::EXCEPTION_MESSAGE`).
+const EXCEPTION: &str = "__exception";
 
-/// The columns of a sample that are its records' own, not what the sample says about them (`ABOUT`).
+/// The columns of a sample that are its records' own: not why a record blocked, which is about the record and no
+/// pipeline reads.
 pub fn replayed(columns: &[crate::heartbeat::CaptureColumn]) -> impl Iterator<Item = &crate::heartbeat::CaptureColumn> {
-    columns
-        .iter()
-        .filter(|c| !c.name.split('.').next().is_some_and(|head| ABOUT.contains(&head)))
+    columns.iter().filter(|c| c.name.split('.').next() != Some(EXCEPTION))
 }
 
 /// A sample's records as a source's meta reads them.
@@ -387,23 +385,23 @@ pub struct SampleRead {
 /// reads null, and a column whose type changed reads under the new type, its failed marks dropped: a value that
 /// failed one type is judged afresh by another. A sample with no columns is read as it stands.
 ///
-/// Where `meta` is a source's, that source sets the `__source` fields, from each record's `__source`; where it is the
-/// sample's own (`SourceMeta::of_columns`), they are columns of the record like any other.
+/// Only a record's own fields are compared: an internal one (`plan::tree::is_internal`) is the engine's, not its
+/// source's. Where `meta` is a source's, the source sets its own internal fields, so the sample's are not read; where
+/// it is the sample's own (`SourceMeta::of_columns`), they are columns of the record like any other.
 pub fn read_sample(
     meta: &SourceMeta,
     columns: &[crate::heartbeat::CaptureColumn],
     records: &[crate::io::RecordObject],
 ) -> Result<SampleRead, String> {
     let from_source = !meta.source_fields().is_empty();
-    let captured: Vec<_> = replayed(columns)
-        .filter(|c| !(from_source && c.name.starts_with("__source.")))
-        .collect();
-    let declared = meta.record_fields();
     let head = |name: &str| {
         crate::plan::tree::segments(name)
             .next()
             .map(std::borrow::Cow::into_owned)
     };
+    let own = |name: &str| !head(name).is_some_and(|h| crate::plan::tree::is_internal(&h));
+    let captured: Vec<_> = replayed(columns).filter(|c| own(&c.name)).collect();
+    let declared = meta.record_fields();
     // An open record keeps a top-level field no declared field claims.
     let kept = |name: &str| meta.is_open() && !declared.iter().any(|(d, _)| head(d) == head(name));
     let mut warnings = Vec::new();
@@ -432,7 +430,10 @@ pub fn read_sample(
                 Some(_) => {}
             }
         }
-        for (name, _) in declared.iter().filter(|(n, _)| *n != crate::plan::tree::UNCLAIMED) {
+        for (name, _) in declared
+            .iter()
+            .filter(|(n, _)| *n != crate::plan::tree::UNCLAIMED && own(n))
+        {
             if !captured.iter().any(|c| c.name == *name) {
                 warnings.push(format!("`{name}` is declared and was not captured, so it reads null"));
             }
@@ -443,11 +444,9 @@ pub fn read_sample(
         .map(|r| {
             let mut object = r.clone();
             if from_source {
-                object.remove("__source");
+                object.retain(|key, _| !crate::plan::tree::is_internal(key));
             }
-            for about in ABOUT {
-                object.remove(about);
-            }
+            object.remove(EXCEPTION);
             for name in &gone {
                 remove_at(&mut object, name);
             }

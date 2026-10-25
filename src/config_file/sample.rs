@@ -72,7 +72,7 @@ pub struct SampleDto {
     /// every field the source it was read from set (`plan::topology::SourceMeta`). A byte source's record is
     /// `{"_raw": text}`. A pasted record is that, and was read from nowhere, so it has no `__source`. A record captured
     /// at a destination is the row its pipeline finished, with its `__destination` fields. A captured record has under
-    /// `__capture` how its capture was taken (`leader::capture::Captures::capture_fields`), which no pipeline reads. A value that failed its
+    /// `__capture` how its capture was taken (`leader::capture::Captures::capture_fields`). A value that failed its
     /// type is stored as the source spelled it, its field listed under `io::MISTYPED_FIELDS` (`io::take_mistyped`), and
     /// fails again when the sample is read.
     pub records: Vec<crate::io::RecordObject>,
