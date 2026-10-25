@@ -31,7 +31,9 @@ describe('builtinRegex', () => {
   it('reads the regex every built-in quotes, one holding a backtick whole', () => {
     const named = (n: string) => GROK_BUILTIN_PATTERNS.find((b) => b.name === n)!;
     expect(builtinRegex(named('WORD'))).toBe('\\b\\w+\\b');
-    expect(builtinRegex(named('COMMONAPACHELOG'))).toMatch(/^%\{IPORHOST:source\.address\} .*`.*-\)$/);
+    expect(builtinRegex(named('COMMONAPACHELOG'))).toMatch(
+      /^%\{IPORHOST:source\.address\} .*`.*-\)$/,
+    );
     expect(GROK_BUILTIN_PATTERNS.filter((b) => builtinRegex(b) === null)).toEqual([]);
     expect(builtinRegex({ name: 'X', signature: '%{X}', description: 'no regex' })).toBeNull();
   });
