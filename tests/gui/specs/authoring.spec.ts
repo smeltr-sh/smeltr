@@ -821,13 +821,13 @@ test('A2: a parser writes into the object it names, and its fields are suggested
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
-  await admin.getByRole('button', { name: /_raw as JSON/ }).click();
+  await admin.getByRole('button', { name: /^Parser _raw as JSON/ }).click();
   await admin.getByRole('button', { name: /^Advanced/ }).click();
   const into = admin.getByRole('textbox', { name: 'write into' });
   await expect(into).toHaveValue('$');
   await into.fill('order');
   await expect(
-    admin.getByRole('button', { name: /_raw as JSON into order \(1 declared\)/ }),
+    admin.getByRole('button', { name: /^Parser _raw as JSON into order \(1 declared\)/ }),
   ).toBeVisible();
 
   // The parse's own keys, not where they land: `id` is declared already, and `total` lands at `order.total`.
