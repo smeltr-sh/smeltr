@@ -65,8 +65,9 @@ export async function onScreen(page: Page, mayLock: boolean): Promise<string[]> 
       if (e.closest('details:not([open]) > :not(summary)')) continue;
       const style = getComputedStyle(e);
       if (style.visibility !== 'visible' || style.pointerEvents === 'none') continue;
-      const r = e.getBoundingClientRect();
-      if (r.width < 2 || r.height < 2) continue;
+      // A link that wraps has a box per line, and the middle of the box round them all may fall in neither.
+      const r = [...e.getClientRects()].find((b) => b.width >= 2 && b.height >= 2);
+      if (!r) continue;
       const x = r.left + r.width / 2;
       const y = r.top + r.height / 2;
       if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
