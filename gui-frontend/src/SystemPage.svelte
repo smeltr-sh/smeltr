@@ -12,6 +12,7 @@
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import Help from './Help.svelte';
+  import Version from './Version.svelte';
   import Panel from './Panel.svelte';
   import Field from './Field.svelte';
   import Advanced from './Advanced.svelte';
@@ -254,19 +255,7 @@
               <h3>Version</h3>
             </div>
             <div class="fields">
-              <span class="version">
-                {#if info.release}
-                  <code>{info.release}</code>
-                  <Help label="Build"><code>{info.smeltrVersion}</code></Help>
-                {:else}
-                  <code>{info.smeltrVersion}</code>
-                {/if}
-                {#if info.newerRelease}
-                  <a href={info.newerRelease.url} target="_blank" rel="noopener"
-                    >{info.newerRelease.release} available</a
-                  >
-                {/if}
-              </span>
+              <Version {info} build newerHref={info.newerRelease?.url} />
             </div>
           </div>
           {#if info.release && updates}
@@ -430,16 +419,6 @@
   .fields {
     display: grid;
     gap: 0.9rem;
-  }
-
-  code {
-    font-family: var(--mono);
-  }
-
-  .version {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
   }
 
   .checked {

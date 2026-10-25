@@ -43,6 +43,7 @@
   import DemoBar from './DemoBar.svelte';
   import Locked from './Locked.svelte';
   import HeldWork from './HeldWork.svelte';
+  import Version from './Version.svelte';
   import AgentPanel from './AgentPanel.svelte';
   import ChatIcon from './ChatIcon.svelte';
   import PersonIcon from './PersonIcon.svelte';
@@ -57,7 +58,9 @@
     SHARED_SCOPE,
     onBranchNeeded,
     MAIN_BRANCH,
+    getSystemInfo,
     type BranchDto,
+    type SystemInfoDto,
     type WorkerGroupDto,
   } from './api';
 
@@ -156,6 +159,16 @@
       hash: who.authenticated ? tabHome(t.tab) : '',
     })),
   );
+
+  /** Which smeltr this leader runs, for the band. Without an answer the band shows none, and whatever the
+   * person was doing reports the failure itself. */
+  let systemInfo = $state<SystemInfoDto | null>(null);
+  $effect(() => {
+    if (!shellShown) return;
+    getSystemInfo()
+      .then((next) => (systemInfo = next))
+      .catch(() => {});
+  });
 
   /** Pipeline names the pages have announced, so a crumb names a pipeline rather than its id. */
   let pipelineNames = $state<PipelineNames>({});
@@ -538,6 +551,15 @@
           <a href={item.hash} class:active={route.tab === item.tab}>{item.label}</a>
         {/each}
       </div>
+      {#if systemInfo}
+        <span class="nav-version">
+          <!-- A newer release is the administrators' to act on, where the check for it is set. -->
+          <Version
+            info={systemInfo}
+            newerHref={administrator ? '#/admin/system/general' : undefined}
+          />
+        </span>
+      {/if}
     </div>
   </nav>
 
@@ -1092,6 +1114,7 @@
      button drawn for the page reads right on it. The pickers those chips
      open are page surfaces, so the swap stops at the chip. */
   .tabs,
+  .nav-version,
   .nav-end > :global(:where(:not(.chip-picker))),
   .nav-end :global(.chip) {
     --bg: var(--band-bg);
@@ -1135,6 +1158,16 @@
   .nav-tabs {
     flex-wrap: wrap;
     row-gap: 0.4rem;
+  }
+
+  /* On the tabs' line rather than centered on their underline, and ending where the identity chip's text above it
+     does, inside that chip's padding and border. */
+  .nav-version {
+    margin-left: auto;
+    align-self: baseline;
+    padding-right: calc(0.6rem + 1px);
+    color: var(--dim);
+    font-size: var(--text-note);
   }
 
   /* The branch chip says on what before it says how -- "main" reads as
