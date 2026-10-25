@@ -37,6 +37,7 @@ const CERTIFICATES = {
   names: ['localhost', '127.0.0.1', 'leader.example'],
   workerName: null,
   restartRequired: false,
+  unserved: null,
   rotation: {
     incoming: described('smeltr authority 2'),
     startedMillis: Date.now(),
@@ -62,7 +63,6 @@ const ACME = {
   dnsProvider: 'cloudflare',
   cloudflareTokenSet: false,
   httpPort: 80,
-  issued: null,
   notAfterMillis: null,
   renewAfterMillis: null,
   lastAttemptMillis: null,
@@ -315,6 +315,25 @@ describe('uploading during a switch', () => {
   });
 });
 
+describe('a certificate a start could not serve', () => {
+  it('says why, and that the leader serves its own', async () => {
+    const why = '"theirs" cannot be served: the certificate has already expired';
+    await show(
+      {
+        ...CERTIFICATES,
+        supplied: true,
+        source: 'upload',
+        entry: 'theirs',
+        unserved: why,
+        rotation: null,
+      },
+      'Serve this certificate',
+    );
+    expect(target.textContent).toContain(`serving its own certificate instead, because ${why}`);
+    expect(target.textContent).not.toContain('Restart the leader');
+  });
+});
+
 describe('ACME', () => {
   const ORDERED = {
     ...ACME,
@@ -322,7 +341,6 @@ describe('ACME', () => {
     directory: 'https://acme-v02.api.letsencrypt.org/directory',
     contact: 'ops@example.com',
     names: ['leader.example'],
-    issued: 'ab'.repeat(32),
     notAfterMillis: Date.now() + YEAR,
     renewAfterMillis: Date.now() + YEAR / 2,
   };

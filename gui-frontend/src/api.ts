@@ -4989,7 +4989,7 @@ export interface CertificatesDto {
   /** Whether an operator supplied what is being served. */
   supplied: boolean;
   source: CertificateSource;
-  /** The name of the list entry an upload was copied from, where one is recorded. */
+  /** The list entry served, where one is. */
   entry: string | null;
   /** The names this leader answers to. A supplied certificate covers at least one. */
   names: string[];
@@ -4999,6 +4999,9 @@ export interface CertificatesDto {
    * Everything above is then what the disk holds rather than what a client is
    * shown, and only a restart closes the gap. */
   restartRequired: boolean;
+  /** Why the entry above is not what clients are shown: a start could not serve it, so this leader serves its
+   * own until a certificate is served again. */
+  unserved: string | null;
   /** Set while this leader is rotating to a new authority. */
   rotation: RotationDto | null;
 }
@@ -5093,8 +5096,7 @@ export interface AcmeDto {
   cloudflareTokenSet: boolean;
   /** Where this leader answers an authority's HTTP-01 challenge. */
   httpPort: number;
-  /** The certificate the last order installed, by fingerprint, and its dates. `null` before any. */
-  issued: string | null;
+  /** The dates of the certificate the last order stored. `null` before any. */
   notAfterMillis: number | null;
   renewAfterMillis: number | null;
   lastAttemptMillis: number | null;

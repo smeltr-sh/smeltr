@@ -299,8 +299,13 @@ pub fn current(dir: &Path) -> Result<Materials, String> {
 
 /// [`current`], for a caller already holding [`changing`].
 fn current_held(dir: &Path) -> Result<Materials, String> {
-    if let Some(entry) = served(dir)? {
-        let served = entry_chain(dir, &entry)?;
+    if let Some(entry) = served(dir)?
+        // An entry gone from the list is one a start already fell back from: what it serves is all there is.
+        && let Some(served) = entry_chain(dir, &entry).map(Some).or_else(|e| match unserved(dir) {
+            Some(_) => Ok(None),
+            None => Err(e),
+        })?
+    {
         // The entry's root, and during a rotation the incoming one beside it: what every worker is given is
         // derived, so a rotation's overlap is published by writing its intent and gone with it.
         let ca_pem = match rotation(dir)? {
@@ -2594,6 +2599,7 @@ pub(crate) mod tests {
         assert_eq!(materials.ca_pem, own.ca_pem);
         assert!(unserved(&dir).is_some_and(|why| why.contains("supplied")));
         assert_eq!(served(&dir).unwrap(), Some(entry), "the entry was forgotten");
+        assert_eq!(current(&dir).unwrap().ca_pem, own.ca_pem, "nothing reads what is served");
         assert!(
             !socket_has_what_is_on_disk(&dir),
             "what workers are given is not what the socket presents"
