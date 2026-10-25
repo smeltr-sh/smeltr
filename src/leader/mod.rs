@@ -2691,7 +2691,7 @@ pub async fn replace_certificate(
     {
         Ok(true) => {
             return Json(Envelope::failed_one(format!(
-                "this leader issued {name:?}, so it is renewed, not replaced. To use your own certificate, \
+                "this leader issued {name:?}, so renew it instead of replacing it. To use your own certificate, \
                  add one under another name and choose it where this one is used"
             )));
         }
@@ -5869,7 +5869,7 @@ mod certificate_list_tests {
         .0;
         assert!(!out.ok);
         assert!(
-            out.errors[0].message.contains("renewed, not replaced"),
+            out.errors[0].message.contains("renew it instead of replacing it"),
             "{:?}",
             out.errors
         );
