@@ -76,9 +76,9 @@ pub struct SymbolTable {
     pub local_slots: HashSet<SlotId>,
     /// The slots `delete` took out of the record.
     pub deleted_slots: HashSet<SlotId>,
-    /// Each copy that shares a slot rather than fill one: the slot, the name it was put at, and how many slots there
-    /// were then, so a later write of that name is told from an earlier one.
-    pub aliases: Vec<(SlotId, String, usize)>,
+    /// Each copy that shares a slot rather than fill one: the slot, the name it was put at, how many slots there
+    /// were then, so a later write of that name is told from an earlier one, and the step that made the copy.
+    pub aliases: Vec<(SlotId, String, usize, FunctionId)>,
     /// Each open local, innermost last.
     open: Vec<Scope>,
     /// How many locals have been opened: the next one's serial.

@@ -1942,8 +1942,8 @@ export interface PreviewRow {
   /** `null` when the row did not survive the pipeline. */
   json: unknown | null;
   exceptions: PreviewException[];
-  /** With `attribution`: each field a step changed, added or removed, by
-   * path, and those steps by id in the order they ran. */
+  /** With `attribution`: each field a step changed or added, by path, and
+   * those steps by id in the order they ran. */
   steps?: Record<string, string[]>;
   /** With `attribution`: the step after which the row was gone. */
   droppedBy?: string;
