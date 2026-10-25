@@ -1000,10 +1000,7 @@ fn resolve_call(
                 "`Object.assign` is a statement that writes its first argument; it has no value to read".to_string(),
             ));
         }
-        return Err(CompileError::new(
-            None,
-            format!("function `{name}` is not implemented (stdlib pending)"),
-        ));
+        return Err(CompileError::new(None, format!("`{method}` is not a function")));
     };
     // `x[i]` and `at(x, i)` are the same call, so they are the same resolution: a struct field by literal key and an
     // element of an array of objects are typed from the key, which no table row can express.

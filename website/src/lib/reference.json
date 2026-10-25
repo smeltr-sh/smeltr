@@ -1055,7 +1055,7 @@
         {
           "name": "slice",
           "signature": "value.slice(start[, end])",
-          "summary": "The part of a string — or of an array — from `start` up to but not including `end`. A negative index counts from the end; `end` defaults to the length.",
+          "summary": "A substring, or part of an array, from `start` up to but not including `end`. A string is indexed by characters. A negative index counts from the end; `end` defaults to the length.",
           "examples": [
             {
               "expr": "line.slice(7)",

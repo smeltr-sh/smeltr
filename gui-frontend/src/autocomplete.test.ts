@@ -62,6 +62,10 @@ describe('rankedSuggestions', () => {
     expect(names).toContain('parseInt');
   });
 
+  it("finds slice by another language's name for it", () => {
+    expect(rankedSuggestions(CONDITION_FUNCTIONS, 'substring')[0].name).toBe('slice');
+  });
+
   it('a word matching nothing returns an empty list', () => {
     expect(rankedSuggestions(CONDITION_FUNCTIONS, 'toInt')).toEqual([]);
   });
