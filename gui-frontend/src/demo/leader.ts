@@ -122,6 +122,7 @@ interface Capture {
   pool: string | null;
   source: string | null;
   destination: string | null;
+  filter: string | null;
   maxMatches: number;
   deadlineSecs: number;
   startedAt: number;
@@ -541,6 +542,7 @@ export class DemoLeader {
           name: s.name,
           source: s.source,
           records: s.records.length,
+          capture: s.capture,
         }));
         return ok({ samples, commit: branch.commit });
       }
@@ -957,6 +959,7 @@ export class DemoLeader {
       pool,
       source: (req.source?.id as string | undefined) ?? null,
       destination: req.destination ?? null,
+      filter: req.filter?.trim() || null,
       maxMatches,
       deadlineSecs,
       startedAt: this.now(),
@@ -1062,6 +1065,14 @@ export class DemoLeader {
       source: req.source,
       columns: pool.columns,
       records,
+      capture: {
+        timestamp: new Date(capture.startedAt).toISOString(),
+        ...(capture.source ? { source: capture.source } : {}),
+        ...(capture.destination ? { destination: capture.destination } : {}),
+        group: capture.group,
+        ...(capture.filter ? { filter: capture.filter } : {}),
+        config: this.state.branches.main.commit,
+      },
     };
     const saved = await this.write(name, scope, `samples/${sample.id}.json`, (_, { samples }) => {
       samples[sample.id] = sample;

@@ -1827,6 +1827,29 @@ export interface SampleDto {
    * A pasted sample has none. */
   columns?: { name: string; type: string }[];
   records: SampleRecordDto[];
+  /** How the records were captured. A pasted or uploaded sample has none. */
+  capture?: SampleCapture;
+}
+
+/** How a sample's records were captured (`config_file::SampleCapture`). */
+export interface SampleCapture {
+  /** When the capture opened, UTC, RFC 3339. */
+  timestamp: string;
+  /** What it read: one source or one destination, by name. */
+  source?: string;
+  destination?: string;
+  group: string;
+  filter?: string;
+  /** The commit the fleet ran when it opened. */
+  config?: string;
+  /** Each worker that stopped capturing on an error. */
+  failed?: { worker: string; reason: string }[];
+}
+
+/** When `sample` was captured, in unix milliseconds, if it was. */
+export function capturedAt(sample: { capture?: SampleCapture }): number | undefined {
+  const at = sample.capture ? Date.parse(sample.capture.timestamp) : NaN;
+  return Number.isNaN(at) ? undefined : at;
 }
 
 /** A library listing: everything but the records. */
@@ -1837,6 +1860,7 @@ export interface SampleSummary {
   records: number;
   /** Unix seconds: when the leader last wrote the sample. */
   captured?: number;
+  capture?: SampleCapture;
 }
 
 export interface ListSamplesResult {

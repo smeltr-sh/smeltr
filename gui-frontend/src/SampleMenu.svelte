@@ -7,8 +7,8 @@
   import ChipPicker from './ChipPicker.svelte';
   import LockIcon from './LockIcon.svelte';
   import SecondaryTabs from './SecondaryTabs.svelte';
-  import { count } from './time';
-  import { getConnections, type Connected, type SampleSummary } from './api';
+  import { count, dateTime } from './time';
+  import { capturedAt, getConnections, type Connected, type SampleSummary } from './api';
 
   let {
     samples,
@@ -57,7 +57,7 @@
       (a, b) =>
         Number(b.id === lastUsed) - Number(a.id === lastUsed) ||
         Number(locked(b)) - Number(locked(a)) ||
-        (b.captured ?? 0) - (a.captured ?? 0),
+        (capturedAt(b) ?? (b.captured ?? 0) * 1000) - (capturedAt(a) ?? (a.captured ?? 0) * 1000),
     ),
   );
 
@@ -157,7 +157,9 @@
                 {s.name}
               </span>
               <span class="dim"
-                >{count(s.records, 'record')}{s.id === lastUsed ? ' · last used' : ''}</span
+                >{count(s.records, 'record')}{capturedAt(s) !== undefined
+                  ? ` · ${dateTime(capturedAt(s)! / 1000)}`
+                  : ''}{s.id === lastUsed ? ' · last used' : ''}</span
               >
             </button>
           {/each}
