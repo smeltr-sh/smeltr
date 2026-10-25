@@ -61,6 +61,8 @@
   let editing: number | null = $state(null);
   let query = $state('');
   let find = $state<FindFilter>({ kind: 'none' });
+  /** How many records the sample holds as saved. */
+  let saved = $state(0);
   let findError = $state('');
   let showAll = $state(false);
   let pasted = $state('');
@@ -77,6 +79,7 @@
       name = got.sample.name;
       source = got.sample.source ?? '';
       rows = got.sample.records.map((record, key) => ({ key, record, changed: false }));
+      saved = rows.length;
       columns = editColumns(got.sample);
     } catch (e) {
       loadFailed = true;
@@ -91,10 +94,7 @@
   const evaluate = (expression: string) =>
     previewPipeline({ config, sample: id, showInternal: true, filter: expression });
   let drafted = $derived(
-    !!sample &&
-      (rows.length !== sample.records.length ||
-        rows.some((r) => r.changed) ||
-        pasted.trim() !== ''),
+    rows.length !== saved || rows.some((r) => r.changed) || pasted.trim() !== '',
   );
   const keeps = (r: Row) =>
     find.kind === 'expression'

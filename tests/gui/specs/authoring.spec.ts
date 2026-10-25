@@ -662,6 +662,9 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
       { name: '__source.topic', type: 'str' },
       { name: '__source.partition', type: 'i64' },
       { name: '__source.offset', type: 'i64' },
+      { name: '__source.bytes', type: 'bytes' },
+      { name: '__source.name', type: 'str' },
+      { name: '__source.type', type: 'str' },
     ],
     records: ORDERS.map((raw, i) => ({ _raw: raw, __source: read(i, 100 + i, raw) })),
   });
