@@ -18,6 +18,7 @@
   import { store, stored } from './stored';
   import PersonIcon from './PersonIcon.svelte';
   import LockIcon from './LockIcon.svelte';
+  import CertificateIcon from './CertificateIcon.svelte';
   import WorkerIcon from './WorkerIcon.svelte';
   import WorkerGroupIcon from './WorkerGroupIcon.svelte';
   import SlidersIcon from './SlidersIcon.svelte';
@@ -56,6 +57,7 @@
     Workers: WorkerIcon,
     'Worker groups': WorkerGroupIcon,
     Secrets: LockIcon,
+    Certificates: CertificateIcon,
     Accounts: PersonIcon,
     System: SlidersIcon,
   };

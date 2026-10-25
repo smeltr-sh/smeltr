@@ -1008,10 +1008,10 @@ async fn setup_leader(
             get(worker_groups_api::list_worker_groups).post(worker_groups_api::create_worker_group),
         )
         .route("/api/worker-groups/:id/hue", put(worker_groups_api::set_group_hue))
-        // Not on `app` below with the rest of the config routes: saving an identity asks the secret store whether
-        // its certificate and the key it names are a pair, which needs `State<AppState>`.
+        // Not on `app` below with the rest of the config routes: saving an identity asks the certificate list
+        // whether it holds the certificate named, which needs `State<AppState>`.
         .route("/api/identities", put(config_api::put_identities))
-        // Here for the same reason: undoing an identity runs the same pairing check.
+        // Here for the same reason: undoing an identity runs the same check.
         .route("/api/undo", post(config_api::undo))
         // Not on `app` below with the rest of the config routes: retention after an upload keeps what the fleet runs,
         // which the registry knows. A lookup file is streamed to disk, so the limit is what a disk takes rather than
@@ -2074,6 +2074,8 @@ async fn run_leader() {
     ));
 
     let LeaderSetup { routes, tls, leader } = setup_leader(port, auth.clone(), store, registry).await;
+    // Before `leader` goes into the certificate state, which a leader serving plain HTTP has none of.
+    let list = leader.clone();
     let certificates = tls.as_ref().map(|(resolver, _)| {
         std::sync::Arc::new(certificates_api::Tls {
             // Spelled as the leader spells it, from the one absolute data directory. The certificate layer keeps
@@ -2123,7 +2125,7 @@ async fn run_leader() {
 
     let app = app
         .merge(routes)
-        .merge(certificates_api::router(auth.clone(), certificates.clone()))
+        .merge(certificates_api::router(auth.clone(), certificates.clone(), list))
         .merge(acme_api::router(auth.clone(), certificates.clone()))
         .merge(auth_router(auth.clone()))
         // Before the SPA fallback, so an API path nobody serves answers as an API. Without it a mistyped route
@@ -2404,6 +2406,9 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
             },
             Default::default(),
             &[
@@ -2423,6 +2428,89 @@ mod tests {
             previewed.rows[0].json,
             Some(serde_json::json!({"n": 2, "doubled": 4, "seen": "orders", "id": "d2"}))
         );
+    }
+
+    /// With attribution, each row says which steps changed each of its fields, in the order they ran, and which step
+    /// dropped it: a step in an `if` branch the row did not take changed nothing on it, and a dropped row has no fields.
+    #[test]
+    fn attribution_names_the_steps_that_changed_each_field_and_dropped_each_row() {
+        let config = r#"{"version":1,"sources":[],"destinations":[],"routes":[],
+            "pipelines":[{"id":"p","name":"p","steps":[
+                {"id":"set","type":"code","body":"a = n * 2; b = 1;"},
+                {"id":"big","type":"if","condition":"n > 1",
+                    "then":[{"id":"bump","type":"code","body":"a = a + 1;"}],
+                    "else":[{"id":"gone","type":"drop","condition":"true"}]},
+                {"id":"trim","type":"code","body":"delete(b);"}]}]}"#;
+        let previewed = super::run_preview(
+            super::PreviewRequest {
+                config: config.to_string(),
+                pipeline: None,
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: true,
+                after_dot: None,
+            },
+            Default::default(),
+            &[column("n", "i64")],
+            serde_json::from_value(serde_json::json!([{"n": 2}, {"n": 1}])).unwrap(),
+        );
+        assert!(
+            previewed.ok,
+            "{:?}",
+            previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        let steps = |row: usize| serde_json::to_value(&previewed.rows[row].steps).unwrap();
+        assert_eq!(steps(0), serde_json::json!({"a": ["set", "bump"]}));
+        assert_eq!(previewed.rows[0].dropped_by, None);
+        assert_eq!(steps(1), serde_json::Value::Null);
+        assert_eq!(previewed.rows[1].dropped_by.as_deref(), Some("gone"));
+    }
+
+    /// A called pipeline's steps are the call's doing, its exceptions included, and a write to an object's field is a
+    /// change to that field.
+    #[test]
+    fn attribution_names_a_call_for_what_its_pipeline_changed() {
+        let config = r#"{"version":1,"sources":[],"destinations":[],"routes":[],
+            "pipelines":[
+                {"id":"p","name":"p","steps":[
+                    {"id":"use_q","type":"call","pipeline":"q"},
+                    {"id":"nest","type":"code","body":"o.x = n; o.y = 2;"},
+                    {"id":"again","type":"code","body":"o.x = n + 1;"}]},
+                {"id":"q","name":"q","steps":[{"id":"inner","type":"code","body":"c = 1; z = 1 / 0;"}]}]}"#;
+        let previewed = super::run_preview(
+            super::PreviewRequest {
+                config: config.to_string(),
+                pipeline: Some("p".to_string()),
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: true,
+                after_dot: None,
+            },
+            Default::default(),
+            &[column("n", "i64")],
+            serde_json::from_value(serde_json::json!([{"n": 2}])).unwrap(),
+        );
+        assert!(
+            previewed.ok,
+            "{:?}",
+            previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            serde_json::to_value(&previewed.rows[0].steps).unwrap(),
+            serde_json::json!({"c": ["use_q"], "o.x": ["nest", "again"], "o.y": ["nest"]})
+        );
+        assert_eq!(previewed.rows[0].exceptions[0].step.as_deref(), Some("use_q"));
+    }
+
+    /// An exception names the step that raised it.
+    #[test]
+    fn an_exception_names_its_step() {
+        let previewed = preview_of(r#"[{"_raw": "x"}]"#, "y = 1 / 0;");
+        assert_eq!(previewed.rows[0].exceptions[0].step.as_deref(), Some("c"));
     }
 
     /// A pasted sample has no columns, and reads as `_raw` text.
@@ -2460,6 +2548,9 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
             },
             Default::default(),
             columns,
@@ -2480,6 +2571,9 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: Some(filter.to_string()),
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
             },
             Default::default(),
             &[],
@@ -2534,6 +2628,9 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
             },
             Default::default(),
             &[],
@@ -2929,6 +3026,9 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
             },
         );
 
@@ -2961,6 +3061,9 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
             },
         );
         assert!(!response.ok, "{} rows", response.rows.len());

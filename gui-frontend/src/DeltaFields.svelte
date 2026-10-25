@@ -64,6 +64,7 @@
 <Nested>
   {#if d.unityCatalog}
     <UrlField
+      required
       field="unityCatalog.workspace"
       label="workspace"
       bind:value={d.unityCatalog.workspace}
@@ -76,6 +77,7 @@
       {/snippet}
     </UrlField>
     <Field
+      required
       field="unityCatalog.table"
       label="table"
       error={catalogTableRefusal(d.unityCatalog.table) ?? null}
@@ -86,7 +88,7 @@
       {/snippet}
       <input type="text" bind:value={d.unityCatalog.table} placeholder="main.web.access_log" />
     </Field>
-    <Field field="region" label="region" error={regionRefusal(d) ?? null}>
+    <Field optional field="region" label="region" error={regionRefusal(d) ?? null}>
       {#snippet help()}
         The region of the table's bucket.
       {/snippet}
@@ -98,6 +100,7 @@
       />
     </Field>
     <Field
+      required
       field="unityCatalog.clientId"
       label="client id"
       error={clientIdRefusal(d.unityCatalog.clientId) ?? null}
@@ -107,7 +110,7 @@
       {/snippet}
       <input type="text" bind:value={d.unityCatalog.clientId} />
     </Field>
-    <Field field="unityCatalog.clientSecret" label="client secret">
+    <Field required field="unityCatalog.clientSecret" label="client secret">
       {#snippet help()}
         The secret holding the service principal's OAuth secret.
       {/snippet}
@@ -121,7 +124,12 @@
       />
     </Field>
   {:else}
-    <Field field="location" label="location" error={locationRefusal(d.location ?? '') ?? null}>
+    <Field
+      required
+      field="location"
+      label="location"
+      error={locationRefusal(d.location ?? '') ?? null}
+    >
       {#snippet help()}
         The table's root in S3. A missing table is created there from the route's record.
       {/snippet}
@@ -130,6 +138,7 @@
   {/if}
 </Nested>
 <Field
+  optional
   field="partitionBy"
   label="partition by"
   group
@@ -137,9 +146,8 @@
 >
   {#snippet help()}
     The columns a table it creates is partitioned by, each a top-level column of the record. A table
-    that exists keeps its own.
+    that exists keeps its own. Default none: an unpartitioned table.
   {/snippet}
-  {#snippet note()}Default none: an unpartitioned table.{/snippet}
   <TokenListInput
     bind:values={
       () => d.partitionBy ?? [],
@@ -184,7 +192,7 @@
     />
   {/if}
 </Advanced>
-<TableDelivery value={d} calls="the store" commit="a version the table's log keeps" />
+<TableDelivery value={d} calls="the store" commit="a version to the table's log" />
 
 <style>
   input,

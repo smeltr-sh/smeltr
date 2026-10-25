@@ -54,7 +54,8 @@ A glyph is drawn once and used wherever its operation is offered, so the sign
 and the operation stay one thing: `src/PencilIcon.svelte` is edit -- open this
 object's editor -- and `src/ColumnsIcon.svelte` is stats, how much went each
 way. `src/TrashIcon.svelte` is remove -- take this object out of the list
-it is in. Renaming is not its own sign: it is the editor a worker group happens to
+it is in. `src/DisableIcon.svelte` is disable -- keep a step in its pipeline but
+out of play. Renaming is not its own sign: it is the editor a worker group happens to
 have, having nothing else to change in place.
 
 A state can have a sign too, when the page routes on it. `src/FailedIcon.svelte`
@@ -97,7 +98,7 @@ never reads as a status.
 | `--panel` | Grouped surface: cards, editor panes, menus |
 | `--field` | Where typed values sit: an input, a step card at rest. The lightest surface in light, the darkest in dark |
 | `--ink` | Primary text, prose included |
-| `--dim` | What a reader may skip: a date, a count, a note under a field |
+| `--dim` | What a reader may skip: a date, a count |
 | `--border` | Hairlines, card and input outlines |
 | `--accent` | The one primary action per view, the active tab's underline, focus rings, the open step's rail, critical text |
 | `--on-accent` | Text on an accent-filled surface |
@@ -213,12 +214,16 @@ no help at all.
   has a subtitle.
 - **Field label.** The field's name. `--text-label`, weight 600. A
   parenthetical that is part of the name -- `fetch buffer (bytes)` --
-  belongs here; a parenthetical that explains does not.
-- **Field note.** One line under the input, stating only what the field
-  takes: its default, its format, its limit. `--text-note`, weight
-  **400** -- it is a sentence, not a second label. Always visible, because
-  a default behind a click is a default nobody reads. A note that explains
-  is an explainer.
+  belongs here; a parenthetical that explains does not. A field the save
+  refuses empty ends in a `*`, in `--error`; one that may be left empty
+  carries no mark.
+- **Field note.** One line under the input, only for what must be known
+  about the value: a choice that moves a source, a list with nothing yet
+  to pick, a port the authority must reach. `--text-note`, weight **400**,
+  in `--accent`. A field shows its default itself, as the value it starts
+  with, its placeholder or its first choice, so no note repeats it. A
+  default the field cannot show, a format or a limit goes in the
+  explainer.
 - **Explainer.** Behind a `?` beside the title or label it belongs to, and
   only where that label leaves out something a first-time user needs to
   use the control correctly. A `?` on a label that says it all is noise.
@@ -226,7 +231,8 @@ no help at all.
   ancestor can clip it, and Escape and click-away come from the platform.
   It explains only the thing it sits beside, usually in one sentence, and
   never repeats another `?` or explains something else on the page. It holds
-  `<code>` and emphasis.
+  `<code>` and emphasis. A field's opens with **Required.** or **Optional.**,
+  and an optional one says what empty does where nobody could guess it.
 - **Critical.** An instruction that must be read before acting: data is
   lost, a step cannot be undone, a condition blocks the task.
   `.critical` (`app.css`): `--accent`, weight 600. The only prose a page
@@ -260,7 +266,9 @@ definition, not a page's own rule.
   A value field may set the mono face. One whose value does not hold
   (`aria-invalid`) takes an `--error` border.
 - **Field.** `Field.svelte`: the label, a `?` when the label leaves
-  something out, the control, then its note or its error.
+  something out, the control, then its note or its error. `required` or
+  `optional` says whether it may be left empty; a toggle or a select that
+  always holds a value is neither.
 - **Filter.** `Chips.svelte`: All, then one chip per value, each with its count.
 - **Fold all.** `FoldAllButton.svelte`: one button that folds every item of a list or unfolds them all.
 - **Card.** `Panel.svelte`, below.
@@ -593,7 +601,7 @@ Six rules that keep the accent meaning something.
    underline: the one accent on a page with no primary action. Focus rings
    and the open step's rail are not spending. A selected or chosen thing is
    an ink tint, never an accent one.
-2. **Prose is ink.** `--dim` is for a date, a count, a note under a field.
+2. **Prose is ink.** `--dim` is for a date, a count.
    A paragraph is never dim.
 3. **A border is a boundary.** Two levels of container below the page.
    Lists are rows parted by hairlines or space, not stacks of cards.
@@ -643,6 +651,7 @@ Save button, and a modal's own OK/Cancel would be a second one.
    live value makes the visible config a lie. For the same reason it
    opens, and its header counts them, when a field inside has an error
    (`errors`).
-4. Every field states its default in its note, in the words the code
-   uses.
+4. Every field shows its default, in the words the code uses: as the
+   value it starts with, its placeholder or its first choice, or, where
+   it can show none of these, in its explainer.
 

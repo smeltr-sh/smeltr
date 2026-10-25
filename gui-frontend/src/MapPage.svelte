@@ -1100,7 +1100,7 @@
               editHash={hashFor(selected)}
               onedit={selected.shared ? () => setScope(SHARED_SCOPE) : undefined}
               onclose={() => (location.hash = '#/map')}
-              footer={path || selected.kind === 'destination' ? selectionControls : undefined}
+              controls={path || selected.kind === 'destination' ? selectionControls : undefined}
               gap={gapOf(selected)}
               onroute={canEdit(selected.shared ? SHARED_SCOPE : selected.group)
                 ? (condition) => routeFrom(selected!, condition)
@@ -1126,7 +1126,7 @@
                 };
               })}
               onclose={() => (location.hash = '#/map')}
-              footer={path ? selectionControls : undefined}
+              controls={path ? selectionControls : undefined}
             />
           </div>
         {/key}

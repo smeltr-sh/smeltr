@@ -14,6 +14,7 @@
 </script>
 
 <script lang="ts">
+  import type { AskAt } from './api';
   import InlineError from './InlineError.svelte';
   import StepList from './StepList.svelte';
   import ValidatedField from './ValidatedField.svelte';
@@ -27,6 +28,9 @@
   import SeparatorInput from './SeparatorInput.svelte';
   import ChipPicker from './ChipPicker.svelte';
   import MoreIcon from './MoreIcon.svelte';
+  import DisableIcon from './DisableIcon.svelte';
+  import { flip } from 'svelte/animate';
+  import { glide } from './glide';
   import FieldRow from './FieldRow.svelte';
   import TypePicker from './TypePicker.svelte';
   import DatetimeFormat from './DatetimeFormat.svelte';
@@ -59,7 +63,7 @@
   import { ago, count } from './time';
   import { parsePath, pushKey } from './names';
   import { SvelteMap } from 'svelte/reactivity';
-  import { STEP_GLYPHS } from './stepGlyphs';
+  import StepGlyph from './StepGlyph.svelte';
   import { errorText, grokCaptures, type GrokPatternDto, type LookupTableDto } from './api';
   import { sharedGrokSuggestions } from './grokPatterns';
   import { beginReconcile, endReconcile } from './grokFields';
@@ -76,10 +80,14 @@
     lookupTables = [],
     grokPatterns = [],
     parseInput = '_raw',
-    selectedStep = null,
-    onSelectStep = () => {},
+    pausedAt = null,
+    ran = null,
+    counts = new Map(),
+    onCount = () => {},
+    onPause = () => {},
     onPropose = () => {},
     proposal = null,
+    askAt,
   }: {
     steps: Step[];
     index: number;
@@ -93,12 +101,21 @@
     grokPatterns?: GrokPatternDto[];
     /** The field a new parse step reads. */
     parseInput?: string;
-    selectedStep?: Step | null;
-    onSelectStep?: (step: Step | null) => void;
+    /** The step the records are paused after. */
+    pausedAt?: Step | null;
+    /** The steps the records have been through, while they are paused; the rest are dimmed. */
+    ran?: Set<Step> | null;
+    /** How many records each step dropped and failed, in the records shown. */
+    counts?: Map<Step, { dropped: number; failed: number }>;
+    /** Filter the records to those the step dropped or failed. */
+    onCount?: (step: Step, kind: 'dropped' | 'failed') => void;
+    onPause?: (step: Step | null) => void;
     /** Ask the parser step to propose its declared fields from the sample. */
     onPropose?: (step: Step) => void;
     /** The field proposal open on some parser step, shown in that step's card. */
     proposal?: OpenProposal | null;
+    /** Asks the engine what may follow a dot in an expression at `at` (`afterDot`). */
+    askAt?: AskAt;
   } = $props();
 
   const readOnly = !editable();
@@ -141,9 +158,12 @@
     }
     if (step.type === 'eval') step.assignments.splice(i, 1);
   }
-  let isSelected = $derived(selectedStep === step);
-  function toggleSelected() {
-    onSelectStep(isSelected ? null : step);
+  let isPausedAt = $derived(pausedAt === step);
+  // A broken step stays bright: its error is what to read.
+  let stepCounts = $derived(counts.get(step));
+  let notRun = $derived(ran !== null && !ran.has(step) && stepErrors.length === 0);
+  function togglePause() {
+    onPause(isPausedAt ? null : step);
   }
 
   // Open/closed is a per-step preference, remembered across reloads by the
@@ -561,16 +581,16 @@
         class:active={step.disabled}
         onclick={() => (step.disabled = !step.disabled)}
         aria-label={step.disabled ? 'Enable this step' : 'Disable this step'}
-        title={step.disabled ? 'Enable this step' : 'Disable this step'}>⏸︎</button
+        title={step.disabled ? 'Enable this step' : 'Disable this step'}><DisableIcon /></button
       >
     {/if}
     <button
       type="button"
-      class:active={isSelected}
-      onclick={toggleSelected}
-      aria-label={isSelected ? 'Clear this step’s diff' : 'Show this step’s diff'}
-      title={isSelected ? 'Clear this step’s diff' : 'Show this step’s diff'}
-      >{isSelected ? '●︎' : '◎︎'}</button
+      class:active={isPausedAt}
+      onclick={togglePause}
+      aria-label={isPausedAt ? 'Show the whole pipeline' : 'Pause the records after this step'}
+      title={isPausedAt ? 'Show the whole pipeline' : 'Pause the records after this step'}
+      >{isPausedAt ? '●︎' : '◎︎'}</button
     >
     {#if !readOnly}
       <button type="button" class="fold" onclick={moveUp} aria-label="Move up" title="Move up"
@@ -592,17 +612,12 @@
     id={`step-${step.id}`}
     class="card if-card"
     class:has-error={stepErrors.length > 0}
-    class:diff-selected={isSelected}
+    class:paused-at={isPausedAt}
+    class:not-run={notRun}
   >
     <div class="card-head if-head">
       <span class="type-badge">
-        <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
-          <path
-            d={STEP_GLYPHS.if.d}
-            fill="currentColor"
-            fill-rule={STEP_GLYPHS.if.evenodd ? 'evenodd' : 'nonzero'}
-          />
-        </svg>
+        <StepGlyph type="if" />
         If
       </span>
       <div class="condition">
@@ -613,6 +628,7 @@
             errors={stepErrorMessages}
             warnings={stepWarningMessages}
             autocomplete="condition"
+            ask={askAt?.({ step: step.id })}
             wrap
           />
         </Locked>
@@ -632,10 +648,14 @@
           {lookupTables}
           {grokPatterns}
           {parseInput}
-          {selectedStep}
-          {onSelectStep}
+          {pausedAt}
+          {ran}
+          {counts}
+          {onCount}
+          {onPause}
           {onPropose}
           {proposal}
+          {askAt}
         />
       </div>
       <div class="branch">
@@ -649,10 +669,14 @@
           {lookupTables}
           {grokPatterns}
           {parseInput}
-          {selectedStep}
-          {onSelectStep}
+          {pausedAt}
+          {ran}
+          {counts}
+          {onCount}
+          {onPause}
           {onPropose}
           {proposal}
+          {askAt}
         />
       </div>
     </div>
@@ -664,7 +688,8 @@
     class:open={expanded}
     class:has-error={stepErrors.length > 0}
     class:comment-card={step.type === 'comment'}
-    class:diff-selected={isSelected}
+    class:paused-at={isPausedAt}
+    class:not-run={notRun}
     class:step-disabled={step.type !== 'comment' && step.disabled}
   >
     <!-- The controls sit beside the button that opens the step: a button cannot hold
@@ -678,13 +703,7 @@
         onclick={() => setExpanded(!expanded)}
       >
         <span class="type-badge" class:comment-badge={step.type === 'comment'}>
-          <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
-            <path
-              d={STEP_GLYPHS[step.type].d}
-              fill="currentColor"
-              fill-rule={STEP_GLYPHS[step.type].evenodd ? 'evenodd' : 'nonzero'}
-            />
-          </svg>
+          <StepGlyph type={step.type} />
           <span class="type-name">{STEP_LABELS[step.type]}</span>
         </span>
         <span class="summary">{stepSummary(step)}</span>
@@ -692,25 +711,42 @@
           {@render glyph(stepErrors.length === 0)}
         {/if}
       </button>
+      {#if stepCounts && (stepCounts.dropped > 0 || stepCounts.failed > 0)}
+        <span class="counts">
+          {#if stepCounts.dropped > 0}
+            <button type="button" class="count link-button" onclick={() => onCount(step, 'dropped')}
+              >&minus;{stepCounts.dropped} dropped</button
+            >
+          {/if}
+          {#if stepCounts.failed > 0}
+            <button
+              type="button"
+              class="count failed link-button"
+              onclick={() => onCount(step, 'failed')}>{stepCounts.failed} failed</button
+            >
+          {/if}
+        </span>
+      {/if}
       {@render controls()}
     </div>
 
     {#if expanded}
       <div class="body">
         {#if step.type === 'comment'}
-          <Field label="Text">
+          <Field optional label="Text">
             <textarea rows="2" bind:value={step.text}></textarea>
           </Field>
         {:else}
           <!-- A parser's filter is under its Advanced: nearly every parse reads every record. -->
           {#if step.type !== 'drop' && step.type !== 'parser'}
-            <Field label="filter">
+            <Field optional label="filter">
               <ValidatedField
                 placeholder="true"
                 bind:value={step.filter}
                 errors={stepErrorMessages}
                 warnings={stepWarningMessages}
                 autocomplete="condition"
+                ask={askAt?.({ step: step.id })}
                 wrap
               />
             </Field>
@@ -751,6 +787,7 @@
                       warnings={stepWarningMessages}
                       forced={assignmentError?.message ?? null}
                       autocomplete="assignment"
+                      ask={askAt?.({ step: step.id })}
                     />
                   </Locked>
                   {#if !readOnly}
@@ -774,7 +811,7 @@
               {/if}
             </div>
           {:else if step.type === 'code'}
-            <Field label="body">
+            <Field required label="body">
               <ValidatedField
                 multiline
                 rows={6}
@@ -783,16 +820,18 @@
                 errors={stepErrorMessages}
                 warnings={stepWarningMessages}
                 autocomplete="code"
+                ask={askAt?.({ step: step.id })}
               />
             </Field>
           {:else if step.type === 'drop'}
-            <Field label="drop when this is true" note="Blank means never.">
+            <Field optional label="drop when this is true" help="Leave it blank to drop nothing.">
               <ValidatedField
                 placeholder="e.g. status == 500"
                 bind:value={step.condition}
                 errors={stepErrorMessages}
                 warnings={stepWarningMessages}
                 autocomplete="condition"
+                ask={askAt?.({ step: step.id })}
                 wrap
               />
             </Field>
@@ -871,17 +910,17 @@
             {#if step.kind.type === 'csv'}
               {@const csvKind = step.kind}
               <Nested>
-                <Field label="delimiter">
+                <Field required label="delimiter">
                   <SeparatorInput bind:value={csvKind.delimiter} />
                 </Field>
               </Nested>
             {:else if step.kind.type === 'keyValue'}
               <Nested>
                 <div class="kind-fields">
-                  <Field label="pair separator">
+                  <Field required label="pair separator">
                     <SeparatorInput bind:value={step.kind.pairSep} />
                   </Field>
-                  <Field label="key/value separator">
+                  <Field required label="key/value separator">
                     <SeparatorInput bind:value={step.kind.kvSep} />
                   </Field>
                 </div>
@@ -947,112 +986,117 @@
                 >
               {/if}
               {#each ps.declared as field, i (field)}
-                {#snippet fieldActions()}
-                  {#if isCsv}
-                    <button
-                      type="button"
-                      class="pick"
-                      disabled={i === 0}
-                      onclick={() => moveDeclared(ps.declared, i, -1)}>Move up</button
-                    >
-                    <button
-                      type="button"
-                      class="pick"
-                      disabled={i === ps.declared.length - 1}
-                      onclick={() => moveDeclared(ps.declared, i, 1)}>Move down</button
-                    >
-                    <button
-                      type="button"
-                      class="pick"
-                      onclick={() => ps.declared.splice(i, 0, newField())}>Add column above</button
-                    >
-                  {/if}
-                  <button type="button" class="pick remove" onclick={() => ps.declared.splice(i, 1)}
-                    >Delete</button
-                  >
-                {/snippet}
-                {#snippet objectFields()}
-                  {@const objTy = field.ty}
-                  {#if objTy.kind === 'object' || objTy.kind === 'arrayOfObjects'}
-                    {#each objTy.fields as sub, j (sub)}
-                      {#snippet subActions()}
-                        <button
-                          type="button"
-                          class="pick remove"
-                          onclick={() => objTy.fields.splice(j, 1)}>Delete</button
-                        >
-                      {/snippet}
-                      <FieldRow
-                        bind:ty={
-                          () => ({ kind: 'named', name: sub.ty }),
-                          (t) => {
-                            if (t.kind === 'named') sub.ty = t.name;
-                          }
-                        }
-                        groups={OBJECT_FIELD_TYPE_GROUPS}
-                        disabled={readOnly}
-                        label={sub.name || 'object field'}
-                        actions={subActions}
-                      >
-                        {#snippet name()}
-                          <input
-                            disabled={readOnly}
-                            type="text"
-                            placeholder="name"
-                            aria-label="object field name"
-                            bind:value={sub.name}
-                          />
-                        {/snippet}
-                      </FieldRow>
-                    {/each}
-                    {#if !readOnly}
+                <div class="glide-row" animate:flip={{ duration: glide() }}>
+                  {#snippet fieldActions()}
+                    {#if isCsv}
                       <button
                         type="button"
-                        class="add-small"
-                        onclick={() => objTy.fields.push({ name: '', ty: 'str' })}>+ field</button
+                        class="pick"
+                        disabled={i === 0}
+                        onclick={() => moveDeclared(ps.declared, i, -1)}>Move up</button
+                      >
+                      <button
+                        type="button"
+                        class="pick"
+                        disabled={i === ps.declared.length - 1}
+                        onclick={() => moveDeclared(ps.declared, i, 1)}>Move down</button
+                      >
+                      <button
+                        type="button"
+                        class="pick"
+                        onclick={() => ps.declared.splice(i, 0, newField())}
+                        >Add column above</button
                       >
                     {/if}
-                    {#if objTy.kind === 'object'}
-                      <label class="inline rows-label">
-                        <Toggle disabled={readOnly} bind:checked={objTy.open} ariaLabel="open" />
-                        <span class="field-name">
-                          open
-                          <Help label="open">
-                            Closed, the object holds only the fields above and the parse drops every
-                            other key. Open, the other keys stay in the output.
-                          </Help>
-                        </span>
-                      </label>
-                    {/if}
-                  {/if}
-                {/snippet}
-                <FieldRow
-                  bind:ty={ps.declared[i].ty}
-                  groups={declaredTypeGroups(isCsv)}
-                  number={isCsv ? i + 1 : undefined}
-                  disabled={readOnly}
-                  label={field.name || (isCsv ? 'column' : 'field')}
-                  actions={isGrok ? undefined : fieldActions}
-                  nested={field.ty.kind === 'object' || field.ty.kind === 'arrayOfObjects'
-                    ? objectFields
-                    : undefined}
-                >
-                  {#snippet name()}
-                    {#if isGrok}
-                      <span class="derived-name" title="from the pattern">{field.name}</span>
-                    {:else}
-                      <Locked>
-                        <ValidatedField
-                          placeholder="name"
-                          bind:value={ps.declared[i].name}
-                          errors={stepErrorMessages}
-                          warnings={stepWarningMessages}
-                          forced={isCsv ? null : nameError(ps.declared[i].name)}
-                        />
-                      </Locked>
+                    <button
+                      type="button"
+                      class="pick remove"
+                      onclick={() => ps.declared.splice(i, 1)}>Delete</button
+                    >
+                  {/snippet}
+                  {#snippet objectFields()}
+                    {@const objTy = field.ty}
+                    {#if objTy.kind === 'object' || objTy.kind === 'arrayOfObjects'}
+                      {#each objTy.fields as sub, j (sub)}
+                        {#snippet subActions()}
+                          <button
+                            type="button"
+                            class="pick remove"
+                            onclick={() => objTy.fields.splice(j, 1)}>Delete</button
+                          >
+                        {/snippet}
+                        <FieldRow
+                          bind:ty={
+                            () => ({ kind: 'named', name: sub.ty }),
+                            (t) => {
+                              if (t.kind === 'named') sub.ty = t.name;
+                            }
+                          }
+                          groups={OBJECT_FIELD_TYPE_GROUPS}
+                          disabled={readOnly}
+                          label={sub.name || 'object field'}
+                          actions={subActions}
+                        >
+                          {#snippet name()}
+                            <input
+                              disabled={readOnly}
+                              type="text"
+                              placeholder="name"
+                              aria-label="object field name"
+                              bind:value={sub.name}
+                            />
+                          {/snippet}
+                        </FieldRow>
+                      {/each}
+                      {#if !readOnly}
+                        <button
+                          type="button"
+                          class="add-small"
+                          onclick={() => objTy.fields.push({ name: '', ty: 'str' })}>+ field</button
+                        >
+                      {/if}
+                      {#if objTy.kind === 'object'}
+                        <label class="inline rows-label">
+                          <Toggle disabled={readOnly} bind:checked={objTy.open} ariaLabel="open" />
+                          <span class="field-name">
+                            open
+                            <Help label="open">
+                              Closed, the object holds only the fields above and the parse drops
+                              every other key. Open, the other keys stay in the output.
+                            </Help>
+                          </span>
+                        </label>
+                      {/if}
                     {/if}
                   {/snippet}
-                </FieldRow>
+                  <FieldRow
+                    bind:ty={ps.declared[i].ty}
+                    groups={declaredTypeGroups(isCsv)}
+                    number={isCsv ? i + 1 : undefined}
+                    disabled={readOnly}
+                    label={field.name || (isCsv ? 'column' : 'field')}
+                    actions={isGrok ? undefined : fieldActions}
+                    nested={field.ty.kind === 'object' || field.ty.kind === 'arrayOfObjects'
+                      ? objectFields
+                      : undefined}
+                  >
+                    {#snippet name()}
+                      {#if isGrok}
+                        <span class="derived-name" title="from the pattern">{field.name}</span>
+                      {:else}
+                        <Locked>
+                          <ValidatedField
+                            placeholder="name"
+                            bind:value={ps.declared[i].name}
+                            errors={stepErrorMessages}
+                            warnings={stepWarningMessages}
+                            forced={isCsv ? null : nameError(ps.declared[i].name)}
+                          />
+                        </Locked>
+                      {/if}
+                    {/snippet}
+                  </FieldRow>
+                </div>
               {/each}
               {#if !readOnly && !isGrok}
                 <div class="adds">
@@ -1081,7 +1125,7 @@
             {/if}
 
             <Advanced values={advancedValues(ps)} errors={advancedErrors(ps)}>
-              <Field label="input field">
+              <Field optional label="input field">
                 <ValidatedField
                   bind:value={ps.input}
                   errors={stepErrorMessages}
@@ -1089,13 +1133,14 @@
                   forced={nameError(ps.input)}
                 />
               </Field>
-              <Field label="filter">
+              <Field optional label="filter">
                 <ValidatedField
                   placeholder="true"
                   bind:value={ps.filter}
                   errors={stepErrorMessages}
                   warnings={stepWarningMessages}
                   autocomplete="condition"
+                  ask={askAt?.({ step: step.id })}
                   wrap
                 />
               </Field>
@@ -1160,7 +1205,11 @@
               {/if}
               {#if parserKind.type === 'keyValue'}
                 {@const kvKind = parserKind}
-                <Field label="quote char" note="Optional.">
+                <Field
+                  optional
+                  label="quote char"
+                  help="Wraps a value that contains the pair separator: it runs from this character to the next one. Leave it empty if values are never quoted."
+                >
                   <input type="text" maxlength="1" bind:value={kvKind.quote} />
                 </Field>
                 <label class="inline">
@@ -1218,7 +1267,7 @@
           {:else if step.type === 'lookup'}
             {@const columns = knownColumns(step.table)}
             {@const isMmdb = tableOf(step.table)?.type === 'mmdb'}
-            <Field label="input field">
+            <Field required label="input field">
               <ValidatedField
                 bind:value={step.input}
                 errors={stepErrorMessages}
@@ -1280,7 +1329,7 @@
                   </select>
                 </Field>
               {:else}
-                <Field label="key / match column">
+                <Field required label="key / match column">
                   <input type="text" bind:value={step.keyColumn} />
                 </Field>
               {/if}
@@ -1439,7 +1488,7 @@
               </select>
             </Field>
           {:else if step.type === 'unroll'}
-            <Field label="array field to unroll">
+            <Field required label="array field to unroll">
               <input type="text" bind:value={step.field} />
             </Field>
             <label class="inline">
@@ -1515,12 +1564,20 @@
     opacity: 0.55;
   }
 
-  /* The step driving the diff view: a tint, per the flat-surfaces rule. */
-  .diff-selected {
-    --card-surface: color-mix(in oklab, var(--ink) 6%, var(--field));
+  /* The step the records are paused after: the pause chip's accent. */
+  .paused-at {
+    --card-surface: color-mix(in oklab, var(--accent) 10%, var(--field));
   }
-  .comment-card.diff-selected {
-    --card-surface: color-mix(in oklab, var(--ink) 6%, var(--comment-bg));
+  .paused-at:not(.has-error) {
+    border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  }
+  .comment-card.paused-at {
+    --card-surface: color-mix(in oklab, var(--accent) 10%, var(--comment-bg));
+  }
+
+  /* Steps the paused records have not been through yet. A disabled one is dimmed already. */
+  .not-run:not(.step-disabled) {
+    opacity: 0.55;
   }
 
   .card-head {
@@ -1610,7 +1667,7 @@
     flex-shrink: 0;
   }
 
-  .type-badge svg {
+  .type-badge :global(svg) {
     height: 1.15em;
     width: auto;
   }
@@ -1639,6 +1696,24 @@
     font-family: inherit;
     color: var(--comment-ink);
     font-style: italic;
+  }
+
+  /* What the step did to the records shown, each a filter to those records. */
+  .counts {
+    display: flex;
+    flex: none;
+  }
+
+  .count {
+    flex: none;
+    padding: 0 0.3rem;
+    font-size: var(--text-note);
+    color: var(--dim);
+  }
+
+  .count.failed {
+    color: var(--error);
+    font-weight: 600;
   }
 
   .summary {
@@ -1675,6 +1750,13 @@
 
     .card:not(.open, .if-card) > .card-head {
       position: relative;
+    }
+
+    /* The counts step aside for the controls, rather than sit under them. */
+    .card:not(.open, .if-card)
+      > .card-head:is(:hover, :focus-within, :has(.active, [aria-expanded='true']))
+      > .counts {
+      margin-right: 10.6rem;
     }
 
     .card:not(.open, .if-card) > .card-head > .controls {
@@ -1816,7 +1898,10 @@
     gap: 0.6rem;
   }
 
-  .rows {
+  /* A `.glide-row` is a declared field and what sits under it, one box, so they glide together when a column
+     moves; it spaces them as the rows are spaced. */
+  .rows,
+  .glide-row {
     display: flex;
     flex-direction: column;
     gap: 0.35rem;

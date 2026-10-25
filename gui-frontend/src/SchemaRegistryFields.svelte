@@ -25,14 +25,14 @@
   }
 </script>
 
-<Field field="schemaRegistry.url" label="schema registry">
+<Field required field="schemaRegistry.url" label="schema registry">
   {#snippet help()}
     The schema registry that holds your Avro schemas: its URL.
   {/snippet}
   <input type="text" bind:value={registry.url} placeholder="https://registry.example.com" />
 </Field>
-<Field field="schemaRegistry.username" label="registry username">
-  {#snippet note()}Only if the registry needs a sign-in.{/snippet}
+<Field optional field="schemaRegistry.username" label="registry username">
+  {#snippet help()}Needed only if the registry requires a sign-in.{/snippet}
   <input
     type="text"
     value={registry.username ?? ''}
@@ -40,7 +40,7 @@
   />
 </Field>
 {#if registry.username !== undefined}
-  <Field field="schemaRegistry.password" label="registry password">
+  <Field optional field="schemaRegistry.password" label="registry password">
     <SecretRefInput
       value={registry.password}
       {secrets}

@@ -27,6 +27,7 @@
 -->
 <script lang="ts">
   import { tick } from 'svelte';
+  import { float, type Anchor } from './float';
   import {
     ASSIGNMENT_FUNCTIONS,
     CODE_FUNCTIONS,
@@ -39,13 +40,20 @@
     currentWord as wordAt,
     describedRuns,
     rankedSuggestions,
+    memberSuggestions,
+    type Member,
     inGrokMacroName,
   } from './autocomplete';
-  import { highlight, KEYWORDS, LITERALS } from '../../website/src/lib/highlight/highlight';
+  import {
+    highlight,
+    KEYWORDS,
+    LITERALS,
+    tokenize,
+  } from '../../website/src/lib/highlight/highlight';
   import { wrapCondition } from './conditionWrap';
   import type { Attachment } from 'svelte/attachments';
   import { fieldError, holdsName, markRuns, quotedTokens } from './errorMarks';
-  import { formatCode } from './api';
+  import { formatCode, type DotAnswer } from './api';
   import { beginReconcile, endReconcile } from './grokFields';
 
   let {
@@ -61,6 +69,8 @@
     rows = 6,
     paint,
     wrap = false,
+    ask,
+    required = false,
   }: {
     value: string;
     errors?: string[];
@@ -90,6 +100,11 @@
     paint?: (text: string) => string;
     /** Left, the text is drawn broken before its operators, to the room it has: see the comment at the top. */
     wrap?: boolean;
+    /** Asks the engine what may follow the `.` at `dot` in `text`, where this expression sits (`afterDot`). Absent,
+     * every function written on a value may. */
+    ask?: (text: string, dot: number) => Promise<DotAnswer | null>;
+    /** As `PasswordField`'s. */
+    required?: boolean;
   } = $props();
 
   /** A `wrap` field being written in: left, it shows its text laid out instead. */
@@ -111,6 +126,8 @@
 
   /** The most lines a left `wrap` field shows. */
   const WRAP_LINES = 3;
+  /** The text the rest view draws, as it is laid out, for its marks. */
+  let restText = $state('');
   /** Draws `src` laid out into the rest view, again whenever its room changes size. */
   function wrapTo(src: string): Attachment<HTMLElement> {
     return (el) => {
@@ -138,6 +155,7 @@
           el.style.width = `${Math.ceil(longest * ch + edges)}px`;
         }
         el.innerHTML = lines.map(highlight).join('\n');
+        restText = lines.join('\n');
       };
       draw();
       const ro = new ResizeObserver(draw);
@@ -191,6 +209,14 @@
         : [],
   );
   let whole = $derived(!!matched && runs.length === 0);
+  // Laid out, the text breaks before its operators: the names are marked where they land in its lines.
+  let restRuns = $derived(
+    named.length > 0
+      ? markRuns(restText, named)
+      : colored && warned.length > 0
+        ? markRuns(restText, warned)
+        : [],
+  );
   // A name box has no painted copy to mark a run in, so a warning that names it marks all of it, as an error does.
   let wholeWarn = $derived(!colored && warned.length > 0);
 
@@ -201,6 +227,7 @@
       el.scrollTop = inputEl.scrollTop;
       el.scrollLeft = inputEl.scrollLeft;
     }
+    placeList?.();
   }
 
   // An edit, a caret move or a drag can scroll the input without a scroll
@@ -225,7 +252,57 @@
 
   let grokActive = $derived(autocomplete === 'grok' && inGrokMacroName(value, currentWord().pos));
 
+  /** The `.` the word follows, or null where it follows none: a dot in a string, a comment or a number is not one. */
+  let dot = $derived.by(() => {
+    const { start } = currentWord();
+    if (!functions || value[start - 1] !== '.') return null;
+    const last = tokenize(value.slice(0, start)).at(-1);
+    return last?.kind === 'plain' && last.text === '.' ? start - 1 : null;
+  });
+
+  /** The engine's answers, by the text up to the dot they are about, kept while the field is being written in. */
+  const answers = new Map<string, DotAnswer | null>();
+  const asking = new Set<string>();
+  /** Bumped as an answer arrives, so what reads `answers` reads it again. */
+  let answered = $state(0);
+
+  /** What the dot follows: unknown until the engine answers, null where it follows no value. */
+  let member = $derived.by((): Member | null => {
+    if (dot === null) return null;
+    void answered;
+    const answer = answers.get(value.slice(0, dot + 1));
+    if (answer === undefined) return { kind: 'unknown' };
+    return answer && { kind: 'typed', ...answer };
+  });
+
+  // Asks once per text up to a dot: the letters after it filter the answer here.
+  $effect(() => {
+    if (dot === null || !ask) return;
+    const head = value.slice(0, dot + 1);
+    if (answers.has(head) || asking.has(head)) return;
+    asking.add(head);
+    ask(value, dot).then(
+      (answer) => {
+        asking.delete(head);
+        // The highlight stays on the item it was moved to, so the reorder never changes what Enter picks.
+        const moved = highlighted > 0 ? suggestions[highlighted]?.name : undefined;
+        answers.set(head, answer);
+        answered++;
+        if (moved !== undefined)
+          highlighted = Math.max(
+            0,
+            suggestions.findIndex((f) => f.name === moved),
+          );
+        if (answer === null && dot !== null && value.slice(0, dot + 1) === head) open = false;
+      },
+      () => asking.delete(head),
+    );
+  });
+
   let suggestions = $derived.by((): StdFuncEntry[] => {
+    if (functions && member) {
+      return memberSuggestions(member, functions, currentWordText, functionUsage);
+    }
     if (functions) return rankedSuggestions(functions, currentWordText, { usage: functionUsage });
     if (grokActive) {
       return rankedSuggestions([...GROK_BUILTIN_PATTERNS, ...grokNamed], currentWordText, {
@@ -240,7 +317,8 @@
 
   function onInput() {
     if (functions) {
-      open = currentWordText.length > 0;
+      // A dot is where a list helps most: what can follow it depends on what is before it.
+      open = currentWordText.length > 0 || member !== null;
     } else if (autocomplete === 'grok') {
       open = grokActive && currentWordText.length > 0;
     } else {
@@ -253,6 +331,8 @@
    * and so does text changed while the leader answered. A one-line field takes only a one-line layout. */
   async function onBlur() {
     open = false;
+    // The record may change before the field is written in again.
+    answers.clear();
     // Focus leaving the window is not leaving the field.
     if (!functions || !document.hasFocus()) return;
     const sent = value;
@@ -278,7 +358,7 @@
   }
 
   async function pick(fn: StdFuncEntry) {
-    const { start, pos } = currentWord();
+    let { start, pos } = currentWord();
     // A function call is inserted whole. A grok macro's `%{` is already
     // typed (suggestions only show inside one); its own `}` is added only
     // when nothing already closes the macro past the caret -- editing
@@ -290,6 +370,12 @@
       const next = value[pos];
       insertion = next === ':' || next === '}' ? fn.name : `${fn.name}}`;
       caretOffset = fn.name.length;
+    } else if (fn.field) {
+      // A key that is not a name is written in brackets, in place of the dot.
+      const bare = /^[A-Za-z_$][\w$]*$/.test(fn.name);
+      if (!bare) start--;
+      insertion = bare ? fn.name : `[${JSON.stringify(fn.name)}]`;
+      caretOffset = insertion.length;
     } else {
       insertion = `${fn.name}()`;
       caretOffset = fn.name.length + 1;
@@ -302,6 +388,39 @@
     inputEl?.setSelectionRange(caretPos, caretPos);
     inputEl?.focus();
   }
+
+  /** The least room under the word the list takes before it goes over it: about three items. */
+  const LIST_FLOOR = 160;
+
+  /** The line box of the word being typed, on screen, held inside the field where the word is scrolled out of it.
+   * The painted copy is laid out and scrolled as the field is, so a range over it finds the word. A field with no
+   * painted copy gives its own box. */
+  function wordBox(): Anchor | undefined {
+    if (!inputEl) return undefined;
+    const field = inputEl.getBoundingClientRect();
+    if (!paintEl) return field;
+    let rest = currentWord().start;
+    const walk = document.createTreeWalker(paintEl, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      const length = n.textContent?.length ?? 0;
+      if (rest > length) {
+        rest -= length;
+        continue;
+      }
+      const range = document.createRange();
+      range.setStart(n, rest);
+      range.setEnd(n, Math.min(rest + 1, length));
+      const word = range.getClientRects()[0] ?? range.getBoundingClientRect();
+      const top = Math.min(Math.max(word.top, field.top), field.bottom);
+      const bottom = Math.max(Math.min(word.bottom, field.bottom), field.top);
+      const left = Math.min(Math.max(word.left, field.left), field.right);
+      return { top, bottom, left, right: left };
+    }
+    return field;
+  }
+
+  /** Places the open list at the word being typed again. Set while the list is open. */
+  let placeList: (() => void) | undefined;
 
   function onKeydown(e: KeyboardEvent) {
     // A `wrap` field is one line of text in a textarea: the box wraps it, a key does not.
@@ -338,11 +457,18 @@
     <span
       class="wrapview"
       class:field-error={!!matched}
-      class:whole={!!matched}
-      class:whole-warn={!matched && warned.length > 0}
+      class:whole
+      class:whole-warn={wholeWarn}
       aria-hidden="true"
       {@attach wrapTo(value)}
     ></span>
+    {#if restRuns.length > 0}
+      <span class="wrapview restmarks" aria-hidden="true"
+        >{#each restRuns as r}{#if r.mark}<span class="squiggle" class:warn={!matched}
+              >{r.text}</span
+            >{:else}{r.text}{/if}{/each}</span
+      >
+    {/if}
   {/if}
   {#if colored && !resting}
     <pre
@@ -368,6 +494,7 @@
       rows={wrap ? 1 : rows}
       {placeholder}
       aria-label={ariaLabel}
+      aria-required={required || undefined}
       bind:value
       class:field-error={!!matched}
       aria-invalid={!!matched}
@@ -393,6 +520,7 @@
       type="text"
       {placeholder}
       aria-label={ariaLabel}
+      aria-required={required || undefined}
       bind:value
       class:field-error={!!matched}
       aria-invalid={!!matched}
@@ -422,7 +550,12 @@
     </button>
   {/if}
   {#if showDropdown}
-    <ul class="suggestions" role="listbox">
+    <ul
+      class="suggestions"
+      role="listbox"
+      popover="manual"
+      {@attach float(wordBox, { floor: LIST_FLOOR }, (place) => (placeList = place))}
+    >
       {#if suggestions.length === 0}
         <li class="no-match">
           <span class="fn-desc">
@@ -440,6 +573,8 @@
           role="option"
           aria-selected={i === highlighted}
           class:highlighted={i === highlighted}
+          class:misfit={!!fn.warning}
+          class:after-fields={!fn.field && suggestions[i - 1]?.field}
           onmousedown={(e) => e.preventDefault()}
           onclick={() => pick(fn)}
           onkeydown={(e) => e.key === 'Enter' && pick(fn)}
@@ -457,6 +592,9 @@
               >
             {/if}
           </span>
+          {#if fn.warning}
+            <span class="fn-warn">&#9888; {fn.warning}</span>
+          {/if}
           <span class="fn-desc"
             >{#each describedRuns(fn.description) as p, j (j)}{#if p.code}<code>{p.text}</code
                 >{:else}{p.text}{/if}{/each}</span
@@ -668,6 +806,8 @@
     text-decoration: underline wavy var(--error);
     text-decoration-thickness: 1.5px;
     text-underline-offset: 2px;
+    /* Unbroken under a descender: a gap reads as two marks. */
+    text-decoration-skip-ink: none;
   }
 
   input.whole-warn,
@@ -676,10 +816,21 @@
     text-decoration: underline wavy var(--warn);
     text-decoration-thickness: 1.5px;
     text-underline-offset: 2px;
+    text-decoration-skip-ink: none;
   }
 
   .marks {
     color: transparent;
+  }
+
+  /* The rest view's marks, over it in the same box. */
+  .restmarks {
+    position: absolute;
+    inset: 0;
+    width: auto;
+    color: transparent;
+    background: none;
+    border-color: transparent;
   }
 
   .fn-toggle {
@@ -709,14 +860,10 @@
   }
 
   .suggestions {
-    position: absolute;
-    z-index: 21;
-    top: calc(100% + 4px);
-    left: 0;
+    color: var(--ink);
     min-width: 260px;
     max-width: min(380px, calc(100vw - 2rem));
     max-height: 280px;
-    overflow-y: auto;
     margin: 0;
     padding: 0.25rem;
     list-style: none;
@@ -770,6 +917,23 @@
     -webkit-line-clamp: 3;
     line-clamp: 3;
     overflow: hidden;
+  }
+
+  /* Fields first, then functions: a rule between them, as the eye skims. */
+  .suggestions li.after-fields {
+    margin-top: 0.25rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.45rem;
+  }
+
+  /* A function that does not take the type before the dot: offered, below every one that does. */
+  .misfit .fn-sig {
+    color: var(--dim);
+  }
+
+  .fn-warn {
+    font-size: var(--text-micro);
+    color: var(--warn);
   }
 
   .fn-desc code {

@@ -542,8 +542,7 @@ fn bundle(draw: &Draw) -> Value {
         let pki = pki();
         let mut identity = json!({"id": "client", "authorities": pki.authority.pem});
         if certificate {
-            identity["certificate"] = json!(pki.client.certificate);
-            identity["key"] = json!({"secret": "client-key", "version": 1});
+            identity["certificate"] = json!({"secret": "client", "version": 1});
         }
         b["identities"] = json!([identity]);
     }
@@ -564,11 +563,16 @@ fn held(draw: &Draw, token: &str) -> (HeldSecrets, bool) {
     if let Some(version) = named.get("version").and_then(Value::as_i64) {
         stored.push(("hec-token".to_string(), version, token.to_string()));
     }
-    if draw.identity == Some(true) {
-        stored.push(("client-key".to_string(), 1, pki().client.key.clone()));
-    }
     let mut secrets = HeldSecrets::default();
     secrets.set_stored(stored);
+    if draw.identity == Some(true) {
+        secrets.take([smeltr::heartbeat::SecretDelivery {
+            name: "client".to_string(),
+            version: 1,
+            value: pki().client.key.clone(),
+            chain: Some(pki().client.certificate.clone()),
+        }]);
+    }
     (secrets, names_unheld)
 }
 

@@ -50,7 +50,7 @@
     value: TableDelivery;
     /** What one call may be made to, as "the store". */
     calls: string;
-    /** What one commit makes of the table, as "a version the table's log keeps". */
+    /** What one commit adds to the table, as "a version to the table's log". */
     commit: string;
   } = $props();
 </script>
@@ -60,7 +60,6 @@
     {#snippet help()}
       How each Parquet file compresses its columns.
     {/snippet}
-    {#snippet note()}Default zstd.{/snippet}
     <select
       value={d.compression ?? 'zstd'}
       onchange={(e) => {
@@ -74,11 +73,10 @@
       {/each}
     </select>
   </Field>
-  <Field field="inFlight" label="parts uploading at once">
+  <Field optional field="inFlight" label="parts uploading at once">
     {#snippet help()}
       How many parts of one file upload at once.
     {/snippet}
-    {#snippet note()}Default {LIMITS.inFlight.default}.{/snippet}
     <input
       type="number"
       min={LIMITS.inFlight.min}
@@ -87,34 +85,31 @@
       oninput={(e) => (d.inFlight = numberOrUnset(e.currentTarget))}
     />
   </Field>
-  <Field field="maxObjectBytes" label="largest file">
+  <Field optional field="maxObjectBytes" label="largest file">
     {#snippet help()}
       The largest data file it writes, compressed.
     {/snippet}
-    {#snippet note()}Default {exactBytes(LIMITS.maxObjectBytes.default)}.{/snippet}
     <BytesInput
       value={d.maxObjectBytes}
       fallback={LIMITS.maxObjectBytes.default}
       onchange={(n) => (d.maxObjectBytes = n)}
     />
   </Field>
-  <Field field="bufferBytes" label="memory">
+  <Field optional field="bufferBytes" label="memory">
     {#snippet help()}
       Memory it may use on each worker for records not yet committed. Files are committed early when
       it fills.
     {/snippet}
-    {#snippet note()}Default {exactBytes(LIMITS.objectBufferBytes.default)}.{/snippet}
     <BytesInput
       value={d.bufferBytes}
       fallback={LIMITS.objectBufferBytes.default}
       onchange={(n) => (d.bufferBytes = n)}
     />
   </Field>
-  <Field field="stallAfterSecs" label="stall after (seconds)">
+  <Field optional field="stallAfterSecs" label="stall after (seconds)">
     {#snippet help()}
       How long one call to {calls}, or one commit, may take before it counts as stalled.
     {/snippet}
-    {#snippet note()}Default {LIMITS.stallAfterSecs.default}.{/snippet}
     <input
       type="number"
       min={LIMITS.stallAfterSecs.min}
@@ -123,15 +118,12 @@
       oninput={(e) => (d.stallAfterSecs = numberOrUnset(e.currentTarget))}
     />
   </Field>
-  <Field field="fileIntervalSecs" label="file interval (seconds)">
+  <Field optional field="fileIntervalSecs" label="file interval (seconds)">
     {#snippet help()}
-      The longest records wait before they are committed to the table. Each commit is {commit};
-      records are acknowledged only once committed, so every source feeding this destination is held
-      open for up to this long.
-    {/snippet}
-    {#snippet note()}
-      Default {LIMITS.tableFileIntervalSecs.default}; {LIMITS.tableFileIntervalSecs.min} to
-      {LIMITS.tableFileIntervalSecs.max}.
+      The longest records wait before they are committed to the table. Each commit adds {commit}, so
+      a short interval makes many. Sources feeding this destination are held open until their
+      records are committed, for up to this long. Between {LIMITS.tableFileIntervalSecs.min} and
+      {LIMITS.tableFileIntervalSecs.max} seconds.
     {/snippet}
     <input
       type="number"

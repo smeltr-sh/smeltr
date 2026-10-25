@@ -44,8 +44,8 @@ while replacing the authority reaches every one. A worker holds as many roots
 as it was given, which is what lets an authority be replaced without stopping
 the fleet. Replacing the authority is those two facts in order, whether the
 leader is moving to another authority of its own or the certificate it serves
-is changing source -- an operator's uploaded certificate in place of the
-leader's own, or back: the incoming root is published beside the outgoing one
+is changing source -- a certificate an operator chose from the list in place of
+the leader's own, or back: the incoming root is published beside the outgoing one
 and reaches each worker on its next heartbeat, and the leader serves under it
 only once every worker it still expects to hear from holds it, once the wait
 has run out, or once the operator tells it to stop waiting. A worker whose
@@ -54,12 +54,12 @@ leader can hand it nothing: the operator gives it the incoming root, and the
 leader names it as theirs to see to. An operator
 rotating the leader's own authority sets the wait; a change of source waits
 until the certificate being served, or the one it is switching to, is about to
-run out, since nothing is lost by waiting until then. An uploaded certificate under the root already in force
-is a renewal, and is served at once, whatever rotation is open; an upload that
+run out, since nothing is lost by waiting until then. A chosen certificate under the root already in force
+is a renewal, and is served at once, whatever rotation is open; a choice that
 would change the root waits for the open rotation to finish or be abandoned. A
 certificate the leader orders for itself from a certificate authority over
 ACME (RFC 8555) arrives the same way, under the root that signed it, so a
-worker is given that root as it would be given an uploaded one; the leader
+worker is given that root as it would be given a chosen one; the leader
 proves it holds each name on the port it serves (TLS-ALPN-01), on port 80
 (HTTP-01), listened on only while an order is open, or with a TXT record
 published through the zone's DNS provider (DNS-01), removed when the order is
@@ -260,6 +260,14 @@ with a git host every commit reaches `main` through the host, so the host's
 own token, kept that way, could be replaced only by using the token it
 replaces.
 
+**A certificate is the secret holding its private key, with more beside it.**
+The key is a leader-stored secret, sealed, versioned and retained as any is;
+the certificate's chain is public and kept beside each version of it, so
+listing certificates opens nothing. The Certificates page lists them and the
+Secrets page leaves them out. The leader serves a copy of the one an operator
+chooses and records which entry the copy came from. A new version of that
+entry has to be one the leader can serve, and is served once stored.
+
 ### The secrets encryption key
 
 Every sealed value carries the id of the key that sealed it, so the leader
@@ -290,16 +298,19 @@ stateDiagram-v2
   note right of Missing: nothing is sealed until restored or regenerated
 ```
 
-### A certificate is not a credential
+### A certificate travels with its key
 
-It is public, so it is committed with the rest of the bundle and read in
-review like every other line of it. Its private key is a credential like any
-other. That splits one upload across the two, and leaves a pair nothing but
-the leader can check: the certificate is in the commit and the key is in the
-store, so the leader refuses an identity whose two halves do not belong
-together, and refuses to move one onto a version of the other it does not
-match. It is the one question about a value the leader answers for itself,
-alongside whether a candidate matches.
+A certificate an identity presents is an entry of the leader's certificate
+list: its chain beside the private key, which is sealed like any stored
+secret. The bundle names the entry by name and version, as it names a secret,
+so the chain is no longer read in review with the rest of the bundle, and a
+replaced certificate reaches a worker as a reviewed change moving the
+references. The two halves cannot drift apart: the list refuses a chain and a
+key that do not belong together, and one version holds both.
+
+A worker is sent the entry's chain with its key. Before it tears down what it
+runs, it refuses a certificate it could not present the way its bundle
+presents it: connecting out, or serving a receiver's senders.
 
 A worker is sent the credentials the configuration it is about to run names,
 and no others. That is minimization, not a wall: enrollment binds a worker to

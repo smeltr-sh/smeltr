@@ -341,6 +341,9 @@ pub struct Plan {
     /// A compiler temporary is bound to no name. Config cannot reach it, and it is never a leaf of `tree`, so the
     /// serializer never writes it. The name it shows here is for reading the plan.
     pub provenance: Vec<SlotOrigin>,
+    /// Each copy that shares its value's slot under another name, which `provenance` does not see: the slot, the name,
+    /// how many slots there were when it was made, and the step that made it.
+    pub aliases: Vec<(SlotId, String, usize, FunctionId)>,
     pub patterns: Vec<crate::expr::ast::PatternSrc>,
     pub warnings: Vec<CompileError>,
     /// Instruction indices that are row barriers. Declared by the function, never discovered from the data: finding
@@ -449,6 +452,8 @@ struct Compiler<'p> {
     untyped: Option<Untyped>,
     /// The vectorized loops being compiled, innermost last (`array_fold`).
     folding: Vec<Folding>,
+    /// What `type_at` asks: the type of an expression where a step begins.
+    probe: Option<std::rc::Rc<Probe>>,
 }
 
 /// A vectorized loop being compiled: its accumulators, each one's write with the type it binds once compiled, and
@@ -515,29 +520,99 @@ enum Resolved {
     Ir(Ir),
 }
 
+/// The type `expr` has where step `step` of `p` begins: what the names in it read there, every step before it run.
+/// Given a `cut` of a code step, the type of the statement it puts at `cut.at`, read where the cut body has it, its
+/// `let`s bound; where the cut body does not compile that far, where the step begins. `None` where it does not
+/// resolve, or `step` is not one the pipeline reaches. The pipeline need not compile: an error elsewhere, the
+/// half-typed expression the question is about among them, leaves the names before `step` bound.
+pub fn type_at(
+    p: &PipelineConfig,
+    meta: &SourceMeta,
+    step: FunctionId,
+    expr: &Expr,
+    cut: Option<crate::plan::dot::Cut>,
+) -> Option<DataType> {
+    let ingest = ingest_fields(meta);
+    let probe = std::rc::Rc::new(Probe {
+        step,
+        expr: expr.clone(),
+        cut,
+        found: std::cell::RefCell::new(None),
+    });
+    let mut c = Compiler::new(p, &ingest, Some(probe.clone()));
+    c.block(&p.body, None);
+    probe.found.take()
+}
+
+/// What `type_at` asks the compiler, and its answer once the compiler reaches the step. Shared, since a step can be
+/// compiled on a copy of the compiler that is thrown away: a later round's answer replaces an earlier one's.
+struct Probe {
+    step: FunctionId,
+    expr: Expr,
+    /// Compiled in place of the step's body, where the step is a code step.
+    cut: Option<crate::plan::dot::Cut>,
+    found: std::cell::RefCell<Option<DataType>>,
+}
+
+impl<'p> Compiler<'p> {
+    fn new(p: &'p PipelineConfig, ingest: &[(&str, DataType)], probe: Option<std::rc::Rc<Probe>>) -> Compiler<'p> {
+        Compiler {
+            tables: &p.lookup_tables,
+            grok_patterns: &p.grok_patterns,
+            ingest: ingest.iter().map(|(n, _)| n.to_string()).collect(),
+            tries: 0,
+            regions: Vec::new(),
+            untyped: None,
+            folding: Vec::new(),
+            syms: SymbolTable::new(ingest),
+            res: ResourceBuilder::default(),
+            instrs: Vec::new(),
+            errors: Vec::new(),
+            outer: Vec::new(),
+            loop_firsts: Vec::new(),
+            scope_marks: Vec::new(),
+            catch_scopes: Vec::new(),
+            hoisted: HashMap::new(),
+            pass: Pass::Outside,
+            probe,
+        }
+    }
+
+    /// Answer the probe, where `step` is the one it asks about.
+    fn answer_probe(&self, step: FunctionId) {
+        if let Some(probe) = self.probe.as_ref().filter(|p| p.step == step) {
+            self.answer(probe);
+        }
+    }
+
+    /// The cut body to compile for code step `step`, where the probe asks about it.
+    fn probe_cut(&self, step: FunctionId) -> Option<String> {
+        let probe = self.probe.as_ref().filter(|p| p.step == step)?;
+        probe.cut.as_ref().map(|c| c.body.clone())
+    }
+
+    /// Answer the probe again, where `e`, in step `step`, is the statement its cut put there.
+    fn answer_cut(&self, e: &Expr, step: FunctionId) {
+        let probe = self.probe.as_ref().filter(|p| p.step == step);
+        if let Some(probe) = probe.filter(|p| p.cut.as_ref().is_some_and(|c| c.at == e.span.start)) {
+            self.answer(probe);
+        }
+    }
+
+    fn answer(&self, probe: &Probe) {
+        let mut syms = self.syms.clone();
+        let ty = resolve(&probe.expr, &mut syms, &mut ResourceBuilder::default())
+            .ok()
+            .map(|ir| ir.ty);
+        *probe.found.borrow_mut() = ty;
+    }
+}
+
 /// Compile one pipeline against the fields `meta` declares: the instructions, in one pass, then slot liveness. Every
 /// error is collected rather than the first one returned, so one compile reports everything wrong with a pipeline.
 pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<CompileError>> {
     let ingest = ingest_fields(meta);
-    let mut c = Compiler {
-        tables: &p.lookup_tables,
-        grok_patterns: &p.grok_patterns,
-        ingest: ingest.iter().map(|(n, _)| n.to_string()).collect(),
-        tries: 0,
-        regions: Vec::new(),
-        untyped: None,
-        folding: Vec::new(),
-        syms: SymbolTable::new(&ingest),
-        res: ResourceBuilder::default(),
-        instrs: Vec::new(),
-        errors: Vec::new(),
-        outer: Vec::new(),
-        loop_firsts: Vec::new(),
-        scope_marks: Vec::new(),
-        catch_scopes: Vec::new(),
-        hoisted: HashMap::new(),
-        pass: Pass::Outside,
-    };
+    let mut c = Compiler::new(p, &ingest, None);
 
     c.block(&p.body, None);
 
@@ -595,6 +670,7 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
         slot_layout: c.syms.layout,
         instrs: c.instrs,
         provenance: c.syms.origins,
+        aliases: c.syms.aliases,
         patterns: c.res.patterns,
         warnings: c.syms.warnings,
         barriers,
@@ -617,7 +693,7 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
         &c.syms.local_slots,
         &c.syms.deleted_slots,
         &c.syms.nulls,
-        &c.syms.aliases,
+        &plan.aliases,
     );
     plan.warnings.extend(unread);
     // A case that runs on into the next has the next one's statements copied into its branch, so a warning about
@@ -688,7 +764,7 @@ fn unread_writes(
     locals: &HashSet<SlotId>,
     deleted: &HashSet<SlotId>,
     nulls: &HashSet<SlotId>,
-    aliases: &[(SlotId, String, usize)],
+    aliases: &[(SlotId, String, usize, FunctionId)],
 ) -> Vec<CompileError> {
     let mut read = HashSet::new();
     every_read(&plan.instrs, &mut |s| {
@@ -716,8 +792,8 @@ fn unread_writes(
             .chain(
                 aliases
                     .iter()
-                    .filter(|(s, n, _)| *s == slot && spelled(n))
-                    .map(|(_, n, at)| (n.as_str(), *at)),
+                    .filter(|(s, n, ..)| *s == slot && spelled(n))
+                    .map(|(_, n, at, _)| (n.as_str(), *at)),
             )
             .collect();
         let rewritten = names
@@ -2572,7 +2648,7 @@ impl Compiler<'_> {
             Resolved::Slot(s) if guard.is_none() && !self.in_loop() => {
                 self.syms.put_place(place, s);
                 let made = self.syms.origins.len();
-                self.syms.aliases.push((s, place.name().to_string(), made));
+                self.syms.aliases.push((s, place.name().to_string(), made, id));
                 return;
             }
             Resolved::Unclaimed(s, removed)
@@ -3753,6 +3829,7 @@ impl Compiler<'_> {
                 Stmt::Declare { name, ty } => self.declare(name, ty, id),
                 // Checked, then discarded: there are no side effects.
                 Stmt::Expr(e) => {
+                    self.answer_cut(e, id);
                     self.expr_ast(e, id);
                 }
                 // A computed key writes a position of an array, or a key of an open object. A literal key is a name the
@@ -4239,6 +4316,10 @@ impl Compiler<'_> {
 
     fn block(&mut self, body: &[Step], guard: Option<SlotId>) {
         for step in body {
+            self.answer_probe(match step {
+                Step::If { id, .. } => *id,
+                Step::Function(f) => f.id,
+            });
             match step {
                 Step::If { id, cond, then, else_ } => {
                     let Some(cond_ir) = self.expr(cond, *id) else {
@@ -4316,6 +4397,8 @@ impl Compiler<'_> {
                 return;
             }
             FunctionKind::Code { body } => {
+                let cut = self.probe_cut(id);
+                let body = cut.as_deref().unwrap_or(body);
                 match parse_block_shaped(body) {
                     Ok((stmts, shape)) => {
                         for ender in shape.unreachable {

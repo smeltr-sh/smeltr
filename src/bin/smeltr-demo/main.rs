@@ -23,8 +23,9 @@ use axum::routing::{get, post};
 use smeltr::config_file::{self, BundleAt, DeclaredAt, FileConfig, RawBundle, SampleDto, TestDto, TestSummary};
 use smeltr::leader::envelope::{ApiError, Empty, Envelope};
 use smeltr::leader::preview::{
-    FormatRequest, Formatted, GrokCaptures, GrokCapturesRequest, LineBreakerRequest, Preview, PreviewRequest,
-    RoutePreview, TestResult, captures_of, format_code, line_breaker_verdict, run_preview, run_route_preview, run_test,
+    AfterDotRequest, CaptureFilterRequest, FormatRequest, Formatted, GrokCaptures, GrokCapturesRequest,
+    LineBreakerRequest, Preview, PreviewRequest, RoutePreview, TestResult, captures_of, format_code,
+    line_breaker_verdict, run_preview, run_route_preview, run_test,
 };
 use tokio::sync::Semaphore;
 
@@ -163,6 +164,11 @@ struct PreviewBody {
     at_micros: Option<i64>,
     #[serde(default)]
     filter: Option<String>,
+    #[serde(default)]
+    attribution: bool,
+    after_dot: Option<AfterDotRequest>,
+    #[serde(default)]
+    capture_filter: Option<CaptureFilterRequest>,
 }
 
 async fn preview(State(service): State<Service>, Json(body): Json<PreviewBody>) -> Json<Envelope<Preview>> {
@@ -191,6 +197,9 @@ async fn preview(State(service): State<Service>, Json(body): Json<PreviewBody>) 
                     show_internal: body.show_internal,
                     at_micros: body.at_micros,
                     filter: body.filter,
+                    attribution: body.attribution,
+                    after_dot: body.after_dot,
+                    capture_filter: body.capture_filter,
                 };
                 run_preview(req, declared_at, &columns, records)
             })

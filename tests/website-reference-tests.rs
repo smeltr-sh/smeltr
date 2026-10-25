@@ -1634,13 +1634,10 @@ fn every_connector_example_loads() {
         } else {
             continue;
         };
-        // An example naming an identity is shown beside one the page declares, here a certificate made for it.
+        // An example naming an identity is shown beside one the page declares, here one naming a certificate from
+        // the list.
         let identities: Vec<_> = (example.get("identity").and_then(|i| i.as_str()))
-            .map(|id| {
-                let key = rcgen::KeyPair::generate().unwrap();
-                let params = rcgen::CertificateParams::new(vec!["workers.example.com".to_string()]).unwrap();
-                serde_json::json!({ "id": id, "certificate": params.self_signed(&key).unwrap().pem(), "key": "TLS_KEY" })
-            })
+            .map(|id| serde_json::json!({ "id": id, "certificate": { "secret": id, "version": 1 } }))
             .into_iter()
             .collect();
         let file =

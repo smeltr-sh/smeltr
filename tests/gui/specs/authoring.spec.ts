@@ -85,8 +85,8 @@ test('A1: a pasted sample is saved under its name and is there to come back to',
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Paste' }).click();
   await dialog.getByLabel('Name').fill('orders, an ordinary hour');
-  await dialog.getByLabel('Source it stands for').fill('orders-west');
-  await dialog.getByLabel('Records').fill('{"id":1,"total":20}\n{"id":2,"total":35}\n');
+  await dialog.getByLabel(/^Source it stands for/).fill('orders-west');
+  await dialog.getByLabel(/^Records/).fill('{"id":1,"total":20}\n{"id":2,"total":35}\n');
   await expect(dialog.getByText('2 records')).toBeVisible();
   await dialog.getByRole('button', { name: 'Save sample' }).click();
   await expect(dialog).toBeHidden();
@@ -111,7 +111,7 @@ test('A1: an uploaded file becomes a sample, one record per line', async ({
   await admin.getByRole('button', { name: 'Add sample' }).click();
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Upload' }).click();
-  await dialog.getByLabel('File').setInputFiles(file);
+  await dialog.getByLabel(/^File/).setInputFiles(file);
   await expect(dialog.getByLabel('Name')).toHaveValue('checkout');
   await expect(dialog.getByText('3 records')).toBeVisible();
   await dialog.getByRole('button', { name: 'Save sample' }).click();
@@ -770,13 +770,15 @@ test('A2: the parser proposes its declared fields from a sample, and the analyst
   await jsonPipeline(api, 'orders', [], { id: 'orders-sample', name: 'orders', records: ORDERS });
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  // The sample in the URL is chosen once the samples have loaded; Suggest fields before then has none to read.
+  await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
   await admin.getByRole('button', { name: /_raw as JSON/ }).click();
   await admin.getByRole('button', { name: 'Suggest fields' }).click();
 
   // Suggested in the step's own card: the sample stays where it was.
   const suggested = admin.getByRole('group', { name: 'Suggested fields' });
   await expect(suggested).toContainText('Suggested from orders, 3 rows');
-  await expect(admin.getByRole('button', { name: '← Back' })).toBeVisible();
+  await expect(admin.getByRole('button', { name: 'Choose a sample' })).toContainText('orders');
   await expect(suggested.getByRole('group', { name: 'id' }).getByRole('combobox')).toHaveValue(
     'i64',
   );
@@ -794,7 +796,9 @@ test('A2: the parser proposes its declared fields from a sample, and the analyst
   await suggested.getByRole('button', { name: 'Add all' }).click();
   await expect(suggested.getByRole('group')).toHaveCount(0);
   await suggested.getByRole('button', { name: 'Done' }).click();
-  await expect(admin.getByRole('button', { name: /_raw as JSON \(3 declared\)/ })).toBeVisible();
+  await expect(
+    admin.getByRole('button', { name: /^Parser _raw as JSON \(3 declared\)/ }),
+  ).toBeVisible();
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Saved.')).toBeVisible();
@@ -812,6 +816,7 @@ test('A3: the proposal says which fields some rows lack and where rows disagree 
   await jsonPipeline(api, 'orders', [], { id: 'orders-sample', name: 'orders', records: ORDERS });
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
   await admin.getByRole('button', { name: /_raw as JSON/ }).click();
   await admin.getByRole('button', { name: 'Suggest fields' }).click();
 
@@ -824,8 +829,9 @@ test('A3: the proposal says which fields some rows lack and where rows disagree 
 });
 
 // A2, choosing what to run over. The editor opens on no sample, still compiling the steps, and the samples a test
-// of this pipeline locks are marked. The output is searched by keyword, or filtered by an expression.
-test('A2: a sample is picked from a table, its output searched by keyword or expression, and Back puts it away', async ({
+// of this pipeline locks come first in the Sample menu, marked. The output is searched by keyword, or filtered by an
+// expression.
+test('A2: a sample is picked from the Sample menu, its output searched by keyword or expression', async ({
   admin,
   leader,
   api,
@@ -847,18 +853,21 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
   });
 
   await goto(admin, leader, '#/build/pipelines/orders');
-  const picker = admin.getByRole('table').filter({ hasText: 'Captured' });
-  // The locked sample first, though `other` sorts before it by name.
-  await expect(picker.getByRole('row').nth(1)).toContainText('orders');
-  await expect(picker.getByTitle('Locked by the test orders parse')).toBeVisible();
-  // No sample, but the steps compiled: the dictionary is there.
-  await admin.getByRole('tab', { name: /Data dictionary/ }).click();
-  await expect(admin.getByRole('cell', { name: 'total', exact: true })).toBeVisible();
-  await admin.getByRole('tab', { name: /Output/ }).click();
+  const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
+  // No sample, but the steps compiled: the Fields menu lists what they declare.
+  await admin.getByRole('button', { name: 'Choose fields' }).click();
+  const fields = admin.getByRole('group', { name: 'Fields' });
+  await expect(fields.getByText('total', { exact: true })).toBeVisible();
+  await admin.keyboard.press('Escape');
 
-  await picker.getByRole('button', { name: 'orders', exact: true }).click();
-  await expect(admin.getByRole('tab', { name: /Output/ })).toContainText('3');
-  const search = admin.getByRole('searchbox', { name: 'Search the output' });
+  // The locked sample first, though `other` sorts before it by name.
+  await sampleMenu.click();
+  const saved = admin.getByRole('listbox', { name: 'Saved samples' });
+  await expect(saved.getByRole('option').first()).toContainText('orders');
+  await expect(saved.getByTitle('Locked by the test orders parse')).toBeVisible();
+  await saved.getByRole('option', { name: /\borders 3 records$/ }).click();
+  await expect(sampleMenu).toContainText('3 records');
+  const search = admin.getByRole('combobox', { name: 'Search the output' });
   await search.fill('SPRING');
   await expect(admin.getByText('2 of 3 rows')).toBeVisible();
   await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
@@ -868,11 +877,75 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
   // One that does not compile to a Bool is a keyword.
   await search.fill('total +');
   await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
+  // Left with an expression in it, the box offers it again, under the kinds of row a chip keeps.
+  await search.fill('total > 15');
+  await expect(admin.getByText('ƒ expression')).toBeVisible();
+  await search.blur();
+  await search.fill('');
+  const offered = admin.getByRole('listbox', { name: 'Suggestions' });
+  await expect(offered.getByRole('option', { name: 'total > 15' })).toBeVisible();
+  await offered.getByRole('option', { name: /Changed by a step/ }).click();
+  await expect(admin.getByRole('button', { name: 'remove changed' })).toBeVisible();
+  await expect(admin.getByText('3 of 3 rows')).toBeVisible();
   await admin.screenshot({ path: 'results/sample-pane-search.png', fullPage: true });
 
-  await admin.getByRole('button', { name: '← Back' }).click();
-  await expect(picker).toBeVisible();
-  await expect(admin.getByRole('tab', { name: /Output/ })).not.toContainText('3');
+  // Another sample, from the menu: the locked one first, and the search starts over.
+  await sampleMenu.click();
+  await saved.getByRole('option', { name: /^other/ }).click();
+  await expect(sampleMenu).toContainText('1 record');
+  await expect(search).toHaveValue('');
+});
+
+// A2, records the workspace has no sample for yet: pasted, or captured from a source the pipeline is fed by, from the
+// Sample menu. Either is saved and is what the workspace runs over.
+test('A2: a sample pasted or captured from the Sample menu is saved and run', async ({
+  admin,
+  leader,
+  api,
+  fleet,
+}) => {
+  await jsonPipeline(api, 'orders', [{ name: 'total', type: 'f64' }], {
+    id: 'orders-sample',
+    name: 'orders',
+    records: ORDERS,
+  });
+  await api.put(`/api/sources${ON}`, [{ id: 'own-metrics', type: 'metrics', bucketSeconds: 1 }]);
+  await api.put(`/api/destinations${ON}`, [
+    { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
+  ]);
+  await api.put(`/api/routes${ON}`, [
+    {
+      id: 'r1',
+      source: 'own-metrics',
+      condition: null,
+      pipeline: 'orders',
+      deliver: [{ to: ['es-a'] }],
+    },
+  ]);
+  await fleet.startWorker(leader, api, 'default', 'w1');
+
+  await goto(admin, leader, '#/build/pipelines/orders');
+  const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
+  await sampleMenu.click();
+  await admin.getByRole('button', { name: 'Paste or file' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Paste' }).click();
+  await dialog.getByLabel('Name').fill('two orders');
+  await dialog.getByLabel(/^Records/).fill('{"id":7,"total":1}\n{"id":8,"total":2}\n');
+  await dialog.getByRole('button', { name: 'Save sample' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(sampleMenu).toContainText('two orders');
+  await expect(sampleMenu).toContainText('2 records');
+
+  await sampleMenu.click();
+  await admin.getByRole('tab', { name: /^Capture/ }).click();
+  await admin
+    .getByRole('listbox', { name: 'Sources' })
+    .getByRole('option', { name: /own-metrics/ })
+    .click();
+  await captureThree(admin, 'metrics now');
+  await expect(sampleMenu).toContainText('metrics now');
+  await expect(sampleMenu).toContainText('3 records');
 });
 
 /** A source, destinations and a `web` pipeline routed from one to them: every record to `es-web`, a server error
@@ -902,6 +975,58 @@ async function webRoutes(api: Api, sampleRecords: string[]) {
 }
 
 // A4, the whole trip.
+// The default shows the fields most records hold, so it moves with the sample. A field the reader
+// chose stays as they chose it.
+test('A2: a field shown from the Fields menu stays shown on a sample that would have hidden it', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/pipelines/wide${ON}`, {
+    id: 'wide',
+    name: 'wide',
+    steps: [{ type: 'parser', id: 'body', input: '_raw', kind: { type: 'json' } }],
+  });
+  // 55 fields. In `few`, f50 to f54 are in one record of three, so the 50 shown by default leave
+  // them out; in `many`, f0 to f4 are, so f52 is in the default there.
+  const record = (rare: (i: number) => boolean, i: number) =>
+    Object.fromEntries(
+      Array.from({ length: 55 }, (_, f) => [`f${f}`, f]).filter(
+        ([, f]) => !rare(f as number) || i === 0,
+      ),
+    );
+  for (const [id, rare] of [
+    ['few', (f: number) => f >= 50],
+    ['many', (f: number) => f < 5],
+  ] as const)
+    await api.put(`/api/samples${ON}`, {
+      id,
+      name: id,
+      records: [0, 1, 2].map((i) => ({ _raw: JSON.stringify(record(rare, i)) })),
+    });
+
+  const grid = admin.getByRole('table');
+  const head = grid.getByRole('button', { name: /^f52\b/ });
+  await goto(admin, leader, '#/build/pipelines/wide/for/few');
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await expect(head).toHaveCount(0);
+  await admin.getByRole('button', { name: 'Choose fields' }).click();
+  await admin.getByRole('searchbox', { name: 'Find a field' }).fill('f52');
+  await admin.getByRole('group', { name: 'Fields' }).getByRole('checkbox').check();
+  await admin.keyboard.press('Escape');
+  await expect(head).toHaveCount(1);
+
+  const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
+  await sampleMenu.click();
+  await admin
+    .getByRole('listbox', { name: 'Saved samples' })
+    .getByRole('option', { name: /^many/ })
+    .click();
+  await expect(sampleMenu).toContainText('many');
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await expect(head).toHaveCount(1);
+});
+
 test('A4: a route preview shows each output row, the route it matched and the destinations it reaches', async ({
   admin,
   leader,
@@ -928,9 +1053,9 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await expect(failed).toContainText('"status":503');
 });
 
-// A4, the whole trip. A step that does not compile says why once, on the step; the box above the sample only
-// names it, and takes the author there.
-test('A4: a compile error is written once, on its step, and the box above the sample jumps to it', async ({
+// A4, the whole trip. A step that does not compile says why once, on the step; the error chip above the records
+// lists it and takes the author there, and the records stand after the last step that compiles.
+test('A4: a compile error is written once, on its step, and the error chip jumps to it', async ({
   admin,
   leader,
   api,
@@ -956,19 +1081,120 @@ test('A4: a compile error is written once, on its step, and the box above the sa
   await body.fill('x = ipVersion();');
 
   const message = '`ipVersion` takes 1 argument, found 0';
-  await expect(admin.getByText('compile failed')).toBeVisible();
+  const failed = admin.getByRole('button', { name: /Compile failed · 1/ });
+  await expect(failed).toBeVisible();
   // Focus is where the field's popup used to repeat it.
   await body.focus();
   await expect(admin.getByText(message, { exact: true })).toHaveCount(1);
-  // The sample from before stays under the box.
-  await expect(admin.getByText('Showing the sample from before this.')).toBeVisible();
+  // The records stand where the pipeline still compiles: after the parser.
+  await expect(admin.getByLabel('Paused')).toHaveText('◉ After step 1 · PARSER');
+  await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
 
-  await admin.getByRole('button', { name: /1 line\(s\) of code Jump/ }).click();
+  await failed.click();
+  await admin.getByRole('button', { name: /takes 1 argument, found 0 Jump/ }).click();
   await expect(body).toBeInViewport();
 });
 
+// ◎ pauses the records after a step: the steps after it are dimmed, a record a later step drops is back, and ✕
+// shows the whole pipeline again.
+test('◎ pauses the records after a step', async ({ admin, leader, api }) => {
+  await api.put(`/api/pipelines/orders${ON}`, {
+    id: 'orders',
+    name: 'orders',
+    steps: [
+      { type: 'parser', id: 'body', input: '_raw', kind: { type: 'json' }, declared: [] },
+      {
+        type: 'drop',
+        id: 'no-coupon',
+        filter: 'true',
+        disabled: false,
+        condition: 'coupon == null',
+      },
+    ],
+  });
+  await api.put(`/api/samples${ON}`, {
+    id: 'orders-sample',
+    name: 'orders',
+    records: ORDERS.map((raw) => ({ _raw: raw })),
+  });
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  const grid = admin.getByRole('table');
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toBeVisible();
+  const dropped = grid.getByRole('row', { name: /^row 1 / });
+  await expect(dropped).toHaveClass(/dropped/);
+
+  await admin.getByRole('button', { name: 'Pause the records after this step' }).first().click();
+  const paused = admin.getByLabel('Paused');
+  await expect(paused).toHaveText(/◉ After step 1 · PARSER/);
+  await expect(dropped).not.toHaveClass(/dropped/);
+  await expect(admin.locator('#step-no-coupon')).toHaveClass(/not-run/);
+
+  await paused.getByRole('button', { name: 'Show the whole pipeline' }).click();
+  await expect(paused).toBeHidden();
+  await expect(dropped).toHaveClass(/dropped/);
+});
+
+// A3, which step did it. Once typing settles, a field carries the sign of the step that last touched it, held it
+// lists every step that did and jumps to one, an exception names its step, and a step's dropped and failed counts
+// filter the records to those it dropped or failed.
+test('A3: a field names the steps that touched it, and a step card counts what it dropped', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/pipelines/web${ON}`, {
+    id: 'web',
+    name: 'web',
+    steps: [
+      {
+        type: 'parser',
+        id: 'body',
+        input: '_raw',
+        kind: { type: 'json' },
+        declared: [
+          { name: 'status', type: 'i64' },
+          { name: 'path', type: 'str' },
+        ],
+      },
+      { type: 'drop', id: 'health', condition: 'path == "/health"' },
+      { type: 'code', id: 'calc', body: 'path = "web" + path;' },
+    ],
+  });
+  await api.put(`/api/samples${ON}`, {
+    id: 'web',
+    name: 'web hour',
+    records: [
+      { _raw: '{"status": 200, "path": "/a"}' },
+      { _raw: '{"status": "oops", "path": "/b"}' },
+      { _raw: '{"status": 200, "path": "/health"}' },
+    ],
+  });
+
+  await goto(admin, leader, '#/build/pipelines/web/for/web');
+  const grid = admin.getByRole('table');
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toBeVisible();
+  // The failing row opens first, and its exception names the parser.
+  await admin.getByRole('button', { name: 'Step 1 · Parser · _raw as JSON (2 declared)' }).click();
+  await expect(admin.locator('#step-body')).toBeInViewport();
+
+  // `path` was set by the parser and then by the code step: the sign is the last's, and the list has both.
+  const record = grid.getByRole('row', { name: /^record 1/ });
+  const last = record.getByRole('button', { name: /^Step 3 · Code/ });
+  await expect(last).toBeVisible();
+  await last.hover();
+  const list = last.locator('xpath=following-sibling::span[1]');
+  await expect(list.getByRole('button', { name: /^Step 1 · Parser/ })).toBeVisible();
+  await expect(list.getByRole('button', { name: /^Step 3 · Code/ })).toBeVisible();
+
+  await admin.locator('#step-health').getByRole('button', { name: '−1 dropped' }).click();
+  await expect(admin.getByRole('button', { name: 'remove dropped by health' })).toBeVisible();
+  await expect(admin.getByText('1 of 3 rows')).toBeVisible();
+  await expect(grid.getByRole('row', { name: /^row 2 / })).toBeVisible();
+});
+
 // A4, the whole trip. A refused save's errors stay on the steps until the next save; a preview error after it is
-// still written somewhere, in the box above the sample.
+// still written somewhere, in the error chip above the records.
 test('A4: after a refused save, a new compile error is still shown', async ({
   admin,
   leader,
@@ -990,13 +1216,14 @@ test('A4: after a refused save, a new compile error is still shown', async ({
   await admin.getByRole('button', { name: /line\(s\) of code/ }).click();
   const body = admin.locator('textarea').last();
   await body.fill('x = ipVersion();');
-  await expect(admin.getByText('compile failed')).toBeVisible();
+  await expect(admin.getByRole('button', { name: /Compile failed · 1/ })).toBeVisible();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(
     admin.locator('.error-bar').getByRole('link', { name: /line\(s\) of code/ }),
   ).toBeVisible();
 
   await body.fill('x = ipVersion(1, 2);');
+  await admin.getByRole('button', { name: /Compile failed · 1/ }).click();
   await expect(
     admin.getByText('`ipVersion` takes 1 argument, found 2', { exact: true }),
   ).toBeVisible();
@@ -1086,7 +1313,7 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await admin.getByRole('button', { name: 'Add step' }).click();
   await admin.getByRole('dialog').getByRole('button', { name: 'Drop', exact: true }).click();
-  await admin.getByLabel('drop when this is true').fill('id == 2');
+  await admin.getByLabel(/^drop when this is true/).fill('id == 2');
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Saved.')).toBeVisible();
 
@@ -1121,15 +1348,16 @@ test('A8: while authoring, a row that fails to parse is shown failing, with why'
   // The grid carries each exception in the row itself, and an opened row unfolds it.
   await expect(grid.getByRole('cell', { name: /"kind":"UnparsableField"/ })).toBeVisible();
   await expect(grid.getByRole('cell', { name: /"kind":"Unparsable"/ })).toBeVisible();
-  // Under the row's head, and as the unfolded exception's message.
-  await expect(
-    admin.getByText('_raw.id is "two", which could not parse as i64 in id', { exact: true }),
-  ).toHaveCount(2);
+  // Under the row's head, after the step that raised it, and as the unfolded exception's message.
+  const why = (message: string) => async () => {
+    await expect(admin.getByText(message, { exact: true })).toHaveCount(1);
+    await expect(grid.locator('.exception', { hasText: message })).toHaveText(
+      /^\s*Step \d+ · Parser · .*: /,
+    );
+  };
+  await why('_raw.id is "two", which could not parse as i64 in id')();
   await admin.getByRole('button', { name: 'row 2', exact: true }).click();
-  // Under the row's head, and as the unfolded exception's message.
-  await expect(
-    admin.getByText('_raw is "not json", which json could not parse', { exact: true }),
-  ).toHaveCount(2);
+  await why('_raw is "not json", which json could not parse')();
 });
 
 // A8, bad rows go somewhere.
@@ -1426,10 +1654,18 @@ test('E8: a Kafka source is moved to now by changing its start, and the page say
   await goto(admin, leader, '#/build/sources');
   await expect(admin.getByRole('heading', { name: 'Sources' })).toBeVisible();
   await admin.getByRole('button', { name: /^orders\b/ }).click();
-  await expect(admin.getByText('Deploying this moves the source.')).toHaveCount(0);
+  await expect(
+    admin.getByText(
+      'Deploying this moves the source to the new position, so records are skipped or read again.',
+    ),
+  ).toHaveCount(0);
   const asked = Date.now();
   await admin.getByRole('combobox', { name: /^start at/ }).selectOption('timestamp');
-  await expect(admin.getByText('Deploying this moves the source.')).toBeVisible();
+  await expect(
+    admin.getByText(
+      'Deploying this moves the source to the new position, so records are skipped or read again.',
+    ),
+  ).toBeVisible();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
@@ -1437,7 +1673,11 @@ test('E8: a Kafka source is moved to now by changing its start, and the page say
   const [source] = saved.config.sources;
   expect(source.start.type).toBe('timestamp');
   expect(source.start.millis).toBeGreaterThanOrEqual(asked);
-  await expect(admin.getByText('Deploying this moves the source.')).toHaveCount(0);
+  await expect(
+    admin.getByText(
+      'Deploying this moves the source to the new position, so records are skipped or read again.',
+    ),
+  ).toHaveCount(0);
 });
 
 test('A10: an S3 source that lists its bucket is added from its form and saved as the leader accepts it', async ({

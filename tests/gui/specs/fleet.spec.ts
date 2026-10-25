@@ -279,7 +279,10 @@ test('rows in and out are charted over the window the engineer picks', async ({
   const flow = admin.getByRole('region', { name: /^Rows in and out/ });
   await expect(flow.getByRole('heading')).toContainText('whole fleet');
   await expect(flow.getByText(new RegExp(`^in ${MOVING.source}`))).toBeVisible({ timeout: 40_000 });
-  await expect(flow.getByText(new RegExp(`^out ${MOVING.source}`))).toBeVisible();
+  // Rows are delivered after they are read, so out can reach its first moving bucket a bucket after in.
+  await expect(flow.getByText(new RegExp(`^out ${MOVING.source}`))).toBeVisible({
+    timeout: 30_000,
+  });
 
   const windows = flow.getByRole('group', { name: 'Chart window' });
   await windows.getByRole('button', { name: '15m' }).click();
@@ -293,14 +296,18 @@ test('rows in and out are charted over the window the engineer picks', async ({
   // One group's share.
   await admin.getByRole('button', { name: /^east\s*1 worker/ }).click();
   await expect(flow.getByRole('heading')).toContainText('group east');
-  await expect(flow.getByText(new RegExp(`^in ${MOVING.source}`))).toBeVisible();
+  // The fleet moving says nothing of one group. A reading moves a 10s bucket at a time, and the map polls once a bucket.
+  await expect(flow.getByText(new RegExp(`^in ${MOVING.source}`))).toBeVisible({ timeout: 30_000 });
 
   // Per source and per destination, on the map.
   await admin.getByRole('link', { name: 'Map' }).click();
   await expect(band(admin, 'east').getByRole('link', { name: /own-metrics/ })).toContainText(
     MOVING,
+    { timeout: 30_000 },
   );
-  await expect(band(admin, 'east').getByRole('link', { name: /search/ })).toContainText(MOVING);
+  await expect(band(admin, 'east').getByRole('link', { name: /search/ })).toContainText(MOVING, {
+    timeout: 30_000,
+  });
 });
 
 test('a source blocked by rows no route takes says which, since when, why and what to do', async ({
@@ -755,10 +762,16 @@ test('a capture at a destination shows each row its pipeline finished for it, an
     .getByRole('link', { name: /search/ })
     .first()
     .click();
+  // Once read, so the click lands where the button stays.
+  await expect(focus(admin, 'search').getByText('Accepted output')).toBeVisible();
   await focus(admin, 'search').getByRole('button', { name: 'Capture' }).click();
-  const fromMap = admin.getByRole('dialog', { name: /search/ });
-  await fromMap.getByRole('button', { name: 'Start' }).click();
-  await expect(fromMap).toContainText('__destination.route', { timeout: 30_000 });
+  await admin
+    .getByRole('dialog', { name: /search/ })
+    .getByRole('button', { name: 'Start' })
+    .click();
+  // A hundred rows fill in seconds, and the dialog is then the save's.
+  const fromMap = admin.getByRole('dialog', { name: /Save the capture/ });
+  await expect(fromMap).toContainText('__destination.route', { timeout: 60_000 });
   await admin.screenshot({ path: 'results/destination-capture-map.png' });
 });
 

@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rdkafka::ClientContext;
@@ -11,7 +11,7 @@ use rdkafka::admin::{AdminClient, AdminOptions, ResourceSpecifier};
 use rdkafka::bindings;
 use rdkafka::client::{DefaultClientContext, OAuthToken};
 use rdkafka::config::ClientConfig;
-use rdkafka::consumer::{BaseConsumer, Consumer, DefaultConsumerContext};
+use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::error::{IsError, KafkaError, RDKafkaErrorCode};
 use rdkafka::message::{Headers, Message};
 use rdkafka::producer::{BaseProducer, BaseRecord, DeliveryResult, Producer, ProducerContext};
@@ -197,7 +197,7 @@ pub fn validate_literal_props(props: &KafkaProps, what: &str, errors: &mut Vec<S
     // The loop above cannot catch this one. librdkafka marks a property whose value needs a compiled-in feature --
     // `compression.type` names the codecs it has -- but `sasl.mechanisms` is a plain string it accepts whatever it
     // links, choosing a provider only when a client is built. Asking here keeps the promise the rest of this function
-    // makes, at the cost of the one probe that builds a client (`supports_gssapi`).
+    // makes.
     let selects_gssapi = props
         .literal
         .iter()
@@ -210,7 +210,7 @@ pub fn validate_literal_props(props: &KafkaProps, what: &str, errors: &mut Vec<S
 }
 
 /// The SASL mechanisms this build can select, in the order a form offers them. Every librdkafka build carries the
-/// first four; GSSAPI needs a provider linked at build time, and `supports_gssapi` is the only way to ask.
+/// first four; GSSAPI needs a provider linked at build time (`supports_gssapi`).
 pub fn available_sasl_mechanisms() -> Vec<&'static str> {
     let mut mechanisms = vec!["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512", "OAUTHBEARER"];
     if supports_gssapi() {
@@ -219,31 +219,12 @@ pub fn available_sasl_mechanisms() -> Vec<&'static str> {
     mechanisms
 }
 
-/// Whether this build links a GSSAPI provider, decided the way librdkafka decides it: by selecting one.
+/// Whether this build links a GSSAPI provider. `Cargo.toml` decides it per platform (its Kerberos section): Linux
+/// links Cyrus SASL and krb5, Windows has SSPI with nothing linked, and no other target carries one. librdkafka's
 /// `builtin.features` cannot say -- the cmake build defines `WITH_SASL_CYRUS` as 0 rather than leaving it undefined,
-/// and that table tests `defined()`, so it lists `sasl_gssapi` on every build. `rd_kafka_new` tests the value: with no
-/// provider it refuses at once, before any thread starts; with one, a client thread starts and is dropped. Once per
-/// process.
+/// and that table tests `defined()`, so it lists `sasl_gssapi` on every build.
 fn supports_gssapi() -> bool {
-    // Windows has no build-time choice to probe: the provider is SSPI, picked by an `#ifdef _WIN32` with nothing
-    // linked. Nor could a probe ask -- keeping `kinit` out of one needs a keytab property, and those are exactly what
-    // librdkafka refuses on Windows.
-    if cfg!(windows) {
-        return true;
-    }
-
-    static ANSWER: OnceLock<bool> = OnceLock::new();
-    *ANSWER.get_or_init(|| {
-        ClientConfig::new()
-            .set("bootstrap.servers", "127.0.0.1:1")
-            .set("security.protocol", "SASL_PLAINTEXT")
-            .set("sasl.mechanism", "GSSAPI")
-            // Zero means the Cyrus provider starts no refresh timer, so the probe does not run `kinit`.
-            .set("sasl.kerberos.min.time.before.relogin", "0")
-            .set("group.id", "smeltr-gssapi-probe")
-            .create_with_context::<DefaultConsumerContext, BaseConsumer>(DefaultConsumerContext)
-            .is_ok()
-    })
+    cfg!(any(windows, target_os = "linux"))
 }
 
 /// Everything an operator configured about this client, over smeltr's own keys: the identity it connects under,
@@ -325,7 +306,7 @@ fn managed_identity_query(props: &KafkaProps, client_id: Option<&str>) -> Option
 }
 
 /// Sets the inline PEM properties an identity carries. librdkafka reads each of these from memory, so nothing is
-/// written to the worker's disk. The key comes through `trust::presented`, so one librdkafka could not read is
+/// written to the worker's disk. The chain and key come through `trust::presented`, so one librdkafka could not read is
 /// refused in the words every other client uses, before any handshake.
 ///
 /// The security protocol is not set here: an identity says what this client presents and trusts, not whether SASL
@@ -338,10 +319,8 @@ fn apply_identity(
 ) -> Result<(), IoError> {
     let Some(identity) = identity else { return Ok(()) };
     config.set("ssl.ca.pem", super::trust::pem(Some(identity))?);
-    if let Some(certificate) = &identity.certificate
-        && let Some(presented) = super::trust::presented(identity, secrets)?
-    {
-        config.set("ssl.certificate.pem", certificate);
+    if let Some(presented) = super::trust::presented(identity, secrets)? {
+        config.set("ssl.certificate.pem", presented.chain_pem);
         config.set("ssl.key.pem", presented.key_pem);
     }
     Ok(())

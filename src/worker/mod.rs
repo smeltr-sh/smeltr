@@ -4555,9 +4555,9 @@ fn load_target(
             missing.join("; ")
         ));
     }
-    let unpaired = system.topology.identity_pairing_errors(secrets);
-    if !unpaired.is_empty() {
-        return Err(unpaired.join("; "));
+    let unusable = system.topology.identity_certificate_errors(secrets);
+    if !unusable.is_empty() {
+        return Err(unusable.join("; "));
     }
     let topology = system
         .compile_topology()

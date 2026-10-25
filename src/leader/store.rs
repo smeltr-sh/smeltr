@@ -87,6 +87,9 @@ impl Custody {
 pub struct SecretRecord {
     pub name: String,
     pub description: String,
+    /// Whether this is a certificate's private key, with the certificate's public chain kept beside each version.
+    /// Listed on the Certificates page rather than with the secrets.
+    pub certificate: bool,
     /// Every version still held, oldest first. Non-empty exactly when custody is [`Custody::LeaderStored`]: the
     /// leader either holds values and has these facts about them, or holds nothing and has none.
     ///
@@ -654,6 +657,16 @@ pub trait Store: Send + Sync {
         value: Option<&str>,
     ) -> Result<(), StoreError>;
 
+    /// Declares `name` as a certificate: a leader-stored secret holding `key`, with `chain` beside its first
+    /// version. PEM both.
+    fn create_certificate(&self, name: &str, description: &str, chain: &str, key: &str) -> Result<(), StoreError>;
+
+    /// [`Store::add_secret_version`] for a certificate: `key` sealed as the new version, `chain` beside it.
+    fn add_certificate_version(&self, name: &str, chain: &str, key: &str) -> Result<i64, StoreError>;
+
+    /// The chain beside `name`'s `version`, PEM. `None` for a secret that is not a certificate, or a version not held.
+    fn certificate_chain(&self, name: &str, version: i64) -> Result<Option<String>, StoreError>;
+
     /// Seals `value` as a new version of `name` and returns its number -- what a bundle quotes to run it. Errors
     /// for an unknown name and for worker-local custody.
     ///
@@ -673,17 +686,8 @@ pub trait Store: Send + Sync {
     /// name, an unheld version, and a row the leader's key cannot open.
     fn verify_secret(&self, name: &str, version: i64, candidate: &str) -> Result<bool, StoreError>;
 
-    /// Whether the value at `name`/`version` is the private key `certificate` was issued for.
-    ///
-    /// A yes-or-no about a value, like `verify_secret`, and for the same reason: an outbound identity's certificate
-    /// is committed and its key is not, so nothing but the leader can tell whether a bundle names two that belong
-    /// together -- and a bundle that names two that do not deploys into a handshake nobody can explain.
-    ///
-    /// `false` for a value this leader cannot open, so an unopenable row is refused rather than waved through.
-    fn certificate_matches(&self, name: &str, version: i64, certificate: &str) -> Result<bool, StoreError>;
-
-    /// The values among `entitled` that a worker does not already hold, as name, version and value, for delivery on
-    /// the heartbeat. `entitled` is the exact `(name, version)` pairs the worker's group's bundle quotes.
+    /// The values among `entitled` that a worker does not already hold, each with the chain beside it where it is a
+    /// certificate entry's key, for delivery on the heartbeat. `entitled` is the exact `(name, version)` pairs the worker's group's bundle quotes.
     ///
     /// The one method here that returns a value, and it cannot be asked for one: it answers "what does this group
     /// lack", never "what is the value of X". A pair that is worker-local, unknown, no longer held, or sealed under
@@ -693,7 +697,7 @@ pub trait Store: Send + Sync {
         &self,
         entitled: &[(String, i64)],
         held: &[(String, i64)],
-    ) -> Result<Vec<(String, i64, String)>, StoreError>;
+    ) -> Result<Vec<crate::heartbeat::SecretDelivery>, StoreError>;
 
     /// Where the secrets encryption key stands against what is sealed under it.
     fn key_standing(&self) -> Result<KeyStanding, StoreError>;

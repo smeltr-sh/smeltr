@@ -18,15 +18,21 @@
 
   let open = $state(false);
   let answer = $state<ConnectionsResponse | null>(null);
+  let failed = $state(false);
   $effect(() => {
     const asked = { kind, id };
     answer = null;
+    failed = false;
     // A line that cannot be answered is left off: the editor works without it.
     getConnections(asked.kind, asked.id)
       .then((res) => {
-        if (res.ok && asked.kind === kind && asked.id === id) answer = res;
+        if (asked.kind !== kind || asked.id !== id) return;
+        if (res.ok) answer = res;
+        else failed = true;
       })
-      .catch(() => {});
+      .catch(() => {
+        if (asked.kind === kind && asked.id === id) failed = true;
+      });
   });
 
   let all = $derived(answer ? rows(kind, answer) : []);
@@ -84,6 +90,11 @@
         <dd><a class="link" href={onMap}>Show on map</a></dd>
       {/if}
     </dl>
+  </Collapsible>
+{:else if !failed}
+  <!-- Its room, held while it is asked: arriving later, it would move the editor below it under a click. -->
+  <Collapsible fixed>
+    {#snippet summary()}<span class="eyebrow">Connections</span>{/snippet}
   </Collapsible>
 {/if}
 

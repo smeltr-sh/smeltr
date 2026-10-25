@@ -318,6 +318,15 @@ pub(crate) const STEPS: &[&str] = &[
     "DROP TABLE agent_accounts;
      DELETE FROM agent_permissions WHERE user_id IN (SELECT id FROM users WHERE auth_source = 'agent');
      DELETE FROM users WHERE auth_source = 'agent';",
+    // 11 -- the public chain of a certificate, beside each version of the secret that holds its private key. A
+    // secret with chains is a certificate. Additive: an older build lists it as the secret it also is, and a chain
+    // whose version an older build deleted is read as nothing, since every read joins it to its version.
+    "CREATE TABLE certificate_chains (
+         name    TEXT NOT NULL,
+         version INTEGER NOT NULL,
+         chain   TEXT NOT NULL,
+         PRIMARY KEY (name, version)
+     );",
 ];
 
 fn conversation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationRecord> {
@@ -543,7 +552,13 @@ impl SqliteStore {
         })
     }
 
-    fn insert_version(conn: &Connection, name: &str, version: i64, sealed: &Sealed) -> Result<(), StoreError> {
+    fn insert_version(
+        conn: &Connection,
+        name: &str,
+        version: i64,
+        sealed: &Sealed,
+        chain: Option<&str>,
+    ) -> Result<(), StoreError> {
         conn.execute(
             "INSERT INTO secret_versions (name, version, set_at, key_id, nonce, ciphertext)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -556,7 +571,73 @@ impl SqliteStore {
                 sealed.ciphertext(),
             ],
         )?;
+        if let Some(chain) = chain {
+            conn.execute(
+                "INSERT INTO certificate_chains (name, version, chain) VALUES (?1, ?2, ?3)",
+                (name, version, chain),
+            )?;
+        }
         Ok(())
+    }
+
+    /// Declares `name` with its first value where it is leader-stored, and that value's certificate chain where it
+    /// is a certificate's private key.
+    fn create(
+        &self,
+        name: &str,
+        custody: Custody,
+        description: &str,
+        value: Option<&str>,
+        chain: Option<&str>,
+    ) -> Result<(), StoreError> {
+        if !crate::config_file::is_safe_secret_name(name) {
+            return Err(StoreError(crate::config_file::unsafe_secret_name(name)));
+        }
+        // Sealed before the row is written, so a key that cannot be created leaves no half-made secret behind.
+        let sealed = match (custody, value) {
+            (Custody::LeaderStored, Some(value)) => Some(self.key_for_sealing()?.seal(name, value.as_bytes())),
+            (Custody::LeaderStored, None) => {
+                return Err(StoreError(format!(
+                    "secret {name:?} is leader-stored, so it needs a value"
+                )));
+            }
+            (Custody::WorkerLocal, None) => None,
+            (Custody::WorkerLocal, Some(_)) => {
+                return Err(StoreError(format!(
+                    "secret {name:?} is worker-local, so its value is never the leader's to hold"
+                )));
+            }
+        };
+
+        let mut conn = self.conn.lock().unwrap();
+        // One transaction: a secret that exists with no version would be a leader-stored credential the fleet can
+        // never obtain, and nothing would say why.
+        let tx = conn.transaction()?;
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO secrets (name, custody, description, next_version) VALUES (?1, ?2, ?3, 1)",
+            (name, custody.as_str(), description),
+        )?;
+        if inserted == 0 {
+            return Err(StoreError(format!("secret {name:?} already exists")));
+        }
+        if let Some(sealed) = &sealed {
+            let version = Self::take_version(&tx, name)?.expect("the row this transaction just inserted");
+            Self::insert_version(&tx, name, version, sealed, chain)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Seals `value` as a new version of `name`, with its certificate chain where it is a certificate's private key.
+    fn add_version(&self, name: &str, value: &str, chain: Option<&str>) -> Result<i64, StoreError> {
+        let sealed = self.key_for_sealing()?.seal(name, value.as_bytes());
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let version = Self::take_version(&tx, name)?
+            .ok_or_else(|| StoreError(format!("no leader-stored secret named {name:?}")))?;
+        Self::insert_version(&tx, name, version, &sealed, chain)?;
+        tx.commit()?;
+        Ok(version)
     }
 
     /// Takes the next version number for `name` and advances the counter, in one statement so two rotations at
@@ -988,9 +1069,20 @@ impl Store for SqliteStore {
         let key = self.key_if_any()?;
         let conn = self.conn.lock().unwrap();
 
-        let mut names = conn.prepare("SELECT name, description FROM secrets ORDER BY name")?;
+        let mut names = conn.prepare(
+            "SELECT name, description,
+                    EXISTS (SELECT 1 FROM certificate_chains JOIN secret_versions USING (name, version)
+                             WHERE name = s.name)
+               FROM secrets s ORDER BY name",
+        )?;
         let secrets = names
-            .query_map((), |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .query_map((), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, bool>(2)?,
+                ))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut held =
@@ -1016,10 +1108,11 @@ impl Store for SqliteStore {
 
         Ok(secrets
             .into_iter()
-            .map(|(name, description)| SecretRecord {
+            .map(|(name, description, certificate)| SecretRecord {
                 versions: by_name.remove(&name).unwrap_or_default(),
                 name,
                 description,
+                certificate,
             })
             .collect())
     }
@@ -1031,58 +1124,37 @@ impl Store for SqliteStore {
         description: &str,
         value: Option<&str>,
     ) -> Result<(), StoreError> {
-        if !crate::config_file::is_safe_secret_name(name) {
-            return Err(StoreError(crate::config_file::unsafe_secret_name(name)));
-        }
-        // Sealed before the row is written, so a key that cannot be created leaves no half-made secret behind.
-        let sealed = match (custody, value) {
-            (Custody::LeaderStored, Some(value)) => Some(self.key_for_sealing()?.seal(name, value.as_bytes())),
-            (Custody::LeaderStored, None) => {
-                return Err(StoreError(format!(
-                    "secret {name:?} is leader-stored, so it needs a value"
-                )));
-            }
-            (Custody::WorkerLocal, None) => None,
-            (Custody::WorkerLocal, Some(_)) => {
-                return Err(StoreError(format!(
-                    "secret {name:?} is worker-local, so its value is never the leader's to hold"
-                )));
-            }
-        };
+        self.create(name, custody, description, value, None)
+    }
 
-        let mut conn = self.conn.lock().unwrap();
-        // One transaction: a secret that exists with no version would be a leader-stored credential the fleet can
-        // never obtain, and nothing would say why.
-        let tx = conn.transaction()?;
-        let inserted = tx.execute(
-            "INSERT OR IGNORE INTO secrets (name, custody, description, next_version) VALUES (?1, ?2, ?3, 1)",
-            (name, custody.as_str(), description),
-        )?;
-        if inserted == 0 {
-            return Err(StoreError(format!("secret {name:?} already exists")));
-        }
-        if let Some(sealed) = &sealed {
-            let version = Self::take_version(&tx, name)?.expect("the row this transaction just inserted");
-            Self::insert_version(&tx, name, version, sealed)?;
-        }
-        tx.commit()?;
-        Ok(())
+    fn create_certificate(&self, name: &str, description: &str, chain: &str, key: &str) -> Result<(), StoreError> {
+        self.create(name, Custody::LeaderStored, description, Some(key), Some(chain))
     }
 
     fn add_secret_version(&self, name: &str, value: &str) -> Result<i64, StoreError> {
-        let sealed = self.key_for_sealing()?.seal(name, value.as_bytes());
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let version = Self::take_version(&tx, name)?
-            .ok_or_else(|| StoreError(format!("no leader-stored secret named {name:?}")))?;
-        Self::insert_version(&tx, name, version, &sealed)?;
-        tx.commit()?;
-        Ok(version)
+        self.add_version(name, value, None)
+    }
+
+    fn add_certificate_version(&self, name: &str, chain: &str, key: &str) -> Result<i64, StoreError> {
+        self.add_version(name, key, Some(chain))
+    }
+
+    fn certificate_chain(&self, name: &str, version: i64) -> Result<Option<String>, StoreError> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT chain FROM certificate_chains JOIN secret_versions USING (name, version)
+                  WHERE name = ?1 AND version = ?2",
+                (name, version),
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     fn delete_secret(&self, name: &str) -> Result<bool, StoreError> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
+        tx.execute("DELETE FROM certificate_chains WHERE name = ?1", (name,))?;
         tx.execute("DELETE FROM secret_versions WHERE name = ?1", (name,))?;
         let gone = tx.execute("DELETE FROM secrets WHERE name = ?1", (name,))? > 0;
         tx.commit()?;
@@ -1090,18 +1162,25 @@ impl Store for SqliteStore {
     }
 
     fn delete_secret_version(&self, name: &str, version: i64) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn.execute(
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM certificate_chains WHERE name = ?1 AND version = ?2",
+            (name, version),
+        )?;
+        let gone = tx.execute(
             "DELETE FROM secret_versions WHERE name = ?1 AND version = ?2",
             (name, version),
-        )? > 0)
+        )? > 0;
+        tx.commit()?;
+        Ok(gone)
     }
 
     fn secrets_for_delivery(
         &self,
         entitled: &[(String, i64)],
         held: &[(String, i64)],
-    ) -> Result<Vec<(String, i64, String)>, StoreError> {
+    ) -> Result<Vec<crate::heartbeat::SecretDelivery>, StoreError> {
         let Some(key) = self.key_if_any()? else {
             return Ok(Vec::new());
         };
@@ -1116,12 +1195,22 @@ impl Store for SqliteStore {
             };
             // An unopenable row is passed over rather than reported: the worker's own refusal names it, and this
             // answer carries values, not logs.
-            if let Some(value) = key.open(name, &sealed) {
-                match String::from_utf8(value) {
-                    Ok(value) => out.push((name.clone(), *version, value)),
-                    Err(_) => continue,
-                }
-            }
+            let Some(Ok(value)) = key.open(name, &sealed).map(String::from_utf8) else {
+                continue;
+            };
+            let chain = conn
+                .query_row(
+                    "SELECT chain FROM certificate_chains WHERE name = ?1 AND version = ?2",
+                    (name, version),
+                    |row| row.get(0),
+                )
+                .optional()?;
+            out.push(crate::heartbeat::SecretDelivery {
+                name: name.clone(),
+                version: *version,
+                value,
+                chain,
+            });
         }
         Ok(out)
     }
@@ -1135,20 +1224,6 @@ impl Store for SqliteStore {
             return Ok(false);
         };
         Ok(key.verify(name, &sealed, candidate))
-    }
-
-    fn certificate_matches(&self, name: &str, version: i64, certificate: &str) -> Result<bool, StoreError> {
-        let Some(key) = self.key_if_any()? else {
-            return Ok(false);
-        };
-        let conn = self.conn.lock().unwrap();
-        let Some(sealed) = Self::sealed(&conn, name, version)? else {
-            return Ok(false);
-        };
-        let Some(value) = key.open(name, &sealed) else {
-            return Ok(false);
-        };
-        Ok(super::tls::is_pair(certificate.as_bytes(), &value).is_ok())
     }
 
     fn list_worker_credentials(&self) -> Result<Vec<WorkerCredentialRecord>, StoreError> {
@@ -2777,6 +2852,45 @@ mod tests {
         assert!(current.set_at >= before);
     }
 
+    /// A certificate is a stored secret the Secrets page leaves out, and its value is read only as a certificate.
+    #[test]
+    fn a_certificate_is_a_secret_with_a_chain_beside_each_version() {
+        let s = store();
+        s.create_certificate("leader", "served", "chain 1", "key 1").unwrap();
+        leader_stored(&s, "kafka-west-sasl", "hunter2");
+        assert_eq!(s.add_certificate_version("leader", "chain 2", "key 2").unwrap(), 2);
+
+        let r = record(&s, "leader");
+        assert!(r.certificate);
+        assert_eq!(r.custody(), Custody::LeaderStored);
+        assert!(!record(&s, "kafka-west-sasl").certificate);
+        assert_eq!(s.certificate_chain("leader", 2).unwrap().as_deref(), Some("chain 2"));
+        assert_eq!(s.certificate_chain("kafka-west-sasl", 1).unwrap(), None);
+        let delivered = s.secrets_for_delivery(&[("leader".to_string(), 2)], &[]).unwrap();
+        assert_eq!(
+            values(delivered.clone()),
+            [("leader".to_string(), 2, "key 2".to_string())]
+        );
+        assert_eq!(
+            delivered[0].chain.as_deref(),
+            Some("chain 2"),
+            "the chain travels with its key"
+        );
+        let plain = s
+            .secrets_for_delivery(&[("kafka-west-sasl".to_string(), 1)], &[])
+            .unwrap();
+        assert_eq!(plain[0].chain, None);
+
+        s.delete_secret_version("leader", 1).unwrap();
+        assert_eq!(
+            s.certificate_chain("leader", 1).unwrap(),
+            None,
+            "a chain goes with its version"
+        );
+        s.delete_secret("leader").unwrap();
+        assert_eq!(s.certificate_chain("leader", 2).unwrap(), None);
+    }
+
     #[test]
     fn custody_and_the_value_must_agree_at_creation() {
         let s = store();
@@ -3097,6 +3211,11 @@ mod tests {
         assert!(!s.verify_secret("kafka-east-sasl", 1, "swordfish").unwrap());
     }
 
+    /// Each delivery's name, version and value.
+    fn values(delivered: Vec<crate::heartbeat::SecretDelivery>) -> Vec<(String, i64, String)> {
+        delivered.into_iter().map(|d| (d.name, d.version, d.value)).collect()
+    }
+
     /// Only the pairs the group's bundle quotes, and only what the worker lacks. The version is matched exactly:
     /// a worker asking about one it holds is told nothing, whatever else has been stored since.
     #[test]
@@ -3108,7 +3227,7 @@ mod tests {
         s.add_secret_version("es-auth", "ApiKey def").unwrap();
 
         let entitled = [("kafka-west-sasl".to_string(), 1), ("es-auth".to_string(), 1)];
-        let mut out = s.secrets_for_delivery(&entitled, &[]).unwrap();
+        let mut out = values(s.secrets_for_delivery(&entitled, &[]).unwrap());
         out.sort();
         assert_eq!(
             out,
@@ -3127,7 +3246,7 @@ mod tests {
 
         let bumped = [("es-auth".to_string(), 2)];
         assert_eq!(
-            s.secrets_for_delivery(&bumped, &held).unwrap(),
+            values(s.secrets_for_delivery(&bumped, &held).unwrap()),
             vec![("es-auth".to_string(), 2, "ApiKey def".to_string())],
             "and the bundle moving is what asks for the new one"
         );
@@ -3141,13 +3260,17 @@ mod tests {
         s.add_secret_version("es-auth", "ApiKey def").unwrap();
 
         assert_eq!(
-            s.secrets_for_delivery(&[("es-auth".to_string(), 2)], &[("es-auth".to_string(), 1)])
-                .unwrap(),
+            values(
+                s.secrets_for_delivery(&[("es-auth".to_string(), 2)], &[("es-auth".to_string(), 1)])
+                    .unwrap()
+            ),
             vec![("es-auth".to_string(), 2, "ApiKey def".to_string())]
         );
         assert_eq!(
-            s.secrets_for_delivery(&[("es-auth".to_string(), 1)], &[("es-auth".to_string(), 2)])
-                .unwrap(),
+            values(
+                s.secrets_for_delivery(&[("es-auth".to_string(), 1)], &[("es-auth".to_string(), 2)])
+                    .unwrap()
+            ),
             vec![("es-auth".to_string(), 1, "ApiKey abc".to_string())],
             "a rollback asks for the older one and gets it"
         );

@@ -252,14 +252,11 @@
 )}
   <!-- Avro's strings are UTF-8: the load refuses an encoding beside it. -->
   {#if !('format' in source && source.format === 'avro')}
-    <Field field="encoding" label="encoding">
+    <Field optional field="encoding" label="encoding">
       {#snippet help()}
         How each record's bytes become <code>_raw</code>'s text. <code>auto</code> guesses, and
         marks the row when it guessed. <code>none</code> decodes nothing, and the record is
         <code>__source.bytes</code> alone.
-      {/snippet}
-      {#snippet note()}
-        Default <code>auto</code>.
       {/snippet}
       <input
         type="text"
@@ -282,9 +279,6 @@
         <code>object</code>: the whole object is one record, for a JSON document a pipeline unrolls.
         <code>escapedLines</code>: one record per line, unescaped as a <code>bytes</code> object destination
         wrote it.
-      {/snippet}
-      {#snippet note()}
-        Default <code>lines</code>.
       {/snippet}
       <select
         value={source.framing ?? 'lines'}
@@ -312,13 +306,13 @@
   {@const store = LISTING_STORE[source.type]}
   {@const listed = LISTED[source.type]}
   {#if source.type === 'azureBlobList'}
-    <Field field="account" label="account">
+    <Field required field="account" label="account">
       {#snippet help()}
         The storage account holding the container.
       {/snippet}
       <input type="text" bind:value={source.account} />
     </Field>
-    <Field field="container" label="container">
+    <Field required field="container" label="container">
       {#snippet help()}
         The container's name, alone.
       {/snippet}
@@ -326,7 +320,7 @@
     </Field>
   {:else if source.type === 'sftp'}
     <ConnectorAccess {store} value={source} show="credential" {secrets} />
-    <Field field="directory" label="directory">
+    <Field optional field="directory" label="directory">
       {#snippet help()}
         The directory it reads: absolute, or under the user's home directory. Empty is the home
         directory.
@@ -341,7 +335,7 @@
       />
     </Field>
   {:else}
-    <Field field="bucket" label="bucket">
+    <Field required field="bucket" label="bucket">
       {#snippet help()}
         The bucket's name, alone.
       {/snippet}
@@ -384,7 +378,6 @@
         from the first poll on, <code>new</code>. Later polls resume where the last one every
         destination took left off.
       {/snippet}
-      {#snippet note()}Default <code>everything</code>.{/snippet}
       <select
         value={source.start ?? 'everything'}
         onchange={(e) => {
@@ -397,11 +390,7 @@
       </select>
     </Field>
   {/if}
-  <Field
-    field="pollIntervalSecs"
-    label="poll interval seconds"
-    note="Default {LIMITS.pollIntervalSecs.default}."
-  >
+  <Field optional field="pollIntervalSecs" label="poll interval seconds">
     {#snippet help()}
       Seconds from the start of one poll to the start of the next.
     {/snippet}
@@ -417,6 +406,7 @@
 <!-- An HTTP API source's own fields: what it asks, how it signs in, and where the answer holds its records. -->
 {#snippet httpApiFields(source: Extract<SourceDto, { type: 'httpApi' }>)}
   <UrlField
+    required
     field="url"
     label="url"
     bind:value={source.url}
@@ -432,7 +422,6 @@
       How it asks: a GET, or a POST of a fixed JSON body, for an API that is asked by what it is
       sent.
     {/snippet}
-    {#snippet note()}Default <code>GET</code>.{/snippet}
     <select
       value={source.method ?? 'GET'}
       onchange={(e) => {
@@ -448,6 +437,7 @@
   {#if source.method === 'POST'}
     <Nested>
       <JsonField
+        optional
         field="body"
         label="body"
         value={source.body}
@@ -490,7 +480,6 @@
       Where an answer's records are: the whole answer is one record, each line is one, or each
       element of a JSON array is one.
     {/snippet}
-    {#snippet note()}Default <code>body</code>.{/snippet}
     <select
       value={source.records ?? 'body'}
       onchange={(e) => {
@@ -506,7 +495,7 @@
   </Field>
   {#if source.records === 'array'}
     <Nested>
-      <Field field="recordsAt" label="records at">
+      <Field optional field="recordsAt" label="records at">
         {#snippet help()}
           The JSON pointer to the array, such as <code>/data</code>. Empty is an answer that is the
           array.
@@ -528,7 +517,6 @@
       Whether a poll follows each answer's <code>Link: rel="next"</code> to the next page, on the same
       host only.
     {/snippet}
-    {#snippet note()}Default one page.{/snippet}
     <select
       value={source.followLinks ? 'follow' : 'one'}
       onchange={(e) => (source.followLinks = e.currentTarget.value === 'follow' || undefined)}
@@ -537,7 +525,7 @@
       <option value="follow">follow next links</option>
     </select>
   </Field>
-  <Field field="sinceParam" label="since parameter">
+  <Field optional field="sinceParam" label="since parameter">
     {#snippet help()}
       The query parameter that asks for what happened since a time. Each poll sends it the start of
       the last poll every destination took. Empty reads everything every poll.
@@ -559,7 +547,7 @@
   <Advanced label="Advanced" modified={apiModified(source)}>
     {#if httpSignIn(source) !== 'none'}
       {#if httpSignIn(source) === 'key'}
-        <Field field="keyId" label="key id">
+        <Field optional field="keyId" label="key id">
           {#snippet help()}
             The <code>kid</code> naming the private key, for a client with several keys.
           {/snippet}
@@ -573,7 +561,7 @@
           />
         </Field>
       {/if}
-      <Field field="scope" label="scope">
+      <Field optional field="scope" label="scope">
         {#snippet help()}
           The scope the client's token is asked for.
         {/snippet}
@@ -588,7 +576,7 @@
       </Field>
     {/if}
     {#if source.sinceParam !== undefined}
-      <Field field="sinceOverlapSecs" label="overlap seconds" note="Default 0.">
+      <Field optional field="sinceOverlapSecs" label="overlap seconds">
         {#snippet help()}
           How far before the last poll's start the since parameter asks from, for an API that
           records events late. What falls in the overlap is read twice.
@@ -629,7 +617,7 @@
   {#if how !== 'none'}
     {@const from = tokenFrom(source)}
     <Nested>
-      <Field field="clientId" label="client id">
+      <Field required field="clientId" label="client id">
         {#snippet help()}
           The OAuth client it signs in as.
         {/snippet}
@@ -643,7 +631,7 @@
         />
       </Field>
       {#if how === 'secret'}
-        <Field field="clientSecret" label="client secret">
+        <Field required field="clientSecret" label="client secret">
           {#snippet help()}
             Where the OAuth client's secret lives. The value never reaches git.
           {/snippet}
@@ -657,7 +645,7 @@
           />
         </Field>
       {:else}
-        <Field field="privateKey" label="private key">
+        <Field required field="privateKey" label="private key">
           {#snippet help()}
             Where the client's RSA private key lives, as PEM PKCS#8, which begins
             <code>BEGIN PRIVATE KEY</code>.
@@ -688,6 +676,7 @@
       <Nested>
         {#if from === 'url'}
           <UrlField
+            required
             field="tokenUrl"
             label="token URL"
             bind:value={source.tokenUrl}
@@ -700,6 +689,7 @@
           </UrlField>
         {:else}
           <UrlField
+            required
             field="issuer"
             label="issuer"
             bind:value={source.issuer}
@@ -720,6 +710,7 @@
 {#snippet oktaFields(source: Extract<SourceDto, { type: 'oktaLogs' }>)}
   {@const how = oktaSignIn(source)}
   <UrlField
+    required
     field="org"
     label="org"
     bind:value={source.org}
@@ -745,7 +736,7 @@
   </Field>
   <Nested>
     {#if how === 'serviceApp'}
-      <Field field="clientId" label="client id">
+      <Field required field="clientId" label="client id">
         {#snippet help()}
           The client id of an API Services app granted the <code>okta.logs.read</code> scope and the Read-only
           Administrator role.
@@ -759,7 +750,7 @@
           placeholder="0oa1b2c3d4e5f6g7h8i9"
         />
       </Field>
-      <Field field="privateKey" label="private key">
+      <Field required field="privateKey" label="private key">
         {#snippet help()}
           Where the app's private key lives: an RSA key as PEM PKCS#8, which begins
           <code>BEGIN PRIVATE KEY</code>.
@@ -774,7 +765,7 @@
         />
       </Field>
     {:else}
-      <Field field="token" label="token">
+      <Field required field="token" label="token">
         {#snippet help()}
           Where an API token lives, created by an admin who can read the System Log.
         {/snippet}
@@ -791,7 +782,7 @@
   </Nested>
   <Advanced label="Advanced" modified={apiModified(source)}>
     {#if how === 'serviceApp'}
-      <Field field="keyId" label="key id">
+      <Field optional field="keyId" label="key id">
         {#snippet help()}
           The key's KID in Okta. Needed only when the app has more than one active key.
         {/snippet}
@@ -811,10 +802,15 @@
 
 <!-- A Kafka source's own fields: where its brokers are, what it reads and as which group. -->
 {#snippet kafkaFields(source: Extract<SourceDto, { type: 'kafka' }>)}
-  <Field field="brokers" label="brokers" warning={brokersWarning(source.brokers, source) ?? null}>
+  <Field
+    required
+    field="brokers"
+    label="brokers"
+    warning={brokersWarning(source.brokers, source) ?? null}
+  >
     <input type="text" bind:value={source.brokers} placeholder="host:9092,host2:9092" />
   </Field>
-  <Field field="topics" label="topics">
+  <Field required field="topics" label="topics">
     {#snippet help()}
       Every topic this consumer group reads. Add a second source only when the brokers, group id or
       start position differ.
@@ -825,19 +821,19 @@
 
 <!-- An Event Hubs source's own fields, which loading turns into a Kafka source's. -->
 {#snippet eventHubsFields(source: Extract<SourceDto, { type: 'eventHubs' }>)}
-  <Field field="namespace" label="namespace">
+  <Field required field="namespace" label="namespace">
     {#snippet help()}
       The Event Hubs namespace: its name in Azure's public cloud, or its host name in another cloud.
     {/snippet}
     <input type="text" bind:value={source.namespace} placeholder="namespace" />
   </Field>
-  <Field field="eventHubs" label="event hubs">
+  <Field required field="eventHubs" label="event hubs">
     {#snippet help()}
       Every event hub this consumer group reads.
     {/snippet}
     <TokenListInput bind:values={source.eventHubs} placeholder="event-hub" />
   </Field>
-  <Field field="consumerGroup" label="consumer group">
+  <Field required field="consumerGroup" label="consumer group">
     {#snippet help()}
       The consumer group this source reads as. Its committed offsets are kept under this name, so a
       new group reads again from <em>start at</em>.
@@ -856,21 +852,18 @@
   />
 {/snippet}
 
+{#snippet moves()}Deploying this moves the source to the new position, so records are skipped or
+  read again.{/snippet}
+
 <!-- Where a stream source starts and stops reading. -->
 {#snippet positions(source: StreamSource)}
   <div class="start">
-    <StartAt bind:start={source.start} label="start at" fallback="earliest">
-      {#snippet help()}
-        Where this source reads from. Changing it will move offsets to the new position.
-      {/snippet}
-      {#snippet note()}
-        {#if startMoves(source)}
-          Deploying this moves the source.
-        {:else}
-          Default <code>earliest</code>.
-        {/if}
-      {/snippet}
-    </StartAt>
+    <StartAt
+      bind:start={source.start}
+      label="start at"
+      fallback="earliest"
+      note={startMoves(source) ? moves : undefined}
+    />
   </div>
 
   <div class="pair">
@@ -878,16 +871,13 @@
       {#snippet help()}
         Each partition stops reading at this point and goes idle.
       {/snippet}
-      {#snippet note()}
-        Default <code>never</code>.
-      {/snippet}
       <select value={stopKind(source)} onchange={(e) => setStop(source, e.currentTarget.value)}>
         <option value="never">never &mdash; keep reading</option>
         <option value="timestamp">at a time</option>
       </select>
     </Field>
     {#if source.stop?.type === 'timestamp'}
-      <Field label="until" note="Exclusive.">
+      <Field required label="until" help="Reading stops just before this time.">
         <input
           type="datetime-local"
           value={toLocalInput(source.stop.millis)}
@@ -926,7 +916,7 @@
 
 <!-- A receiver's own fields: where it listens, who it admits, and what each kind reads from a request. -->
 {#snippet receiverFields(source: ReceiverSource)}
-  <Field field="port" label="port">
+  <Field required field="port" label="port">
     {#snippet help()}
       The port it listens on. Every worker of the group binds it, so no two receivers share one, but
       OTLP receivers of different signals may, and a UDP port is not the TCP port of that number.
@@ -948,7 +938,6 @@
         What it takes: log records, metric data points or spans, each a record. To take more than
         one, add a receiver for each on the same port.
       {/snippet}
-      {#snippet note()}Default <code>logs</code>.{/snippet}
       <select
         value={source.signal ?? 'logs'}
         onchange={(e) => {
@@ -969,7 +958,6 @@
         What senders send over. Over UDP each datagram is a message, served without TLS. A UDP
         receiver can't slow a sender, so what arrives while it is full is dropped.
       {/snippet}
-      {#snippet note()}Default <code>tcp</code>.{/snippet}
       <select
         value={source.transport ?? 'tcp'}
         onchange={(e) => {
@@ -989,7 +977,7 @@
     </Field>
   {/if}
   {#if source.type === 'httpReceiver'}
-    <Field field="path" label="path">
+    <Field optional field="path" label="path">
       {#snippet help()}
         The path senders POST to. Empty is <code>/</code>.
       {/snippet}
@@ -1006,7 +994,7 @@
     </Field>
   {/if}
   {#if source.type === 'syslogReceiver'}
-    <Field field="allowFrom" label="allow from">
+    <Field optional field="allowFrom" label="allow from">
       {#snippet help()}
         {#if source.transport === 'udp'}
           The networks a sender may send from, each a CIDR block. Over UDP only these networks admit
@@ -1062,7 +1050,6 @@
         Where a request's records are: the whole body is one record, each line is one, or each
         element of a JSON array is one.
       {/snippet}
-      {#snippet note()}Default <code>body</code>.{/snippet}
       <select
         value={source.records ?? 'body'}
         onchange={(e) => {
@@ -1079,7 +1066,7 @@
     </Field>
     {#if source.records === 'array'}
       <Nested>
-        <Field field="recordsAt" label="records at">
+        <Field optional field="recordsAt" label="records at">
           {#snippet help()}
             The JSON pointer to the array, such as <code>/events</code>. Empty is a body that is the
             array.
@@ -1114,11 +1101,7 @@
         {/snippet}
       </ReceiverSourcetypes>
     {/if}
-    <Field
-      field="maxRequestBytes"
-      label="request size"
-      note="Default {exactBytes(LIMITS.receiverRequestBytes.default)}."
-    >
+    <Field optional field="maxRequestBytes" label="request size">
       {#snippet help()}
         {#if source.type === 's2sReceiver'}
           The largest frame it reads, and the most one record holds, at most
@@ -1171,7 +1154,7 @@
         <ConnectorAccess store="eventHubs" value={source} show="advanced" />
       {/if}
       {#if source.type === 'kafka'}
-        <Field field="groupId" label="group id">
+        <Field optional field="groupId" label="group id">
           {#snippet help()}
             Leave it blank unless this source needs offsets of its own. Blank reads as its worker
             group's consumer group, <code>{defaultGroupId()}</code>, so every worker group reads
@@ -1180,11 +1163,7 @@
           <input type="text" bind:value={source.groupId} placeholder={defaultGroupId()} />
         </Field>
       {/if}
-      <Field
-        field="fetchBytes"
-        label="fetch buffer"
-        note="Default {exactBytes(LIMITS.fetchBytes.default)}."
-      >
+      <Field optional field="fetchBytes" label="fetch buffer">
         {#snippet help()}
           The most fetched but not yet processed data this source holds on a worker, across all its
           partitions.
@@ -1206,7 +1185,7 @@
     {@const store = OBJECT_STORE[source.type]}
     {@const limit = source.type === 'gcsPubSub' ? LIMITS.ackDeadlineSecs : LIMITS.visibilitySecs}
     {#if source.type === 'gcsPubSub'}
-      <Field field="subscription" label="subscription">
+      <Field required field="subscription" label="subscription">
         {#snippet help()}
           The Pub/Sub subscription on the topic a bucket's notifications go to, named in full. Give
           it a dead-letter policy: a message whose object cannot be read ends only through it.
@@ -1219,6 +1198,7 @@
       </Field>
     {:else}
       <UrlField
+        required
         field="queueUrl"
         label="queue URL"
         bind:value={source.queueUrl}
@@ -1237,7 +1217,7 @@
       </UrlField>
     {/if}
     {#if source.type === 'azureBlobQueue'}
-      <Field field="account" label="account">
+      <Field required field="account" label="account">
         {#snippet help()}
           The storage account holding the blobs. A blob in another account is refused.
         {/snippet}
@@ -1274,7 +1254,7 @@
       {/if}
       <ConnectorAccess {store} value={source} show="advanced" />
       {@render encodingField(source)}
-      <Field field="visibilitySecs" label="visibility seconds" note="Default {limit.default}.">
+      <Field optional field="visibilitySecs" label="visibility seconds">
         {#snippet help()}
           How long a received message stays hidden from every other worker. A worker that dies
           holding one hands it on after this long. At most {limit.max}.
@@ -1288,11 +1268,7 @@
         />
       </Field>
       {#if source.type === 'azureBlobQueue'}
-        <Field
-          field="maxDeliveries"
-          label="max deliveries"
-          note="Default {LIMITS.maxDeliveries.default}."
-        >
+        <Field optional field="maxDeliveries" label="max deliveries">
           {#snippet help()}
             Times a message is received before it is moved to the queue named after this one with
             <code>-poison</code> added.
@@ -1321,7 +1297,7 @@
   {:else if isReceiver(source)}
     {@render receiverFields(source)}
   {:else if source.type === 'metrics'}
-    <Field field="bucketSeconds" label="bucket seconds">
+    <Field required field="bucketSeconds" label="bucket seconds">
       {#snippet help()}
         How many seconds of each worker's own metrics go into one row.
       {/snippet}
@@ -1332,9 +1308,6 @@
       {#snippet help()}
         The lowest severity this source carries. Below the worker's own <code>SMELTR_LOG_LEVEL</code
         >, <code>info</code> unless set, it gets nothing more.
-      {/snippet}
-      {#snippet note()}
-        Default <code>info</code>.
       {/snippet}
       <select
         value={source.minLevel ?? DEFAULT_LEVEL}
