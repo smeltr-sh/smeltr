@@ -75,7 +75,7 @@
     previewFailure,
     previewPipeline,
     afterDot,
-    type DotAt,
+    type AskAt,
     errorText,
     type ApiError,
     errorMessage,
@@ -775,7 +775,7 @@
 
   /** Asks the engine what may follow a dot in a step's expression, over the steps as they are being written and the
    * sample's columns. */
-  const askAt = (at: DotAt) => (text: string, dot: number) =>
+  const askAt: AskAt = (at) => (text, dot) =>
     afterDot({
       config: JSON.stringify(
         buildFileConfig(

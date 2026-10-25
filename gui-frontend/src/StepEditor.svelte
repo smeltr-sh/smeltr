@@ -20,7 +20,7 @@
 </script>
 
 <script lang="ts">
-  import type { DotAnswer, DotAt } from './api';
+  import type { AskAt } from './api';
   import InlineError from './InlineError.svelte';
   import StepList from './StepList.svelte';
   import ValidatedField from './ValidatedField.svelte';
@@ -108,7 +108,7 @@
     /** The field proposal open on some parser step, shown in that step's card. */
     proposal?: OpenProposal | null;
     /** Asks the engine what may follow a dot in an expression at `at` (`afterDot`). */
-    askAt?: (at: DotAt) => (text: string, dot: number) => Promise<DotAnswer | null>;
+    askAt?: AskAt;
   } = $props();
 
   const readOnly = !editable();

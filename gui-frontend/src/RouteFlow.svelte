@@ -14,7 +14,7 @@
   same way, or, where the caller offers it, made in the pipeline editor (`onnewpipeline`).
 -->
 <script lang="ts">
-  import type { DotAnswer, DotAt } from './api';
+  import type { AskAt } from './api';
   import { tick, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import Help from './Help.svelte';
@@ -75,7 +75,7 @@
     /** The card's routes: every route of one source. */
     routes: RouteDto[];
     /** Asks the engine what may follow a dot in an expression at `at` (`afterDot`). */
-    askAt?: (at: DotAt) => (text: string, dot: number) => Promise<DotAnswer | null>;
+    askAt?: AskAt;
     sourceIds: string[];
     pipelineIds: string[];
     destinationIds: string[];

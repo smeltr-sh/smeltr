@@ -71,15 +71,7 @@ pub struct AfterDot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ty: Option<String>,
     pub fields: Vec<(String, String)>,
-    pub methods: Vec<MethodOut>,
-}
-
-/// A function a call on the value may name: what its first parameter takes, and whether that takes the value.
-#[derive(serde::Serialize)]
-pub struct MethodOut {
-    pub name: &'static str,
-    pub takes: String,
-    pub fits: bool,
+    pub methods: Vec<plan::dot::Method>,
 }
 
 #[derive(Default, serde::Serialize)]
@@ -654,33 +646,22 @@ fn after_dot(
         Before::Unread => None,
         Before::Value(e) => Some(e),
     };
-    let source_meta = |id: &str| {
-        system
-            .topology
-            .sources
-            .iter()
-            .find(|s| s.name == id)
-            .map(|s| (s.id, s.kind.meta()))
-            .ok_or_else(|| format!("this config has no source {id:?}"))
-    };
-    let pipeline_of = |id: usize| system.pipelines.iter().find(|p| p.id == id);
     let ty = match &asked.at {
         DotAt::Step(step) => {
             let p = pipeline
-                .and_then(|id| system.pipeline_ids.iter().position(|p| p == id))
-                .and_then(pipeline_of)
+                .and_then(|id| system.pipeline(id))
                 .ok_or("this config has no such pipeline")?;
             let step = p
-                .step_ids
-                .iter()
-                .position(|s| s == step)
+                .function_id(step)
                 .ok_or_else(|| format!("this pipeline has no step {step:?}"))?;
             let meta = SourceMeta::of_columns(&replayed(columns).cloned().collect::<Vec<_>>())?;
-            expr.and_then(|e| plan::plan::type_at(p, &meta, step as crate::core::id::FunctionId, &e))
+            expr.and_then(|e| plan::plan::type_at(p, &meta, step, &e))
         }
         DotAt::Source(id) => {
-            let (_, meta) = source_meta(id)?;
-            let syms = SymbolTable::new(&plan::plan::ingest_fields(&meta));
+            let source = (system.topology.sources.iter())
+                .find(|s| s.name == *id)
+                .ok_or_else(|| format!("this config has no source {id:?}"))?;
+            let syms = SymbolTable::new(&plan::plan::ingest_fields(&source.kind.meta()));
             expr.and_then(|e| type_in(&e, &syms))
         }
         DotAt::When(route) => {
@@ -698,16 +679,14 @@ fn after_dot(
                 .map(|s| s.kind.meta())
                 .unwrap_or(SourceMeta::NONE);
             // The pipeline compiles on its own: the route's half-typed `when` is not in it.
-            let plan = pipeline_of(r.pipeline).and_then(|p| plan::plan::compile(p, &meta).ok());
-            let tag_field = r.on_exception.tag_field.as_str();
+            let plan = (system.pipelines.iter())
+                .find(|p| p.id == r.pipeline)
+                .and_then(|p| plan::plan::compile(p, &meta).ok());
             plan.zip(expr).and_then(|(plan, e)| {
-                let syms = SymbolTable::over_plan_output(
-                    &plan.delivery_layout(),
-                    &plan.tree,
-                    &plan::plan::ingest_fields(&meta),
-                    &[(tag_field, plan.tag_slot())],
-                );
-                type_in(&e, &syms)
+                type_in(
+                    &e,
+                    &plan::topology::output_symbols(&plan, &r.on_exception.tag_field, &meta),
+                )
             })
         }
     };
@@ -719,14 +698,7 @@ fn after_dot(
         },
         Some(ty) => AfterDot {
             fields: fields_of(&ty).iter().map(|(k, t)| (k.clone(), t.spell())).collect(),
-            methods: methods_for(&ty)
-                .into_iter()
-                .map(|m| MethodOut {
-                    name: m.name,
-                    takes: m.takes,
-                    fits: m.fits,
-                })
-                .collect(),
+            methods: methods_for(&ty),
             ty: Some(ty.spell()),
         },
     }))
@@ -765,11 +737,7 @@ pub fn run_preview(
     }
 
     let pipeline_cfg = match &req.pipeline {
-        Some(id) => system
-            .pipeline_ids
-            .iter()
-            .position(|p| p == id)
-            .and_then(|i| system.pipelines.iter().find(|p| p.id == i)),
+        Some(id) => system.pipeline(id),
         None => system.pipelines.first(),
     };
     let Some(pipeline_cfg) = pipeline_cfg else {
@@ -1158,7 +1126,7 @@ mod tests {
         previewed.body.after_dot
     }
 
-    fn method<'a>(answer: &'a AfterDot, name: &str) -> &'a MethodOut {
+    fn method<'a>(answer: &'a AfterDot, name: &str) -> &'a plan::dot::Method {
         answer.methods.iter().find(|m| m.name == name).unwrap()
     }
 

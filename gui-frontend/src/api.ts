@@ -1921,6 +1921,9 @@ export interface DotAnswer {
   methods: { name: string; takes: string; fits: boolean }[];
 }
 
+/** Asks what may follow the `.` at `dot` in `text`, an expression at `at`: `afterDot` over the bundle being edited. */
+export type AskAt = (at: DotAt) => (text: string, dot: number) => Promise<DotAnswer | null>;
+
 export interface PreviewException {
   /** The answer the exception's kind takes. */
   answer: 'ignore' | 'tag' | 'drop' | 'block';

@@ -30,20 +30,17 @@ pub fn before_dot(src: &str, dot: usize) -> Before {
         return Before::Nothing;
     }
     // The dot itself is a token only where it is not in a string, a comment or a number.
-    let is_dot = Lexer::tokenize(&src[..=dot]).is_ok_and(|toks| {
-        toks.iter()
-            .rev()
-            .find(|t| t.token != Token::Eof)
-            .is_some_and(|t| t.token == Token::Punct(Punct::Dot) && t.span.start as usize == dot)
-    });
-    if !is_dot {
+    let Ok(mut toks) = Lexer::tokenize(&src[..=dot]) else {
+        return Before::Nothing;
+    };
+    toks.retain(|t| t.token != Token::Eof);
+    if toks
+        .pop()
+        .is_none_or(|t| t.token != Token::Punct(Punct::Dot) || t.span.start as usize != dot)
+    {
         return Before::Nothing;
     }
     let head = &src[..dot];
-    let Ok(toks) = Lexer::tokenize(head) else {
-        return Before::Nothing;
-    };
-    let toks: Vec<_> = toks.into_iter().filter(|t| t.token != Token::Eof).collect();
     match toks.last() {
         Some(t) if t.span.end as usize == dot => {
             // `1.` is a number being typed.
@@ -82,7 +79,7 @@ pub fn fields_of(ty: &DataType) -> &[(String, DataType)] {
 }
 
 /// A function a call on a value may name: what its first parameter takes, and whether that takes `ty`.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub struct Method {
     pub name: &'static str,
     /// The types it takes, as a type error spells them: `i64/f64`.

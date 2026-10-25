@@ -69,7 +69,7 @@
     type IdentityDto,
     type SecretDto,
     type FileConfigDto,
-    type DotAt,
+    type AskAt,
     afterDot,
     TAG_FIELD,
   } from './api';
@@ -172,7 +172,7 @@
   /** A save's errors on a route's condition and its rules' `when`, drawn on them by `RouteFlow`. */
   const validation = provideValidation('routes');
   /** Asks the engine what may follow a dot in a route's expression, over the routes as they are being written. */
-  const askAt = (at: DotAt) => (text: string, dot: number) =>
+  const askAt: AskAt = (at) => (text, dot) =>
     afterDot({ config: JSON.stringify({ ...loadedConfig, routes }), at, text, dot });
   const routesEditor = new SectionEditor<RouteDto[]>('routes', {
     get: () => routes,

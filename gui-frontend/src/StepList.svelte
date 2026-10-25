@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { DotAnswer, DotAt } from './api';
+  import type { AskAt } from './api';
   import StepEditor, { saveExpanded } from './StepEditor.svelte';
   import {
     newStep,
@@ -52,7 +52,7 @@
     /** The field proposal open on some parser step, shown in that step's card. */
     proposal?: OpenProposal | null;
     /** Asks the engine what may follow a dot in an expression at `at` (`afterDot`). */
-    askAt?: (at: DotAt) => (text: string, dot: number) => Promise<DotAnswer | null>;
+    askAt?: AskAt;
   } = $props();
 
   /** Each step type's group in the catalog: what it acts on. */
