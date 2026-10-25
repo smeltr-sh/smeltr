@@ -54,6 +54,8 @@ pub enum SubjectKind {
     Pipeline,
     /// A leader-stored secret, by name.
     Secret,
+    /// A certificate in the leader's list, by name.
+    Certificate,
 }
 
 /// Which catalog entry raised this warning. The catalog is fixed (design doc, Control plane), so a reader can
@@ -2488,8 +2490,9 @@ pub fn encryption_key_warnings(standing: &KeyStanding, starts: &HashMap<FactKey,
                     "encrypted with a key this leader no longer has. Store a new version".to_string(),
                 ),
                 Unopenable::Certificate(_) => (
-                    SubjectKind::Leader,
-                    "encrypted with a key this leader no longer has. Replace it under Certificates".to_string(),
+                    SubjectKind::Certificate,
+                    "encrypted with a key this leader no longer has. Replace the certificate under Certificates"
+                        .to_string(),
                 ),
                 Unopenable::Setting(key) => (
                     SubjectKind::Leader,
