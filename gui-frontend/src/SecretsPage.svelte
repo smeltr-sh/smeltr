@@ -49,8 +49,12 @@
 
   async function load() {
     loading = true;
+    const before = key;
     try {
-      [secrets, key] = await Promise.all([listSecrets(), getEncryptionKey()]);
+      const [listed, read] = await Promise.all([listSecrets(), getEncryptionKey()]);
+      secrets = listed;
+      // A regeneration that answered while this was loading is newer than what this read.
+      if (key === before) key = read;
     } catch (e) {
       reported(e);
     } finally {
