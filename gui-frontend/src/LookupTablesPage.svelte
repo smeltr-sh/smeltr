@@ -436,15 +436,8 @@
               <button type="button" onclick={() => removeTable(sel)}>Remove</button>
             {/if}
           </div>
-          <div class="tabs" role="tablist">
-            {#each tabs as name (name)}
-              <button
-                type="button"
-                role="tab"
-                aria-selected={name === shownTab}
-                onclick={() => (tab = name)}>{name}</button
-              >
-            {/each}
+          <div class="tabs">
+            <SecondaryTabs {tabs} active={shownTab} onselect={(t) => (tab = t)} ariaLabel="Table" />
           </div>
 
           {@const cells =
@@ -733,26 +726,7 @@
 
   /* A secondary tab row (STYLE_GUIDE.md), held in the page rather than the hash. */
   .tabs {
-    display: flex;
-    gap: 1rem;
     margin-bottom: 0.9rem;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .tabs button {
-    background: none;
-    padding: 0.35rem 0;
-    border-width: 0 0 3px;
-    border-radius: 0;
-    border-color: transparent;
-    color: var(--dim);
-    font-size: var(--text-body);
-  }
-
-  .tabs button[aria-selected='true'] {
-    color: var(--ink);
-    font-weight: 600;
-    border-color: var(--accent);
   }
 
   .facts :is(th, td) {
