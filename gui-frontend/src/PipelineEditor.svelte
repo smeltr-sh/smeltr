@@ -1255,14 +1255,16 @@
   }
 
   /** Each column's type, from the side the grid's cells show: after the step, or before where
-   * the step removed the field. */
+   * the step removed the field. The head shows it as a declaration does, `status: i64`, so
+   * a field nothing declares shows none. */
   let columnTypes = $derived.by(() => {
     const declared =
       pausedByRow && pauseRun ? pauseRun.declared : { before: sampleDeclared, after: runDeclared };
     return new Map(
       columns.map((path) => {
         const after = typeAt(declared.after, path);
-        return [path, after === 'undeclared' ? (typeAt(declared.before, path) ?? after) : after];
+        const type = after === 'undeclared' ? typeAt(declared.before, path) : after;
+        return [path, type === 'undeclared' ? null : type];
       }),
     );
   });
@@ -1526,8 +1528,8 @@
     const sized = rowsMaps.slice(0, SIZED_ROWS);
     return columns.map((path) => {
       const type = showTypes ? columnTypes.get(path) : null;
-      // The name, its type and the sort arrow.
-      let w = Math.max(COLUMN_MIN_CH, path.length + (type ? type.length + 1 : 0) + 2);
+      // The name, `: ` and its type, and the sort arrow.
+      let w = Math.max(COLUMN_MIN_CH, path.length + (type ? type.length + 2 : 0) + 2);
       for (const m of sized) {
         if (w >= COLUMN_CH) break;
         if (m.after.has(path) || m.before.has(path))
@@ -2120,8 +2122,8 @@
                               ><SortButton sort={gridSort} key={path}
                                 ><span class="head-name"
                                   ><span class="path-prefix">{name.prefix}</span>{name.leaf}</span
-                                >{#if showTypes && columnTypes.get(path)}{' '}<span
-                                    class="head-type">{columnTypes.get(path)}</span
+                                >{#if showTypes && columnTypes.get(path)}<span class="head-type"
+                                    >{': '}{columnTypes.get(path)}</span
                                   >{/if}</SortButton
                               ></th
                             >
@@ -2801,8 +2803,11 @@
     text-overflow: ellipsis;
   }
 
-  /* In a column too narrow for both, the type gives way before the name. */
+  /* In a column too narrow for both, the type gives way before the name. Its
+     colon sits against the name, as a declaration writes it, inside the sort
+     button's gap. */
   .head-type {
+    margin-left: -0.25rem;
     min-width: 0;
     flex-shrink: 10;
     overflow: hidden;

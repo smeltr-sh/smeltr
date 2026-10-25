@@ -1085,7 +1085,7 @@ test('A3: a field names the steps that touched it, a step card counts what it dr
 
   // A column's head names its type, until types are hidden.
   const head = grid.getByRole('button', { name: /^status\b/ });
-  await expect(head).toHaveText(/^status\s+i64/);
+  await expect(head).toHaveText(/^status: i64/);
   await admin.getByRole('button', { name: 'Hide types' }).click();
   await expect(head).not.toContainText('i64');
 });
