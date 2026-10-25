@@ -88,14 +88,22 @@ const DEFAULT_BATCH_MESSAGES: usize = 10_000;
 const MAX_BATCH_MESSAGES: usize = 1_000_000;
 const SMALLEST_RECORD_BYTES: usize = 64;
 
-/// What librdkafka holds for each queued message beyond its payload, measured at 2.16. `queue.buffering.max.kbytes`
-/// counts payloads alone, so the message count is what bounds a queue of small records.
+/// What librdkafka and the delivery tag hold for each queued record beyond its payload and key. librdkafka's own
+/// bounds count payloads alone, or records whatever their size, so the producer counts each record at this much more
+/// against its share of `bufferBytes` (`Held`). `per_message_overhead` keeps it true across librdkafka upgrades.
 const MESSAGE_OVERHEAD_BYTES: usize = 225;
 
-/// `queue.buffering.max.messages`: as many of the smallest records as the producer's share of `bufferBytes` holds with
-/// their overhead. librdkafka's own 100,000 caps a far link at 100,000 records a round trip, whatever the buffer.
-fn queued_messages(producer_bytes: usize) -> usize {
-    (producer_bytes / (SMALLEST_RECORD_BYTES + MESSAGE_OVERHEAD_BYTES)).max(1)
+/// What a record costs the producer's share of `bufferBytes` while librdkafka holds it.
+fn held_bytes(value: usize, key: usize) -> usize {
+    value + key + MESSAGE_OVERHEAD_BYTES
+}
+
+/// What one queued record carries back to its delivery report.
+struct Sent {
+    /// The send-sequence its batch was tagged with, so an acknowledgment is attributed to the batch.
+    seq: u64,
+    /// Its `held_bytes`, given back when it is reported.
+    held: usize,
 }
 
 /// The range librdkafka lets `message.max.bytes` take. A broker ceiling outside it is brought inside: a producer built
@@ -1018,6 +1026,9 @@ struct DeliveryTracker {
     reach: Arc<Mutex<Reach>>,
     /// Whether this producer sends gzip to Event Hubs, whose Basic and Standard tiers refuse it.
     gzip_to_event_hubs: bool,
+    /// Bytes the queued records cost, by `held_bytes`. Written by `produce` and the delivery reports, both on egress's
+    /// thread, since only its polls run them.
+    held: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// Whether the producer reaches a broker, as its callbacks tell it.
@@ -1092,10 +1103,11 @@ impl ClientContext for DeliveryTracker {
 }
 
 impl ProducerContext for DeliveryTracker {
-    /// The send-sequence the record was tagged with, so an acknowledgment is attributed to its batch.
-    type DeliveryOpaque = Box<u64>;
+    type DeliveryOpaque = Box<Sent>;
 
-    fn delivery(&self, result: &DeliveryResult<'_>, seq: Self::DeliveryOpaque) {
+    fn delivery(&self, result: &DeliveryResult<'_>, sent: Self::DeliveryOpaque) {
+        self.held.fetch_sub(sent.held, std::sync::atomic::Ordering::Relaxed);
+        let seq = sent.seq;
         let mut state = self.state.lock().unwrap();
         if let Err((e, _)) = result {
             // First failure wins; `flush` reports one `Result`.
@@ -1109,12 +1121,12 @@ impl ProducerContext for DeliveryTracker {
                     _ => e.to_string(),
                 });
             }
-            state.failed_seqs.insert(*seq);
+            state.failed_seqs.insert(seq);
         }
         if let Some(n) = state.outstanding.get_mut(&seq) {
             *n = n.saturating_sub(1);
         }
-        state.settle(*seq);
+        state.settle(seq);
     }
 }
 
@@ -1136,6 +1148,10 @@ pub struct KafkaDestination {
     seq: u64,
     /// How its rows are written, where they are written as Avro.
     avro: Option<crate::io::avro::AvroWriter>,
+    /// Shared with the producer's own `DeliveryTracker`.
+    held: Arc<std::sync::atomic::AtomicUsize>,
+    /// The producer's share of `bufferBytes`, which `held` stays under.
+    budget: usize,
 }
 
 /// Bytes one consumer fetch may carry: half of `fetchBytes`, so a fetch always lands with room behind it.
@@ -1262,7 +1278,9 @@ impl KafkaDestination {
             reach: Arc::default(),
             gzip_to_event_hubs: config.service == crate::plan::topology::KafkaService::EventHubs
                 && config.compression == crate::plan::topology::Compression::Gzip,
+            held: Arc::default(),
         };
+        let held = tracker.held.clone();
         let state = tracker.state.clone();
         let reach = tracker.reach.clone();
         let mut producer_config = ClientConfig::new();
@@ -1273,18 +1291,18 @@ impl KafkaDestination {
             // carries a fifth of what it can. Without it a retried produce may duplicate a record, as a batch
             // smeltr sends again already may (at-least-once), or reorder it against its neighbors.
             .set("acks", config.acks.as_property())
-            // Bounds a stalled producer's memory; librdkafka's default is 1 GB. The egress queue in front of this
-            // one holds the other half of `bufferBytes` and counts rows a little differently, so a full producer
-            // queue is reachable from egress: `deliver` polls it down, and a queue that stays full is the stall it
-            // already reports.
+            // `produce` bounds the queue at the producer's share of `bufferBytes`, counting what librdkafka holds for
+            // each record besides its payload; this only stops librdkafka's own 1 GB default from being the bound
+            // should that count ever fall short. The egress queue in front of this one holds the other half of
+            // `bufferBytes` and counts rows a little differently, so a full producer queue is reachable from egress:
+            // `deliver` polls it down, and a queue that stays full is the stall it already reports.
             .set(
                 "queue.buffering.max.kbytes",
                 (config.producer_bytes() / 1024).to_string(),
             )
-            .set(
-                "queue.buffering.max.messages",
-                queued_messages(config.producer_bytes()).to_string(),
-            )
+            // `produce` bounds the queue by what its records hold, so librdkafka's count, 100,000 by default, cannot
+            // hold a far link to fewer records a round trip than the buffer has room for.
+            .set("queue.buffering.max.messages", i32::MAX.to_string())
             .set("client.id", CLIENT_ID);
         // From the destination's own field; the passthrough reserves `compression.type`.
         producer_config.set("compression.type", config.compression.as_property());
@@ -1338,6 +1356,8 @@ impl KafkaDestination {
             reach,
             seq: 0,
             avro,
+            held,
+            budget: config.producer_bytes(),
         })
     }
 }
@@ -1357,8 +1377,11 @@ impl KafkaDestination {
     /// partition key, and routing a document id into it would change partitioning and ordering on every Kafka
     /// destination in a deployment that only meant to turn on Elasticsearch dedupe.
     fn produce(&mut self, out: OutgoingRecord<'_>) -> Result<(), IoError> {
+        use std::sync::atomic::Ordering::Relaxed;
         let topic = out.placement.unwrap_or(&self.default_topic);
-        let mut record = BaseRecord::with_opaque_to(topic, Box::new(self.seq)).payload(out.value);
+        let held = held_bytes(out.value.len(), out.key.map_or(0, <[u8]>::len));
+        let sent = Box::new(Sent { seq: self.seq, held });
+        let mut record = BaseRecord::with_opaque_to(topic, sent).payload(out.value);
         if let Some(k) = out.key {
             record = record.key(k);
         }
@@ -1367,32 +1390,38 @@ impl KafkaDestination {
         *self.state.lock().unwrap().outstanding.entry(self.seq).or_insert(0) += 1;
         let deadline = Instant::now() + self.stall_after;
         loop {
-            match self.producer.send(record) {
-                Ok(()) => return Ok(()),
-                // Ordinarily momentary backpressure: poll to drain, since `BaseProducer` has no thread of its own.
-                // Bounded, because a queue full for the whole budget means the destination is not draining, and
-                // blocking would stop the consumer polling (`MAX_POLL_INTERVAL`).
-                Err((KafkaError::MessageProduction(RDKafkaErrorCode::QueueFull), rejected)) => {
-                    if Instant::now() >= deadline {
-                        self.uncount();
-                        return Err(IoError::transient(format!(
-                            "destination {} is not draining: its local queue stayed full for {:?}",
-                            self.default_topic, self.stall_after
-                        )));
+            // A record larger than the whole budget goes alone, rather than never.
+            let queued = self.held.load(Relaxed);
+            if queued == 0 || queued + held <= self.budget {
+                match self.producer.send(record) {
+                    // Added here, not before: only this thread's polls run delivery reports.
+                    Ok(()) => {
+                        self.held.fetch_add(held, Relaxed);
+                        return Ok(());
                     }
-                    // `poll` waits out its whole timeout, so a short one: the send is tried again soon after the
-                    // queue has room.
-                    self.producer.poll(Duration::from_millis(10));
-                    record = rejected;
-                }
-                // Refused synchronously, before queuing: a rejection of this record (`is_rejection`), distinct from a
-                // delivery failure reported through `DeliveryTracker`. No callback will come for it, so take the count
-                // back off.
-                Err((e, _)) => {
-                    self.uncount();
-                    return Err(e.into());
+                    Err((KafkaError::MessageProduction(RDKafkaErrorCode::QueueFull), rejected)) => record = rejected,
+                    // Refused synchronously, before queuing: a rejection of this record (`is_rejection`), distinct
+                    // from a delivery failure reported through `DeliveryTracker`. No callback will come for it, so
+                    // take the count back off.
+                    Err((e, _)) => {
+                        self.uncount();
+                        return Err(e.into());
+                    }
                 }
             }
+            // A full queue is ordinarily momentary backpressure: poll to drain, since `BaseProducer` has no thread of
+            // its own. Bounded, because a queue full for the whole budget means the destination is not draining, and
+            // blocking would stop the consumer polling (`MAX_POLL_INTERVAL`).
+            if Instant::now() >= deadline {
+                self.uncount();
+                return Err(IoError::transient(format!(
+                    "destination {} is not draining: its local queue stayed full for {:?}",
+                    self.default_topic, self.stall_after
+                )));
+            }
+            // `poll` waits out its whole timeout, so a short one: the send is tried again soon after the queue has
+            // room.
+            self.producer.poll(Duration::from_millis(10));
         }
     }
 }
@@ -1613,11 +1642,46 @@ mod tests {
         assert_eq!(slow.in_flight, IN_FLIGHT_PER_CONNECTION);
     }
 
+    /// What a queued record costs is no more than `held_bytes` counts it at: librdkafka's own share of a record, and
+    /// its delivery tag, measured as the resident memory a queue of one-byte records takes. Queued for a broker that is
+    /// never reached, so every record stays queued. A librdkafka that holds more per record fails it.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn the_queue_holds_as_many_small_records_as_the_buffer_does_with_their_overhead() {
-        assert_eq!(queued_messages(32 << 20), (32 << 20) / 289);
-        assert_eq!(queued_messages(512 << 20), (512 << 20) / 289);
-        assert_eq!(queued_messages(0), 1, "librdkafka takes no less");
+    fn per_message_overhead() {
+        const RECORDS: usize = 500_000;
+        fn resident() -> usize {
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            let line = status.lines().find(|l| l.starts_with("VmRSS:")).unwrap();
+            line.split_whitespace().nth(1).unwrap().parse::<usize>().unwrap() * 1024
+        }
+        let tracker = DeliveryTracker {
+            state: Arc::default(),
+            metrics: MetricsHandle::new(Arc::new(crate::metrics::Metrics::new()), "test"),
+            destination: "test".into(),
+            reach: Arc::default(),
+            gzip_to_event_hubs: false,
+            held: Arc::default(),
+        };
+        let producer: BaseProducer<DeliveryTracker> = ClientConfig::new()
+            .set("bootstrap.servers", "127.0.0.1:1")
+            .set("queue.buffering.max.messages", i32::MAX.to_string())
+            .set("queue.buffering.max.kbytes", i32::MAX.to_string())
+            .set("message.timeout.ms", "600000")
+            .create_with_context(tracker)
+            .unwrap();
+        let before = resident();
+        for seq in 0..RECORDS {
+            let sent = Box::new(Sent { seq: seq as u64, held: held_bytes(1, 0) });
+            let record = BaseRecord::<(), [u8], _>::with_opaque_to("t", sent).payload(b"x");
+            producer.send(record).map_err(|(e, _)| e).unwrap();
+        }
+        let per_record = (resident() - before) / RECORDS;
+        assert!(
+            per_record <= held_bytes(1, 0),
+            "a queued one-byte record holds {per_record} bytes, where it is counted at {}",
+            held_bytes(1, 0)
+        );
+        eprintln!("a queued one-byte record holds {per_record} bytes");
     }
 
     #[test]
@@ -2263,6 +2327,40 @@ mod tests {
             None,
             "the error must clear once the broker is reachable again"
         );
+    }
+
+    /// A producer whose broker is gone queues records only while what they hold fits its share of `bufferBytes`,
+    /// counted with their overhead, then says it is not draining once `stallAfterSecs` runs out.
+    #[test]
+    fn the_queue_holds_no_more_than_the_buffer_counting_each_record() {
+        let mock = mock_cluster_with_topic("full-topic");
+        let value = [b'x'; 1000];
+        let fits = 100;
+        let mut dest = KafkaDestination::new(
+            &KafkaDestinationConfig {
+                payload: crate::plan::config::Payload::Record,
+                compression: crate::plan::topology::Compression::None,
+                acks: crate::plan::topology::Acks::All,
+                stall_after: Duration::from_secs(1),
+                brokers: mock.bootstrap_servers(),
+                default_topic: "full-topic".to_string(),
+                service: crate::plan::topology::KafkaService::Kafka,
+                identity: None,
+                buffer_bytes: 2 * fits * held_bytes(value.len(), 0),
+                props: Default::default(),
+                avro: None,
+            },
+            7,
+            MetricsHandle::new(Arc::new(crate::metrics::Metrics::new()), "egress-7"),
+            &Default::default(),
+        )
+        .unwrap();
+        mock.broker_down(1).unwrap();
+        let queued = (0..10 * fits).take_while(|_| dest.produce(OutgoingRecord::new(&value)).is_ok()).count();
+        assert_eq!(queued, fits);
+        assert_eq!(dest.held.load(std::sync::atomic::Ordering::Relaxed), fits * held_bytes(value.len(), 0));
+        let refused = dest.produce(OutgoingRecord::new(&value)).unwrap_err();
+        assert!(refused.message.contains("not draining"), "{}", refused.message);
     }
 
     /// Produces `n` one-byte records to `topic` on `mock` and waits for every delivery.
