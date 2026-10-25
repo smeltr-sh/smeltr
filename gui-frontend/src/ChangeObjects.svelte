@@ -487,7 +487,7 @@
   {@const target = undoTarget(c)}
   <div class="card">
     <div class="obj-head">
-      <span class="badge {c.status}">{c.status}</span>
+      {#if !scratch}<span class="badge {c.status}">{c.status}</span>{/if}
       {#if c.moved}<span class="dim note">moved</span>{/if}
       <span class="label mono">{c.label}</span>
       <span class="dim note kind">{c.noun} &middot; {c.scope}</span>
@@ -616,8 +616,10 @@
     />
     {#if view === 'objects' && !loading && !loadFailed}
       <span class="dim note"
-        >{count(deployed.length, 'object')}{#if notDeployed.length > 0}
-          &middot; {notDeployed.length} not deployed{/if}</span
+        >{count(
+          deployed.length,
+          'object',
+        )}{#if notDeployed.length > 0}{` · ${notDeployed.length} not deployed`}{/if}</span
       >
     {/if}
     <select class="saves" aria-label="Saves" bind:value={range}>
@@ -669,9 +671,8 @@
       <div class="card not-deployed">
         <h2 class="card-note">Not deployed</h2>
         <p class="card-note">
-          No test uses these samples, so deploying leaves them out. They stay on <code
-            >{branch.name}</code
-          >, and go when it is deployed.
+          No test uses these samples. They stay on <code>{branch.name}</code> until it is deployed, then
+          are deleted with it. To deploy one, lock it as a test.
         </p>
         {#each notDeployed as c (keyOf(c))}
           {@render objectCard(c, true)}

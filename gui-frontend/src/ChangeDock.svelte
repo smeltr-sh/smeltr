@@ -85,7 +85,8 @@
 
       {#if notDeployed > 0}
         <span class="item">
-          <span class="mark req" aria-hidden="true">!</span>
+          <!-- Nothing to fix: what stays on the branch is said, not warned about. -->
+          <span class="mark" aria-hidden="true"></span>
           <span>{count(notDeployed, 'sample')} not deployed</span>
         </span>
       {/if}
