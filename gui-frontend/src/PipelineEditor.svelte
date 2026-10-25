@@ -696,14 +696,14 @@
   let lastUsed = $state('');
   function readLastUsed(): string {
     try {
-      return window.localStorage.getItem(sampleKey(id)) ?? '';
+      return window.localStorage.getItem(sampleKey(pipelineId)) ?? '';
     } catch {
       return '';
     }
   }
 
   async function chooseSample(id: string) {
-    const pipeline = untrack(() => routeId);
+    const pipeline = untrack(() => pipelineId);
     selectedSample = id;
     if (id) {
       lastUsed = id;
