@@ -28,9 +28,11 @@ describe('sharedGrokSuggestions', () => {
 });
 
 describe('builtinRegex', () => {
-  it('reads the regex a built-in quotes, and none from one defined by code', () => {
+  it('reads the regex every built-in quotes, one holding a backtick whole', () => {
     const named = (n: string) => GROK_BUILTIN_PATTERNS.find((b) => b.name === n)!;
     expect(builtinRegex(named('WORD'))).toBe('\\b\\w+\\b');
-    expect(builtinRegex(named('IPV6'))).toBeNull();
+    expect(builtinRegex(named('COMMONAPACHELOG'))).toMatch(/^%\{IPORHOST:source\.address\} .*`.*-\)$/);
+    expect(GROK_BUILTIN_PATTERNS.filter((b) => builtinRegex(b) === null)).toEqual([]);
+    expect(builtinRegex({ name: 'X', signature: '%{X}', description: 'no regex' })).toBeNull();
   });
 });
