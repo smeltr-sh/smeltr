@@ -281,7 +281,7 @@
               <td>
                 <span class="mono">{c.name}</span>
                 {#if c.served}<span class="badge" title="The certificate this leader serves."
-                    >leader</span
+                    >served</span
                   >{/if}
                 {#if c.kept === 'issued'}<span
                     class="badge"

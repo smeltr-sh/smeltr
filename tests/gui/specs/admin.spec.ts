@@ -192,7 +192,7 @@ test('the leader certificate is the certificate leader in the list', async ({ ad
   await expect(served.getByText(/^[0-9a-f]{16}…[0-9a-f]{8}$/)).toBeVisible();
 
   await openAdmin(admin, 'Certificates');
-  await expect(admin.getByRole('cell', { name: /^leader leader issued$/ })).toBeVisible();
+  await expect(admin.getByRole('cell', { name: /^leader served issued$/ })).toBeVisible();
 });
 
 test('System and Cluster show the build each machine runs', async ({

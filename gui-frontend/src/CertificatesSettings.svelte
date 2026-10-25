@@ -528,8 +528,8 @@
             <a href="#/admin/certificates">Admin → Certificates</a>. Replace it there to renew it.
           {:else}
             Serves the certificate "{OWN_CERTIFICATE}" from
-            <a href="#/admin/certificates">Admin → Certificates</a>, which this leader issues under
-            the current authority and renews on its own.
+            <a href="#/admin/certificates">Admin → Certificates</a>. This leader issued it under the
+            current authority and renews it on its own.
           {/if}
         </Help>
       {/snippet}

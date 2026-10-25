@@ -82,7 +82,7 @@ export async function switchToUploaded(page: Page, pki: Pki): Promise<string> {
 
 /** Replaces the certificate the leader serves with `pki`, on the Certificates page, which serves it too. */
 export async function replaceServed(page: Page, pki: Pki) {
-  await replaceCertificate(page, 'leader', pki);
+  await replaceCertificate(page, 'served', pki);
 }
 
 /** Replaces the certificate in the row that says `text`, its name or the badge of the one the leader serves, with
