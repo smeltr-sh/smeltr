@@ -210,13 +210,17 @@
         <Field
           required
           label="Issued for"
-          note="DNS names and IP addresses, one per line. This leader signs it with its own authority, which whatever connects to it must trust. Before it expires the leader renews it and opens a change for you to deploy."
+          help="DNS names and IP addresses, one per line. This leader signs it with its own authority, which whatever connects to it must trust. Before it expires the leader renews it and opens a change for you to deploy."
         >
-          <textarea bind:value={issuedNames} rows="3" spellcheck="false"></textarea>
+          <textarea
+            bind:value={issuedNames}
+            rows="3"
+            spellcheck="false"
+            placeholder={'receiver.example.com\n10.0.0.7'}></textarea>
         </Field>
         <Field
           label="Valid for"
-          note="Each renewal is valid for the same length of time. A certificate never outlasts this leader's authority: if the authority expires first, so does the certificate."
+          help="Each renewal is valid for the same length of time. A certificate never outlasts this leader's authority: if the authority expires first, so does the certificate."
         >
           <select bind:value={validityDays}>
             {#each ISSUED_VALIDITY_DAYS as days}
