@@ -23,8 +23,8 @@
 
   let overflowing = $state(false);
 
-  /** Says whether the clamped value is cut short, as its width changes. */
-  function watch(node: HTMLElement) {
+  /** Says whether the clamped value is cut short, as its width or its text changes. */
+  function watch(node: HTMLElement, _text: string) {
     const check = () => {
       if (node.classList.contains('clamped'))
         overflowing = node.scrollHeight > node.clientHeight + 1;
@@ -43,7 +43,8 @@
       class="more"
       aria-expanded={open}
       aria-label={`${open ? 'collapse' : 'expand'} the value of ${label}`}
-      onclick={ontoggle}>{open ? 'less' : `Show all ${text.length.toLocaleString('en-US')} characters`}</button
+      onclick={ontoggle}
+      >{open ? 'less' : `Show all ${text.length.toLocaleString('en-US')} characters`}</button
     >
   {/if}
 </span>

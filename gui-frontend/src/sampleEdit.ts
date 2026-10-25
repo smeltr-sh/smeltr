@@ -30,7 +30,9 @@ function recordColumns(record: SampleRecordDto): string[] {
     mistypedOf(record) !== null && Object.keys(record[TAG] as Record<string, unknown>).length === 1;
   return Object.keys(record)
     .filter((k) => !(k === TAG && onlyMistyped))
-    .flatMap((k) => (inner(record, k) ? Object.keys(inner(record, k)!).map((f) => `${k}.${f}`) : [k]));
+    .flatMap((k) =>
+      inner(record, k) ? Object.keys(inner(record, k)!).map((f) => `${k}.${f}`) : [k],
+    );
 }
 
 /** The object an internal field `key` holds, whose fields are columns of their own. */
@@ -90,7 +92,8 @@ function inCaptureOrder(found: string[], captured: string[]): string[] {
 export function editColumns(sample: SampleDto): EditColumn[] {
   const types = new Map((sample.columns ?? []).map((c) => [c.name, c.type]));
   const names: string[] = [];
-  for (const r of sample.records) for (const k of recordColumns(r)) if (!names.includes(k)) names.push(k);
+  for (const r of sample.records)
+    for (const k of recordColumns(r)) if (!names.includes(k)) names.push(k);
   return inCaptureOrder(names, [...types.keys()]).map((name) => ({ name, type: types.get(name) }));
 }
 

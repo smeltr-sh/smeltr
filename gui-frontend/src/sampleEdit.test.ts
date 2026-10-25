@@ -89,7 +89,10 @@ describe('editColumns', () => {
   });
 
   it('shows an internal field that is not an object as one column', () => {
-    const at = { ...kafka, records: [{ _raw: 'a', __exception: 'boom', __capture: { failed: [] } }] };
+    const at = {
+      ...kafka,
+      records: [{ _raw: 'a', __exception: 'boom', __capture: { failed: [] } }],
+    };
     expect(editColumns(at).map((c) => c.name)).toEqual(['_raw', '__exception', '__capture.failed']);
   });
 });
