@@ -2168,7 +2168,8 @@ fn issue_server_cert(dir: &Path, server: CertificateParams, ca_key_pem: &str) ->
 
 fn authority_params(validity: Duration) -> Result<CertificateParams, String> {
     let mut params = CertificateParams::default();
-    // Constrained to zero: this authority signs the leader's own certificate and nothing that could sign further.
+    // Constrained to zero: this authority signs the leader's own certificate and the ones it issues for the list, and
+    // nothing that could sign further.
     params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     params.distinguished_name = subject(AUTHORITY_SUBJECT);

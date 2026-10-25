@@ -1052,6 +1052,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     out.extend(deploy_warnings);
     out.extend(normal_warnings);
     out.extend(key_warnings);
+    out.extend(issued_certificates_due(state, now_ms).await?);
     out.extend(
         serving
             .map(|s| warnings::leader_certificate(&s, now_ms))
@@ -2607,90 +2608,53 @@ async fn issue_certificate(State(state): State<AppState>, Json(req): Json<IssueR
     }
 }
 
-/// How often the leader looks for a certificate it issued that is due for renewal.
-const RENEWAL_TICK: std::time::Duration = std::time::Duration::from_secs(60 * 60);
-
-/// Renews, for as long as the leader runs, each certificate it issued once it is due ([`renew_issued_due`]).
-pub async fn renew_issued_certificates(state: AppState) {
-    loop {
-        tokio::time::sleep(RENEWAL_TICK).await;
-        renew_issued_due(&state, crate::leader::warnings::now_millis()).await;
-    }
-}
-
-/// Issues the next version of each certificate this leader issued that is two thirds of the way through its life,
-/// or whose root the leader no longer signs with -- a rotation cut over -- and drafts the change that points what
-/// names it at that version. The change is reviewed and deployed like any other; until it is, workers present the
-/// version they have.
-pub async fn renew_issued_due(state: &AppState, now_ms: i64) {
+/// The certificates this leader issued that are due for renewal, as warnings ([`warnings::issued_certificates_due`]).
+/// None where it signs nothing, or its authority cannot be read: the leader's own warnings say that.
+async fn issued_certificates_due(state: &AppState, now_ms: i64) -> Result<Vec<warnings::Warning>, StoreError> {
     let dir = tls::dir_of(&state.data_dir);
-    let due = {
-        let dir = dir.clone();
-        run_store(state.store.clone(), move |s| {
-            if !dir.exists() {
-                return Ok(Vec::new());
-            }
-            let signing = tls::signing_root_fingerprint(&dir).map_err(StoreError)?;
-            let mut due = Vec::new();
-            for (name, issued) in s.issued_certificates()? {
-                let chain = newest_chain(s, &name)?.map(|(_, chain)| chain).unwrap_or_default();
-                if renewal_due(&chain, &signing, now_ms) {
-                    due.push((name, issued));
-                }
-            }
-            Ok(due)
-        })
-        .await
-    };
-    let due = match due {
-        Ok(due) => due,
-        Err(e) => {
-            tracing::warn!(target: "leader.issued_unread", error = %e, "could not read which issued certificates are due");
-            return;
+    run_store(state.store.clone(), move |s| {
+        let Some(signing) = dir.exists().then(|| tls::signing_root_fingerprint(&dir).ok()).flatten() else {
+            return Ok(Vec::new());
+        };
+        let mut issued = Vec::new();
+        for name in s.issued_certificates()?.into_keys() {
+            let chain = newest_chain(s, &name)?
+                .and_then(|(_, chain)| tls::describe_each(chain.as_bytes(), "the certificate").ok())
+                .unwrap_or_default();
+            issued.push((name, chain));
         }
-    };
-    for (name, issued) in due {
-        if let Err(e) = renew_issued(state, &dir, &name, issued).await {
-            tracing::warn!(
-                target: "leader.issued_not_renewed",
-                certificate = %name,
-                error = %e,
-                "this leader could not renew a certificate it issued, and tries again within the hour"
-            );
+        Ok(warnings::issued_certificates_due(&issued, &signing, now_ms))
+    })
+    .await
+}
+
+/// Issues the next version of a certificate this leader issued, for the names and lifetime it was issued with. What
+/// an admin does when [`warnings::issued_certificates_due`] says one is due; the caller then points what names it at
+/// the new version, as after a replace.
+async fn renew_certificate(State(state): State<AppState>, Path(name): Path<String>) -> Json<Envelope> {
+    let wanted = name.clone();
+    let issued = match run_store(state.store.clone(), move |s| {
+        Ok(s.issued_certificates()?.remove(&wanted))
+    })
+    .await
+    {
+        Ok(Some(issued)) => issued,
+        Ok(None) => {
+            return Json(Envelope::failed_one(format!(
+                "this leader did not issue {name:?}, so it cannot renew it. Replace it instead"
+            )));
         }
+        Err(e) => return Json(Envelope::failed_one(e)),
+    };
+    let dir = tls::dir_of(&state.data_dir);
+    let (chain, key) = match blocking(move || tls::issue(&dir, issued.names.clone(), issued.validity())).await {
+        Ok(issued) => issued,
+        Err(e) => return Json(Envelope::failed_one(e)),
+    };
+    match run_store(state.store, move |s| s.add_certificate_version(&name, &chain, &key)).await {
+        Ok(_) => Json(Envelope::done()),
+        Err(e) => Json(Envelope::failed_one(e)),
     }
-}
-
-/// Whether the certificate whose newest chain is `chain` is due: two thirds of the way through its leaf's life, as
-/// an ordered one is, or ending at a root other than `signing`. One that cannot be read is due.
-fn renewal_due(chain: &str, signing: &str, now_ms: i64) -> bool {
-    let Ok(described) = tls::describe_each(chain.as_bytes(), "the certificate") else {
-        return true;
-    };
-    let (Some(leaf), Some(root)) = (described.first(), described.last()) else {
-        return true;
-    };
-    let renew_after = leaf.not_before_millis + (leaf.not_after_millis - leaf.not_before_millis) * 2 / 3;
-    now_ms >= renew_after || root.fingerprint != signing
-}
-
-async fn renew_issued(state: &AppState, dir: &std::path::Path, name: &str, issued: Issued) -> Result<(), String> {
-    let dir = dir.to_path_buf();
-    let (chain, key) = blocking(move || tls::issue(&dir, issued.names.clone(), issued.validity())).await?;
-    let wanted = name.to_string();
-    let version = run_store(state.store.clone(), move |s| {
-        s.add_certificate_version(&wanted, &chain, &key)
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    let data_dir = state.data_dir.clone();
-    let name = name.to_string();
-    blocking(move || {
-        let branch = format!("renew-{name}-v{version}");
-        let title = format!("This leader renewed {name}: point it at version {version}");
-        draft_pointing(&data_dir, &branch, &name, version, &title, &store::Actor::system()).map(|_| ())
-    })
-    .await
 }
 
 /// Stores a new version of a certificate. The route is the binary's, which serves the new version too where the
@@ -3058,8 +3022,26 @@ async fn point_secret(
 
     let data_dir = state.data_dir.clone();
     let drafted = blocking(move || {
-        let title = format!("Point {name} at version {}", req.version);
-        draft_pointing(&data_dir, &req.branch, &name, req.version, &title, &actor)
+        let done = point_secret_references(&data_dir, &req.branch, &name, req.version, &actor)?;
+        // Nothing moved, so there is no change to open.
+        if done.commit.is_none() {
+            return Ok((done, false));
+        }
+        let repo = git::repo_path(&data_dir);
+        let already_open = git::read_change(&repo, &req.branch)
+            .map_err(|e| e.to_string())?
+            .is_some_and(|c| c.state == git::ChangeState::Open);
+        if !already_open {
+            let title = format!("Point {name} at version {}", req.version);
+            let description = format!(
+                "{} reference{} across {}.",
+                done.references,
+                if done.references == 1 { "" } else { "s" },
+                done.groups.join(", ")
+            );
+            git::open_change(&repo, &req.branch, &title, &description, &actor).map_err(|e| e.to_string())?;
+        }
+        Ok::<_, String>((done, !already_open))
     })
     .await;
 
@@ -3073,37 +3055,6 @@ async fn point_secret(
         })),
         Err(e) => Json(Envelope::failed_one(e)),
     }
-}
-
-/// Points `name`'s references on `branch` at `version` and opens a change titled `title` over them, or joins the one
-/// open there. Also whether this opened the change.
-fn draft_pointing(
-    data_dir: &std::path::Path,
-    branch: &str,
-    name: &str,
-    version: i64,
-    title: &str,
-    actor: &store::Actor,
-) -> Result<(Repointed, bool), String> {
-    let done = point_secret_references(data_dir, branch, name, version, actor)?;
-    // Nothing moved, so there is no change to open.
-    if done.commit.is_none() {
-        return Ok((done, false));
-    }
-    let repo = git::repo_path(data_dir);
-    let already_open = git::read_change(&repo, branch)
-        .map_err(|e| e.to_string())?
-        .is_some_and(|c| c.state == git::ChangeState::Open);
-    if !already_open {
-        let description = format!(
-            "{} reference{} across {}.",
-            done.references,
-            if done.references == 1 { "" } else { "s" },
-            done.groups.join(", ")
-        );
-        git::open_change(&repo, branch, title, &description, actor).map_err(|e| e.to_string())?;
-    }
-    Ok((done, !already_open))
 }
 
 /// Forgets one version on purpose -- what answers a leak, rather than waiting for retention to reach it.
@@ -3527,6 +3478,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/secrets/:name", put(store_secret_value).delete(delete_secret))
         .route("/api/certificates", get(list_certificates).post(create_certificate))
         .route("/api/certificates/issued", post(issue_certificate))
+        .route("/api/certificates/:name/renew", post(renew_certificate))
         .route(
             "/api/secrets/:name/versions/:version",
             axum::routing::delete(forget_secret_version),
@@ -5903,49 +5855,73 @@ mod certificate_list_tests {
         assert!(out.errors[0].message.contains("renews it itself"), "{:?}", out.errors);
     }
 
-    /// Not yet due, nothing happens; two thirds of the way through, the next version is issued for as long as the
-    /// first and a change drafted pointing the identity at it.
+    async fn renew(state: &AppState, name: &str) -> Envelope {
+        renew_certificate(State(state.clone()), Path(name.to_string())).await.0
+    }
+
+    /// Not yet due, nothing is said; two thirds of the way through, it warns until an admin renews it, and the next
+    /// version is issued for the same names and as long as the first.
     #[tokio::test]
-    async fn a_certificate_due_is_renewed_and_a_change_drafted() {
+    async fn a_certificate_due_warns_until_it_is_renewed() {
         let state = issuing("renew");
         assert!(issue_lasting(&state, "acme", &["receiver.example.com"], 90).await.ok);
         let leaf = listed(&state, "acme").await.chain[0].clone();
         let lifetime = |c: &tls::Described| (c.not_after_millis - c.not_before_millis) / (24 * 60 * 60 * 1000);
         assert_eq!(lifetime(&leaf), 90);
 
-        renew_issued_due(&state, leaf.not_before_millis + 1).await;
-        assert_eq!(listed(&state, "acme").await.versions.len(), 1, "not yet due");
-
+        assert!(
+            issued_certificates_due(&state, leaf.not_before_millis + 1)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let due = leaf.not_before_millis + (leaf.not_after_millis - leaf.not_before_millis) * 2 / 3;
-        renew_issued_due(&state, due).await;
+        let said = issued_certificates_due(&state, due).await.unwrap();
+        assert_eq!(said.len(), 1);
+        assert_eq!(said[0].condition, warnings::Condition::IssuedCertificateDue);
+        assert_eq!(said[0].subject_id, "acme");
+        assert_eq!(said[0].since_millis, Some(due));
+        assert_eq!(
+            listed(&state, "acme").await.versions.len(),
+            1,
+            "nothing renews it on its own"
+        );
+
+        let out = renew(&state, "acme").await;
+        assert!(out.ok, "{:?}", out.errors);
         let renewed = listed(&state, "acme").await;
         assert_eq!(renewed.versions.len(), 2);
         assert_ne!(renewed.chain[0].fingerprint, leaf.fingerprint);
+        assert_eq!(renewed.chain[0].names, ["receiver.example.com"]);
         assert_eq!(lifetime(&renewed.chain[0]), 90);
-
-        let repo = git::repo_path(&state.data_dir);
-        let change = git::read_change(&repo, "renew-acme-v2")
-            .unwrap()
-            .expect("a change is drafted");
-        assert_eq!(change.state, git::ChangeState::Open);
-        let tip = git::branch_tip(&repo, "renew-acme-v2").unwrap();
-        let bytes = git::read_blobs(&repo, &tip, &["groups/g/identities.json".to_string()])
-            .unwrap()
-            .pop()
-            .flatten()
-            .unwrap();
-        assert!(String::from_utf8(bytes).unwrap().contains(r#""version": 2"#));
+        let now = renewed.chain[0].not_before_millis + 1;
+        assert!(issued_certificates_due(&state, now).await.unwrap().is_empty());
     }
 
-    /// One issued under a root the leader no longer signs with is renewed at once, whatever its age.
+    #[tokio::test]
+    async fn only_an_issued_certificate_is_renewed() {
+        let state = issuing("renew-not-issued");
+        let out = renew(&state, "acme").await;
+        assert!(!out.ok);
+        assert!(out.errors[0].message.contains("did not issue"), "{:?}", out.errors);
+    }
+
+    /// One issued under a root the leader no longer signs with is due at once, whatever its age, and so is one
+    /// whose chain cannot be read.
     #[test]
     fn a_certificate_under_another_root_is_due() {
         let dir = own("renew-root");
         let (chain, _) = tls::issue(&dir, vec!["a.example.com".to_string()], A_YEAR).unwrap();
+        let chain = tls::describe_each(chain.as_bytes(), "c").unwrap();
         let signing = tls::signing_root_fingerprint(&dir).unwrap();
-        let now = tls::describe(chain.as_bytes(), "c").unwrap().not_before_millis + 1;
-        assert!(!renewal_due(&chain, &signing, now));
-        assert!(renewal_due(&chain, "another root", now));
-        assert!(renewal_due("not a chain", &signing, now));
+        let now = chain[0].not_before_millis + 1;
+        let issued = [("acme".to_string(), chain)];
+        assert!(warnings::issued_certificates_due(&issued, &signing, now).is_empty());
+        let said = warnings::issued_certificates_due(&issued, "another root", now);
+        assert_eq!(said.len(), 1);
+        assert_eq!(said[0].since_millis, None);
+        assert!(said[0].message.contains("no longer signs with"), "{}", said[0].message);
+        let unreadable = [("acme".to_string(), Vec::new())];
+        assert_eq!(warnings::issued_certificates_due(&unreadable, &signing, now).len(), 1);
     }
 }

@@ -54,6 +54,8 @@ pub enum SubjectKind {
     Pipeline,
     /// A leader-stored secret, by name.
     Secret,
+    /// A certificate in the list, by name.
+    Certificate,
 }
 
 /// Which catalog entry raised this warning. The catalog is fixed (design doc, Control plane), so a reader can
@@ -94,6 +96,7 @@ pub enum Condition {
     SecretNeedsValue,
     AcmeRenewalFailing,
     LeaderCertificateRunningOut,
+    IssuedCertificateDue,
 }
 
 impl Condition {
@@ -133,6 +136,7 @@ impl Condition {
         Condition::SecretNeedsValue,
         Condition::AcmeRenewalFailing,
         Condition::LeaderCertificateRunningOut,
+        Condition::IssuedCertificateDue,
     ];
 
     /// What this is called on the wire. The match is what makes a new entry a compile error here.
@@ -171,6 +175,7 @@ impl Condition {
             Condition::SecretNeedsValue => "secretNeedsValue",
             Condition::AcmeRenewalFailing => "acmeRenewalFailing",
             Condition::LeaderCertificateRunningOut => "leaderCertificateRunningOut",
+            Condition::IssuedCertificateDue => "issuedCertificateDue",
         }
     }
 }
@@ -2438,6 +2443,63 @@ fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
         since_millis: Some(newer.since),
         message: format!("smeltr {} is out, and this leader runs {own}", newer.release),
     }
+}
+
+/// The certificates this leader issued that are due for renewal: two thirds of the way through their newest
+/// version's life, as an ordered one is, or ending at a root other than `signing`, which a rotation's cutover leaves
+/// them doing. Each entry is a name and its newest chain described, empty where that cannot be read, which is due
+/// too. Nothing renews one until an admin does, so each says to.
+pub fn issued_certificates_due(
+    issued: &[(String, Vec<crate::leader::tls::Described>)],
+    signing: &str,
+    now_ms: i64,
+) -> Vec<Warning> {
+    let mut out = Vec::new();
+    for (name, chain) in issued {
+        let renew = format!("Renew it in {CERTIFICATE_LIST} and deploy the change it opens");
+        let (expired, since_millis, message) = match (chain.first(), chain.last()) {
+            (Some(leaf), Some(root)) => {
+                let renew_after = leaf.not_before_millis + (leaf.not_after_millis - leaf.not_before_millis) * 2 / 3;
+                let remaining = leaf.not_after_millis - now_ms;
+                let when = if remaining <= 0 {
+                    "has expired".to_string()
+                } else {
+                    format!("expires in {} days", remaining / (24 * 60 * 60 * 1000))
+                };
+                if root.fingerprint != signing {
+                    let message = format!(
+                        "this leader issued it under an authority it no longer signs with, and it {when}. {renew}"
+                    );
+                    (remaining <= 0, None, message)
+                } else if now_ms >= renew_after {
+                    (
+                        remaining <= 0,
+                        Some(renew_after),
+                        format!("this leader issued it, and it {when}. {renew}"),
+                    )
+                } else {
+                    continue;
+                }
+            }
+            _ => (
+                false,
+                None,
+                format!("this leader cannot read its newest version. {renew}"),
+            ),
+        };
+        out.push(Warning {
+            scope: None,
+            condition: Condition::IssuedCertificateDue,
+            subject_kind: SubjectKind::Certificate,
+            site: None,
+            subject_id: name.clone(),
+            group: None,
+            severity: if expired { Severity::Failed } else { Severity::Warning },
+            since_millis,
+            message,
+        });
+    }
+    out
 }
 
 /// What the key's failure is about, as the Issues page names it.

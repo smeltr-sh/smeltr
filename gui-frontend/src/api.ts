@@ -2481,7 +2481,8 @@ export type WarningCondition =
   | 'secretsKeyUnusable'
   | 'secretNeedsValue'
   | 'acmeRenewalFailing'
-  | 'leaderCertificateRunningOut';
+  | 'leaderCertificateRunningOut'
+  | 'issuedCertificateDue';
 
 /** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. *Info*: a fact worth
  * knowing that asks nothing; the leader sends it only to a caller that asks (`listWarnings({ info: true })`). */
@@ -2500,7 +2501,8 @@ export interface WarningDto {
     | 'enrollmentCode'
     | 'identity'
     | 'pipeline'
-    | 'secret';
+    | 'secret'
+    | 'certificate';
   /** Unique only within `group`, not fleet-wide -- a worker's own id is the exception. */
   subjectId: string;
   /** Which group this is about, or null where there is none to report -- an enrolled worker
@@ -2588,6 +2590,8 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'ACME renewal failing';
     case 'leaderCertificateRunningOut':
       return 'Leader certificate running out';
+    case 'issuedCertificateDue':
+      return 'Certificate due for renewal';
   }
 }
 
@@ -3568,6 +3572,11 @@ export function issueCertificate(
 export const ISSUED_VALIDITY_DAYS = [90, 365, 2 * 365, 3 * 365] as const;
 
 /** Stores a new version, which the leader serves too where it serves this certificate. */
+/** Issues the next version of a certificate this leader issued, for the same names and lifetime. */
+export function renewCertificate(name: string): Promise<AdminActionResult> {
+  return apiJson(`/api/certificates/${encodeURIComponent(name)}/renew`, { method: 'POST' });
+}
+
 export function replaceCertificate(
   name: string,
   certificate: string,

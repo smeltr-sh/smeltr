@@ -23,6 +23,7 @@
     issueCertificate,
     ISSUED_VALIDITY_DAYS,
     replaceCertificate,
+    renewCertificate,
     pointSecretNow,
     deleteSecret,
     currentVersion,
@@ -120,7 +121,7 @@
         return;
       }
       await load();
-      if (replaced !== null) await pointAt(replaced);
+      if (replaced !== null) await pointAt(replaced, 'Replaced');
     } catch (e) {
       reported(e);
     } finally {
@@ -128,24 +129,40 @@
     }
   }
 
-  /** What the last replace did to the identities naming it. */
+  /** What the last replace or renewal did to the identities naming it. */
   let replacedNote = $state('');
 
   /** Points every identity naming `name` at its new version, as storing a secret's value does: the change deploys
    * it, on the branch already being edited. */
-  async function pointAt(name: string) {
+  async function pointAt(name: string, done: 'Replaced' | 'Renewed') {
     const version = currentVersion(certificates.find((c) => c.name === name)!)?.version;
     if (version === undefined) return;
     const pointed = await pointSecretNow(name, version);
     if (!pointed.ok) {
-      replacedNote = `Replaced, but no identity could be updated to use it: ${errorText(pointed.errors) || 'the change was not drafted'}`;
+      replacedNote = `${done}, but no identity could be updated to use it: ${errorText(pointed.errors) || 'the change was not drafted'}`;
     } else if (pointed.references === 0) {
-      replacedNote = 'Replaced.';
+      replacedNote = `${done}.`;
     } else {
       const identities =
         pointed.references === 1 ? '1 identity' : `${pointed.references} identities`;
       const groups = `group${pointed.groups.length === 1 ? '' : 's'} ${pointed.groups.join(', ')}`;
-      replacedNote = `Replaced. ${identities} in ${groups} will present the new version once you deploy the open change.`;
+      replacedNote = `${done}. ${identities} in ${groups} will present the new version once you deploy the open change.`;
+    }
+  }
+
+  /** Issues the next version, then points what names it there, as a replace does. */
+  async function renew(name: string) {
+    if (saving) return;
+    saving = true;
+    try {
+      const res = await renewCertificate(name);
+      if (!res.ok) return;
+      await load();
+      await pointAt(name, 'Renewed');
+    } catch (e) {
+      reported(e);
+    } finally {
+      saving = false;
     }
   }
 
@@ -210,7 +227,7 @@
         <Field
           required
           label="Issued for"
-          help="DNS names and IP addresses, one per line. This leader signs it with its own authority, which whatever connects to it must trust. Before it expires the leader renews it and opens a change for you to deploy."
+          help="DNS names and IP addresses, one per line. This leader signs it with its own authority, which whatever connects to it must trust. Before it expires the leader warns you to renew it."
         >
           <textarea
             bind:value={issuedNames}
@@ -295,7 +312,7 @@
                 {#if c.served}<span class="badge">leader</span>{/if}
                 {#if c.issuedFor}<span
                     class="badge"
-                    title="Issued by this leader, which renews it itself, so it has no Replace button. To use your own certificate, add one under another name."
+                    title="Issued by this leader, which issues its next version when you press Renew, so it has no Replace button. To use your own certificate, add one under another name."
                     >issued</span
                   >{/if}
                 {#if c.description}<small class="note">{c.description}</small>{/if}
@@ -306,7 +323,11 @@
               </td>
               <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
               <td class="row-actions">
-                {#if !c.issuedFor}
+                {#if c.issuedFor}
+                  <button type="button" disabled={saving} onclick={() => renew(c.name)}
+                    >Renew</button
+                  >
+                {:else}
                   <button type="button" onclick={() => open(c.name)}>Replace</button>
                 {/if}
                 <button type="button" onclick={() => remove(c)}>Delete</button>
