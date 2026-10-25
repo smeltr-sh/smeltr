@@ -181,21 +181,26 @@ pub fn build(
     pki: &Pki,
 ) -> Box<dyn Source> {
     let mut secrets = HeldSecrets::default();
-    let mut stored: Vec<_> = (tokens.iter().enumerate())
+    let stored: Vec<_> = (tokens.iter().enumerate())
         .map(|(i, token)| (format!("token{i}"), 1, token.clone()))
         .collect();
-    stored.push(("receiver-key".into(), 1, pki.server.key.clone()));
     secrets.set_stored(stored);
+    secrets.take([smeltr::heartbeat::SecretDelivery {
+        name: "receiver".into(),
+        version: 1,
+        value: pki.server.key.clone(),
+        chain: Some(pki.server.certificate.clone()),
+    }]);
     let identity = (tls != Tls::None).then(|| {
         Arc::new(Identity {
             id: "receiver".into(),
-            certificate: Some(pki.server.certificate.clone()),
-            key: Some(SecretRef::LeaderStored {
-                name: "receiver-key".into(),
+            certificate: Some(SecretRef::LeaderStored {
+                name: "receiver".into(),
                 version: 1,
             }),
             authorities: (tls == Tls::Vouched).then(|| pki.authority.pem.clone()),
             trust_public: true,
+            presented: smeltr::plan::topology::PresentedAs::SERVER,
         })
     });
     let config = ReceiverConfig {

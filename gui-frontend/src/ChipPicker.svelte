@@ -33,7 +33,7 @@
   }: {
     open?: boolean;
     /** Which chip this is. Styles the face, nothing else. */
-    kind: 'branch' | 'identity' | 'scope' | 'columns' | 'row' | 'step' | 'model';
+    kind: 'branch' | 'identity' | 'scope' | 'columns' | 'row' | 'step' | 'model' | 'error';
     /** The edge the panel hangs from. `left` where the chip sits in a column narrower than the
      * panel, which would otherwise open off the side of the window. */
     align?: 'left' | 'right';
@@ -95,7 +95,7 @@
 <div class="chip-picker" bind:this={wrapper}>
   <button
     type="button"
-    class="chip {kind}"
+    class={['chip', kind, kind === 'error' && 'error-button']}
     bind:this={chip}
     onclick={toggle}
     aria-expanded={open}
@@ -123,13 +123,19 @@
     align-items: center;
     gap: 0.35rem;
     padding: 0.2rem 0.6rem;
-    border: 1px solid var(--border);
+    border-width: 1px;
+    border-style: solid;
     border-radius: 999px;
-    background: var(--bg);
-    color: var(--dim);
     font-family: inherit;
     font-size: var(--text-note);
     cursor: pointer;
+  }
+
+  /* An error's face takes its colors from app.css's `.error-button`. */
+  .chip:where(:not(.error)) {
+    border-color: var(--border);
+    background: var(--bg);
+    color: var(--dim);
   }
 
   .chip.branch {
@@ -158,6 +164,13 @@
     border-radius: var(--radius);
     padding: 0.3rem 0.7rem;
     color: var(--ink);
+    font-size: var(--text-label);
+  }
+
+  /* What failed, in a row of ordinary buttons: their shape. */
+  .chip.error {
+    border-radius: var(--radius);
+    padding: 0.3rem 0.7rem;
     font-size: var(--text-label);
   }
 

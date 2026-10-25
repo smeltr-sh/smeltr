@@ -5,7 +5,8 @@
 //! random text and values of the wrong JSON type in the same fields, where only the loader's conduct is checked.
 //!
 //! Either way the loader must not panic, must name a field in each refusal, and must build a HEC receiver's runtime
-//! config from each file it accepts. Nothing here opens a socket.
+//! config from each file it accepts. Where that receiver presents a certificate, the worker's own check must refuse
+//! each one it could not serve. Nothing here opens a socket.
 //!
 //! Seeded through `crate::fuzz`: a failure names its seed and the source it generated, and `Coverage` fails the run
 //! when an option, or a refusal at it, was never reached.
@@ -18,8 +19,9 @@ use super::dto::MaxRequestBytes;
 use super::fuzz_loader::{self, Fuzzed, Pool, Verdict, garbage_value, parse, random_text, random_value};
 use super::test_fixtures::example_json;
 use crate::fuzz::Rng;
+use crate::heartbeat::SecretDelivery;
 use crate::io::line_breaker::PER_LINE;
-use crate::plan::topology::{Receiver, SecretRef, SourceKind, SourceMeta, Transport};
+use crate::plan::topology::{HeldSecrets, Receiver, SecretRef, SourceKind, SourceMeta, Transport};
 
 /// The source's id in every generated file.
 const HEC: &str = "hec";
@@ -89,25 +91,44 @@ const IDENTITIES: &[Declared] = &[
         serves: false,
         vouches: true,
     },
-    // A certificate whose Extended Key Usage is client authentication alone.
-    Declared {
-        id: "client",
-        serves: false,
-        vouches: false,
-    },
-    // A certificate whose Key Usage leaves out the digital signature a handshake is signed with.
-    Declared {
-        id: "unsigning",
-        serves: false,
-        vouches: false,
-    },
 ];
+
+/// What a worker may hold for the certificate an identity names, and whether it refuses to present it.
+const HELD: [(&str, bool); 4] = [
+    ("a certificate for serving", false),
+    // Extended Key Usage of client authentication alone.
+    ("a client-only certificate", true),
+    // Key Usage that leaves out the digital signature a handshake is signed with.
+    ("a certificate that cannot sign", true),
+    // A stored secret that is not a certificate entry.
+    ("a value with no certificate", true),
+];
+
+/// The chain beside each of [`HELD`], issued once for every seed.
+static CHAINS: std::sync::LazyLock<[Option<String>; 4]> = std::sync::LazyLock::new(|| {
+    use rcgen::{CertificateParams, ExtendedKeyUsagePurpose, KeyPair, KeyUsagePurpose};
+
+    let issue = |edit: fn(&mut CertificateParams)| {
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
+        edit(&mut params);
+        Some(params.self_signed(&key).unwrap().pem())
+    };
+    [
+        issue(|_| {}),
+        issue(|p| p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth]),
+        issue(|p| p.key_usages = vec![KeyUsagePurpose::KeyEncipherment]),
+        None,
+    ]
+});
 
 /// One generated source, and what the loader must make of it.
 struct Case {
     source: Value,
     /// The fields the loader must refuse, when `known` generated it.
     refused: Option<BTreeSet<&'static str>>,
+    /// What the worker holds for the certificate its identity names, of [`HELD`].
+    held: usize,
 }
 
 impl Fuzzed for Case {
@@ -226,6 +247,7 @@ fn known(rng: &mut Rng) -> Case {
     Case {
         source,
         refused: Some(refused),
+        held: rng.below(HELD.len()),
     }
 }
 
@@ -332,44 +354,36 @@ fn garbage(rng: &mut Rng) -> Case {
     if rng.chance(16) {
         fields.insert(random_text(rng, PIECES), random_value(rng, PIECES));
     }
-    Case { source, refused: None }
+    Case {
+        source,
+        refused: None,
+        held: rng.below(HELD.len()),
+    }
 }
 
-/// PEM for each identity's certificate and key, and for an authority to trust.
+/// PEM for an authority to trust. A certificate an identity presents is a list entry the bundle names, so the
+/// loader reads no PEM for it.
 struct Pems {
-    plain: String,
-    client: String,
-    unsigning: String,
     authority: String,
 }
 
 impl Pems {
     fn new() -> Pems {
-        use rcgen::{CertificateParams, ExtendedKeyUsagePurpose, KeyPair, KeyUsagePurpose};
-
-        let issue = |edit: fn(&mut CertificateParams)| {
-            let key = KeyPair::generate().unwrap();
-            let mut params = CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
-            edit(&mut params);
-            params.self_signed(&key).unwrap().pem()
-        };
         Pems {
-            plain: issue(|_| {}),
-            client: issue(|p| p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth]),
-            unsigning: issue(|p| p.key_usages = vec![KeyUsagePurpose::KeyEncipherment]),
-            authority: issue(|_| {}),
+            authority: rcgen::generate_simple_self_signed(vec!["smeltr-test".to_string()])
+                .unwrap()
+                .cert
+                .pem(),
         }
     }
 
-    /// The declared identity named `named`, as the file declares it. One no connector names is held to what a
-    /// connector connecting out presents, so the file declares only the one the receiver names.
+    /// The declared identity named `named`, as the file declares it.
     fn identities(&self, named: Option<&str>) -> Value {
-        let key = json!({ "secret": "receiver-key", "version": 1 });
-        let declare = |certificate: Option<&str>, authorities: Option<&str>| {
+        let listed = json!({ "secret": "receiver", "version": 1 });
+        let declare = |presents: bool, authorities: Option<&str>| {
             let mut identity = json!({});
-            if let Some(certificate) = certificate {
-                identity["certificate"] = certificate.into();
-                identity["key"] = key.clone();
+            if presents {
+                identity["certificate"] = listed.clone();
             }
             if let Some(authorities) = authorities {
                 identity["authorities"] = authorities.into();
@@ -378,11 +392,9 @@ impl Pems {
         };
         let all = IDENTITIES.iter().filter(|d| Some(d.id) == named).map(|declared| {
             let mut identity = match declared.id {
-                "served" => declare(Some(&self.plain), None),
-                "vouching" => declare(Some(&self.plain), Some(&self.authority)),
-                "trusting" => declare(None, Some(&self.authority)),
-                "client" => declare(Some(&self.client), None),
-                _ => declare(Some(&self.unsigning), None),
+                "served" => declare(true, None),
+                "vouching" => declare(true, Some(&self.authority)),
+                _ => declare(false, Some(&self.authority)),
             };
             identity["id"] = declared.id.into();
             identity
@@ -475,7 +487,37 @@ fn built(case: &Case, system: &super::LoadedSystem) -> Result<(), String> {
     system
         .compile_topology()
         .map_err(|e| format!("the accepted bundle does not compile: {e:?}"))?;
+
+    if r.identity.as_ref().is_some_and(|i| i.certificate.is_some()) {
+        let (what, refuses) = HELD[case.held];
+        let mut held = HeldSecrets::default();
+        held.take([SecretDelivery {
+            name: "receiver".to_string(),
+            version: 1,
+            value: "key".to_string(),
+            chain: CHAINS[case.held].clone(),
+        }]);
+        let errors = system.topology.identity_certificate_errors(&held);
+        if errors.is_empty() == refuses {
+            return Err(format!("a worker holding {what} came to {errors:?}"));
+        }
+    }
     Ok(())
+}
+
+/// What a worker makes of the certificate the accepted receiver's identity names, where it names one.
+fn presents(case: &Case) -> Option<String> {
+    let identity = case.source.get("identity").and_then(Value::as_str);
+    IDENTITIES.iter().find(|i| Some(i.id) == identity && i.serves)?;
+    Some(held_label(HELD[case.held]))
+}
+
+/// What a worker holding one of [`HELD`] reaches.
+fn held_label((what, refuses): (&str, bool)) -> String {
+    format!(
+        "a worker holding {what} {}",
+        if refuses { "refuses it" } else { "serves it" }
+    )
 }
 
 /// Every option of a HEC receiver, by its name in the file.
@@ -540,6 +582,9 @@ fn run(seeds: std::ops::Range<u64>, generate: fn(&mut Rng) -> Case, expected: Ve
                 Verdict::Refused => format!("refused admitting {}", admits(case)),
                 Verdict::Accepted => format!("accepted admitting {}", admits(case)),
             });
+            if let (Verdict::Accepted, Some(presents)) = (verdict, presents(case)) {
+                coverage.reach(presents);
+            }
         },
     );
 }
@@ -555,7 +600,8 @@ fn known_hec_receiver_configs_get_the_verdict_the_rules_give() {
         .into_iter()
         .flat_map(|a| [format!("accepted admitting {a}"), format!("refused admitting {a}")])
         .chain(["refused admitting nobody".to_string()]);
-    run(1..2_000, known, refusals.chain(verdicts).collect());
+    let held = HELD.map(held_label);
+    run(1..2_000, known, refusals.chain(verdicts).chain(held).collect());
 }
 
 #[test]

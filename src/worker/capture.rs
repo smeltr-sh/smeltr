@@ -1216,12 +1216,11 @@ pub fn run_cold_capture(
     let mut secrets = secrets.clone();
     secrets.take(invitation.secrets.clone());
 
-    // `put_identities` proves the pair at save time, but the capture's own key arrived with this invitation, lent
-    // for this session alone -- proof from whenever the identity was last saved says nothing about whether that
-    // key still belongs to that certificate.
+    // The capture's own certificate arrived with this invitation, lent for this session alone, so it is checked
+    // here as a deploy checks the ones its commit names.
     if let crate::plan::topology::SourceKind::Kafka(k) = &kind
         && let Some(identity) = &k.identity
-        && let Some(why) = crate::plan::topology::identity_pairing_error(identity, &secrets)
+        && let Some(why) = crate::plan::topology::identity_certificate_error(identity, &secrets)
     {
         captures.fail(admitted, why);
         return;
@@ -1583,22 +1582,16 @@ mod tests {
     /// presents. A worker follows `main`, so an identity it had to look up is one it would not find.
     #[test]
     fn a_capture_rebuilds_its_source_under_the_identity_the_invitation_carried() {
-        let key = rcgen::KeyPair::generate().unwrap();
-        let certificate = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()])
-            .unwrap()
-            .self_signed(&key)
-            .unwrap()
-            .pem();
         let identity = crate::config_file::IdentityDto {
             id: "acme".to_string(),
             description: None,
-            certificate: Some(certificate),
-            key: Some(crate::config_file::SecretRefDto::LeaderStored(
+            certificate: Some(crate::config_file::SecretRefDto::LeaderStored(
                 crate::config_file::LeaderSecretDto {
-                    secret: "acme-key".to_string(),
+                    secret: "acme".to_string(),
                     version: 1,
                 },
             )),
+            key: None,
             authorities: None,
             trust_public: None,
         };
@@ -1632,29 +1625,25 @@ mod tests {
         );
     }
 
-    /// `put_identities` proves the pair at save time, but a capture's key is delivered fresh with the invitation,
-    /// naming whatever version is current now -- which a save-time proof from earlier cannot vouch for. Checked
-    /// again here, before the source is ever opened.
+    /// A capture's certificate is delivered fresh with the invitation, so it is checked here as a deploy checks the
+    /// ones its commit names, before the source is ever opened: a Kafka source presents it as a client.
     #[test]
-    fn a_capture_whose_key_does_not_belong_to_its_certificate_is_refused() {
-        let issued_to = rcgen::KeyPair::generate().unwrap();
-        let certificate = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()])
-            .unwrap()
-            .self_signed(&issued_to)
-            .unwrap()
-            .pem();
-        let someone_elses_key = rcgen::KeyPair::generate().unwrap().serialize_pem();
+    fn a_capture_whose_certificate_cannot_be_presented_as_a_client_is_refused() {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        let server_only = params.self_signed(&key).unwrap().pem();
 
         let identity = crate::config_file::IdentityDto {
             id: "acme".to_string(),
             description: None,
-            certificate: Some(certificate),
-            key: Some(crate::config_file::SecretRefDto::LeaderStored(
+            certificate: Some(crate::config_file::SecretRefDto::LeaderStored(
                 crate::config_file::LeaderSecretDto {
-                    secret: "acme-key".to_string(),
+                    secret: "acme".to_string(),
                     version: 1,
                 },
             )),
+            key: None,
             authorities: None,
             trust_public: None,
         };
@@ -1673,9 +1662,10 @@ mod tests {
         inv.source = Some(source);
         inv.identity = Some(identity);
         inv.secrets = vec![crate::heartbeat::SecretDelivery {
-            name: "acme-key".to_string(),
+            name: "acme".to_string(),
             version: 1,
-            value: someone_elses_key,
+            value: key.serialize_pem(),
+            chain: Some(server_only),
         }];
 
         let captures = Captures::default();
@@ -1690,8 +1680,13 @@ mod tests {
         let reports = captures.finished("w1");
         assert_eq!(reports.len(), 1);
         match &reports[0].finished {
-            Some(CaptureEnd::Failed(reason)) => assert!(reason.contains("acme"), "{reason}"),
-            other => panic!("expected Failed to name the mismatched identity, got {other:?}"),
+            Some(CaptureEnd::Failed(reason)) => {
+                assert!(
+                    reason.contains("acme") && reason.contains("client authentication"),
+                    "{reason}"
+                )
+            }
+            other => panic!("expected Failed to name the identity, got {other:?}"),
         }
     }
 

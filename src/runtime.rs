@@ -1673,42 +1673,32 @@ impl Transform {
         if at.is_empty() {
             return Vec::new();
         }
-        let delivers_to = |route: &CompiledRoute, dest: DestId| {
-            route.deliver.iter().any(|rule| rule.to.contains(&dest))
-                || route.on_exception.answers.iter().any(|a| a.targets().contains(&dest))
-        };
         let mut taps = Vec::new();
         for (i, at) in at.iter().enumerate() {
             let Some(target) = destinations.iter().find(|t| t.name == at.destination) else {
                 continue;
             };
-            if !delivers_to(&topology.routes[route_idx], target.id) {
+            if !topology.routes[route_idx].delivers_to(target.id) {
                 continue;
             }
             let key = |idx: usize| (at.session.clone(), at.admission, idx);
             if !filters.contains_key(&key(route_idx)) {
                 let (mut errors, mut compiles) = (Vec::new(), false);
-                for (idx, route) in topology.routes.iter().enumerate() {
-                    if !delivers_to(route, target.id) {
-                        continue;
-                    }
-                    let plan = topology
-                        .plan_for(route.source, route.pipeline)
-                        .expect("compile_topology validated every route's pipeline id");
-                    let compiled = match &at.filter {
-                        None => Ok(None),
-                        Some(src) => crate::plan::topology::output_condition(
-                            src,
-                            "a capture filter",
-                            plan,
-                            &route.on_exception.tag_field,
-                            &topology.meta_for(route.source),
-                        )
-                        .map(|(ir, patterns)| Some(Arc::new(OutputFilter { ir, patterns }))),
-                    };
+                let compiled: Vec<_> = match &at.filter {
+                    None => topology.delivering(target.id).map(|(idx, _)| (idx, Ok(None))).collect(),
+                    Some(src) => (topology.capture_filters(target.id, src).into_iter())
+                        .map(|(idx, c)| {
+                            (
+                                idx,
+                                c.map(|(ir, patterns)| Some(Arc::new(OutputFilter { ir, patterns }))),
+                            )
+                        })
+                        .collect(),
+                };
+                for (idx, compiled) in compiled {
                     let filter = compiled.map_or_else(
                         |e| {
-                            errors.push(format!("on route {:?}: {e}", route.id));
+                            errors.push(format!("on route {:?}: {e}", topology.routes[idx].id));
                             RouteFilter::Skips
                         },
                         RouteFilter::Keeps,

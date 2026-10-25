@@ -5431,29 +5431,18 @@ fn an_http_receiver_with_a_bad_address_path_or_size_is_refused() {
     assert!(e.contains("a path starts with /"), "a route pattern is not a path: {e}");
 }
 
-/// A receiver whose identity's certificate is limited to `purpose`.
-fn http_receiver_serving(purpose: rcgen::ExtendedKeyUsagePurpose) -> String {
-    let key = rcgen::KeyPair::generate().unwrap();
-    let mut params = rcgen::CertificateParams::new(vec!["receiver".to_string()]).unwrap();
-    params.extended_key_usages = vec![purpose];
-    let certificate = serde_json::to_string(&params.self_signed(&key).unwrap().pem()).unwrap();
-    format!(
-        r#"{{"version":1,
-            "identities":[{{"id":"served","certificate":{certificate},"key":"RECEIVER_KEY"}}],
-            "sources":[{{"id":"hook","type":"httpReceiver","port":8088,"identity":"served"{RECEIVER_TOKEN}}}]}}"#
-    )
-}
-
-/// A receiver presents its certificate as a server's, so an ordinary server certificate serves, and one limited to
-/// client authentication is refused.
+/// A receiver presents its identity's certificate as a server's, which is what a worker holds that certificate to.
 #[test]
-fn an_http_receiver_serves_a_server_certificate_and_not_a_client_one() {
-    assert_eq!(
-        refusal(&http_receiver_serving(rcgen::ExtendedKeyUsagePurpose::ServerAuth)),
-        ""
+fn an_http_receiver_presents_its_certificate_as_a_server() {
+    let json = format!(
+        r#"{{"version":1,
+            "identities":[{{"id":"served","certificate":{{"secret":"served","version":1}}}}],
+            "sources":[{{"id":"hook","type":"httpReceiver","port":8088,"identity":"served"{RECEIVER_TOKEN}}}]}}"#
     );
-    let e = refusal(&http_receiver_serving(rcgen::ExtendedKeyUsagePurpose::ClientAuth));
-    assert!(e.contains("server authentication"), "{e}");
+    assert_eq!(refusal(&json), "");
+    let system = load_str(&json).expect("must load");
+    let identity = &system.topology.identities[0];
+    assert!(identity.presented.server && !identity.presented.client, "{identity:?}");
 }
 
 /// Every worker binds every receiver, so two on one port would fail on all of them.
@@ -5698,7 +5687,7 @@ fn s2s_receiver_config(extra: &str) -> String {
     let pem = serde_json::to_string(&params.self_signed(&key).unwrap().pem()).unwrap();
     format!(
         r#"{{"version":1,
-            "identities":[{{"id":"s2s-tls","certificate":{pem},"key":"S2S_KEY","authorities":{pem}}}],
+            "identities":[{{"id":"s2s-tls","certificate":{{"secret":"s2s-tls","version":1}},"authorities":{pem}}}],
             "sources":[{{"id":"forwarders","type":"s2sReceiver","port":9997{extra}}}]}}"#
     )
 }

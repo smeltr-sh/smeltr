@@ -24,8 +24,9 @@ const MARGIN = 8;
 
 /** Places `el`, a shown popover, at the anchor `at` gives: under it, or over it where less than the floor fits under
  * it and more fits over it. Its height is capped to the room on that side, under the cap its own style sets, and it
- * is kept inside the window across. It is placed again as anything scrolls, as the window resizes and as `el` changes
- * size, until `stop` is called. `place` places it again, for an anchor that moves on its own: a caret. */
+ * is kept inside the window across. It is placed again as the anchor moves, for a scroll or for the page shifting
+ * under it, as the window resizes and as `el` changes size, until `stop` is called. `place` places it again, for an
+ * anchor that moves on its own: a caret. */
 export function follow(
   el: HTMLElement,
   at: () => Anchor | undefined,
@@ -57,14 +58,29 @@ export function follow(
   place();
   const resized = new ResizeObserver(place);
   resized.observe(el);
-  window.addEventListener('scroll', place, true);
   window.addEventListener('resize', place);
+  // The anchor is read each frame rather than on scroll: content loading above it moves it with no event at all.
+  let last = at();
+  let frame = requestAnimationFrame(function watch() {
+    const a = at();
+    if (
+      a &&
+      (!last ||
+        a.top !== last.top ||
+        a.bottom !== last.bottom ||
+        a.left !== last.left ||
+        a.right !== last.right)
+    )
+      place();
+    last = a;
+    frame = requestAnimationFrame(watch);
+  });
   return {
     place,
     stop: () => {
       resized.disconnect();
-      window.removeEventListener('scroll', place, true);
       window.removeEventListener('resize', place);
+      cancelAnimationFrame(frame);
     },
   };
 }
