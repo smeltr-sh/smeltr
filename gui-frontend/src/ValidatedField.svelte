@@ -305,8 +305,10 @@
 
   /** The most the list shows before it scrolls. */
   const LIST_HEIGHT = 280;
+  /** The least room under the field the list takes before it goes over the field: about three items. */
+  const LIST_FLOOR = 160;
   /** Shows the list in the top layer, so no box that scrolls or clips cuts it off, under the field, or over it where
-   * there is more room there. It follows the field as anything around it scrolls. */
+   * there is too little room under it and more over it. It follows the field as anything around it scrolls. */
   const float: Attachment<HTMLElement> = (list) => {
     list.showPopover();
     const place = () => {
@@ -314,7 +316,7 @@
       const r = inputEl.getBoundingClientRect();
       const below = window.innerHeight - r.bottom - 12;
       const above = r.top - 12;
-      const under = below >= Math.min(LIST_HEIGHT, list.scrollHeight) || below >= above;
+      const under = below >= Math.min(LIST_FLOOR, list.scrollHeight) || below >= above;
       list.style.maxHeight = `${Math.min(LIST_HEIGHT, under ? below : above)}px`;
       list.style.top = under ? `${r.bottom + 4}px` : 'auto';
       list.style.bottom = under ? 'auto' : `${window.innerHeight - r.top + 4}px`;
