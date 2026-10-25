@@ -3045,6 +3045,14 @@ pub struct CompiledRoute {
     pub on_exception: OnException,
 }
 
+impl CompiledRoute {
+    /// Whether this route sends rows to `dest`: a `deliver` rule's or an exception answer's target.
+    pub fn delivers_to(&self, dest: DestId) -> bool {
+        self.deliver.iter().any(|rule| rule.to.contains(&dest))
+            || self.on_exception.answers.iter().any(|a| a.targets().contains(&dest))
+    }
+}
+
 impl CompiledTopology {
     /// Every destination a row entering through `source` could reach: the union of that source's routes' `deliver`
     /// targets, plus the DLQ each of those salvages its refusals to.
@@ -3222,6 +3230,40 @@ impl CompiledTopology {
     /// The plan a row entering through `source` runs under `pipeline`.
     pub fn plan_for(&self, source: SourceId, pipeline: usize) -> Option<&Plan> {
         self.pipelines.get(&(self.meta_for(source), pipeline))
+    }
+
+    /// Each route that sends rows to `dest`, with its index.
+    pub fn delivering(&self, dest: DestId) -> impl Iterator<Item = (usize, &CompiledRoute)> {
+        self.routes.iter().enumerate().filter(move |(_, r)| r.delivers_to(dest))
+    }
+
+    /// A route's finished record, as a condition over it reads it.
+    pub fn output_of(&self, route: &CompiledRoute) -> SymbolTable {
+        let meta = self.meta_for(route.source);
+        let plan = (self.plan_for(route.source, route.pipeline))
+            .expect("compile_topology validated every route's pipeline id");
+        output_symbols(plan, &route.on_exception.tag_field, &meta)
+    }
+
+    /// A capture filter at `dest`, compiled against the output of each route delivering there, by route index. A
+    /// filter runs on each of them it compiles on, since they may give `dest` rows of different shapes.
+    pub fn capture_filters(&self, dest: DestId, src: &str) -> Vec<(usize, Result<OutputCondition, CompileError>)> {
+        self.delivering(dest)
+            .map(|(idx, r)| {
+                let plan = (self.plan_for(r.source, r.pipeline))
+                    .expect("compile_topology validated every route's pipeline id");
+                (
+                    idx,
+                    output_condition(
+                        src,
+                        "a capture filter",
+                        plan,
+                        &r.on_exception.tag_field,
+                        &self.meta_for(r.source),
+                    ),
+                )
+            })
+            .collect()
     }
 
     /// Whether anything `source`'s records reach reads its field `field`: a route's condition, its pipeline or its
@@ -3433,6 +3475,9 @@ pub(crate) fn output_symbols(plan: &Plan, tag_field: &str, meta: &SourceMeta) ->
     )
 }
 
+/// A condition over a finished batch, and the patterns `Ctx::patterns` is pointed at to evaluate it.
+pub type OutputCondition = (Ir, Vec<crate::core::ctx::CompiledPattern>);
+
 /// Compile `src`, called `what` in an error, as a condition over `plan`'s finished batch: what a `deliver` rule reads,
 /// and what a filter at a destination reads. Evaluated with `Ctx::patterns` pointed at the patterns it returns.
 pub(crate) fn output_condition(
@@ -3441,7 +3486,7 @@ pub(crate) fn output_condition(
     plan: &Plan,
     tag_field: &str,
     meta: &SourceMeta,
-) -> Result<(Ir, Vec<crate::core::ctx::CompiledPattern>), CompileError> {
+) -> Result<OutputCondition, CompileError> {
     let mut res = ResourceBuilder::default();
     let ast = parse(src, None)?;
     let ir = flatten(resolve(&ast, &mut output_symbols(plan, tag_field, meta), &mut res)?);

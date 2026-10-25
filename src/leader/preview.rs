@@ -660,19 +660,20 @@ pub fn format_code(req: FormatRequest) -> Envelope<Formatted> {
     )
 }
 
-/// The routes delivering to the destination `id`, which a capture filter there runs over.
-fn delivering<'a>(
-    system: &'a config_file::LoadedSystem,
-    id: &str,
-) -> Result<impl Iterator<Item = &'a plan::topology::RouteConfig>, String> {
+/// `system` compiled, and the id of its destination `name`: what a capture filter there is compiled over, as a worker
+/// compiles it (`runtime`).
+fn at_destination(
+    system: &config_file::LoadedSystem,
+    name: &str,
+) -> Result<(plan::topology::CompiledTopology, crate::core::id::DestId), String> {
     let dest = (system.topology.destinations.iter())
-        .find(|d| d.name == *id)
-        .ok_or_else(|| format!("this config has no destination {id:?}"))?
+        .find(|d| d.name == *name)
+        .ok_or_else(|| format!("this config has no destination {name:?}"))?
         .id;
-    Ok(system.topology.routes.iter().filter(move |r| {
-        r.deliver.iter().any(|rule| rule.to.contains(&dest))
-            || r.on_exception.answers.iter().any(|a| a.targets().contains(&dest))
-    }))
+    let compiled = system
+        .compile_topology()
+        .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))?;
+    Ok((compiled, dest))
 }
 
 /// Route `r`'s pipeline, compiled over what its source gives, and that metadata.
@@ -697,17 +698,14 @@ fn capture_filter(
     asked: &CaptureFilterRequest,
     system: &config_file::LoadedSystem,
 ) -> Result<CaptureFilterCheck, String> {
+    let (compiled, dest) = at_destination(system, &asked.destination)?;
     let mut check = CaptureFilterCheck::default();
-    for r in delivering(system, &asked.destination)? {
-        let compiled = route_plan(system, r).and_then(|(plan, meta)| {
-            plan::topology::output_condition(&asked.text, "a capture filter", &plan, &r.on_exception.tag_field, &meta)
-                .map_err(|e| e.to_string())
-        });
-        match compiled {
+    for (idx, filter) in compiled.capture_filters(dest, &asked.text) {
+        match filter {
             Ok(_) => check.reads += 1,
-            Err(error) => check.skips.push(RouteSkip {
-                route: r.id.clone(),
-                error,
+            Err(e) => check.skips.push(RouteSkip {
+                route: compiled.routes[idx].id.clone(),
+                error: e.to_string(),
             }),
         }
     }
@@ -767,8 +765,9 @@ fn after_dot(
         DotAt::Destination(id) => {
             // A filter there runs on each route delivering to it that it compiles on (`runtime`), so a name has
             // what any of them gives it.
-            delivering(system, id)?
-                .filter_map(|r| over_output(r, expr.as_ref()?))
+            let (compiled, dest) = at_destination(system, id)?;
+            (compiled.delivering(dest))
+                .filter_map(|(_, r)| type_in(expr.as_ref()?, &compiled.output_of(r)))
                 .reduce(|a, b| plan::dictionary::meet(a, &b))
         }
     };
@@ -1198,10 +1197,20 @@ mod tests {
         "routes":[{"id":"r","source":"in","pipeline":"p","condition":"_raw.","deliver":[{"when":"n.","to":["out","both"]}]},
             {"id":"r2","source":"in","pipeline":"q","deliver":[{"to":["both"]}]}]}"#;
 
+    /// `BUNDLE` without the condition and the `when` being typed: a destination's filter compiles over the whole
+    /// topology, which compiles only once they are written.
+    fn compiling() -> String {
+        BUNDLE.replace(r#""condition":"_raw.","#, "").replace(r#""when":"n.","#, "")
+    }
+
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {
+        let config = match at {
+            DotAt::Destination(_) => compiling(),
+            _ => BUNDLE.into(),
+        };
         let previewed = run_preview(
             PreviewRequest {
-                config: BUNDLE.into(),
+                config,
                 pipeline: Some("p".into()),
                 sample: None,
                 show_internal: false,
@@ -1295,7 +1304,7 @@ mod tests {
         let check = |text: &str| {
             let previewed = run_preview(
                 PreviewRequest {
-                    config: BUNDLE.into(),
+                    config: compiling(),
                     pipeline: None,
                     sample: None,
                     show_internal: false,
