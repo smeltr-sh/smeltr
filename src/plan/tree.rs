@@ -560,7 +560,13 @@ mod tests {
 
     #[test]
     fn a_name_under_the_record_is_its_own() {
-        for (text, want) in [("$", "$"), ("$.a", "a"), ("$.a.b", "a.b"), (r#"$["a.b"]"#, r#"["a.b"]"#), ("$a", "$a")] {
+        for (text, want) in [
+            ("$", "$"),
+            ("$.a", "a"),
+            ("$.a.b", "a.b"),
+            (r#"$["a.b"]"#, r#"["a.b"]"#),
+            ("$a", "$a"),
+        ] {
             assert_eq!(parse_name(text).as_deref(), Ok(want), "{text}");
         }
         assert!(parse_name("$.").is_err());

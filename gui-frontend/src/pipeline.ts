@@ -573,7 +573,6 @@ export function truncateSteps(steps: Step[], target: Step, includeTarget: boolea
   return null;
 }
 
-
 /** Every step in the order an author reads them: an `if` before its branches, `then` before `else`. */
 export function flatSteps(steps: Step[]): Step[] {
   return steps.flatMap((s) =>

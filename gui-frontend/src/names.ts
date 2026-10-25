@@ -82,7 +82,9 @@ export function parsePath(
   // `$` is the record, so `$.a` is the name `a`, as the language reads it.
   if (text === '$') return { ok: true, name: '$' };
   let rest =
-    text.startsWith('$[') || (text.startsWith('$.') && text.length > 2) ? text.slice(text[1] === '.' ? 2 : 1) : text;
+    text.startsWith('$[') || (text.startsWith('$.') && text.length > 2)
+      ? text.slice(text[1] === '.' ? 2 : 1)
+      : text;
   while (rest !== '') {
     if (rest.startsWith('[')) {
       const quoted = jsonString(rest.slice(1));
