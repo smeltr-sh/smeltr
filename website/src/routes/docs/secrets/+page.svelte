@@ -77,7 +77,8 @@
     A connection identity contains the certificate a worker presents and the authorities it trusts.
     Create it under Build → Resources → Connection identities. A source or destination selects it as
     its <strong>client identity</strong>: the worker connects out, uses it to check the far end's
-    certificate, and presents its certificate when the far end asks for one. A receiver selects it as its
+    certificate, and presents its certificate when the far end asks for one. A receiver selects it
+    as its
     <strong>server identity</strong>: the receiver serves TLS with its certificate and, if the
     identity has authorities, admits only senders whose certificates chain to one of them.
   </p>

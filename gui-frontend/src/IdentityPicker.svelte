@@ -43,8 +43,8 @@
 >
   {#snippet help()}
     {#if farEnd === 'sender'}
-      The certificate and key this receiver serves TLS with. If the identity trusts authorities, every
-      sender must present a certificate that chains to one of them.
+      The certificate and key this receiver serves TLS with. If the identity trusts authorities,
+      every sender must present a certificate that chains to one of them.
     {:else}
       Pick one when the {farEnd} requires a client certificate, or its own certificate comes from your
       organization's authority rather than a public one. With none, this client presents no certificate
