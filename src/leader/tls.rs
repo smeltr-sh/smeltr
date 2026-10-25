@@ -117,41 +117,38 @@ pub fn ensure_own(dir: &Path, sans: Vec<String>, validity: Duration) -> Result<M
 /// both server and client authentication. Never outlives the authority, as the leader's own certificate never does.
 pub fn issue(dir: &Path, names: Vec<String>, validity: Duration) -> Result<(String, String), String> {
     let _reading = changing();
-    let ca_pem = std::fs::read(dir.join(CA_CERT)).map_err(|e| format!("{}: {e}", dir.join(CA_CERT).display()))?;
-    let ca_key_path = dir.join(CA_KEY);
-    private_file::check(&ca_key_path, "the certificate authority's private key")?;
-    let ca_key_pem = std::fs::read_to_string(&ca_key_path).map_err(|e| format!("{}: {e}", ca_key_path.display()))?;
-    let authority = root_of_key(&ca_pem, &ca_key_pem)?;
-
-    let mut params =
-        CertificateParams::new(names).map_err(|e| format!("those names cannot be put in a certificate: {e}"))?;
-    params.is_ca = IsCa::NoCa;
-    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth, ExtendedKeyUsagePurpose::ClientAuth];
-    params.use_authority_key_identifier_extension = true;
-    (params.not_before, params.not_after) = window(validity)?;
-    let ceiling = OffsetDateTime::from_unix_timestamp(authority.not_after_millis / 1000)
-        .map_err(|e| format!("{CA_CERT} expires at a time no calendar holds: {e}"))?;
-    params.not_after = params.not_after.min(ceiling);
-
-    let ca_key = KeyPair::from_pem(&ca_key_pem).map_err(|e| format!("read the authority's private key: {e}"))?;
-    let issuer = Issuer::new(authority_params(Duration::ZERO)?, ca_key);
-    let key = KeyPair::generate().map_err(|e| format!("generate the certificate's key: {e}"))?;
-    let leaf = params
-        .signed_by(&key, &issuer)
-        .map_err(|e| format!("sign the certificate: {e}"))?
-        .pem();
+    let (ca_pem, ca_key_pem, authority) = authority_held(dir)?;
+    let mut params = leaf_params(
+        names,
+        validity,
+        vec![ExtendedKeyUsagePurpose::ServerAuth, ExtendedKeyUsagePurpose::ClientAuth],
+        "those names cannot be put in a certificate",
+    )?;
+    cap_at(&mut params, &authority)?;
+    let (leaf, key) = sign(params, &ca_key_pem, "the certificate")?;
     let (_, root) = signing_root_pem(&ca_pem, leaf.as_bytes())?;
-    Ok((format!("{}\n{root}", leaf.trim_end()), key.serialize_pem()))
+    Ok((format!("{}\n{root}", leaf.trim_end()), key))
 }
 
 /// The fingerprint of the root [`issue`] signs under now: after a rotation's cutover, the incoming one.
 pub fn signing_root_fingerprint(dir: &Path) -> Result<String, String> {
     let _reading = changing();
-    let ca_pem = std::fs::read(dir.join(CA_CERT)).map_err(|e| format!("{}: {e}", dir.join(CA_CERT).display()))?;
+    Ok(authority_held(dir)?.2.fingerprint)
+}
+
+/// The authority's certificate file and private key, both PEM, and the root in that file the key signs as.
+fn authority_held(dir: &Path) -> Result<(Vec<u8>, String, Described), String> {
+    let ca_cert_path = dir.join(CA_CERT);
     let ca_key_path = dir.join(CA_KEY);
+    private_file::check(&ca_key_path, "the certificate authority's private key")?;
+    let ca_pem = std::fs::read(&ca_cert_path).map_err(|e| format!("{}: {e}", ca_cert_path.display()))?;
     let ca_key_pem = std::fs::read_to_string(&ca_key_path).map_err(|e| format!("{}: {e}", ca_key_path.display()))?;
-    Ok(root_of_key(&ca_pem, &ca_key_pem)?.fingerprint)
+    // The root this leader signs with, not the file's first. A rotation leaves two in there, and reading the
+    // other one's expiry caps the certificate against a date that has nothing to do with it -- too early while
+    // the incoming root outlives the outgoing one, too late the other way round, which is the direction that
+    // serves a certificate outliving what vouches for it.
+    let authority = root_of_key(&ca_pem, &ca_key_pem)?;
+    Ok((ca_pem, ca_key_pem, authority))
 }
 
 /// [`ensure_own`] for a caller already holding [`CHANGING`]. Issuing a certificate is replacing what is in force,
@@ -618,23 +615,9 @@ fn prepare(dir: &Path, sans: Vec<String>, validity: Duration, create: bool) -> R
     if create {
         create_authority(&ca_cert_path, &ca_key_path, validity)?;
     }
-    private_file::check(&ca_key_path, "the certificate authority's private key")?;
+    let (ca_pem, ca_key_pem, authority) = authority_held(dir)?;
 
-    let ca_pem = std::fs::read(&ca_cert_path).map_err(|e| format!("{}: {e}", ca_cert_path.display()))?;
-    let ca_key_pem = std::fs::read_to_string(&ca_key_path).map_err(|e| format!("{}: {e}", ca_key_path.display()))?;
-    // The root this leader signs with, not the file's first. A rotation leaves two in there, and reading the
-    // other one's expiry caps the certificate against a date that has nothing to do with it -- too early while
-    // the incoming root outlives the outgoing one, too late the other way round, which is the direction that
-    // serves a certificate outliving what vouches for it.
-    let authority = root_of_key(&ca_pem, &ca_key_pem)?;
-
-    // Never past the authority's own expiry. Clients disagree about a certificate that outlives its issuer --
-    // rustls does not read a root's expiry at all, OpenSSL does -- so one that did would leave a worker's
-    // heartbeats succeeding while its `git fetch` failed, which is a fleet that reports healthy and has quietly
-    // stopped taking configuration.
-    let ceiling = OffsetDateTime::from_unix_timestamp(authority.not_after_millis / 1000)
-        .map_err(|e| format!("{CA_CERT} expires at a time no calendar holds: {e}"))?;
-    server.not_after = server.not_after.min(ceiling);
+    cap_at(&mut server, &authority)?;
 
     issue_server_cert(dir, server, &ca_key_pem)?;
 
@@ -2148,22 +2131,36 @@ fn issue_server_cert(dir: &Path, server: CertificateParams, ca_key_pem: &str) ->
     if supplied(dir)?.is_none() {
         replaced_what_is_served(dir);
     }
+    let (cert, key) = sign(server, ca_key_pem, "the server certificate")?;
+    let key_path = dir.join(SERVER_KEY);
+    private_file::replace(&key_path, key.as_bytes()).map_err(|e| format!("{}: {e}", key_path.display()))?;
+    let cert_path = dir.join(SERVER_CERT);
+    write_durably(&cert_path, cert.as_bytes()).map_err(|e| format!("{}: {e}", cert_path.display()))
+}
+
+/// `params` signed by the authority whose key is `ca_key_pem` under a new key: the certificate and that key, PEM.
+fn sign(params: CertificateParams, ca_key_pem: &str, what: &str) -> Result<(String, String), String> {
     let ca_key = KeyPair::from_pem(ca_key_pem).map_err(|e| format!("read the authority's private key: {e}"))?;
     // The issuer carries the subject, key usages and key-identifier method to write into the signed certificate;
     // its own validity is never read, so any period builds the same issuer. [`AUTHORITY_SUBJECT`] is what makes
     // rebuilding it from the same constants match the authority on disk, and `verify` is what proves it did.
     let issuer = Issuer::new(authority_params(Duration::ZERO)?, ca_key);
-
-    let key = KeyPair::generate().map_err(|e| format!("generate the server key: {e}"))?;
-    let cert = server
+    let key = KeyPair::generate().map_err(|e| format!("generate the key for {what}: {e}"))?;
+    let cert = params
         .signed_by(&key, &issuer)
-        .map_err(|e| format!("sign the server certificate: {e}"))?;
+        .map_err(|e| format!("sign {what}: {e}"))?;
+    Ok((cert.pem(), key.serialize_pem()))
+}
 
-    let key_path = dir.join(SERVER_KEY);
-    private_file::replace(&key_path, key.serialize_pem().as_bytes())
-        .map_err(|e| format!("{}: {e}", key_path.display()))?;
-    let cert_path = dir.join(SERVER_CERT);
-    write_durably(&cert_path, cert.pem().as_bytes()).map_err(|e| format!("{}: {e}", cert_path.display()))
+/// Ends `params` no later than `authority` does. Clients disagree about a certificate that outlives its issuer --
+/// rustls does not read a root's expiry at all, OpenSSL does -- so one that did would leave a worker's heartbeats
+/// succeeding while its `git fetch` failed, which is a fleet that reports healthy and has quietly stopped taking
+/// configuration.
+fn cap_at(params: &mut CertificateParams, authority: &Described) -> Result<(), String> {
+    let ceiling = OffsetDateTime::from_unix_timestamp(authority.not_after_millis / 1000)
+        .map_err(|e| format!("{CA_CERT} expires at a time no calendar holds: {e}"))?;
+    params.not_after = params.not_after.min(ceiling);
+    Ok(())
 }
 
 fn authority_params(validity: Duration) -> Result<CertificateParams, String> {
@@ -2178,15 +2175,31 @@ fn authority_params(validity: Duration) -> Result<CertificateParams, String> {
 }
 
 fn server_params(sans: Vec<String>, validity: Duration) -> Result<CertificateParams, String> {
-    let mut params =
-        CertificateParams::new(sans).map_err(|e| format!("the leader's certificate names are not usable: {e}"))?;
+    let mut params = leaf_params(
+        sans,
+        validity,
+        vec![ExtendedKeyUsagePurpose::ServerAuth],
+        "the leader's certificate names are not usable",
+    )?;
+    params.distinguished_name = subject(SERVER_SUBJECT);
+    Ok(params)
+}
+
+/// A certificate for `names` that signs nothing further, valid `validity` from now. `unusable` opens the error for
+/// a name a certificate cannot carry.
+fn leaf_params(
+    names: Vec<String>,
+    validity: Duration,
+    extended: Vec<ExtendedKeyUsagePurpose>,
+    unusable: &str,
+) -> Result<CertificateParams, String> {
+    let mut params = CertificateParams::new(names).map_err(|e| format!("{unusable}: {e}"))?;
     params.is_ca = IsCa::NoCa;
     // `KeyPair::generate` gives an ECDSA key, which signs and never enciphers, so a key-encipherment bit here
     // would claim a use the key does not have.
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    params.extended_key_usages = extended;
     params.use_authority_key_identifier_extension = true;
-    params.distinguished_name = subject(SERVER_SUBJECT);
     (params.not_before, params.not_after) = window(validity)?;
     Ok(params)
 }
