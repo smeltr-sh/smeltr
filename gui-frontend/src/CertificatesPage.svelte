@@ -311,12 +311,12 @@
                 {#if c.served}<span class="badge" title="The certificate this leader serves."
                     >leader</span
                   >{/if}
-                {#if c.issuedFor}<span
+                {#if c.kept === 'issued'}<span
                     class="badge"
                     title="Issued by this leader, which renews it on its own, so it has no Replace button. To use your own certificate, add one under another name."
                     >issued</span
                   >{/if}
-                {#if c.acme}<span
+                {#if c.kept === 'acme'}<span
                     class="badge"
                     title="Ordered over ACME by this leader, which renews it on its own, so it has no Replace button. To use your own certificate, add one under another name."
                     >ACME</span
@@ -329,7 +329,7 @@
               </td>
               <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
               <td class="row-actions">
-                {#if c.issuedFor || c.acme}
+                {#if c.kept}
                   <button type="button" disabled={saving} onclick={() => updateIdentities(c.name)}
                     >Update identities</button
                   >

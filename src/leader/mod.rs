@@ -2412,12 +2412,9 @@ pub struct CertificateOut {
     pub chain: Vec<tls::Described>,
     /// Whether the leader serves a copy of it.
     pub served: bool,
-    /// The names it is issued for, where this leader issued it.
+    /// How this leader keeps it up to date, `issued` or `acme`, where it does.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub issued_for: Option<Vec<String>>,
-    /// Whether this leader orders it over ACME.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub acme: bool,
+    pub kept: Option<&'static str>,
 }
 
 #[derive(serde::Deserialize)]
@@ -2544,19 +2541,17 @@ async fn list_certificates(
                 ..
             } = SecretOut::from(r);
             let served = served.contains(&name);
-            let (issued_for, acme) = match kept.remove(&name) {
-                Some(Kept::Issued(issued)) => (Some(issued.names), false),
-                Some(Kept::Acme) => (None, true),
-                None => (None, false),
-            };
+            let kept = kept.remove(&name).map(|k| match k {
+                Kept::Issued(_) => "issued",
+                Kept::Acme => "acme",
+            });
             out.push(CertificateOut {
                 name,
                 description,
                 versions,
                 chain,
                 served,
-                issued_for,
-                acme,
+                kept,
             });
         }
         Ok(out)
@@ -5868,10 +5863,7 @@ mod certificate_list_tests {
         assert!(out.ok, "{:?}", out.errors);
 
         let entry = listed(&state, "acme").await;
-        assert_eq!(
-            entry.issued_for.as_deref(),
-            Some(&["receiver.example.com".to_string(), "10.0.0.7".to_string()][..])
-        );
+        assert_eq!(entry.kept, Some("issued"));
         assert_eq!(entry.chain[0].names, ["receiver.example.com", "10.0.0.7"]);
         let signing = tls::signing_root_fingerprint(&tls::dir_of(&state.data_dir)).unwrap();
         assert_eq!(entry.chain.last().unwrap().fingerprint, signing);

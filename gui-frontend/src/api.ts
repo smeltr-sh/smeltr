@@ -3534,10 +3534,8 @@ export type CertificateDto = {
   chain: DescribedCertificate[];
   /** Whether the leader serves a copy of it. */
   served: boolean;
-  /** The names this leader issues it for, where this leader issued it. */
-  issuedFor?: string[];
-  /** Whether this leader orders it over ACME, and renews it. */
-  acme?: boolean;
+  /** How this leader keeps it up to date, where it renews it. */
+  kept?: 'issued' | 'acme';
 };
 
 export function listCertificates(): Promise<CertificateDto[]> {

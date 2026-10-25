@@ -801,7 +801,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/certificates",
-        what: "Certificates: name, description, versions, the newest version's chain described, and issuedFor where this leader issued it; never a key. No query.",
+        what: "Certificates: name, description, versions, the newest version's chain described, and kept (issued or acme) where this leader renews it; never a key. No query.",
         body: "",
     },
     Route {

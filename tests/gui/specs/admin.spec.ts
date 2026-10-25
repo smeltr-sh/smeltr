@@ -405,11 +405,11 @@ test('the leader issues a certificate for the names given, and an identity prese
   await admin.screenshot({ path: test.info().outputPath('certificate-issued.png') });
   const listed = (await api.get('/api/certificates')) as {
     name: string;
-    issuedFor?: string[];
+    kept?: string;
     chain: { notBeforeMillis: number; notAfterMillis: number }[];
   }[];
   const issued = listed.find((c) => c.name === 'receiver-tls');
-  expect(issued?.issuedFor).toEqual(['receiver.example.com', '10.0.0.7']);
+  expect(issued?.kept).toBe('issued');
   const leaf = issued!.chain[0];
   expect(Math.floor((leaf.notAfterMillis - leaf.notBeforeMillis) / 86_400_000)).toBe(730);
 
