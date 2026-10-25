@@ -6708,10 +6708,10 @@ mod tests {
         );
         assert_eq!(
             (said[2].subject_kind, said[2].subject_id.as_str()),
-            (SubjectKind::Leader, "ingest-tls")
+            (SubjectKind::Certificate, "ingest-tls")
         );
         assert!(
-            said[2].message.ends_with("Replace it under Certificates"),
+            said[2].message.ends_with("Replace the certificate under Certificates"),
             "{}",
             said[2].message
         );
