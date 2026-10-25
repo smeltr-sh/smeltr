@@ -61,6 +61,21 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
             "only a Kafka or Event Hubs source's capture takes a start",
         ));
     }
+    let opened = open_one(state.clone(), request).await;
+    // What the fleet ran when it opened, for a sample saved from it to record. A capture is no less worth taking for a
+    // leader that cannot read its own history, so a failed read records none.
+    if let Some(session) = &opened.0.body.session {
+        let repo = smeltr::leader::git::repo_path(&state.data_dir);
+        let config = blocking(move || Ok::<_, String>(smeltr::leader::git::deployed(&repo)))
+            .await
+            .ok()
+            .flatten();
+        state.captures.opened_on(session, config);
+    }
+    opened
+}
+
+async fn open_one(state: AppState, request: CaptureRequest) -> Json<Envelope<StartedCapture>> {
     let source = match (&request.source, &request.destination) {
         (Some(source), None) => source.clone(),
         (None, Some(destination)) => {
@@ -493,6 +508,7 @@ pub async fn save_capture(
         source,
         columns,
         records,
+        capture: state.captures.sample_capture(&session),
     };
     let records = sample.records.len();
 

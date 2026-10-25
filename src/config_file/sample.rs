@@ -75,6 +75,42 @@ pub struct SampleDto {
     /// type is stored as the source spelled it, its field listed under `io::MISTYPED_FIELDS` (`io::take_mistyped`), and
     /// fails again when the sample is read.
     pub records: Vec<crate::io::RecordObject>,
+    /// How the records were captured. Absent from a sample pasted or uploaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<SampleCapture>,
+}
+
+/// How a sample's records were captured, as the capture was asked for and as it went: what a person needs to tell one
+/// capture from the next, and to take it again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SampleCapture {
+    /// When the capture opened, in UTC, as RFC 3339.
+    pub timestamp: String,
+    /// The source it read, by name. A capture reads one source or one destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The destination whose rows it read, by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
+    /// The group it ran in, where its source or destination is named.
+    pub group: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    /// The commit the fleet ran when the capture opened. Absent where nothing was deployed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<String>,
+    /// Each worker that stopped capturing on an error, and why. What it caught before is in the records.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<CaptureFailure>,
+}
+
+/// A worker that stopped capturing on an error.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptureFailure {
+    pub worker: String,
+    pub reason: String,
 }
 
 /// `record`'s `__source` fields, empty for a record read from nowhere.
@@ -98,6 +134,8 @@ pub struct SampleSummary {
     /// fills it from `config.git`'s history; a sample is not stored with it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub captured: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture: Option<SampleCapture>,
     /// The file it was read from, within its bundle.
     #[serde(skip)]
     pub path: String,
@@ -111,6 +149,7 @@ impl SampleDto {
             source: self.source.clone(),
             records: self.records.len(),
             captured: None,
+            capture: self.capture.clone(),
             path: String::new(),
         }
     }
@@ -249,6 +288,18 @@ mod tests {
                 .clone(),
             ],
             columns: Vec::new(),
+            capture: Some(SampleCapture {
+                timestamp: "2026-10-25T13:57:12.000000Z".to_string(),
+                source: Some("orders-west".to_string()),
+                destination: None,
+                group: "west".to_string(),
+                filter: Some("_raw.includes(\"a\")".to_string()),
+                config: Some("54bf84a1".to_string()),
+                failed: vec![CaptureFailure {
+                    worker: "w2".to_string(),
+                    reason: "the broker refused the credential".to_string(),
+                }],
+            }),
         };
         let path = sample_path(&sample.id).unwrap();
         std::fs::write(dir.join(&path), sample_bytes(&sample)).unwrap();
@@ -259,6 +310,7 @@ mod tests {
         assert_eq!(read.name, sample.name);
         assert_eq!(read.source.as_deref(), Some("orders-west"));
         assert_eq!(read.records[0], sample.records[0]);
+        assert_eq!(read.capture, sample.capture);
     }
 
     /// A record is stored as `$` is, and a pasted one was read from nowhere, so it has no `__source` at all.

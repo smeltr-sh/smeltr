@@ -124,6 +124,10 @@ pub enum WorkerState {
 struct Session {
     invitation: CaptureInvitation,
     started: Instant,
+    /// When it opened, in microseconds since the epoch, and the commit the fleet ran then: what a sample saved from
+    /// it records ([`Captures::sample_capture`]).
+    opened_micros: i64,
+    config: Option<String>,
     /// Set by [`Captures::stop`] on a capture still running. Nothing more is folded in and nobody more is invited.
     stopped: bool,
     /// The workers this capture is waiting for: those in its group the leader had heard from when it opened.
@@ -381,6 +385,8 @@ impl Captures {
                 stopped: false,
                 invitation: invitation.clone(),
                 started: Instant::now(),
+                opened_micros: crate::core::ctx::wall_clock_micros(),
+                config: None,
                 expected,
                 holding,
                 invited: HashSet::new(),
@@ -489,6 +495,40 @@ impl Captures {
 
     pub fn status(&self, session: &str) -> Option<CaptureStatus> {
         self.0.lock().unwrap().get(session).map(|s| s.status(session))
+    }
+
+    /// Note that the fleet ran `config` when `session` opened.
+    pub fn opened_on(&self, session: &str, config: Option<String>) {
+        if let Some(s) = self.0.lock().unwrap().get_mut(session) {
+            s.config = config;
+        }
+    }
+
+    /// How `session` was captured, as a sample saved from it records it.
+    pub fn sample_capture(&self, session: &str) -> Option<crate::config_file::SampleCapture> {
+        let sessions = self.0.lock().unwrap();
+        let s = sessions.get(session)?;
+        let mut timestamp = Vec::new();
+        crate::ops::datetime::write_iso8601_micros_bare(s.opened_micros, &mut timestamp);
+        Some(crate::config_file::SampleCapture {
+            timestamp: String::from_utf8(timestamp).expect("an instant is written as ASCII"),
+            source: s.invitation.source.as_ref().map(|source| source.id.clone()),
+            destination: s.invitation.destination.clone(),
+            group: s.invitation.group.clone(),
+            filter: s.invitation.filter.clone(),
+            config: s.config.clone(),
+            failed: s
+                .ended
+                .iter()
+                .filter_map(|(worker, end)| match end {
+                    CaptureEnd::Failed(reason) => Some(crate::config_file::CaptureFailure {
+                        worker: worker.clone(),
+                        reason: reason.clone(),
+                    }),
+                    _ => None,
+                })
+                .collect(),
+        })
     }
 
     /// The group `session` was opened against, which is the area whoever follows it must edit.
@@ -610,6 +650,47 @@ mod tests {
     /// How many records a status holds.
     fn count(status: &CaptureStatus) -> usize {
         rows_in(&status.batches)
+    }
+
+    /// A sample saved from a capture records how it was taken: what it read, in which group, under which filter, on
+    /// which commit, and each worker that failed with why.
+    #[test]
+    fn a_capture_says_how_it_was_taken() {
+        let captures = Captures::default();
+        captures.open(
+            "s1".to_string(),
+            CaptureRequest {
+                filter: Some("_raw.includes(\"x\")".to_string()),
+                ..request(Some(60))
+            },
+            expect(&["w1", "w2"]),
+            Default::default(),
+            Vec::new(),
+        );
+        captures.opened_on("s1", Some("54bf84a1".to_string()));
+        captures.invitations_for("w1", "prod-west", |_| None);
+        captures.invitations_for("w2", "prod-west", |_| None);
+        captures.record(report("s1", "w1", &["a"]));
+        captures.record(CaptureReport {
+            finished: Some(CaptureEnd::Failed("the broker refused the credential".to_string())),
+            ..progress_report("s1", "w2", &[])
+        });
+
+        let taken = captures.sample_capture("s1").unwrap();
+        assert!(taken.timestamp.ends_with('Z') && taken.timestamp.contains('T'), "{}", taken.timestamp);
+        assert_eq!(taken.source.as_deref(), Some("orders"));
+        assert_eq!(taken.destination, None);
+        assert_eq!(taken.group, "prod-west");
+        assert_eq!(taken.filter.as_deref(), Some("_raw.includes(\"x\")"));
+        assert_eq!(taken.config.as_deref(), Some("54bf84a1"));
+        assert_eq!(
+            taken.failed,
+            [crate::config_file::CaptureFailure {
+                worker: "w2".to_string(),
+                reason: "the broker refused the credential".to_string(),
+            }],
+            "a worker that finished is not a failure"
+        );
     }
 
     /// A capture asks for one total. Each worker is handed that number as its own bound, and the leader stops

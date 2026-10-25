@@ -2933,6 +2933,7 @@ mod tests {
             source: None,
             records: vec![smeltr::io::raw_object("{}".to_string())],
             columns: Vec::new(),
+            capture: None,
         };
         seed_west_over_shared(&data, &group, &sample);
 
@@ -3015,6 +3016,7 @@ mod tests {
             source: Some("orders".to_string()),
             records: vec![smeltr::io::raw_object("{}".to_string())],
             columns: Vec::new(),
+            capture: None,
         };
         seed_west_over_shared(&data, &group, &sample);
 
