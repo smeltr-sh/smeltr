@@ -156,13 +156,21 @@
                   >{/if}
                 {s.name}
               </span>
-              <span class="dim">{s.records}{s.id === lastUsed ? ' · last used' : ''}</span>
+              <span class="dim"
+                >{count(s.records, 'record')}{s.id === lastUsed ? ' · last used' : ''}</span
+              >
             </button>
           {/each}
         </div>
       {:else if tab === 'capture'}
         <!-- svelte-ignore a11y_autofocus -->
-        <input type="search" bind:value={query} aria-label="Find a source" autofocus />
+        <input
+          type="search"
+          bind:value={query}
+          placeholder="Find a source"
+          aria-label="Find a source"
+          autofocus
+        />
         <div class="list" role="listbox" aria-label="Sources">
           {#each foundSources as c (`${c.scope}/${c.id}`)}
             <button
