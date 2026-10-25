@@ -88,6 +88,16 @@ const DEFAULT_BATCH_MESSAGES: usize = 10_000;
 const MAX_BATCH_MESSAGES: usize = 1_000_000;
 const SMALLEST_RECORD_BYTES: usize = 64;
 
+/// What librdkafka holds for each queued message beyond its payload, measured at 2.16. `queue.buffering.max.kbytes`
+/// counts payloads alone, so the message count is what bounds a queue of small records.
+const MESSAGE_OVERHEAD_BYTES: usize = 225;
+
+/// `queue.buffering.max.messages`: as many of the smallest records as the producer's share of `bufferBytes` holds with
+/// their overhead. librdkafka's own 100,000 caps a far link at 100,000 records a round trip, whatever the buffer.
+fn queued_messages(producer_bytes: usize) -> usize {
+    (producer_bytes / (SMALLEST_RECORD_BYTES + MESSAGE_OVERHEAD_BYTES)).max(1)
+}
+
 /// The range librdkafka lets `message.max.bytes` take. A broker ceiling outside it is brought inside: a producer built
 /// outside the range never comes up at all.
 const MIN_MESSAGE_BYTES: usize = 1_000;
@@ -1271,6 +1281,10 @@ impl KafkaDestination {
                 "queue.buffering.max.kbytes",
                 (config.producer_bytes() / 1024).to_string(),
             )
+            .set(
+                "queue.buffering.max.messages",
+                queued_messages(config.producer_bytes()).to_string(),
+            )
             .set("client.id", CLIENT_ID);
         // From the destination's own field; the passthrough reserves `compression.type`.
         producer_config.set("compression.type", config.compression.as_property());
@@ -1597,6 +1611,13 @@ mod tests {
         assert_eq!(slow.linger, MAX_LINGER);
         assert_eq!(slow.batch, (64 << 20) / 5);
         assert_eq!(slow.in_flight, IN_FLIGHT_PER_CONNECTION);
+    }
+
+    #[test]
+    fn the_queue_holds_as_many_small_records_as_the_buffer_does_with_their_overhead() {
+        assert_eq!(queued_messages(32 << 20), (32 << 20) / 289);
+        assert_eq!(queued_messages(512 << 20), (512 << 20) / 289);
+        assert_eq!(queued_messages(0), 1, "librdkafka takes no less");
     }
 
     #[test]

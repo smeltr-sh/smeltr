@@ -1334,8 +1334,7 @@ const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
     ),
     (
         "queue.buffering.max.messages",
-        "left at librdkafka's own default, so it cannot undercut the bound `bufferBytes` sets on \
-         `queue.buffering.max.kbytes`; set to 0 it would remove that bound entirely",
+        "set from this destination's own `bufferBytes` field, with what librdkafka holds for each message",
     ),
     (
         "batch.size",
@@ -7053,6 +7052,7 @@ mod tests {
             "batch.num.messages",
             "acks",
             "max.in.flight.requests.per.connection",
+            "queue.buffering.max.messages",
         ] {
             let json = example_json().replacen(
                 r#""groupId": "smeltr""#,
@@ -7066,25 +7066,6 @@ mod tests {
                 "{key} was accepted: {errors:?}"
             );
         }
-    }
-
-    /// The one property smeltr reserves without setting: leaving librdkafka's default in place is itself the
-    /// decision, and an operator lowering it would bound the producer queue somewhere `bufferBytes` cannot see.
-    #[test]
-    fn the_message_count_bound_is_reserved_though_smeltr_leaves_it_alone() {
-        let json = example_json().replacen(
-            r#""groupId": "smeltr""#,
-            r#""groupId": "smeltr", "properties": {"queue.buffering.max.messages": "1"}"#,
-            1,
-        );
-        let file: FileConfig = serde_json::from_str(&json).unwrap();
-        let errors = validation_errors(file);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("queue.buffering.max.messages") && e.contains("smeltr owns")),
-            "{errors:?}"
-        );
     }
 
     /// A transactional producer refuses every record sent outside a transaction, and smeltr begins none.
