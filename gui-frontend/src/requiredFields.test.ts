@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 // A control the browser refuses empty belongs to a field marked `required`, so its `*` and its `?` say so too.
-// The other way is not checked: most required fields refuse empty in the save, not in the browser.
+// The other way is not checked: most required fields refuse empty in the save, not in the browser. It reads the
+// source, so it sees only a literal `required`, not `required={…}`.
 const sources = import.meta.glob<string>('./**/*.svelte', {
   query: '?raw',
   import: 'default',

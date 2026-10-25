@@ -726,6 +726,11 @@
         {@const AdminPage = pages.groups}
         <Locked refusedInDemo><AdminPage page="groups" /></Locked>
       {/if}
+    {:else if route.page === 'certificates'}
+      {#if pages.certificates}
+        {@const CertificatesPage = pages.certificates}
+        <Locked refusedInDemo><CertificatesPage adding={route.adding ?? false} /></Locked>
+      {/if}
     {:else if route.page === 'secrets'}
       {#if pages.secrets}
         {@const SecretsPage = pages.secrets}

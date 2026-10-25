@@ -60,23 +60,22 @@
   const message = $derived(
     error ?? (context && field ? context.validation.message(context.id(), field) : null),
   );
+  const control = () => root.querySelector<HTMLElement>('input, select, textarea');
   $effect(() => {
     if (!context || !field) return;
     return context.validation.mount(context.id(), field, () => {
       // A control before a button: the label's own `?` is a button too.
-      const control =
-        root.querySelector<HTMLElement>('input, select, textarea') ??
-        root.querySelector<HTMLElement>('button:not(.ask)');
-      if (control) control.focus();
+      const target = control() ?? root.querySelector<HTMLElement>('button:not(.ask)');
+      if (target) target.focus();
       else root.scrollIntoView({ block: 'center' });
     });
   });
-  // A screen reader hears this rather than the `*`.
+  // A screen reader hears this rather than the `*`. A group's first control is not the group, so it gets none.
   $effect(() => {
-    const control = root.querySelector('input, select, textarea');
-    if (!control) return;
-    if (required) control.setAttribute('aria-required', 'true');
-    else control.removeAttribute('aria-required');
+    const c = control();
+    if (!c || group) return;
+    if (required) c.setAttribute('aria-required', 'true');
+    else c.removeAttribute('aria-required');
   });
   // The item's id before an edit reaches the control. An edit to the id
   // field renames the item, and the item's errors go with it.

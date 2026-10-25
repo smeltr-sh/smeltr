@@ -17,10 +17,11 @@ import { Authority } from '../acme';
 import { openAdmin, workerRow } from '../moves/admin';
 import {
   acmeNewRoot,
-  fullChain,
+  chooseUploaded,
   inForce,
   openCertificates,
   renewAcme,
+  replaceServed,
   source,
   switchToAcme,
   switchToLeaderIssued,
@@ -65,6 +66,10 @@ test('every worker follows the certificate from Leader issued to Uploaded and ba
   const uploaded = await api.get('/api/settings/certificates');
   expect(uploaded.supplied).toBe(true);
   expect(uploaded.rotation).toBeNull();
+  // The tab names the entry it serves, chosen in its picker.
+  const served = await openCertificates(page);
+  await expect(served.getByRole('combobox', { name: 'Certificate' })).toHaveValue(uploaded.entry);
+  expect(uploaded.entry).toMatch(/^uploaded-/);
 
   await switchToLeaderIssued(page);
   await heard();
@@ -106,7 +111,7 @@ test('a renewal is served while the switch back to Leader issued waits for a wor
 
   // A worker gone quiet is still waited for, so the switch back stays open.
   await fleet.stopWorker('w-away');
-  const served = await openCertificates(page);
+  let served = await openCertificates(page);
   await source(served, 'Leader issued').click();
   await served.getByRole('button', { name: 'Switch to Leader issued' }).click();
   await expect(
@@ -130,13 +135,11 @@ test('a renewal is served while the switch back to Leader issued waits for a wor
     later.getTime(),
   );
 
-  // The upload form is still there under the switch, and a renewal under the uploaded root is served at once.
-  await source(served, 'Uploaded').click();
-  await served.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(renewal));
-  await served.getByRole('textbox', { name: 'Private key' }).fill(renewal.privateKey);
+  // The chooser is still there under the switch, and a renewal under the uploaded root is served at once.
+  served = await chooseUploaded(page, renewal);
   await served.getByRole('button', { name: 'Serve this certificate' }).click();
   await expect(served.getByRole('status')).toHaveText(
-    'this leader is serving the certificate you supplied',
+    /^this leader is serving the certificate "uploaded-\d+"$/,
   );
   await expect(
     served.getByRole('heading', { name: /^Switch to Leader issued in progress/ }),
@@ -149,6 +152,11 @@ test('a renewal is served while the switch back to Leader issued waits for a wor
 
   await served.getByRole('button', { name: 'Abandon switch' }).click();
   await inForce(served, 'Uploaded');
+
+  // Replacing the entry the leader serves serves the new version.
+  await replaceServed(page, pki);
+  const replaced = await api.get('/api/settings/certificates');
+  expect(replaced.served.fingerprint).toBe(before.served.fingerprint);
   await api.ctx.dispose();
 });
 

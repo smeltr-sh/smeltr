@@ -2074,6 +2074,17 @@ async fn run_leader() {
     ));
 
     let LeaderSetup { routes, tls, leader } = setup_leader(port, auth.clone(), store, registry).await;
+    // After `setup_leader`, which recovers an upload a crash interrupted, so what is listed is what is served.
+    if tls.is_some()
+        && let Err(e) = smeltr::leader::list_uploaded_certificate(
+            leader.store.as_ref(),
+            &smeltr::leader::tls::dir_of(&leader.data_dir),
+        )
+    {
+        tracing::warn!(target: "leader.certificates", "the uploaded certificate the leader serves was not listed: {e}");
+    }
+    // Before `leader` goes into the certificate state, which a leader serving plain HTTP has none of.
+    let list = leader.clone();
     let certificates = tls.as_ref().map(|(resolver, _)| {
         std::sync::Arc::new(certificates_api::Tls {
             // Spelled as the leader spells it, from the one absolute data directory. The certificate layer keeps
@@ -2123,7 +2134,7 @@ async fn run_leader() {
 
     let app = app
         .merge(routes)
-        .merge(certificates_api::router(auth.clone(), certificates.clone()))
+        .merge(certificates_api::router(auth.clone(), certificates.clone(), list))
         .merge(acme_api::router(auth.clone(), certificates.clone()))
         .merge(auth_router(auth.clone()))
         // Before the SPA fallback, so an API path nobody serves answers as an API. Without it a mistyped route
@@ -2404,6 +2415,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                after_dot: None,
             },
             Default::default(),
             &[
@@ -2460,6 +2472,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                after_dot: None,
             },
             Default::default(),
             columns,
@@ -2480,6 +2493,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: Some(filter.to_string()),
+                after_dot: None,
             },
             Default::default(),
             &[],
@@ -2534,6 +2548,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                after_dot: None,
             },
             Default::default(),
             &[],
@@ -2929,6 +2944,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                after_dot: None,
             },
         );
 
@@ -2961,6 +2977,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                after_dot: None,
             },
         );
         assert!(!response.ok, "{} rows", response.rows.len());
