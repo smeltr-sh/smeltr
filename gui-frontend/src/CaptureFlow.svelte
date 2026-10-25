@@ -310,10 +310,10 @@
           {/if}
         </select>
       </Field>
-      <Field label="Keep records where" note="Leave it empty to keep everything.">
+      <Field label="Keep records where">
         {#snippet help()}
           {#each filterHelp(at) as part, i (i)}{#if part.code}<code>{part.text}</code
-              >{:else}{part.text}{/if}{/each}
+              >{:else}{part.text}{/if}{/each} Leave it empty to keep everything.
         {/snippet}
         <ValidatedField
           bind:value={filter}

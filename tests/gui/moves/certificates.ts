@@ -86,9 +86,7 @@ async function fillAcme(served: Locator, authority: Authority, names: string[]) 
   }
   await served.getByRole('textbox', { name: 'Contact email' }).fill('ops@example.com');
   await advanced(served);
-  await served
-    .getByRole('textbox', { name: 'Authority', exact: true })
-    .fill(authority.roots.join(''));
+  await served.getByRole('textbox', { name: /^Authority/ }).fill(authority.roots.join(''));
 }
 
 /** Orders a certificate for `names` from `authority`, and waits until it is in force. The first order is under a
@@ -128,7 +126,7 @@ export async function refuseDns01(page: Page, token: string, ip: string) {
   await served
     .getByRole('combobox', { name: 'DNS provider' })
     .selectOption({ label: 'Cloudflare' });
-  await served.getByLabel('API token', { exact: true }).fill(token);
+  await served.getByLabel(/^API token/).fill(token);
   await served.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByText(`DNS-01 cannot prove an IP address: ${ip}`)).toBeVisible();
   await challenge.selectOption(was);
@@ -143,9 +141,7 @@ export async function acmeNewRoot(page: Page, authority: Authority) {
   const served = await openCertificates(page);
   await source(served, 'ACME').click();
   await advanced(served);
-  await served
-    .getByRole('textbox', { name: 'Authority', exact: true })
-    .fill(authority.roots.join(''));
+  await served.getByRole('textbox', { name: /^Authority/ }).fill(authority.roots.join(''));
   await served.getByRole('button', { name: 'Renew now' }).click();
   await publishing(served, /^Moving workers to a new root/);
   await inForce(served, 'ACME');
