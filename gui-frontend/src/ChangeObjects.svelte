@@ -102,18 +102,18 @@
   let scopes = $derived([...new Set(branch.touches.map(scopeOf))].sort());
 
   let changes = $state<ObjectChange[]>([]);
-  /** A sample no test names, which a deploy leaves out (`BranchDto.scratch`). Only the whole change says, since
+  /** A sample no test names, which a deploy leaves out (`BranchDto.leftOut`). Only the whole change says, since
    * one save does not deploy. */
-  let scratchPaths = $derived(new Set(branch.scratch ?? []));
-  function isScratch(c: ObjectChange): boolean {
+  let leftOutPaths = $derived(new Set(branch.leftOut ?? []));
+  function isLeftOut(c: ObjectChange): boolean {
     return (
       span.whole &&
       c.section === SAMPLES &&
-      scratchPaths.has(`${prefixOf(c.scope)}${SAMPLES}/${c.id}.json`)
+      leftOutPaths.has(`${prefixOf(c.scope)}${SAMPLES}/${c.id}.json`)
     );
   }
-  let deployed = $derived(changes.filter((c) => !isScratch(c)));
-  let notDeployed = $derived(changes.filter(isScratch));
+  let deploying = $derived(changes.filter((c) => !isLeftOut(c)));
+  let leftOut = $derived(changes.filter(isLeftOut));
   let loading = $state(true);
   let loadFailed = $state(false);
   let loads = 0;
@@ -481,13 +481,13 @@
   </div>
 {/snippet}
 
-{#snippet objectCard(c: ObjectChange, scratch: boolean)}
+{#snippet objectCard(c: ObjectChange, leftOut: boolean)}
   {@const key = keyOf(c)}
   {@const tests = span.whole ? testsOf(c) : null}
   {@const target = undoTarget(c)}
   <div class="card">
     <div class="obj-head">
-      {#if !scratch}<span class="badge {c.status}">{c.status}</span>{/if}
+      {#if !leftOut}<span class="badge {c.status}">{c.status}</span>{/if}
       {#if c.moved}<span class="dim note">moved</span>{/if}
       <span class="label mono">{c.label}</span>
       <span class="dim note kind">{c.noun} &middot; {c.scope}</span>
@@ -514,9 +514,8 @@
         aria-pressed={!!showingJson[key]}
         onclick={() => (showingJson = { ...showingJson, [key]: !showingJson[key] })}>JSON</button
       >
-      <!-- A group's own card is read only: neither undo nor a comment names a manifest. A scratch sample
-        never reaches main, so it has nothing to undo. -->
-      {#if target && span.whole && !scratch && canEdit(c.scope)}
+      <!-- A group's own card is read only: neither undo nor a comment names a manifest. A left-out sample never reaches main, so it has nothing to undo. -->
+      {#if target && span.whole && !leftOut && canEdit(c.scope)}
         <button
           type="button"
           class="compact"
@@ -543,7 +542,7 @@
                   ? '-'
                   : ' '} {line.text}</div>{/each}</pre>
       </div>
-    {:else if !scratch}
+    {:else if !leftOut}
       {#if c.fields.length > 0}
         <table class="fields">
           <tbody>
@@ -617,9 +616,9 @@
     {#if view === 'objects' && !loading && !loadFailed}
       <span class="dim note"
         >{count(
-          deployed.length,
+          deploying.length,
           'object',
-        )}{#if notDeployed.length > 0}{` · ${count(notDeployed.length, 'sample')} left out`}{/if}</span
+        )}{#if leftOut.length > 0}{` · ${count(leftOut.length, 'sample')} left out`}{/if}</span
       >
     {/if}
     <select class="saves" aria-label="Saves" bind:value={range}>
@@ -664,17 +663,17 @@
   {:else if changes.length === 0}
     <p class="dim">No objects changed.</p>
   {:else}
-    {#each deployed as c (keyOf(c))}
+    {#each deploying as c (keyOf(c))}
       {@render objectCard(c, false)}
     {/each}
-    {#if notDeployed.length > 0}
-      <div class="card not-deployed">
+    {#if leftOut.length > 0}
+      <div class="card left-out">
         <h2 class="card-note">Left out</h2>
         <p class="card-note">
           No test uses these samples. They stay on <code>{branch.name}</code> until it is deployed, then
           are deleted with it. To deploy one, lock it as a test.
         </p>
-        {#each notDeployed as c (keyOf(c))}
+        {#each leftOut as c (keyOf(c))}
           {@render objectCard(c, true)}
         {/each}
       </div>
@@ -870,7 +869,7 @@
   }
 
   .elsewhere h2,
-  .not-deployed h2 {
+  .left-out h2 {
     font-size: var(--text-micro);
     font-weight: 700;
     text-transform: uppercase;
@@ -879,19 +878,19 @@
     border-bottom: 1px solid var(--border);
   }
   /* Its samples sit inside it, each folded to its head. */
-  .not-deployed {
+  .left-out {
     display: grid;
     gap: 0.6rem;
     padding-bottom: 0.8rem;
   }
-  .not-deployed > p {
+  .left-out > p {
     padding-top: 0;
     padding-bottom: 0;
   }
-  .not-deployed > .card {
+  .left-out > .card {
     margin: 0 0.8rem;
   }
-  .not-deployed > .card .obj-head {
+  .left-out > .card .obj-head {
     border-bottom: 0;
   }
   .away {

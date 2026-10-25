@@ -197,9 +197,9 @@ pub struct BranchOut {
     behind: u32,
     /// The files the branch changes, relative to the repository root.
     touches: Vec<String>,
-    /// Those of `touches` that are samples no test names, which a deploy leaves out (`git::branch_scratch_samples`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    scratch: Vec<String>,
+    /// Those of `touches` that are samples no test names, which a deploy leaves out (`git::left_out_samples`).
+    #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    left_out: std::collections::BTreeSet<String>,
     /// The review request on this branch, where one was opened.
     #[serde(skip_serializing_if = "Option::is_none")]
     change: Option<ChangeOut>,
@@ -290,15 +290,17 @@ pub async fn list_branches(
             .into_iter()
             .filter(|b| b.name != git::MAIN_BRANCH)
         {
-            let touches: Vec<String> = git::changed_files(&repo, &summary.name)?
-                .into_iter()
-                .map(|c| c.path)
-                .collect();
+            let changed = git::changed_files(&repo, &summary.name)?;
+            let touches: Vec<String> = changed.iter().map(|c| c.path.clone()).collect();
             if !sees_all(&access, touches.iter().map(String::as_str)) {
                 continue;
             }
             let base = git::branch_base(&repo, &summary.name)?;
-            let scratch = git::branch_scratch_samples(&repo, &summary.name)?;
+            let left_out = git::left_out_samples(
+                &repo,
+                &summary.head,
+                changed.iter().map(|c| (c.path.as_str(), c.status == "D")),
+            );
             let change = git::read_change(&repo, &summary.name)?.map(ChangeOut::from);
             let push = remote.as_ref().map(|_| {
                 match failures
@@ -330,7 +332,7 @@ pub async fn list_branches(
                 commits: summary.ahead,
                 behind: summary.behind,
                 touches,
-                scratch,
+                left_out,
                 change,
             });
         }

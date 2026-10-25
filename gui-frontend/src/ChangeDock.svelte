@@ -14,7 +14,7 @@
     tests,
     testsLoading,
     behind,
-    notDeployed = 0,
+    leftOut = 0,
     bringingCurrent,
     bringCurrentDisabled,
     onbringcurrent,
@@ -31,7 +31,7 @@
     /** Commits `main` has that the branch does not. */
     behind: number;
     /** Samples no test names, which the deploy leaves out. */
-    notDeployed?: number;
+    leftOut?: number;
     bringingCurrent: boolean;
     bringCurrentDisabled: boolean;
     onbringcurrent: () => void;
@@ -83,11 +83,11 @@
         {/if}
       </span>
 
-      {#if notDeployed > 0}
+      {#if leftOut > 0}
         <span class="item">
           <!-- Nothing to fix: what stays on the branch is said, not warned about. -->
           <span class="mark" aria-hidden="true"></span>
-          <span>{count(notDeployed, 'sample')} left out</span>
+          <span>{count(leftOut, 'sample')} left out</span>
         </span>
       {/if}
 

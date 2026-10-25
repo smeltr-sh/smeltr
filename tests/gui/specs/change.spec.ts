@@ -510,7 +510,7 @@ test('a review sets apart the samples no test uses, which the deploy leaves out'
   await api.openChange('scratch', 'Colors, and a capture');
 
   await goto(admin, leader, '#/changes/review/scratch');
-  const staying = admin.locator('.not-deployed');
+  const staying = admin.locator('.left-out');
   await expect(staying.getByRole('heading', { name: 'Left out' })).toBeVisible();
   await expect(staying.getByText('capture 14:20', { exact: true })).toBeVisible();
   await expect(staying.getByRole('button', { name: 'Undo changes' })).toHaveCount(0);

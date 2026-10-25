@@ -1971,7 +1971,7 @@ fn squash_change_from(
 
     let head = main_head(&repo).ok_or_else(|| GitError(format!("{MAIN_BRANCH} has no commit")))?;
     // The branch is not behind `main`, so what a squash merge would produce is the tree the branch already holds,
-    // less its scratch samples.
+    // less its left-out samples.
     let tree = deploying_tree(&repo, &head, &tip)?;
     if tree == tree_of(&repo, &head)? {
         return Err(GitError(format!(
@@ -2007,33 +2007,29 @@ fn squash_change_from(
     })
 }
 
-/// The samples `tip` adds or changes from `base` that no test beside them names, by path. They are scratch: a
-/// deploy leaves them out. A sample removed is never scratch, and a bundle holding a test that does not read has
-/// none, since what that test names cannot be known.
-fn scratch_samples(repo_path: &Path, base: &str, tip: &str) -> Result<std::collections::HashSet<String>, GitError> {
-    let repo = open(repo_path)?;
-    // Each sample added or changed, under the bundle it is in: `groups/<id>/`, `shared/`, or the root's empty one.
-    let mut changed: Vec<(String, String)> = Vec::new();
-    for change in tree_changes(&repo, resolve(&repo, base)?, resolve(&repo, tip)?)? {
-        if matches!(change, gix::object::tree::diff::ChangeDetached::Deletion { .. }) {
-            continue;
-        }
-        let path = change.location().to_string();
+/// Of `changed`, the files a branch at `tip` changes, each with whether it was removed: the samples no test beside
+/// them names, by path. A deploy leaves them out. A sample removed is never left out, and a bundle holding a test
+/// that does not read leaves none out, since what that test names cannot be known.
+pub fn left_out_samples<'a>(
+    repo_path: &Path,
+    tip: &str,
+    changed: impl IntoIterator<Item = (&'a str, bool)>,
+) -> std::collections::BTreeSet<String> {
+    let mut named: std::collections::HashMap<&str, Option<std::collections::HashSet<String>>> =
+        std::collections::HashMap::new();
+    let mut left_out = std::collections::BTreeSet::new();
+    for (path, removed) in changed {
+        // The bundle a sample is in: `groups/<id>/`, `shared/`, or the root's empty one.
         let bundle = path
             .rsplit_once('/')
             .and_then(|(dir, _)| dir.strip_suffix(crate::config_file::SAMPLES_DIR))
-            .filter(|bundle| bundle.is_empty() || bundle.ends_with('/'));
-        if let Some(bundle) = bundle {
-            changed.push((bundle.to_string(), path));
-        }
-    }
-    let mut named: std::collections::HashMap<String, Option<std::collections::HashSet<String>>> =
-        std::collections::HashMap::new();
-    let mut scratch = std::collections::HashSet::new();
-    for (bundle, path) in changed {
-        let named = named.entry(bundle.clone()).or_insert_with(|| {
-            let mut files = super::tree::TreeFiles::new(repo_path, tip, bundle.as_str());
-            let (tests, unreadable) = crate::config_file::list_tests(&mut files);
+            .filter(|bundle| !removed && (bundle.is_empty() || bundle.ends_with('/')));
+        let Some(bundle) = bundle else {
+            continue;
+        };
+        let named = named.entry(bundle).or_insert_with(|| {
+            let (tests, unreadable) =
+                crate::config_file::list_tests(&mut super::tree::TreeFiles::new(repo_path, tip, bundle));
             unreadable.is_empty().then(|| {
                 tests
                     .iter()
@@ -2042,38 +2038,41 @@ fn scratch_samples(repo_path: &Path, base: &str, tip: &str) -> Result<std::colle
                     .collect()
             })
         });
-        if named.as_ref().is_some_and(|named| !named.contains(&path)) {
-            scratch.insert(path);
+        if named.as_ref().is_some_and(|named| !named.contains(path)) {
+            left_out.insert(path.to_string());
         }
     }
-    Ok(scratch)
+    left_out
 }
 
-/// The scratch samples of `branch` ([`scratch_samples`]), against where it left `main`, sorted.
-pub fn branch_scratch_samples(repo_path: &Path, branch: &str) -> Result<Vec<String>, GitError> {
-    check_branch_name(branch)?;
-    let (base, tip) = since_main(&open(repo_path)?, branch)?;
-    let mut scratch: Vec<String> = scratch_samples(repo_path, &base.to_string(), &tip.to_string())?
-        .into_iter()
-        .collect();
-    scratch.sort();
-    Ok(scratch)
-}
-
-/// `tip`'s tree with each of its scratch samples ([`scratch_samples`]) as `base` holds it: what deploying a branch at
-/// `tip` onto `base` puts on `main`.
+/// `tip`'s tree with each of its left-out samples ([`left_out_samples`]) as `base` holds it: what deploying a branch
+/// at `tip` onto `base` puts on `main`.
 fn deploying_tree(repo_path: &Path, base: &str, tip: &str) -> Result<String, GitError> {
-    let scratch: Vec<String> = scratch_samples(repo_path, base, tip)?.into_iter().collect();
-    if scratch.is_empty() {
-        return tree_of(repo_path, tip);
+    let git = open(repo_path)?;
+    let changed: Vec<(String, bool)> = tree_changes(&git, resolve(&git, base)?, resolve(&git, tip)?)?
+        .iter()
+        .map(|change| {
+            let removed = matches!(change, gix::object::tree::diff::ChangeDetached::Deletion { .. });
+            (change.location().to_string(), removed)
+        })
+        .collect();
+    let left_out: Vec<String> = left_out_samples(
+        repo_path,
+        tip,
+        changed.iter().map(|(path, removed)| (path.as_str(), *removed)),
+    )
+    .into_iter()
+    .collect();
+    if left_out.is_empty() {
+        return Ok(tree_at(&git, tip)?.to_string());
     }
-    let edits: Vec<FileEdit> = scratch
+    let edits: Vec<FileEdit> = left_out
         .iter()
         .cloned()
-        .zip(read_blobs(repo_path, base, &scratch)?)
+        .zip(read_blobs(repo_path, base, &left_out)?)
         .map(|(path, content)| FileEdit { path, content })
         .collect();
-    let (_, tree) = tree_with(&open(repo_path)?, tip, &edits)?;
+    let (_, tree) = tree_with(&git, tip, &edits)?;
     Ok(tree.to_string())
 }
 
@@ -4511,10 +4510,10 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
-    /// A sample deploys only when a test beside it names it: the rest are scratch, and stay on the branch.
+    /// A sample deploys only when a test beside it names it: the rest are left out, and stay on the branch.
     #[test]
     fn a_deploy_leaves_out_samples_no_test_names() {
-        let data = temp_dir("scratch-samples");
+        let data = temp_dir("left-out-samples");
         let repo = repo_path(&data);
         put(&data, MAIN_BRANCH, &west("orders"), "a bundle for west");
         save(
@@ -4559,7 +4558,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            branch_scratch_samples(&repo, "work").unwrap(),
+            {
+                let changed = changed_files(&repo, "work").unwrap();
+                let tip = branch_tip(&repo, "work").unwrap();
+                let changed = changed.iter().map(|c| (c.path.as_str(), c.status == "D"));
+                left_out_samples(&repo, &tip, changed).into_iter().collect::<Vec<_>>()
+            },
             [
                 "groups/west/samples/old.json",
                 "groups/west/samples/tried.json",
@@ -4593,10 +4597,10 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
-    /// A branch holding only scratch samples has nothing to deploy.
+    /// A branch holding only left-out samples has nothing to deploy.
     #[test]
-    fn scratch_samples_alone_deploy_nothing() {
-        let data = temp_dir("scratch-only");
+    fn left_out_samples_alone_deploy_nothing() {
+        let data = temp_dir("left-out-only");
         let repo = repo_path(&data);
         put(&data, MAIN_BRANCH, &west("orders"), "a bundle for west");
         create_branch(&data, "work").unwrap();
@@ -4615,7 +4619,7 @@ mod tests {
     /// A test that does not read could name any sample, so its bundle's samples all deploy.
     #[test]
     fn a_test_that_does_not_read_keeps_its_bundles_samples() {
-        let data = temp_dir("scratch-unreadable-test");
+        let data = temp_dir("left-out-unreadable-test");
         let repo = repo_path(&data);
         put(&data, MAIN_BRANCH, &west("orders"), "a bundle for west");
         create_branch(&data, "work").unwrap();
