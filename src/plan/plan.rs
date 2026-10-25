@@ -341,6 +341,9 @@ pub struct Plan {
     /// A compiler temporary is bound to no name. Config cannot reach it, and it is never a leaf of `tree`, so the
     /// serializer never writes it. The name it shows here is for reading the plan.
     pub provenance: Vec<SlotOrigin>,
+    /// Each copy that shares its value's slot under another name, which `provenance` does not see: the slot, the name,
+    /// how many slots there were when it was made, and the step that made it.
+    pub aliases: Vec<(SlotId, String, usize, FunctionId)>,
     pub patterns: Vec<crate::expr::ast::PatternSrc>,
     pub warnings: Vec<CompileError>,
     /// Instruction indices that are row barriers. Declared by the function, never discovered from the data: finding
@@ -667,6 +670,7 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
         slot_layout: c.syms.layout,
         instrs: c.instrs,
         provenance: c.syms.origins,
+        aliases: c.syms.aliases,
         patterns: c.res.patterns,
         warnings: c.syms.warnings,
         barriers,
@@ -689,7 +693,7 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
         &c.syms.local_slots,
         &c.syms.deleted_slots,
         &c.syms.nulls,
-        &c.syms.aliases,
+        &plan.aliases,
     );
     plan.warnings.extend(unread);
     // A case that runs on into the next has the next one's statements copied into its branch, so a warning about
@@ -760,7 +764,7 @@ fn unread_writes(
     locals: &HashSet<SlotId>,
     deleted: &HashSet<SlotId>,
     nulls: &HashSet<SlotId>,
-    aliases: &[(SlotId, String, usize)],
+    aliases: &[(SlotId, String, usize, FunctionId)],
 ) -> Vec<CompileError> {
     let mut read = HashSet::new();
     every_read(&plan.instrs, &mut |s| {
@@ -788,8 +792,8 @@ fn unread_writes(
             .chain(
                 aliases
                     .iter()
-                    .filter(|(s, n, _)| *s == slot && spelled(n))
-                    .map(|(_, n, at)| (n.as_str(), *at)),
+                    .filter(|(s, n, ..)| *s == slot && spelled(n))
+                    .map(|(_, n, at, _)| (n.as_str(), *at)),
             )
             .collect();
         let rewritten = names
@@ -2644,7 +2648,7 @@ impl Compiler<'_> {
             Resolved::Slot(s) if guard.is_none() && !self.in_loop() => {
                 self.syms.put_place(place, s);
                 let made = self.syms.origins.len();
-                self.syms.aliases.push((s, place.name().to_string(), made));
+                self.syms.aliases.push((s, place.name().to_string(), made, id));
                 return;
             }
             Resolved::Unclaimed(s, removed)

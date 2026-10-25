@@ -3,17 +3,24 @@
 //! everything it reads as arguments -- the config, the sample and where its lookup tables resolve -- so the leader's
 //! routes, its test runner and the demo's preview service give one answer.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::config_file::{self, Verdict};
 use crate::core::batch::Batch;
+use crate::core::bits;
 use crate::core::buffer::{self, BufferPool};
+use crate::core::column::{Column, DataType, Validity};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind};
+use crate::core::id::{FunctionId, SlotId};
+use crate::format::record::RecordView;
 use crate::leader::envelope::{ApiError, Empty, Envelope};
 use crate::plan;
 use crate::plan::output::{RowFilter, run_to_json_marked};
+use crate::plan::plan::Plan;
+use crate::plan::resolve::Origin;
 use crate::plan::topology::SourceMeta;
+use crate::plan::tree;
 
 #[derive(serde::Deserialize)]
 pub struct PreviewRequest {
@@ -37,6 +44,10 @@ pub struct PreviewRequest {
     /// for are returned. One that does not compile fails the preview at the `filter` stage.
     #[serde(default)]
     pub filter: Option<String>,
+    /// Say, on each row, which steps changed each of its fields and which step dropped it (`touched`). It keeps every
+    /// field's every value for the whole run and compares them, so an editor asks for it once typing settles.
+    #[serde(default)]
+    pub attribution: bool,
     /// What may follow a `.` in an expression of the config. Asked, the preview answers it instead of running the
     /// sample, and `Preview::after_dot` holds the answer.
     #[serde(default)]
@@ -269,6 +280,13 @@ pub struct RowOut {
     /// `None` when the row did not survive the pipeline.
     pub json: Option<serde_json::Value>,
     pub exceptions: Vec<ExceptionOut>,
+    /// With `attribution`: each field a step changed or added, by its name as the editor writes it, and those steps by
+    /// id in the order they ran. Absent on a row no step changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<BTreeMap<String, Vec<String>>>,
+    /// With `attribution`: the step after which the row was gone.
+    #[serde(rename = "droppedBy", skip_serializing_if = "Option::is_none")]
+    pub dropped_by: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -276,6 +294,9 @@ pub struct ExceptionOut {
     /// The answer the exception's kind takes: `ignore`, `tag`, `drop`, `deliver` or `block`.
     pub answer: &'static str,
     pub message: String,
+    /// The step that raised it, by id. Absent for one raised reading the record, before any step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
 }
 
 // -- route preview ------------------------------------------------------
@@ -855,7 +876,7 @@ pub fn run_preview(
         Ok(read) => read,
         Err(e) => return Preview::failed("sample", vec![ApiError::new(e)], pipeline_names),
     };
-    let plan = match plan::plan::compile(pipeline_cfg, &meta) {
+    let mut plan = match plan::plan::compile(pipeline_cfg, &meta) {
         Ok(plan) => plan,
         Err(errs) => {
             // `compile` runs one pipeline in isolation and so never sets `CompileError::pipeline`; the pipeline
@@ -867,6 +888,9 @@ pub fn run_preview(
             return Preview::failed("compile", messages, pipeline_names);
         }
     };
+    if req.attribution {
+        keep_bindings(&mut plan);
+    }
 
     let warnings: Vec<ApiError> = plan
         .warnings
@@ -934,11 +958,13 @@ pub fn run_preview(
             req.show_internal,
             filter.as_ref(),
         );
+        // An unroll makes rows of its own, which no longer line up with the sample's.
+        let touched = (req.attribution && batch.rows() == records.len()).then(|| touched(&plan, &batch));
         batch.reclaim(&mut pool);
-        rows
+        (rows, touched)
     });
-    let preview_rows = match previewed {
-        Ok(rows) => rows,
+    let (preview_rows, touched) = match previewed {
+        Ok(previewed) => previewed,
         Err(over) => {
             return Preview::failed(
                 "memory",
@@ -950,7 +976,12 @@ pub fn run_preview(
         }
     };
 
-    let rows: Vec<(RowOut, bool)> = preview_rows
+    // A called pipeline's steps are the call's: the call is the step this pipeline's author sees.
+    let calls = serde_json::from_str::<serde_json::Value>(&req.config)
+        .ok()
+        .and_then(|config| calls_of(&config, req.pipeline.as_deref()))
+        .unwrap_or_default();
+    let mut rows: Vec<(RowOut, bool)> = preview_rows
         .into_iter()
         .map(|r| {
             let row = RowOut {
@@ -961,12 +992,21 @@ pub fn run_preview(
                 exceptions: r
                     .exceptions
                     .into_iter()
-                    .map(|(answer, message)| ExceptionOut { answer, message })
+                    .map(|(answer, message, step)| ExceptionOut {
+                        answer,
+                        message,
+                        step: step.map(|id| calls.get(&id).cloned().unwrap_or(id)),
+                    })
                     .collect(),
+                steps: None,
+                dropped_by: None,
             };
             (row, r.matched)
         })
         .collect();
+    if let Some(touched) = touched {
+        attribute(&calls, &plan, touched, &mut rows);
+    }
 
     let parsers = tally
         .parses()
@@ -1011,6 +1051,255 @@ pub fn run_preview(
         parsers,
         warnings,
     })
+}
+
+/// Clear every `reuse` that would hand away a binding of a name, so `touched` can read each binding after the run.
+/// Compiler temporaries are still reused.
+fn keep_bindings(plan: &mut Plan) {
+    let named: HashSet<SlotId> = plan
+        .provenance
+        .iter()
+        .filter(|o| !o.name.starts_with('<'))
+        .map(|o| o.slot)
+        .chain(plan.aliases.iter().map(|(slot, ..)| *slot))
+        .collect();
+    for instr in &mut plan.instrs {
+        if instr.reuse.is_some_and(|s| named.contains(&s)) {
+            instr.reuse = None;
+        }
+    }
+}
+
+/// What each step did to each row, read from a run of a plan `keep_bindings` kept: a step that binds a name changed it
+/// on a row where the new value differs from the one bound before, and a step that binds `__live` dropped a row it
+/// turns false. A value is compared whole, so a step that changes one field of an object changed the object.
+struct Touched<'p> {
+    /// Per row, each name a step changed, with the step, in the order they ran.
+    changed: Vec<Vec<(&'p str, FunctionId)>>,
+    dropped_by: Vec<Option<FunctionId>>,
+}
+
+fn touched<'p>(plan: &'p Plan, batch: &Batch) -> Touched<'p> {
+    let rows = batch.rows();
+    let mut changed = vec![Vec::new(); rows];
+    let mut dropped_by = vec![None; rows];
+    // Every binding of a name in the order the compiler made it: a copy, made when there were `at` slots, comes
+    // before the slot numbered `at`.
+    let mut bindings: Vec<(usize, &'p str, SlotId, Option<FunctionId>)> = plan
+        .provenance
+        .iter()
+        .filter(|o| !o.name.starts_with('<'))
+        .map(|o| {
+            let step = match o.origin {
+                Origin::Function(f) => Some(f),
+                _ => None,
+            };
+            (2 * o.slot + 1, o.name.as_str(), o.slot, step)
+        })
+        .chain(
+            plan.aliases
+                .iter()
+                .map(|(slot, name, at, f)| (2 * at, name.as_str(), *slot, Some(*f))),
+        )
+        .collect();
+    bindings.sort_by_key(|(order, ..)| *order);
+    let mut bound: HashMap<&str, SlotId> = HashMap::new();
+    for (_, name, slot, step) in bindings {
+        let before = bound.insert(name, slot);
+        let Some(step) = step else {
+            continue;
+        };
+        if name == "__live" {
+            let live = |slot: Option<SlotId>, row: usize| {
+                slot.is_none_or(|s| {
+                    batch
+                        .peek(s)
+                        .bool()
+                        .is_ok_and(|b| b.validity.is_valid(row) && bits::get_row(b.values, row))
+                })
+            };
+            for (row, dropped) in dropped_by.iter_mut().enumerate() {
+                if dropped.is_none() && live(before, row) && !live(Some(slot), row) {
+                    *dropped = Some(step);
+                }
+            }
+            continue;
+        }
+        let now = batch.peek(slot);
+        let differs = match before.map(|s| batch.peek(s)) {
+            // A first binding changed the rows it gives a value. An object's every row is one.
+            None if !matches!(now.data_type(), DataType::Struct(..)) => {
+                (0..rows).map(|row| now.is_valid(row)).collect()
+            }
+            None => vec![true; rows],
+            Some(was) => differs(was, now).unwrap_or_else(|| {
+                // Unclaimed fields serialize as an object's own keys, under no name.
+                let field = if name.ends_with('*') { tree::UNCLAIMED } else { "v" };
+                let (was, now) = (
+                    RecordView::from_named([(field, was)]),
+                    RecordView::from_named([(field, now)]),
+                );
+                (0..rows).map(|row| was.row(row) != now.row(row)).collect()
+            }),
+        };
+        for (changed, _) in changed.iter_mut().zip(differs).filter(|(_, differs)| *differs) {
+            changed.push((name, step));
+        }
+    }
+    Touched { changed, dropped_by }
+}
+
+/// Per row, whether `was` and `now` hold different values, read straight from two columns of one type held row by
+/// row. `None` for any other pair, which only their JSON can compare.
+fn differs(was: &Column, now: &Column) -> Option<Vec<bool>> {
+    fn by_row(a: &Validity, b: &Validity, len: usize, same: impl Fn(usize) -> bool) -> Vec<bool> {
+        (0..len)
+            .map(|row| match (a.is_valid(row), b.is_valid(row)) {
+                (true, true) => !same(row),
+                (a, b) => a != b,
+            })
+            .collect()
+    }
+    let len = now.len();
+    if was.data_type() != now.data_type() {
+        return None;
+    }
+    Some(match now.data_type() {
+        DataType::Bool => {
+            let (a, b) = (was.bool().ok()?, now.bool().ok()?);
+            by_row(a.validity, b.validity, len, |r| {
+                bits::get_row(a.values, r) == bits::get_row(b.values, r)
+            })
+        }
+        DataType::I64 => {
+            let (a, b) = (was.i64().ok()?, now.i64().ok()?);
+            by_row(a.validity, b.validity, len, |r| a.values[r] == b.values[r])
+        }
+        DataType::DateTime => {
+            let (a, b) = (was.datetime().ok()?, now.datetime().ok()?);
+            by_row(a.validity, b.validity, len, |r| a.values[r] == b.values[r])
+        }
+        DataType::Duration => {
+            let (a, b) = (was.duration().ok()?, now.duration().ok()?);
+            by_row(a.validity, b.validity, len, |r| a.values[r] == b.values[r])
+        }
+        DataType::F64 => {
+            let (a, b) = (was.f64().ok()?, now.f64().ok()?);
+            by_row(a.validity, b.validity, len, |r| {
+                a.values[r].to_bits() == b.values[r].to_bits()
+            })
+        }
+        DataType::Str | DataType::Bytes => {
+            let (a, b) = (was.var().ok()?, now.var().ok()?);
+            by_row(a.validity, b.validity, len, |r| a.get(r) == b.get(r))
+        }
+        _ => return None,
+    })
+}
+
+/// `touched` written onto `rows`, each name spread over the leaves of the row at it as the editor names them, and each
+/// step named by the step of the pipeline it is in: a called pipeline's steps by the call (`calls_of`).
+fn attribute(calls: &HashMap<String, String>, plan: &Plan, touched: Touched<'_>, rows: &mut [(RowOut, bool)]) {
+    let step = |f: FunctionId| {
+        let id = plan.step_ids.get(f as usize)?;
+        Some(calls.get(id).unwrap_or(id).clone())
+    };
+    let claimed: HashSet<String> = plan.tree.leaves().into_iter().map(|(name, _)| name).collect();
+    for ((row, _), (changed, dropped)) in rows.iter_mut().zip(touched.changed.into_iter().zip(touched.dropped_by)) {
+        row.dropped_by = dropped.and_then(step);
+        let Some(json) = &row.json else {
+            continue;
+        };
+        let leaves = leaves(json);
+        let mut steps: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (name, f) in changed {
+            let Some(id) = step(f) else {
+                continue;
+            };
+            let (prefix, unclaimed) = match name.strip_suffix('*') {
+                Some(object) => (object.trim_end_matches('.'), true),
+                None => (name, false),
+            };
+            let at = leaves
+                .range::<str, _>((std::ops::Bound::Included(prefix), std::ops::Bound::Unbounded))
+                .take_while(|leaf| leaf.starts_with(prefix))
+                .filter(|leaf| under(leaf, prefix) && !(unclaimed && claimed.contains(*leaf)));
+            for leaf in at {
+                let ids = steps.entry(leaf.clone()).or_default();
+                if ids.last() != Some(&id) {
+                    ids.push(id.clone());
+                }
+            }
+        }
+        row.steps = (!steps.is_empty()).then_some(steps);
+    }
+}
+
+/// Whether `leaf` is `name` or a leaf of the object at it. `""` is the record.
+fn under(leaf: &str, name: &str) -> bool {
+    name.is_empty()
+        || leaf
+            .strip_prefix(name)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('.') || rest.starts_with('['))
+}
+
+/// Each step a `call` of the pipeline with id `pipeline` (or of the first) brought in, by the call's id.
+fn calls_of(config: &serde_json::Value, pipeline: Option<&str>) -> Option<HashMap<String, String>> {
+    let pipelines = config["pipelines"].as_array()?;
+    let own = match pipeline {
+        Some(id) => pipelines.iter().find(|p| p["id"] == id)?,
+        None => pipelines.first()?,
+    };
+    let mut calls = HashMap::new();
+    let mut walk = vec![(own["steps"].as_array()?.clone(), None::<String>)];
+    while let Some((steps, call)) = walk.pop() {
+        for step in steps {
+            let id = step["id"].as_str().unwrap_or_default().to_string();
+            if let Some(call) = &call {
+                calls.insert(id.clone(), call.clone());
+            }
+            let by = call.clone().unwrap_or(id);
+            if step["type"] == CALL {
+                let callee = pipelines.iter().find(|p| p["id"] == step["pipeline"]);
+                if let Some(steps) = callee.and_then(|p| p["steps"].as_array()) {
+                    walk.push((steps.clone(), Some(by)));
+                }
+            } else {
+                for branch in ["then", "else"] {
+                    if let Some(steps) = step[branch].as_array() {
+                        walk.push((steps.clone(), call.clone()));
+                    }
+                }
+            }
+        }
+    }
+    Some(calls)
+}
+
+const CALL: &str = "call";
+
+/// A record's leaves by name, as the editor names them. An empty object or an array is one leaf, as the editor draws
+/// it.
+fn leaves(record: &serde_json::Value) -> BTreeSet<String> {
+    fn walk(value: &serde_json::Value, path: &mut String, into: &mut BTreeSet<String>) {
+        match value {
+            serde_json::Value::Object(object) if !object.is_empty() => {
+                for (key, value) in object {
+                    let len = path.len();
+                    plan::tree::push_key(path, key);
+                    walk(value, path, into);
+                    path.truncate(len);
+                }
+            }
+            _ if !path.is_empty() => {
+                into.insert(path.clone());
+            }
+            _ => {}
+        }
+    }
+    let mut into = BTreeSet::new();
+    walk(record, &mut String::new(), &mut into);
+    into
 }
 
 /// What one test made of the config on a branch.
@@ -1102,6 +1391,7 @@ pub fn run_pipeline_actual(
             show_internal: false,
             at_micros: Some(locked_at),
             filter: None,
+            attribution: false,
             after_dot: None,
             capture_filter: None,
         },
@@ -1218,6 +1508,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
                 after_dot: Some(AfterDotRequest {
                     dot: text.len() - 1,
                     text: text.into(),
@@ -1312,6 +1603,7 @@ mod tests {
                     show_internal: false,
                     at_micros: None,
                     filter: None,
+                    attribution: false,
                     after_dot: None,
                     capture_filter: Some(CaptureFilterRequest {
                         text: text.into(),
@@ -1346,6 +1638,7 @@ mod tests {
                 show_internal: false,
                 at_micros: None,
                 filter: None,
+                attribution: false,
                 after_dot: Some(AfterDotRequest {
                     text: "_raw.".into(),
                     dot: 4,

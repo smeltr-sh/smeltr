@@ -69,7 +69,7 @@
   import { ago, count } from './time';
   import { parsePath, pushKey } from './names';
   import { SvelteMap } from 'svelte/reactivity';
-  import { STEP_GLYPHS } from './stepGlyphs';
+  import StepGlyph from './StepGlyph.svelte';
   import { errorText, grokCaptures, type GrokPatternDto, type LookupTableDto } from './api';
   import { sharedGrokSuggestions } from './grokPatterns';
   import { beginReconcile, endReconcile } from './grokFields';
@@ -86,9 +86,11 @@
     lookupTables = [],
     grokPatterns = [],
     parseInput = '_raw',
-    selectedStep = null,
+    pausedAt = null,
     ran = null,
-    onSelectStep = () => {},
+    counts = new Map(),
+    onCount = () => {},
+    onPause = () => {},
     onPropose = () => {},
     proposal = null,
     askAt,
@@ -105,10 +107,15 @@
     grokPatterns?: GrokPatternDto[];
     /** The field a new parse step reads. */
     parseInput?: string;
-    selectedStep?: Step | null;
+    /** The step the records are paused after. */
+    pausedAt?: Step | null;
     /** The steps the records have been through, while they are paused; the rest are dimmed. */
     ran?: Set<Step> | null;
-    onSelectStep?: (step: Step | null) => void;
+    /** How many records each step dropped and failed, in the records shown. */
+    counts?: Map<Step, { dropped: number; failed: number }>;
+    /** Filter the records to those the step dropped or failed. */
+    onCount?: (step: Step, kind: 'dropped' | 'failed') => void;
+    onPause?: (step: Step | null) => void;
     /** Ask the parser step to propose its declared fields from the sample. */
     onPropose?: (step: Step) => void;
     /** The field proposal open on some parser step, shown in that step's card. */
@@ -157,11 +164,12 @@
     }
     if (step.type === 'eval') step.assignments.splice(i, 1);
   }
-  let isSelected = $derived(selectedStep === step);
+  let isPausedAt = $derived(pausedAt === step);
   // A broken step stays bright: its error is what to read.
+  let stepCounts = $derived(counts.get(step));
   let notRun = $derived(ran !== null && !ran.has(step) && stepErrors.length === 0);
-  function toggleSelected() {
-    onSelectStep(isSelected ? null : step);
+  function togglePause() {
+    onPause(isPausedAt ? null : step);
   }
 
   // Open/closed is a per-step preference, remembered across reloads by the
@@ -584,11 +592,11 @@
     {/if}
     <button
       type="button"
-      class:active={isSelected}
-      onclick={toggleSelected}
-      aria-label={isSelected ? 'Show the whole pipeline' : 'Pause the records after this step'}
-      title={isSelected ? 'Show the whole pipeline' : 'Pause the records after this step'}
-      >{isSelected ? '●︎' : '◎︎'}</button
+      class:active={isPausedAt}
+      onclick={togglePause}
+      aria-label={isPausedAt ? 'Show the whole pipeline' : 'Pause the records after this step'}
+      title={isPausedAt ? 'Show the whole pipeline' : 'Pause the records after this step'}
+      >{isPausedAt ? '●︎' : '◎︎'}</button
     >
     {#if !readOnly}
       <button type="button" class="fold" onclick={moveUp} aria-label="Move up" title="Move up"
@@ -610,18 +618,12 @@
     id={`step-${step.id}`}
     class="card if-card"
     class:has-error={stepErrors.length > 0}
-    class:diff-selected={isSelected}
+    class:paused-at={isPausedAt}
     class:not-run={notRun}
   >
     <div class="card-head if-head">
       <span class="type-badge">
-        <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
-          <path
-            d={STEP_GLYPHS.if.d}
-            fill="currentColor"
-            fill-rule={STEP_GLYPHS.if.evenodd ? 'evenodd' : 'nonzero'}
-          />
-        </svg>
+        <StepGlyph type="if" />
         If
       </span>
       <div class="condition">
@@ -652,9 +654,11 @@
           {lookupTables}
           {grokPatterns}
           {parseInput}
-          {selectedStep}
+          {pausedAt}
           {ran}
-          {onSelectStep}
+          {counts}
+          {onCount}
+          {onPause}
           {onPropose}
           {proposal}
           {askAt}
@@ -671,9 +675,11 @@
           {lookupTables}
           {grokPatterns}
           {parseInput}
-          {selectedStep}
+          {pausedAt}
           {ran}
-          {onSelectStep}
+          {counts}
+          {onCount}
+          {onPause}
           {onPropose}
           {proposal}
           {askAt}
@@ -688,7 +694,7 @@
     class:open={expanded}
     class:has-error={stepErrors.length > 0}
     class:comment-card={step.type === 'comment'}
-    class:diff-selected={isSelected}
+    class:paused-at={isPausedAt}
     class:not-run={notRun}
     class:step-disabled={step.type !== 'comment' && step.disabled}
   >
@@ -703,13 +709,7 @@
         onclick={() => setExpanded(!expanded)}
       >
         <span class="type-badge" class:comment-badge={step.type === 'comment'}>
-          <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
-            <path
-              d={STEP_GLYPHS[step.type].d}
-              fill="currentColor"
-              fill-rule={STEP_GLYPHS[step.type].evenodd ? 'evenodd' : 'nonzero'}
-            />
-          </svg>
+          <StepGlyph type={step.type} />
           <span class="type-name">{STEP_LABELS[step.type]}</span>
         </span>
         <span class="summary">{stepSummary(step)}</span>
@@ -717,6 +717,22 @@
           {@render glyph(stepErrors.length === 0)}
         {/if}
       </button>
+      {#if stepCounts && (stepCounts.dropped > 0 || stepCounts.failed > 0)}
+        <span class="counts">
+          {#if stepCounts.dropped > 0}
+            <button type="button" class="count link-button" onclick={() => onCount(step, 'dropped')}
+              >&minus;{stepCounts.dropped} dropped</button
+            >
+          {/if}
+          {#if stepCounts.failed > 0}
+            <button
+              type="button"
+              class="count failed link-button"
+              onclick={() => onCount(step, 'failed')}>{stepCounts.failed} failed</button
+            >
+          {/if}
+        </span>
+      {/if}
       {@render controls()}
     </div>
 
@@ -928,6 +944,7 @@
                           bind:value={grokKind.patterns[i]}
                           autocomplete="grok"
                           grokNamed={sharedGrokSuggestions(grokPatterns)}
+                          wrap
                         />
                       </Locked>
                       {#if !readOnly}
@@ -1178,6 +1195,7 @@
                             bind:value={grokKind.customPatterns[i].pattern}
                             autocomplete="grok"
                             grokNamed={sharedGrokSuggestions(grokPatterns)}
+                            wrap
                           />
                         </Locked>
                       </div>
@@ -1555,18 +1573,18 @@
   }
 
   /* The step the records are paused after: the pause chip's accent. */
-  .diff-selected {
+  .paused-at {
     --card-surface: color-mix(in oklab, var(--accent) 10%, var(--field));
   }
-  .diff-selected:not(.has-error) {
+  .paused-at:not(.has-error) {
     border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
   }
-  .comment-card.diff-selected {
+  .comment-card.paused-at {
     --card-surface: color-mix(in oklab, var(--accent) 10%, var(--comment-bg));
   }
 
-  /* Steps the paused records have not been through yet. */
-  .not-run {
+  /* Steps the paused records have not been through yet. A disabled one is dimmed already. */
+  .not-run:not(.step-disabled) {
     opacity: 0.55;
   }
 
@@ -1657,7 +1675,7 @@
     flex-shrink: 0;
   }
 
-  .type-badge svg {
+  .type-badge :global(svg) {
     height: 1.15em;
     width: auto;
   }
@@ -1686,6 +1704,24 @@
     font-family: inherit;
     color: var(--comment-ink);
     font-style: italic;
+  }
+
+  /* What the step did to the records shown, each a filter to those records. */
+  .counts {
+    display: flex;
+    flex: none;
+  }
+
+  .count {
+    flex: none;
+    padding: 0 0.3rem;
+    font-size: var(--text-note);
+    color: var(--dim);
+  }
+
+  .count.failed {
+    color: var(--error);
+    font-weight: 600;
   }
 
   .summary {
@@ -1722,6 +1758,13 @@
 
     .card:not(.open, .if-card) > .card-head {
       position: relative;
+    }
+
+    /* The counts step aside for the controls, rather than sit under them. */
+    .card:not(.open, .if-card)
+      > .card-head:is(:hover, :focus-within, :has(.active, [aria-expanded='true']))
+      > .counts {
+      margin-right: 10.6rem;
     }
 
     .card:not(.open, .if-card) > .card-head > .controls {

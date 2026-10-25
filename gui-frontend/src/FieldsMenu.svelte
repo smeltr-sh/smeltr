@@ -126,7 +126,7 @@
             <span class="mono dim type" title={f.type ?? undefined}>{f.type ?? ''}</span>
             {#if records !== null}<button
                 type="button"
-                class="count"
+                class="count link-button"
                 class:none={f.count === 0}
                 aria-label={`records with ${f.path}`}
                 disabled={f.count === 0}
@@ -256,15 +256,9 @@
   }
 
   .count {
-    border: none;
-    background: none;
-    padding: 0;
-    font: inherit;
     font-family: var(--mono);
     color: var(--ink);
-    text-decoration: underline dotted;
     text-underline-offset: 3px;
-    cursor: pointer;
   }
 
   .count.none {

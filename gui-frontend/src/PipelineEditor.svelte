@@ -28,6 +28,7 @@
     unknownLookupTables,
     truncateSteps,
     flatSteps,
+    stepName,
     STEP_LABELS,
     stepsRun,
     parseInputFor,
@@ -772,6 +773,7 @@
     sample: string,
     atMicros?: number,
     filter?: string,
+    attribution?: boolean,
   ): Promise<PreviewResult> {
     const held = unfinished.hold(stepsSubset);
     const config = JSON.stringify(
@@ -792,6 +794,7 @@
       showInternal: true,
       atMicros,
       filter,
+      attribution,
     });
     return { ...res, errors: res.errors.map(held.restore) };
   }
@@ -904,7 +907,7 @@
   let showTypes = $state(true);
 
   /** The step ◎ paused at. */
-  let selectedStep: Step | null = $state(null);
+  let pauseChoice: Step | null = $state(null);
   /** The first step the preview's compile errors name. */
   let brokenStep = $derived(orderedStepErrors(steps, compileErrorsByStep)[0]?.step ?? null);
 
@@ -925,14 +928,14 @@
   /** ◎'s pause, unless the steps it runs do not compile: then the compile error's. */
   let pause = $derived.by((): Pause | null => {
     const flat = flatSteps(steps);
-    const run = selectedStep && stepsRun(steps, selectedStep, true);
-    if (selectedStep && run && !(brokenStep && run.has(brokenStep)))
+    const run = pauseChoice && stepsRun(steps, pauseChoice, true);
+    if (pauseChoice && run && !(brokenStep && run.has(brokenStep)))
       return {
-        step: selectedStep,
-        number: flat.indexOf(selectedStep) + 1,
+        step: pauseChoice,
+        number: flat.indexOf(pauseChoice) + 1,
         run,
-        before: truncateSteps(steps, selectedStep, false)!,
-        after: truncateSteps(steps, selectedStep, true)!,
+        before: truncateSteps(steps, pauseChoice, false)!,
+        after: truncateSteps(steps, pauseChoice, true)!,
         chosen: true,
       };
     if (!brokenStep) return null;
@@ -962,15 +965,15 @@
     stage ? stage[0].toUpperCase() + stage.slice(1) : 'Preview';
   let pauseError = $state('');
 
-  function onSelectStep(step: Step | null) {
-    selectedStep = step;
+  function onPause(step: Step | null) {
+    pauseChoice = step;
   }
 
   let pauseAsked = 0;
-  async function loadPause() {
+  async function loadPause(pause: Pause | null, sample: string) {
     pauseError = '';
     const asked = ++pauseAsked;
-    if (!pause || !lastSample) {
+    if (!pause || !sample) {
       pauseRun = null;
       return;
     }
@@ -981,8 +984,8 @@
       // the step.
       const at = Date.now() * 1000;
       const [beforeRes, afterRes] = await Promise.all([
-        fetchPreview(before, lastSample, at),
-        fetchPreview(after, lastSample, at),
+        fetchPreview(before, sample, at),
+        fetchPreview(after, sample, at),
       ]);
       // A later pause answers for the screen.
       if (asked !== pauseAsked) return;
@@ -1006,9 +1009,16 @@
     }
   }
 
-  // Tracks `pause` and `lastSample`: both read before the first `await`.
+  // Run as the steps settle, as the whole pipeline's preview is.
   $effect(() => {
-    loadPause();
+    const [p, sample] = [pause, lastSample];
+    const timer = setTimeout(() => void loadPause(p, sample), RECOMPUTE_MS);
+    return () => clearTimeout(timer);
+  });
+
+  // A step deleted while the records are paused after it takes the pause with it.
+  $effect(() => {
+    if (pauseChoice && !flatSteps(steps).includes(pauseChoice)) pauseChoice = null;
   });
 
   // -- a pipeline for a route being made ---------------------------------------
@@ -1173,6 +1183,79 @@
 
   /** The rows the grid shows: the pause's, once run, or else the whole pipeline's. */
   let gridRows = $derived(pause && pauseRun ? pauseRun.after : (lastGoodResult?.rows ?? null));
+
+  // Which steps touched each field of a row, dropped it and raised its
+  // exceptions, for the records shown. The leader runs the pipeline once per
+  // step for it, so it is asked for once typing settles, and it stands only
+  // for the run it was asked about.
+  const ATTRIBUTE_MS = 1000;
+  let attributed = $state<{ rows: PreviewRow[]; byRow: Map<number, PreviewRow> } | null>(null);
+  $effect(() => {
+    const rows = gridRows;
+    const cut = pause && pauseRun ? pause.after : steps;
+    const sample = lastSample;
+    void signature;
+    if (!rows || rows.length === 0 || !sample) return;
+    let current = true;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetchPreview(cut, sample, undefined, undefined, true);
+        if (current && res.ok && res.rows.length === rows.length)
+          attributed = { rows, byRow: new Map(res.rows.map((r) => [r.row, r])) };
+      } catch {
+        // The records stand without it.
+      }
+    }, ATTRIBUTE_MS);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  });
+  let attribution = $derived(attributed && attributed.rows === gridRows ? attributed.byRow : null);
+
+  /** Each step by id, with its number in the step list. */
+  let stepNumbers = $derived(
+    new Map(flatSteps(steps).map((step, i) => [step.id, { step, number: i + 1 }])),
+  );
+
+  /** The steps that touched each field of `row`, in the order they ran. A
+   * list is compared whole, so a field inside one takes the list's. */
+  function touchedOn(row: number) {
+    const touched = attribution?.get(row)?.steps;
+    return (path: string) => {
+      let at = path;
+      while (touched && !(at in touched)) {
+        const up = at.replace(/(\.[^.[]*|\[[^\]]*\])$/, '');
+        if (up === at || up === '') break;
+        at = up;
+      }
+      return (touched?.[at] ?? []).flatMap((id) => {
+        const t = stepNumbers.get(id);
+        return t ? [t] : [];
+      });
+    };
+  }
+
+  /** How many of the records shown each step dropped and failed. */
+  let stepCounts = $derived.by(() => {
+    const counts = new Map<Step, { dropped: number; failed: number }>();
+    const of = (id: string | undefined) => {
+      const step = id ? stepNumbers.get(id)?.step : undefined;
+      if (!step) return null;
+      let c = counts.get(step);
+      if (!c) counts.set(step, (c = { dropped: 0, failed: 0 }));
+      return c;
+    };
+    for (const r of gridRows ?? []) {
+      for (const id of new Set(r.exceptions.map((e) => e.step))) {
+        const c = of(id);
+        if (c) c.failed++;
+      }
+      const c = of(attribution?.get(r.row)?.droppedBy);
+      if (c) c.dropped++;
+    }
+    return counts;
+  });
 
   // The pause's runs by row, so a row finds its sides without a search.
   let pausedByRow = $derived.by(() => {
@@ -1489,9 +1572,27 @@
   // beside the text keep the rows that are failing, dropped, changed by a step
   // or hold a field, each on top of the text and of each other.
 
-  type FindChip = { kind: 'failing' | 'dropped' | 'changed' } | { kind: 'has'; path: string };
+  type FindChip =
+    | { kind: 'failing' | 'dropped' | 'changed' }
+    | { kind: 'has'; path: string }
+    | { kind: 'droppedBy' | 'failedAt'; step: string };
   let chips = $state<FindChip[]>([]);
-  const chipKey = (c: FindChip) => (c.kind === 'has' ? `has ${c.path}` : c.kind);
+  const chipKey = (c: FindChip) =>
+    c.kind === 'has'
+      ? `has ${c.path}`
+      : c.kind === 'droppedBy'
+        ? `dropped by ${c.step}`
+        : c.kind === 'failedAt'
+          ? `failed at ${c.step}`
+          : c.kind;
+  function chipLabel(c: FindChip): string {
+    if (c.kind === 'has') return `has ${c.path}`;
+    if (c.kind === 'droppedBy' || c.kind === 'failedAt') {
+      const number = stepNumbers.get(c.step)?.number ?? '?';
+      return c.kind === 'droppedBy' ? `⌫ Dropped by step ${number}` : `⚠ Failed at step ${number}`;
+    }
+    return CHIP_LABELS[c.kind];
+  }
 
   const hasChip = (c: FindChip) => chips.some((x) => chipKey(x) === chipKey(c));
 
@@ -1529,6 +1630,8 @@
     const row = gridRows![i];
     if (c.kind === 'failing') return row.exceptions.length > 0;
     if (c.kind === 'dropped') return row.json === null;
+    if (c.kind === 'droppedBy') return attribution?.get(row.row)?.droppedBy === c.step;
+    if (c.kind === 'failedAt') return row.exceptions.some((e) => e.step === c.step);
     return rowChanged(i);
   }
 
@@ -1701,7 +1804,7 @@
           accent
           label="Paused"
           removeLabel="Show the whole pipeline"
-          onremove={pause.chosen ? () => onSelectStep(null) : undefined}
+          onremove={pause.chosen ? () => onPause(null) : undefined}
         >
           ◉ {pause.step
             ? `After step ${pause.number} · ${STEP_LABELS[pause.step.type].toUpperCase()}`
@@ -1807,9 +1910,16 @@
             {lookupTables}
             {grokPatterns}
             parseInput={parseInputFor(sampleRows[0])}
-            selectedStep={pause?.step ?? null}
+            pausedAt={pause?.step ?? null}
             ran={pause?.run ?? null}
-            {onSelectStep}
+            counts={stepCounts}
+            onCount={(step, kind) =>
+              addChip(
+                kind === 'dropped'
+                  ? { kind: 'droppedBy', step: step.id }
+                  : { kind: 'failedAt', step: step.id },
+              )}
+            {onPause}
             onPropose={readOnly ? undefined : proposeFields}
             proposal={openProposal}
             {askAt}
@@ -1924,9 +2034,7 @@
                     >{#each chips as c (chipKey(c))}<RemovableChip
                         removeLabel={`remove ${chipKey(c)}`}
                         onremove={() => toggleChip(c)}
-                        ><span class="find-chip"
-                          >{c.kind === 'has' ? `has ${c.path}` : CHIP_LABELS[c.kind]}</span
-                        ></RemovableChip
+                        ><span class="find-chip">{chipLabel(c)}</span></RemovableChip
                       >{/each}{/snippet}
                   {#snippet after()}{#if outputQuery.trim()}<span
                         class="mode"
@@ -2113,7 +2221,15 @@
                                     {/if}
                                   </div>
                                   {#each row.exceptions as a}
-                                    <p class="exception">{a.message}</p>
+                                    {@const by = a.step ? stepNumbers.get(a.step) : undefined}
+                                    <p class="exception">
+                                      {#if by}<button
+                                          type="button"
+                                          class="link-button"
+                                          onclick={() => (jumpToStepId = by.step.id)}
+                                          >{stepName(by.step, by.number)}</button
+                                        >{': '}{/if}{a.message}
+                                    </p>
                                   {/each}
                                 </div>
                                 <div
@@ -2127,6 +2243,8 @@
                                     declared={sides.declared}
                                     {changedOnly}
                                     {showTypes}
+                                    touched={touchedOn(row.row)}
+                                    onjump={(step) => (jumpToStepId = step.id)}
                                   />
                                 </div>
                               </td>
