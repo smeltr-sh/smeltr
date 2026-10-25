@@ -343,7 +343,8 @@ impl Captures {
     /// `expected` is the workers in this capture's group the leader has heard from: who it waits for before calling
     /// itself finished. `holding` is those of them holding rows a block keeps, which its total waits for. `secrets`
     /// is what this source's own credentials resolved to, which the caller reads out of the store once here rather
-    /// than on every heartbeat that hands the invitation on.
+    /// than on every heartbeat that hands the invitation on. `config` is the commit the fleet ran when it opened, for
+    /// a sample saved from it to record.
     pub fn open(
         &self,
         id: String,
@@ -351,6 +352,7 @@ impl Captures {
         expected: HashSet<String>,
         holding: HashSet<String>,
         secrets: Vec<crate::heartbeat::SecretDelivery>,
+        config: Option<String>,
     ) -> CaptureInvitation {
         let one_worker = request.source.as_ref().is_some_and(|s| s.kind.single_worker());
         let invitation = CaptureInvitation {
@@ -386,7 +388,7 @@ impl Captures {
                 invitation: invitation.clone(),
                 started: Instant::now(),
                 opened_micros: crate::core::ctx::wall_clock_micros(),
-                config: None,
+                config,
                 expected,
                 holding,
                 invited: HashSet::new(),
@@ -495,13 +497,6 @@ impl Captures {
 
     pub fn status(&self, session: &str) -> Option<CaptureStatus> {
         self.0.lock().unwrap().get(session).map(|s| s.status(session))
-    }
-
-    /// Note that the fleet ran `config` when `session` opened.
-    pub fn opened_on(&self, session: &str, config: Option<String>) {
-        if let Some(s) = self.0.lock().unwrap().get_mut(session) {
-            s.config = config;
-        }
     }
 
     /// How `session` was captured, as a sample saved from it records it.
@@ -666,8 +661,8 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            Some("54bf84a1".to_string()),
         );
-        captures.opened_on("s1", Some("54bf84a1".to_string()));
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
         captures.record(report("s1", "w1", &["a"]));
@@ -711,6 +706,7 @@ mod tests {
             expect(&["w1", "w2", "w3"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         assert_eq!(invitation.max_matches, 3, "each worker may fill it alone");
         captures.invitations_for("w1", "prod-west", |_| None);
@@ -747,6 +743,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -782,6 +779,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         assert_eq!(captures.invitations_for("w2", "prod-west", |_| None).len(), 1);
         assert!(
@@ -828,6 +826,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         let held_by_w1 = |source: &str| (source == "pg").then(|| "w1".to_string());
         assert!(
@@ -849,6 +848,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.record(progress_report("s1", "w1", &["a"]));
@@ -893,6 +893,7 @@ mod tests {
             expect(&["w1", "w2", "w3"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         for worker in ["w1", "w2", "w3"] {
             captures.invitations_for(worker, "prod-west", |_| None);
@@ -949,6 +950,7 @@ mod tests {
             expect(&["w1", "w2"]),
             expect(&["w2"]),
             Vec::new(),
+            None,
         );
         for worker in ["w1", "w2"] {
             captures.invitations_for(worker, "prod-west", |_| None);
@@ -975,6 +977,7 @@ mod tests {
             expect(&["w1", "w2"]),
             expect(&["w2"]),
             Vec::new(),
+            None,
         );
         for worker in ["w1", "w2"] {
             captures.invitations_for(worker, "prod-west", |_| None);
@@ -1006,6 +1009,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1039,6 +1043,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1068,6 +1073,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         for worker in ["w2", "w1", "w3"] {
             captures.invitations_for(worker, "prod-west", |_| None);
@@ -1113,6 +1119,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         assert_eq!(captures.invitations_for("w1", "prod-west", |_| None).len(), 1);
         captures.stop("s1");
@@ -1131,6 +1138,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         let listed: Vec<String> = captures
             .invitations_for("w1", "prod-west", |_| None)
@@ -1153,6 +1161,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
 
         assert_eq!(captures.invitations_for("w1", "prod-west", |_| None).len(), 1);
@@ -1181,6 +1190,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.record(report("s1", "w1", &["a"]));
@@ -1198,6 +1208,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.record(report("s1", "w1", &["a"]));
@@ -1218,6 +1229,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
 
@@ -1239,6 +1251,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1270,6 +1283,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
 
@@ -1296,6 +1310,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
 
@@ -1324,6 +1339,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1354,6 +1370,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1393,6 +1410,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1418,6 +1436,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1444,6 +1463,7 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
+            None,
         );
 
         // Only w1 has heartbeated so far, and it answers immediately.
@@ -1477,6 +1497,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
 
         assert!(
@@ -1498,6 +1519,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         assert_eq!(captures.group("s1").as_deref(), Some("prod-west"));
         captures.stop("s1");
@@ -1518,6 +1540,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.record(report("s1", "impostor", &["forged", "forged"]));
 
@@ -1545,6 +1568,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         assert_eq!(invitation.max_matches, crate::config_file::MAX_SAMPLE_RECORDS);
         assert_eq!(invitation.max_bytes, MAX_BYTES_CEILING);
@@ -1564,6 +1588,7 @@ mod tests {
                 expect(&["w1"]),
                 Default::default(),
                 Vec::new(),
+                None,
             )
         };
         assert_eq!(open("s1", Some(StartPositionDto::Latest)).start, None);
@@ -1584,6 +1609,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.record(report("s1", "w1", &["a"]));
@@ -1612,6 +1638,7 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
+            None,
         );
         assert_eq!(invitation.destination.as_deref(), Some("es"));
         assert!(invitation.source.is_none());
