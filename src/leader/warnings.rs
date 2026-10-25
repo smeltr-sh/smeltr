@@ -619,7 +619,7 @@ fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &R
             // naming that would send them to a page that turns them away.
             (_, Rotating::Stuck(why) | Rotating::Unreadable(why)) => format!(
                 "this leader's certificate authority {} and the rotation meant to replace it cannot finish: {why} \
-                 Put that right, or abandon the rotation on the Certificates page and start another",
+                 Put that right, or abandon the rotation in Admin → System → Leader certificate and start another",
                 if expired {
                     "has expired".to_string()
                 } else {
@@ -627,10 +627,10 @@ fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &R
                 }
             ),
             (true, _) => "this leader's certificate authority has expired, and no worker given it can verify this \
-                 leader any more. Rotate it on the Certificates page"
+                 leader any more. Rotate it in Admin → System → Leader certificate"
                 .to_string(),
             (false, _) => format!(
-                "this leader's certificate authority expires in {days} days. Rotate it on the Certificates page: \
+                "this leader's certificate authority expires in {days} days. Rotate it in Admin → System → Leader certificate: \
                  every worker has to take the new one before this leader signs under it"
             ),
         },
@@ -649,7 +649,8 @@ pub struct Serving {
 
 /// The certificate this leader serves running out. One ACME renews is said once a renewal is due and the last try
 /// failed, which is two thirds of the way through its life rather than the last tenth: the leader has been trying,
-/// and the operator has most of a third to put it right. Any other is said in its last tenth, by [`notice_millis`].
+/// and the operator has most of a third to put it right. Any other is said in its last tenth, by [`notice_millis`],
+/// and so is an ACME one ACME has stopped trying to renew.
 pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
     let certificate = &serving.certificate;
     let remaining = certificate.not_after_millis - now_ms;
@@ -659,14 +660,19 @@ pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
     } else {
         format!("expires in {} days", remaining / (24 * 60 * 60 * 1000))
     };
-    let (condition, since_millis, message) = match serving.source {
-        crate::leader::acme::Source::Acme => {
-            let (Some(error), Some(due)) = (serving.acme.last_error.as_deref(), serving.acme.renew_after_millis) else {
-                return Vec::new();
-            };
-            if now_ms < due {
-                return Vec::new();
-            }
+    let acme = &serving.acme;
+    let failing = match (
+        acme.last_error.as_deref(),
+        acme.renew_after_millis,
+        acme.last_attempt_millis,
+    ) {
+        // Tried since it fell due: an error from before then, such as a Renew now that failed early, is not a
+        // renewal failing.
+        (Some(error), Some(due), Some(tried)) if tried >= due => Some((error, due)),
+        _ => None,
+    };
+    let (condition, since_millis, message) = match (serving.source, failing) {
+        (crate::leader::acme::Source::Acme, Some((error, due))) => {
             let error = one_line(error);
             // The error last, so a long one clipped costs nothing and nothing after it reads as the authority's.
             let message = if expired {
@@ -682,12 +688,18 @@ pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
             };
             (Condition::AcmeRenewalFailing, due, message)
         }
-        source => {
+        (source, _) => {
+            // An ACME certificate reaches its last tenth unrenewed and without a failure only where ACME stopped
+            // trying: turned off, or its names no longer orderable.
             let notice = notice_millis(certificate.not_before_millis, certificate.not_after_millis);
             if remaining > notice {
                 return Vec::new();
             }
             let message = match (source, &serving.entry) {
+                (crate::leader::acme::Source::Acme, _) => format!(
+                    "this leader's certificate {when}, and ACME is not renewing it. Check the ACME settings in Admin \
+                     → System → Leader certificate"
+                ),
                 (crate::leader::acme::Source::Upload, Some(entry)) => format!(
                     "this leader's certificate {entry:?} {when}. Replace it in Admin → Certificates, and the leader \
                      serves the new version"
@@ -762,7 +774,7 @@ fn enrollment_code_names_outgoing_authority(
             subject_id: code.id.clone(),
             group: (!code.group_id.is_empty()).then(|| code.group_id.clone()),
             severity: Severity::Warning,
-            // The rotation's own start, which the Certificates page already shows against the rotation itself.
+            // The rotation's own start, which the Leader certificate tab already shows against the rotation itself.
             // Repeating it on every enrollment code it dooms would be one date said many times and acted on once.
             since_millis: None,
             message:
@@ -3245,8 +3257,10 @@ mod tests {
         }
     }
 
+    /// The last try, at `NOW`, failed with `error`.
     fn failing(mut serving: Serving, error: &str) -> Serving {
         serving.acme.last_error = Some(error.to_string());
+        serving.acme.last_attempt_millis = Some(NOW);
         serving
     }
 
@@ -3277,8 +3291,32 @@ mod tests {
     fn an_acme_certificate_renewing_on_time_is_not_said() {
         let early = failing(serving(crate::leader::acme::Source::Acme, 20), "the authority is down");
         assert!(leader_certificate(&early, NOW).is_empty(), "failed before it was due");
-        let quiet = serving(crate::leader::acme::Source::Acme, 3);
+        let quiet = serving(crate::leader::acme::Source::Acme, 10);
         assert!(leader_certificate(&quiet, NOW).is_empty(), "due, and nothing failed");
+    }
+
+    /// An error from before the renewal fell due, such as a Renew now that failed early, is not the renewal
+    /// failing: nothing has tried since.
+    #[test]
+    fn an_error_from_before_the_renewal_fell_due_is_not_said() {
+        let mut stale = failing(serving(crate::leader::acme::Source::Acme, 12), "the authority is down");
+        stale.acme.last_attempt_millis = stale.acme.renew_after_millis.map(|due| due - 1);
+        assert!(leader_certificate(&stale, NOW).is_empty());
+    }
+
+    /// ACME turned off, or its names no longer orderable, tries nothing and records no failure: the certificate
+    /// still has to be said before it runs out.
+    #[test]
+    fn an_acme_certificate_nothing_renews_is_said_in_its_last_tenth() {
+        let said = leader_certificate(&serving(crate::leader::acme::Source::Acme, 4), NOW);
+        assert_eq!(said[0].condition, Condition::LeaderCertificateRunningOut);
+        assert!(
+            said[0]
+                .message
+                .starts_with("this leader's certificate expires in 4 days, and ACME is not renewing it"),
+            "{}",
+            said[0].message
+        );
     }
 
     #[test]
