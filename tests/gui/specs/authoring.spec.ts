@@ -1076,7 +1076,10 @@ test('A4: a compile error is written once, on its step, and the error chip jumps
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
-  await admin.locator('.card-head').getByRole('button', { name: /line\(s\) of code/ }).click();
+  await admin
+    .locator('.card-head')
+    .getByRole('button', { name: /line\(s\) of code/ })
+    .click();
   const body = admin.locator('textarea').last();
   await body.fill('x = ipVersion();');
 
@@ -1226,7 +1229,10 @@ test('A4: after a refused save, a new compile error is still shown', async ({
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
-  await admin.locator('.card-head').getByRole('button', { name: /line\(s\) of code/ }).click();
+  await admin
+    .locator('.card-head')
+    .getByRole('button', { name: /line\(s\) of code/ })
+    .click();
   const body = admin.locator('textarea').last();
   await body.fill('x = ipVersion();');
   await expect(admin.getByRole('button', { name: /Compile failed · 1/ })).toBeVisible();
@@ -1261,7 +1267,10 @@ test('A4: a code field is laid out when it is left, and a warning is written on 
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
-  await admin.locator('.card-head').getByRole('button', { name: /line\(s\) of code/ }).click();
+  await admin
+    .locator('.card-head')
+    .getByRole('button', { name: /line\(s\) of code/ })
+    .click();
   const body = admin.locator('textarea').last();
   await body.fill('let n=1\nif(_raw!=""){x=1}else{x=2}');
   await body.blur();
@@ -1280,7 +1289,10 @@ test('A4: a save pressed from a code field saves its layout', async ({ admin, le
   });
 
   await goto(admin, leader, '#/build/pipelines/orders');
-  await admin.locator('.card-head').getByRole('button', { name: /line\(s\) of code/ }).click();
+  await admin
+    .locator('.card-head')
+    .getByRole('button', { name: /line\(s\) of code/ })
+    .click();
   const body = admin.locator('textarea').last();
   await body.fill('x=2');
   await admin.route('**/api/format', async (route) => {
