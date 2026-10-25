@@ -312,6 +312,17 @@ A worker is sent the entry's chain with its key. Before it tears down what it
 runs, it refuses a certificate it could not present the way its bundle
 presents it: connecting out, or serving a receiver's senders.
 
+An entry is uploaded, or issued by the leader under the authority it already
+holds, for the names and the lifetime an admin gives, so a sender verifies it
+against the leader's root. One is due for renewal two thirds of the way
+through its life, and as soon as the leader signs under another root, which is
+what a rotation's cutover leaves it doing. The leader warns while one is due
+and renews nothing unattended: an admin renews it, which issues a new version
+with the same names and lifetime and drafts that admin's change moving the
+references to it, as replacing a value does. What workers present moves when
+that change is deployed. The leader holds an issued entry's key, so it is never
+replaced by an upload under its name.
+
 A worker is sent the credentials the configuration it is about to run names,
 and no others. That is minimization, not a wall: enrollment binds a worker to
 the cluster, not to a group, so one compromised worker host exposes every

@@ -379,6 +379,48 @@ test('an identity presents a certificate from the list, and replacing it points 
   ]);
 });
 
+test('the leader issues a certificate for the names given, and an identity presents it', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  await goto(admin, leader, '#/admin/certificates');
+  await admin.getByRole('button', { name: '+ Add certificate' }).click();
+  const dialog = admin.getByRole('dialog', { name: 'new certificate' });
+  await dialog.getByRole('button', { name: 'Issued by this leader' }).click();
+  await dialog.getByRole('textbox', { name: 'Name' }).fill('receiver-tls');
+  await dialog.getByRole('textbox', { name: 'Issued for' }).fill('receiver.example.com\n10.0.0.7');
+  const validFor = dialog.getByRole('combobox', { name: /^Valid for/ });
+  await expect(validFor).toHaveValue('365');
+  await validFor.selectOption({ label: '2 years' });
+  await admin.screenshot({ path: test.info().outputPath('certificate-issue.png') });
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+
+  const row = admin.getByRole('row').filter({ hasText: 'receiver-tls' });
+  await expect(row.getByText('issued', { exact: true })).toBeVisible();
+  await expect(row.getByText('receiver.example.com, 10.0.0.7')).toBeVisible();
+  await expect(row.getByRole('button', { name: 'Replace' })).toHaveCount(0);
+  await row.getByRole('button', { name: 'Renew' }).click();
+  await expect(admin.getByText('Renewed.', { exact: true })).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('certificate-issued.png') });
+  const listed = (await api.get('/api/certificates')) as {
+    name: string;
+    issuedFor?: string[];
+    chain: { notBeforeMillis: number; notAfterMillis: number }[];
+  }[];
+  const issued = listed.find((c) => c.name === 'receiver-tls');
+  expect(issued?.issuedFor).toEqual(['receiver.example.com', '10.0.0.7']);
+  const leaf = issued!.chain[0];
+  expect(Math.floor((leaf.notAfterMillis - leaf.notBeforeMillis) / 86_400_000)).toBe(730);
+
+  await goto(admin, leader, '#/build/identities');
+  await admin.getByRole('button', { name: '+ Add identity' }).click();
+  const identity = admin.getByRole('dialog', { name: 'new identity' });
+  await identity.getByRole('combobox', { name: /^presents/ }).selectOption('receiver-tls');
+  await expect(identity.getByText(/^version 2/)).toBeVisible();
+  await expect(identity.getByText(/receiver\.example\.com, 10\.0\.0\.7/)).toBeVisible();
+});
+
 test('the git remote form takes an http or https URL, and warns about a credential in plain text', async ({
   admin,
 }) => {

@@ -12,8 +12,8 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension};
 use super::access::{AgentPermissions, Level, Role};
 use super::secrets::{self, EncryptionKey, Sealed};
 use super::store::{
-    AccountError, AuthSource, ConversationRecord, Custody, EnrollmentCodeRecord, HeldSource, KeyStanding, KeyState,
-    LocalCredentialRecord, NewEnrollmentCode, NewLocalUser, OidcIdentityRecord, OidcSignIn, SecretRecord,
+    AccountError, AuthSource, ConversationRecord, Custody, EnrollmentCodeRecord, HeldSource, Issued, KeyStanding,
+    KeyState, LocalCredentialRecord, NewEnrollmentCode, NewLocalUser, OidcIdentityRecord, OidcSignIn, SecretRecord,
     SecurityEvent, SourceHold, Spend, Store, StoreError, StoredValue, Unopenable, UsableEnrollmentCode, UserRecord,
     WorkerCredentialRecord, WorkerKind,
 };
@@ -327,6 +327,14 @@ pub(crate) const STEPS: &[&str] = &[
          chain   TEXT NOT NULL,
          PRIMARY KEY (name, version)
      );",
+    // 12 -- the names a certificate this leader issues is issued for, as a JSON array, and how many days each version
+    // is valid for, which are what each renewal issues it with again. A certificate with a row here is the leader's
+    // to renew. Additive: an older build lists it as the certificate it also is, and never renews it.
+    "CREATE TABLE issued_certificates (
+         name          TEXT PRIMARY KEY,
+         names         TEXT NOT NULL,
+         validity_days INTEGER NOT NULL
+     );",
 ];
 
 fn conversation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationRecord> {
@@ -599,6 +607,7 @@ impl SqliteStore {
         description: &str,
         value: Option<&str>,
         chain: Option<&str>,
+        issued_for: Option<&Issued>,
     ) -> Result<(), StoreError> {
         if !crate::config_file::is_safe_secret_name(name) {
             return Err(StoreError(crate::config_file::unsafe_secret_name(name)));
@@ -633,6 +642,13 @@ impl SqliteStore {
         if let Some(sealed) = &sealed {
             let version = Self::take_version(&tx, name)?.expect("the row this transaction just inserted");
             Self::insert_version(&tx, name, version, sealed, chain)?;
+        }
+        if let Some(issued) = issued_for {
+            let names = serde_json::to_string(&issued.names).map_err(|e| StoreError(e.to_string()))?;
+            tx.execute(
+                "INSERT INTO issued_certificates (name, names, validity_days) VALUES (?1, ?2, ?3)",
+                (name, names, issued.validity_days),
+            )?;
         }
         tx.commit()?;
         Ok(())
@@ -1134,11 +1150,48 @@ impl Store for SqliteStore {
         description: &str,
         value: Option<&str>,
     ) -> Result<(), StoreError> {
-        self.create(name, custody, description, value, None)
+        self.create(name, custody, description, value, None, None)
     }
 
     fn create_certificate(&self, name: &str, description: &str, chain: &str, key: &str) -> Result<(), StoreError> {
-        self.create(name, Custody::LeaderStored, description, Some(key), Some(chain))
+        self.create(name, Custody::LeaderStored, description, Some(key), Some(chain), None)
+    }
+
+    fn create_issued_certificate(
+        &self,
+        name: &str,
+        description: &str,
+        issued: &Issued,
+        chain: &str,
+        key: &str,
+    ) -> Result<(), StoreError> {
+        self.create(
+            name,
+            Custody::LeaderStored,
+            description,
+            Some(key),
+            Some(chain),
+            Some(issued),
+        )
+    }
+
+    fn issued_certificates(&self) -> Result<std::collections::BTreeMap<String, Issued>, StoreError> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn.prepare("SELECT name, names, validity_days FROM issued_certificates")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        let mut out = std::collections::BTreeMap::new();
+        for row in rows {
+            let (name, names, validity_days) = row?;
+            let names = serde_json::from_str(&names).map_err(|e| StoreError(format!("{name:?}'s names: {e}")))?;
+            out.insert(name, Issued { names, validity_days });
+        }
+        Ok(out)
     }
 
     fn add_secret_version(&self, name: &str, value: &str) -> Result<i64, StoreError> {
@@ -1165,6 +1218,7 @@ impl Store for SqliteStore {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM certificate_chains WHERE name = ?1", (name,))?;
+        tx.execute("DELETE FROM issued_certificates WHERE name = ?1", (name,))?;
         tx.execute("DELETE FROM secret_versions WHERE name = ?1", (name,))?;
         let gone = tx.execute("DELETE FROM secrets WHERE name = ?1", (name,))? > 0;
         tx.commit()?;
@@ -2860,6 +2914,27 @@ mod tests {
         assert_eq!(current.version, 1);
         assert!(current.usable);
         assert!(current.set_at >= before);
+    }
+
+    /// An issued certificate keeps the names it is issued for until it is deleted; an uploaded one has none.
+    #[test]
+    fn an_issued_certificate_keeps_its_names_until_deleted() {
+        let s = store();
+        let issued = Issued {
+            names: vec!["a.example.com".to_string(), "10.0.0.7".to_string()],
+            validity_days: 90,
+        };
+        s.create_issued_certificate("issued", "", &issued, "chain", "key")
+            .unwrap();
+        s.create_certificate("uploaded", "", "chain", "key").unwrap();
+        assert_eq!(
+            s.issued_certificates().unwrap(),
+            [("issued".to_string(), issued)].into_iter().collect()
+        );
+        assert!(record(&s, "issued").certificate);
+
+        s.delete_secret("issued").unwrap();
+        assert!(s.issued_certificates().unwrap().is_empty());
     }
 
     /// A certificate is a stored secret the Secrets page leaves out, and its value is read only as a certificate.

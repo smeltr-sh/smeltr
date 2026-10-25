@@ -294,7 +294,11 @@
             </Field>
           </Nested>
         {/if}
-        <Field optional label="Description">
+        <Field
+          optional
+          label="Description"
+          help="A note shown under the secret's name in the list, to say what it is for."
+        >
           <input bind:value={newDescription} placeholder="the west broker's SCRAM password" />
         </Field>
       </div>
