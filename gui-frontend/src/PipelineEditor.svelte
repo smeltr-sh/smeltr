@@ -1695,17 +1695,16 @@
         </ChipPicker>
       {/if}
       {#if pause && selectedSample}
-        <span class="pause-chip" aria-label="Paused">
+        <RemovableChip
+          accent
+          label="Paused"
+          removeLabel="Show the whole pipeline"
+          onremove={pause.chosen ? () => onSelectStep(null) : undefined}
+        >
           ◉ {pause.step
             ? `After step ${pause.number} · ${STEP_LABELS[pause.step.type].toUpperCase()}`
             : 'Input records'}
-          {#if pause.chosen}<button
-              type="button"
-              aria-label="Show the whole pipeline"
-              title="Show the whole pipeline"
-              onclick={() => onSelectStep(null)}>✕</button
-            >{/if}
-        </span>
+        </RemovableChip>
         {#if pauseLoading}<span class="dim">loading…</span>{/if}
       {/if}
       {#if result && !result.ok && !pause && lastGoodResult && selectedSample}
@@ -1947,7 +1946,7 @@
                 {#if failingCount > 0}
                   <button
                     type="button"
-                    class="failing"
+                    class="failing error-button"
                     aria-pressed={chips.some((c) => c.kind === 'failing')}
                     onclick={() => toggleChip({ kind: 'failing' })}>⚠ {failingCount} failing</button
                   >
@@ -2295,28 +2294,6 @@
     padding-left: 1.2rem;
   }
 
-  /* Where the records stand. The step it names wears the same accent. */
-  .pause-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.3rem 0.6rem;
-    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
-    border-radius: var(--radius);
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
-    color: var(--accent);
-    white-space: nowrap;
-  }
-
-  .pause-chip button {
-    border: none;
-    background: none;
-    padding: 0 0.1rem;
-    font: inherit;
-    color: inherit;
-    cursor: pointer;
-  }
-
   /* The steps sit on the panel, so a step at rest is drawn by its own
      `--field` surface (STYLE_GUIDE.md, "Cards"). */
   .builder {
@@ -2384,13 +2361,6 @@
   /* The failing rows are what to read first, so their count stands out until read. */
   .failing {
     flex: none;
-    border-color: var(--error);
-    color: var(--error);
-    font-weight: 600;
-  }
-
-  .failing[aria-pressed='true'] {
-    background: color-mix(in srgb, var(--error) 12%, transparent);
   }
 
   .add-small {
