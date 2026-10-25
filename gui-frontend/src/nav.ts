@@ -22,7 +22,7 @@ export type SystemSection = 'general' | 'sessions' | 'certificates' | 'git' | 'a
 export const SYSTEM_SECTIONS: { section: SystemSection; label: string }[] = [
   { section: 'general', label: 'General' },
   { section: 'sessions', label: 'Sessions' },
-  { section: 'certificates', label: 'Certificates' },
+  { section: 'certificates', label: 'Leader certificate' },
   { section: 'git', label: 'Git remote' },
   { section: 'agents', label: 'AI agents' },
   { section: 'license', label: 'License' },
@@ -137,6 +137,7 @@ export type Route =
   | { tab: 'admin'; page: 'workers'; section: WorkersSection }
   | { tab: 'admin'; page: 'groups' }
   | { tab: 'admin'; page: 'secrets'; section: SecretsSection }
+  | { tab: 'admin'; page: 'certificates'; adding?: boolean }
   // `section` is which tab of Accounts is showing.
   | { tab: 'admin'; page: 'accounts'; section: AccountsSection }
   // `section` is which tab of System is showing; the others arrive when their
@@ -259,6 +260,7 @@ const SECTIONS: Partial<Record<Tab, SectionItem[]>> = {
     { label: 'Workers', hash: '#/admin' },
     { label: 'Worker groups', hash: '#/admin/groups' },
     { label: 'Secrets', hash: '#/admin/secrets' },
+    { label: 'Certificates', hash: '#/admin/certificates' },
     { label: 'Accounts', hash: '#/admin/accounts' },
     { label: 'System', hash: '#/admin/system/general' },
   ],
@@ -345,6 +347,7 @@ const SECTION_OF: Record<Route['page'], string | null> = {
   workers: 'Workers',
   groups: 'Worker groups',
   secrets: 'Secrets',
+  certificates: 'Certificates',
   accounts: 'Accounts',
   system: 'System',
   'agent-permissions': null,
@@ -599,6 +602,10 @@ export function parseRoute(hash: string): Route {
       if (parts[1] === 'secrets') {
         return { tab: 'admin', page: 'secrets', section: parts[2] === 'key' ? 'key' : 'secrets' };
       }
+      if (parts[1] === 'certificates')
+        return parts[2] === 'new'
+          ? { tab: 'admin', page: 'certificates', adding: true }
+          : { tab: 'admin', page: 'certificates' };
       if (parts[1] === 'accounts') {
         const named = ACCOUNTS_SECTIONS.find((s) => s.section === parts[2]);
         return { tab: 'admin', page: 'accounts', section: named?.section ?? 'users' };

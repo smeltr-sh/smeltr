@@ -755,10 +755,16 @@ test('a capture at a destination shows each row its pipeline finished for it, an
     .getByRole('link', { name: /search/ })
     .first()
     .click();
+  // Once read, so the click lands where the button stays.
+  await expect(focus(admin, 'search').getByText('Accepted output')).toBeVisible();
   await focus(admin, 'search').getByRole('button', { name: 'Capture' }).click();
-  const fromMap = admin.getByRole('dialog', { name: /search/ });
-  await fromMap.getByRole('button', { name: 'Start' }).click();
-  await expect(fromMap).toContainText('__destination.route', { timeout: 30_000 });
+  await admin
+    .getByRole('dialog', { name: /search/ })
+    .getByRole('button', { name: 'Start' })
+    .click();
+  // A hundred rows fill in seconds, and the dialog is then the save's.
+  const fromMap = admin.getByRole('dialog', { name: /Save the capture/ });
+  await expect(fromMap).toContainText('__destination.route', { timeout: 60_000 });
   await admin.screenshot({ path: 'results/destination-capture-map.png' });
 });
 

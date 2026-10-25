@@ -46,11 +46,12 @@
     type FieldProposal,
     type OpenProposal,
   } from './proposal';
-  import { SvelteSet } from 'svelte/reactivity';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { fieldsSettled } from './grokFields';
   import { provideUnfinishedRows } from './unfinished.svelte';
   import RecordFields from './RecordFields.svelte';
   import SearchBox from './SearchBox.svelte';
+  import RemovableChip from './RemovableChip.svelte';
   import { formatDiffValue } from './diff';
   import {
     countStates,
@@ -79,6 +80,8 @@
     SHARED_SCOPE,
     previewFailure,
     previewPipeline,
+    afterDot,
+    type AskAt,
     errorText,
     type ApiError,
     errorMessage,
@@ -697,14 +700,14 @@
   let lastUsed = $state('');
   function readLastUsed(): string {
     try {
-      return window.localStorage.getItem(sampleKey(id)) ?? '';
+      return window.localStorage.getItem(sampleKey(pipelineId)) ?? '';
     } catch {
       return '';
     }
   }
 
   async function chooseSample(id: string) {
-    const pipeline = untrack(() => routeId);
+    const pipeline = untrack(() => pipelineId);
     selectedSample = id;
     if (id) {
       lastUsed = id;
@@ -793,6 +796,27 @@
     });
     return { ...res, errors: res.errors.map(held.restore) };
   }
+
+  /** Asks the engine what may follow a dot in a step's expression, over the steps as they are being written and the
+   * sample's columns. */
+  const askAt: AskAt = (at) => (text, dot) =>
+    afterDot({
+      config: JSON.stringify(
+        buildFileConfig(
+          pipelineId,
+          pipelineName,
+          unfinished.hold(steps).steps,
+          ownPipelines,
+          ownLookupTables,
+          ownGrokPatterns,
+        ),
+      ),
+      pipeline: pipelineId,
+      sample: lastSample || undefined,
+      at,
+      text,
+      dot,
+    });
 
   async function run() {
     running = true;
@@ -1309,10 +1333,11 @@
     }));
   });
 
-  // What differs from each field's default, rather than what is shown: a
-  // step added along the way brings its fields with it, instead of arriving
-  // invisible behind a choice made before they existed. The default is the
-  // fields most records hold, up to a grid's worth. A field under a `__`
+  // What the reader chose for each field they touched, and the default for the
+  // rest: a step added along the way brings its fields with it, instead of
+  // arriving invisible behind a choice made before they existed. The default is
+  // the fields most records hold, up to a grid's worth, so it moves with the
+  // step and sample shown; a choice does not. A field under a `__`
   // key is internal, smeltr's own and never delivered, so it starts hidden,
   // and an unfolded row shows it only while its column is shown. A root key
   // the path has to quote (`["__a.b"]`) counts as well.
@@ -1327,18 +1352,14 @@
         .map((f) => f.path),
     ),
   );
-  let toggledColumns = $state(new SvelteSet<string>());
-  const isShown = (path: string) => shownByDefault.has(path) !== toggledColumns.has(path);
+  let chosenFields = $state(new SvelteMap<string, boolean>());
+  const isShown = (path: string) => chosenFields.get(path) ?? shownByDefault.has(path);
   let columns = $derived(allColumns.filter(isShown));
 
   const unfoldedPath = (path: string) => !startsHidden(path) || isShown(path);
 
   function showFields(paths: string[], show: boolean) {
-    for (const path of paths) {
-      if (isShown(path) === show) continue;
-      if (toggledColumns.has(path)) toggledColumns.delete(path);
-      else toggledColumns.add(path);
-    }
+    for (const path of paths) chosenFields.set(path, show);
   }
 
   // The field choice is the reader's own, remembered per pipeline in this browser.
@@ -1346,19 +1367,21 @@
   $effect(() => {
     const key = fieldsKey(pipelineId);
     untrack(() => {
-      toggledColumns.clear();
+      chosenFields.clear();
       try {
-        const saved = JSON.parse(window.localStorage.getItem(key) ?? '[]') as string[];
-        for (const path of saved) toggledColumns.add(path);
+        const saved: unknown = JSON.parse(window.localStorage.getItem(key) ?? '{}');
+        if (saved && typeof saved === 'object' && !Array.isArray(saved))
+          for (const [path, shown] of Object.entries(saved))
+            if (typeof shown === 'boolean') chosenFields.set(path, shown);
       } catch {
         // Nothing usable stored: the default stands.
       }
     });
   });
   $effect(() => {
-    const saved = JSON.stringify([...toggledColumns]);
+    const saved = JSON.stringify(Object.fromEntries(chosenFields));
     try {
-      if (saved === '[]') window.localStorage.removeItem(untrack(() => fieldsKey(pipelineId)));
+      if (saved === '{}') window.localStorage.removeItem(untrack(() => fieldsKey(pipelineId)));
       else
         window.localStorage.setItem(
           untrack(() => fieldsKey(pipelineId)),
@@ -1891,6 +1914,7 @@
             {onSelectStep}
             onPropose={readOnly ? undefined : proposeFields}
             proposal={openProposal}
+            {askAt}
           />
         </div>
 
@@ -1959,7 +1983,7 @@
               shown={isShown}
               {dictionary}
               onshow={showFields}
-              ondefault={() => toggledColumns.clear()}
+              ondefault={() => chosenFields.clear()}
               onhas={(path) => {
                 showFields([path], true);
                 addChip({ kind: 'has', path });
@@ -1998,12 +2022,12 @@
                   mono={expressionRows !== null}
                 >
                   {#snippet before()}<span aria-hidden="true">⌕</span
-                    >{#each chips as c (chipKey(c))}<span class="find-chip"
-                        >{chipLabel(c)}<button
-                          type="button"
-                          aria-label={`remove ${chipKey(c)}`}
-                          onclick={() => toggleChip(c)}>✕</button
-                        ></span
+                    >{#each chips as c (chipKey(c))}<RemovableChip
+                        removeLabel={`remove ${chipKey(c)}`}
+                        onremove={() => toggleChip(c)}
+                        ><span class="find-chip"
+                          >{chipLabel(c)}</span
+                        ></RemovableChip
                       >{/each}{/snippet}
                   {#snippet after()}{#if outputQuery.trim()}<span
                         class="mode"
@@ -2466,26 +2490,8 @@
   }
 
   .find-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    flex: none;
-    padding: 0 0.2rem 0 0.5rem;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--panel);
     color: var(--ink);
     font-size: var(--text-note);
-    white-space: nowrap;
-  }
-
-  .find-chip button {
-    border: none;
-    background: none;
-    padding: 0 0.2rem;
-    font: inherit;
-    color: var(--dim);
-    cursor: pointer;
   }
 
   /* The failing rows are what to read first, so their count stands out until read. */

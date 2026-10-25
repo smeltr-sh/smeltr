@@ -35,7 +35,7 @@
     children,
   }: {
     label: string;
-    help?: Snippet;
+    help?: Snippet | string;
     note?: Snippet | string;
     error?: string | null;
     warning?: string | null;
@@ -79,7 +79,9 @@
 
 {#snippet name()}
   <span class="name" class:bare id={nameId}
-    >{label}{#if help}<Help {label}>{@render help()}</Help>{/if}</span
+    >{label}{#if help}<Help {label}
+        >{#if typeof help === 'string'}{help}{:else}{@render help()}{/if}</Help
+      >{/if}</span
   >
 {/snippet}
 
@@ -144,8 +146,9 @@
     white-space: nowrap;
   }
 
+  /* What stays under a field is what must be known, so it reads in the accent. */
   .note {
-    color: var(--dim);
+    color: var(--accent);
     font-size: var(--text-note);
   }
 

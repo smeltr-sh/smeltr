@@ -41,6 +41,43 @@ pub struct PreviewRequest {
     /// pipeline once more for every step, so an editor asks for it once typing settles.
     #[serde(default)]
     pub attribution: bool,
+    /// What may follow a `.` in an expression of the config. Asked, the preview answers it instead of running the
+    /// sample, and `Preview::after_dot` holds the answer.
+    #[serde(default)]
+    pub after_dot: Option<AfterDotRequest>,
+}
+
+/// A `.` an author has just typed: the expression's text, the dot's byte offset in it, and where the expression sits,
+/// which decides what its names read.
+#[derive(serde::Deserialize)]
+pub struct AfterDotRequest {
+    pub text: String,
+    pub dot: usize,
+    pub at: DotAt,
+}
+
+/// Where an expression sits: its names read the record as it is there.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DotAt {
+    /// At the start of a step of the request's pipeline, by the step's id.
+    Step(String),
+    /// A source's record as it arrives, by the source's id: a route's condition, or a capture filter at the source.
+    Source(String),
+    /// A `when` of a route's `deliver` rules, by the route's id: its pipeline's output.
+    When(String),
+    /// A capture filter at a destination, by its id: the output of every route that delivers there.
+    Destination(String),
+}
+
+/// What may follow a `.`: the type of what it follows where it sits, as the engine spells it, an object's fields, and
+/// each function a call there may name. `ty` is absent where it does not resolve.
+#[derive(serde::Serialize)]
+pub struct AfterDot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ty: Option<String>,
+    pub fields: Vec<(String, String)>,
+    pub methods: Vec<plan::dot::Method>,
 }
 
 #[derive(Default, serde::Serialize)]
@@ -62,6 +99,10 @@ pub struct Preview {
     /// What compiles but is likely a mistake (`Plan::warnings`), each placed at its step as an error is.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ApiError>,
+    /// The answer to `PreviewRequest::after_dot`. Absent where the dot follows no value: it is in a string, a comment
+    /// or a number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_dot: Option<AfterDot>,
 }
 
 /// The record by its compiled types alone, and with the sample's output filling what only a row knows. `sampled` is
@@ -605,6 +646,96 @@ pub fn format_code(req: FormatRequest) -> Envelope<Formatted> {
     )
 }
 
+/// The answer to `asked` against `system`. A step's names read the record its pipeline's sample was captured under, as
+/// a preview of that pipeline does; a source's, the record the source gives; a `when`'s, the route's pipeline's output
+/// for that source. `Err` names an id `system` does not hold.
+fn after_dot(
+    asked: &AfterDotRequest,
+    system: &config_file::LoadedSystem,
+    pipeline: Option<&str>,
+    columns: &[crate::heartbeat::CaptureColumn],
+) -> Result<Option<AfterDot>, String> {
+    use plan::dot::{Before, before_dot, fields_of, methods_for, type_in};
+    use plan::resolve::SymbolTable;
+    let expr = match before_dot(&asked.text, asked.dot) {
+        Before::Nothing => return Ok(None),
+        Before::Unread => None,
+        Before::Value(e) => Some(e),
+    };
+    // What `e` is over a route's pipeline's output. The pipeline compiles on its own: a half-typed expression after it
+    // is not in it.
+    let over_output = |r: &plan::topology::RouteConfig, e: &crate::expr::ast::Expr| {
+        let meta = (system.topology.sources.iter())
+            .find(|s| s.id == r.source)
+            .map(|s| s.kind.meta())
+            .unwrap_or(SourceMeta::NONE);
+        let plan = (system.pipelines.iter())
+            .find(|p| p.id == r.pipeline)
+            .and_then(|p| plan::plan::compile(p, &meta).ok())?;
+        type_in(
+            e,
+            &plan::topology::output_symbols(&plan, &r.on_exception.tag_field, &meta),
+        )
+    };
+    let ty = match &asked.at {
+        DotAt::Step(step) => {
+            let p = pipeline
+                .and_then(|id| system.pipeline(id))
+                .ok_or("this config has no such pipeline")?;
+            let step = p
+                .function_id(step)
+                .ok_or_else(|| format!("this pipeline has no step {step:?}"))?;
+            let meta = SourceMeta::of_columns(&replayed(columns).cloned().collect::<Vec<_>>())?;
+            let cut = plan::dot::cut_at(&asked.text, asked.dot);
+            expr.and_then(|e| plan::plan::type_at(p, &meta, step, &e, cut))
+        }
+        DotAt::Source(id) => {
+            let source = (system.topology.sources.iter())
+                .find(|s| s.name == *id)
+                .ok_or_else(|| format!("this config has no source {id:?}"))?;
+            let syms = SymbolTable::new(&plan::plan::ingest_fields(&source.kind.meta()));
+            expr.and_then(|e| type_in(&e, &syms))
+        }
+        DotAt::When(route) => {
+            let r = (system.topology.routes.iter())
+                .find(|r| r.id == *route)
+                .ok_or_else(|| format!("this config has no route {route:?}"))?;
+            expr.and_then(|e| over_output(r, &e))
+        }
+        DotAt::Destination(id) => {
+            let dest = (system.topology.destinations.iter())
+                .find(|d| d.name == *id)
+                .ok_or_else(|| format!("this config has no destination {id:?}"))?;
+            // A filter there compiles once for each route that delivers to it (`runtime`), so a name has a type
+            // only where every one of them gives it the same one.
+            let delivers = |r: &&plan::topology::RouteConfig| {
+                r.deliver.iter().any(|rule| rule.to.contains(&dest.id))
+                    || r.on_exception.answers.iter().any(|a| a.targets().contains(&dest.id))
+            };
+            let mut types = system
+                .topology
+                .routes
+                .iter()
+                .filter(delivers)
+                .map(|r| over_output(r, expr.as_ref()?));
+            let first = types.next().flatten();
+            first.filter(|t| types.all(|other| other.as_ref() == Some(t)))
+        }
+    };
+    Ok(Some(match ty {
+        None => AfterDot {
+            ty: None,
+            fields: Vec::new(),
+            methods: Vec::new(),
+        },
+        Some(ty) => AfterDot {
+            fields: fields_of(&ty).iter().map(|(k, t)| (k.clone(), t.spell())).collect(),
+            methods: methods_for(&ty),
+            ty: Some(ty.spell()),
+        },
+    }))
+}
+
 pub fn run_preview(
     req: PreviewRequest,
     declared_at: config_file::DeclaredAt,
@@ -626,12 +757,19 @@ pub fn run_preview(
 
     let pipeline_names: Vec<String> = system.pipelines.iter().map(|p| p.name.clone()).collect();
 
+    if let Some(asked) = &req.after_dot {
+        return match after_dot(asked, &system, req.pipeline.as_deref(), columns) {
+            Ok(after_dot) => Envelope::ok(Preview {
+                pipeline_names,
+                after_dot,
+                ..Preview::default()
+            }),
+            Err(e) => Preview::failed("config", vec![ApiError::new(e)], pipeline_names),
+        };
+    }
+
     let pipeline_cfg = match &req.pipeline {
-        Some(id) => system
-            .pipeline_ids
-            .iter()
-            .position(|p| p == id)
-            .and_then(|i| system.pipelines.iter().find(|p| p.id == i)),
+        Some(id) => system.pipeline(id),
         None => system.pipelines.first(),
     };
     let Some(pipeline_cfg) = pipeline_cfg else {
@@ -692,6 +830,7 @@ pub fn run_preview(
         return Envelope::ok(Preview {
             stage: None,
             pipeline_names,
+            after_dot: None,
             rows: vec![],
             unfiltered: filter.as_ref().map(|_| 0),
             parsers: vec![],
@@ -809,6 +948,7 @@ pub fn run_preview(
     Envelope::ok(Preview {
         stage: None,
         pipeline_names,
+        after_dot: None,
         dictionary: Some(DictionaryOut {
             compiled: Dictionary::of(&record),
             sampled: Some(Dictionary::of(&sampled)),
@@ -855,6 +995,7 @@ fn attribute(
             at_micros,
             filter: None,
             attribution: false,
+            after_dot: None,
         };
         let previewed = run_preview(req, declared_at.clone(), columns, records.to_vec());
         (previewed.ok && previewed.body.rows.len() == count)
@@ -1060,6 +1201,7 @@ pub fn run_pipeline_actual(
             at_micros: Some(locked_at),
             filter: None,
             attribution: false,
+            after_dot: None,
         },
         declared_at,
         columns,
@@ -1134,4 +1276,123 @@ pub fn run_route_actual(
         }
     }
     Ok(actual)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A bundle whose pipeline sets `u` and `n` and then has a step `s`, routed from a Kafka source with a condition and
+    /// a `when` being typed.
+    const BUNDLE: &str = r#"{"version":1,
+        "sources":[{"id":"in","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}],
+        "destinations":[{"id":"out","type":"kafka","brokers":"b:9092","defaultTopic":"t"}],
+        "pipelines":[{"id":"p","name":"P","steps":[
+            {"id":"u","type":"code","body":"u = parseUrl(_raw); n = 1;"},
+            {"id":"s","type":"code","body":"x = 1;"}]}],
+        "routes":[{"id":"r","source":"in","pipeline":"p","condition":"_raw.","deliver":[{"when":"n.","to":["out"]}]}]}"#;
+
+    fn after(text: &str, at: DotAt) -> Option<AfterDot> {
+        let previewed = run_preview(
+            PreviewRequest {
+                config: BUNDLE.into(),
+                pipeline: Some("p".into()),
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: Some(AfterDotRequest {
+                    dot: text.len() - 1,
+                    text: text.into(),
+                    at,
+                }),
+            },
+            Default::default(),
+            &[],
+            Vec::new(),
+        );
+        assert!(
+            previewed.ok,
+            "{:?}",
+            previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        previewed.body.after_dot
+    }
+
+    fn method<'a>(answer: &'a AfterDot, name: &str) -> &'a plan::dot::Method {
+        answer.methods.iter().find(|m| m.name == name).unwrap()
+    }
+
+    /// A step reads what the steps before it wrote, though the step itself does not compile yet.
+    #[test]
+    fn a_step_reads_the_record_the_steps_before_it_wrote() {
+        let answer = after("x = u.", DotAt::Step("s".into())).unwrap();
+        assert!(
+            answer.ty.as_deref().is_some_and(|t| t.starts_with('{')),
+            "{:?}",
+            answer.ty
+        );
+        assert!(
+            answer.fields.contains(&("path".into(), "str".into())),
+            "{:?}",
+            answer.fields
+        );
+        assert!(method(&answer, "keys").fits);
+        assert!(!method(&answer, "sign").fits);
+    }
+
+    /// A code step reads the names its own statements before the dot bind, `let`s among them.
+    #[test]
+    fn a_step_reads_what_its_own_statements_before_the_dot_bind() {
+        let local = after("let v = parseUrl(_raw); w = v.path.", DotAt::Step("s".into())).unwrap();
+        assert_eq!(local.ty.as_deref(), Some("str"));
+        let inner = after("if (n == 1) { let v = [1]; x = v.", DotAt::Step("s".into())).unwrap();
+        assert_eq!(inner.ty.as_deref(), Some("array<i64>"));
+    }
+
+    /// A source's record is what it gives as it arrives; a `when`, and a destination's filter, the pipeline's output.
+    #[test]
+    fn a_source_and_a_when_read_their_own_record() {
+        let raw = after("_raw.", DotAt::Source("in".into())).unwrap();
+        assert_eq!(raw.ty.as_deref(), Some("str"));
+        assert!(method(&raw, "toLowerCase").fits);
+        assert_eq!(method(&raw, "sign").takes, "i64/f64");
+        assert!(!method(&raw, "sign").fits);
+
+        let n = after("n.", DotAt::When("r".into())).unwrap();
+        assert_eq!(n.ty.as_deref(), Some("i64"));
+        // A capture filter at a destination reads what the routes delivering there give it.
+        assert_eq!(
+            after("n.", DotAt::Destination("out".into())).unwrap().ty.as_deref(),
+            Some("i64")
+        );
+        assert!(after("n.", DotAt::Source("in".into())).unwrap().ty.is_none());
+    }
+
+    /// A dot in a string follows no value; an id the bundle does not hold fails.
+    #[test]
+    fn a_dot_that_follows_no_value_has_no_answer() {
+        assert!(after(r#"x == "a."#, DotAt::Source("in".into())).is_none());
+        let previewed = run_preview(
+            PreviewRequest {
+                config: BUNDLE.into(),
+                pipeline: None,
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: Some(AfterDotRequest {
+                    text: "_raw.".into(),
+                    dot: 4,
+                    at: DotAt::Source("nope".into()),
+                }),
+            },
+            Default::default(),
+            &[],
+            Vec::new(),
+        );
+        assert!(!previewed.ok);
+    }
 }

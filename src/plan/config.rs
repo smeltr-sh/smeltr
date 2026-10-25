@@ -24,6 +24,13 @@ pub struct PipelineConfig {
     pub grok_patterns: GrokPatterns,
 }
 
+impl PipelineConfig {
+    /// The `FunctionId` of the step the file names `id`: what `step_ids` holds at it.
+    pub fn function_id(&self, id: &str) -> Option<FunctionId> {
+        self.step_ids.iter().position(|s| s == id).map(|i| i as FunctionId)
+    }
+}
+
 /// A bundle's named grok patterns, by name: what any grok in the group's pipelines can name, between its own
 /// `GrokConfig::custom_patterns` and the built-ins. `config_file::load` checked that each expands on its own and
 /// that none takes a built-in's name.

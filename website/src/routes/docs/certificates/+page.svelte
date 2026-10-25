@@ -3,6 +3,8 @@
   const sections = [
     { id: 'model', title: 'Choose the trust model' },
     { id: 'download', title: 'Obtain and verify the public CA' },
+    { id: 'list', title: 'Keep certificates in the list' },
+    { id: 'names', title: 'Names a certificate must cover' },
     { id: 'source', title: 'Choose where the certificate comes from' },
     { id: 'acme', title: 'Order a certificate over ACME' },
     { id: 'rotation', title: 'Rotate the authority' },
@@ -41,7 +43,7 @@
           ><td>Trust the proxy certificate; install a private CA if needed</td></tr
         >
         <tr
-          ><th>Certificate changes</th><td>Admin → System → Certificates</td><td
+          ><th>Certificate changes</th><td>Admin → System → Leader certificate</td><td
             >At the proxy or ingress</td
           ></tr
         >
@@ -52,8 +54,8 @@
   <p>
     For direct TLS the generated CA is at <code>tls/ca.pem</code> beneath leader.storage.data_dir.
     Obtain that public file through a trusted host-management channel for initial browser setup.
-    Once signed in, Admin → System → Certificates also provides <strong>Download ca.pem</strong> and the
-    authority fingerprint. Never distribute the CA private key.
+    Once signed in, Admin → System → Leader certificate also provides
+    <strong>Download ca.pem</strong> and the authority fingerprint. Never distribute the CA private key.
   </p>
   <pre><code
       >openssl x509 -in /var/lib/smeltr/tls/ca.pem -noout -subject -dates -fingerprint -sha256</code
@@ -64,11 +66,31 @@
     certificate shown in the UI. Do not use a certificate warning bypass as the production setup
     procedure.
   </p>
+  <h2 id="list">Keep certificates in the list</h2>
+  <p>
+    Open Admin → Certificates and choose <strong>+ Add certificate</strong>. Enter a Name, paste the
+    full certificate chain and its private key, both PEM, and choose <strong>Add</strong>. For a
+    private authority, end the chain with its root. The private key is stored encrypted and never
+    shown again.
+  </p>
+  <p>
+    To renew a certificate, choose <strong>Replace</strong> and paste the new version. If the leader serves
+    it, the leader switches to the new version; there's no need to choose it again. The certificate the
+    leader serves cannot be deleted.
+  </p>
+  <h2 id="names">Names a certificate must cover</h2>
+  <p>
+    A certificate this leader serves must cover the name your browser reaches it by. If this leader
+    runs its own worker, it must also cover the address that worker reaches it by: 127.0.0.1, unless
+    <a href="/docs/reference#worker.leader.url">worker.leader.url</a> says otherwise. Public
+    authorities don't issue certificates for 127.0.0.1, so to serve a public certificate, set
+    worker.leader.url to a URL on one of the certificate's names, such as
+    <code>https://smeltr.example.com</code>, then restart.
+  </p>
   <h2 id="source">Choose where the certificate comes from</h2>
   <p>
-    Admin → System → Certificates shows the authority and the certificate this leader serves, and a <strong
-      >Source</strong
-    > chooser with the one in force marked.
+    Admin → System → Leader certificate shows the authority and the certificate this leader serves,
+    and a <strong>Source</strong> chooser with the one in force marked.
   </p>
   <div class="table-scroll">
     <table>
@@ -82,10 +104,10 @@
         >
         <tr
           ><th>Uploaded</th><td
-            >An administrator pastes the full certificate chain and its private key, both PEM, and
-            selects
-            <strong>Serve this certificate</strong>. The certificate must cover every name the page
-            lists.</td
+            >An administrator picks a certificate from <strong>Admin → Certificates</strong>, or
+            adds one there with <strong>add a certificate</strong>, and selects
+            <strong>Serve this certificate</strong>. See
+            <a href="#names">Names a certificate must cover</a>.</td
           ></tr
         >
         <tr
@@ -138,9 +160,8 @@
       can't prove an IP address.
     </li>
     <li>
-      If this leader runs its own worker, set worker.leader.url to one of the certificate's names.
-      That worker otherwise reaches the leader at localhost, and the leader refuses a certificate
-      that doesn't cover it.
+      If this leader runs its own worker, read
+      <a href="#names">Names a certificate must cover</a> first.
     </li>
   </ul>
   <h3>Order it</h3>
