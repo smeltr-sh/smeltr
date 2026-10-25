@@ -15,6 +15,7 @@
 <script lang="ts">
   import type { Snippet, Component } from 'svelte';
   import ScopePicker from './ScopePicker.svelte';
+  import { store, stored } from './stored';
   import PersonIcon from './PersonIcon.svelte';
   import LockIcon from './LockIcon.svelte';
   import CertificateIcon from './CertificateIcon.svelte';
@@ -43,19 +44,11 @@
   const FOLDED_KEY = 'smeltr-rail-folded';
   let folded = $state(loadFolded());
   function loadFolded(): boolean {
-    try {
-      return localStorage.getItem(FOLDED_KEY) === 'true';
-    } catch {
-      return false;
-    }
+    return stored(FOLDED_KEY) === 'true';
   }
   function fold() {
     folded = !folded;
-    try {
-      localStorage.setItem(FOLDED_KEY, String(folded));
-    } catch {
-      // Best-effort: a blocked or full localStorage just forgets across reloads.
-    }
+    store(FOLDED_KEY, String(folded));
   }
 
   // Admin's items draw the icon components their pages already use; every

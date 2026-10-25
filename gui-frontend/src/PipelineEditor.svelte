@@ -12,6 +12,7 @@
 <script lang="ts">
   import InlineError from './InlineError.svelte';
   import { untrack } from 'svelte';
+  import { store, stored, storedJson } from './stored';
   import StepList from './StepList.svelte';
   import Connections from './Connections.svelte';
   import SectionShell from './SectionShell.svelte';
@@ -701,11 +702,7 @@
   const sampleKey = (pipeline: string) => `smeltr-workspace-sample:${pipeline}`;
   let lastUsed = $state('');
   function readLastUsed(): string {
-    try {
-      return window.localStorage.getItem(sampleKey(pipelineId)) ?? '';
-    } catch {
-      return '';
-    }
+    return stored(sampleKey(pipelineId)) ?? '';
   }
 
   async function chooseSample(id: string) {
@@ -713,11 +710,7 @@
     selectedSample = id;
     if (id) {
       lastUsed = id;
-      try {
-        window.localStorage.setItem(sampleKey(pipeline), id);
-      } catch {
-        // Storage refused: the editor opens on no sample next time.
-      }
+      store(sampleKey(pipeline), id);
     }
     sampleRows = [];
     // The rows on screen were the last sample's.
@@ -866,11 +859,13 @@
   //
   // The steps column takes half the width when the work is the steps and is
   // narrow when it is inside one of them. Drag it, or double-click to snap
-  // between the two. `null` is the half.
+  // between the two. `null` is the half. The width is the reader's, remembered in this browser.
 
   const STEPS_NARROW = 240;
   const STEPS_MIN = 200;
-  let stepsWidth = $state<number | null>(null);
+  const STEPS_WIDTH_KEY = 'smeltr-workspace-steps-width';
+  let stepsWidth = $state<number | null>(Number(stored(STEPS_WIDTH_KEY)) || null);
+  $effect(() => store(STEPS_WIDTH_KEY, stepsWidth === null ? null : String(stepsWidth)));
 
   function drag(e: PointerEvent) {
     const bar = e.currentTarget as HTMLElement;
@@ -1377,28 +1372,18 @@
     const key = fieldsKey(pipelineId);
     untrack(() => {
       chosenFields.clear();
-      try {
-        const saved: unknown = JSON.parse(window.localStorage.getItem(key) ?? '{}');
-        if (saved && typeof saved === 'object' && !Array.isArray(saved))
-          for (const [path, shown] of Object.entries(saved))
-            if (typeof shown === 'boolean') chosenFields.set(path, shown);
-      } catch {
-        // Nothing usable stored: the default stands.
-      }
+      const saved = storedJson<unknown>(key, {});
+      if (saved && typeof saved === 'object' && !Array.isArray(saved))
+        for (const [path, shown] of Object.entries(saved))
+          if (typeof shown === 'boolean') chosenFields.set(path, shown);
     });
   });
   $effect(() => {
     const saved = JSON.stringify(Object.fromEntries(chosenFields));
-    try {
-      if (saved === '{}') window.localStorage.removeItem(untrack(() => fieldsKey(pipelineId)));
-      else
-        window.localStorage.setItem(
-          untrack(() => fieldsKey(pipelineId)),
-          saved,
-        );
-    } catch {
-      // Storage refused: the choice lasts as long as the page.
-    }
+    store(
+      untrack(() => fieldsKey(pipelineId)),
+      saved === '{}' ? null : saved,
+    );
   });
 
   // A record is a line until asked for, and any number can be open at once:
@@ -1679,11 +1664,10 @@
   $effect(() => {
     const key = expressionsKey(pipelineId);
     untrack(() => {
-      try {
-        recentExpressions = JSON.parse(window.localStorage.getItem(key) ?? '[]') as string[];
-      } catch {
-        recentExpressions = [];
-      }
+      const saved = storedJson<unknown>(key, []);
+      recentExpressions = Array.isArray(saved)
+        ? saved.filter((e): e is string => typeof e === 'string')
+        : [];
     });
   });
 
@@ -1695,11 +1679,7 @@
       0,
       RECENT_EXPRESSIONS,
     );
-    try {
-      window.localStorage.setItem(expressionsKey(pipelineId), JSON.stringify(recentExpressions));
-    } catch {
-      // Storage refused: they last as long as the page.
-    }
+    store(expressionsKey(pipelineId), JSON.stringify(recentExpressions));
   }
 
   let outputQuery = $state('');
