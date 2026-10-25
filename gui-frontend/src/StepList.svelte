@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { AskAt } from './api';
   import StepEditor, { saveExpanded } from './StepEditor.svelte';
   import {
     newStep,
@@ -30,6 +31,7 @@
     onSelectStep = () => {},
     onPropose = () => {},
     proposal = null,
+    askAt,
   }: {
     steps: Step[];
     errorsByStep?: Map<Step, PreviewError[]>;
@@ -50,6 +52,8 @@
     onPropose?: (step: Step) => void;
     /** The field proposal open on some parser step, shown in that step's card. */
     proposal?: OpenProposal | null;
+    /** Asks the engine what may follow a dot in an expression at `at` (`afterDot`). */
+    askAt?: AskAt;
   } = $props();
 
   /** Each step type's group in the catalog: what it acts on. */
@@ -113,6 +117,7 @@
         {onSelectStep}
         {onPropose}
         {proposal}
+        {askAt}
       />
     </div>
   {/each}

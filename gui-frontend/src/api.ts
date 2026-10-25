@@ -1902,7 +1902,29 @@ export interface PreviewRequest {
   /** A Bool over the pipeline's output: only the rows it is true for come back.
    * One that does not compile fails at the `filter` stage. */
   filter?: string;
+  /** Asks what may follow a `.` instead of running the sample. */
+  afterDot?: { text: string; dot: number; at: DotAt };
 }
+
+/** Where an expression sits, which decides what its names read: at the start
+ * of a step of the request's pipeline, a source's record as it arrives (a
+ * route's condition, a capture filter there), a route's pipeline's output (its
+ * `when`s), or what every route delivering to a destination gives it (a capture
+ * filter there). Each by its id. */
+export type DotAt =
+  { step: string } | { source: string } | { when: string } | { destination: string };
+
+/** What may follow a `.`: the type of what it follows, as the engine spells
+ * it (absent where it does not resolve), an object's fields, and each
+ * function a call there may name, with what its first parameter takes. */
+export interface DotAnswer {
+  ty?: string;
+  fields: [string, string][];
+  methods: { name: string; takes: string; fits: boolean }[];
+}
+
+/** Asks what may follow the `.` at `dot` in `text`, an expression at `at`: `afterDot` over the bundle being edited. */
+export type AskAt = (at: DotAt) => (text: string, dot: number) => Promise<DotAnswer | null>;
 
 export interface PreviewException {
   /** The answer the exception's kind takes. */
@@ -1950,6 +1972,8 @@ export interface PreviewResult {
   parsers: ParserProposal[];
   /** The record the pipeline writes. Absent when it did not compile. */
   dictionary?: DictionaryOut;
+  /** The answer to `PreviewRequest.afterDot`. Absent where the dot follows no value. */
+  after_dot?: DotAnswer;
   /** What compiles but is likely a mistake, each placed at its step as an error is. */
   warnings?: ApiError[];
 }
@@ -1983,9 +2007,24 @@ export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
       show_internal: req.showInternal ?? false,
       at_micros: req.atMicros ?? null,
       filter: req.filter ?? null,
+      after_dot: req.afterDot ?? null,
     },
     'quiet',
   );
+}
+
+/** What may follow the `.` at `dot` in `text`, an expression at `at` in `config`. Null where the dot follows no
+ * value, or the engine could not say. */
+export async function afterDot(
+  req: Pick<PreviewRequest, 'config' | 'pipeline' | 'sample'> & {
+    text: string;
+    dot: number;
+    at: DotAt;
+  },
+): Promise<DotAnswer | null> {
+  const { text, dot, at, ...rest } = req;
+  const res = await previewPipeline({ ...rest, afterDot: { text, dot, at } });
+  return (res.ok && res.after_dot) || null;
 }
 
 /** What a grok pattern captures, which is the set of fields the step declares.

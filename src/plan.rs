@@ -5,6 +5,7 @@
 pub mod binding;
 pub mod config;
 pub mod dictionary;
+pub mod dot;
 pub mod exec;
 pub mod lower;
 pub mod output;

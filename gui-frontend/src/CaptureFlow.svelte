@@ -49,6 +49,9 @@
     type IdentityDto,
     type SourceDto,
     type WorkerGroupDto,
+    type FileConfigDto,
+    type AskAt,
+    afterDot,
   } from './api';
 
   let {
@@ -131,6 +134,7 @@
       const config = given ? await configAt(currentBranch(), given.scope) : await getConfig();
       if (given) readAt = config.commit ?? null;
       if (config.config) {
+        loaded = config.config;
         // A source's sample is saved in its own scope, so only one its editor may save to is offered.
         sources = scope !== SHARED_SCOPE || canEdit(SHARED_SCOPE) ? config.config.sources : [];
         destinations = config.config.destinations;
@@ -166,6 +170,26 @@
   let captureDestination = $derived(
     destinations.find((d) => targetKey('destination', d.id) === selected) ?? null,
   );
+  /** The bundle the targets were read from. Absent for a source a form is editing. */
+  let loaded: FileConfigDto | null = $state(null);
+  /** Asks the engine what may follow a dot in the filter: over the bundle the targets came from, or over the edited
+   * source alone. */
+  const askAt: AskAt = (at) => (text, dot) =>
+    afterDot({
+      config: JSON.stringify(
+        loaded ?? {
+          version: 1,
+          sources,
+          destinations: [],
+          routes: [],
+          pipelines: [],
+          identities: [...identities, ...sharedIdentities],
+        },
+      ),
+      at,
+      text,
+      dot,
+    });
   /** What the filter reads: a source's record, or a destination's row. */
   let at: CaptureAt = $derived(captureDestination ? 'destination' : 'source');
   // Sent with the source rather than named: a worker follows main, and this
@@ -319,6 +343,11 @@
           bind:value={filter}
           placeholder={filterPlaceholder(at)}
           autocomplete="condition"
+          ask={captureSource
+            ? askAt({ source: captureSource.id })
+            : captureDestination
+              ? askAt({ destination: captureDestination.id })
+              : undefined}
           wrap
         />
       </Field>

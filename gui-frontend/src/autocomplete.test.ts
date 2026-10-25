@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { currentWord, describedRuns, inGrokMacroName, rankedSuggestions } from './autocomplete';
+import {
+  currentWord,
+  describedRuns,
+  inGrokMacroName,
+  memberSuggestions,
+  rankedSuggestions,
+  type Member,
+} from './autocomplete';
 import { CODE_FUNCTIONS, CONDITION_FUNCTIONS } from './stdlib';
 import { GROK_BUILTIN_PATTERNS } from './grokPatterns';
 
@@ -20,8 +27,16 @@ describe('currentWord', () => {
 });
 
 describe('rankedSuggestions', () => {
-  it('an empty word returns the whole list, unfiltered, in its original order', () => {
-    expect(rankedSuggestions(CONDITION_FUNCTIONS, '')).toEqual(CONDITION_FUNCTIONS);
+  it('ranks the whole list the same way for an empty word', () => {
+    const names = rankedSuggestions(CONDITION_FUNCTIONS, '').map((f) => f.name);
+    expect(names).toHaveLength(CONDITION_FUNCTIONS.length);
+    expect(names.map((n) => n.length)).toEqual(
+      [...names.map((n) => n.length)].sort((a, b) => a - b),
+    );
+    const used = rankedSuggestions(CONDITION_FUNCTIONS, '', {
+      usage: new Map([[names.at(-1)!, 50]]),
+    });
+    expect(used[0].name).toBe(names.at(-1));
   });
 
   it('ranks every name the word starts ahead of the rest, shorter first', () => {
@@ -148,5 +163,79 @@ describe('describedRuns', () => {
       { text: 'text', code: true },
       { text: ' as JSON.', code: false },
     ]);
+  });
+});
+
+describe('memberSuggestions', () => {
+  const fn = (name: string, signature: string) => ({ name, signature, description: '' });
+  const functions = [
+    fn('sign', 'value.sign()'),
+    fn('length', 'value.length()'),
+    fn('keys', 'object.keys()'),
+    fn('toString', 'value.toString()'),
+    fn('now', 'now()'),
+  ];
+  /** The engine's answer for a value of `ty`, the functions taking what `fits` names. */
+  const typed = (ty: string, fits: string[], fields: [string, string][] = []): Member => ({
+    kind: 'typed',
+    ty,
+    fields,
+    methods: [
+      { name: 'sign', takes: 'i64/f64', fits: fits.includes('sign') },
+      { name: 'length', takes: 'str/bytes/array', fits: fits.includes('length') },
+      { name: 'keys', takes: 'object', fits: fits.includes('keys') },
+      {
+        name: 'toString',
+        takes: 'i64/f64/bool/str/bytes/datetime/duration',
+        fits: fits.includes('toString'),
+      },
+    ],
+  });
+
+  it('offers what takes the value first, and the rest after it, warned', () => {
+    const got = memberSuggestions(typed('str', ['length', 'toString']), functions, '');
+    expect(got.map((f) => [f.name, f.warning])).toEqual([
+      ['length', undefined],
+      ['toString', undefined],
+      ['sign', 'works on i64/f64, not str'],
+      ['keys', 'works on objects, not str'],
+    ]);
+  });
+
+  it('names only the mismatch when a function works on many types', () => {
+    const got = memberSuggestions(typed('array<str>', ['length']), functions, 'toS');
+    expect(got[0].warning).toBe("doesn't work on array<str>");
+  });
+
+  it("offers an object's fields first, an object field by its kind", () => {
+    const got = memberSuggestions(
+      typed(
+        '{path: str, q: {a: i64}}',
+        ['keys'],
+        [
+          ['path', 'str'],
+          ['q', '{a: i64}'],
+        ],
+      ),
+      functions,
+      '',
+    );
+    expect(got.slice(0, 3).map((f) => [f.name, f.signature, !!f.field])).toEqual([
+      ['q', 'q: object', true],
+      ['path', 'path: str', true],
+      ['keys', 'object.keys()', false],
+    ]);
+    expect(got.find((f) => f.name === 'sign')?.warning).toBe('works on i64/f64, not object');
+  });
+
+  it('keeps a misfit below every fit, however well it matches the word', () => {
+    const got = memberSuggestions(typed('str', ['length']), functions, 'n');
+    expect(got.map((f) => f.name)).toEqual(['length', 'sign', 'toString']);
+  });
+
+  it('offers every function written on a value until the engine answers', () => {
+    const got = memberSuggestions({ kind: 'unknown' }, functions, '');
+    expect(got.map((f) => f.name)).toEqual(['sign', 'keys', 'length', 'toString']);
+    expect(got.every((f) => !f.warning)).toBe(true);
   });
 });
