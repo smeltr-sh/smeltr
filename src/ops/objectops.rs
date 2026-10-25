@@ -48,6 +48,38 @@ impl ObjectOp {
     pub fn by_name(name: &str) -> Option<ObjectOp> {
         ObjectOp::NAMED.into_iter().find(|op| op.name() == Some(name))
     }
+
+    /// What its first argument must be, as a type error spells it.
+    pub const fn takes(self) -> &'static str {
+        match self {
+            ObjectOp::FromEntries => "array",
+            _ => "object",
+        }
+    }
+
+    /// Whether its first argument may be of type `ty`: an object, or for `fromEntries` an array of `{key, value}`
+    /// objects whose keys are strings. Null is a `fromEntries` of nothing.
+    pub fn accepts(self, ty: &DataType) -> bool {
+        let entry = |e: &DataType| match e {
+            DataType::Null => true,
+            DataType::Struct(fields, _) => {
+                let of = |n: &str| fields.iter().find(|(k, _)| k == n).map(|(_, t)| t);
+                matches!(
+                    (of("key"), of("value")),
+                    (Some(DataType::Str | DataType::Null), Some(_))
+                )
+            }
+            _ => false,
+        };
+        match self {
+            ObjectOp::FromEntries => match ty {
+                DataType::Null => true,
+                DataType::Array(e) => entry(e),
+                _ => false,
+            },
+            _ => matches!(ty, DataType::Struct(..)),
+        }
+    }
 }
 
 /// `keys(o)` over `object`, a struct column: an `array<str>` per row, its unclaimed fields' keys among them where

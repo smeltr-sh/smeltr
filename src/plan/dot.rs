@@ -113,23 +113,19 @@ pub fn methods_for(ty: &DataType) -> Vec<Method> {
             }),
         }
     }
-    let object = matches!(ty, DataType::Struct(..));
-    let array = matches!(ty, DataType::Array(_));
     for op in ObjectOp::NAMED {
-        let name = op.name().expect("a named op has a name");
-        let takes_array = op == ObjectOp::FromEntries;
         out.push(Method {
-            name,
-            takes: if takes_array { "array" } else { "object" }.into(),
-            fits: if takes_array { array } else { object },
+            name: op.name().expect("a named op has a name"),
+            takes: op.takes().into(),
+            fits: op.accepts(ty),
         });
     }
-    // The prelude's functions loop over their first argument.
+    // The prelude's functions walk their first argument with `for...of`, which takes an array.
     for name in PRELUDE_FUNCTIONS {
         out.push(Method {
             name,
             takes: "array".into(),
-            fits: array,
+            fits: matches!(ty, DataType::Array(_)),
         });
     }
     out
