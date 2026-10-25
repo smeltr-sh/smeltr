@@ -61,11 +61,18 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
             "only a Kafka or Event Hubs source's capture takes a start",
         ));
     }
+    // What the fleet ran when it opened, for a sample saved from it to record. A capture is no less worth taking for a
+    // leader that cannot read its own history, so a failed read records none.
+    let repo = smeltr::leader::git::repo_path(&state.data_dir);
+    let config = blocking(move || Ok::<_, String>(smeltr::leader::git::deployed(&repo)))
+        .await
+        .ok()
+        .flatten();
     let source = match (&request.source, &request.destination) {
         (Some(source), None) => source.clone(),
         (None, Some(destination)) => {
             let destination = destination.clone();
-            return Json(start_destination_capture(&state, request, &destination));
+            return Json(start_destination_capture(&state, request, &destination, config));
         }
         _ => return Json(Envelope::failed_one("a capture names one source or one destination")),
     };
@@ -145,7 +152,7 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
     }
     let invitation = state
         .captures
-        .open(session.clone(), request, expected, holding, granted);
+        .open(session.clone(), request, expected, holding, granted, config);
     Json(Envelope::ok(StartedCapture {
         session: Some(session),
         max_matches: Some(invitation.max_matches),
@@ -157,7 +164,12 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
 /// Open a capture at a deployed destination. It carries no configuration and no credentials: a worker reads only
 /// what its own deployment sends there, and one that sends nothing there says so. Its filter reads each row as its
 /// pipeline finished it.
-fn start_destination_capture(state: &AppState, request: CaptureRequest, destination: &str) -> Envelope<StartedCapture> {
+fn start_destination_capture(
+    state: &AppState,
+    request: CaptureRequest,
+    destination: &str,
+    config: Option<String>,
+) -> Envelope<StartedCapture> {
     if destination.is_empty() {
         return Envelope::failed_one("a capture at a destination names it");
     }
@@ -175,7 +187,7 @@ fn start_destination_capture(state: &AppState, request: CaptureRequest, destinat
     let session = format!("{:016x}", rand_session());
     let invitation = state
         .captures
-        .open(session.clone(), request, expected, holding, Vec::new());
+        .open(session.clone(), request, expected, holding, Vec::new(), config);
     Envelope::ok(StartedCapture {
         session: Some(session),
         max_matches: Some(invitation.max_matches),
@@ -480,8 +492,15 @@ pub async fn save_capture(
             ));
         }
     };
-    let columns = sample_columns(&status.batches);
-    let records = status.batches.iter().flat_map(sample_records).collect();
+    let mut columns = sample_columns(&status.batches);
+    let mut records: Vec<smeltr::io::RecordObject> = status.batches.iter().flat_map(sample_records).collect();
+    // How it was taken, on every record as its `__source` fields are.
+    for (column, value) in state.captures.capture_fields(&session) {
+        for record in &mut records {
+            put_path(record, &column.name, value.clone());
+        }
+        columns.push(column);
+    }
     let sample = config_file::SampleDto {
         id: request.sample_id(),
         name: request.name,
@@ -790,6 +809,7 @@ mod tests {
             ["w1".to_string()].into(),
             Default::default(),
             Vec::new(),
+            None,
         );
         let editor = |area: &str| Access::Areas(BTreeMap::from([(area.to_string(), Level::Editor)]));
         (captures, editor("payments"), editor("search"))

@@ -1795,6 +1795,13 @@ export function deletePipeline(id: string): Promise<MutationResult> {
  * again when the sample is read. */
 export type SampleRecordDto = Record<string, unknown>;
 
+/** Whether the root key of `path`, a field's path, is internal: smeltr's own, starting `__`, as
+ * `plan::tree::is_internal` reads one. A root key the path has to quote
+ * (`["__a.b"]`) counts as well. */
+export function isInternal(path: string): boolean {
+  return path.startsWith('__') || path.startsWith('["__');
+}
+
 /** The fields a sample record's source set, if it was read from one. */
 export function sampleSource(record: SampleRecordDto): Record<string, unknown> | undefined {
   const source = record.__source;
@@ -1829,6 +1836,12 @@ export interface SampleDto {
   records: SampleRecordDto[];
 }
 
+/** When `sample` was captured, in unix milliseconds, if it was. */
+export function capturedAt(sample: { captured?: string }): number | undefined {
+  const at = sample.captured ? Date.parse(sample.captured) : NaN;
+  return Number.isNaN(at) ? undefined : at;
+}
+
 /** A library listing: everything but the records. */
 export interface SampleSummary {
   id: string;
@@ -1836,7 +1849,10 @@ export interface SampleSummary {
   source?: string;
   records: number;
   /** Unix seconds: when the leader last wrote the sample. */
-  captured?: number;
+  written?: number;
+  /** When its records were captured, RFC 3339: the first record's
+   * `__capture.timestamp`. A pasted or uploaded sample has none. */
+  captured?: string;
 }
 
 export interface ListSamplesResult {

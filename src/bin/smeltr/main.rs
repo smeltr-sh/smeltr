@@ -2284,36 +2284,39 @@ mod tests {
         );
     }
 
-    /// Why a held record blocked is shown with it and saved in its sample, but is not the record's: a preview of the
-    /// sample neither reads it nor warns that it was captured and is left out.
+    /// A sample's internal fields -- where a record was read from, why a block held it, how it was captured -- are its
+    /// fields like any other: a pipeline previewed over the sample reads them, and a route preview, which reads the
+    /// record as its live source sets it, checks only the record's own fields and says nothing of them.
     #[test]
-    fn a_sample_s_exception_message_is_not_part_of_its_records() {
+    fn a_sample_s_internal_fields_are_read_as_any_field() {
         let (mut columns, mut records) = captured();
         columns.push(column(smeltr::worker::capture::EXCEPTION_MESSAGE, "str"));
-        records[0].insert(
-            "__exception".to_string(),
-            serde_json::json!({"message": "matched no route"}),
-        );
-        for meta in [
-            smeltr::plan::topology::SourceMeta::of_columns(
-                &smeltr::leader::preview::replayed(&columns).cloned().collect::<Vec<_>>(),
-            )
-            .unwrap(),
-            smeltr::plan::topology::SourceMeta::KAFKA
-                .declaring(vec![
-                    ("id".into(), smeltr::core::column::DataType::I64),
-                    ("user.name".into(), smeltr::core::column::DataType::Str),
-                ])
-                .unwrap(),
-        ] {
-            let smeltr::leader::preview::SampleRead {
-                records: read,
-                warnings,
-                ..
-            } = smeltr::leader::preview::read_sample(&meta, &columns, &records).unwrap();
-            assert!(warnings.is_empty(), "{warnings:?}");
-            assert!(!meta.record_object(&read[0], "").contains_key("__exception"));
+        columns.push(column("__capture.group", "str"));
+        for record in &mut records {
+            record.insert(
+                "__exception".to_string(),
+                serde_json::json!({"message": "matched no route"}),
+            );
+            record.insert("__capture".to_string(), serde_json::json!({"group": "west"}));
         }
+        let own = smeltr::plan::topology::SourceMeta::of_columns(&columns).unwrap();
+        let read = smeltr::leader::preview::read_sample(&own, &columns, &records).unwrap();
+        assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+        let object = own.record_object(&read.records[0], "");
+        assert_eq!(
+            object["__exception"],
+            serde_json::json!({"message": "matched no route"})
+        );
+        assert_eq!(object["__capture"], serde_json::json!({"group": "west"}));
+
+        let live = smeltr::plan::topology::SourceMeta::KAFKA
+            .declaring(vec![
+                ("id".into(), smeltr::core::column::DataType::I64),
+                ("user.name".into(), smeltr::core::column::DataType::Str),
+            ])
+            .unwrap();
+        let read = smeltr::leader::preview::read_sample(&live, &columns, &records).unwrap();
+        assert!(read.warnings.is_empty(), "{:?}", read.warnings);
     }
 
     /// A route preview reads a sample as its source declares now, and says how that differs from what was captured.
