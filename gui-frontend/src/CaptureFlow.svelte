@@ -49,6 +49,8 @@
     type IdentityDto,
     type SourceDto,
     type WorkerGroupDto,
+    type FileConfigDto,
+    type AskAt,
     afterDot,
   } from './api';
 
@@ -132,6 +134,7 @@
       const config = given ? await configAt(currentBranch(), given.scope) : await getConfig();
       if (given) readAt = config.commit ?? null;
       if (config.config) {
+        loaded = config.config;
         // A source's sample is saved in its own scope, so only one its editor may save to is offered.
         sources = scope !== SHARED_SCOPE || canEdit(SHARED_SCOPE) ? config.config.sources : [];
         destinations = config.config.destinations;
@@ -167,18 +170,23 @@
   let captureDestination = $derived(
     destinations.find((d) => targetKey('destination', d.id) === selected) ?? null,
   );
-  /** Asks the engine what may follow a dot in a filter on `source`'s records, over a bundle of that source alone. */
-  const askSource = (source: SourceDto) => (text: string, dot: number) =>
+  /** The bundle the targets were read from. Absent for a source a form is editing. */
+  let loaded: FileConfigDto | null = $state(null);
+  /** Asks the engine what may follow a dot in the filter: over the bundle the targets came from, or over the edited
+   * source alone. */
+  const askAt: AskAt = (at) => (text, dot) =>
     afterDot({
-      config: JSON.stringify({
-        version: 1,
-        sources: [source],
-        destinations: [],
-        routes: [],
-        pipelines: [],
-        identities: [...identities, ...sharedIdentities],
-      }),
-      at: { source: source.id },
+      config: JSON.stringify(
+        loaded ?? {
+          version: 1,
+          sources,
+          destinations: [],
+          routes: [],
+          pipelines: [],
+          identities: [...identities, ...sharedIdentities],
+        },
+      ),
+      at,
       text,
       dot,
     });
@@ -335,7 +343,11 @@
           bind:value={filter}
           placeholder={filterPlaceholder(at)}
           autocomplete="condition"
-          ask={captureSource ? askSource(captureSource) : undefined}
+          ask={captureSource
+            ? askAt({ source: captureSource.id })
+            : captureDestination
+              ? askAt({ destination: captureDestination.id })
+              : undefined}
           wrap
         />
       </Field>

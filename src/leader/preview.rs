@@ -62,6 +62,8 @@ pub enum DotAt {
     Source(String),
     /// A `when` of a route's `deliver` rules, by the route's id: its pipeline's output.
     When(String),
+    /// A capture filter at a destination, by its id: the output of every route that delivers there.
+    Destination(String),
 }
 
 /// What may follow a `.`: the type of what it follows where it sits, as the engine spells it, an object's fields, and
@@ -646,6 +648,21 @@ fn after_dot(
         Before::Unread => None,
         Before::Value(e) => Some(e),
     };
+    // What `e` is over a route's pipeline's output. The pipeline compiles on its own: a half-typed expression after it
+    // is not in it.
+    let over_output = |r: &plan::topology::RouteConfig, e: &crate::expr::ast::Expr| {
+        let meta = (system.topology.sources.iter())
+            .find(|s| s.id == r.source)
+            .map(|s| s.kind.meta())
+            .unwrap_or(SourceMeta::NONE);
+        let plan = (system.pipelines.iter())
+            .find(|p| p.id == r.pipeline)
+            .and_then(|p| plan::plan::compile(p, &meta).ok())?;
+        type_in(
+            e,
+            &plan::topology::output_symbols(&plan, &r.on_exception.tag_field, &meta),
+        )
+    };
     let ty = match &asked.at {
         DotAt::Step(step) => {
             let p = pipeline
@@ -665,29 +682,29 @@ fn after_dot(
             expr.and_then(|e| type_in(&e, &syms))
         }
         DotAt::When(route) => {
-            let r = system
+            let r = (system.topology.routes.iter())
+                .find(|r| r.id == *route)
+                .ok_or_else(|| format!("this config has no route {route:?}"))?;
+            expr.and_then(|e| over_output(r, &e))
+        }
+        DotAt::Destination(id) => {
+            let dest = (system.topology.destinations.iter())
+                .find(|d| d.name == *id)
+                .ok_or_else(|| format!("this config has no destination {id:?}"))?;
+            // A filter there compiles once for each route that delivers to it (`runtime`), so a name has a type
+            // only where every one of them gives it the same one.
+            let delivers = |r: &&plan::topology::RouteConfig| {
+                r.deliver.iter().any(|rule| rule.to.contains(&dest.id))
+                    || r.on_exception.answers.iter().any(|a| a.targets().contains(&dest.id))
+            };
+            let mut types = system
                 .topology
                 .routes
                 .iter()
-                .find(|r| r.id == *route)
-                .ok_or_else(|| format!("this config has no route {route:?}"))?;
-            let meta = system
-                .topology
-                .sources
-                .iter()
-                .find(|s| s.id == r.source)
-                .map(|s| s.kind.meta())
-                .unwrap_or(SourceMeta::NONE);
-            // The pipeline compiles on its own: the route's half-typed `when` is not in it.
-            let plan = (system.pipelines.iter())
-                .find(|p| p.id == r.pipeline)
-                .and_then(|p| plan::plan::compile(p, &meta).ok());
-            plan.zip(expr).and_then(|(plan, e)| {
-                type_in(
-                    &e,
-                    &plan::topology::output_symbols(&plan, &r.on_exception.tag_field, &meta),
-                )
-            })
+                .filter(delivers)
+                .map(|r| over_output(r, expr.as_ref()?));
+            let first = types.next().flatten();
+            first.filter(|t| types.all(|other| other.as_ref() == Some(t)))
         }
     };
     Ok(Some(match ty {
@@ -1148,7 +1165,7 @@ mod tests {
         assert!(!method(&answer, "sign").fits);
     }
 
-    /// A source's record is what it gives as it arrives; a `when` reads the pipeline's output.
+    /// A source's record is what it gives as it arrives; a `when`, and a destination's filter, the pipeline's output.
     #[test]
     fn a_source_and_a_when_read_their_own_record() {
         let raw = after("_raw.", DotAt::Source("in".into())).unwrap();
@@ -1159,6 +1176,11 @@ mod tests {
 
         let n = after("n.", DotAt::When("r".into())).unwrap();
         assert_eq!(n.ty.as_deref(), Some("i64"));
+        // A capture filter at a destination reads what the routes delivering there give it.
+        assert_eq!(
+            after("n.", DotAt::Destination("out".into())).unwrap().ty.as_deref(),
+            Some("i64")
+        );
         assert!(after("n.", DotAt::Source("in".into())).unwrap().ty.is_none());
     }
 

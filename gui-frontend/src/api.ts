@@ -1908,9 +1908,11 @@ export interface PreviewRequest {
 
 /** Where an expression sits, which decides what its names read: at the start
  * of a step of the request's pipeline, a source's record as it arrives (a
- * route's condition, a capture filter), or a route's pipeline's output (its
- * `when`s). Each by its id. */
-export type DotAt = { step: string } | { source: string } | { when: string };
+ * route's condition, a capture filter there), a route's pipeline's output (its
+ * `when`s), or what every route delivering to a destination gives it (a capture
+ * filter there). Each by its id. */
+export type DotAt =
+  { step: string } | { source: string } | { when: string } | { destination: string };
 
 /** What may follow a `.`: the type of what it follows, as the engine spells
  * it (absent where it does not resolve), an object's fields, and each
