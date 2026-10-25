@@ -113,7 +113,7 @@
     );
   }
   let deploying = $derived(changes.filter((c) => !isLeftOut(c)));
-  let leftOut = $derived(changes.filter(isLeftOut));
+  let leftOutSamples = $derived(changes.filter(isLeftOut));
   let loading = $state(true);
   let loadFailed = $state(false);
   let loads = 0;
@@ -514,7 +514,8 @@
         aria-pressed={!!showingJson[key]}
         onclick={() => (showingJson = { ...showingJson, [key]: !showingJson[key] })}>JSON</button
       >
-      <!-- A group's own card is read only: neither undo nor a comment names a manifest. A left-out sample never reaches main, so it has nothing to undo. -->
+      <!-- A group's own card is read only: neither undo nor a comment names a manifest. A left-out sample
+        never reaches main, so it has nothing to undo. -->
       {#if target && span.whole && !leftOut && canEdit(c.scope)}
         <button
           type="button"
@@ -618,7 +619,7 @@
         >{count(
           deploying.length,
           'object',
-        )}{#if leftOut.length > 0}{` · ${count(leftOut.length, 'sample')} left out`}{/if}</span
+        )}{#if leftOutSamples.length > 0}{` · ${count(leftOutSamples.length, 'sample')} left out`}{/if}</span
       >
     {/if}
     <select class="saves" aria-label="Saves" bind:value={range}>
@@ -666,14 +667,14 @@
     {#each deploying as c (keyOf(c))}
       {@render objectCard(c, false)}
     {/each}
-    {#if leftOut.length > 0}
+    {#if leftOutSamples.length > 0}
       <div class="card left-out">
         <h2 class="card-note">Left out</h2>
         <p class="card-note">
           No test uses these samples. They stay on <code>{branch.name}</code> until it is deployed, then
           are deleted with it. To deploy one, lock it as a test.
         </p>
-        {#each leftOut as c (keyOf(c))}
+        {#each leftOutSamples as c (keyOf(c))}
           {@render objectCard(c, true)}
         {/each}
       </div>
