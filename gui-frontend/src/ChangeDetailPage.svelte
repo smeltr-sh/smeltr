@@ -579,6 +579,7 @@
         tests={tally}
         {testsLoading}
         behind={loaded.branch.behind}
+        notDeployed={loaded.branch.scratch?.length ?? 0}
         {bringingCurrent}
         bringCurrentDisabled={bringingCurrent || mergeConflicts !== null}
         onbringcurrent={() => confirmBringCurrent()}

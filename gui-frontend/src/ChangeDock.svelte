@@ -1,8 +1,8 @@
 <!--
   Where a change stands before it deploys, held at the bottom of the viewport
   so it stays in view while the conversation and the diff scroll: what its
-  reviewers said, how its tests came out, whether it is current with main,
-  and the button that deploys it.
+  reviewers said, how its tests came out, what it holds that will not deploy,
+  whether it is current with main, and the button that deploys it.
 -->
 <script lang="ts">
   import Locked from './Locked.svelte';
@@ -14,6 +14,7 @@
     tests,
     testsLoading,
     behind,
+    notDeployed = 0,
     bringingCurrent,
     bringCurrentDisabled,
     onbringcurrent,
@@ -29,6 +30,8 @@
     testsLoading: boolean;
     /** Commits `main` has that the branch does not. */
     behind: number;
+    /** Samples no test names, which the deploy leaves out. */
+    notDeployed?: number;
     bringingCurrent: boolean;
     bringCurrentDisabled: boolean;
     onbringcurrent: () => void;
@@ -79,6 +82,13 @@
           <span>{tests.passed} of {count(tests.total, 'test')}</span>
         {/if}
       </span>
+
+      {#if notDeployed > 0}
+        <span class="item">
+          <span class="mark req" aria-hidden="true">!</span>
+          <span>{count(notDeployed, 'sample')} not deployed</span>
+        </span>
+      {/if}
 
       <span class="item">
         {#if behind > 0}

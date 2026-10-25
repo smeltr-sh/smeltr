@@ -197,6 +197,9 @@ pub struct BranchOut {
     behind: u32,
     /// The files the branch changes, relative to the repository root.
     touches: Vec<String>,
+    /// Those of `touches` that are samples no test names, which a deploy leaves out (`git::branch_scratch_samples`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    scratch: Vec<String>,
     /// The review request on this branch, where one was opened.
     #[serde(skip_serializing_if = "Option::is_none")]
     change: Option<ChangeOut>,
@@ -295,6 +298,7 @@ pub async fn list_branches(
                 continue;
             }
             let base = git::branch_base(&repo, &summary.name)?;
+            let scratch = git::branch_scratch_samples(&repo, &summary.name)?;
             let change = git::read_change(&repo, &summary.name)?.map(ChangeOut::from);
             let push = remote.as_ref().map(|_| {
                 match failures
@@ -326,6 +330,7 @@ pub async fn list_branches(
                 commits: summary.ahead,
                 behind: summary.behind,
                 touches,
+                scratch,
                 change,
             });
         }

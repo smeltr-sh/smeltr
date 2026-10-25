@@ -1970,8 +1970,9 @@ fn squash_change_from(
     }
 
     let head = main_head(&repo).ok_or_else(|| GitError(format!("{MAIN_BRANCH} has no commit")))?;
-    // The branch is not behind `main`, so what a squash merge would produce is the tree the branch already holds.
-    let tree = tree_of(&repo, &tip)?;
+    // The branch is not behind `main`, so what a squash merge would produce is the tree the branch already holds,
+    // less its scratch samples.
+    let tree = deploying_tree(&repo, &head, &tip)?;
     if tree == tree_of(&repo, &head)? {
         return Err(GitError(format!(
             "{branch:?} makes no difference to {MAIN_BRANCH} -- there is nothing to deploy"
@@ -2004,6 +2005,76 @@ fn squash_change_from(
         head,
         tip,
     })
+}
+
+/// The samples `tip` adds or changes from `base` that no test beside them names, by path. They are scratch: a
+/// deploy leaves them out. A sample removed is never scratch, and a bundle holding a test that does not read has
+/// none, since what that test names cannot be known.
+fn scratch_samples(repo_path: &Path, base: &str, tip: &str) -> Result<std::collections::HashSet<String>, GitError> {
+    let repo = open(repo_path)?;
+    // Each sample added or changed, under the bundle it is in: `groups/<id>/`, `shared/`, or the root's empty one.
+    let mut changed: Vec<(String, String)> = Vec::new();
+    for change in tree_changes(&repo, resolve(&repo, base)?, resolve(&repo, tip)?)? {
+        if matches!(change, gix::object::tree::diff::ChangeDetached::Deletion { .. }) {
+            continue;
+        }
+        let path = change.location().to_string();
+        let bundle = path
+            .rsplit_once('/')
+            .and_then(|(dir, _)| dir.strip_suffix(crate::config_file::SAMPLES_DIR))
+            .filter(|bundle| bundle.is_empty() || bundle.ends_with('/'));
+        if let Some(bundle) = bundle {
+            changed.push((bundle.to_string(), path));
+        }
+    }
+    let mut named: std::collections::HashMap<String, Option<std::collections::HashSet<String>>> =
+        std::collections::HashMap::new();
+    let mut scratch = std::collections::HashSet::new();
+    for (bundle, path) in changed {
+        let named = named.entry(bundle.clone()).or_insert_with(|| {
+            let mut files = super::tree::TreeFiles::new(repo_path, tip, bundle.as_str());
+            let (tests, unreadable) = crate::config_file::list_tests(&mut files);
+            unreadable.is_empty().then(|| {
+                tests
+                    .iter()
+                    .filter_map(|test| crate::config_file::sample_path(&test.sample).ok())
+                    .map(|within| format!("{bundle}{within}"))
+                    .collect()
+            })
+        });
+        if named.as_ref().is_some_and(|named| !named.contains(&path)) {
+            scratch.insert(path);
+        }
+    }
+    Ok(scratch)
+}
+
+/// The scratch samples of `branch` ([`scratch_samples`]), against where it left `main`, sorted.
+pub fn branch_scratch_samples(repo_path: &Path, branch: &str) -> Result<Vec<String>, GitError> {
+    check_branch_name(branch)?;
+    let (base, tip) = since_main(&open(repo_path)?, branch)?;
+    let mut scratch: Vec<String> = scratch_samples(repo_path, &base.to_string(), &tip.to_string())?
+        .into_iter()
+        .collect();
+    scratch.sort();
+    Ok(scratch)
+}
+
+/// `tip`'s tree with each of its scratch samples ([`scratch_samples`]) as `base` holds it: what deploying a branch at
+/// `tip` onto `base` puts on `main`.
+fn deploying_tree(repo_path: &Path, base: &str, tip: &str) -> Result<String, GitError> {
+    let scratch: Vec<String> = scratch_samples(repo_path, base, tip)?.into_iter().collect();
+    if scratch.is_empty() {
+        return tree_of(repo_path, tip);
+    }
+    let edits: Vec<FileEdit> = scratch
+        .iter()
+        .cloned()
+        .zip(read_blobs(repo_path, base, &scratch)?)
+        .map(|(path, content)| FileEdit { path, content })
+        .collect();
+    let (_, tree) = tree_with(&open(repo_path)?, tip, &edits)?;
+    Ok(tree.to_string())
 }
 
 /// Move `main` and the fleet to `squash` and delete its branch: the rest of an approval.
@@ -4437,6 +4508,109 @@ mod tests {
 
         deploy_commit(&data, &approved, &Actor::system()).unwrap();
         assert_eq!(hold(&repo).unwrap(), None, "released");
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// A sample deploys only when a test beside it names it: the rest are scratch, and stay on the branch.
+    #[test]
+    fn a_deploy_leaves_out_samples_no_test_names() {
+        let data = temp_dir("scratch-samples");
+        let repo = repo_path(&data);
+        put(&data, MAIN_BRANCH, &west("orders"), "a bundle for west");
+        save(
+            &data,
+            MAIN_BRANCH,
+            &[
+                ("groups/west/samples/old.json", "old"),
+                ("groups/west/samples/gone.json", "gone"),
+            ],
+            "samples from before",
+        );
+
+        create_branch(&data, "work").unwrap();
+        put(&data, "work", &west("billing"), "west runs billing");
+        let test = r#"{"id":"t","name":"t","sample":"locked","lockedAt":0,"rowsIn":1,"expected":[]}"#;
+        save(
+            &data,
+            "work",
+            &[
+                ("groups/west/samples/locked.json", "locked"),
+                ("groups/west/tests/t.json", test),
+                ("groups/west/samples/tried.json", "tried"),
+                ("groups/west/samples/old.json", "old, edited"),
+                ("shared/samples/pasted.json", "pasted"),
+            ],
+            "samples and a test",
+        );
+        let removing = [FileEdit {
+            path: "groups/west/samples/gone.json".into(),
+            content: None,
+        }];
+        let tip = branch_tip(&repo, "work").unwrap();
+        commit_edits(&repo, "work", &tip, Some(&tip), &removing, "remove gone", &Actor::system()).unwrap();
+
+        assert_eq!(
+            branch_scratch_samples(&repo, "work").unwrap(),
+            ["groups/west/samples/old.json", "groups/west/samples/tried.json", "shared/samples/pasted.json"],
+            "what the review marks as not deployed"
+        );
+
+        open_change(&repo, "work", "Billing", "", &Actor::system()).unwrap();
+        let deployed = deploy_change(&data, "work", &Actor::system()).unwrap();
+        let paths = [
+            "groups/west/samples/locked.json",
+            "groups/west/tests/t.json",
+            "groups/west/samples/tried.json",
+            "groups/west/samples/old.json",
+            "groups/west/samples/gone.json",
+            "shared/samples/pasted.json",
+        ]
+        .map(String::from);
+        let landed: Vec<Option<String>> = read_blobs(&repo, &deployed, &paths)
+            .unwrap()
+            .into_iter()
+            .map(|b| b.map(|b| String::from_utf8(b).unwrap()))
+            .collect();
+        assert_eq!(landed[0].as_deref(), Some("locked"), "a test names it");
+        assert_eq!(landed[1].as_deref(), Some(test));
+        assert_eq!(landed[2], None, "no test names it");
+        assert_eq!(landed[3].as_deref(), Some("old"), "main keeps what it held");
+        assert_eq!(landed[4], None, "a removal deploys");
+        assert_eq!(landed[5], None, "nor in shared/");
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// A branch holding only scratch samples has nothing to deploy.
+    #[test]
+    fn scratch_samples_alone_deploy_nothing() {
+        let data = temp_dir("scratch-only");
+        let repo = repo_path(&data);
+        put(&data, MAIN_BRANCH, &west("orders"), "a bundle for west");
+        create_branch(&data, "work").unwrap();
+        save(&data, "work", &[("groups/west/samples/tried.json", "tried")], "a capture");
+        open_change(&repo, "work", "Tried", "", &Actor::system()).unwrap();
+        let err = deploy_change(&data, "work", &Actor::system()).expect_err("nothing reaches main");
+        assert!(err.0.contains("nothing to deploy"), "{}", err.0);
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// A test that does not read could name any sample, so its bundle's samples all deploy.
+    #[test]
+    fn a_test_that_does_not_read_keeps_its_bundles_samples() {
+        let data = temp_dir("scratch-unreadable-test");
+        let repo = repo_path(&data);
+        put(&data, MAIN_BRANCH, &west("orders"), "a bundle for west");
+        create_branch(&data, "work").unwrap();
+        save(
+            &data,
+            "work",
+            &[("groups/west/samples/tried.json", "tried"), ("groups/west/tests/broken.json", "{")],
+            "a capture and a broken test",
+        );
+        open_change(&repo, "work", "Tried", "", &Actor::system()).unwrap();
+        let deployed = deploy_change(&data, "work", &Actor::system()).unwrap();
+        let landed = read_blobs(&repo, &deployed, &["groups/west/samples/tried.json".to_string()]).unwrap();
+        assert_eq!(landed[0].as_deref(), Some(&b"tried"[..]));
         std::fs::remove_dir_all(&data).ok();
     }
 
