@@ -298,16 +298,19 @@ stateDiagram-v2
   note right of Missing: nothing is sealed until restored or regenerated
 ```
 
-### A certificate is not a credential
+### A certificate travels with its key
 
-It is public, so it is committed with the rest of the bundle and read in
-review like every other line of it. Its private key is a credential like any
-other. That splits one upload across the two, and leaves a pair nothing but
-the leader can check: the certificate is in the commit and the key is in the
-store, so the leader refuses an identity whose two halves do not belong
-together, and refuses to move one onto a version of the other it does not
-match. It is the one question about a value the leader answers for itself,
-alongside whether a candidate matches.
+A certificate an identity presents is an entry of the leader's certificate
+list: its chain beside the private key, which is sealed like any stored
+secret. The bundle names the entry by name and version, as it names a secret,
+so the chain is no longer read in review with the rest of the bundle, and a
+replaced certificate reaches a worker as a reviewed change moving the
+references. The two halves cannot drift apart: the list refuses a chain and a
+key that do not belong together, and one version holds both.
+
+A worker is sent the entry's chain with its key. Before it tears down what it
+runs, it refuses a certificate it could not present the way its bundle
+presents it: connecting out, or serving a receiver's senders.
 
 A worker is sent the credentials the configuration it is about to run names,
 and no others. That is minimization, not a wall: enrollment binds a worker to

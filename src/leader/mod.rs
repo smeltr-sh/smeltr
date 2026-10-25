@@ -210,8 +210,8 @@ fn secrets_at(
             .collect::<Vec<_>>()
     })?;
     // `named_secrets` names one per connector, on purpose -- `missing_secrets` reads every one of those to say
-    // which connectors are stuck, not just the first. A credential several connectors share, an identity's key
-    // among them, would otherwise be sealed and sent once per connector naming it.
+    // which connectors are stuck, not just the first. A credential several connectors share, an identity's
+    // certificate among them, would otherwise be sealed and sent once per connector naming it.
     names.sort();
     names.dedup();
     Ok(names)
@@ -464,10 +464,7 @@ async fn heartbeat(
             .into_iter()
             .map(|invitation| crate::heartbeat::Invited::Readable(Box::new(invitation)))
             .collect(),
-        secrets: secrets
-            .into_iter()
-            .map(|(name, version, value)| crate::heartbeat::SecretDelivery { name, version, value })
-            .collect(),
+        secrets,
     }))
 }
 
@@ -1017,10 +1014,14 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     // that it is done once per commit rather than once per poll.
     let data_dir = state.data_dir.clone();
     let expiries = state.expiries.clone();
+    let store = state.store.clone();
     let running = warnings::running_deployments(&snapshot, &credentials, heartbeat_interval);
-    let certificates = tokio::task::spawn_blocking(move || deployed_certificates(&data_dir, &expiries, running))
-        .await
-        .unwrap_or_default();
+    let certificates = tokio::task::spawn_blocking(move || {
+        let chain = |name: &str, version: i64| store.certificate_chain(name, version).ok().flatten();
+        deployed_certificates(&data_dir, &expiries, running, &chain)
+    })
+    .await
+    .unwrap_or_default();
     // Off the async runtime: `worker_logged_warnings` reads the logs table the same way `GET /api/logs` does, and
     // that handler already makes this same trip through `spawn_blocking` rather than block the runtime on it.
     let registry = state.registry.clone();
@@ -1124,10 +1125,13 @@ fn serving_certificate(data_dir: &std::path::Path) -> Option<warnings::Serving> 
 /// the warning while a worker still runs the one it replaced, and a commit nothing has deployed yet must not raise
 /// one. A group whose bundle does not load contributes none -- something else already says so, and a warning about
 /// a certificate inside a bundle nothing can read would be the second answer to a question already asked.
+///
+/// `chain` gives the chain the certificate list holds at a name and version.
 fn deployed_certificates(
     data_dir: &std::path::Path,
     cache: &Expiries,
     running: std::collections::HashSet<(String, String)>,
+    chain: &dyn Fn(&str, i64) -> Option<String>,
 ) -> Vec<warnings::DeployedCertificate> {
     let repo = git::repo_path(data_dir);
     if !git::repo_ready(&repo) {
@@ -1143,7 +1147,7 @@ fn deployed_certificates(
         let key = (group.clone(), commit.clone());
         let found = cached.remove(&key).unwrap_or_else(|| {
             tree::load_group_at(&repo, &commit, &group)
-                .map(|system| certificates_of(&system.topology, &group, &commit))
+                .map(|system| certificates_of(&system.topology, &group, &commit, chain))
                 .unwrap_or_default()
         });
         out.extend(found.iter().cloned());
@@ -1153,17 +1157,25 @@ fn deployed_certificates(
     out
 }
 
-/// What a group's identities say about how long they are good for. PEM the connector would refuse is passed over:
-/// a bundle holding one never validated, and the save that refused it is where that is said.
+/// What a group's identities say about how long they are good for: the chain each presents, from the certificate
+/// list through `chain`, and the authorities it trusts. PEM the connector would refuse is passed over: a bundle
+/// holding one never validated, and the save that refused it is where that is said.
 fn certificates_of(
     topology: &crate::plan::topology::TopologyConfig,
     group: &str,
     commit: &str,
+    chain: &dyn Fn(&str, i64) -> Option<String>,
 ) -> Vec<warnings::DeployedCertificate> {
+    use crate::plan::topology::SecretRef;
+
     let mut out = Vec::new();
     for identity in &topology.identities {
+        let presented = match &identity.certificate {
+            Some(SecretRef::LeaderStored { name, version }) => chain(name, *version),
+            _ => None,
+        };
         for (half, pem) in [
-            (warnings::Half::Presented, identity.certificate.as_deref()),
+            (warnings::Half::Presented, presented.as_deref()),
             (warnings::Half::Trusted, identity.authorities.as_deref()),
         ] {
             let Some(pem) = pem else { continue };
@@ -2286,7 +2298,7 @@ async fn store_secret_value(
 }
 
 /// Refuses a secret route that means nothing for a certificate's key: its value is set with its chain, and nothing
-/// verifies or points at it as a secret.
+/// verifies it as a secret.
 async fn not_a_certificate(state: &AppState, name: &str) -> Result<(), String> {
     match is_certificate(state, name).await {
         Ok(false) => Ok(()),
@@ -2419,7 +2431,7 @@ pub fn newest_certificate(store: &dyn Store, name: &str) -> Result<Option<(Strin
         return Ok(None);
     };
     let opened = store.secrets_for_delivery(&[(name.to_string(), version)], &[])?;
-    Ok(opened.into_iter().next().map(|(_, _, key)| (chain, key)))
+    Ok(opened.into_iter().next().map(|d| (chain, d.value)))
 }
 
 /// Which list entry each copy in `tls/` was taken from, by the copy's leaf fingerprint, as `acme` records which
@@ -2482,42 +2494,6 @@ fn fingerprints_in_use(tls_dir: &std::path::Path) -> Result<Vec<String>, String>
         in_use.push(tls::describe(&incoming, "the incoming certificate")?.fingerprint);
     }
     Ok(in_use)
-}
-
-/// The name a certificate uploaded before the list existed is listed under, or under with a number after it where an
-/// admin already has a secret or certificate by that name.
-pub const UPLOADED_BEFORE_THE_LIST: &str = "leader";
-
-/// Lists the certificate an operator uploaded for the leader before certificates were kept in a list, so the
-/// Certificates page shows what the leader serves and it can be chosen again. Run at start; does nothing once the
-/// copy in force has its name, or where the leader serves its own or an ordered certificate.
-pub fn list_uploaded_certificate(store: &dyn Store, tls_dir: &std::path::Path) -> Result<(), String> {
-    if acme::source(tls_dir)? != acme::Source::Upload {
-        return Ok(());
-    }
-    let (materials, served) = tls::in_force(tls_dir)?;
-    let fingerprint = tls::describe(&served, "the certificate")?.fingerprint;
-    if copies_from_the_list(tls_dir)?.contains_key(&fingerprint) {
-        return Ok(());
-    }
-    let key_path = &materials.server_key_path;
-    let key = std::fs::read_to_string(key_path).map_err(|e| format!("{}: {e}", key_path.display()))?;
-    let (_, root) = tls::signing_root_pem(&materials.ca_pem, &served)?;
-    let chain = format!("{}\n{root}", String::from_utf8_lossy(&served).trim_end());
-    let taken: Vec<String> = store
-        .list_secrets()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(|r| r.name)
-        .collect();
-    let name = std::iter::once(UPLOADED_BEFORE_THE_LIST.to_string())
-        .chain((2..).map(|n| format!("{UPLOADED_BEFORE_THE_LIST}-{n}")))
-        .find(|name| !taken.contains(name))
-        .expect("an unbounded run of names has a free one");
-    store
-        .create_certificate(&name, "", &chain, &key)
-        .map_err(|e| e.to_string())?;
-    record_copy(tls_dir, &fingerprint, &name)
 }
 
 async fn list_certificates(
@@ -2703,7 +2679,6 @@ fn point_secret_references(
     name: &str,
     version: i64,
     actor: &store::Actor,
-    store: &dyn Store,
 ) -> Result<Repointed, String> {
     let repo = git::repo_path(data_dir);
     // The branch tip when there is one, so a bump lands on top of edits already there rather than reverting them.
@@ -2728,15 +2703,7 @@ fn point_secret_references(
     for prefix in bundles {
         let mut moved_here = 0;
         for (file, moved) in [
-            repoint_array::<crate::config_file::SourceDto>(
-                &repo,
-                &parent,
-                &prefix,
-                "sources.json",
-                name,
-                version,
-                store,
-            )?,
+            repoint_array::<crate::config_file::SourceDto>(&repo, &parent, &prefix, "sources.json", name, version)?,
             repoint_array::<crate::config_file::DestinationDto>(
                 &repo,
                 &parent,
@@ -2744,7 +2711,6 @@ fn point_secret_references(
                 "destinations.json",
                 name,
                 version,
-                store,
             )?,
             repoint_array::<crate::config_file::IdentityDto>(
                 &repo,
@@ -2753,7 +2719,6 @@ fn point_secret_references(
                 "identities.json",
                 name,
                 version,
-                store,
             )?,
         ]
         .into_iter()
@@ -2809,7 +2774,6 @@ fn repoint_array<T>(
     file: &str,
     name: &str,
     version: i64,
-    store: &dyn Store,
 ) -> Result<Option<(git::FileEdit, usize)>, String>
 where
     T: serde::de::DeserializeOwned + serde::Serialize + PointsAtSecret,
@@ -2827,13 +2791,6 @@ where
     let moved: usize = items.iter_mut().map(|i| i.point_secret_at(name, version)).sum();
     if moved == 0 {
         return Ok(None);
-    }
-    let refusals: Vec<String> = items
-        .iter()
-        .flat_map(|i| i.refuses_version(store, name, version))
-        .collect();
-    if !refusals.is_empty() {
-        return Err(format!("{path}: {}", refusals.join("; ")));
     }
     let content = serde_json::to_vec_pretty(&items).map_err(|e| format!("{path}: {e}"))?;
     Ok(Some((
@@ -2856,13 +2813,6 @@ trait PointsAtSecret {
             .map(|r| usize::from(r.point_at(name, version)))
             .sum()
     }
-
-    /// Why this item cannot run at `version`, once the leader has looked at the value there. Empty for an item
-    /// whose meaning does not depend on what the value is, which is every one but an identity: one password is as
-    /// good as another at any version, and a private key is only ever its own certificate's.
-    fn refuses_version(&self, _store: &dyn Store, _name: &str, _version: i64) -> Vec<String> {
-        Vec::new()
-    }
 }
 
 impl PointsAtSecret for crate::config_file::SourceDto {
@@ -2880,25 +2830,6 @@ impl PointsAtSecret for crate::config_file::DestinationDto {
 impl PointsAtSecret for crate::config_file::IdentityDto {
     fn secrets_mut(&mut self) -> Vec<&mut crate::config_file::SecretRefDto> {
         crate::config_file::IdentityDto::secrets_mut(self)
-    }
-
-    fn refuses_version(&self, store: &dyn Store, name: &str, version: i64) -> Vec<String> {
-        let Some(certificate) = &self.certificate else {
-            return Vec::new();
-        };
-        // A worker-local key is on a host this leader never sees, so there is nothing here to check.
-        if !matches!(&self.key, Some(crate::config_file::SecretRefDto::LeaderStored(k)) if k.secret == name) {
-            return Vec::new();
-        }
-        match store.certificate_matches(name, version, certificate) {
-            Ok(true) => Vec::new(),
-            Ok(false) => vec![format!(
-                "version {version} is not the private key the identity {:?} presents a certificate for. Rotating \
-                 a client key is one change with the certificate it belongs to, not a version on its own",
-                self.id
-            )],
-            Err(e) => vec![format!("the identity {:?} could not be checked: {e}", self.id)],
-        }
     }
 }
 
@@ -2944,9 +2875,6 @@ async fn point_secret(
     Path(name): Path<String>,
     Json(req): Json<PointSecretRequest>,
 ) -> Json<Envelope<PointedSecret>> {
-    if let Err(e) = not_a_certificate(&state, &name).await {
-        return Json(Envelope::failed_one(e));
-    }
     let held = {
         let wanted = name.clone();
         let version = req.version;
@@ -2965,11 +2893,8 @@ async fn point_secret(
     }
 
     let data_dir = state.data_dir.clone();
-    // The store comes along: moving an identity onto a key that is not its certificate's is the one repoint the
-    // value itself refuses, and only the leader can see both halves.
-    let pointing = state.store.clone();
     let drafted = blocking(move || {
-        let done = point_secret_references(&data_dir, &req.branch, &name, req.version, &actor, pointing.as_ref())?;
+        let done = point_secret_references(&data_dir, &req.branch, &name, req.version, &actor)?;
         // Nothing moved, so there is no change to open.
         if done.commit.is_none() {
             return Ok((done, false));
@@ -3494,7 +3419,7 @@ mod identity_expiry_tests {
     /// anybody looked.
     #[test]
     fn a_deployed_identitys_certificates_are_read_off_the_bundle() {
-        let found = certificates_of(&deployed(&certificate(90)), "g", "c0");
+        let found = certificates_of(&deployed(&certificate(90)), "g", "c0", &|_, _| None);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].group, "g");
         assert_eq!(found[0].identity, "acme");
@@ -3506,11 +3431,36 @@ mod identity_expiry_tests {
         );
     }
 
+    /// The certificate an identity presents is read from the list, at the version the bundle names.
+    #[test]
+    fn a_presented_certificate_is_read_from_the_list() {
+        let identity = r#"{"id": "acme", "certificate": {"secret": "acme", "version": 2}}"#;
+        let json = example_json()
+            .replacen(
+                r#""groupId": "smeltr""#,
+                r#""groupId": "smeltr", "properties": {"security.protocol": "SSL"}, "identity": "acme""#,
+                1,
+            )
+            .replacen(
+                r#""version": 1,"#,
+                &format!(r#""version": 1, "identities": [{identity}],"#),
+                1,
+            );
+        let topology = crate::config_file::load_str(&json)
+            .expect("a bundle naming an identity")
+            .topology;
+        let listed = certificate(30);
+        let chain = |name: &str, version: i64| (name == "acme" && version == 2).then(|| listed.clone());
+        let found = certificates_of(&topology, "g", "c0", &chain);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].half, warnings::Half::Presented);
+    }
+
     /// A trust store holds more than one root, and each is its own answer about when trust runs out.
     #[test]
     fn every_authority_in_a_store_is_read_out_of_it() {
         let store = format!("{}{}", certificate(30), certificate(3650));
-        let found = certificates_of(&deployed(&store), "g", "c0");
+        let found = certificates_of(&deployed(&store), "g", "c0", &|_, _| None);
         assert_eq!(found.len(), 2);
         assert!(found.iter().all(|c| c.half == warnings::Half::Trusted));
     }
@@ -3618,7 +3568,7 @@ mod identity_expiry_tests {
         );
 
         let running = std::collections::HashSet::from([("g".to_string(), old.clone())]);
-        let found = deployed_certificates(&data, &Expiries::default(), running);
+        let found = deployed_certificates(&data, &Expiries::default(), running, &|_, _| None);
 
         assert_eq!(found.len(), 1, "{found:?}");
         let life = found[0].not_after_millis - found[0].not_before_millis;
@@ -3648,7 +3598,7 @@ mod identity_expiry_tests {
         );
 
         let running = std::collections::HashSet::from([("g".to_string(), old), ("g".to_string(), new)]);
-        let found = deployed_certificates(&data, &Expiries::default(), running);
+        let found = deployed_certificates(&data, &Expiries::default(), running, &|_, _| None);
 
         assert_eq!(
             found.len(),
@@ -3674,15 +3624,20 @@ mod identity_expiry_tests {
             "issue a certificate nobody has deployed",
         );
 
-        let found = deployed_certificates(&data, &Expiries::default(), std::collections::HashSet::new());
+        let found = deployed_certificates(
+            &data,
+            &Expiries::default(),
+            std::collections::HashSet::new(),
+            &|_, _| None,
+        );
         assert!(found.is_empty(), "{found:?}");
     }
 
-    /// Two sources sharing one identity name its key twice -- once each, so `missing_secrets` can say which
+    /// Two sources sharing one identity name its certificate twice -- once each, so `missing_secrets` can say which
     /// connector is stuck if either is. Entitlement is a different question: how many times the leader seals and
-    /// sends the same key, which is once, however many connectors named it.
+    /// sends the same certificate, which is once, however many connectors named it.
     #[test]
-    fn a_key_two_sources_share_is_entitled_once() {
+    fn a_certificate_two_sources_share_is_entitled_once() {
         let data = temp_dir("shared-identity-key");
         let repo = git::repo_path(&data);
         git::init_bare_repo(&repo).unwrap();
@@ -3704,11 +3659,7 @@ mod identity_expiry_tests {
             ),
             (
                 "groups/g/identities.json".to_string(),
-                format!(
-                    r#"[{{"id":"acme","certificate":{},"key":{{"secret":"acme-key","version":1}}}}]"#,
-                    serde_json::to_string(&certificate(365)).unwrap()
-                )
-                .into_bytes(),
+                br#"[{"id":"acme","certificate":{"secret":"acme","version":1}}]"#.to_vec(),
             ),
         ]
         .map(|(path, content)| git::FileEdit {
@@ -3735,8 +3686,8 @@ mod identity_expiry_tests {
         let entitled = entitled_secrets(&data, &Entitlements::default(), "g");
         assert_eq!(
             entitled,
-            vec![("acme-key".to_string(), 1)],
-            "the same key named by two connectors is entitled once, not once per connector: {entitled:?}"
+            vec![("acme".to_string(), 1)],
+            "the same certificate named by two connectors is entitled once, not once per connector: {entitled:?}"
         );
     }
 
@@ -3758,11 +3709,7 @@ mod identity_expiry_tests {
                 ),
                 (
                     "groups/g/identities.json".to_string(),
-                    format!(
-                        r#"[{{"id":"acme","certificate":{},"key":{{"secret":"acme-key","version":{version}}}}}]"#,
-                        serde_json::to_string(&certificate(365)).unwrap()
-                    )
-                    .into_bytes(),
+                    format!(r#"[{{"id":"acme","certificate":{{"secret":"acme","version":{version}}}}}]"#).into_bytes(),
                 ),
             ]
             .map(|(path, content)| git::FileEdit {
@@ -3790,10 +3737,10 @@ mod identity_expiry_tests {
 
         let cache = Entitlements::default();
         let deployed = deployed_versions(&data, &cache, &Default::default()).unwrap();
-        assert_eq!(deployed["acme-key"], vec![("g".to_string(), 2)]);
+        assert_eq!(deployed["acme"], vec![("g".to_string(), 2)]);
         let running = [("g".to_string(), older)].into();
         let with_older = deployed_versions(&data, &cache, &running).unwrap();
-        assert_eq!(with_older["acme-key"], vec![("g".to_string(), 1), ("g".to_string(), 2)]);
+        assert_eq!(with_older["acme"], vec![("g".to_string(), 1), ("g".to_string(), 2)]);
 
         let unreadable = [("g".to_string(), "0".repeat(40))].into();
         assert!(
@@ -4122,6 +4069,59 @@ mod secrets_delivery_tests {
                 version: 1,
             }),
             "main did not move"
+        );
+    }
+
+    /// A replaced certificate is a new version of it, and the identities naming it move to that version the same
+    /// way a secret's references do.
+    #[tokio::test]
+    async fn pointing_a_certificate_moves_the_identities_naming_it() {
+        let state = state("point-certificate");
+        let repo = git::repo_path(&state.data_dir);
+        let head = git::main_head(&repo).unwrap();
+        let edits = [git::FileEdit {
+            path: "groups/g/identities.json".to_string(),
+            content: Some(br#"[{"id":"acme","certificate":{"secret":"acme-client","version":1}}]"#.to_vec()),
+        }];
+        git::commit_edits(
+            &repo,
+            git::MAIN_BRANCH,
+            &head,
+            Some(&head),
+            &edits,
+            "an identity",
+            &store::Actor::system(),
+        )
+        .unwrap();
+        state
+            .store
+            .create_certificate("acme-client", "", "chain 1", "key 1")
+            .unwrap();
+        state
+            .store
+            .add_certificate_version("acme-client", "chain 2", "key 2")
+            .unwrap();
+
+        let out = point(&state, "acme-client", 2, "renew-acme").await;
+        assert!(out.ok, "{:?}", out.errors);
+        assert_eq!(out.references, 1);
+        assert_eq!(out.files, vec!["groups/g/identities.json".to_string()]);
+
+        let tip = git::branch_tip(&repo, "renew-acme").expect("the branch exists");
+        let bytes = git::read_blobs(&repo, &tip, &["groups/g/identities.json".to_string()])
+            .unwrap()
+            .pop()
+            .flatten()
+            .expect("the file is there");
+        let identities: Vec<crate::config_file::IdentityDto> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            identities[0].certificate,
+            Some(crate::config_file::SecretRefDto::LeaderStored(
+                crate::config_file::LeaderSecretDto {
+                    secret: "acme-client".to_string(),
+                    version: 2,
+                }
+            ))
         );
     }
 
@@ -5580,7 +5580,6 @@ mod single_worker_tests {
 #[cfg(test)]
 mod certificate_list_tests {
     use super::*;
-    use crate::leader::sqlite_store::SqliteStore;
 
     const A_YEAR: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
@@ -5595,35 +5594,6 @@ mod certificate_list_tests {
         let tls_dir = dir.join("tls");
         tls::ensure(&tls_dir, names(), A_YEAR, &[]).expect("an authority");
         tls_dir
-    }
-
-    fn certificates(store: &dyn Store) -> Vec<String> {
-        let all = store.list_secrets().unwrap().into_iter();
-        all.filter(|r| r.certificate).map(|r| r.name).collect()
-    }
-
-    /// An upload from before the list is listed once, whole enough to be chosen and served again.
-    #[test]
-    fn an_uploaded_certificate_is_listed_once() {
-        let dir = own("uploaded");
-        let theirs = tls::ensure(&own("theirs"), names(), A_YEAR, &[]).unwrap();
-        let chain = std::fs::read(&theirs.server_cert_path).unwrap();
-        let key = std::fs::read(&theirs.server_key_path).unwrap();
-        tls::install(&dir, &chain, &key, &theirs.ca_pem, &names(), &[]).expect("an upload");
-        let store = SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("uploaded")).unwrap();
-
-        list_uploaded_certificate(&store, &dir).unwrap();
-        list_uploaded_certificate(&store, &dir).unwrap();
-
-        assert_eq!(certificates(&store), [UPLOADED_BEFORE_THE_LIST]);
-        let (listed, listed_key) = newest_certificate(&store, UPLOADED_BEFORE_THE_LIST).unwrap().unwrap();
-        assert_eq!(listed_key.as_bytes(), key);
-        let (served, root) = tls::split_root(listed.as_bytes(), b"")
-            .unwrap()
-            .expect("the chain ends at its root");
-        assert_eq!(served, chain);
-        assert_eq!(root.as_bytes(), theirs.ca_pem);
-        assert_eq!(served_names(&dir).unwrap(), [UPLOADED_BEFORE_THE_LIST]);
     }
 
     /// The entry served is the one chosen, though another holds the same certificate, and none once the leader
@@ -5642,34 +5612,5 @@ mod certificate_list_tests {
 
         tls::uninstall(&dir).unwrap();
         assert!(served_names(&dir).unwrap().is_empty());
-    }
-
-    #[test]
-    fn an_uploaded_certificate_takes_a_free_name() {
-        let dir = own("free-name");
-        let theirs = tls::ensure(&own("free-name-theirs"), names(), A_YEAR, &[]).unwrap();
-        let chain = std::fs::read(&theirs.server_cert_path).unwrap();
-        let key = std::fs::read(&theirs.server_key_path).unwrap();
-        tls::install(&dir, &chain, &key, &theirs.ca_pem, &names(), &[]).expect("an upload");
-        let store = SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("free-name")).unwrap();
-        store
-            .create_secret(
-                UPLOADED_BEFORE_THE_LIST,
-                crate::leader::store::Custody::LeaderStored,
-                "",
-                Some("an admin's"),
-            )
-            .unwrap();
-
-        list_uploaded_certificate(&store, &dir).unwrap();
-        assert_eq!(served_names(&dir).unwrap(), ["leader-2"]);
-    }
-
-    #[test]
-    fn the_leaders_own_certificate_is_not_listed() {
-        let dir = own("own");
-        let store = SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("own")).unwrap();
-        list_uploaded_certificate(&store, &dir).unwrap();
-        assert!(certificates(&store).is_empty());
     }
 }

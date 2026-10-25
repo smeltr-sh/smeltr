@@ -9,6 +9,9 @@
   What the step removed waits on one folded line at the end, so a rename
   reads as its new name alone.
 
+  Beside the mark, the sign of the last step that touched the field; held,
+  it lists every step that did, and each jumps to its step.
+
   Structs and arrays draw a page at a time, and one too big for what is left
   of its page starts folded (`recordLines`). Filtered to what changed, the
   tree is dropped and each field states its whole path: at four or five lines
@@ -17,6 +20,9 @@
 <script lang="ts">
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { formatDiffValue } from './diff';
+  import { stepName, type Step } from './pipeline';
+  import StepGlyph from './StepGlyph.svelte';
+  import { float } from './float';
   import {
     changedLines,
     changeFitsInline,
@@ -37,6 +43,8 @@
     declared,
     changedOnly = false,
     showTypes = true,
+    touched,
+    onjump,
   }: {
     before: unknown;
     after: unknown;
@@ -46,6 +54,10 @@
     keep?: (path: string) => boolean;
     changedOnly?: boolean;
     showTypes?: boolean;
+    /** The steps that touched a field on this record, in the order they ran,
+     * each with its number in the step list. Without it no step is shown. */
+    touched?: (path: string) => { step: Step; number: number }[];
+    onjump?: (step: Step) => void;
   } = $props();
 
   let split = $derived(withoutRemoved(diffTree(before, after, keep, declared)));
@@ -58,6 +70,22 @@
 
   // The reader's choices, by a struct's or an array's path: open or folded,
   // and how many pages past the first it draws.
+  // The field whose steps are listed, while the pointer or focus is on its glyph or the list. Leaving
+  // waits a moment, so the pointer can cross the gap between the two.
+  let byOpen = $state<string | null>(null);
+  let byAnchor: HTMLElement | undefined;
+  let byClosing: ReturnType<typeof setTimeout> | undefined;
+  function showBy(path: string, at: HTMLElement) {
+    clearTimeout(byClosing);
+    byAnchor = at;
+    byOpen = path;
+  }
+  function hideBy() {
+    clearTimeout(byClosing);
+    byClosing = setTimeout(() => (byOpen = null), 150);
+  }
+  $effect(() => () => clearTimeout(byClosing));
+
   let folds = $state(new SvelteMap<string, boolean>());
   let pages = $state(new SvelteMap<string, number>());
 
@@ -137,6 +165,7 @@
 {#snippet more(depth: number, shown: number, total: number, onmore: () => void)}
   <div class="line">
     <span class="gutter"></span>
+    {#if touched}<span class="by"></span>{/if}
     <span class="dim" style:margin-left={`${depth * INDENT_CH}ch`}
       >{shown} of {total} shown ·&nbsp;</span
     ><button type="button" class="more" onclick={onmore}>show more</button>
@@ -148,6 +177,40 @@
   {@const body = formatDiffValue(line.state === 'removed' ? line.before : line.after)}
   <div class="line state-{line.state}">
     <span class="gutter">{GLYPH[line.state]}</span>
+    {#if touched}
+      {@const by = touched(line.path)}
+      <span
+        class="by"
+        role="group"
+        onpointerenter={(e) => showBy(line.path, e.currentTarget)}
+        onpointerleave={hideBy}
+        onfocusin={(e) => showBy(line.path, e.currentTarget)}
+        onfocusout={hideBy}
+      >
+        {#if by.length > 0}
+          {@const last = by[by.length - 1]}
+          <button
+            type="button"
+            class="by-glyph"
+            aria-label={stepName(last.step, last.number)}
+            onclick={() => onjump?.(last.step)}><StepGlyph type={last.step.type} /></button
+          >
+          {#if byOpen === line.path}
+            <span
+              class="by-list"
+              popover="manual"
+              {@attach float(() => byAnchor?.getBoundingClientRect())}
+            >
+              {#each by as t (t.step.id)}
+                <button type="button" onclick={() => onjump?.(t.step)}
+                  ><StepGlyph type={t.step.type} /> {stepName(t.step, t.number)}</button
+                >
+              {/each}
+            </span>
+          {/if}
+        {/if}
+      </span>
+    {/if}
     <span class="key">
       <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}>
         {#if changedOnly}
@@ -211,7 +274,12 @@
   <span class="dim">no change at this step</span>
 {:else}
   <!-- A character's slack, so a name that just fits does not wrap on a rounding. -->
-  <div class="fields" style:--name-w={`${nameCh + 1}ch`} style:--type-w={`${typeCh}ch`}>
+  <div
+    class="fields"
+    class:by-steps={!!touched}
+    style:--name-w={`${nameCh + 1}ch`}
+    style:--type-w={`${typeCh}ch`}
+  >
     {#each lines as line (line.kind + line.path + line.depth)}
       {#if line.kind === 'group'}
         <button
@@ -221,6 +289,7 @@
           onclick={() => folds.set(line.path, !line.open)}
         >
           <span class="gutter chevron">{line.open ? '▾︎' : '▸︎'}</span>
+          {#if touched}<span class="by"></span>{/if}
           <span class="key">
             <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}
               >{@render name(line.label)}</span
@@ -327,6 +396,50 @@
     width: 0.75rem;
     text-align: center;
     color: var(--dim);
+  }
+
+  /* The step that last touched the field, and on hover every step that did. */
+  .by {
+    flex-shrink: 0;
+    width: 1rem;
+    margin-left: -0.3rem;
+  }
+
+  .by-glyph {
+    border: 0;
+    background: none;
+    padding: 0;
+    color: var(--dim);
+    cursor: pointer;
+  }
+
+  .by-glyph:hover {
+    color: var(--ink);
+  }
+
+  .by-list {
+    display: flex;
+    flex-direction: column;
+    padding: 0.25rem;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    white-space: nowrap;
+  }
+
+  .by-list button {
+    border: 0;
+    background: none;
+    padding: 0.1rem 0.4rem;
+    text-align: left;
+    font: inherit;
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .by-list button:hover {
+    background: color-mix(in srgb, var(--ink) 10%, var(--panel));
   }
 
   .key {
@@ -461,6 +574,11 @@
     font: inherit;
     text-align: left;
     cursor: pointer;
+  }
+
+  /* Past the step's sign too. */
+  .by-steps .held {
+    padding-left: calc(2.95rem + var(--key-w));
   }
 
   .held:hover .held-rule,

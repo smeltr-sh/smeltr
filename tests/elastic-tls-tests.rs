@@ -102,23 +102,28 @@ fn content_length(head: &[u8]) -> usize {
         .unwrap_or(0)
 }
 
-/// The key a `LeaderStored` reference resolves to, as a worker would hold it.
-fn holding(key: &str) -> HeldSecrets {
+/// The certificate entry an identity's reference resolves to, as a worker would hold it.
+fn holding(certificate: &str, key: &str) -> HeldSecrets {
     let mut secrets = HeldSecrets::default();
-    secrets.set_stored([("client-key".to_string(), 1, key.to_string())]);
+    secrets.take([smeltr::heartbeat::SecretDelivery {
+        name: "client".to_string(),
+        version: 1,
+        value: key.to_string(),
+        chain: Some(certificate.to_string()),
+    }]);
     secrets
 }
 
-fn identity(certificate: Option<&str>, authorities: Option<&str>) -> Identity {
+fn identity(presents: bool, authorities: Option<&str>) -> Identity {
     Identity {
         id: "acme".to_string(),
-        certificate: certificate.map(str::to_string),
-        key: certificate.map(|_| SecretRef::LeaderStored {
-            name: "client-key".to_string(),
+        certificate: presents.then(|| SecretRef::LeaderStored {
+            name: "client".to_string(),
             version: 1,
         }),
         authorities: authorities.map(str::to_string),
         trust_public: true,
+        presented: smeltr::plan::topology::PresentedAs::CLIENT,
     }
 }
 
@@ -143,8 +148,8 @@ fn an_identity_completes_a_mutual_tls_handshake() {
     let server = serve(certs::server_config(&served, &authority));
     let answered = post(
         &server.url,
-        Some(&identity(Some(&client.certificate), Some(&authority.pem))),
-        &holding(&client.key),
+        Some(&identity(true, Some(&authority.pem))),
+        &holding(&client.certificate, &client.key),
     );
     assert!(server.finish(), "the server never answered a request");
 
@@ -168,8 +173,8 @@ fn without_the_authority_a_privately_issued_server_is_refused() {
     // server's against but the platform's public roots.
     let refused = post(
         &server.url,
-        Some(&identity(Some(&client.certificate), None)),
-        &holding(&client.key),
+        Some(&identity(true, None)),
+        &holding(&client.certificate, &client.key),
     );
     assert!(
         !server.finish(),
@@ -195,8 +200,8 @@ fn an_identity_trusting_another_authority_is_refused() {
     let server = serve(certs::server_config(&served, &authority));
     let refused = post(
         &server.url,
-        Some(&identity(Some(&client.certificate), Some(&elsewhere.pem))),
-        &holding(&client.key),
+        Some(&identity(true, Some(&elsewhere.pem))),
+        &holding(&client.certificate, &client.key),
     );
     assert!(
         !server.finish(),
@@ -220,7 +225,7 @@ fn trusting_without_presenting_is_refused_where_a_certificate_is_demanded() {
     let server = serve(certs::server_config(&served, &authority));
     let refused = post(
         &server.url,
-        Some(&identity(None, Some(&authority.pem))),
+        Some(&identity(false, Some(&authority.pem))),
         &HeldSecrets::default(),
     );
     // The far end's own verdict, not what this client made of it: a server that ends the connection and a
@@ -242,8 +247,8 @@ fn a_key_that_is_not_pem_is_refused_when_the_agent_is_built() {
     let mangled = client.key.replace('\n', " ");
 
     let built = agent_config(
-        Some(&identity(Some(&client.certificate), Some(&authority.pem))),
-        &holding(&mangled),
+        Some(&identity(true, Some(&authority.pem))),
+        &holding(&client.certificate, &mangled),
     );
     let message = built.err().map(|e| e.to_string()).unwrap_or_default();
     assert!(

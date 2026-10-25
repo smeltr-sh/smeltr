@@ -134,7 +134,7 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
         }
     };
     if !granted.is_empty() {
-        let named: Vec<String> = granted.iter().map(|(n, v, _)| format!("{n} v{v}")).collect();
+        let named: Vec<String> = granted.iter().map(|d| format!("{} v{}", d.name, d.version)).collect();
         tracing::info!(
             target: "capture.secrets_granted",
             subject = %session,
@@ -143,11 +143,6 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
             "a capture carries credentials to its workers"
         );
     }
-    let granted: Vec<smeltr::heartbeat::SecretDelivery> = granted
-        .into_iter()
-        .map(|(name, version, value)| smeltr::heartbeat::SecretDelivery { name, version, value })
-        .collect();
-
     let invitation = state
         .captures
         .open(session.clone(), request, expected, holding, granted);
@@ -209,7 +204,7 @@ fn leader_stored_refs(one_source: &config_file::FileConfig) -> Vec<(String, i64)
                 .password()
                 .cloned()
                 .into_iter()
-                .chain(database.identity().and_then(|i| i.key.clone()))
+                .chain(database.identity().and_then(|i| i.certificate.clone()))
                 .collect(),
             None => Vec::new(),
         },

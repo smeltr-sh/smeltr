@@ -1302,15 +1302,15 @@ impl SecretRef {
     }
 }
 
-/// One identity a worker connects out under: the certificate it shows a source or a destination, the credential
-/// holding that certificate's private key, and the authorities it verifies that far end against.
+/// One identity a worker connects out under: the certificate it shows a source or a destination, and the
+/// authorities it verifies that far end against.
 ///
 /// A far end that asks for no certificate needs only the authorities, and one served from a public root needs only
 /// the certificate, so either half may be absent -- but not both, which `config_file::load` refuses. `authorities`
 /// absent means the platform's own roots.
 ///
-/// A certificate is public and travels in the bundle; its key is named, like every other credential, and resolved
-/// when the client is built.
+/// The certificate is an entry of the leader's certificate list, named by name and version like any stored secret.
+/// The worker is sent its chain and private key together, and the client is built from them.
 ///
 /// Held behind an `Arc` wherever a connector names one: a deployment usually speaks one organization's PKI, so the
 /// same certificate and the same authorities are named by many connectors and copied into none of them.
@@ -1318,13 +1318,34 @@ impl SecretRef {
 pub struct Identity {
     /// What the bundle calls it, for a message an operator reads.
     pub id: String,
-    /// PEM, leaf first, with any intermediates after it.
-    pub certificate: Option<String>,
-    pub key: Option<SecretRef>,
+    /// The certificate entry it presents. Always leader-stored: `config_file::load` refuses any other.
+    pub certificate: Option<SecretRef>,
     /// PEM, one or more roots.
     pub authorities: Option<String>,
     /// Whether a client under it also trusts the public roots (`io::trust`). A receiver never does.
     pub trust_public: bool,
+    /// How the bundle's connectors present `certificate`, which is what its leaf has to permit.
+    pub presented: PresentedAs,
+}
+
+/// Where a bundle's connectors present an identity's certificate: connecting out, to a receiver's senders, or both.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PresentedAs {
+    pub client: bool,
+    pub server: bool,
+}
+
+impl PresentedAs {
+    /// Connecting out alone.
+    pub const CLIENT: PresentedAs = PresentedAs {
+        client: true,
+        server: false,
+    };
+    /// To a receiver's senders alone.
+    pub const SERVER: PresentedAs = PresentedAs {
+        client: false,
+        server: true,
+    };
 }
 
 /// A Confluent Schema Registry: where it is, and who signs in to it. Reached under its connector's identity.
@@ -2894,7 +2915,15 @@ fn usable(read: Option<String>) -> Option<String> {
 /// about to quote.
 #[derive(Clone, Default)]
 pub struct HeldSecrets {
-    stored: std::collections::BTreeMap<(String, i64), String>,
+    stored: std::collections::BTreeMap<(String, i64), Held>,
+}
+
+/// One version as the leader sent it: the value, and the chain beside it when it is a certificate entry's private
+/// key.
+#[derive(Clone)]
+struct Held {
+    value: String,
+    chain: Option<String>,
 }
 
 /// Names and versions, never values. This holds every credential the deployment uses, so one `{:?}` reaching a
@@ -2907,16 +2936,19 @@ impl std::fmt::Debug for HeldSecrets {
 }
 
 impl HeldSecrets {
-    /// Replaces what the leader has sent. Each entry is a name, a version, and that version's value.
+    /// Replaces what the leader has sent with plain values: each entry is a name, a version, and that version's value.
     pub fn set_stored(&mut self, values: impl IntoIterator<Item = (String, i64, String)>) {
-        self.stored = values.into_iter().map(|(n, v, value)| ((n, v), value)).collect();
+        self.stored = values
+            .into_iter()
+            .map(|(n, v, value)| ((n, v), Held { value, chain: None }))
+            .collect();
     }
 
-    /// The name, version and value of every credential in `wanted` that this worker holds, for handing to the
-    /// process that will use them. The one place a value is read back out: it crosses to a runtime on a private
-    /// pipe and nowhere else, and a runtime is given what its own bundle quotes rather than everything this
-    /// worker has ever been sent.
-    pub fn deliveries_for(&self, wanted: &[NamedSecret]) -> Vec<(String, i64, String)> {
+    /// The name, version, value and chain of every credential in `wanted` that this worker holds, for handing to
+    /// the process that will use them. The one place a value is read back out: it crosses to a runtime on a private
+    /// pipe and nowhere else, and a runtime is given what its own bundle quotes rather than everything this worker
+    /// has ever been sent.
+    pub fn deliveries_for(&self, wanted: &[NamedSecret]) -> Vec<crate::heartbeat::SecretDelivery> {
         self.stored
             .iter()
             .filter(|((name, version), _)| {
@@ -2924,7 +2956,12 @@ impl HeldSecrets {
                     matches!(&s.reference, SecretRef::LeaderStored { name: n, version: v } if n == name && v == version)
                 })
             })
-            .map(|((name, version), value)| (name.clone(), *version, value.clone()))
+            .map(|((name, version), held)| crate::heartbeat::SecretDelivery {
+                name: name.clone(),
+                version: *version,
+                value: held.value.clone(),
+                chain: held.chain.clone(),
+            })
             .collect()
     }
 
@@ -2932,7 +2969,11 @@ impl HeldSecrets {
     /// so an empty delivery means nothing changed rather than that nothing is held.
     pub fn take(&mut self, delivered: impl IntoIterator<Item = crate::heartbeat::SecretDelivery>) {
         for d in delivered {
-            self.stored.insert((d.name, d.version), d.value);
+            let held = Held {
+                value: d.value,
+                chain: d.chain,
+            };
+            self.stored.insert((d.name, d.version), held);
         }
     }
 
@@ -2956,35 +2997,54 @@ impl HeldSecrets {
     pub fn value(&self, reference: &SecretRef) -> Option<String> {
         match reference {
             SecretRef::WorkerLocal(var) => usable(std::env::var(var).ok()),
-            SecretRef::LeaderStored { name, version } => self.stored.get(&(name.clone(), *version)).cloned(),
+            SecretRef::LeaderStored { name, version } => {
+                self.stored.get(&(name.clone(), *version)).map(|h| h.value.clone())
+            }
         }
+    }
+
+    /// The chain and private key of the certificate entry `reference` names, PEM both. `None` when this worker does
+    /// not hold that version, or holds one with no chain: a stored secret that is not a certificate.
+    pub fn certificate(&self, reference: &SecretRef) -> Option<(String, String)> {
+        let SecretRef::LeaderStored { name, version } = reference else {
+            return None;
+        };
+        let held = self.stored.get(&(name.clone(), *version))?;
+        Some((held.chain.clone()?, held.value.clone()))
     }
 }
 
-/// Whether `identity`'s certificate and key belong together, when both are named and the key is one `held` has.
-/// `None` when there is nothing to check yet: an identity presenting nothing pairs with nothing, and a key this
-/// holder does not have at all is [`TopologyConfig::missing_secrets`]' concern, not this one's.
+/// Why `identity`'s certificate cannot be presented the way its bundle presents it, once the worker holds it.
+/// `None` when there is nothing to check yet: an identity presenting nothing, and a certificate this holder does not
+/// have at all, which is [`TopologyConfig::missing_secrets`]' concern.
 ///
 /// A free function rather than a method, so [`crate::worker::capture`]'s cold path -- which builds one identity's
 /// source and never has a whole [`TopologyConfig`] to ask -- can run the same check on the one identity it has.
-pub fn identity_pairing_error(identity: &Identity, held: &HeldSecrets) -> Option<String> {
-    let (certificate, key_ref) = (identity.certificate.as_ref()?, identity.key.as_ref()?);
-    let key = held.value(key_ref)?;
-    crate::leader::tls::is_pair(certificate.as_bytes(), key.as_bytes())
-        .err()
-        .map(|why| {
-            format!(
-                "identity {:?} names a key that is not its certificate's: {why}",
-                identity.id
-            )
-        })
+pub fn identity_certificate_error(identity: &Identity, held: &HeldSecrets) -> Option<String> {
+    let reference = identity.certificate.as_ref()?;
+    held.value(reference)?;
+    let what = format!("identity {:?}", identity.id);
+    let Some((chain, _)) = held.certificate(reference) else {
+        return Some(format!(
+            "{what} names {}, which is not a certificate",
+            reference.describe()
+        ));
+    };
+    let uses = [
+        (identity.presented.client, crate::io::trust::Side::Client),
+        (identity.presented.server, crate::io::trust::Side::Server),
+    ];
+    uses.into_iter()
+        .filter(|(presented, _)| *presented)
+        .find_map(|(_, how)| crate::io::trust::refuse_unless_usable(&chain, how).err())
+        .map(|why| format!("{what} presents a certificate {why}"))
 }
 
-/// The key an identity names, as one entry of [`TopologyConfig::named_secrets`].
+/// The certificate an identity names, as one entry of [`TopologyConfig::named_secrets`].
 pub(crate) fn identity_secret(identity: Option<&Identity>, what: &str) -> Option<NamedSecret> {
     let identity = identity?;
     Some(NamedSecret {
-        reference: identity.key.clone()?,
+        reference: identity.certificate.clone()?,
         what: format!("{what}: the identity {:?}", identity.id),
     })
 }
@@ -3006,15 +3066,14 @@ impl TopologyConfig {
             .collect()
     }
 
-    /// Every identity naming both halves whose certificate and key do not belong together, among the keys this
-    /// worker holds. `put_identities` proves the pair at save time, but a secret's name and version are reusable --
-    /// deleted and recreated under the same reference, holding different content -- so that proof does not survive
-    /// to whenever this commit actually runs. Checked here instead, wherever a commit is about to, so a mismatch is
-    /// refused before anything is torn down rather than discovered at the handshake, after it already has been.
-    pub fn identity_pairing_errors(&self, held: &HeldSecrets) -> Vec<String> {
+    /// Every identity whose certificate cannot be presented the way this bundle presents it, among the
+    /// certificates this worker holds. Checked wherever a commit is about to run, so a certificate a far end would
+    /// refuse is refused before anything is torn down rather than discovered at the handshake, after it already has
+    /// been.
+    pub fn identity_certificate_errors(&self, held: &HeldSecrets) -> Vec<String> {
         self.identities
             .iter()
-            .filter_map(|identity| identity_pairing_error(identity, held))
+            .filter_map(|identity| identity_certificate_error(identity, held))
             .collect()
     }
 }
@@ -4210,69 +4269,102 @@ mod tests {
         assert!(missing[0].contains("SMELTR_TEST_DEFINITELY_UNSET_AUTH"), "{missing:?}");
     }
 
-    /// A certificate, and a key that either issued it or belongs to someone else's.
-    fn certificate_and_key(matching: bool) -> (String, String) {
-        let issuer_key = rcgen::KeyPair::generate().unwrap();
-        let params = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
-        let certificate = params.self_signed(&issuer_key).unwrap().pem();
-        let key = if matching {
-            issuer_key
-        } else {
-            rcgen::KeyPair::generate().unwrap()
-        };
-        (certificate, key.serialize_pem())
+    /// A certificate and its key, its Extended Key Usage naming `purposes` where any are given.
+    fn certificate_and_key(purposes: Vec<rcgen::ExtendedKeyUsagePurpose>) -> (String, String) {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
+        params.extended_key_usages = purposes;
+        (params.self_signed(&key).unwrap().pem(), key.serialize_pem())
     }
 
-    /// A bundle with a connector that connects under `identity`.
-    fn with_identity(identity: Identity) -> TopologyConfig {
+    /// A bundle with a connector that presents `acme`'s certificate as `presented`.
+    fn presenting(presented: PresentedAs) -> TopologyConfig {
         TopologyConfig {
-            identities: vec![std::sync::Arc::new(identity)],
+            identities: vec![std::sync::Arc::new(Identity {
+                id: "acme".to_string(),
+                certificate: Some(stored("acme", 1)),
+                authorities: None,
+                trust_public: true,
+                presented,
+            })],
             ..Default::default()
         }
     }
 
-    /// The proof `put_identities` ran at save time does not survive a key's name and version being deleted and
-    /// recreated under different content -- so it is run again here, against whatever this worker actually holds.
+    /// What a worker holds once the leader has sent it the certificate `acme` at version 1.
+    fn holding_certificate(chain: Option<String>, key: String) -> HeldSecrets {
+        let mut h = HeldSecrets::default();
+        h.take([crate::heartbeat::SecretDelivery {
+            name: "acme".to_string(),
+            version: 1,
+            value: key,
+            chain,
+        }]);
+        h
+    }
+
+    /// A certificate whose Extended Key Usage leaves out the side it is presented from is refused before anything
+    /// is torn down, rather than at the handshake.
     #[test]
-    fn a_key_that_does_not_belong_to_its_certificate_is_refused() {
-        let (certificate, key) = certificate_and_key(false);
-        let t = with_identity(Identity {
-            id: "acme".to_string(),
-            certificate: Some(certificate),
-            key: Some(stored("acme-key", 1)),
-            authorities: None,
-            trust_public: true,
-        });
-        let errors = t.identity_pairing_errors(&held(&[("acme-key", 1, &key)]));
+    fn a_certificate_is_held_to_the_side_its_bundle_presents_it_from() {
+        let (chain, key) = certificate_and_key(vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth]);
+        let held = holding_certificate(Some(chain), key);
+        let errors = presenting(PresentedAs::CLIENT).identity_certificate_errors(&held);
         assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].contains("acme"), "{errors:?}");
+        assert!(
+            errors[0].contains("acme") && errors[0].contains("client authentication"),
+            "{errors:?}"
+        );
+        assert!(
+            presenting(PresentedAs::SERVER)
+                .identity_certificate_errors(&held)
+                .is_empty()
+        );
     }
 
     #[test]
-    fn a_key_that_belongs_to_its_certificate_is_not_refused() {
-        let (certificate, key) = certificate_and_key(true);
-        let t = with_identity(Identity {
-            id: "acme".to_string(),
-            certificate: Some(certificate),
-            key: Some(stored("acme-key", 1)),
-            authorities: None,
-            trust_public: true,
-        });
-        assert!(t.identity_pairing_errors(&held(&[("acme-key", 1, &key)])).is_empty());
+    fn a_certificate_with_no_extended_key_usage_is_presented_from_either_side() {
+        let (chain, key) = certificate_and_key(Vec::new());
+        let held = holding_certificate(Some(chain), key);
+        let both = PresentedAs {
+            client: true,
+            server: true,
+        };
+        assert!(presenting(both).identity_certificate_errors(&held).is_empty());
     }
 
-    /// A key this worker does not have yet is `missing_secrets`' concern -- there is nothing here to pair against.
+    /// A stored secret that is not a certificate entry has no chain, so there is nothing to present.
     #[test]
-    fn an_identity_whose_key_this_worker_lacks_is_not_this_checks_concern() {
-        let (certificate, _) = certificate_and_key(true);
-        let t = with_identity(Identity {
-            id: "acme".to_string(),
-            certificate: Some(certificate),
-            key: Some(stored("acme-key", 1)),
-            authorities: None,
-            trust_public: true,
-        });
-        assert!(t.identity_pairing_errors(&HeldSecrets::default()).is_empty());
+    fn a_secret_that_is_not_a_certificate_is_refused() {
+        let errors =
+            presenting(PresentedAs::CLIENT).identity_certificate_errors(&holding_certificate(None, "hunter2".into()));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("not a certificate"), "{errors:?}");
+    }
+
+    /// A certificate this worker does not have yet is `missing_secrets`' concern.
+    #[test]
+    fn an_identity_whose_certificate_this_worker_lacks_is_not_this_checks_concern() {
+        assert!(
+            presenting(PresentedAs::CLIENT)
+                .identity_certificate_errors(&HeldSecrets::default())
+                .is_empty()
+        );
+    }
+
+    /// The chain travels with its key, and both reach the runtime.
+    #[test]
+    fn a_certificate_is_held_and_handed_on_with_its_chain() {
+        let held = holding_certificate(Some("chain".into()), "key".into());
+        assert_eq!(
+            held.certificate(&stored("acme", 1)),
+            Some(("chain".to_string(), "key".to_string()))
+        );
+        let wanted = [NamedSecret {
+            reference: stored("acme", 1),
+            what: "the identity".to_string(),
+        }];
+        assert_eq!(held.deliveries_for(&wanted)[0].chain.as_deref(), Some("chain"));
     }
 
     /// A deployment runs the version its bundle quotes or it does not run. Neither an older value nor a newer one
@@ -4329,6 +4421,7 @@ mod tests {
             name: "b".to_string(),
             version: 3,
             value: "three".to_string(),
+            chain: None,
         }]);
         assert_eq!(h.value(&stored("a", 1)).as_deref(), Some("one"));
         assert_eq!(

@@ -840,6 +840,7 @@ export class DemoLeader {
       show_internal: boolean;
       at_micros: number | null;
       filter: string | null;
+      attribution?: boolean;
       after_dot: unknown;
       capture_filter: unknown;
     },
@@ -860,6 +861,7 @@ export class DemoLeader {
       showInternal: req.show_internal,
       atMicros: req.at_micros,
       filter: req.filter,
+      attribution: req.attribution ?? false,
       afterDot: req.after_dot ?? undefined,
       captureFilter: req.capture_filter ?? undefined,
     });

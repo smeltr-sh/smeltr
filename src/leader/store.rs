@@ -686,17 +686,8 @@ pub trait Store: Send + Sync {
     /// name, an unheld version, and a row the leader's key cannot open.
     fn verify_secret(&self, name: &str, version: i64, candidate: &str) -> Result<bool, StoreError>;
 
-    /// Whether the value at `name`/`version` is the private key `certificate` was issued for.
-    ///
-    /// A yes-or-no about a value, like `verify_secret`, and for the same reason: an outbound identity's certificate
-    /// is committed and its key is not, so nothing but the leader can tell whether a bundle names two that belong
-    /// together -- and a bundle that names two that do not deploys into a handshake nobody can explain.
-    ///
-    /// `false` for a value this leader cannot open, so an unopenable row is refused rather than waved through.
-    fn certificate_matches(&self, name: &str, version: i64, certificate: &str) -> Result<bool, StoreError>;
-
-    /// The values among `entitled` that a worker does not already hold, as name, version and value, for delivery on
-    /// the heartbeat. `entitled` is the exact `(name, version)` pairs the worker's group's bundle quotes.
+    /// The values among `entitled` that a worker does not already hold, each with the chain beside it where it is a
+    /// certificate entry's key, for delivery on the heartbeat. `entitled` is the exact `(name, version)` pairs the worker's group's bundle quotes.
     ///
     /// The one method here that returns a value, and it cannot be asked for one: it answers "what does this group
     /// lack", never "what is the value of X". A pair that is worker-local, unknown, no longer held, or sealed under
@@ -706,7 +697,7 @@ pub trait Store: Send + Sync {
         &self,
         entitled: &[(String, i64)],
         held: &[(String, i64)],
-    ) -> Result<Vec<(String, i64, String)>, StoreError>;
+    ) -> Result<Vec<crate::heartbeat::SecretDelivery>, StoreError>;
 
     /// Where the secrets encryption key stands against what is sealed under it.
     fn key_standing(&self) -> Result<KeyStanding, StoreError>;

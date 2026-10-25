@@ -123,7 +123,7 @@ fn case(code: &str, input: &[&str], expect: Expect) {
         let notes = r
             .exceptions
             .iter()
-            .map(|(_, m)| m.as_str())
+            .map(|(_, m, _)| m.as_str())
             .collect::<Vec<_>>()
             .join("; ");
         let note_ok = match want_note {

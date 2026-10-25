@@ -820,6 +820,10 @@ pub struct SecretDelivery {
     pub name: String,
     pub version: i64,
     pub value: String,
+    /// The certificate chain beside the value, PEM, when the secret is a certificate entry and the value its private
+    /// key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<String>,
 }
 
 /// Names the version, never the value (`plan::topology::HeldSecrets` does the same for the same reason). Written
@@ -2261,6 +2265,7 @@ mod tests {
             name: "kafka-cred".to_string(),
             version: 4,
             value: "hunter2-the-actual-password".to_string(),
+            chain: None,
         };
         let direct = format!("{delivery:?}");
         assert!(!direct.contains("hunter2"), "{direct}");
@@ -2305,6 +2310,7 @@ mod tests {
             name: "kafka-cred".to_string(),
             version: 4,
             value: "hunter2".to_string(),
+            chain: None,
         })
         .unwrap();
         assert_eq!(json, r#"{"name":"kafka-cred","version":4,"value":"hunter2"}"#);

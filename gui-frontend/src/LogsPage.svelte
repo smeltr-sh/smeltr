@@ -282,7 +282,7 @@
             <td class="mono site">
               <button
                 type="button"
-                class="link"
+                class="link-button"
                 onclick={() => go({ ...resetCursor(filters), site: row.site })}
               >
                 {row.site}
@@ -316,7 +316,7 @@
             <td class="mono who">
               <button
                 type="button"
-                class="link"
+                class="link-button"
                 onclick={() => go({ ...resetCursor(filters), worker: row.workerId })}
               >
                 {row.workerId}
@@ -430,15 +430,6 @@
     display: flex;
     gap: 0.4rem;
     margin-top: 0.75rem;
-  }
-  .link {
-    background: none;
-    border: none;
-    padding: 0;
-    font: inherit;
-    color: inherit;
-    text-decoration: underline dotted;
-    cursor: pointer;
   }
   .fields {
     margin-left: 0.4rem;
