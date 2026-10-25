@@ -188,7 +188,7 @@
       The certificate this worker shows the far end, chosen from the list on
       <a href="#/admin/certificates">Admin &rarr; Certificates</a>. For a source or destination it is
       the client certificate, needed only when the far end requires one; for a receiver it is the
-      certificate the receiver serves.
+      certificate the receiver serves, and it needs one.
     {/snippet}
   </CertificatePicker>
 
