@@ -19,7 +19,7 @@
     /** Whether the reader has opened it. The caller keeps this, so it outlives a redraw. */
     open: boolean;
     ontoggle: () => void;
-    /** What the value is, for the button that opens it: `the value of x`. */
+    /** The name the value goes by where it is shown, for the button that opens it. */
     label: string;
     /** Struck through: a value that is no longer there. */
     gone?: boolean;
@@ -28,6 +28,9 @@
   } = $props();
 
   let overflowing = $state(false);
+  let shown = $derived(
+    open ? 'Show less' : `Show all ${text.length.toLocaleString('en-US')} characters`,
+  );
 
   /** Says whether the clamped value is cut short, as its width or its text changes. */
   function watch(node: HTMLElement, _text: string) {
@@ -49,13 +52,12 @@
     <button
       type="button"
       class="more"
-      aria-expanded={open}
-      aria-label={`${open ? 'collapse' : 'expand'} ${label}`}
+      aria-label={`${shown} of ${label}`}
       onclick={(e) => {
         // Opening the value is all the click does, inside a row or an option that a click would choose.
         e.stopPropagation();
         ontoggle();
-      }}>{open ? 'less' : `Show all ${text.length.toLocaleString('en-US')} characters`}</button
+      }}>{shown}</button
     >
   {/if}
 </span>

@@ -232,7 +232,7 @@
                     <td>
                       <input
                         class="mono"
-                        aria-label={`the value of ${c.name}, record ${r.key + 1}`}
+                        aria-label={`${c.name}, record ${r.key + 1}`}
                         aria-invalid={cellMistyped(r.record, c.name)}
                         value={cellText(r.record, c.name)}
                         onchange={(e) => setCell(r.key, c, e.currentTarget.value)}
@@ -256,7 +256,7 @@
                         {text}
                         open={opened.has(at)}
                         ontoggle={() => (opened.has(at) ? opened.delete(at) : opened.add(at))}
-                        label={`the value of ${c.name}, record ${r.key + 1}`}
+                        label={`${c.name}, record ${r.key + 1}`}
                       />
                     </td>
                   {/if}

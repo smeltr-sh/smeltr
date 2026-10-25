@@ -615,7 +615,7 @@
               open={openDescription === fn.signature}
               ontoggle={() =>
                 (openDescription = openDescription === fn.signature ? null : fn.signature)}
-              label={`the description of ${fn.signature}`}
+              label={fn.signature}
               >{#each describedRuns(fn.description) as p, j (j)}{#if p.code}<code>{p.text}</code
                   >{:else}{p.text}{/if}{/each}</Clamped
             >
