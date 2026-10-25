@@ -49,9 +49,18 @@ const NO_CONVERSATION: &str = "there is no such conversation";
 #[derive(Default)]
 pub struct Chats {
     router: OnceLock<Router>,
-    /// Held around every reach into a conversation's turns as well as its run, so the two are only ever seen and
-    /// changed together. The store's own lock is taken inside it, never around it.
-    runs: Mutex<HashMap<String, Run>>,
+    /// Each conversation's [`Slot`], by its id. Held only to find or add one.
+    slots: Mutex<HashMap<String, Slot>>,
+}
+
+/// A conversation's run, under a lock of its own. The lock is held around every reach into the conversation's turns
+/// as well, so the two are only ever seen and changed together; the store's own lock is taken inside it, never
+/// around it. The hourly sweep deletes without it: what it takes has had nothing added for days.
+type Slot = Arc<Mutex<Option<Run>>>;
+
+/// `slot`'s run, held.
+fn hold(slot: &Slot) -> std::sync::MutexGuard<'_, Option<Run>> {
+    slot.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl Chats {
@@ -61,8 +70,19 @@ impl Chats {
         let _ = self.router.set(router);
     }
 
-    fn runs(&self) -> std::sync::MutexGuard<'_, HashMap<String, Run>> {
-        self.runs.lock().unwrap_or_else(|e| e.into_inner())
+    fn slots(&self) -> std::sync::MutexGuard<'_, HashMap<String, Slot>> {
+        self.slots.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Conversation `id`'s slot, made the first time it is asked for.
+    fn slot(&self, id: &str) -> Slot {
+        self.slots().entry(id.to_string()).or_default().clone()
+    }
+
+    /// Whether a turn runs in conversation `id`.
+    fn running(&self, id: &str) -> bool {
+        let slot = self.slots().get(id).cloned();
+        slot.is_some_and(|slot| hold(&slot).as_ref().is_some_and(|r| r.running))
     }
 }
 
@@ -312,14 +332,19 @@ async fn begin(
     refusal: fn(&[Turn]) -> Option<&'static str>,
 ) -> Result<(), Box<Response>> {
     let stop = Arc::new(AtomicBool::new(false));
-    let (chats, store, read, flag) = (auth.chats.clone(), auth.store.clone(), id.to_string(), stop.clone());
+    let slot = auth.chats.slot(id);
+    let (held, store, read, flag) = (slot.clone(), auth.store.clone(), id.to_string(), stop.clone());
     let begun = store_call(move || {
-        let mut runs = chats.runs();
-        if runs.get(&read).is_some_and(|r| r.running) {
+        let mut run = hold(&held);
+        if run.as_ref().is_some_and(|r| r.running) {
             return Ok(Err(Box::new(refuse(
                 StatusCode::CONFLICT,
                 "the agent is still answering",
             ))));
+        }
+        // Deleted since the caller found it: there is nothing to answer in.
+        if store.conversation(&read)?.is_none() {
+            return Ok(Err(Box::new(refuse(StatusCode::NOT_FOUND, NO_CONVERSATION))));
         }
         let turns = store.turns_of(&read)?;
         let turns: Result<Vec<Turn>, _> = turns.iter().map(|t| serde_json::from_str(t)).collect();
@@ -333,14 +358,13 @@ async fn begin(
         if let Some(why) = refusal(&turns) {
             return Ok(Err(Box::new(refuse(StatusCode::CONFLICT, why))));
         }
-        let run = Run {
+        *run = Some(Run {
             stop: flag,
             running: true,
             ended: None,
             error: None,
             writing: String::new(),
-        };
-        runs.insert(read, run);
+        });
         Ok(Ok(turns))
     })
     .await;
@@ -352,21 +376,19 @@ async fn begin(
     let host = Turned {
         auth: auth.clone(),
         conversation: id.to_string(),
+        slot,
         // The gate let this request through on it, so it is there.
         token: presented_token(headers, auth.origin.cookie_name()).unwrap_or_default(),
         stop,
         person: smeltr::leader::auth::hash_secret(&actor.id),
         picked,
     };
-    let auth = auth.clone();
-    let id = id.to_string();
     tokio::spawn(async move {
         let outcome = match job {
             Job::Message(message) => turn(&host, turns, message).await,
             Job::Fresh { summarize } => fresh(&host, turns, summarize).await,
         };
-        let mut runs = auth.chats.runs();
-        if let Some(run) = runs.get_mut(&id) {
+        if let Some(run) = hold(&host.slot).as_mut() {
             run.running = false;
             run.writing.clear();
             match outcome {
@@ -462,6 +484,7 @@ fn last_answer(turns: &[Turn]) -> Option<&model::Reply> {
 struct Turned {
     auth: Auth,
     conversation: String,
+    slot: Slot,
     token: String,
     stop: Arc<AtomicBool>,
     /// The person's account id, hashed.
@@ -481,16 +504,12 @@ impl Host for Turned {
 
     async fn keep(&self, turn: &Turn) -> Result<(), String> {
         let text = serde_json::to_string(turn).map_err(|e| e.to_string())?;
-        let (chats, store, id) = (
-            self.auth.chats.clone(),
-            self.auth.store.clone(),
-            self.conversation.clone(),
-        );
+        let (slot, store, id) = (self.slot.clone(), self.auth.store.clone(), self.conversation.clone());
         let kept = blocking(move || {
-            let mut runs = chats.runs();
+            let mut run = hold(&slot);
             let kept = store.append_turn(&id, &text, now_millis())?;
             // What was being written is now among the turns.
-            if let Some(run) = runs.get_mut(&id) {
+            if let Some(run) = run.as_mut() {
                 run.writing.clear();
             }
             Ok::<_, StoreError>(kept)
@@ -504,7 +523,7 @@ impl Host for Turned {
     }
 
     fn heard(&self, text: &str) {
-        if let Some(run) = self.auth.chats.runs().get_mut(&self.conversation) {
+        if let Some(run) = hold(&self.slot).as_mut() {
             run.writing.push_str(text);
         }
     }
@@ -592,12 +611,10 @@ pub async fn list(State(auth): State<Auth>, actor: Extension<Actor>, by_agent: O
     let user_id = actor.id.clone();
     match store_call(move || store.conversations_of(&user_id)).await {
         Ok(conversations) => {
-            let runs = auth.chats.runs();
-            let running = |id: &str| runs.get(id).is_some_and(|r| r.running);
             let conversations: Vec<ConversationSummary> = conversations
                 .into_iter()
                 .map(|c| {
-                    let running = running(&c.id);
+                    let running = auth.chats.running(&c.id);
                     summary(c, running)
                 })
                 .collect();
@@ -639,10 +656,10 @@ pub async fn read(
         Ok(c) => c,
         Err(refused) => return *refused,
     };
-    let (chats, store) = (auth.chats.clone(), auth.store.clone());
+    let (slot, store) = (auth.chats.slot(&id), auth.store.clone());
     let read = store_call(move || {
-        let runs = chats.runs();
-        Ok((store.turns_of(&id)?, runs.get(&id).cloned()))
+        let run = hold(&slot);
+        Ok((store.turns_of(&id)?, run.clone()))
     });
     let (turns, run) = match read.await {
         Ok(read) => read,
@@ -712,7 +729,8 @@ pub async fn stop(
     if let Err(refused) = owned(&auth, &actor, &id).await {
         return *refused;
     }
-    if let Some(run) = auth.chats.runs().get(&id) {
+    let slot = auth.chats.slots().get(&id).cloned();
+    if let Some(run) = slot.as_ref().and_then(|slot| hold(slot).clone()) {
         run.stop.store(true, Ordering::SeqCst);
     }
     no_store(Envelope::done())
@@ -733,11 +751,15 @@ pub async fn delete(
     }
     let (chats, store) = (auth.chats.clone(), auth.store.clone());
     let deleted = store_call(move || {
-        let mut runs = chats.runs();
-        if let Some(run) = runs.remove(&id) {
+        let slot = chats.slot(&id);
+        let mut run = hold(&slot);
+        if let Some(run) = run.take() {
             run.stop.store(true, Ordering::SeqCst);
         }
-        store.delete_conversation(&id)
+        let deleted = store.delete_conversation(&id)?;
+        // A turn still holding this slot finds the conversation gone; a later one starts from a new slot.
+        chats.slots().remove(&id);
+        Ok(deleted)
     });
     match deleted.await {
         Ok(_) => no_store(Envelope::done()),
