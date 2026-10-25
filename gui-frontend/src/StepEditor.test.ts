@@ -43,6 +43,7 @@ describe('a parser step’s split keys at dots', () => {
     filter: '',
     disabled: false,
     input: '_raw',
+    into: '$',
     kind,
     declared: [],
   });
@@ -103,6 +104,7 @@ describe('a parser step’s Advanced', () => {
     filter: '',
     disabled: false,
     input: '_raw',
+    into: '$',
     kind: { type: 'json' },
     declared: [],
     ...over,
@@ -114,6 +116,13 @@ describe('a parser step’s Advanced', () => {
     }).body;
     expect(body).toMatch(/input <code[^>]*>msg<\/code>/);
     expect(body).toMatch(/filter <code[^>]*>x == 1<\/code>/);
+  });
+
+  it('names the object it writes into, and not the record', () => {
+    const named = (into: string) =>
+      render(StepEditor, { props: { steps: [parser({ into })], index: 0 } }).body;
+    expect(named('app')).toMatch(/into <code[^>]*>app<\/code>/);
+    expect(named('$')).not.toMatch(/into <code/);
   });
 
   it('opens on an error in its filter, and counts it', () => {
@@ -143,6 +152,7 @@ describe('a parser step’s fields', () => {
     filter: '',
     disabled: false,
     input: '_raw',
+    into: '$',
     kind,
     declared,
   });
@@ -198,6 +208,7 @@ describe('a parser step’s separators', () => {
     filter: '',
     disabled: false,
     input: '_raw',
+    into: '$',
     kind,
     declared: [],
   });
@@ -372,6 +383,7 @@ describe('a step a viewer reads', () => {
       filter: '',
       disabled: false,
       input: '_raw',
+      into: '$',
       kind: { type: 'keyValue', pairSep: ' ', kvSep: '=', quote: '"' },
       declared: [{ name: 'level', ty: { kind: 'named', name: 'str' } }],
     },

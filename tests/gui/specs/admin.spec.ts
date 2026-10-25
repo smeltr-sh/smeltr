@@ -441,12 +441,12 @@ test('AI agents turned on under System offer the agent screens', async ({ admin 
     await admin.getByRole('switch', { name: 'AI agents enabled' }).check();
     await expect(admin.getByRole('alert')).toHaveText('Turning AI agents on needs: API key.');
     await admin.getByRole('textbox', { name: /^Endpoint URL\b/ }).fill(model.base);
-    await admin.getByLabel('API key', { exact: true }).fill('sk-wrong');
+    await admin.getByRole('textbox', { name: 'API key', exact: true }).fill('sk-wrong');
     await expect(admin.getByText('Saving asks the endpoint for a short answer')).toBeVisible();
     await admin.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(admin.getByRole('alert')).toContainText('answered 401: invalid x-api-key');
 
-    await admin.getByLabel('API key', { exact: true }).fill(MODEL_KEY);
+    await admin.getByRole('textbox', { name: 'API key', exact: true }).fill(MODEL_KEY);
     await admin.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(admin.getByRole('button', { name: 'replace the API key' })).toBeVisible();
 

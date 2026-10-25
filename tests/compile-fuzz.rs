@@ -332,8 +332,25 @@ struct Parse {
     split_dots: bool,
     /// A text field.
     input: usize,
+    /// The object it writes into, each of `declared` a field of it; `None`, the record.
+    into: Option<String>,
+    /// Whether `into` is an object the program bound, rather than a key the record may hold.
+    into_bound: bool,
     /// Each field it writes, with whether this parse is its first write, which declares it.
     declared: Vec<(usize, bool)>,
+}
+
+impl Parse {
+    /// `id`'s name as the parse finds it: its key under `into`.
+    fn key<'n>(&self, name: &'n str) -> &'n str {
+        match &self.into {
+            Some(into) => name
+                .strip_prefix(into.as_str())
+                .and_then(|k| k.strip_prefix('.'))
+                .unwrap_or(name),
+            None => name,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1553,17 +1570,29 @@ impl Gen {
     }
 
     /// A parse of a text field, with the eval step that writes the text first at the top level. Under a guard the
-    /// parse reads a text field already bound, and is of a kind that declares every key it writes.
+    /// parse reads a text field already bound, and is of a kind that declares every key it writes. At the top level it
+    /// may write into an object, its fields new: one of its own, `o`, which holds fields already, or `zz`, a key some
+    /// records hold as text.
     fn parse_steps(&mut self, top: bool) -> Option<Vec<(Form, Vec<S>)>> {
         let kinds: Vec<Parser> = Parser::ALL.into_iter().filter(|k| top || !k.dynamic()).collect();
         let kind = *self.rng.pick(&kinds);
+        let into = (top && self.rng.chance(3)).then(|| match self.rng.below(3) {
+            0 => "o".to_string(),
+            1 => "zz".to_string(),
+            _ => format!("p{}", self.bindings.len()),
+        });
+        let into_bound = into.as_deref() == Some("o");
         let mut declared = Vec::new();
         for _ in 0..1 + self.rng.below(3) {
             let ty = self
                 .rng
                 .pick(&[DataType::I64, DataType::F64, DataType::Str, DataType::Bool])
                 .clone();
-            if let Some(d) = self.out_field(ty, top) {
+            let field = match &into {
+                Some(into) => Some((self.field(format!("{into}.f{}", self.bindings.len()), ty), true)),
+                None => self.out_field(ty, top),
+            };
+            if let Some(d) = field {
                 declared.push(d);
             }
         }
@@ -1573,7 +1602,7 @@ impl Gen {
         let mut out = Vec::new();
         let input = match top {
             true => {
-                let text = self.text(kind, &declared);
+                let text = self.text(kind, into.as_deref(), &declared);
                 let id = self.field(format!("f{}", self.bindings.len()), DataType::Str);
                 out.push((Form::Eval, vec![S::Assign(id, text)]));
                 id
@@ -1584,6 +1613,8 @@ impl Gen {
             kind,
             split_dots: self.rng.chance(2),
             input,
+            into,
+            into_bound,
             declared,
         };
         out.push((Form::Parser, vec![S::Parse(parse)]));
@@ -1591,7 +1622,7 @@ impl Gen {
     }
 
     /// A line of `kind` holding a value of each of `declared`, the keys their names.
-    fn text(&mut self, kind: Parser, declared: &[(usize, bool)]) -> E {
+    fn text(&mut self, kind: Parser, into: Option<&str>, declared: &[(usize, bool)]) -> E {
         let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
         let mut parts = Vec::new();
         let mut before = match kind {
@@ -1601,6 +1632,7 @@ impl Gen {
         };
         for (i, &(id, _)) in declared.iter().enumerate() {
             let (name, ty) = (self.bindings[id].name.clone(), self.bindings[id].ty.clone());
+            let name = into.map_or(name.as_str(), |into| &name[into.len() + 1..]).to_string();
             let sep = match (i, kind) {
                 (0, _) => "",
                 (_, Parser::Json) => ", ",
@@ -1858,10 +1890,19 @@ impl Writer<'_> {
             S::Drop => out.push_str("drop(); "),
             S::Bare(e) => out.push_str(&format!("{}; ", self.expr(e))),
             S::Parse(p) => {
+                // What `plan::lower` writes for an object the open record may hold as a key: it, converted to an
+                // object, before the fields that convert under it.
+                if let Some(into) = p.into.as_ref().filter(|_| !p.into_bound) {
+                    out.push_str(&format!("{into}: {{...}} = {into}; "));
+                }
                 if !p.kind.dynamic() {
                     self.declare(p.declared.iter().copied(), out);
                 }
-                let names: Vec<String> = p.declared.iter().map(|&(id, _)| self.name(id)).collect();
+                let names: Vec<String> = p
+                    .declared
+                    .iter()
+                    .map(|&(id, _)| p.key(&self.name(id)).to_string())
+                    .collect();
                 let dots = format!("splitDots: {}", p.split_dots);
                 let input = self.name(p.input);
                 let call = match p.kind {
@@ -1876,7 +1917,10 @@ impl Writer<'_> {
                     ),
                     Parser::Grok => format!("grok({input}, [\"{}\"], {{{dots}}})", grok_pattern(&names)),
                 };
-                out.push_str(&format!("Object.assign($, {call}); "));
+                out.push_str(&format!(
+                    "Object.assign({}, {call}); ",
+                    p.into.as_deref().unwrap_or("$")
+                ));
                 if p.kind.dynamic() {
                     self.declare(p.declared.iter().copied(), out);
                 }
@@ -1966,7 +2010,11 @@ impl Writer<'_> {
                 keep_parent_fields: *keep,
             }),
             (Form::Parser, [S::Parse(p)]) => {
-                let names: Vec<String> = p.declared.iter().map(|&(id, _)| self.name(id)).collect();
+                let names: Vec<String> = p
+                    .declared
+                    .iter()
+                    .map(|&(id, _)| p.key(&self.name(id)).to_string())
+                    .collect();
                 let split_dots = p.split_dots;
                 let kind = match p.kind {
                     Parser::Json => ParserKind::Json { split_dots },
@@ -1988,12 +2036,13 @@ impl Writer<'_> {
                 };
                 func(FunctionKind::Parser {
                     input: self.name(p.input),
+                    into: p.into.clone().unwrap_or_else(|| "$".into()),
                     kind,
                     declared: p
                         .declared
                         .iter()
                         .map(|&(id, _)| DeclaredField {
-                            name: self.name(id),
+                            name: p.key(&self.name(id)).to_string(),
                             ty: self.p.bindings[id].ty.clone(),
                             time_source: None,
                         })
@@ -2239,6 +2288,9 @@ const CONSTRUCTS: &[&str] = &[
     "unroll keep",
     "drop",
     "bare call",
+    "parse into",
+    "parse into an object",
+    "parse into a record key",
 ];
 
 /// What `p` writes, by the names `expected` gives.
@@ -2319,6 +2371,9 @@ fn covers(p: &Program) -> BTreeSet<String> {
                 },
                 Node::S(S::Drop) => "drop".into(),
                 Node::S(S::Bare(_)) => "bare call".into(),
+                Node::S(S::Parse(p)) if p.into_bound => "parse into an object".into(),
+                Node::S(S::Parse(p)) if p.into.as_deref() == Some("zz") => "parse into a record key".into(),
+                Node::S(S::Parse(p)) if p.into.is_some() => "parse into".into(),
                 Node::S(S::Parse(p)) => format!("{} call", p.kind.name()),
                 Node::S(S::Lookup(_)) => "lookup call".into(),
                 Node::S(S::Assign(..)) => return,

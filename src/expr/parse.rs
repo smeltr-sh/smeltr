@@ -1920,7 +1920,6 @@ impl<'s> Parser<'s> {
 /// write and a declaration of it are one name, as `$["a.b"]` is.
 pub fn index_of(base: Expr, index: Expr, span: Span) -> Expr {
     if let (ExprKind::Field(name), ExprKind::Literal(Value::Str(key))) = (&base.kind, &index.kind) {
-        let name = if name == tree::ROOT { "" } else { name };
         return Expr::new(span, ExprKind::Field(tree::child(name, key)));
     }
     let kind = ExprKind::Index {
