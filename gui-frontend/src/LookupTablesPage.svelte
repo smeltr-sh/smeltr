@@ -14,7 +14,6 @@
   import Connections from './Connections.svelte';
   import EditInShared from './EditInShared.svelte';
   import Locked from './Locked.svelte';
-  import Tabs from './Tabs.svelte';
   import UnreadableFiles from './UnreadableFiles.svelte';
   import { count } from './time';
   import { SvelteMap } from 'svelte/reactivity';
@@ -438,7 +437,7 @@
             {/if}
           </div>
           <div class="tabs">
-            <Tabs {tabs} selected={shownTab} onselect={(t) => (tab = t)} ariaLabel="Table" />
+            <SecondaryTabs {tabs} active={shownTab} onselect={(t) => (tab = t)} ariaLabel="Table" />
           </div>
 
           {@const cells =
