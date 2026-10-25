@@ -2646,12 +2646,12 @@ async fn sign_under_authority(state: &AppState, issued: &Issued) -> Result<(Stri
     .await
 }
 
+/// A certificate this leader issued: its name, how it is issued, and its newest chain described.
+type IssuedChain = (String, Issued, Vec<tls::Described>);
+
 /// The signing root and each certificate this leader issued, with its newest chain described: empty where that
 /// cannot be read. `None` where the leader signs nothing, or its authority cannot be read: its own warnings say that.
-fn issued_chains(
-    s: &dyn Store,
-    dir: &std::path::Path,
-) -> Result<Option<(String, Vec<(String, Issued, Vec<tls::Described>)>)>, StoreError> {
+fn issued_chains(s: &dyn Store, dir: &std::path::Path) -> Result<Option<(String, Vec<IssuedChain>)>, StoreError> {
     let Some(signing) = dir.exists().then(|| tls::signing_root_fingerprint(dir).ok()).flatten() else {
         return Ok(None);
     };
