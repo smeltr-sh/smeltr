@@ -22,7 +22,7 @@
     /** What an absent `start` reads from. */
     fallback: 'earliest' | 'latest';
     /** The label's `?`. */
-    help: Snippet;
+    help?: Snippet;
     /** Under the field: what must be known about the position chosen. */
     note?: Snippet;
   } = $props();

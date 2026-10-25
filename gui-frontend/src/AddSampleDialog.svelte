@@ -143,7 +143,7 @@
       </Field>
       <Field
         label="Source it stands for"
-        help="The source this sample's records stand for. A route selects on a source, so a sample with none runs through a pipeline but not through a route."
+        help="A route selects on a source, so a sample with none runs through a pipeline but not through a route."
       >
         <input bind:value={source} placeholder="orders-west" class="mono" />
       </Field>

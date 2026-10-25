@@ -765,12 +765,16 @@
           {#if preset === OTHER}
             <Field
               label="Directory URL"
-              help="The ACME directory URL from your certificate authority. It starts with https://."
+              help="Where your certificate authority publishes its ACME directory. It starts with https://."
             >
               <input type="url" bind:value={directoryUrl} spellcheck="false" />
             </Field>
           {/if}
-          <Field label="Names" group help="The host names the certificate is for.">
+          <Field
+            label="Names"
+            group
+            help="Press Enter or type a comma after each name. A wildcard such as *.example.com needs DNS-01, and DNS-01 cannot prove an IP address."
+          >
             <TokenListInput bind:values={nameList} placeholder="leader.example.com" />
           </Field>
           <Field label="Contact email">
@@ -813,8 +817,8 @@
                     </Field>
                     <Field label="API token">
                       {#snippet help()}
-                        A Cloudflare API token that can read the zones that hold the names and edit
-                        their DNS records: <a
+                        It must be able to read the zones that hold the names and edit their DNS
+                        records: <a
                           href="https://developers.cloudflare.com/fundamentals/api/get-started/create-token/"
                           target="_blank"
                           rel="noreferrer">Cloudflare's Create API token</a
@@ -838,13 +842,13 @@
               </Field>
               <Field
                 label="EAB key ID"
-                help="The key ID your certificate authority gave you for external account binding. Leave it empty if it gave you none."
+                help="Your certificate authority gives it for external account binding. Leave it empty if it gave you none."
               >
                 <input bind:value={eabKeyId} spellcheck="false" />
               </Field>
               <Field
                 label="EAB HMAC key"
-                help="The key your certificate authority gives with the EAB key ID. Stored encrypted and never shown again."
+                help="Your certificate authority gives it with the EAB key ID. It is stored encrypted and never shown again."
               >
                 <PasswordField
                   bind:value={eabHmac}

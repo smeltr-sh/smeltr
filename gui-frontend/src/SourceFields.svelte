@@ -853,11 +853,7 @@
       label="start at"
       fallback="earliest"
       note={startMoves(source) ? moves : undefined}
-    >
-      {#snippet help()}
-        Where this source reads from.
-      {/snippet}
-    </StartAt>
+    />
   </div>
 
   <div class="pair">
