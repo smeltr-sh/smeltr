@@ -214,7 +214,9 @@ no help at all.
   has a subtitle.
 - **Field label.** The field's name. `--text-label`, weight 600. A
   parenthetical that is part of the name -- `fetch buffer (bytes)` --
-  belongs here; a parenthetical that explains does not.
+  belongs here; a parenthetical that explains does not. A field the save
+  refuses empty ends in a `*`, in `--error`; one that may be left empty
+  carries no mark.
 - **Field note.** One line under the input, only for what must be known
   about the value: a choice that moves a source, a list with nothing yet
   to pick, a port the authority must reach. `--text-note`, weight **400**,
@@ -229,7 +231,8 @@ no help at all.
   ancestor can clip it, and Escape and click-away come from the platform.
   It explains only the thing it sits beside, usually in one sentence, and
   never repeats another `?` or explains something else on the page. It holds
-  `<code>` and emphasis.
+  `<code>` and emphasis. A field's opens with **Required.** or **Optional.**,
+  and an optional one says what empty does where nobody could guess it.
 - **Critical.** An instruction that must be read before acting: data is
   lost, a step cannot be undone, a condition blocks the task.
   `.critical` (`app.css`): `--accent`, weight 600. The only prose a page
@@ -263,7 +266,9 @@ definition, not a page's own rule.
   A value field may set the mono face. One whose value does not hold
   (`aria-invalid`) takes an `--error` border.
 - **Field.** `Field.svelte`: the label, a `?` when the label leaves
-  something out, the control, then its note or its error.
+  something out, the control, then its note or its error. `required` or
+  `optional` says whether it may be left empty; a toggle or a select that
+  always holds a value is neither.
 - **Filter.** `Chips.svelte`: All, then one chip per value, each with its count.
 - **Fold all.** `FoldAllButton.svelte`: one button that folds every item of a list or unfolds them all.
 - **Card.** `Panel.svelte`, below.

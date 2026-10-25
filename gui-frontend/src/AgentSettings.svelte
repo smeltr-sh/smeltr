@@ -213,26 +213,26 @@
             {#each PROVIDERS as p (p.value)}<option value={p.value}>{p.label}</option>{/each}
           </select>
         </Field>
-        <Field label="Endpoint URL">
+        <Field required label="Endpoint URL">
           <input
             bind:value={endpoint}
             placeholder={provider === 'openai-compatible' ? 'https://models.example.com' : ''}
             class="mono"
           />
         </Field>
-        <Field label="Model">
+        <Field required label="Model">
           {#snippet help()}
             The model's name as the provider gives it.
           {/snippet}
           <input bind:value={model} class="mono" />
         </Field>
-        <Field label="Context window">
+        <Field required label="Context window">
           {#snippet help()}
             The most the model reads at once. Conversations begin being summarized at 75% full.
           {/snippet}
           <UnitInput bind:value={contextTokens} unit="tokens" min={4096} max={10000000} required />
         </Field>
-        <Field label="API key" group>
+        <Field required label="API key" group>
           {#snippet help()}
             Stored encrypted and never shown again.
           {/snippet}
@@ -251,7 +251,7 @@
         <h3>Conversations</h3>
       </div>
       <div class="fields">
-        <Field label="Kept for">
+        <Field required label="Kept for">
           {#snippet help()}
             A conversation nobody has added to for this long is deleted.
           {/snippet}

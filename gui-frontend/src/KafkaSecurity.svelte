@@ -129,7 +129,7 @@
     </Field>
 
     {#each fields as f (f.prop)}
-      <Field label="{f.label}{f.optional ? ' (optional)' : ''}">
+      <Field label={f.label} required={!f.optional} optional={f.optional}>
         {#snippet help()}
           {f.note} Written as <code>{f.prop}</code>.
         {/snippet}

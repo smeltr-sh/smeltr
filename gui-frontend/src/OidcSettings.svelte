@@ -230,7 +230,7 @@
             >
           </div>
         </Field>
-        <Field label="Issuer URL" error={(!partialScheme(issuer) && issuerError) || null}>
+        <Field required label="Issuer URL" error={(!partialScheme(issuer) && issuerError) || null}>
           {#snippet help()}
             The provider's issuer URL. The leader reads <code
               >/.well-known/openid-configuration</code
@@ -239,10 +239,10 @@
           {/snippet}
           <input bind:value={issuer} placeholder="https://example.okta.com" class="mono" />
         </Field>
-        <Field label="Client ID">
+        <Field required label="Client ID">
           <input bind:value={clientId} class="mono" />
         </Field>
-        <Field label="Client secret" group>
+        <Field optional label="Client secret" group>
           {#snippet help()}
             Stored encrypted and never shown again.
           {/snippet}
@@ -254,7 +254,7 @@
           />
         </Field>
         <Advanced modified={groupsClaim.trim() !== DEFAULT_GROUPS_CLAIM}>
-          <Field label="Groups claim" error={claimProblem || null}>
+          <Field required label="Groups claim" error={claimProblem || null}>
             <input bind:value={groupsClaim} class="mono" />
           </Field>
         </Advanced>

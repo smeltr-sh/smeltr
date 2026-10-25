@@ -442,17 +442,8 @@ export function stepToDto(step: Step): unknown {
 /** Every lookup table id any `lookup` step, at any depth, refers to. */
 export function collectLookupTables(steps: Step[]): string[] {
   const found = new Set<string>();
-  const visit = (list: Step[]) => {
-    for (const s of list) {
-      if (s.type === 'lookup') {
-        if (s.table.trim() !== '') found.add(s.table.trim());
-      } else if (s.type === 'if') {
-        visit(s.then);
-        visit(s.else);
-      }
-    }
-  };
-  visit(steps);
+  for (const s of flatSteps(steps))
+    if (s.type === 'lookup' && s.table.trim() !== '') found.add(s.table.trim());
   return [...found];
 }
 
@@ -980,18 +971,7 @@ export interface PreviewError {
 
 /** Every step, by its own id, at any depth. */
 function stepsById(steps: Step[]): Map<string, Step> {
-  const found = new Map<string, Step>();
-  const visit = (list: Step[]) => {
-    for (const step of list) {
-      found.set(step.id, step);
-      if (step.type === 'if') {
-        visit(step.then);
-        visit(step.else);
-      }
-    }
-  };
-  visit(steps);
-  return found;
+  return new Map(flatSteps(steps).map((s) => [s.id, s]));
 }
 
 /** Errors grouped by the step they belong to, found by id, keeping each
@@ -1017,27 +997,17 @@ export function errorsByStep(steps: Step[], errors: PreviewError[]): Map<Step, P
   return result;
 }
 
-/** The steps `byStep` names, in the order the pipeline lists them rather than
- * the order errors happened to arrive in -- an `if` before its branches, same
- * as `stepsById` -- so "the first one" means the first an author would
- * scroll past, not whichever the API answered first. */
+/** The steps `byStep` names, in `flatSteps`'s order rather than the order
+ * errors happened to arrive in, so "the first one" means the first an author
+ * would scroll past, not whichever the API answered first. */
 export function orderedStepErrors(
   steps: Step[],
   byStep: Map<Step, PreviewError[]>,
 ): { step: Step; messages: string[] }[] {
-  const found: { step: Step; messages: string[] }[] = [];
-  const visit = (list: Step[]) => {
-    for (const step of list) {
-      const errs = byStep.get(step);
-      if (errs) found.push({ step, messages: errs.map((e) => e.message) });
-      if (step.type === 'if') {
-        visit(step.then);
-        visit(step.else);
-      }
-    }
-  };
-  visit(steps);
-  return found;
+  return flatSteps(steps).flatMap((step) => {
+    const errs = byStep.get(step);
+    return errs ? [{ step, messages: errs.map((e) => e.message) }] : [];
+  });
 }
 
 export const STEP_LABELS: Record<StepType, string> = {

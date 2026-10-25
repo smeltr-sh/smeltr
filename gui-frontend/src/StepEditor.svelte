@@ -738,13 +738,13 @@
     {#if expanded}
       <div class="body">
         {#if step.type === 'comment'}
-          <Field label="Text">
+          <Field optional label="Text">
             <textarea rows="2" bind:value={step.text}></textarea>
           </Field>
         {:else}
           <!-- A parser's filter is under its Advanced: nearly every parse reads every record. -->
           {#if step.type !== 'drop' && step.type !== 'parser'}
-            <Field label="filter">
+            <Field optional label="filter">
               <ValidatedField
                 placeholder="true"
                 bind:value={step.filter}
@@ -816,7 +816,7 @@
               {/if}
             </div>
           {:else if step.type === 'code'}
-            <Field label="body">
+            <Field required label="body">
               <ValidatedField
                 multiline
                 rows={6}
@@ -829,7 +829,7 @@
               />
             </Field>
           {:else if step.type === 'drop'}
-            <Field label="drop when this is true" help="Leave it blank to drop nothing.">
+            <Field optional label="drop when this is true" help="Leave it blank to drop nothing.">
               <ValidatedField
                 placeholder="e.g. status == 500"
                 bind:value={step.condition}
@@ -915,17 +915,17 @@
             {#if step.kind.type === 'csv'}
               {@const csvKind = step.kind}
               <Nested>
-                <Field label="delimiter">
+                <Field required label="delimiter">
                   <SeparatorInput bind:value={csvKind.delimiter} />
                 </Field>
               </Nested>
             {:else if step.kind.type === 'keyValue'}
               <Nested>
                 <div class="kind-fields">
-                  <Field label="pair separator">
+                  <Field required label="pair separator">
                     <SeparatorInput bind:value={step.kind.pairSep} />
                   </Field>
-                  <Field label="key/value separator">
+                  <Field required label="key/value separator">
                     <SeparatorInput bind:value={step.kind.kvSep} />
                   </Field>
                 </div>
@@ -1130,7 +1130,7 @@
             {/if}
 
             <Advanced values={advancedValues(ps)} errors={advancedErrors(ps)}>
-              <Field label="input field">
+              <Field optional label="input field">
                 <ValidatedField
                   bind:value={ps.input}
                   errors={stepErrorMessages}
@@ -1138,7 +1138,7 @@
                   forced={nameError(ps.input)}
                 />
               </Field>
-              <Field label="filter">
+              <Field optional label="filter">
                 <ValidatedField
                   placeholder="true"
                   bind:value={ps.filter}
@@ -1211,6 +1211,7 @@
               {#if parserKind.type === 'keyValue'}
                 {@const kvKind = parserKind}
                 <Field
+                  optional
                   label="quote char"
                   help="Wraps a value that contains the pair separator: it runs from this character to the next one. Leave it empty if values are never quoted."
                 >
@@ -1271,7 +1272,7 @@
           {:else if step.type === 'lookup'}
             {@const columns = knownColumns(step.table)}
             {@const isMmdb = tableOf(step.table)?.type === 'mmdb'}
-            <Field label="input field">
+            <Field required label="input field">
               <ValidatedField
                 bind:value={step.input}
                 errors={stepErrorMessages}
@@ -1333,7 +1334,7 @@
                   </select>
                 </Field>
               {:else}
-                <Field label="key / match column">
+                <Field required label="key / match column">
                   <input type="text" bind:value={step.keyColumn} />
                 </Field>
               {/if}
@@ -1492,7 +1493,7 @@
               </select>
             </Field>
           {:else if step.type === 'unroll'}
-            <Field label="array field to unroll">
+            <Field required label="array field to unroll">
               <input type="text" bind:value={step.field} />
             </Field>
             <label class="inline">

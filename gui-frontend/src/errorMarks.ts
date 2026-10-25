@@ -33,10 +33,12 @@ export function fieldError(text: string, errors: string[], forced: string | null
 
 /** `text` cut into runs, each marked where one of `tokens` stands as a whole
  * name: every occurrence, the longest token first where two start at one
- * place. The runs join back into `text`. */
+ * place. The runs join back into `text`. A token with no name in it, as the
+ * `.` a parse error quotes, marks nothing: every `.` in the text is not where
+ * the error is. */
 export function markRuns(text: string, tokens: string[]): { text: string; mark: boolean }[] {
   const longestFirst = [...new Set(tokens)]
-    .filter((t) => t.length > 0)
+    .filter((t) => WORD.test(t))
     .sort((a, b) => b.length - a.length);
   const runs: { text: string; mark: boolean }[] = [];
   let plain = '';

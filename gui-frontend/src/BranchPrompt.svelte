@@ -42,7 +42,7 @@
       <code class="mono">main</code> is what deploys move, so it is never edited directly. Name the branch
       to put this on &mdash; an existing one carries on where it left off.
     </p>
-    <Field label="branch">
+    <Field required label="branch">
       <!-- svelte-ignore a11y_autofocus -->
       <input bind:value={name} autofocus spellcheck="false" aria-label="branch to edit on" />
     </Field>

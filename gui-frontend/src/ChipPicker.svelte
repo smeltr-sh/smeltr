@@ -95,7 +95,7 @@
 <div class="chip-picker" bind:this={wrapper}>
   <button
     type="button"
-    class="chip {kind}"
+    class={['chip', kind, kind === 'error' && 'error-button']}
     bind:this={chip}
     onclick={toggle}
     aria-expanded={open}
@@ -123,13 +123,19 @@
     align-items: center;
     gap: 0.35rem;
     padding: 0.2rem 0.6rem;
-    border: 1px solid var(--border);
+    border-width: 1px;
+    border-style: solid;
     border-radius: 999px;
-    background: var(--bg);
-    color: var(--dim);
     font-family: inherit;
     font-size: var(--text-note);
     cursor: pointer;
+  }
+
+  /* An error's face takes its colors from app.css's `.error-button`. */
+  .chip:where(:not(.error)) {
+    border-color: var(--border);
+    background: var(--bg);
+    color: var(--dim);
   }
 
   .chip.branch {
@@ -161,15 +167,11 @@
     font-size: var(--text-label);
   }
 
-  /* What failed, in a row of ordinary buttons: their shape, in the error's color. */
+  /* What failed, in a row of ordinary buttons: their shape. */
   .chip.error {
     border-radius: var(--radius);
     padding: 0.3rem 0.7rem;
-    border-color: color-mix(in srgb, var(--error) 50%, var(--border));
-    background: color-mix(in srgb, var(--error) 10%, transparent);
-    color: var(--error);
     font-size: var(--text-label);
-    font-weight: 600;
   }
 
   /* A table row's own actions. An icon control, not a pill. It carries no

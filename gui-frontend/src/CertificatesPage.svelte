@@ -152,21 +152,22 @@
   >
     <div class="form-body">
       {#if editing?.name === null}
-        <Field label="Name" error={nameProblem(newName)}>
+        <Field required label="Name" error={nameProblem(newName)}>
           <input bind:value={newName} placeholder="receiver-tls" class="mono" />
         </Field>
       {/if}
       <Field
+        required
         label="Certificate"
         note="PEM, the full chain. For a private authority, end it with the root."
       >
         <textarea bind:value={pem} rows="5" spellcheck="false"></textarea>
       </Field>
-      <Field label="Private key" note="PEM. Stored encrypted and never shown again.">
+      <Field required label="Private key" note="PEM. Stored encrypted and never shown again.">
         <textarea bind:value={privateKey} rows="5" spellcheck="false"></textarea>
       </Field>
       {#if editing?.name === null}
-        <Field label="Description">
+        <Field optional label="Description">
           <input bind:value={newDescription} />
         </Field>
       {/if}

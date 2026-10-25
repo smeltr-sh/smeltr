@@ -707,7 +707,7 @@ fn after_dot(
                 .find(|d| d.name == *id)
                 .ok_or_else(|| format!("this config has no destination {id:?}"))?;
             // A filter there compiles once for each route that delivers to it (`runtime`), so a name has a type
-            // only where every one of them gives it the same one.
+            // only where every one of them gives it one, and holds what all of those have in common.
             let delivers = |r: &&plan::topology::RouteConfig| {
                 r.deliver.iter().any(|rule| rule.to.contains(&dest.id))
                     || r.on_exception.answers.iter().any(|a| a.targets().contains(&dest.id))
@@ -718,8 +718,7 @@ fn after_dot(
                 .iter()
                 .filter(delivers)
                 .map(|r| over_output(r, expr.as_ref()?));
-            let first = types.next().flatten();
-            first.filter(|t| types.all(|other| other.as_ref() == Some(t)))
+            (types.next().flatten()).and_then(|first| types.try_fold(first, |t, other| plan::dot::common(&t, &other?)))
         }
     };
     Ok(Some(match ty {
@@ -1283,14 +1282,17 @@ mod tests {
     use super::*;
 
     /// A bundle whose pipeline sets `u` and `n` and then has a step `s`, routed from a Kafka source with a condition and
-    /// a `when` being typed.
+    /// a `when` being typed. A second pipeline sets `u` and `n` of other types, and both routes deliver to `both`.
     const BUNDLE: &str = r#"{"version":1,
         "sources":[{"id":"in","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}],
-        "destinations":[{"id":"out","type":"kafka","brokers":"b:9092","defaultTopic":"t"}],
+        "destinations":[{"id":"out","type":"kafka","brokers":"b:9092","defaultTopic":"t"},
+            {"id":"both","type":"kafka","brokers":"b:9092","defaultTopic":"t"}],
         "pipelines":[{"id":"p","name":"P","steps":[
             {"id":"u","type":"code","body":"u = parseUrl(_raw); n = 1;"},
-            {"id":"s","type":"code","body":"x = 1;"}]}],
-        "routes":[{"id":"r","source":"in","pipeline":"p","condition":"_raw.","deliver":[{"when":"n.","to":["out"]}]}]}"#;
+            {"id":"s","type":"code","body":"x = 1;"}]},
+            {"id":"q","name":"Q","steps":[{"id":"v","type":"code","body":"u = {path: \"/\", seen: true}; n = 1.5;"}]}],
+        "routes":[{"id":"r","source":"in","pipeline":"p","condition":"_raw.","deliver":[{"when":"n.","to":["out","both"]}]},
+            {"id":"r2","source":"in","pipeline":"q","deliver":[{"to":["both"]}]}]}"#;
 
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {
         let previewed = run_preview(
@@ -1368,6 +1370,16 @@ mod tests {
             Some("i64")
         );
         assert!(after("n.", DotAt::Source("in".into())).unwrap().ty.is_none());
+    }
+
+    /// A destination fed by routes of different types reads what all of them have in common.
+    #[test]
+    fn a_destination_reads_what_every_route_delivering_there_has_in_common() {
+        let at = || DotAt::Destination("both".into());
+        assert_eq!(after("n.", at()).unwrap().ty.as_deref(), Some("f64"));
+        let u = after("u.", at()).unwrap();
+        assert_eq!(u.fields, vec![("path".to_string(), "str".to_string())]);
+        assert_eq!(after("x.", at()).unwrap().ty, None);
     }
 
     /// A dot in a string follows no value; an id the bundle does not hold fails.

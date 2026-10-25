@@ -16,6 +16,7 @@
     note,
     placeholder = '',
     rows = 4,
+    optional = false,
   }: {
     label: string;
     field?: string;
@@ -25,6 +26,7 @@
     note?: Snippet | string;
     placeholder?: string;
     rows?: number;
+    optional?: boolean;
   } = $props();
 
   const written = (v: unknown) => (v === undefined ? '' : JSON.stringify(v, null, 2));
@@ -65,7 +67,7 @@
   }
 </script>
 
-<Field {label} {field} {help} {note} {error}>
+<Field {label} {field} {help} {note} {error} {optional}>
   <textarea
     {rows}
     spellcheck="false"

@@ -143,6 +143,7 @@
     {/snippet}
 
     <UrlField
+      required
       label="URL"
       bind:value={url}
       sends={token !== '' || tokenKept}
@@ -154,14 +155,14 @@
         server.{/snippet}
     </UrlField>
 
-    <Field label="User">
+    <Field optional label="User">
       {#snippet help()}
         The name the token is sent with. Use the name your host takes with a token.
       {/snippet}
       <input bind:value={user} placeholder="smeltr" />
     </Field>
 
-    <Field label="Token" group>
+    <Field optional label="Token" group>
       {#snippet help()}
         An access token that can read the repository and push branches to it, Git LFS included.
         Stored encrypted and never shown again.

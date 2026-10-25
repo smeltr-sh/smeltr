@@ -32,9 +32,6 @@ body {
   padding: 2rem 1.5rem 4rem;
 }
 
-/* An instruction that must be read before acting: data lost, a step that
-   cannot be undone, a condition that blocks the task. The only prose a
-   page shows unasked (STYLE_GUIDE.md, "Text"). */
 /* A button that reads as part of the text it sits in, underlined dotted: it opens or jumps rather than
    acts. */
 .link-button {
@@ -47,6 +44,22 @@ body {
   cursor: pointer;
 }
 
+/* What failed, among ordinary buttons: their shape, in the error's color. A pressed one keeps
+   only the rows that failed. */
+.error-button {
+  border-color: color-mix(in srgb, var(--error) 50%, var(--border));
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  color: var(--error);
+  font-weight: 600;
+}
+
+.error-button[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--error) 22%, transparent);
+}
+
+/* An instruction that must be read before acting: data lost, a step that
+   cannot be undone, a condition that blocks the task. The only prose a
+   page shows unasked (STYLE_GUIDE.md, "Text"). */
 .critical {
   max-width: 68ch;
   margin: 0 0 1rem;

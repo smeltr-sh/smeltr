@@ -128,7 +128,7 @@
     <SchemaRegistryFields registry={value.schemaRegistry} {secrets} />
   {/if}
 
-  <Field field="fields" label="Avro fields, as fields of the record" group>
+  <Field optional field="fields" label="Avro fields, as fields of the record" group>
     {#snippet help()}
       Each field to read, with a type. Name a nested field with dots, such as <code>user.id</code>.
       Top-level fields you don't list are kept.
