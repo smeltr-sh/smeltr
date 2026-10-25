@@ -411,7 +411,7 @@ export function stepToDto(step: Step): unknown {
         type: 'parser',
         ...functionFields(step),
         input: step.input,
-        ...(step.into ? { into: step.into } : {}),
+        ...(step.into.trim() ? { into: step.into.trim() } : {}),
         kind: parserKindDto(step.kind),
         declared: step.declared.map((f) => ({ name: f.name, type: dataTypeDto(f.ty) })),
       };

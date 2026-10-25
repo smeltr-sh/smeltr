@@ -745,6 +745,8 @@ describe('a parser that writes into an object', () => {
   it('sends its object, and nothing where it writes into the record', () => {
     expect(stepToDto(parser({ into: 'app' }))).toMatchObject({ into: 'app' });
     expect(stepToDto(parser())).not.toHaveProperty('into');
+    expect(stepToDto(parser({ into: ' app ' }))).toMatchObject({ into: 'app' });
+    expect(stepToDto(parser({ into: ' ' }))).not.toHaveProperty('into');
     expect(stepsFromDto([stepToDto(parser({ into: 'app' }))])).toEqual([parser({ into: 'app' })]);
     expect(stepsFromDto([stepToDto(parser())])).toEqual([parser()]);
   });
