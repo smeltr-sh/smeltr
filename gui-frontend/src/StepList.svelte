@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { AskAt } from './api';
   import StepEditor, { saveExpanded } from './StepEditor.svelte';
   import {
     newStep,
@@ -15,6 +16,8 @@
   import { editable } from './access';
   import TypeCatalog, { type CatalogType } from './TypeCatalog.svelte';
   import { STEP_GLYPHS } from './stepGlyphs';
+  import { flip } from 'svelte/animate';
+  import { glide } from './glide';
 
   let {
     steps,
@@ -30,6 +33,7 @@
     onSelectStep = () => {},
     onPropose = () => {},
     proposal = null,
+    askAt,
   }: {
     steps: Step[];
     errorsByStep?: Map<Step, PreviewError[]>;
@@ -52,6 +56,8 @@
     onPropose?: (step: Step) => void;
     /** The field proposal open on some parser step, shown in that step's card. */
     proposal?: OpenProposal | null;
+    /** Asks the engine what may follow a dot in an expression at `at` (`afterDot`). */
+    askAt?: AskAt;
   } = $props();
 
   /** Each step type's group in the catalog: what it acts on. */
@@ -89,28 +95,32 @@
 
 <div class="step-list">
   {#each steps as step, i (step)}
-    {#if editable()}
-      <div class="insert">
-        <button type="button" onclick={() => (addingAt = i)} aria-label="Insert step">+ step</button
-        >
-      </div>
-    {/if}
-    <StepEditor
-      {steps}
-      index={i}
-      {errorsByStep}
-      {warningsByStep}
-      {pipelineIds}
-      {pipelineNames}
-      {lookupTables}
-      {grokPatterns}
-      {parseInput}
-      {selectedStep}
-      {ran}
-      {onSelectStep}
-      {onPropose}
-      {proposal}
-    />
+    <div class="slot" animate:flip={{ duration: glide() }}>
+      {#if editable()}
+        <div class="insert">
+          <button type="button" onclick={() => (addingAt = i)} aria-label="Insert step"
+            >+ step</button
+          >
+        </div>
+      {/if}
+      <StepEditor
+        {steps}
+        index={i}
+        {errorsByStep}
+        {warningsByStep}
+        {pipelineIds}
+        {pipelineNames}
+        {lookupTables}
+        {grokPatterns}
+        {parseInput}
+        {selectedStep}
+        {ran}
+        {onSelectStep}
+        {onPropose}
+        {proposal}
+        {askAt}
+      />
+    </div>
   {/each}
 
   {#if editable()}
@@ -136,20 +146,26 @@
     gap: 0.6rem;
   }
 
+  /* A step with the gap above it, one box, so the pair glides together when the list reorders. */
+  .slot {
+    display: flex;
+    flex-direction: column;
+  }
+
   .add-row {
     display: flex;
     gap: 0.5rem;
     align-items: center;
   }
 
-  /* The gap above a step, where a step can go in. It takes none of the list's height: its negative margins give
-     back what it fills, so it lies over the gap the list leaves, and above the first step, over the list's edge.
+  /* The gap above a step, where a step can go in. It takes none of the list's height: its negative top margin
+     gives back what it fills, so it lies over the gap the list leaves, and above the first step, over the list's edge.
      It shows on hover or focus. Where nothing hovers it would be an invisible target, so it is not there at all,
      and + step at the end still adds. */
   .insert {
     position: relative;
     height: 0.6rem;
-    margin: -0.6rem 0;
+    margin-top: -0.6rem;
     display: flex;
     align-items: center;
     justify-content: center;

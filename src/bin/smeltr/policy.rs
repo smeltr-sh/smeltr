@@ -103,7 +103,8 @@ pub fn need(method: &Method, path: &str, query: Option<&str>) -> Need {
         | (Method::POST, ["identities", "describe"])
         | (Method::POST, ["sql", "statement"])
         // Names, versions and where each is used, never a value: what a secret picker offers whoever saves a form.
-        | (Method::GET | Method::HEAD, ["secrets"]) => Need::Somewhere(Level::Editor),
+        | (Method::GET | Method::HEAD, ["secrets"])
+        | (Method::GET | Method::HEAD, ["certificates"]) => Need::Somewhere(Level::Editor),
 
         // Branches and changes. Which areas a change touches is in the branch, so reviewing and deploying one is
         // checked again by its handler.
@@ -271,6 +272,8 @@ mod tests {
             (Method::GET, "/api/settings/certificates"),
             (Method::POST, "/api/secrets"),
             (Method::GET, "/api/secrets/s1/versions/1"),
+            (Method::POST, "/api/certificates"),
+            (Method::PUT, "/api/certificates/c1"),
             (Method::GET, "/api/workers"),
             (Method::POST, "/api/workers/w1/restart"),
             (Method::GET, "/api/enrollment-codes"),
@@ -379,6 +382,7 @@ mod tests {
             (Method::POST, "/api/identities/describe"),
             (Method::POST, "/api/sql/statement"),
             (Method::GET, "/api/secrets"),
+            (Method::GET, "/api/certificates"),
         ] {
             assert_eq!(
                 need(&method, path, None),

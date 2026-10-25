@@ -16,7 +16,10 @@ export function fullChain(pki: Pki): string {
 /** The Leader certificate card, with the page open. */
 export async function openCertificates(page: Page): Promise<Locator> {
   await openAdmin(page, 'System');
-  await page.getByRole('link', { name: 'Certificates', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'System settings' })
+    .getByRole('link', { name: 'Leader certificate', exact: true })
+    .click();
   return page.getByRole('region', { name: /^Leader certificate/ });
 }
 
@@ -43,15 +46,44 @@ async function publishing(served: Locator, heading: RegExp) {
   await expect(served.getByText(/Not waited for/)).toHaveCount(0);
 }
 
+let uploads = 0;
+
+/** Adds `pki` to the certificate list through the chooser's add link, which comes back to the Leader certificate
+ * card, and picks it there. Returns the card. */
+export async function chooseUploaded(page: Page, pki: Pki): Promise<Locator> {
+  const name = `uploaded-${++uploads}`;
+  let served = await openCertificates(page);
+  await source(served, 'Uploaded').click();
+  await served.getByRole('link', { name: 'add a certificate' }).click();
+  const dialog = page.getByRole('dialog', { name: 'new certificate' });
+  await dialog.getByRole('textbox', { name: 'Name' }).fill(name);
+  await dialog.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
+  await dialog.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  served = page.getByRole('region', { name: /^Leader certificate/ });
+  await source(served, 'Uploaded').click();
+  await served.getByRole('combobox', { name: 'Certificate' }).selectOption(name);
+  return served;
+}
+
 /** Serves `pki` in place of the leader's own, and waits until it is in force. */
 export async function switchToUploaded(page: Page, pki: Pki) {
-  const served = await openCertificates(page);
-  await source(served, 'Uploaded').click();
-  await served.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
-  await served.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
+  const served = await chooseUploaded(page, pki);
   await served.getByRole('button', { name: 'Serve this certificate' }).click();
   await publishing(served, /^Switch to Uploaded in progress/);
   await inForce(served, 'Uploaded');
+}
+
+/** Replaces the certificate the leader serves with `pki`, on the Certificates page, which serves it too. */
+export async function replaceServed(page: Page, pki: Pki) {
+  await openAdmin(page, 'Certificates');
+  const row = page.getByRole('row').filter({ has: page.getByText('leader', { exact: true }) });
+  await row.getByRole('button', { name: 'Replace' }).click();
+  const dialog = page.getByRole('dialog', { name: /^replace / });
+  await dialog.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
+  await dialog.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
+  await dialog.getByRole('button', { name: 'Replace', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
 }
 
 /** Goes back to the leader's own certificate, and waits until it is in force. */
@@ -86,9 +118,7 @@ async function fillAcme(served: Locator, authority: Authority, names: string[]) 
   }
   await served.getByRole('textbox', { name: 'Contact email' }).fill('ops@example.com');
   await advanced(served);
-  await served
-    .getByRole('textbox', { name: 'Authority', exact: true })
-    .fill(authority.roots.join(''));
+  await served.getByRole('textbox', { name: /^Authority/ }).fill(authority.roots.join(''));
 }
 
 /** Orders a certificate for `names` from `authority`, and waits until it is in force. The first order is under a
@@ -128,7 +158,7 @@ export async function refuseDns01(page: Page, token: string, ip: string) {
   await served
     .getByRole('combobox', { name: 'DNS provider' })
     .selectOption({ label: 'Cloudflare' });
-  await served.getByLabel('API token', { exact: true }).fill(token);
+  await served.getByLabel(/^API token/).fill(token);
   await served.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByText(`DNS-01 cannot prove an IP address: ${ip}`)).toBeVisible();
   await challenge.selectOption(was);
@@ -143,9 +173,7 @@ export async function acmeNewRoot(page: Page, authority: Authority) {
   const served = await openCertificates(page);
   await source(served, 'ACME').click();
   await advanced(served);
-  await served
-    .getByRole('textbox', { name: 'Authority', exact: true })
-    .fill(authority.roots.join(''));
+  await served.getByRole('textbox', { name: /^Authority/ }).fill(authority.roots.join(''));
   await served.getByRole('button', { name: 'Renew now' }).click();
   await publishing(served, /^Moving workers to a new root/);
   await inForce(served, 'ACME');

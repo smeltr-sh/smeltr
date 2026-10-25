@@ -344,7 +344,7 @@
   {#if store === 'sftp'}
     <div class="pair">
       {@render serverField('host', 'host', "The server's host name or address.")}
-      <Field field="port" label="port" note="Default {SFTP_PORT}.">
+      <Field field="port" label="port">
         {#snippet help()}The server's SSH port.{/snippet}
         <input
           type="number"

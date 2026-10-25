@@ -26,6 +26,7 @@ const LOAD = {
   workers: () => import('./AdminPage.svelte'),
   groups: () => import('./AdminPage.svelte'),
   secrets: () => import('./SecretsPage.svelte'),
+  certificates: () => import('./CertificatesPage.svelte'),
   accounts: () => import('./AccountsPage.svelte'),
   system: () => import('./SystemPage.svelte'),
   'agent-permissions': () => import('./AgentPermissionsPage.svelte'),

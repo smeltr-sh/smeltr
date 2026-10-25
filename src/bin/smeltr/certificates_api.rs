@@ -8,14 +8,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 
 use smeltr::leader::resolver::Resolver;
 use smeltr::leader::store::Actor;
-use smeltr::leader::{accounts, acme, blocking, tls};
+use smeltr::leader::{CertificateRequest, accounts, acme, blocking, tls};
 
 use crate::gate::{Auth, refuse};
 use crate::users_api::no_store;
@@ -45,17 +45,21 @@ pub struct Certificates {
     /// `None` where this leader serves plain HTTP, behind a proxy that terminates TLS. The routes stay registered
     /// so the page can say so: a tab that answers "there is nothing here, and why" beats one that 404s.
     tls: Option<Arc<Tls>>,
+    /// What stores a certificate in the list, whether or not this leader serves TLS.
+    leader: smeltr::leader::AppState,
 }
 
 /// The certificates routes, gated like every other operator surface. `None` where this leader serves plain HTTP:
 /// there is no certificate to show and nothing a worker would verify.
-pub fn router(auth: Auth, tls: Option<Arc<Tls>>) -> axum::Router {
+pub fn router(auth: Auth, tls: Option<Arc<Tls>>, leader: smeltr::leader::AppState) -> axum::Router {
     let state = Certificates {
         auth: auth.clone(),
         tls,
+        leader,
     };
     axum::Router::new()
         .route("/api/settings/certificates", get(show).put(install))
+        .route("/api/certificates/:name", put(replace))
         .route("/api/settings/certificates/reissue", post(reissue))
         .route("/api/settings/certificates/supplied", delete(uninstall))
         .route(
@@ -86,6 +90,12 @@ struct CertificatesDto {
     supplied: bool,
     /// Where it came from: this leader's own authority, an upload, or an order from a certificate authority.
     source: acme::Source,
+    /// The list entry an upload was copied from, where one is recorded.
+    entry: Option<String>,
+    /// The names this leader answers to. A supplied certificate covers at least one.
+    names: Vec<String>,
+    /// The name the worker inside this leader reaches it by, where one runs. A supplied certificate covers it.
+    worker_name: Option<String>,
     /// Set when a certificate reached the disk and the socket refused it. Everything above is then what `dir`
     /// holds rather than what a client is shown, and only a restart closes the gap.
     restart_required: bool,
@@ -132,6 +142,9 @@ async fn read(tls: Option<&Arc<Tls>>) -> Result<CertificatesDto, String> {
             served: None,
             supplied: false,
             source: acme::Source::Own,
+            entry: None,
+            names: Vec::new(),
+            worker_name: None,
             restart_required: false,
             rotation: None,
         });
@@ -155,6 +168,9 @@ async fn read(tls: Option<&Arc<Tls>>) -> Result<CertificatesDto, String> {
         served: Some(tls::describe(&served, "the certificate")?),
         supplied: materials.supplied,
         source: acme::source(&serving.dir)?,
+        entry: smeltr::leader::entry_in_force(&serving.dir)?,
+        names: serving.names.clone(),
+        worker_name: serving.from_inside.clone(),
         restart_required: !tls::socket_has_what_is_on_disk(&serving.dir),
         rotation: rotation
             .map(|state| {
@@ -237,13 +253,12 @@ pub(crate) fn must_serve(serving: &Tls, headers: &axum::http::HeaderMap) -> Vec<
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InstallRequest {
-    /// The certificate to serve, then its intermediates, then -- for an authority the platform does not hold --
-    /// its root. PEM.
+    /// The name of the certificate in the list to serve. Its chain ends with its root where the platform does not
+    /// hold that root.
     certificate: String,
-    private_key: String,
 }
 
-/// `PUT /api/settings/certificates`: serve a certificate an operator already has.
+/// `PUT /api/settings/certificates`: serve a copy of a certificate from the list.
 async fn install(
     State(state): State<Certificates>,
     actor: axum::Extension<Actor>,
@@ -259,41 +274,94 @@ async fn install(
     // directory besides.
     let _ordered = state.auth.settings_writes.lock().await;
 
-    // Everything the upload has to satisfy, before a byte is written, so a refusal leaves this leader serving
-    // exactly what it served before.
-    let (chain, ca) = match tls::split_root(request.certificate.as_bytes(), b"") {
-        Ok(Some((chain, ca))) => (chain, ca.into_bytes()),
+    let store = state.auth.store.clone();
+    let name = request.certificate.clone();
+    let (certificate, key) = match blocking(move || smeltr::leader::newest_certificate(store.as_ref(), &name)).await {
+        Ok(Some(found)) => found,
         Ok(None) => {
             return refuse(
-                StatusCode::BAD_REQUEST,
-                "the certificate's root is missing. End the chain with the root that issued it.",
+                StatusCode::NOT_FOUND,
+                &format!("there is no certificate named {:?}", request.certificate),
             );
         }
-        Err(e) => return refuse(StatusCode::BAD_REQUEST, &e),
+        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e.to_string()),
     };
-    let (chain, ca) = (chain.as_slice(), ca.as_slice());
-    let key = request.private_key.as_bytes();
-    let required = must_serve(&serving, &headers);
-    if let Err(e) = tls::check_supplied(chain, key, ca, &serving.names, &required) {
-        return refuse(StatusCode::BAD_REQUEST, &e);
+    let checked = match checked(&serving, &headers, &certificate, &key) {
+        Ok(checked) => checked,
+        Err(response) => return *response,
+    };
+    serve(&state, &actor, &serving, &request.certificate, checked).await
+}
+
+/// A certificate from the list that has passed everything serving it requires.
+struct Checked {
+    chain: Vec<u8>,
+    key: Vec<u8>,
+    ca: Vec<u8>,
+    required: Vec<String>,
+    /// Whether it is under another root than the one every worker verifies by.
+    rotates: bool,
+    fingerprint: String,
+}
+
+/// Everything serving `certificate` has to satisfy, before a byte is written, so a refusal leaves this leader
+/// serving exactly what it served before.
+fn checked(
+    serving: &Tls,
+    headers: &axum::http::HeaderMap,
+    certificate: &str,
+    key: &str,
+) -> Result<Checked, Box<Response>> {
+    let (chain, ca) = match tls::split_root(certificate.as_bytes(), b"") {
+        Ok(Some((chain, ca))) => (chain, ca.into_bytes()),
+        Ok(None) => {
+            return Err(Box::new(refuse(
+                StatusCode::BAD_REQUEST,
+                "the certificate's root is missing. End the chain with the root that issued it.",
+            )));
+        }
+        Err(e) => return Err(Box::new(refuse(StatusCode::BAD_REQUEST, &e))),
+    };
+    let key = key.as_bytes().to_vec();
+    let required = must_serve(serving, headers);
+    if let Err(e) = tls::check_supplied(&chain, &key, &ca, &serving.names, &required) {
+        return Err(Box::new(refuse(StatusCode::BAD_REQUEST, &e)));
     }
     // A certificate under the root every worker already verifies by is served at once. One under another root
     // reaches the fleet the way a new authority does: published first, served once the fleet holds it.
-    let rotates = match tls::supplying_changes_root(&serving.dir, chain, ca) {
-        Ok(rotates) => rotates,
-        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    };
+    let rotates = tls::supplying_changes_root(&serving.dir, &chain, &ca)
+        .map_err(|e| Box::new(refuse(StatusCode::SERVICE_UNAVAILABLE, &e)))?;
     // One rotation at a time: an upload that would begin one over an open rotation is refused, where a renewal
     // changes no root and is served whatever is open.
     if rotates && let Err(e) = tls::rotation_may_begin(&serving.dir, tls::Installs::Supplied) {
-        return refused(&e);
+        return Err(Box::new(refused(&e)));
     }
+    let fingerprint = tls::describe(&chain, "the certificate")
+        .map_err(|e| Box::new(refuse(StatusCode::BAD_REQUEST, &e)))?
+        .fingerprint;
+    Ok(Checked {
+        chain,
+        key,
+        ca,
+        required,
+        rotates,
+        fingerprint,
+    })
+}
+
+/// Serves a copy of the list entry `name`, as `checked` found it. Under the settings lock.
+async fn serve(state: &Certificates, actor: &Actor, serving: &Arc<Tls>, name: &str, checked: Checked) -> Response {
+    let Checked {
+        chain,
+        key,
+        ca,
+        required,
+        rotates,
+        fingerprint,
+    } = checked;
     // Recorded before anything is served, against what the upload itself says it is: an audit row that cannot be
     // written stops the change rather than trailing it.
-    let fingerprint = match tls::describe(chain, "the certificate") {
-        Ok(described) => described.fingerprint,
-        Err(e) => return refuse(StatusCode::BAD_REQUEST, &e),
-    };
+    //
     // A switch is recorded as the rotation it begins, against the root it rotates to: the certificate is served
     // only once the fleet holds that root, and the row for serving it would otherwise be written weeks early, or
     // for a switch that is then abandoned.
@@ -303,26 +371,64 @@ async fn install(
             Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
         }
     } else {
-        ("certificate-supplied", fingerprint)
+        ("certificate-supplied", fingerprint.clone())
     };
-    if let Err(e) = record(&state.auth, &actor, subject.0, &subject.1).await {
+    if let Err(e) = record(&state.auth, actor, subject.0, &subject.1).await {
+        return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
+    }
+    if let Err(e) = smeltr::leader::record_copy(&serving.dir, &fingerprint, name) {
         return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
     }
 
     if rotates {
         let now_ms = smeltr::leader::warnings::now_millis();
-        let begun = tls::begin_supplied_rotation(&serving.dir, chain, key, ca, &serving.names, &required, now_ms);
+        let begun = tls::begin_supplied_rotation(&serving.dir, &chain, &key, &ca, &serving.names, &required, now_ms);
         if let Err(e) = begun {
             return refuse(StatusCode::CONFLICT, &e);
         }
         // The socket is untouched: what is served has not moved, and the file that did is the one `/api/authority`
         // and the heartbeat read afresh. A fleet with nobody in it to wait for cuts over on the next read.
-        return answer(&state).await;
+        return answer(state).await;
     }
-    if let Err(e) = tls::install(&serving.dir, chain, key, ca, &serving.names, &required) {
+    if let Err(e) = tls::install(&serving.dir, &chain, &key, &ca, &serving.names, &required) {
         return refuse(StatusCode::BAD_REQUEST, &e);
     }
-    serve_what_is_on_disk(&state, &serving).await
+    serve_what_is_on_disk(state, serving).await
+}
+
+/// `PUT /api/certificates/:name`: a new version of a certificate in the list. Where the leader serves it, the new
+/// version has to be one it can serve, and it is served once stored.
+async fn replace(
+    State(state): State<Certificates>,
+    actor: axum::Extension<Actor>,
+    headers: axum::http::HeaderMap,
+    Path(name): Path<String>,
+    Json(request): Json<CertificateRequest>,
+) -> Response {
+    let store =
+        |request| smeltr::leader::replace_certificate(State(state.leader.clone()), Path(name.clone()), Json(request));
+    let Some(serving) = state.tls.clone() else {
+        return store(request).await.into_response();
+    };
+    let _ordered = state.auth.settings_writes.lock().await;
+    match smeltr::leader::served_names(&serving.dir) {
+        Ok(served) if served.contains(&name) => {}
+        Ok(_) => return store(request).await.into_response(),
+        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
+    }
+    let checked = match checked(&serving, &headers, &request.certificate, &request.private_key) {
+        Ok(checked) => checked,
+        Err(response) => return *response,
+    };
+    let stored = store(request).await;
+    if !stored.ok {
+        return stored.into_response();
+    }
+    let served = serve(&state, &actor, &serving, &name, checked).await;
+    if !served.status().is_success() {
+        return served;
+    }
+    stored.into_response()
 }
 
 /// `DELETE /api/settings/certificates/supplied`: go back to this leader's own authority.

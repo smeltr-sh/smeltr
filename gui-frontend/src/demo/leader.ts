@@ -840,6 +840,7 @@ export class DemoLeader {
       show_internal: boolean;
       at_micros: number | null;
       filter: string | null;
+      after_dot: unknown;
     },
   ): Promise<Answer> {
     const branch = this.branch(name) ?? this.state.branches.main;
@@ -852,10 +853,13 @@ export class DemoLeader {
     return this.ask('/preview', {
       ...this.bundleOf(branch, scope, JSON.parse(req.config)),
       pipeline: req.pipeline,
-      sample,
+      // What follows a dot reads the sample's columns, never its records: only the one a sample must hold crosses
+      // the network.
+      sample: sample && req.after_dot ? { ...sample, records: sample.records.slice(0, 1) } : sample,
       showInternal: req.show_internal,
       atMicros: req.at_micros,
       filter: req.filter,
+      afterDot: req.after_dot ?? undefined,
     });
   }
 
