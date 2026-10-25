@@ -661,7 +661,7 @@ pub fn format_code(req: FormatRequest) -> Envelope<Formatted> {
 }
 
 /// `system` compiled, and the id of its destination `name`: what a capture filter there is compiled over, as a worker
-/// compiles it (`runtime`).
+/// compiles it (`runtime`). The whole topology compiles, so an error anywhere in `system` leaves a destination no answer.
 fn at_destination(
     system: &config_file::LoadedSystem,
     name: &str,
