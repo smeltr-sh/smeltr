@@ -32,6 +32,7 @@ fn csv_step(id: FunctionId, headers: &[&str], declared: &[(&str, DataType)]) -> 
         id,
         FunctionKind::Parser {
             input: "_raw".into(),
+            into: "$".into(),
             kind: ParserKind::Csv(config),
             declared,
         },
@@ -533,6 +534,7 @@ fn a_csv_step_keeps_its_dialect_options() {
     });
     let step = FunctionKind::Parser {
         input: "_raw".into(),
+        into: "$".into(),
         kind: ParserKind::Csv(config),
         declared: declared.into(),
     };

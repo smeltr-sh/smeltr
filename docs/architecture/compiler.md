@@ -23,7 +23,8 @@ statements under the step's guard, so nothing a step does is done a second
 way, and every compile error names the step the author wrote.
 
 ```text
-  parser   a.b: i64;  …one per declared field the name does not hold at that type;  Object.assign($, json(_raw))
+  parser   app.a.b: i64;  …one per declared field the name does not hold at that type;  Object.assign(app, json(_raw))
+           into $:  a.b: i64;  …;  Object.assign($, json(_raw))
   lookup   Object.assign($, lookup("geo", key))
   rename   move(a.b, a.d)
   drop     if (cond) drop()            a blank condition lowers to nothing

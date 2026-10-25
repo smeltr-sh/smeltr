@@ -695,6 +695,7 @@ fn csv(id: FunctionId, headers: &[&str], declared: &[(&str, DataType)]) -> Step 
         id,
         FunctionKind::Parser {
             input: "_raw".into(),
+            into: "$".into(),
             kind: ParserKind::Csv(smeltr::plan::config::CsvConfig {
                 split_dots: false,
                 delimiter: b',',
@@ -739,6 +740,7 @@ fn a_csv_step_column_is_one_key_unless_it_splits_dots() {
             0,
             FunctionKind::Parser {
                 input: "_raw".into(),
+                into: "$".into(),
                 kind: ParserKind::Csv(smeltr::plan::config::CsvConfig {
                     split_dots,
                     delimiter: b',',
@@ -788,6 +790,7 @@ fn a_parser_that_names_fields_from_the_record_declares_whatever_it_likes() {
             0,
             FunctionKind::Parser {
                 input: "_raw".into(),
+                into: "$".into(),
                 kind: kind.clone(),
                 declared: vec![DeclaredField {
                     name: "nothing_here_names_me".into(),
