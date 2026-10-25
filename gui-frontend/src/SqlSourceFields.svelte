@@ -306,10 +306,10 @@
 </script>
 
 <div class="pair">
-  <Field field="host" label="host">
+  <Field required field="host" label="host">
     <input type="text" bind:value={source.host} placeholder="db.internal" />
   </Field>
-  <Field field="port" label="port">
+  <Field optional field="port" label="port">
     <input
       type="number"
       min="1"
@@ -323,10 +323,10 @@
   </Field>
 </div>
 <div class="pair">
-  <Field field="database" label="database">
+  <Field required field="database" label="database">
     <input type="text" bind:value={source.database} />
   </Field>
-  <Field field="user" label="user">
+  <Field required field="user" label="user">
     {#snippet help()}
       A user that can only read. smeltr runs only a <code>SELECT</code> or a <code>WITH</code>, in a
       read-only transaction, but the database is what enforces it.
@@ -334,7 +334,7 @@
     <input type="text" bind:value={source.user} />
   </Field>
 </div>
-<Field field="password" label="password" group>
+<Field optional field="password" label="password" group>
   <SecretRefInput
     value={source.password}
     {secrets}
@@ -366,7 +366,7 @@
   </Nested>
 {/if}
 
-<Field field="query" label="query" group>
+<Field required field="query" label="query" group>
   {#snippet help()}
     Yours, run as written inside smeltr's own statement. Leave out <code>ORDER BY</code> and
     <code>LIMIT</code>: the statement orders by the position and sets the batch size. A
@@ -553,7 +553,7 @@
                   </Field>
                 {/if}
                 {#if positionIsTime}
-                  <Field field="mode.settleSecs" label="wait for late commits (seconds)">
+                  <Field optional field="mode.settleSecs" label="wait for late commits (seconds)">
                     {#snippet help()}
                       A poll reads only rows at least this far behind the database's clock, so a
                       transaction that commits late is still read.
@@ -627,7 +627,7 @@
                   </select>
                 </Field>
               {/if}
-              <Field field="pollIntervalSecs" label="poll every (seconds)">
+              <Field optional field="pollIntervalSecs" label="poll every (seconds)">
                 <input
                   type="number"
                   min={LIMITS.pollIntervalSecs.min}
@@ -649,7 +649,7 @@
   </Field>
 
   <Advanced label="Advanced" modified={source.batch !== undefined}>
-    <Field field="batch" label="batch">
+    <Field optional field="batch" label="batch">
       {#snippet help()}
         The most rows one poll reads by a position, and the most a poll of every row may return.
       {/snippet}

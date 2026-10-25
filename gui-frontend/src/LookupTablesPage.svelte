@@ -567,11 +567,11 @@
       {#if adding?.draft}
         {@const draft = adding.draft}
         <div class="form-body">
-          <Field label="id" error={idProblem(draft.id, takenIds())}>
+          <Field required label="id" error={idProblem(draft.id, takenIds())}>
             <input type="text" bind:value={draft.id} />
           </Field>
           {#if draft.type === 'csv'}
-            <Field label="delimiter">
+            <Field optional label="delimiter">
               <input type="text" maxlength="1" size="2" bind:value={draft.delimiter} />
             </Field>
           {/if}
