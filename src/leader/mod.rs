@@ -74,7 +74,7 @@ use axum::routing::{get, post, put};
 use crate::heartbeat::{HeartbeatRequest, HeartbeatResponse, ThreadKind};
 use envelope::Envelope;
 use registry::{Registry, ThreadHealth};
-use store::{Issued, Spend, Store, StoreError};
+use store::{Issued, Kept, Spend, Store, StoreError};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -988,13 +988,10 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
         &recovering,
         heartbeat_interval,
     ));
-    let (key, issued) = run_store(state.store.clone(), |s| {
-        Ok((s.key_standing()?, s.issued_certificates()?.into_keys().collect()))
-    })
-    .await?;
+    let (key, kept) = run_store(state.store.clone(), |s| Ok((s.key_standing()?, s.kept_certificates()?))).await?;
     active_facts.extend(warnings::encryption_key_facts(&key));
     let starts = state.registry.observe_facts(&active_facts, now_ms);
-    let key_warnings = warnings::encryption_key_warnings(&key, &issued, &starts);
+    let key_warnings = warnings::encryption_key_warnings(&key, &kept, &starts);
     let normal_warnings =
         warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, heartbeat_interval);
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
@@ -1025,6 +1022,14 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     })
     .await
     .unwrap_or_default();
+    let newest = run_store(state.store.clone(), |s| {
+        Ok((s.list_secrets()?.into_iter())
+            .filter(|r| r.certificate)
+            .filter_map(|r| r.current().map(|v| (r.name.clone(), (v.version, v.set_at))))
+            .collect())
+    })
+    .await?;
+    let behind = warnings::identities_behind(&certificates, &newest);
     // Off the async runtime: `worker_logged_warnings` reads the logs table the same way `GET /api/logs` does, and
     // that handler already makes this same trip through `spawn_blocking` rather than block the runtime on it.
     let registry = state.registry.clone();
@@ -1055,7 +1060,8 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     out.extend(deploy_warnings);
     out.extend(normal_warnings);
     out.extend(key_warnings);
-    out.extend(issued_certificates_due(state, now_ms).await?);
+    out.extend(issued_certificates_not_renewed(state, now_ms).await?);
+    out.extend(behind);
     out.extend(
         serving
             .map(|s| warnings::leader_certificate(&s, now_ms))
@@ -1186,6 +1192,12 @@ fn certificates_of(
             let Ok(described) = tls::describe_each(pem.as_bytes(), "it") else {
                 continue;
             };
+            let entry = match (half, &identity.certificate) {
+                (warnings::Half::Presented, Some(SecretRef::LeaderStored { name, version })) => {
+                    Some((name.clone(), *version))
+                }
+                _ => None,
+            };
             out.extend(described.into_iter().map(|c| warnings::DeployedCertificate {
                 group: group.to_string(),
                 commit: commit.to_string(),
@@ -1193,6 +1205,7 @@ fn certificates_of(
                 half,
                 not_before_millis: c.not_before_millis,
                 not_after_millis: c.not_after_millis,
+                entry: entry.clone(),
             }));
         }
     }
@@ -2402,6 +2415,9 @@ pub struct CertificateOut {
     /// The names it is issued for, where this leader issued it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issued_for: Option<Vec<String>>,
+    /// Whether this leader orders it over ACME.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub acme: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -2515,7 +2531,7 @@ async fn list_certificates(
     run_store(state.store, move |s| {
         // Only a badge, so a TLS folder that cannot be read shows none rather than hiding the list. Deleting refuses.
         let served = served_names(&tls::dir_of(&data_dir)).unwrap_or_default();
-        let mut issued = s.issued_certificates()?;
+        let mut kept = s.kept_certificates()?;
         let mut out = Vec::new();
         for r in s.list_secrets()?.into_iter().filter(|r| r.certificate) {
             let chain = newest_chain(s, &r.name)?
@@ -2528,7 +2544,11 @@ async fn list_certificates(
                 ..
             } = SecretOut::from(r);
             let served = served.contains(&name);
-            let issued_for = issued.remove(&name).map(|i| i.names);
+            let (issued_for, acme) = match kept.remove(&name) {
+                Some(Kept::Issued(issued)) => (Some(issued.names), false),
+                Some(Kept::Acme) => (None, true),
+                None => (None, false),
+            };
             out.push(CertificateOut {
                 name,
                 description,
@@ -2536,6 +2556,7 @@ async fn list_certificates(
                 chain,
                 served,
                 issued_for,
+                acme,
             });
         }
         Ok(out)
@@ -2598,7 +2619,7 @@ async fn issue_certificate(State(state): State<AppState>, Json(req): Json<IssueR
         Err(e) => return Json(Envelope::failed_one(e)),
     };
     match run_store(state.store, move |s| {
-        s.create_issued_certificate(&req.name, &req.description, &issued, &chain, &key)
+        s.create_kept_certificate(&req.name, &req.description, &Kept::Issued(issued), &chain, &key)
     })
     .await
     {
@@ -2625,53 +2646,84 @@ async fn sign_under_authority(state: &AppState, issued: &Issued) -> Result<(Stri
     .await
 }
 
-/// The certificates this leader issued that are due for renewal, as warnings ([`warnings::issued_certificates_due`]).
-/// None where it signs nothing, or its authority cannot be read: the leader's own warnings say that.
-async fn issued_certificates_due(state: &AppState, now_ms: i64) -> Result<Vec<warnings::Warning>, StoreError> {
+/// The signing root and each certificate this leader issued, with its newest chain described: empty where that
+/// cannot be read. `None` where the leader signs nothing, or its authority cannot be read: its own warnings say that.
+fn issued_chains(
+    s: &dyn Store,
+    dir: &std::path::Path,
+) -> Result<Option<(String, Vec<(String, Issued, Vec<tls::Described>)>)>, StoreError> {
+    let Some(signing) = dir.exists().then(|| tls::signing_root_fingerprint(dir).ok()).flatten() else {
+        return Ok(None);
+    };
+    let mut issued = Vec::new();
+    for (name, kept) in s.kept_certificates()? {
+        let Kept::Issued(how) = kept else { continue };
+        let chain = newest_chain(s, &name)?
+            .and_then(|(_, chain)| tls::describe_each(chain.as_bytes(), "the certificate").ok())
+            .unwrap_or_default();
+        issued.push((name, how, chain));
+    }
+    Ok(Some((signing, issued)))
+}
+
+/// The certificates this leader should have renewed and has not, as warnings
+/// ([`warnings::issued_certificates_not_renewed`]).
+async fn issued_certificates_not_renewed(state: &AppState, now_ms: i64) -> Result<Vec<warnings::Warning>, StoreError> {
     let dir = tls::dir_of(&state.data_dir);
     run_store(state.store.clone(), move |s| {
-        let Some(signing) = dir.exists().then(|| tls::signing_root_fingerprint(&dir).ok()).flatten() else {
+        let Some((signing, issued)) = issued_chains(s, &dir)? else {
             return Ok(Vec::new());
         };
-        let mut issued = Vec::new();
-        for name in s.issued_certificates()?.into_keys() {
-            let chain = newest_chain(s, &name)?
-                .and_then(|(_, chain)| tls::describe_each(chain.as_bytes(), "the certificate").ok())
-                .unwrap_or_default();
-            issued.push((name, chain));
-        }
-        Ok(warnings::issued_certificates_due(&issued, &signing, now_ms))
+        let chains: Vec<_> = issued.into_iter().map(|(name, _, chain)| (name, chain)).collect();
+        Ok(warnings::issued_certificates_not_renewed(&chains, &signing, now_ms))
     })
     .await
 }
 
-/// What this leader issued `name` for, or `None` where it did not issue it.
-async fn issued_as(state: &AppState, name: &str) -> Result<Option<Issued>, StoreError> {
-    let name = name.to_string();
-    run_store(state.store.clone(), move |s| Ok(s.issued_certificates()?.remove(&name))).await
+/// Issues the next version of each certificate this leader issued that is due ([`warnings::issued_due`]), or whose
+/// newest version a regenerated encryption key cannot open, for the names and lifetime it was issued with. What the
+/// leader does on its own; moving what names one to the new version is an admin's. Answers each it tried, and how
+/// that went.
+pub async fn renew_issued(state: &AppState, now_ms: i64) -> Result<Vec<(String, Result<(), String>)>, StoreError> {
+    let dir = tls::dir_of(&state.data_dir);
+    let due = run_store(state.store.clone(), move |s| {
+        let Some((signing, issued)) = issued_chains(s, &dir)? else {
+            return Ok(Vec::new());
+        };
+        let unopenable = s.key_standing()?.unopenable;
+        Ok(issued
+            .into_iter()
+            .filter(|(name, _, chain)| {
+                warnings::issued_due(chain, &signing, now_ms).is_some()
+                    || unopenable.contains(&store::Unopenable::Certificate(name.clone()))
+            })
+            .map(|(name, how, _)| (name, how))
+            .collect::<Vec<_>>())
+    })
+    .await?;
+    let mut out = Vec::new();
+    for (name, how) in due {
+        let renewed = match sign_under_authority(state, &how).await {
+            Ok((chain, key)) => {
+                let wanted = name.clone();
+                run_store(state.store.clone(), move |s| {
+                    s.add_certificate_version(&wanted, &chain, &key)
+                })
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+            }
+            Err(e) => Err(e),
+        };
+        out.push((name, renewed));
+    }
+    Ok(out)
 }
 
-/// Issues the next version of a certificate this leader issued, for the names and lifetime it was issued with. What
-/// an admin does when [`warnings::issued_certificates_due`] says one is due; the caller then points what names it at
-/// the new version, as after a replace.
-async fn renew_certificate(State(state): State<AppState>, Path(name): Path<String>) -> Json<Envelope> {
-    let issued = match issued_as(&state, &name).await {
-        Ok(Some(issued)) => issued,
-        Ok(None) => {
-            return Json(Envelope::failed_one(format!(
-                "this leader did not issue {name:?}, so it cannot renew it. Replace it instead"
-            )));
-        }
-        Err(e) => return Json(Envelope::failed_one(e)),
-    };
-    let (chain, key) = match sign_under_authority(&state, &issued).await {
-        Ok(signed) => signed,
-        Err(e) => return Json(Envelope::failed_one(e)),
-    };
-    match run_store(state.store, move |s| s.add_certificate_version(&name, &chain, &key)).await {
-        Ok(_) => Json(Envelope::done()),
-        Err(e) => Json(Envelope::failed_one(e)),
-    }
+/// How this leader keeps `name` up to date, or `None` where it does not.
+async fn kept_as(state: &AppState, name: &str) -> Result<Option<Kept>, StoreError> {
+    let name = name.to_string();
+    run_store(state.store.clone(), move |s| Ok(s.kept_certificates()?.remove(&name))).await
 }
 
 /// Stores a new version of a certificate. The route is the binary's, which serves the new version too where the
@@ -2684,15 +2736,17 @@ pub async fn replace_certificate(
     if let Err(e) = req.check() {
         return Json(Envelope::failed_one(e));
     }
-    match issued_as(&state, &name).await.map(|i| i.is_some()) {
-        Ok(true) => {
-            return Json(Envelope::failed_one(format!(
-                "this leader issued {name:?}, so renew it instead of replacing it. To use your own certificate, \
-                 add one under another name and choose it where this one is used"
-            )));
-        }
-        Ok(false) => {}
+    let how = match kept_as(&state, &name).await {
+        Ok(Some(Kept::Issued(_))) => "issues",
+        Ok(Some(Kept::Acme)) => "orders over ACME",
+        Ok(None) => "",
         Err(e) => return Json(Envelope::failed_one(e)),
+    };
+    if !how.is_empty() {
+        return Json(Envelope::failed_one(format!(
+            "this leader {how} {name:?} and renews it itself, so it cannot be replaced. To use your own \
+             certificate, add one under another name and choose it where this one is used"
+        )));
     }
     match is_certificate(&state, &name).await {
         Ok(true) => store_value(state, name, req.private_key, Some(req.certificate)).await,
@@ -3490,7 +3544,6 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/secrets/:name", put(store_secret_value).delete(delete_secret))
         .route("/api/certificates", get(list_certificates).post(create_certificate))
         .route("/api/certificates/issued", post(issue_certificate))
-        .route("/api/certificates/:name/renew", post(renew_certificate))
         .route(
             "/api/secrets/:name/versions/:version",
             axum::routing::delete(forget_secret_version),
@@ -5865,83 +5918,88 @@ mod certificate_list_tests {
         .0;
         assert!(!out.ok);
         assert!(
-            out.errors[0].message.contains("renew it instead of replacing it"),
+            out.errors[0]
+                .message
+                .contains("renews it itself, so it cannot be replaced"),
             "{:?}",
             out.errors
         );
     }
 
-    async fn renew(state: &AppState, name: &str) -> Envelope {
-        renew_certificate(State(state.clone()), Path(name.to_string())).await.0
+    async fn renewed(state: &AppState, now_ms: i64) -> Vec<String> {
+        let tried = renew_issued(state, now_ms).await.unwrap();
+        for (name, outcome) in &tried {
+            assert!(outcome.is_ok(), "{name}: {outcome:?}");
+        }
+        tried.into_iter().map(|(name, _)| name).collect()
     }
 
-    /// Not yet due, nothing is said; two thirds of the way through, it warns until an admin renews it, and the next
-    /// version is issued for the same names and as long as the first.
+    /// Not yet due, nothing is renewed; two thirds of the way through, the leader issues the next version on its
+    /// own, for the same names and as long as the first, and only warns where it could not.
     #[tokio::test]
-    async fn a_certificate_due_warns_until_it_is_renewed() {
+    async fn a_due_certificate_is_renewed_unattended() {
         let state = issuing("renew");
         assert!(issue_lasting(&state, "acme", &["receiver.example.com"], 90).await.ok);
         let leaf = listed(&state, "acme").await.chain[0].clone();
         let lifetime = |c: &tls::Described| (c.not_after_millis - c.not_before_millis) / (24 * 60 * 60 * 1000);
         assert_eq!(lifetime(&leaf), 90);
 
+        assert!(renewed(&state, leaf.not_before_millis + 1).await.is_empty());
+        let due = leaf.not_before_millis + (leaf.not_after_millis - leaf.not_before_millis) * 2 / 3;
+        let late = due + 2 * 24 * 60 * 60 * 1000;
+        let said = issued_certificates_not_renewed(&state, late).await.unwrap();
+        assert_eq!(said.len(), 1, "a day past due and not renewed is a warning");
+        assert_eq!(said[0].condition, warnings::Condition::IssuedCertificateNotRenewed);
+        assert_eq!(said[0].since_millis, Some(due));
         assert!(
-            issued_certificates_due(&state, leaf.not_before_millis + 1)
+            issued_certificates_not_renewed(&state, due + 1)
                 .await
                 .unwrap()
-                .is_empty()
-        );
-        let due = leaf.not_before_millis + (leaf.not_after_millis - leaf.not_before_millis) * 2 / 3;
-        let said = issued_certificates_due(&state, due).await.unwrap();
-        assert_eq!(said.len(), 1);
-        assert_eq!(said[0].condition, warnings::Condition::IssuedCertificateDue);
-        assert_eq!(said[0].subject_id, "acme");
-        assert_eq!(said[0].since_millis, Some(due));
-        assert_eq!(
-            listed(&state, "acme").await.versions.len(),
-            1,
-            "nothing renews it on its own"
+                .is_empty(),
+            "not within the day the renewal has to run"
         );
 
-        let out = renew(&state, "acme").await;
-        assert!(out.ok, "{:?}", out.errors);
-        let renewed = listed(&state, "acme").await;
-        assert_eq!(renewed.versions.len(), 2);
-        assert_ne!(renewed.chain[0].fingerprint, leaf.fingerprint);
-        assert_eq!(renewed.chain[0].names, ["receiver.example.com"]);
-        assert_eq!(lifetime(&renewed.chain[0]), 90);
-        let now = renewed.chain[0].not_before_millis + 1;
-        assert!(issued_certificates_due(&state, now).await.unwrap().is_empty());
+        assert_eq!(renewed(&state, due).await, ["acme"]);
+        let renewed_entry = listed(&state, "acme").await;
+        assert_eq!(renewed_entry.versions.len(), 2);
+        assert_ne!(renewed_entry.chain[0].fingerprint, leaf.fingerprint);
+        assert_eq!(renewed_entry.chain[0].names, ["receiver.example.com"]);
+        assert_eq!(lifetime(&renewed_entry.chain[0]), 90);
+        let now = renewed_entry.chain[0].not_before_millis + 1;
+        assert!(renewed(&state, now).await.is_empty());
+        assert!(issued_certificates_not_renewed(&state, now).await.unwrap().is_empty());
     }
 
-    /// A renewal needs nothing the old version sealed: after the key is regenerated, it issues a new key, and the
-    /// certificate is no longer one to enter again.
+    /// A renewal needs nothing the old version sealed: after the key is regenerated, the leader issues a new key on
+    /// its own, and the certificate is no longer one to enter again.
     #[tokio::test]
-    async fn renewing_clears_a_certificate_a_regenerated_key_cannot_open() {
+    async fn a_certificate_a_regenerated_key_cannot_open_is_renewed() {
         let state = issuing("renew-regenerated");
         assert!(issue(&state, "acme", &["receiver.example.com"]).await.ok);
+        let leaf = listed(&state, "acme").await.chain[0].clone();
         std::fs::remove_file(state.data_dir.with_extension("key")).unwrap();
         let event = crate::leader::accounts::event_for(&store::Actor::system(), "key-regenerate", "", "ok");
         let acme = store::Unopenable::Certificate("acme".to_string());
         assert!(state.store.regenerate_key(&event).unwrap().unopenable.contains(&acme));
 
-        let out = renew(&state, "acme").await;
-        assert!(out.ok, "{:?}", out.errors);
+        assert_eq!(renewed(&state, leaf.not_before_millis + 1).await, ["acme"]);
         assert!(!state.store.key_standing().unwrap().unopenable.contains(&acme));
         let (chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
         tls::is_pair(chain.as_bytes(), key.as_bytes()).expect("the new key is the new certificate's");
     }
 
+    /// Only what the leader issued is renewed: an upload is the admin's to replace.
     #[tokio::test]
     async fn only_an_issued_certificate_is_renewed() {
         let state = issuing("renew-not-issued");
-        let out = renew(&state, "acme").await;
-        assert!(!out.ok);
-        assert!(out.errors[0].message.contains("did not issue"), "{:?}", out.errors);
+        let (chain, key) =
+            tls::issue(&tls::dir_of(&state.data_dir), vec!["a.example.com".to_string()], A_YEAR).unwrap();
+        state.store.create_certificate("uploaded", "", &chain, &key).unwrap();
+        assert!(renewed(&state, i64::MAX / 2).await.is_empty());
     }
 
     /// One issued under a root the leader no longer signs with is due at once, whatever its age, and so is one
-    /// whose chain cannot be read.
+    /// whose chain cannot be read. Neither warns: the next renewal, within the hour, issues it again.
     #[test]
     fn a_certificate_under_another_root_is_due() {
         let dir = own("renew-root");
@@ -5949,17 +6007,16 @@ mod certificate_list_tests {
         let chain = tls::describe_each(chain.as_bytes(), "c").unwrap();
         let signing = tls::signing_root_fingerprint(&dir).unwrap();
         let now = chain[0].not_before_millis + 1;
-        let issued = [("acme".to_string(), chain)];
-        assert!(warnings::issued_certificates_due(&issued, &signing, now).is_empty());
-        let said = warnings::issued_certificates_due(&issued, "another root", now);
-        assert_eq!(said.len(), 1);
-        assert_eq!(said[0].since_millis, None);
-        assert!(
-            said[0].message.contains("before the authority was rotated"),
-            "{}",
-            said[0].message
+        assert_eq!(warnings::issued_due(&chain, &signing, now), None);
+        assert_eq!(
+            warnings::issued_due(&chain, "another root", now),
+            Some(warnings::Due::OtherRoot)
         );
-        let unreadable = [("acme".to_string(), Vec::new())];
-        assert_eq!(warnings::issued_certificates_due(&unreadable, &signing, now).len(), 1);
+        assert_eq!(
+            warnings::issued_due(&[], &signing, now),
+            Some(warnings::Due::Unreadable)
+        );
+        let issued = [("acme".to_string(), chain)];
+        assert!(warnings::issued_certificates_not_renewed(&issued, "another root", i64::MAX / 2).is_empty());
     }
 }

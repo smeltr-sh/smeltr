@@ -2481,7 +2481,8 @@ export type WarningCondition =
   | 'secretNeedsValue'
   | 'acmeRenewalFailing'
   | 'leaderCertificateRunningOut'
-  | 'issuedCertificateDue';
+  | 'issuedCertificateNotRenewed'
+  | 'identityCertificateBehind';
 
 /** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. *Info*: a fact worth
  * knowing that asks nothing; the leader sends it only to a caller that asks (`listWarnings({ info: true })`). */
@@ -2589,8 +2590,10 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'ACME renewal failing';
     case 'leaderCertificateRunningOut':
       return 'Leader certificate running out';
-    case 'issuedCertificateDue':
-      return 'Certificate due for renewal';
+    case 'issuedCertificateNotRenewed':
+      return 'Certificate not renewed';
+    case 'identityCertificateBehind':
+      return 'Identity on an older certificate';
   }
 }
 

@@ -98,6 +98,15 @@ impl Issued {
     }
 }
 
+/// How the leader keeps a certificate up to date on its own: an entry with one is never replaced by an upload.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Kept {
+    /// Issued under the leader's own authority, and issued again the same way.
+    Issued(Issued),
+    /// Ordered over ACME, under the `acme.*` settings, and ordered again under them.
+    Acme,
+}
+
 /// What the leader knows about a secret. Never its value.
 pub struct SecretRecord {
     pub name: String,
@@ -678,18 +687,18 @@ pub trait Store: Send + Sync {
     /// version. PEM both.
     fn create_certificate(&self, name: &str, description: &str, chain: &str, key: &str) -> Result<(), StoreError>;
 
-    /// [`Store::create_certificate`] for one this leader issued as `issued` says, which it renews the same way.
-    fn create_issued_certificate(
+    /// [`Store::create_certificate`] for one this leader keeps up to date as `kept` says.
+    fn create_kept_certificate(
         &self,
         name: &str,
         description: &str,
-        issued: &Issued,
+        kept: &Kept,
         chain: &str,
         key: &str,
     ) -> Result<(), StoreError>;
 
-    /// The certificates this leader issued, each with what it issues it for.
-    fn issued_certificates(&self) -> Result<std::collections::BTreeMap<String, Issued>, StoreError>;
+    /// The certificates this leader keeps up to date, each with how.
+    fn kept_certificates(&self) -> Result<std::collections::BTreeMap<String, Kept>, StoreError>;
 
     /// [`Store::add_secret_version`] for a certificate: `key` sealed as the new version, `chain` beside it.
     fn add_certificate_version(&self, name: &str, chain: &str, key: &str) -> Result<i64, StoreError>;
