@@ -913,6 +913,55 @@ async function webRoutes(api: Api, sampleRecords: string[]) {
 }
 
 // A4, the whole trip.
+// The default shows the fields most records hold, so it moves with the sample. A field the reader
+// chose stays as they chose it.
+test('A2: a field shown from the Fields menu stays shown on a sample that would have hidden it', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/pipelines/wide${ON}`, {
+    id: 'wide',
+    name: 'wide',
+    steps: [{ type: 'parser', id: 'body', input: '_raw', kind: { type: 'json' } }],
+  });
+  // 55 fields. In `few`, f50 to f54 are in one record of three, so the 50 shown by default leave
+  // them out; in `many`, f0 to f4 are, so f52 is in the default there.
+  const record = (rare: (i: number) => boolean, i: number) =>
+    Object.fromEntries(
+      Array.from({ length: 55 }, (_, f) => [`f${f}`, f]).filter(
+        ([, f]) => !rare(f as number) || i === 0,
+      ),
+    );
+  for (const [id, rare] of [
+    ['few', (f: number) => f >= 50],
+    ['many', (f: number) => f < 5],
+  ] as const)
+    await api.put(`/api/samples${ON}`, {
+      id,
+      name: id,
+      records: [0, 1, 2].map((i) => ({ _raw: JSON.stringify(record(rare, i)) })),
+    });
+
+  const grid = admin.getByRole('table');
+  const head = grid.getByRole('button', { name: /^f52\b/ });
+  await goto(admin, leader, '#/build/pipelines/wide/for/few');
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await expect(head).toHaveCount(0);
+  await admin.getByRole('button', { name: 'Choose fields' }).click();
+  await admin.getByRole('searchbox', { name: 'Find a field' }).fill('f52');
+  await admin.getByRole('group', { name: 'Fields' }).getByRole('checkbox').check();
+  await admin.keyboard.press('Escape');
+  await expect(head).toHaveCount(1);
+
+  await admin.getByRole('button', { name: '← Back' }).click();
+  const picker = admin.getByRole('table').filter({ hasText: 'Captured' });
+  await picker.getByRole('button', { name: 'many', exact: true }).click();
+  await expect(admin.getByText('Sample many')).toBeVisible();
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await expect(head).toHaveCount(1);
+});
+
 test('A4: a route preview shows each output row, the route it matched and the destinations it reaches', async ({
   admin,
   leader,
