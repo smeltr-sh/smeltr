@@ -1671,7 +1671,10 @@ mod tests {
             .unwrap();
         let before = resident();
         for seq in 0..RECORDS {
-            let sent = Box::new(Sent { seq: seq as u64, held: held_bytes(1, 0) });
+            let sent = Box::new(Sent {
+                seq: seq as u64,
+                held: held_bytes(1, 0),
+            });
             let record = BaseRecord::<(), [u8], _>::with_opaque_to("t", sent).payload(b"x");
             producer.send(record).map_err(|(e, _)| e).unwrap();
         }
@@ -2356,9 +2359,14 @@ mod tests {
         )
         .unwrap();
         mock.broker_down(1).unwrap();
-        let queued = (0..10 * fits).take_while(|_| dest.produce(OutgoingRecord::new(&value)).is_ok()).count();
+        let queued = (0..10 * fits)
+            .take_while(|_| dest.produce(OutgoingRecord::new(&value)).is_ok())
+            .count();
         assert_eq!(queued, fits);
-        assert_eq!(dest.held.load(std::sync::atomic::Ordering::Relaxed), fits * held_bytes(value.len(), 0));
+        assert_eq!(
+            dest.held.load(std::sync::atomic::Ordering::Relaxed),
+            fits * held_bytes(value.len(), 0)
+        );
         let refused = dest.produce(OutgoingRecord::new(&value)).unwrap_err();
         assert!(refused.message.contains("not draining"), "{}", refused.message);
     }
