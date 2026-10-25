@@ -72,7 +72,7 @@
 </script>
 
 {#if concurrent}
-  <Field field="inFlight" label="starting concurrency">
+  <Field optional field="inFlight" label="starting concurrency">
     {#snippet help()}
       {requests} in flight at once when the destination starts, per worker; it adapts from there.
     {/snippet}
@@ -85,10 +85,10 @@
     />
   </Field>
 {/if}
-<Field field={size} label={sizeLabel} help={sizeHelp}>
+<Field optional field={size} label={sizeLabel} help={sizeHelp}>
   <BytesInput value={d[size]} fallback={sizeDefault} onchange={(n) => (d[size] = n)} />
 </Field>
-<Field field="bufferBytes" label="delivery buffer">
+<Field optional field="bufferBytes" label="delivery buffer">
   {#snippet help()}
     The most one worker holds for this destination, queued or sent and not yet acknowledged.
     {#if bufferHelp}{@render bufferHelp()}{:else}Divided by the {sizeLabel}, it is the most requests
@@ -100,7 +100,7 @@
     onchange={(n) => (d.bufferBytes = n)}
   />
 </Field>
-<Field field="stallAfterSecs" label="stall after (seconds)">
+<Field optional field="stallAfterSecs" label="stall after (seconds)">
   {#snippet help()}
     How long one batch may take to deliver, {including}, before this destination counts as stalled.
   {/snippet}

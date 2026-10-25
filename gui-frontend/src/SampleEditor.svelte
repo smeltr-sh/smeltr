@@ -150,8 +150,8 @@
     }}
   >
     <div class="pair">
-      <Field label="Name"><input bind:value={name} required /></Field>
-      <Field label="Source it stands for"><input bind:value={source} /></Field>
+      <Field required label="Name"><input bind:value={name} required /></Field>
+      <Field optional label="Source it stands for"><input bind:value={source} /></Field>
     </div>
 
     <Field label="Records" group>

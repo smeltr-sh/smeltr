@@ -164,13 +164,14 @@
 {#snippet fields(destination: DestinationDto)}
   {#if destination.type === 'kafka'}
     <Field
+      required
       field="brokers"
       label="brokers"
       warning={brokersWarning(destination.brokers, destination) ?? null}
     >
       <input type="text" bind:value={destination.brokers} placeholder="host:9092,host2:9092" />
     </Field>
-    <Field field="defaultTopic" label="default topic">
+    <Field required field="defaultTopic" label="default topic">
       <input type="text" bind:value={destination.defaultTopic} />
     </Field>
     {@render formatFields(
@@ -215,7 +216,7 @@
           {/each}
         </select>
       </Field>
-      <Field field="stallAfterSecs" label="stall after (seconds)">
+      <Field optional field="stallAfterSecs" label="stall after (seconds)">
         {#snippet help()}
           How long one batch may take to deliver before this destination counts as stalled.
         {/snippet}
@@ -230,7 +231,7 @@
           }}
         />
       </Field>
-      <Field field="bufferBytes" label="buffer">
+      <Field optional field="bufferBytes" label="buffer">
         {#snippet help()}
           The most one worker holds for this destination, accepted but not yet acknowledged by the
           brokers. Over a slow link it caps throughput.
@@ -251,14 +252,14 @@
       />
     </Advanced>
   {:else if destination.type === 'eventHubs'}
-    <Field field="namespace" label="namespace">
+    <Field required field="namespace" label="namespace">
       {#snippet help()}
         The Event Hubs namespace: its name in Azure's public cloud, or its host name in another
         cloud.
       {/snippet}
       <input type="text" bind:value={destination.namespace} placeholder="namespace" />
     </Field>
-    <Field field="defaultEventHub" label="default event hub">
+    <Field required field="defaultEventHub" label="default event hub">
       {#snippet help()}
         The event hub a record goes to unless its pipeline sets <code>__destination.topic</code>.
       {/snippet}
@@ -297,7 +298,7 @@
           <option value="gzip">gzip</option>
         </select>
       </Field>
-      <Field field="stallAfterSecs" label="stall after (seconds)">
+      <Field optional field="stallAfterSecs" label="stall after (seconds)">
         {#snippet help()}
           How long one batch may take to deliver before this destination counts as stalled.
         {/snippet}
@@ -312,7 +313,7 @@
           }}
         />
       </Field>
-      <Field field="bufferBytes" label="buffer">
+      <Field optional field="bufferBytes" label="buffer">
         {#snippet help()}
           The most one worker holds for this destination, accepted but not yet acknowledged by Event
           Hubs. Over a slow link it caps throughput.
@@ -330,6 +331,7 @@
   {:else if destination.type === 'logAnalytics'}
     {@const l = destination}
     <UrlField
+      required
       field="endpoint"
       label="endpoint"
       bind:value={l.endpoint}
@@ -341,13 +343,13 @@
         The rule's logs ingestion endpoint, or the data collection endpoint linked to it.
       {/snippet}
     </UrlField>
-    <Field field="ruleId" label="rule id">
+    <Field required field="ruleId" label="rule id">
       {#snippet help()}
         The rule's immutable id, from its JSON view in the Azure portal.
       {/snippet}
       <input type="text" bind:value={l.ruleId} placeholder="dcr-0123456789abcdef0123456789abcdef" />
     </Field>
-    <Field field="stream" label="stream">
+    <Field required field="stream" label="stream">
       {#snippet help()}
         The rule's stream the rows go to, such as <code>Custom-Events_CL</code>.
       {/snippet}
@@ -372,13 +374,14 @@
     </Advanced>
   {:else if destination.type === 'elasticsearch'}
     <UrlField
+      required
       field="url"
       label="url"
       bind:value={destination.url}
       sends={sendsCredential(destination)}
       placeholder="https://es.internal:9200"
     />
-    <Field field="defaultIndex" label="default index">
+    <Field required field="defaultIndex" label="default index">
       <input type="text" bind:value={destination.defaultIndex} />
     </Field>
     <IdentityPicker
@@ -410,7 +413,7 @@
     </Field>
     {#if (destination.docId ?? 'auto') !== 'auto'}
       <Nested>
-        <Field field="idField" label="id field">
+        <Field optional field="idField" label="id field">
           {#snippet help()}
             The row field that already holds each document's stable id. Leave it empty and the
             pipeline must set <code>__destination.id</code>.
@@ -474,9 +477,9 @@
         />
       </Field>
       {#if destination.sniff}
-        <Field field="zoneAttribute" label="zone attribute">
+        <Field optional field="zoneAttribute" label="zone attribute">
           {#snippet help()}
-            Optional: The node attribute that names a node's zone, set on each node as
+            The node attribute that names a node's zone, set on each node as
             <code>node.attr.&lt;name&gt;</code>.
           {/snippet}
           <input
@@ -493,6 +496,7 @@
     </Advanced>
   {:else if destination.type === 'splunkHec'}
     <UrlField
+      required
       field="url"
       label="url"
       bind:value={destination.url}
@@ -503,7 +507,7 @@
         The collector's base address, without <code>/services/collector</code>.
       {/snippet}
     </UrlField>
-    <Field field="token" label="token">
+    <Field required field="token" label="token">
       {#snippet help()}
         The secret holding the HEC token.
       {/snippet}
@@ -554,6 +558,7 @@
         {/if}
       {/snippet}
       <Field
+        optional
         field={key}
         label={key}
         help={(destination.endpoint ?? 'event') === 'event' ? keyHelp : undefined}
@@ -622,6 +627,7 @@
   {:else if destination.type === 'http' || destination.type === 'prometheus'}
     {@const h = destination}
     <UrlField
+      required
       field="url"
       label="url"
       bind:value={h.url}
@@ -683,7 +689,7 @@
         {#if h.format === 'text' || h.format === 'bytes'}
           {@const fieldDefault = h.format === 'text' ? '_raw' : '__source.bytes'}
           <Nested>
-            <Field field="field" label={`${h.format} field`}>
+            <Field optional field="field" label={`${h.format} field`}>
               <input
                 type="text"
                 value={h.field ?? ''}
@@ -771,15 +777,15 @@
   {:else if isObjectStore(destination)}
     {@const o = destination}
     {#if o.type === 'azureBlob'}
-      <Field field="account" label="account">
+      <Field required field="account" label="account">
         <input type="text" bind:value={o.account} />
       </Field>
-      <Field field="container" label="container">
+      <Field required field="container" label="container">
         <input type="text" bind:value={o.container} />
       </Field>
     {:else if o.type === 'sftp'}
       <ConnectorAccess store={o.type} value={o} show="credential" {secrets} />
-      <Field field="directory" label="directory">
+      <Field optional field="directory" label="directory">
         {#snippet help()}
           The directory it writes into: absolute, or under the user's home directory. Empty is the
           home directory. It must exist; the folders a prefix names under it are made as needed.
@@ -794,14 +800,14 @@
         />
       </Field>
     {:else}
-      <Field field="bucket" label="bucket">
+      <Field required field="bucket" label="bucket">
         <input type="text" bind:value={o.bucket} />
       </Field>
     {/if}
     {#if o.type !== 'sftp'}
       <ConnectorAccess store={o.type} value={o} show="credential" {secrets} />
     {/if}
-    <Field field="prefix" label="prefix">
+    <Field optional field="prefix" label="prefix">
       {#snippet help()}
         What every {o.type === 'sftp' ? 'file path' : 'object key'} starts with.
         <code>%Y %m %d %H %M</code>
@@ -858,7 +864,7 @@
     >
       <ConnectorAccess store={o.type} value={o} show="advanced" />
       {#if o.type === 's3'}
-        <Field field="kmsKeyId" label="KMS key id">
+        <Field optional field="kmsKeyId" label="KMS key id">
           {#snippet help()}
             The KMS key each object is encrypted under. Left empty, the bucket's default encryption.
           {/snippet}
@@ -909,7 +915,7 @@
           </select>
         </Field>
       {/if}
-      <Field field="inFlight" label="parts uploading at once">
+      <Field optional field="inFlight" label="parts uploading at once">
         {#snippet help()}
           How many parts of one file upload at once.
         {/snippet}
@@ -921,7 +927,7 @@
           oninput={(e) => (o.inFlight = numberOrUnset(e.currentTarget))}
         />
       </Field>
-      <Field field="maxObjectBytes" label="largest file">
+      <Field optional field="maxObjectBytes" label="largest file">
         {#snippet help()}
           The largest file this destination puts in the bucket, compressed. Set it to what the tools
           that read the bucket handle best.
@@ -932,7 +938,7 @@
           onchange={(n) => (o.maxObjectBytes = n)}
         />
       </Field>
-      <Field field="bufferBytes" label="memory">
+      <Field optional field="bufferBytes" label="memory">
         {#snippet help()}
           Memory this destination may use on each worker for records not yet in the bucket. Files
           are finished early when it fills, so files reach the largest size only when it holds that
@@ -944,7 +950,7 @@
           onchange={(n) => (o.bufferBytes = n)}
         />
       </Field>
-      <Field field="stallAfterSecs" label="stall after (seconds)">
+      <Field optional field="stallAfterSecs" label="stall after (seconds)">
         {#snippet help()}
           How long one store call, or one finishing of the files, may take before it counts as a
           stall. {#if o.type === 'sftp'}At least {SFTP_MIN_STALL_AFTER} on SFTP, so a sign-in finishes
@@ -959,6 +965,7 @@
         />
       </Field>
       <Field
+        optional
         field="fileIntervalSecs"
         label="file interval (seconds)"
         warning={(o.fileIntervalSecs ?? LIMITS.fileIntervalSecs.default) >
@@ -1019,7 +1026,7 @@
   {#if d.format === 'text' || d.format === 'bytes'}
     {@const fieldDefault = d.format === 'text' ? '_raw' : '__source.bytes'}
     <Nested>
-      <Field field="field" label={`${d.format} field`}>
+      <Field optional field="field" label={`${d.format} field`}>
         <input
           type="text"
           value={d.field ?? ''}

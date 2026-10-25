@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createRawSnippet, mount, unmount } from 'svelte';
+import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import Field from './Field.svelte';
 import IdentityPicker from './IdentityPicker.svelte';
 import { setScope } from './api';
@@ -30,14 +30,18 @@ async function signInAs(areas: Record<string, string>) {
   await load();
 }
 
-function input(): HTMLInputElement {
+function input(
+  marks: { required?: boolean; optional?: boolean; help?: string } = {},
+): HTMLInputElement {
   field = mount(Field, {
     target,
     props: {
       label: 'id',
+      ...marks,
       children: createRawSnippet(() => ({ render: () => '<input type="text" />' })),
     },
   });
+  flushSync();
   return target.querySelector('input')!;
 }
 
@@ -95,5 +99,26 @@ describe('a field where the scope is not yours to change', () => {
     await signInAs({ shared: 'viewer', payments: 'viewer' });
     history.replaceState(null, '', '/#/changes');
     expect(input().closest('fieldset[disabled]')).toBeNull();
+  });
+});
+
+describe('a required or optional field', () => {
+  it('marks a required name with a star and its control with aria-required', () => {
+    const control = input({ required: true, help: 'The name a route uses.' });
+    expect(target.querySelector('.name')!.textContent).toContain('*');
+    expect(control.getAttribute('aria-required')).toBe('true');
+    expect(target.querySelector('.pop')!.textContent).toBe('Required. The name a route uses.');
+  });
+
+  it("opens an optional field's help with Optional, and marks its name with nothing", () => {
+    const control = input({ optional: true, help: 'The name a route uses.' });
+    expect(target.querySelector('.name')!.textContent).not.toContain('*');
+    expect(control.hasAttribute('aria-required')).toBe(false);
+    expect(target.querySelector('.pop')!.textContent).toBe('Optional. The name a route uses.');
+  });
+
+  it('leaves a field that is neither as it was', () => {
+    input({ help: 'The name a route uses.' });
+    expect(target.querySelector('.pop')!.textContent).toBe('The name a route uses.');
   });
 });
