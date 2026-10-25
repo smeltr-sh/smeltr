@@ -411,7 +411,12 @@ pub(crate) async fn renew_if_due(auth: &Auth, serving: &Arc<Tls>) {
             return;
         }
     };
-    if !due {
+    // An order a regenerated key cannot open is ordered again at once, as an issued certificate is issued again.
+    let store = auth.store.clone();
+    let unopenable = blocking(move || store.key_standing()).await.is_ok_and(|standing| {
+        (standing.unopenable).contains(&smeltr::leader::store::Unopenable::Certificate(acme::ENTRY.to_string()))
+    });
+    if !due && !unopenable {
         return;
     }
     let required: Vec<String> = serving.from_inside.iter().cloned().collect();
