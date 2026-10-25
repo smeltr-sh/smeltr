@@ -153,6 +153,8 @@ pub enum KeyState {
 pub enum Unopenable {
     /// A leader-stored secret, by name.
     Secret(String),
+    /// A certificate's private key, by the certificate's name.
+    Certificate(String),
     /// A sealed leader setting, by its key.
     Setting(String),
 }

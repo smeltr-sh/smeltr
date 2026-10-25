@@ -3585,7 +3585,7 @@ export interface EncryptionKeyDto {
   keyId: string | null;
   path: string;
   /** Each value whose newest copy the key cannot open: what to enter again. */
-  unopenable: { kind: 'secret' | 'setting'; name: string; label: string }[];
+  unopenable: { kind: 'secret' | 'certificate' | 'setting'; name: string; label: string }[];
 }
 
 export function getEncryptionKey(): Promise<EncryptionKeyDto> {

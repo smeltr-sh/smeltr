@@ -2219,11 +2219,11 @@ pub struct EncryptionKeyOut {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnopenableOut {
-    /// `secret` or `setting`.
+    /// `secret`, `certificate` or `setting`.
     pub kind: &'static str,
-    /// A secret's name, or a setting's key.
+    /// A secret's or certificate's name, or a setting's key.
     pub name: String,
-    /// What a person calls it: a secret's name, or what the setting is.
+    /// What a person calls it: a secret's or certificate's name, or what the setting is.
     pub label: String,
 }
 
@@ -2245,6 +2245,11 @@ impl From<store::KeyStanding> for EncryptionKeyOut {
                 .map(|u| match u {
                     store::Unopenable::Secret(name) => UnopenableOut {
                         kind: "secret",
+                        label: name.clone(),
+                        name,
+                    },
+                    store::Unopenable::Certificate(name) => UnopenableOut {
+                        kind: "certificate",
                         label: name.clone(),
                         name,
                     },
