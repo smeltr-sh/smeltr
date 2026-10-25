@@ -1845,13 +1845,9 @@
     gap: 0.6rem;
   }
 
-  .rows {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-  }
-
-  /* A declared field and what sits under it, one box, so they glide together when a column moves. */
+  /* A `.glide-row` is a declared field and what sits under it, one box, so they glide together when a column
+     moves; it spaces them as the rows are spaced. */
+  .rows,
   .glide-row {
     display: flex;
     flex-direction: column;
