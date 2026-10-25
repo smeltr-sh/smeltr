@@ -229,6 +229,8 @@ export type Step =
   | (FunctionCommon & {
       type: 'parser';
       input: string;
+      /** The object the parse writes into; empty, the record. */
+      into: string;
       kind: ParserKind;
       declared: FieldSpec[];
     })
@@ -314,6 +316,7 @@ export function newStep(type: StepType, parseInput = '_raw'): Step {
         filter: '',
         disabled: false,
         input: parseInput,
+        into: '',
         kind: { type: 'json' },
         declared: [],
       };
@@ -408,6 +411,7 @@ export function stepToDto(step: Step): unknown {
         type: 'parser',
         ...functionFields(step),
         input: step.input,
+        ...(step.into ? { into: step.into } : {}),
         kind: parserKindDto(step.kind),
         declared: step.declared.map((f) => ({ name: f.name, type: dataTypeDto(f.ty) })),
       };
@@ -578,6 +582,11 @@ export function truncateSteps(steps: Step[], target: Step, includeTarget: boolea
   return null;
 }
 
+/** Whether a parser's `into` names an object, rather than the record: empty and `$` both name the record. */
+export function intoObject(into: string): boolean {
+  return into.trim() !== '' && into.trim() !== '$';
+}
+
 export function stepSummary(step: Step): string {
   switch (step.type) {
     case 'if':
@@ -597,7 +606,7 @@ export function stepSummary(step: Step): string {
         ? step.pairs.map((p) => `${p.from || '…'} → ${p.to || '…'}`).join(', ')
         : '(no pairs)';
     case 'parser':
-      return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
+      return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${intoObject(step.into) ? ` into ${step.into.trim()}` : ''}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
     case 'lookup':
       return `${step.input || '…'} → ${step.outputs.map((o) => o.field || '…').join(', ') || '(no outputs)'}`;
     case 'unroll':
@@ -834,6 +843,7 @@ function dtoToStep(dto: unknown, where: string): Step {
         type: 'parser',
         ...common(id),
         input: str(o, 'input', where),
+        into: optStr(o, 'into'),
         kind: dtoToParserKind(o.kind, `${where}.kind`),
         declared: optArr(o, 'declared').map((f) => {
           const fo = rec(f, `${where}.declared`);

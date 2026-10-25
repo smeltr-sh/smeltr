@@ -9,6 +9,7 @@ import {
   parseInputFor,
   orderedStepErrors,
   parsePipelineDtoJson,
+  stepSummary,
   stepToDto,
   stepsFromDto,
   truncateSteps,
@@ -33,6 +34,7 @@ function parser(overrides: Partial<Extract<Step, { type: 'parser' }>> = {}): Ste
     filter: '',
     disabled: false,
     input: '_raw',
+    into: '',
     kind: { type: 'json' },
     declared: [],
     ...overrides,
@@ -442,6 +444,7 @@ describe('array-of-objects declared types', () => {
           type: 'parser',
           id: 'p1',
           input: '_raw',
+          into: '',
           kind: { type: 'json' },
           declared: [{ name: 'sites', type: nested }],
         },
@@ -479,6 +482,7 @@ function pipelineDeclaring(type: unknown): string {
         type: 'parser',
         id: 'p1',
         input: '_raw',
+        into: '',
         kind: { type: 'json' },
         declared: [{ name: 'sites', type }],
       },
@@ -712,5 +716,20 @@ describe('STEP_SUMMARIES', () => {
   it("says what the website's step reference says", () => {
     const website = Object.fromEntries(stepReference.steps.kinds.map((k) => [k.type, k.summary]));
     expect(STEP_SUMMARIES).toEqual(website);
+  });
+});
+
+describe('a parser that writes into an object', () => {
+  it('sends its object, and nothing where it writes into the record', () => {
+    expect(stepToDto(parser({ into: 'app' }))).toMatchObject({ into: 'app' });
+    expect(stepToDto(parser())).not.toHaveProperty('into');
+    expect(stepsFromDto([stepToDto(parser({ into: 'app' }))])).toEqual([parser({ into: 'app' })]);
+    expect(stepsFromDto([stepToDto(parser())])).toEqual([parser()]);
+  });
+
+  it('names its object in its summary, and not the record', () => {
+    expect(stepSummary(parser({ into: 'app' }))).toBe('_raw as JSON into app');
+    expect(stepSummary(parser({ into: '$' }))).toBe('_raw as JSON');
+    expect(stepSummary(parser())).toBe('_raw as JSON');
   });
 });

@@ -25,6 +25,7 @@ const parse = {
   filter: null,
   disabled: false,
   input: '_raw',
+  into: '',
   kind: { type: 'json' },
   declared: [],
 };

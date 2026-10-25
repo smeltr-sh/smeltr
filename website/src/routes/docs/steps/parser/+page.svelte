@@ -44,8 +44,9 @@
   <StepExample example={examples.json} />
   <p>Both declared fields arrive typed, and the undeclared <code>region</code> passes through.</p>
   <p>
-    With <code>into</code>, the same fields go under one object instead. In the GUI,
-    <strong>write into</strong> is under <strong>Advanced</strong>.
+    With <code>into</code>, the same fields arrive under one object instead of at the top level.
+    This step declares <code>status</code>, which lands typed at <code>app.status</code>. In the
+    GUI, <strong>write into</strong> is under <strong>Advanced</strong>.
   </p>
   <StepExample example={examples.into} />
 

@@ -1324,6 +1324,47 @@ const declareFromProduction: Move = {
   },
 };
 
+/** The pipelines made from a capture, which nothing has deleted since: each a JSON Parser over `_raw`. */
+const parsing = (w: World) => w.editing.pipelines.filter((p) => p.endsWith('-parse'));
+
+const writeInto: Move = {
+  name: 'write-into',
+  weight: (w) => (parsing(w).length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const pipeline = rng.pick(parsing(world));
+    // An object of its own, or the record again.
+    const into = rng.chance(4) ? '$' : `o${world.made++}`;
+    await goto(page, leader, '#/build/pipelines');
+    await page.getByRole('link', { name: pipeline, exact: true }).click();
+    const parser = page.getByRole('button', { name: /as JSON/ });
+    if ((await parser.getAttribute('aria-expanded')) !== 'true')
+      await parser.click({ position: { x: 8, y: 8 } });
+    const box = page.getByRole('textbox', { name: 'write into' });
+    // Advanced is open where it holds something set.
+    if (!(await box.isVisible())) await page.getByRole('button', { name: /^Advanced/ }).click();
+    await box.fill(into);
+    await expect(parser).toContainText(into === '$' ? /as JSON( \(|$)/ : `as JSON into ${into}`);
+    await save(j, () => expect(page.getByText('Saved.')).toBeVisible());
+    await editingIsSaved(j);
+    const truth = await j.truth();
+    const written: (string | undefined)[] = [];
+    for (const scope of ['shared', 'default']) {
+      const res = await truth.get(
+        `/api/config?branch=${encodeURIComponent(world.branch!)}&scope=${scope}`,
+      );
+      for (const p of res.config.pipelines as {
+        name: string;
+        steps: { type: string; into?: string }[];
+      }[])
+        if (p.name === pipeline)
+          for (const step of p.steps) if (step.type === 'parser') written.push(step.into);
+    }
+    expect(written, `${pipeline} writes into ${into}`).toEqual([into]);
+    return `parse "${pipeline}" into ${into === '$' ? 'the record' : into}`;
+  },
+};
+
 const addReceiver: Move = {
   name: 'add-receiver',
   weight: (w) => (w.password && !receiving(w) && !grouping(w) ? 1 : 0),
@@ -2484,6 +2525,7 @@ export const MOVES: readonly Move[] = [
   regenerateKey,
   addStep,
   declareFromProduction,
+  writeInto,
   addReceiver,
   addOtherDestination,
   addLookup,

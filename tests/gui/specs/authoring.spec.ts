@@ -805,6 +805,50 @@ test('A2: the parser proposes its declared fields from a sample, and the analyst
   expect(names.sort()).toEqual(['discount', 'id', 'total']);
 });
 
+// A2, where the parsed fields go: under one object the analyst names, declared and suggested by their own names.
+test('A2: a parser writes into the object it names, and its fields are suggested and declared under it', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await jsonPipeline(api, 'orders', [{ name: 'id', type: 'i64' }], {
+    id: 'orders-sample',
+    name: 'orders',
+    records: ORDERS,
+  });
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await admin.getByRole('button', { name: /_raw as JSON/ }).click();
+  await admin.getByRole('button', { name: /^Advanced/ }).click();
+  const into = admin.getByRole('textbox', { name: 'write into' });
+  await expect(into).toHaveAttribute('placeholder', '$');
+  await into.fill('order');
+  await expect(
+    admin.getByRole('button', { name: /_raw as JSON into order \(1 declared\)/ }),
+  ).toBeVisible();
+
+  // The parse's own keys, not where they land: `id` is declared already, and `total` lands at `order.total`.
+  await admin.getByRole('button', { name: 'Suggest fields' }).click();
+  const suggested = admin.getByRole('group', { name: 'Suggested fields' });
+  await expect(suggested.getByRole('group', { name: 'total' })).toBeVisible();
+  await expect(suggested.getByRole('group', { name: 'id' })).toHaveCount(0);
+  await suggested
+    .getByRole('group', { name: 'coupon' })
+    .getByRole('button', { name: 'Add' })
+    .click();
+  await suggested.getByRole('button', { name: 'Done' }).click();
+
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Saved.')).toBeVisible();
+  const step = (await api.get(`/api/pipelines/orders${ON}`)).pipeline.steps[0];
+  expect(step.into).toBe('order');
+  expect(step.declared.map((f: { name: string }) => f.name).sort()).toEqual(['coupon', 'id']);
+  // What arrives: the parsed keys under `order`, declared or not.
+  await expect(admin.getByRole('table').first()).toContainText('order.total');
+  await admin.screenshot({ path: 'results/write-into.png', fullPage: true });
+});
+
 // A3, where the sample is thin.
 test('A3: the proposal says which fields some rows lack and where rows disagree about a type', async ({
   admin,

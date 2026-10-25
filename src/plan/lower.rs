@@ -64,7 +64,7 @@ pub fn names(kind: &FunctionKind) -> Result<FunctionKind, String> {
             *input = name(input)?;
             // `$` names the record, as empty does.
             *into = match into.trim() {
-                ROOT => String::new(),
+                "" | ROOT => String::new(),
                 _ => name(into)?,
             };
             for d in declared {
