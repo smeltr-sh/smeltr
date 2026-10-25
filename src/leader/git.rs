@@ -4547,11 +4547,24 @@ mod tests {
             content: None,
         }];
         let tip = branch_tip(&repo, "work").unwrap();
-        commit_edits(&repo, "work", &tip, Some(&tip), &removing, "remove gone", &Actor::system()).unwrap();
+        commit_edits(
+            &repo,
+            "work",
+            &tip,
+            Some(&tip),
+            &removing,
+            "remove gone",
+            &Actor::system(),
+        )
+        .unwrap();
 
         assert_eq!(
             branch_scratch_samples(&repo, "work").unwrap(),
-            ["groups/west/samples/old.json", "groups/west/samples/tried.json", "shared/samples/pasted.json"],
+            [
+                "groups/west/samples/old.json",
+                "groups/west/samples/tried.json",
+                "shared/samples/pasted.json"
+            ],
             "what the review marks as not deployed"
         );
 
@@ -4587,7 +4600,12 @@ mod tests {
         let repo = repo_path(&data);
         put(&data, MAIN_BRANCH, &west("orders"), "a bundle for west");
         create_branch(&data, "work").unwrap();
-        save(&data, "work", &[("groups/west/samples/tried.json", "tried")], "a capture");
+        save(
+            &data,
+            "work",
+            &[("groups/west/samples/tried.json", "tried")],
+            "a capture",
+        );
         open_change(&repo, "work", "Tried", "", &Actor::system()).unwrap();
         let err = deploy_change(&data, "work", &Actor::system()).expect_err("nothing reaches main");
         assert!(err.0.contains("nothing to deploy"), "{}", err.0);
@@ -4604,7 +4622,10 @@ mod tests {
         save(
             &data,
             "work",
-            &[("groups/west/samples/tried.json", "tried"), ("groups/west/tests/broken.json", "{")],
+            &[
+                ("groups/west/samples/tried.json", "tried"),
+                ("groups/west/tests/broken.json", "{"),
+            ],
             "a capture and a broken test",
         );
         open_change(&repo, "work", "Tried", "", &Actor::system()).unwrap();
