@@ -118,10 +118,12 @@ session timeout before the group hands it on.
 
 An identity is what a worker shows the source or destination it connects out
 to, and which authorities it verifies that far end against; either half may be
-empty. A client trusts those authorities on top of the public roots, Mozilla's
+empty. What it shows is a certificate from the leader's list, named by name and
+version like a stored secret (`security.md`, A certificate travels with its
+key). A client trusts those authorities on top of the public roots, Mozilla's
 and its host's, unless the identity trusts no public root; a receiver admits by
 the authorities alone (`io::trust`). One object, because both are the same
-organization's PKI and are uploaded together. One concept, because a connector must not have to know that
+organization's PKI and are chosen together. One concept, because a connector must not have to know that
 one kind of client reaches TLS through properties and another through a client
 the code builds. An identity a connector also answers by hand, or one under a
 protocol that negotiates no TLS, is refused at save time: there is one place

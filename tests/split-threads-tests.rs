@@ -695,15 +695,33 @@ fn capturing_route(
     captures: &Arc<smeltr::worker::capture::Captures>,
     route: RouteConfig,
 ) -> (Transform, Arc<Lane>) {
-    let routes = vec![route];
-    let pipelines = vec![PipelineConfig {
-        id: 0,
-        name: "pipeline-0".into(),
-        body: vec![code(0, "n: i64; Object.assign($, json(_raw)); doubled = n * 2;")],
+    capturing_routes(
+        dest,
+        captures,
+        vec![route],
+        vec![pipeline(0, "n: i64; Object.assign($, json(_raw)); doubled = n * 2;")],
+    )
+}
+
+/// A pipeline `id` of one code step, `body`.
+fn pipeline(id: usize, body: &str) -> PipelineConfig {
+    PipelineConfig {
+        id,
+        name: format!("pipeline-{id}"),
+        body: vec![code(0, body)],
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
-    }];
+    }
+}
+
+/// `capturing`, over `routes` from source 0 and their `pipelines`.
+fn capturing_routes(
+    dest: &AsyncDestination,
+    captures: &Arc<smeltr::worker::capture::Captures>,
+    routes: Vec<RouteConfig>,
+    pipelines: Vec<PipelineConfig>,
+) -> (Transform, Arc<Lane>) {
     let topology = Arc::new(compile_topology(&routes, &pipelines).unwrap());
     let ready = Arc::new(Ready::new());
     let (tx, _rx) = reports();
@@ -795,6 +813,46 @@ fn a_destination_filter_a_route_cannot_read_ends_the_capture() {
     assert!(
         matches!(&report.finished, Some(smeltr::heartbeat::CaptureEnd::Failed(why)) if why.contains("\"orders\"")),
         "{report:?}"
+    );
+}
+
+/// Where routes of different shapes deliver to one destination, a filter keeps what it matches on the routes it
+/// compiles on and passes over the others.
+#[test]
+fn a_destination_filter_reads_the_routes_it_compiles_on() {
+    let dest = AsyncDestination::new();
+    let captures = Arc::new(smeltr::worker::capture::Captures::default());
+    captures.admit(&[at_destination(Some("doubled > 2"))]);
+    let route = |id: &str, pipeline| RouteConfig {
+        id: id.to_string(),
+        source: 0,
+        cond: None,
+        pipeline,
+        deliver: deliver_to(&[0]),
+        on_exception: Default::default(),
+    };
+    let (mut transform, lane) = capturing_routes(
+        &dest,
+        &captures,
+        vec![route("orders", 0), route("audit", 1)],
+        vec![
+            pipeline(0, "n: i64; Object.assign($, json(_raw)); doubled = n * 2;"),
+            pipeline(1, "seen = true;"),
+        ],
+    );
+
+    push(&lane, 1, br#"{"n":2}"#);
+    for _ in 0..4 {
+        let _ = transform.step(Duration::ZERO);
+    }
+
+    let report = captures.progress("w1").remove(0);
+    assert_eq!(report.finished, None, "{report:?}");
+    let rows: Vec<_> = report.batches.iter().flat_map(|b| &b.rows).collect();
+    assert_eq!(rows.len(), 1, "{report:?}");
+    assert_eq!(
+        held_column(&report, "__destination.route"),
+        vec![serde_json::json!("orders")]
     );
 }
 

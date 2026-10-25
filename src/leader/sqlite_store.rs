@@ -1180,7 +1180,7 @@ impl Store for SqliteStore {
         &self,
         entitled: &[(String, i64)],
         held: &[(String, i64)],
-    ) -> Result<Vec<(String, i64, String)>, StoreError> {
+    ) -> Result<Vec<crate::heartbeat::SecretDelivery>, StoreError> {
         let Some(key) = self.key_if_any()? else {
             return Ok(Vec::new());
         };
@@ -1195,12 +1195,22 @@ impl Store for SqliteStore {
             };
             // An unopenable row is passed over rather than reported: the worker's own refusal names it, and this
             // answer carries values, not logs.
-            if let Some(value) = key.open(name, &sealed) {
-                match String::from_utf8(value) {
-                    Ok(value) => out.push((name.clone(), *version, value)),
-                    Err(_) => continue,
-                }
-            }
+            let Some(Ok(value)) = key.open(name, &sealed).map(String::from_utf8) else {
+                continue;
+            };
+            let chain = conn
+                .query_row(
+                    "SELECT chain FROM certificate_chains WHERE name = ?1 AND version = ?2",
+                    (name, version),
+                    |row| row.get(0),
+                )
+                .optional()?;
+            out.push(crate::heartbeat::SecretDelivery {
+                name: name.clone(),
+                version: *version,
+                value,
+                chain,
+            });
         }
         Ok(out)
     }
@@ -1214,20 +1224,6 @@ impl Store for SqliteStore {
             return Ok(false);
         };
         Ok(key.verify(name, &sealed, candidate))
-    }
-
-    fn certificate_matches(&self, name: &str, version: i64, certificate: &str) -> Result<bool, StoreError> {
-        let Some(key) = self.key_if_any()? else {
-            return Ok(false);
-        };
-        let conn = self.conn.lock().unwrap();
-        let Some(sealed) = Self::sealed(&conn, name, version)? else {
-            return Ok(false);
-        };
-        let Some(value) = key.open(name, &sealed) else {
-            return Ok(false);
-        };
-        Ok(super::tls::is_pair(certificate.as_bytes(), &value).is_ok())
     }
 
     fn list_worker_credentials(&self) -> Result<Vec<WorkerCredentialRecord>, StoreError> {
@@ -2871,7 +2867,19 @@ mod tests {
         assert_eq!(s.certificate_chain("leader", 2).unwrap().as_deref(), Some("chain 2"));
         assert_eq!(s.certificate_chain("kafka-west-sasl", 1).unwrap(), None);
         let delivered = s.secrets_for_delivery(&[("leader".to_string(), 2)], &[]).unwrap();
-        assert_eq!(delivered, [("leader".to_string(), 2, "key 2".to_string())]);
+        assert_eq!(
+            values(delivered.clone()),
+            [("leader".to_string(), 2, "key 2".to_string())]
+        );
+        assert_eq!(
+            delivered[0].chain.as_deref(),
+            Some("chain 2"),
+            "the chain travels with its key"
+        );
+        let plain = s
+            .secrets_for_delivery(&[("kafka-west-sasl".to_string(), 1)], &[])
+            .unwrap();
+        assert_eq!(plain[0].chain, None);
 
         s.delete_secret_version("leader", 1).unwrap();
         assert_eq!(
@@ -3203,6 +3211,11 @@ mod tests {
         assert!(!s.verify_secret("kafka-east-sasl", 1, "swordfish").unwrap());
     }
 
+    /// Each delivery's name, version and value.
+    fn values(delivered: Vec<crate::heartbeat::SecretDelivery>) -> Vec<(String, i64, String)> {
+        delivered.into_iter().map(|d| (d.name, d.version, d.value)).collect()
+    }
+
     /// Only the pairs the group's bundle quotes, and only what the worker lacks. The version is matched exactly:
     /// a worker asking about one it holds is told nothing, whatever else has been stored since.
     #[test]
@@ -3214,7 +3227,7 @@ mod tests {
         s.add_secret_version("es-auth", "ApiKey def").unwrap();
 
         let entitled = [("kafka-west-sasl".to_string(), 1), ("es-auth".to_string(), 1)];
-        let mut out = s.secrets_for_delivery(&entitled, &[]).unwrap();
+        let mut out = values(s.secrets_for_delivery(&entitled, &[]).unwrap());
         out.sort();
         assert_eq!(
             out,
@@ -3233,7 +3246,7 @@ mod tests {
 
         let bumped = [("es-auth".to_string(), 2)];
         assert_eq!(
-            s.secrets_for_delivery(&bumped, &held).unwrap(),
+            values(s.secrets_for_delivery(&bumped, &held).unwrap()),
             vec![("es-auth".to_string(), 2, "ApiKey def".to_string())],
             "and the bundle moving is what asks for the new one"
         );
@@ -3247,13 +3260,17 @@ mod tests {
         s.add_secret_version("es-auth", "ApiKey def").unwrap();
 
         assert_eq!(
-            s.secrets_for_delivery(&[("es-auth".to_string(), 2)], &[("es-auth".to_string(), 1)])
-                .unwrap(),
+            values(
+                s.secrets_for_delivery(&[("es-auth".to_string(), 2)], &[("es-auth".to_string(), 1)])
+                    .unwrap()
+            ),
             vec![("es-auth".to_string(), 2, "ApiKey def".to_string())]
         );
         assert_eq!(
-            s.secrets_for_delivery(&[("es-auth".to_string(), 1)], &[("es-auth".to_string(), 2)])
-                .unwrap(),
+            values(
+                s.secrets_for_delivery(&[("es-auth".to_string(), 1)], &[("es-auth".to_string(), 2)])
+                    .unwrap()
+            ),
             vec![("es-auth".to_string(), 1, "ApiKey abc".to_string())],
             "a rollback asks for the older one and gets it"
         );

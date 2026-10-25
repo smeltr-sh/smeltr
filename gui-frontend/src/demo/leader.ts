@@ -842,6 +842,7 @@ export class DemoLeader {
       filter: string | null;
       attribution?: boolean;
       after_dot: unknown;
+      capture_filter: unknown;
     },
   ): Promise<Answer> {
     const branch = this.branch(name) ?? this.state.branches.main;
@@ -862,6 +863,7 @@ export class DemoLeader {
       filter: req.filter,
       attribution: req.attribution ?? false,
       afterDot: req.after_dot ?? undefined,
+      captureFilter: req.capture_filter ?? undefined,
     });
   }
 
