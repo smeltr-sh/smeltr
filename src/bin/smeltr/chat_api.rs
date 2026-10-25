@@ -772,6 +772,10 @@ pub async fn sweep(auth: Auth) {
     let mut every = tokio::time::interval(SWEEP_EVERY);
     loop {
         every.tick().await;
+        // A slot only read, with no run and nobody holding it, is made again when next asked for. Never waited on:
+        // the map is held here.
+        let idle = |slot: &Slot| Arc::strong_count(slot) == 1 && slot.try_lock().is_ok_and(|run| run.is_none());
+        auth.chats.slots().retain(|_, slot| !idle(slot));
         let store = auth.store.clone();
         let swept = blocking(move || {
             let days = Settings::read(store.as_ref())?.keep_days;
