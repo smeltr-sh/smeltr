@@ -92,6 +92,8 @@ pub enum Condition {
     StreamUnrouted,
     SecretsKeyUnusable,
     SecretNeedsValue,
+    AcmeRenewalFailing,
+    LeaderCertificateRunningOut,
 }
 
 impl Condition {
@@ -129,6 +131,8 @@ impl Condition {
         Condition::StreamUnrouted,
         Condition::SecretsKeyUnusable,
         Condition::SecretNeedsValue,
+        Condition::AcmeRenewalFailing,
+        Condition::LeaderCertificateRunningOut,
     ];
 
     /// What this is called on the wire. The match is what makes a new entry a compile error here.
@@ -165,6 +169,8 @@ impl Condition {
             Condition::StreamUnrouted => "streamUnrouted",
             Condition::SecretsKeyUnusable => "secretsKeyUnusable",
             Condition::SecretNeedsValue => "secretNeedsValue",
+            Condition::AcmeRenewalFailing => "acmeRenewalFailing",
+            Condition::LeaderCertificateRunningOut => "leaderCertificateRunningOut",
         }
     }
 }
@@ -179,6 +185,12 @@ const AUTHORITY_NOTICE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// and a fleet that heartbeats every few seconds is done in minutes while one behind a weekly maintenance window
 /// is not. A tenth of a decade is a year, which is the pace this is for.
 const AUTHORITY_LAST_PART: f64 = 0.1;
+
+/// How long before a certificate good from `not_before_millis` to `not_after_millis` runs out it is said to be
+/// running out: the last part of its life. The GUI marks one by the same rule (`time.ts`).
+pub fn notice_millis(not_before_millis: i64, not_after_millis: i64) -> i64 {
+    ((not_after_millis - not_before_millis) as f64 * AUTHORITY_LAST_PART) as i64
+}
 
 /// A named condition about one object: what the design calls a warning. [`derive`] recomputes the whole list on
 /// every call; nothing here is stored, and there is nothing to acknowledge.
@@ -420,7 +432,7 @@ pub struct DeployedCertificate {
 ///
 /// A date rather than something observed, like the two authority entries: the leader reads it off the bundle, so
 /// the warning knows exactly when it began and needs nothing remembered. Notice is a tenth of that certificate's
-/// own life or thirty days, whichever is longer, because a tenth of a short-lived one is no notice at all.
+/// own life.
 ///
 /// One warning per identity per half, because an identity holds more than one certificate and they do not fail
 /// together. A presented chain is only as good as its soonest part. A trust store holds several roots on purpose --
@@ -476,8 +488,7 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
     let mut out: Vec<Warning> = decisive
         .into_values()
         .filter_map(|certificate| {
-            let life = certificate.not_after_millis - certificate.not_before_millis;
-            let notice = ((life as f64 * AUTHORITY_LAST_PART) as i64).max(AUTHORITY_NOTICE.as_millis() as i64);
+            let notice = notice_millis(certificate.not_before_millis, certificate.not_after_millis);
             let remaining = certificate.not_after_millis - now_ms;
             // Not yet valid is a current failure, not a countdown, so it is reported whatever the notice window
             // says about a `not_after` still years off: a TLS peer rejects it today regardless of when it expires.
@@ -515,7 +526,7 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
                 },
                 // Clamped to the certificate's own start: one shorter-lived than the notice window would otherwise
                 // read as having warned before it existed.
-                since_millis: Some((certificate.not_after_millis - notice).max(certificate.not_before_millis)),
+                since_millis: Some(certificate.not_after_millis - notice),
                 message: match (certificate.half, not_yet_valid, expired) {
                     (Half::Presented, true, _) => format!(
                         "the certificate identity {id:?} presents is not valid yet, so every source and \
@@ -586,10 +597,7 @@ fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &R
     let Some(authority) = signing.filter(|_| !matches!(rotating, Rotating::UnderWay)) else {
         return Vec::new();
     };
-    let life = authority.not_after_millis - authority.not_before_millis;
-    // Whichever is longer. A tenth of a very short authority is hours, which is no notice at all, and a leader
-    // configured with one is a leader always about to lose it -- which is what saying so from the start means.
-    let notice = ((life as f64 * AUTHORITY_LAST_PART) as i64).max(AUTHORITY_NOTICE.as_millis() as i64);
+    let notice = notice_millis(authority.not_before_millis, authority.not_after_millis);
     let remaining = authority.not_after_millis - now_ms;
     if remaining > notice {
         return Vec::new();
@@ -611,7 +619,7 @@ fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &R
             // naming that would send them to a page that turns them away.
             (_, Rotating::Stuck(why) | Rotating::Unreadable(why)) => format!(
                 "this leader's certificate authority {} and the rotation meant to replace it cannot finish: {why} \
-                 Put that right, or abandon the rotation on the Certificates page and start another",
+                 Put that right, or abandon the rotation in Admin → System → Leader certificate and start another",
                 if expired {
                     "has expired".to_string()
                 } else {
@@ -619,14 +627,124 @@ fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &R
                 }
             ),
             (true, _) => "this leader's certificate authority has expired, and no worker given it can verify this \
-                 leader any more. Rotate it on the Certificates page"
+                 leader any more. Rotate it in Admin → System → Leader certificate"
                 .to_string(),
             (false, _) => format!(
-                "this leader's certificate authority expires in {days} days. Rotate it on the Certificates page: \
+                "this leader's certificate authority expires in {days} days. Rotate it in Admin → System → Leader certificate: \
                  every worker has to take the new one before this leader signs under it"
             ),
         },
     }]
+}
+
+/// The certificate this leader serves, as its warnings read it.
+pub struct Serving {
+    pub certificate: crate::leader::tls::Described,
+    pub source: crate::leader::acme::Source,
+    /// The entry in the certificate list it is a copy of, for an uploaded one.
+    pub entry: Option<String>,
+    /// What the last order left, for one ACME renews.
+    pub acme: crate::leader::acme::State,
+}
+
+/// The certificate this leader serves running out. One ACME renews is said once a renewal is due and the last try
+/// failed, which is two thirds of the way through its life rather than the last tenth: the leader has been trying,
+/// and the operator has most of a third to put it right. Any other is said in its last tenth, by [`notice_millis`],
+/// and so is an ACME one ACME has stopped trying to renew.
+pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
+    let certificate = &serving.certificate;
+    let remaining = certificate.not_after_millis - now_ms;
+    let expired = remaining <= 0;
+    let when = if expired {
+        "has expired".to_string()
+    } else {
+        format!("expires in {} days", remaining / (24 * 60 * 60 * 1000))
+    };
+    let acme = &serving.acme;
+    let failing = match (
+        acme.last_error.as_deref(),
+        acme.renew_after_millis,
+        acme.last_attempt_millis,
+    ) {
+        // Tried since it fell due: an error from before then, such as a Renew now that failed early, is not a
+        // renewal failing.
+        (Some(error), Some(due), Some(tried)) if tried >= due => Some((error, due)),
+        _ => None,
+    };
+    let (condition, since_millis, message) = match (serving.source, failing) {
+        (crate::leader::acme::Source::Acme, Some((error, due))) => {
+            let error = one_line(error);
+            // The error last, so a long one clipped costs nothing and nothing after it reads as the authority's.
+            let message = if expired {
+                format!(
+                    "this leader could not renew its certificate, and the certificate has expired. Check the ACME \
+                     settings in Admin → System → Leader certificate. Last error: {error}"
+                )
+            } else {
+                format!(
+                    "this leader could not renew its certificate. It tries again every hour, and the certificate \
+                     {when}. Check the ACME settings in Admin → System → Leader certificate. Last error: {error}"
+                )
+            };
+            (Condition::AcmeRenewalFailing, due, message)
+        }
+        (source, _) => {
+            // An ACME certificate reaches its last tenth unrenewed and without a failure only where ACME stopped
+            // trying: turned off, or its names no longer orderable.
+            let notice = notice_millis(certificate.not_before_millis, certificate.not_after_millis);
+            if remaining > notice {
+                return Vec::new();
+            }
+            let message = match (source, &serving.entry) {
+                (crate::leader::acme::Source::Acme, _) => format!(
+                    "this leader's certificate {when}, and ACME is not renewing it. Check the ACME settings in Admin \
+                     → System → Leader certificate"
+                ),
+                (crate::leader::acme::Source::Upload, Some(entry)) => format!(
+                    "this leader's certificate {entry:?} {when}. Replace it in Admin → Certificates, and the leader \
+                     serves the new version"
+                ),
+                _ => {
+                    format!("this leader's certificate {when}. Issue a new one in Admin → System → Leader certificate")
+                }
+            };
+            (
+                Condition::LeaderCertificateRunningOut,
+                certificate.not_after_millis - notice,
+                message,
+            )
+        }
+    };
+    vec![Warning {
+        scope: None,
+        condition,
+        subject_kind: SubjectKind::Leader,
+        site: None,
+        subject_id: certificate
+            .names
+            .first()
+            .cloned()
+            .unwrap_or_else(|| certificate.subject.clone()),
+        group: None,
+        severity: if expired { Severity::Failed } else { Severity::Warning },
+        since_millis: Some(since_millis),
+        message,
+    }]
+}
+
+/// An authority's error as the end of a row: its first line, without a full stop, as no row ends in one, and short
+/// enough to leave the row readable.
+fn one_line(error: &str) -> String {
+    const LONGEST: usize = 200;
+    let line = error.lines().next().unwrap_or_default().trim().trim_end_matches('.');
+    match line.char_indices().nth(LONGEST) {
+        // At the last word that fits, so a clipped error does not end mid-word.
+        Some((cut, _)) => format!(
+            "{}…",
+            line[..cut].rsplit_once(' ').map_or(&line[..cut], |(kept, _)| kept)
+        ),
+        None => line.to_string(),
+    }
 }
 
 /// The outstanding enrollment codes that name a root this rotation is about to retire.
@@ -656,7 +774,7 @@ fn enrollment_code_names_outgoing_authority(
             subject_id: code.id.clone(),
             group: (!code.group_id.is_empty()).then(|| code.group_id.clone()),
             severity: Severity::Warning,
-            // The rotation's own start, which the Certificates page already shows against the rotation itself.
+            // The rotation's own start, which the Leader certificate tab already shows against the rotation itself.
             // Repeating it on every enrollment code it dooms would be one date said many times and acted on once.
             since_millis: None,
             message:
@@ -3117,6 +3235,149 @@ mod tests {
         }
     }
 
+    // -- the certificate this leader serves -----------------------------------
+
+    /// What this leader serves: a 45-day certificate with `remaining_days` left, from `source`.
+    fn serving(source: crate::leader::acme::Source, remaining_days: i64) -> Serving {
+        let not_after_millis = NOW + remaining_days * DAY;
+        Serving {
+            certificate: crate::leader::tls::Described {
+                subject: "smeltr.example.com".to_string(),
+                fingerprint: "cd".repeat(32),
+                names: vec!["smeltr.example.com".to_string()],
+                not_before_millis: not_after_millis - 45 * DAY,
+                not_after_millis,
+            },
+            source,
+            entry: None,
+            acme: crate::leader::acme::State {
+                renew_after_millis: Some(not_after_millis - 15 * DAY),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The last try, at `NOW`, failed with `error`.
+    fn failing(mut serving: Serving, error: &str) -> Serving {
+        serving.acme.last_error = Some(error.to_string());
+        serving.acme.last_attempt_millis = Some(NOW);
+        serving
+    }
+
+    /// Said once a renewal is due and the last try failed, dated from when it fell due: the leader has been trying
+    /// since then.
+    #[test]
+    fn a_failing_acme_renewal_is_said_from_when_it_fell_due() {
+        let due = failing(
+            serving(crate::leader::acme::Source::Acme, 12),
+            "the authority refused the order.",
+        );
+        let said = leader_certificate(&due, NOW);
+        assert_eq!(said.len(), 1);
+        assert_eq!(said[0].condition, Condition::AcmeRenewalFailing);
+        assert_eq!(said[0].severity, Severity::Warning);
+        assert_eq!(said[0].since_millis, due.acme.renew_after_millis);
+        assert_eq!(said[0].subject_id, "smeltr.example.com");
+        assert!(
+            said[0].message.ends_with("Last error: the authority refused the order"),
+            "{}",
+            said[0].message
+        );
+        assert!(said[0].message.contains("expires in 12 days"), "{}", said[0].message);
+    }
+
+    /// A renewal not yet due, or one that has not failed, is nothing to say.
+    #[test]
+    fn an_acme_certificate_renewing_on_time_is_not_said() {
+        let early = failing(serving(crate::leader::acme::Source::Acme, 20), "the authority is down");
+        assert!(leader_certificate(&early, NOW).is_empty(), "failed before it was due");
+        let quiet = serving(crate::leader::acme::Source::Acme, 10);
+        assert!(leader_certificate(&quiet, NOW).is_empty(), "due, and nothing failed");
+    }
+
+    /// An error from before the renewal fell due, such as a Renew now that failed early, is not the renewal
+    /// failing: nothing has tried since.
+    #[test]
+    fn an_error_from_before_the_renewal_fell_due_is_not_said() {
+        let mut stale = failing(serving(crate::leader::acme::Source::Acme, 12), "the authority is down");
+        stale.acme.last_attempt_millis = stale.acme.renew_after_millis.map(|due| due - 1);
+        assert!(leader_certificate(&stale, NOW).is_empty());
+    }
+
+    /// ACME turned off, or its names no longer orderable, tries nothing and records no failure: the certificate
+    /// still has to be said before it runs out.
+    #[test]
+    fn an_acme_certificate_nothing_renews_is_said_in_its_last_tenth() {
+        let said = leader_certificate(&serving(crate::leader::acme::Source::Acme, 4), NOW);
+        assert_eq!(said[0].condition, Condition::LeaderCertificateRunningOut);
+        assert!(
+            said[0]
+                .message
+                .starts_with("this leader's certificate expires in 4 days, and ACME is not renewing it"),
+            "{}",
+            said[0].message
+        );
+    }
+
+    #[test]
+    fn an_acme_certificate_that_ran_out_is_a_failure() {
+        let expired = failing(serving(crate::leader::acme::Source::Acme, -1), "the authority is down");
+        let said = leader_certificate(&expired, NOW);
+        assert_eq!(said[0].severity, Severity::Failed);
+        assert!(
+            said[0]
+                .message
+                .starts_with("this leader could not renew its certificate, and the certificate has expired"),
+            "{}",
+            said[0].message
+        );
+    }
+
+    /// An uploaded certificate is said in its last tenth, by the entry it is a copy of, where it is replaced.
+    #[test]
+    fn an_uploaded_certificate_is_said_in_its_last_tenth() {
+        let mut uploaded = serving(crate::leader::acme::Source::Upload, 5);
+        uploaded.entry = Some("web".to_string());
+        assert!(
+            leader_certificate(&uploaded, NOW).is_empty(),
+            "45 days, 5 left: not in its last tenth yet"
+        );
+
+        let mut uploaded = serving(crate::leader::acme::Source::Upload, 4);
+        uploaded.entry = Some("web".to_string());
+        let said = leader_certificate(&uploaded, NOW);
+        assert_eq!(said[0].condition, Condition::LeaderCertificateRunningOut);
+        assert_eq!(
+            said[0].since_millis,
+            Some(uploaded.certificate.not_after_millis - 45 * DAY / 10)
+        );
+        assert!(
+            said[0]
+                .message
+                .starts_with("this leader's certificate \"web\" expires in 4 days. Replace it")
+        );
+    }
+
+    #[test]
+    fn the_leaders_own_certificate_is_issued_again_where_it_was_issued() {
+        let said = leader_certificate(&serving(crate::leader::acme::Source::Own, 0), NOW + 1);
+        assert_eq!(said[0].severity, Severity::Failed);
+        assert_eq!(
+            said[0].message,
+            "this leader's certificate has expired. Issue a new one in Admin → System → Leader certificate"
+        );
+    }
+
+    /// An authority's error goes inside a sentence, so it must not end the sentence or swamp the row.
+    #[test]
+    fn an_authority_error_is_one_clause() {
+        assert_eq!(one_line("refused.\ndetail"), "refused");
+        let long = "word ".repeat(60);
+        let clipped = one_line(&long);
+        assert!(clipped.chars().count() <= 201, "{clipped}");
+        assert!(clipped.ends_with("word…"), "{clipped}");
+    }
+
     // -- a deployed identity's certificates -----------------------------------
 
     /// One certificate an identity carries: how long it is good for, and how much of that is left. Every caller
@@ -3251,15 +3512,6 @@ mod tests {
         assert_eq!(said[0].since_millis, Some(year.not_after_millis - notice));
     }
 
-    /// The thirty-day floor on notice is longer than a two-day certificate's whole life, so the naive start
-    /// predates the certificate itself. Clamped to when the certificate actually began.
-    #[test]
-    fn a_short_certificates_warning_never_begins_before_it_did() {
-        let short = carried("acme", Half::Presented, 2, 1);
-        let said = identity_expiring(std::slice::from_ref(&short), NOW);
-        assert_eq!(said[0].since_millis, Some(short.not_before_millis));
-    }
-
     /// A chain is only as good as its soonest part: an intermediate that has run out breaks it whatever the leaf
     /// says about itself.
     #[test]
@@ -3326,8 +3578,8 @@ mod tests {
     fn two_commits_carrying_the_same_untouched_certificate_are_one_warning() {
         let said = identity_expiring(
             &[
-                on_commit("acme", Half::Trusted, 30, 5, "old"),
-                on_commit("acme", Half::Trusted, 30, 5, "new"),
+                on_commit("acme", Half::Trusted, 30, 2, "old"),
+                on_commit("acme", Half::Trusted, 30, 2, "new"),
             ],
             NOW,
         );
@@ -3380,14 +3632,6 @@ mod tests {
         assert_eq!(said.len(), 1, "a tenth of a decade left and nothing said");
         assert_eq!(said[0].severity, Severity::Warning);
         assert_eq!(said[0].subject_kind, SubjectKind::Leader);
-    }
-
-    /// A tenth of a very short authority is no notice at all, and a leader configured with one is always about to
-    /// lose it. Saying so from the start is what that means.
-    #[test]
-    fn a_short_lived_authority_is_never_out_of_its_last_part() {
-        let brief = authority(2, 1);
-        assert_eq!(authority_aging(Some(&brief), &Rotating::None, NOW).len(), 1);
     }
 
     /// The answer is already under way, and a warning nobody can clear is one an operator learns to ignore.

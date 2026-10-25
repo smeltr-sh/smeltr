@@ -69,6 +69,8 @@
     type IdentityDto,
     type SecretDto,
     type FileConfigDto,
+    type AskAt,
+    afterDot,
     TAG_FIELD,
   } from './api';
   import { mintRouteId } from './ids';
@@ -169,6 +171,9 @@
   });
   /** A save's errors on a route's condition and its rules' `when`, drawn on them by `RouteFlow`. */
   const validation = provideValidation('routes');
+  /** Asks the engine what may follow a dot in a route's expression, over the routes as they are being written. */
+  const askAt: AskAt = (at) => (text, dot) =>
+    afterDot({ config: JSON.stringify({ ...loadedConfig, routes }), at, text, dot });
   const routesEditor = new SectionEditor<RouteDto[]>('routes', {
     get: () => routes,
     set: (value) => (routes = value.map(withRules)),
@@ -613,6 +618,7 @@
             {/snippet}
             <RouteFlow
               routes={card.routes}
+              {askAt}
               {sourceIds}
               {pipelineIds}
               {destinationIds}

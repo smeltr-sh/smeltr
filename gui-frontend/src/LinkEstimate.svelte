@@ -4,7 +4,7 @@
   worker's `derive_sizes`). An estimate, and it says so: the worker measures the round trip and asks
   the broker for its ceiling at deployment, and those two figures are typed here.
 
-  The same native `popover` as `Help.svelte`, placed under its own button.
+  The same native `popover` as `Help.svelte`, placed under its own button by `float.ts`.
 -->
 <script module lang="ts">
   let seq = 0;
@@ -14,6 +14,7 @@
   import { bytes, parseBytes, exactBytes } from './bytes';
   import { DEFAULT_BROKER_CEILING, estimateLink } from './linkEstimate';
   import CalculatorIcon from './CalculatorIcon.svelte';
+  import { follow } from './float';
 
   /** The buffer the field beside this holds, default filled in. Re-read each time the popover opens. */
   let { bufferBytes }: { bufferBytes: number } = $props();
@@ -33,23 +34,7 @@
     estimateLink({ bufferBytes: buffer, roundTripMs, partitions, brokerCeiling: ceiling }),
   );
 
-  function place() {
-    bufferText = exactBytes(bufferBytes);
-    const b = ask.getBoundingClientRect();
-    pop.style.left = `${b.left}px`;
-    pop.style.top = `${b.bottom + 6}px`;
-  }
-
-  function clamp() {
-    const r = pop.getBoundingClientRect();
-    const overX = r.right - (window.innerWidth - 8);
-    if (overX > 0) pop.style.left = `${Math.max(8, r.left - overX)}px`;
-    const overY = r.bottom - (window.innerHeight - 8);
-    if (overY > 0) {
-      const b = ask.getBoundingClientRect();
-      pop.style.top = `${Math.max(8, b.top - r.height - 6)}px`;
-    }
-  }
+  let stop: (() => void) | undefined;
 
   function number(e: Event, fallback: number): number {
     const n = Number((e.currentTarget as HTMLInputElement).value);
@@ -71,10 +56,11 @@
   popover
   class="pop"
   onbeforetoggle={(e) => {
-    if ((e as ToggleEvent).newState === 'open') place();
-  }}
-  ontoggle={(e) => {
-    if ((e as ToggleEvent).newState === 'open') clamp();
+    stop?.();
+    stop = undefined;
+    if ((e as ToggleEvent).newState !== 'open') return;
+    bufferText = exactBytes(bufferBytes);
+    stop = follow(pop, () => ask.getBoundingClientRect()).stop;
   }}
 >
   <p class="lead">
@@ -170,9 +156,6 @@
   }
 
   .pop {
-    position: fixed;
-    inset: auto;
-    margin: 0;
     width: min(22rem, calc(100vw - 1rem));
     padding: 0.7rem 0.85rem 0.8rem;
     border: 1px solid var(--border);

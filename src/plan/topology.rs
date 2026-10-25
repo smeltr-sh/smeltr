@@ -3422,6 +3422,17 @@ fn compile_deliver_rule(
     })
 }
 
+/// The names an expression over `plan`'s finished batch reads, for a row from a source of `meta`: the pipeline's
+/// output, the source's own fields, and the route's tag field.
+pub(crate) fn output_symbols(plan: &Plan, tag_field: &str, meta: &SourceMeta) -> SymbolTable {
+    SymbolTable::over_plan_output(
+        &plan.delivery_layout(),
+        &plan.tree,
+        &ingest_fields(meta),
+        &[(tag_field, plan.tag_slot())],
+    )
+}
+
 /// Compile `src`, called `what` in an error, as a condition over `plan`'s finished batch: what a `deliver` rule reads,
 /// and what a filter at a destination reads. Evaluated with `Ctx::patterns` pointed at the patterns it returns.
 pub(crate) fn output_condition(
@@ -3433,13 +3444,7 @@ pub(crate) fn output_condition(
 ) -> Result<(Ir, Vec<crate::core::ctx::CompiledPattern>), CompileError> {
     let mut res = ResourceBuilder::default();
     let ast = parse(src, None)?;
-    let mut syms = SymbolTable::over_plan_output(
-        &plan.delivery_layout(),
-        &plan.tree,
-        &ingest_fields(meta),
-        &[(tag_field, plan.tag_slot())],
-    );
-    let ir = flatten(resolve(&ast, &mut syms, &mut res)?);
+    let ir = flatten(resolve(&ast, &mut output_symbols(plan, tag_field, meta), &mut res)?);
     let ir = condition(ir, src, what)?;
     Ok((ir, crate::plan::plan::compile_patterns(&res.patterns)?))
 }

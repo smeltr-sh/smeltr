@@ -137,9 +137,8 @@
 >
   {#snippet help()}
     The columns a table it creates is partitioned by, each a top-level column of the record. A table
-    that exists keeps its own.
+    that exists keeps its own. Default none: an unpartitioned table.
   {/snippet}
-  {#snippet note()}Default none: an unpartitioned table.{/snippet}
   <TokenListInput
     bind:values={
       () => d.partitionBy ?? [],
@@ -184,7 +183,7 @@
     />
   {/if}
 </Advanced>
-<TableDelivery value={d} calls="the store" commit="a version the table's log keeps" />
+<TableDelivery value={d} calls="the store" commit="a version to the table's log" />
 
 <style>
   input,

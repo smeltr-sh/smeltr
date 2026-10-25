@@ -32,6 +32,18 @@ export function expiry(unixMillis: number, now: number = Date.now()): string {
   return `expires in ${count(Math.round(days / 365), 'year')}`;
 }
 
+const DAY = 86_400_000;
+
+/** Whether a certificate is running out, by the leader's rule for its warning
+ * (`leader::warnings::notice_millis`): within the last tenth of its life. */
+export function expiringSoon(
+  cert: { notBeforeMillis: number; notAfterMillis: number },
+  now: number = Date.now(),
+): boolean {
+  const notice = (cert.notAfterMillis - cert.notBeforeMillis) / 10;
+  return cert.notAfterMillis - now <= notice;
+}
+
 /** Time left until `unixMillis`, to the second, such as `1 day 06:22:51`: for a moment somebody is
  * watching arrive, where the page ticks it each second. */
 export function countdown(unixMillis: number, now: number = Date.now()): string {
