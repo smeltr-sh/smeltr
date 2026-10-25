@@ -70,6 +70,7 @@
     paint,
     wrap = false,
     ask,
+    required = false,
   }: {
     value: string;
     errors?: string[];
@@ -102,6 +103,8 @@
     /** Asks the engine what may follow the `.` at `dot` in `text`, where this expression sits (`afterDot`). Absent,
      * every function written on a value may. */
     ask?: (text: string, dot: number) => Promise<DotAnswer | null>;
+    /** As `PasswordField`'s. */
+    required?: boolean;
   } = $props();
 
   /** A `wrap` field being written in: left, it shows its text laid out instead. */
@@ -473,6 +476,7 @@
       rows={wrap ? 1 : rows}
       {placeholder}
       aria-label={ariaLabel}
+      aria-required={required || undefined}
       bind:value
       class:field-error={!!matched}
       aria-invalid={!!matched}
@@ -498,6 +502,7 @@
       type="text"
       {placeholder}
       aria-label={ariaLabel}
+      aria-required={required || undefined}
       bind:value
       class:field-error={!!matched}
       aria-invalid={!!matched}

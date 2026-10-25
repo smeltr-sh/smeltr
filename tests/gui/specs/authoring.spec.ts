@@ -770,6 +770,8 @@ test('A2: the parser proposes its declared fields from a sample, and the analyst
   await jsonPipeline(api, 'orders', [], { id: 'orders-sample', name: 'orders', records: ORDERS });
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  // The sample in the URL is chosen once the samples have loaded; Suggest fields before then has none to read.
+  await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
   await admin.getByRole('button', { name: /_raw as JSON/ }).click();
   await admin.getByRole('button', { name: 'Suggest fields' }).click();
 
@@ -812,6 +814,7 @@ test('A3: the proposal says which fields some rows lack and where rows disagree 
   await jsonPipeline(api, 'orders', [], { id: 'orders-sample', name: 'orders', records: ORDERS });
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
   await admin.getByRole('button', { name: /_raw as JSON/ }).click();
   await admin.getByRole('button', { name: 'Suggest fields' }).click();
 
