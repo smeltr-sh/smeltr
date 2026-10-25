@@ -217,7 +217,7 @@
         {#snippet body(source)}
           <Connections kind="source" id={source.id} />
           <div class="pair">
-            <Field field="id" label="id">
+            <Field required field="id" label="id">
               <input type="text" bind:value={source.id} />
             </Field>
             <Field label="type"><span class="fixed">{typeLabel(source.type)}</span></Field>

@@ -99,7 +99,7 @@ export const MECHANISM_FIELDS: Record<string, MechanismField[]> = {
       prop: 'sasl.oauthbearer.scope',
       label: 'scope',
       secret: false,
-      note: 'Optional; the authorization server decides whether it wants one.',
+      note: 'Leave it empty and the authorization server decides whether it wants one.',
       optional: true,
     },
   ],

@@ -17,7 +17,7 @@
   } = $props();
 </script>
 
-<Field field="lineBreaker" label="line breaker">
+<Field field="lineBreaker" label="line breaker" optional>
   {#snippet help()}
     Where a record ends. The first capture group is required and will be dropped. E.g.
     <code>{'</event>(\\s*)'}</code> ends a record after each <code>{'</event>'}</code> and drops the

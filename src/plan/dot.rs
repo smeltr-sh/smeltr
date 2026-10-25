@@ -123,6 +123,26 @@ pub fn fields_of(ty: &DataType) -> &[(String, DataType)] {
     }
 }
 
+/// What a value has where it is of either type: a struct holds the keys both hold, each met the same way, and is open
+/// where either is or a key is left out. Any other pair meets as `DataType::unify` meets it. None where they do not
+/// meet.
+pub fn common(a: &DataType, b: &DataType) -> Option<DataType> {
+    match (a, b) {
+        (DataType::Struct(fa, oa), DataType::Struct(fb, ob)) => {
+            let fields: Vec<(String, DataType)> = (fa.iter())
+                .filter_map(|(name, x)| {
+                    let (_, y) = fb.iter().find(|(n, _)| n == name)?;
+                    Some((name.clone(), common(x, y)?))
+                })
+                .collect();
+            let open = *oa || *ob || fields.len() < fa.len().max(fb.len());
+            Some(DataType::Struct(fields, open))
+        }
+        (DataType::Array(x), DataType::Array(y)) => common(x, y).map(|e| DataType::Array(Box::new(e))),
+        _ => a.unify(b),
+    }
+}
+
 /// A function a call on a value may name: what its first parameter takes, and whether that takes `ty`.
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub struct Method {
@@ -247,6 +267,34 @@ mod tests {
         assert_eq!(ty("parseUrl(_raw).path."), Some(DataType::Str));
         assert!(matches!(ty("parseUrl(_raw)."), Some(DataType::Struct(..))));
         assert_eq!(ty("nope."), None);
+    }
+
+    #[test]
+    fn what_two_types_have_in_common_is_the_keys_both_hold() {
+        let st = |fields: &[(&str, DataType)], open| {
+            DataType::Struct(fields.iter().map(|(n, t)| (n.to_string(), t.clone())).collect(), open)
+        };
+        let a = st(
+            &[("ip", DataType::Str), ("n", DataType::I64), ("only", DataType::Bool)],
+            false,
+        );
+        let b = st(&[("n", DataType::F64), ("ip", DataType::Str)], false);
+        assert_eq!(
+            common(&a, &b),
+            Some(st(&[("ip", DataType::Str), ("n", DataType::F64)], true))
+        );
+        let same = st(&[("ip", DataType::Str)], false);
+        assert_eq!(common(&same, &same), Some(same.clone()));
+        // A key whose types do not meet is left out; the struct around it stays.
+        let bytes = st(&[("ip", DataType::Bytes)], false);
+        assert_eq!(common(&same, &bytes), Some(st(&[], true)));
+        let arr = |t: DataType| DataType::Array(Box::new(t));
+        assert_eq!(
+            common(&arr(a.clone()), &arr(b)),
+            Some(arr(st(&[("ip", DataType::Str), ("n", DataType::F64)], true)))
+        );
+        assert_eq!(common(&DataType::I64, &DataType::F64), Some(DataType::F64));
+        assert_eq!(common(&DataType::Str, &DataType::Bytes), None);
     }
 
     #[test]

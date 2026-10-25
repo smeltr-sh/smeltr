@@ -297,7 +297,7 @@
             label="Expected throughput"
             modified={warnings.sourceRowsBandPercent !== warnings.defaultPercent}
           >
-            <Field label="Range">
+            <Field required label="Range">
               {#snippet help()}
                 The expected range of a source's throughput based on this time of day.
               {/snippet}
@@ -347,7 +347,7 @@
             </h3>
           </div>
           <div class="fields">
-            <Field label="Idle timeout">
+            <Field required label="Idle timeout">
               <UnitInput
                 bind:value={idleShown}
                 unit={idleUnit.label}
@@ -357,7 +357,7 @@
                 required
               />
             </Field>
-            <Field label="Maximum session age">
+            <Field required label="Maximum session age">
               <UnitInput
                 bind:value={absoluteShown}
                 unit={absoluteUnit.label}

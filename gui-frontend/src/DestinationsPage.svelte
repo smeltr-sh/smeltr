@@ -190,7 +190,7 @@
         {#snippet body(destination)}
           <Connections kind="destination" id={destination.id} />
           <div class="pair">
-            <Field field="id" label="id">
+            <Field required field="id" label="id">
               <input type="text" bind:value={destination.id} />
             </Field>
             <Field label="type"><span class="fixed">{typeLabel(destination.type)}</span></Field>

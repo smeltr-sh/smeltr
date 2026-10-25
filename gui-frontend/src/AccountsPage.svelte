@@ -450,10 +450,10 @@
   >
     <div class="fields">
       <div class="pair">
-        <Field label="Display name">
+        <Field required label="Display name">
           <input bind:value={newDisplayName} required />
         </Field>
-        <Field label="Username">
+        <Field required label="Username">
           <input bind:value={newUsername} autocomplete="off" required />
         </Field>
       </div>
@@ -465,7 +465,7 @@
   </Dialog>
 
   <Dialog open={naming} title="new role" oncancel={() => (naming = false)} onsubmit={named}>
-    <Field label="Role" error={nameTaken ? 'There is a role by this name already.' : null}>
+    <Field required label="Role" error={nameTaken ? 'There is a role by this name already.' : null}>
       {#snippet help()}
         The group exactly as your provider names it. Accounts in that group hold what the role
         gives.
@@ -685,7 +685,7 @@
 
                   {#if renaming}
                     <form class="panel" onsubmit={(e) => rename(e, person)}>
-                      <Field label="Display name">
+                      <Field required label="Display name">
                         {#snippet help()}Only the name shown in smeltr changes.{/snippet}
                         <input bind:value={renameTo} required />
                       </Field>

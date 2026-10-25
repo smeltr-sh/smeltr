@@ -271,7 +271,7 @@
 
     <Dialog open={adding} title="new secret" oncancel={cancelAdding} onsubmit={add}>
       <div class="form-body">
-        <Field label="Name" error={nameProblem(newName)}>
+        <Field required label="Name" error={nameProblem(newName)}>
           {#snippet help()}The name a source or destination picks it by. Letters, digits, - _ and .{/snippet}
           <input bind:value={newName} placeholder="kafka-west-sasl" class="mono" />
         </Field>
@@ -288,13 +288,13 @@
         </Field>
         {#if newCustody === 'leader-stored'}
           <Nested>
-            <Field label="Value">
+            <Field required label="Value">
               {#snippet help()}Stored encrypted and never shown again.{/snippet}
               <PasswordField bind:value={newValue} ariaLabel="value" />
             </Field>
           </Nested>
         {/if}
-        <Field label="Description">
+        <Field optional label="Description">
           <input bind:value={newDescription} placeholder="the west broker's SCRAM password" />
         </Field>
       </div>

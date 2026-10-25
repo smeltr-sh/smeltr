@@ -78,7 +78,7 @@
 >
   {#if draft}
     <div class="form-body">
-      <Field label="id" error={idProblem(draft.id, unavailable)}>
+      <Field required label="id" error={idProblem(draft.id, unavailable)}>
         <input type="text" class="mono" bind:value={draft.id} />
       </Field>
       {@render fields(draft)}
