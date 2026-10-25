@@ -10,6 +10,8 @@
 <script lang="ts">
   import { reported } from './errors.svelte';
   import Field from './Field.svelte';
+  import Clamped from './Clamped.svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { getSample, putSample, type SampleDto, type SampleRecordDto } from './api';
   import {
     cellMistyped,
@@ -17,8 +19,6 @@
     editColumns,
     matches,
     pastedRecords,
-    readFrom,
-    readFromFields,
     withCell,
     type EditColumn,
   } from './sampleEdit';
@@ -48,7 +48,6 @@
   let source = $state('');
   let rows: Row[] = $state([]);
   let columns: EditColumn[] = $state([]);
-  let readFields: string[] = $state([]);
   let selected: Set<number> = $state(new Set());
   let editing: number | null = $state(null);
   let query = $state('');
@@ -68,7 +67,6 @@
       source = got.sample.source ?? '';
       rows = got.sample.records.map((record, key) => ({ key, record, changed: false }));
       columns = editColumns(got.sample);
-      readFields = readFromFields(got.sample);
     } catch (e) {
       loadFailed = true;
       reported(e);
@@ -99,8 +97,14 @@
     editing = null;
   }
 
+  // Which long cells the reader has opened, by record and column.
+  const opened = new SvelteSet<string>();
+  /** Past this many characters a cell is given room to be read in: with every internal field a column, the table
+   * would otherwise squeeze it to a sliver. */
+  const LONG = 60;
+
   function open(e: Event, key: number) {
-    if (!(e.target as Element).closest('.tick, .right')) editing = key;
+    if (!(e.target as Element).closest('.tick, .right, .more')) editing = key;
   }
 
   function remove(key: number) {
@@ -200,9 +204,6 @@
                   >{c.name}{#if c.type}<small>{c.type}</small>{/if}</th
                 >
               {/each}
-              {#if readFields.length > 0}
-                <th>Read from<small>{readFields.join(' · ')}</small></th>
-              {/if}
               <th></th>
             </tr>
           </thead>
@@ -244,14 +245,22 @@
                       />
                     </td>
                   {:else}
-                    <td class="mono" class:error={cellMistyped(r.record, c.name)}
-                      >{cellText(r.record, c.name)}</td
+                    {@const text = cellText(r.record, c.name)}
+                    {@const at = `${r.key}/${c.name}`}
+                    <td
+                      class="mono"
+                      class:long={text.length > LONG}
+                      class:error={cellMistyped(r.record, c.name)}
                     >
+                      <Clamped
+                        {text}
+                        open={opened.has(at)}
+                        ontoggle={() => (opened.has(at) ? opened.delete(at) : opened.add(at))}
+                        label={`${c.name}, record ${r.key + 1}`}
+                      />
+                    </td>
                   {/if}
                 {/each}
-                {#if readFields.length > 0}
-                  <td class="mono dim nowrap">{readFrom(r.record, readFields)}</td>
-                {/if}
                 <td class="right">
                   <button
                     type="button"
@@ -335,8 +344,8 @@
   .mono {
     font-family: var(--mono);
   }
-  .nowrap {
-    white-space: nowrap;
+  td.long {
+    min-width: 28rem;
   }
   .table-wrap {
     overflow-x: auto;
