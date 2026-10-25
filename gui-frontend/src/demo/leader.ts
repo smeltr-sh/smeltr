@@ -841,6 +841,7 @@ export class DemoLeader {
       at_micros: number | null;
       filter: string | null;
       after_dot: unknown;
+      capture_filter: unknown;
     },
   ): Promise<Answer> {
     const branch = this.branch(name) ?? this.state.branches.main;
@@ -860,6 +861,7 @@ export class DemoLeader {
       atMicros: req.at_micros,
       filter: req.filter,
       afterDot: req.after_dot ?? undefined,
+      captureFilter: req.capture_filter ?? undefined,
     });
   }
 

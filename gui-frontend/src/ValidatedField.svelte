@@ -126,6 +126,8 @@
 
   /** The most lines a left `wrap` field shows. */
   const WRAP_LINES = 3;
+  /** The text the rest view draws, as it is laid out, for its marks. */
+  let restText = $state('');
   /** Draws `src` laid out into the rest view, again whenever its room changes size. */
   function wrapTo(src: string): Attachment<HTMLElement> {
     return (el) => {
@@ -153,6 +155,7 @@
           el.style.width = `${Math.ceil(longest * ch + edges)}px`;
         }
         el.innerHTML = lines.map(highlight).join('\n');
+        restText = lines.join('\n');
       };
       draw();
       const ro = new ResizeObserver(draw);
@@ -206,6 +209,14 @@
         : [],
   );
   let whole = $derived(!!matched && runs.length === 0);
+  // Laid out, the text breaks before its operators: the names are marked where they land in its lines.
+  let restRuns = $derived(
+    named.length > 0
+      ? markRuns(restText, named)
+      : colored && warned.length > 0
+        ? markRuns(restText, warned)
+        : [],
+  );
   // A name box has no painted copy to mark a run in, so a warning that names it marks all of it, as an error does.
   let wholeWarn = $derived(!colored && warned.length > 0);
 
@@ -446,11 +457,18 @@
     <span
       class="wrapview"
       class:field-error={!!matched}
-      class:whole={!!matched}
-      class:whole-warn={!matched && warned.length > 0}
+      class:whole
+      class:whole-warn={wholeWarn}
       aria-hidden="true"
       {@attach wrapTo(value)}
     ></span>
+    {#if restRuns.length > 0}
+      <span class="wrapview restmarks" aria-hidden="true"
+        >{#each restRuns as r}{#if r.mark}<span class="squiggle" class:warn={!matched}
+              >{r.text}</span
+            >{:else}{r.text}{/if}{/each}</span
+      >
+    {/if}
   {/if}
   {#if colored && !resting}
     <pre
@@ -800,6 +818,16 @@
 
   .marks {
     color: transparent;
+  }
+
+  /* The rest view's marks, over it in the same box. */
+  .restmarks {
+    position: absolute;
+    inset: 0;
+    width: auto;
+    color: transparent;
+    background: none;
+    border-color: transparent;
   }
 
   .fn-toggle {

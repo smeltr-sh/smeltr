@@ -1904,6 +1904,9 @@ export interface PreviewRequest {
   filter?: string;
   /** Asks what may follow a `.` instead of running the sample. */
   afterDot?: { text: string; dot: number; at: DotAt };
+  /** A capture filter at a destination to check against each route delivering there. Asked, the preview answers it
+   * instead of running a sample. */
+  captureFilter?: { text: string; destination: string };
 }
 
 /** Where an expression sits, which decides what its names read: at the start
@@ -1974,6 +1977,8 @@ export interface PreviewResult {
   dictionary?: DictionaryOut;
   /** The answer to `PreviewRequest.afterDot`. Absent where the dot follows no value. */
   after_dot?: DotAnswer;
+  /** The answer to `PreviewRequest.captureFilter`. */
+  capture_filter?: CaptureFilterCheck;
   /** What compiles but is likely a mistake, each placed at its step as an error is. */
   warnings?: ApiError[];
 }
@@ -2008,6 +2013,7 @@ export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
       at_micros: req.atMicros ?? null,
       filter: req.filter ?? null,
       after_dot: req.afterDot ?? null,
+      capture_filter: req.captureFilter ?? null,
     },
     'quiet',
   );
@@ -2025,6 +2031,23 @@ export async function afterDot(
   const { text, dot, at, ...rest } = req;
   const res = await previewPipeline({ ...rest, afterDot: { text, dot, at } });
   return (res.ok && res.after_dot) || null;
+}
+
+/** How many routes delivering to a destination a capture filter there runs on, and each it passes over with why: it
+ * does not compile against that route's output. */
+export interface CaptureFilterCheck {
+  reads: number;
+  skips: { route: string; error: string }[];
+}
+
+/** What a capture filter at `destination` makes of each route delivering there, over `config`. */
+export async function checkCaptureFilter(
+  config: string,
+  text: string,
+  destination: string,
+): Promise<CaptureFilterCheck | null> {
+  const res = await previewPipeline({ config, captureFilter: { text, destination } });
+  return (res.ok && res.capture_filter) || null;
 }
 
 /** What a grok pattern captures, which is the set of fields the step declares.
