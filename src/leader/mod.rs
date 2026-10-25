@@ -2768,8 +2768,13 @@ pub async fn replace_certificate(
 /// Deleting a credential the fleet runs, or would run once released, would strand the groups that use it, with no way
 /// back: the value is gone. So the one case that cannot be undone is refused, and everything else deletes. The
 /// certificate the leader serves is refused too, whichever route asks: the leader would serve one the list no longer
-/// shows.
+/// shows. The leader's own entry is refused always: switching back to it must find it.
 async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) -> Json<Envelope> {
+    if name == tls::OWN_ENTRY {
+        return Json(Envelope::failed_one(format!(
+            "this leader keeps its own certificate as {name:?} and renews it itself, so it cannot be deleted"
+        )));
+    }
     match served_names(&tls::dir_of(&state.data_dir)) {
         Ok(served) if served.contains(&name) => {
             return Json(Envelope::failed_one(format!(
@@ -5783,6 +5788,8 @@ mod certificate_list_tests {
         assert!(!refused.0.ok, "the served entry was deleted");
         let refused = forget_secret_version(State(state.clone()), Path(("chosen".to_string(), 1))).await;
         assert!(!refused.0.ok, "the served version was forgotten");
+        let refused = delete_secret(State(state.clone()), Path(tls::OWN_ENTRY.to_string())).await;
+        assert!(!refused.0.ok, "the leader's own entry was deleted while another was served");
 
         for _ in 0..crate::startup_config::leader_secret_versions() + 1 {
             let stored = store_value(state.clone(), "chosen".to_string(), key.clone(), Some(chain.clone())).await;
