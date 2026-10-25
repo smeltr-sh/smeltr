@@ -163,7 +163,7 @@
                   <a href="#/admin/secrets">{warning.subjectId}</a>
                 {:else if warning.condition === 'secretsKeyUnusable'}
                   <a href="#/admin/secrets/key">{warning.subjectId}</a>
-                {:else if warning.condition === 'acmeRenewalFailing' || warning.condition === 'leaderCertificateRunningOut'}
+                {:else if ['acmeRenewalFailing', 'leaderCertificateRunningOut', 'authorityAging'].includes(warning.condition)}
                   <a href="#/admin/system/certificates">{warning.subjectId}</a>
                 {:else if warning.subjectKind === 'pipeline' && warning.scope}
                   {@const scope = warning.scope}
