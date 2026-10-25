@@ -2646,12 +2646,12 @@ async fn sign_under_authority(state: &AppState, issued: &Issued) -> Result<(Stri
     .await
 }
 
-/// A certificate this leader issued: its name, how it is issued, and its newest chain described.
-type IssuedChain = (String, Issued, Vec<tls::Described>);
-
 /// The signing root and each certificate this leader issued, with its newest chain described: empty where that
 /// cannot be read. `None` where the leader signs nothing, or its authority cannot be read: its own warnings say that.
-fn issued_chains(s: &dyn Store, dir: &std::path::Path) -> Result<Option<(String, Vec<IssuedChain>)>, StoreError> {
+fn issued_chains(
+    s: &dyn Store,
+    dir: &std::path::Path,
+) -> Result<Option<(String, Vec<warnings::IssuedChain>)>, StoreError> {
     let Some(signing) = dir.exists().then(|| tls::signing_root_fingerprint(dir).ok()).flatten() else {
         return Ok(None);
     };
@@ -2674,8 +2674,7 @@ async fn issued_certificates_not_renewed(state: &AppState, now_ms: i64) -> Resul
         let Some((signing, issued)) = issued_chains(s, &dir)? else {
             return Ok(Vec::new());
         };
-        let chains: Vec<_> = issued.into_iter().map(|(name, _, chain)| (name, chain)).collect();
-        Ok(warnings::issued_certificates_not_renewed(&chains, &signing, now_ms))
+        Ok(warnings::issued_certificates_not_renewed(&issued, &signing, now_ms))
     })
     .await
 }
@@ -6016,7 +6015,11 @@ mod certificate_list_tests {
             warnings::issued_due(&[], &signing, now),
             Some(warnings::Due::Unreadable)
         );
-        let issued = [("acme".to_string(), chain)];
+        let how = Issued {
+            names: vec!["a.example.com".to_string()],
+            validity_days: 365,
+        };
+        let issued = [("acme".to_string(), how, chain)];
         assert!(warnings::issued_certificates_not_renewed(&issued, "another root", i64::MAX / 2).is_empty());
     }
 }

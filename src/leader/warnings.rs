@@ -2487,6 +2487,9 @@ pub fn identities_behind(deployed: &[DeployedCertificate], newest: &HashMap<Stri
         .collect()
 }
 
+/// A certificate this leader issued: its name, how it is issued, and its newest chain described.
+pub type IssuedChain = (String, crate::leader::store::Issued, Vec<crate::leader::tls::Described>);
+
 /// Why a certificate this leader issued is due for its next version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Due {
@@ -2520,13 +2523,9 @@ const RENEWAL_GRACE_MILLIS: i64 = 24 * 60 * 60 * 1000;
 /// The certificates this leader issued that it should have renewed and has not, by name and newest chain described.
 /// Only the aged ones: after a cutover every one is due at once and is renewed within the hour, and a failure there
 /// is in the log, as one here is.
-pub fn issued_certificates_not_renewed(
-    issued: &[(String, Vec<crate::leader::tls::Described>)],
-    signing: &str,
-    now_ms: i64,
-) -> Vec<Warning> {
+pub fn issued_certificates_not_renewed(issued: &[IssuedChain], signing: &str, now_ms: i64) -> Vec<Warning> {
     let mut out = Vec::new();
-    for (name, chain) in issued {
+    for (name, _, chain) in issued {
         let Some(Due::Aged(since)) = issued_due(chain, signing, now_ms) else {
             continue;
         };
