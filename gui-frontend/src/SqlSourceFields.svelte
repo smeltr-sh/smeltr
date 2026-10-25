@@ -377,6 +377,7 @@
     multiline
     rows={4}
     ariaLabel="query"
+    required
     paint={(text: string) => highlightSql(text, source.type)}
     placeholder="SELECT event_id, occurred_at, user_name FROM auth.events"
   />

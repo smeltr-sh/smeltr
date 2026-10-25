@@ -21,6 +21,7 @@
     label,
     newLabel,
     onnew,
+    required = false,
   }: {
     values: string[];
     placeholder?: string;
@@ -33,6 +34,8 @@
     /** The text of the choice that runs `onnew`. */
     newLabel?: string;
     onnew?: () => void;
+    /** As `PasswordField`'s, said of the input a new value is typed in. */
+    required?: boolean;
   } = $props();
 
   /** What the picker offers: each choice once, none already chosen. */
@@ -131,6 +134,7 @@
       class="chip-draft"
       bind:value={draft}
       placeholder={values.length === 0 ? placeholder : ''}
+      aria-required={required || undefined}
       onkeydown={onDraftKeydown}
       onblur={commitDraft}
     />

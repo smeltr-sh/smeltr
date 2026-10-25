@@ -19,12 +19,15 @@
     placeholder = '',
     ariaLabel,
     rows = 6,
+    required = false,
   }: {
     value: string;
     placeholder?: string;
     ariaLabel?: string;
     /** How tall it grows once it has to. */
     rows?: number;
+    /** Said to a screen reader, as a required `Field` says it of its own control. */
+    required?: boolean;
   } = $props();
 
   let revealed = $state(false);
@@ -69,6 +72,7 @@
       {placeholder}
       autocomplete="off"
       aria-label={ariaLabel}
+      aria-required={required || undefined}
       onpaste={paste}
       data-bwignore="true"
       data-lpignore="true"
