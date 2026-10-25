@@ -47,7 +47,7 @@
   const chosen = $derived(newest ? entry?.chain[0] : undefined);
 </script>
 
-<Field {label} {help} {field}>
+<Field {label} {help} {field} {optional}>
   {#snippet note()}
     {#if version !== undefined && value}
       version {version}{#if chosen}&nbsp;·{/if}

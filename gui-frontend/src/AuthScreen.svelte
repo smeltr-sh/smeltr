@@ -221,22 +221,22 @@
       {#if changing}
         <p class="who">{displayName} · <code>{username}</code></p>
         {#if asked}
-          <Field label="Current password">
+          <Field required label="Current password">
             <input type="password" bind:value={current} autocomplete="current-password" required />
           </Field>
         {/if}
-        <Field label="New password">
+        <Field required label="New password">
           <input type="password" bind:value={chosen} autocomplete="new-password" required />
         </Field>
-        <Field label="Confirm new password">
+        <Field required label="Confirm new password">
           <input type="password" bind:value={repeated} autocomplete="new-password" required />
         </Field>
       {:else}
-        <Field label="Username">
+        <Field required label="Username">
           <!-- svelte-ignore a11y_autofocus -->
           <input bind:value={typed} autocomplete="username" autofocus required />
         </Field>
-        <Field label="Password">
+        <Field required label="Password">
           <input type="password" bind:value={current} autocomplete="current-password" required />
         </Field>
       {/if}

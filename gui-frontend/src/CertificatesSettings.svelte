@@ -800,6 +800,7 @@
           </Field>
           {#if preset === OTHER}
             <Field
+              required
               label="Directory URL"
               help="Where your certificate authority publishes its ACME directory. It starts with https://."
             >
@@ -807,13 +808,14 @@
             </Field>
           {/if}
           <Field
+            required
             label="Names"
             group
             help="Press Enter or type a comma after each name. A wildcard such as *.example.com needs DNS-01, and DNS-01 cannot prove an IP address."
           >
-            <TokenListInput bind:values={nameList} placeholder="leader.example.com" />
+            <TokenListInput bind:values={nameList} placeholder="leader.example.com" required />
           </Field>
-          <Field label="Contact email">
+          <Field optional label="Contact email">
             {#snippet help()}Where the certificate authority sends notices about this account.{/snippet}
             <input type="email" bind:value={contact} />
           </Field>
@@ -851,7 +853,7 @@
                         <option value="cloudflare">Cloudflare</option>
                       </select>
                     </Field>
-                    <Field label="API token">
+                    <Field required label="API token">
                       {#snippet help()}
                         It must be able to read the zones that hold the names and edit their DNS
                         records: <a
@@ -871,18 +873,21 @@
                 {/if}
               </div>
               <Field
+                optional
                 label="Authority"
                 help="The root certificate of a private authority, as PEM, if this leader doesn't already trust it. Leave it empty for a public authority."
               >
                 <textarea bind:value={acmeAuthority} rows="4" spellcheck="false"></textarea>
               </Field>
               <Field
+                optional
                 label="EAB key ID"
                 help="Your certificate authority gives it for external account binding. Leave it empty if it gave you none."
               >
                 <input bind:value={eabKeyId} spellcheck="false" />
               </Field>
               <Field
+                optional
                 label="EAB HMAC key"
                 help="Your certificate authority gives it with the EAB key ID. It is stored encrypted and never shown again."
               >

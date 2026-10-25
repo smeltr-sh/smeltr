@@ -817,7 +817,7 @@
         >
           <form onsubmit={saveForgetAfter}>
             <div class="mintrow">
-              <Field label="Forget one after it has been silent for (minutes)">
+              <Field required label="Forget one after it has been silent for (minutes)">
                 {#snippet help()}
                   How long an ephemeral worker that stops heartbeating without saying it is stopping
                   stays listed.
@@ -875,10 +875,10 @@
           </select>
         </Field>
         {#if mintKind === 'permanent'}
-          <Field label="Workers">
+          <Field required label="Workers">
             <input type="number" min="1" bind:value={mintUses} />
           </Field>
-          <Field label="Valid for (hours)">
+          <Field required label="Valid for (hours)">
             <input type="number" min="1" bind:value={mintHours} />
           </Field>
         {/if}
@@ -900,7 +900,7 @@
             Secret.
           {/if}
         </p>
-        <Field label="The address this worker will reach the leader at">
+        <Field required label="The address this worker will reach the leader at">
           <input class="mono" bind:value={leaderUrl} />
         </Field>
         <pre class="mono code-value enrollblock">{enrollCommand}</pre>
@@ -1018,14 +1018,14 @@
       onsubmit={addGroup}
     >
       <div class="mintrow">
-        <Field label="Name">
+        <Field required label="Name">
           <input
             value={newGroupName}
             oninput={(e) => onGroupNameInput(e.currentTarget.value)}
             placeholder="prod west"
           />
         </Field>
-        <Field label="Id" error={groupIdProblem}>
+        <Field required label="Id" error={groupIdProblem}>
           {#snippet help()}
             The group's directory in the config repository: letters, digits, - _ and ., not starting
             with a dot. It is fixed once saved.
@@ -1193,7 +1193,7 @@
                   <tr>
                     <td colspan="6">
                       <div class="hue-edit">
-                        <Field label="Name">
+                        <Field required label="Name">
                           <!-- svelte-ignore a11y_autofocus -->
                           <input bind:value={renameValue} autofocus />
                         </Field>

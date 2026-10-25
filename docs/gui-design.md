@@ -379,7 +379,8 @@ pipeline captures from it as from any other.
 
 The leader reads the capture's text (`leader::onboard`) and proposes the step that
 parses it: a JSON, Key/value or CSV Parser, a Grok Parser on the built-in
-whole-line pattern of a syslog or web access log line, or for CEF a Code
+whole-line pattern of a syslog or web access log line, written out so each
+field it fills shows in the step, or for CEF a Code
 step that spreads `cef(_raw)`. A CSV capture that opens with a header row takes its
 column names from it, and a Drop step ahead of the Parser takes out that
 row, which a source sends once per file. Records that arrive as fields need

@@ -73,7 +73,7 @@
       {/each}
     </select>
   </Field>
-  <Field field="inFlight" label="parts uploading at once">
+  <Field optional field="inFlight" label="parts uploading at once">
     {#snippet help()}
       How many parts of one file upload at once.
     {/snippet}
@@ -85,7 +85,7 @@
       oninput={(e) => (d.inFlight = numberOrUnset(e.currentTarget))}
     />
   </Field>
-  <Field field="maxObjectBytes" label="largest file">
+  <Field optional field="maxObjectBytes" label="largest file">
     {#snippet help()}
       The largest data file it writes, compressed.
     {/snippet}
@@ -95,7 +95,7 @@
       onchange={(n) => (d.maxObjectBytes = n)}
     />
   </Field>
-  <Field field="bufferBytes" label="memory">
+  <Field optional field="bufferBytes" label="memory">
     {#snippet help()}
       Memory it may use on each worker for records not yet committed. Files are committed early when
       it fills.
@@ -106,7 +106,7 @@
       onchange={(n) => (d.bufferBytes = n)}
     />
   </Field>
-  <Field field="stallAfterSecs" label="stall after (seconds)">
+  <Field optional field="stallAfterSecs" label="stall after (seconds)">
     {#snippet help()}
       How long one call to {calls}, or one commit, may take before it counts as stalled.
     {/snippet}
@@ -118,7 +118,7 @@
       oninput={(e) => (d.stallAfterSecs = numberOrUnset(e.currentTarget))}
     />
   </Field>
-  <Field field="fileIntervalSecs" label="file interval (seconds)">
+  <Field optional field="fileIntervalSecs" label="file interval (seconds)">
     {#snippet help()}
       The longest records wait before they are committed to the table. Each commit adds {commit}, so
       a short interval makes many. Sources feeding this destination are held open until their
