@@ -962,7 +962,7 @@ pub struct SourcetypeDto {
 
 /// `$`. serde's default is a function, and Rust cannot name one `$`.
 fn root() -> String {
-    "$".to_string()
+    crate::plan::tree::ROOT.to_string()
 }
 
 fn root_path() -> String {
