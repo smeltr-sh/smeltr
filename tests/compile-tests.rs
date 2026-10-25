@@ -802,15 +802,3 @@ fn a_parser_that_names_fields_from_the_record_declares_whatever_it_likes() {
         );
     }
 }
-
-// `substring` is TypeScript's second spelling of `slice`, with rules of its own; the language keeps the one.
-#[test]
-fn a_function_the_language_lacks_is_not_a_function() {
-    for body in ["x: str; out = x.substring(0, 4);", "x: str; out = substring(x, 0, 4);"] {
-        let errs = err(vec![code(0, body)]);
-        assert!(
-            errs.iter().any(|e| e.message.contains("`substring` is not a function")),
-            "{body}: {errs:?}"
-        );
-    }
-}

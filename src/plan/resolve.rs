@@ -2718,7 +2718,7 @@ mod tests {
     fn method_call_on_a_dotted_receiver_naming_an_unknown_method_is_an_error() {
         let mut t = with_fields(&[("x", DataType::Str)]);
         let e = lower("x.notAFunction()", &mut t).unwrap_err();
-        assert!(e.message.contains("not implemented"), "{}", e.message);
+        assert_eq!(e.message, "`notAFunction` is not a function");
     }
 
     /// Moved from the parser to the type checker: dot on an expression is member access now, so a forgotten `()` is no
