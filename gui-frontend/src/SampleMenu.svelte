@@ -57,7 +57,7 @@
       (a, b) =>
         Number(b.id === lastUsed) - Number(a.id === lastUsed) ||
         Number(locked(b)) - Number(locked(a)) ||
-        (capturedAt(b) ?? (b.captured ?? 0) * 1000) - (capturedAt(a) ?? (a.captured ?? 0) * 1000),
+        (b.written ?? 0) - (a.written ?? 0),
     ),
   );
 

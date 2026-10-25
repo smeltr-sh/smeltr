@@ -98,7 +98,7 @@ pub struct SampleSummary {
     /// When the leader last wrote the sample, in unix seconds: the newest commit that touched its file. The listing
     /// fills it from `config.git`'s history; a sample is not stored with it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub captured: Option<i64>,
+    pub written: Option<i64>,
     /// The first record's `__capture` fields: how a sample saved from a capture was taken. A sample pasted or
     /// uploaded has none.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,7 +115,7 @@ impl SampleDto {
             name: self.name.clone(),
             source: self.source.clone(),
             records: self.records.len(),
-            captured: None,
+            written: None,
             capture: match self.records.first().and_then(|r| r.get("__capture")) {
                 Some(serde_json::Value::Object(capture)) => Some(capture.clone()),
                 _ => None,

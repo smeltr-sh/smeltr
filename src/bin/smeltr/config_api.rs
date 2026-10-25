@@ -1975,14 +1975,14 @@ pub struct Sample {
     commit: Option<String>,
 }
 
-/// Fill in when each of `samples`, as `reading` listed them, was captured.
-fn fill_captured(reading: &Reading, samples: &mut [config_file::SampleSummary]) -> Result<(), ApiError> {
+/// Fill in when each of `samples`, as `reading` listed them, was last written.
+fn fill_written(reading: &Reading, samples: &mut [config_file::SampleSummary]) -> Result<(), ApiError> {
     let in_repo = |s: &config_file::SampleSummary| format!("{}/{}", reading.prefix, s.path);
     let paths: Vec<String> = samples.iter().map(in_repo).collect();
-    let captured =
+    let written =
         git::last_changed(&reading.repo, &reading.commit, &paths).map_err(|e| ApiError::new(e.to_string()))?;
     for sample in samples {
-        sample.captured = captured.get(&in_repo(sample)).copied();
+        sample.written = written.get(&in_repo(sample)).copied();
     }
     Ok(())
 }
@@ -1992,7 +1992,7 @@ pub async fn list_samples(Query(q): Query<BranchQuery>) -> Json<Envelope<Samples
     let read = blocking(move || {
         let reading = open_for_read(&branch, &scope)?;
         let (mut samples, unreadable) = config_file::list_samples(&mut reading.files());
-        fill_captured(&reading, &mut samples)?;
+        fill_written(&reading, &mut samples)?;
         Ok::<_, ApiError>((samples, unreadable, reading.commit))
     })
     .await;
@@ -3570,15 +3570,15 @@ mod tests {
         assert_eq!(read.source.as_deref(), Some("orders-west"));
 
         let (mut listed, unreadable) = config_file::list_samples(&mut reading.files());
-        fill_captured(&reading, &mut listed).unwrap();
+        fill_written(&reading, &mut listed).unwrap();
         assert!(unreadable.is_empty());
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].records, 1);
         let saved = git::log(&reading.repo, &reading.commit, 1).unwrap();
         assert_eq!(
-            listed[0].captured,
+            listed[0].written,
             Some(saved[0].time),
-            "captured when the leader saved it"
+            "written when the leader saved it"
         );
         std::fs::remove_dir_all(&data).ok();
     }

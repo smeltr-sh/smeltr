@@ -1858,7 +1858,7 @@ export interface SampleSummary {
   source?: string;
   records: number;
   /** Unix seconds: when the leader last wrote the sample. */
-  captured?: number;
+  written?: number;
   /** The first record's `__capture` fields. A pasted or uploaded sample has none. */
   capture?: SampleCapture;
 }

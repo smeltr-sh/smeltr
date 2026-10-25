@@ -65,7 +65,7 @@
       name: (s) => s.name,
       source: (s) => s.source ?? 'pasted',
       records: (s) => s.records,
-      captured: (s) => capturedAt(s) ?? (s.captured ?? 0) * 1000,
+      captured: (s) => capturedAt(s) ?? 0,
     }),
   );
 
