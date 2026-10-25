@@ -988,10 +988,13 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
         &recovering,
         heartbeat_interval,
     ));
-    let key = run_store(state.store.clone(), |s| s.key_standing()).await?;
+    let (key, issued) = run_store(state.store.clone(), |s| {
+        Ok((s.key_standing()?, s.issued_certificates()?.into_keys().collect()))
+    })
+    .await?;
     active_facts.extend(warnings::encryption_key_facts(&key));
     let starts = state.registry.observe_facts(&active_facts, now_ms);
-    let key_warnings = warnings::encryption_key_warnings(&key, &starts);
+    let key_warnings = warnings::encryption_key_warnings(&key, &issued, &starts);
     let normal_warnings =
         warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, heartbeat_interval);
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
