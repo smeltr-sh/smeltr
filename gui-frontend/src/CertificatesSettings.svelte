@@ -528,8 +528,8 @@
             <a href="#/admin/certificates">Admin → Certificates</a>. Replace it there to renew it.
           {:else}
             Serves the certificate "{OWN_CERTIFICATE}" from
-            <a href="#/admin/certificates">Admin → Certificates</a>, which this leader issues under the
-            current authority and renews on its own.
+            <a href="#/admin/certificates">Admin → Certificates</a>, which this leader issues under
+            the current authority and renews on its own.
           {/if}
         </Help>
       {/snippet}
@@ -613,25 +613,27 @@
       {/if}
 
       {#if source === 'own' && !switching}
-        <div class="setting actions">
-          {@render status(formError, message)}
-          {#if certificates.supplied}
-            <div class="buttons">
-              <button
-                class="primary"
-                type="button"
-                disabled={busy}
-                onclick={() =>
-                  act(
-                    () => putCertificate(OWN_CERTIFICATE),
-                    switched('back to this leader’s own authority'),
-                  )}
-              >
-                Switch to Leader issued
-              </button>
-            </div>
-          {/if}
-        </div>
+        {#if certificates.supplied || formError || message}
+          <div class="setting actions">
+            {@render status(formError, message)}
+            {#if certificates.supplied}
+              <div class="buttons">
+                <button
+                  class="primary"
+                  type="button"
+                  disabled={busy}
+                  onclick={() =>
+                    act(
+                      () => putCertificate(OWN_CERTIFICATE),
+                      switched('back to this leader’s own authority'),
+                    )}
+                >
+                  Switch to Leader issued
+                </button>
+              </div>
+            {/if}
+          </div>
+        {/if}
         {#if certificates.rotation}
           <div class="setting">
             <h3>
