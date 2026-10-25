@@ -25,7 +25,7 @@ use smeltr::leader::agent::{self, Answer, ApiCall, Ended, Host};
 use smeltr::leader::blocking;
 use smeltr::leader::envelope::Envelope;
 use smeltr::leader::model::{self, Effort, Fresh, Said, Settings, Turn};
-use smeltr::leader::store::{Actor, ConversationRecord};
+use smeltr::leader::store::{Actor, ConversationRecord, StoreError};
 use smeltr::leader::warnings::now_millis;
 
 use crate::agent_catalog::CATALOG;
@@ -49,6 +49,8 @@ const NO_CONVERSATION: &str = "there is no such conversation";
 #[derive(Default)]
 pub struct Chats {
     router: OnceLock<Router>,
+    /// Held around every reach into a conversation's turns as well as its run, so the two are only ever seen and
+    /// changed together. The store's own lock is taken inside it, never around it.
     runs: Mutex<HashMap<String, Run>>,
 }
 
@@ -73,16 +75,6 @@ struct Run {
     error: Option<String>,
     /// The answer the model is writing, so far; empty between answers.
     writing: String,
-    /// How many of the conversation's turns are kept ahead of `writing`. A read takes the turns and the run apart, so
-    /// it can find the answer kept and `writing` not yet cleared; this count tells it that `writing` is among them.
-    follows: usize,
-}
-
-impl Run {
-    /// What the model is writing, for a read that found `kept` turns kept.
-    fn writing(&self, kept: usize) -> Option<String> {
-        (self.running && !self.writing.is_empty() && kept == self.follows).then(|| self.writing.clone())
-    }
 }
 
 #[derive(serde::Deserialize)]
@@ -199,8 +191,7 @@ async fn owned(auth: &Auth, actor: &Actor, id: &str) -> Result<ConversationRecor
     }
 }
 
-fn summary(auth: &Auth, c: ConversationRecord) -> ConversationSummary {
-    let running = auth.chats.runs().get(&c.id).is_some_and(|r| r.running);
+fn summary(c: ConversationRecord, running: bool) -> ConversationSummary {
     ConversationSummary {
         id: c.id,
         title: c.title,
@@ -238,15 +229,10 @@ pub async fn start(
     if let Err(response) = store_call(move || store.create_conversation(&kept)).await {
         return *response;
     }
-    begin(
-        &auth,
-        &actor,
-        &headers,
-        &conversation.id,
-        Vec::new(),
-        Job::Message(message),
-        request.picked(),
-    );
+    let job = Job::Message(message);
+    if let Err(refused) = begin(&auth, &actor, &headers, &conversation.id, job, request.picked(), any).await {
+        return refused;
+    }
     (
         StatusCode::ACCEPTED,
         no_store(Envelope::ok(json!({"id": conversation.id}))),
@@ -270,43 +256,14 @@ pub async fn add_message(
         Ok(message) => message,
         Err(refused) => return *refused,
     };
-    let turns = match idle_turns(&auth, &actor, &id).await {
-        Ok(turns) => turns,
-        Err(refused) => return *refused,
-    };
-    if !begin(
-        &auth,
-        &actor,
-        &headers,
-        &id,
-        turns,
-        Job::Message(message),
-        request.picked(),
-    ) {
-        return refuse(StatusCode::CONFLICT, "the agent is still answering");
+    if let Err(refused) = owned(&auth, &actor, &id).await {
+        return *refused;
+    }
+    let job = Job::Message(message);
+    if let Err(refused) = begin(&auth, &actor, &headers, &id, job, request.picked(), any).await {
+        return refused;
     }
     (StatusCode::ACCEPTED, no_store(Envelope::done())).into_response()
-}
-
-/// The caller's conversation `id`, as its turns, while no turn runs in it.
-async fn idle_turns(auth: &Auth, actor: &Actor, id: &str) -> Result<Vec<Turn>, Box<Response>> {
-    owned(auth, actor, id).await?;
-    if auth.chats.runs().get(id).is_some_and(|r| r.running) {
-        return Err(Box::new(refuse(StatusCode::CONFLICT, "the agent is still answering")));
-    }
-    let store = auth.store.clone();
-    let read = id.to_string();
-    let turns = store_call(move || store.turns_of(&read)).await?;
-    turns
-        .iter()
-        .map(|t| serde_json::from_str(t))
-        .collect::<Result<Vec<Turn>, _>>()
-        .map_err(|e| {
-            Box::new(refuse(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("a turn of this conversation cannot be read: {e}"),
-            ))
-        })
 }
 
 /// `POST /api/agent/conversations/:id/context`: begin the model's reading of the conversation again, from a summary
@@ -322,53 +279,73 @@ pub async fn context(
     if let Some(refused) = refused(&auth, &by_agent).await {
         return refused;
     }
-    let turns = match idle_turns(&auth, &actor, &id).await {
-        Ok(turns) => turns,
-        Err(refused) => return *refused,
-    };
-    if matches!(turns.last(), None | Some(Turn::Fresh(_))) {
-        return refuse(
-            StatusCode::CONFLICT,
-            "nothing has been said since the conversation began again",
-        );
+    if let Err(refused) = owned(&auth, &actor, &id).await {
+        return *refused;
     }
     let job = Job::Fresh {
         summarize: request.summarize,
     };
-    if !begin(&auth, &actor, &headers, &id, turns, job, Picked::default()) {
-        return refuse(StatusCode::CONFLICT, "the agent is still answering");
+    let said_nothing = |turns: &[Turn]| {
+        matches!(turns.last(), None | Some(Turn::Fresh(_)))
+            .then_some("nothing has been said since the conversation began again")
+    };
+    if let Err(refused) = begin(&auth, &actor, &headers, &id, job, Picked::default(), said_nothing).await {
+        return refused;
     }
     (StatusCode::ACCEPTED, no_store(Envelope::done())).into_response()
 }
 
-/// Start a turn of `id` in the background, unless one runs. False when one does.
-fn begin(
+/// No refusal: any conversation can take a message.
+fn any(_: &[Turn]) -> Option<&'static str> {
+    None
+}
+
+/// Start a turn of `id` in the background from its turns as they stand, unless one runs or `refusal` says why
+/// those turns cannot start one.
+async fn begin(
     auth: &Auth,
     actor: &Actor,
     headers: &HeaderMap,
     id: &str,
-    turns: Vec<Turn>,
     job: Job,
     picked: Picked,
-) -> bool {
+    refusal: fn(&[Turn]) -> Option<&'static str>,
+) -> Result<(), Response> {
     let stop = Arc::new(AtomicBool::new(false));
-    {
-        let mut runs = auth.chats.runs();
-        if runs.get(id).is_some_and(|r| r.running) {
-            return false;
+    let (chats, store, read, flag) = (auth.chats.clone(), auth.store.clone(), id.to_string(), stop.clone());
+    let begun = store_call(move || {
+        let mut runs = chats.runs();
+        if runs.get(&read).is_some_and(|r| r.running) {
+            return Ok(Err(refuse(StatusCode::CONFLICT, "the agent is still answering")));
         }
-        runs.insert(
-            id.to_string(),
-            Run {
-                stop: stop.clone(),
-                running: true,
-                ended: None,
-                error: None,
-                writing: String::new(),
-                follows: turns.len(),
-            },
-        );
-    }
+        let turns = store.turns_of(&read)?;
+        let turns: Result<Vec<Turn>, _> = turns.iter().map(|t| serde_json::from_str(t)).collect();
+        let turns = match turns {
+            Ok(turns) => turns,
+            Err(e) => {
+                let why = format!("a turn of this conversation cannot be read: {e}");
+                return Ok(Err(refuse(StatusCode::INTERNAL_SERVER_ERROR, &why)));
+            }
+        };
+        if let Some(why) = refusal(&turns) {
+            return Ok(Err(refuse(StatusCode::CONFLICT, why)));
+        }
+        let run = Run {
+            stop: flag,
+            running: true,
+            ended: None,
+            error: None,
+            writing: String::new(),
+        };
+        runs.insert(read, run);
+        Ok(Ok(turns))
+    })
+    .await;
+    let turns = match begun {
+        Ok(Ok(turns)) => turns,
+        Ok(Err(refused)) => return Err(refused),
+        Err(response) => return Err(*response),
+    };
     let host = Turned {
         auth: auth.clone(),
         conversation: id.to_string(),
@@ -395,7 +372,7 @@ fn begin(
             }
         }
     });
-    true
+    Ok(())
 }
 
 async fn turn(host: &Turned, turns: Vec<Turn>, message: String) -> Result<Ended, String> {
@@ -501,18 +478,24 @@ impl Host for Turned {
 
     async fn keep(&self, turn: &Turn) -> Result<(), String> {
         let text = serde_json::to_string(turn).map_err(|e| e.to_string())?;
-        let store = self.auth.store.clone();
-        let id = self.conversation.clone();
-        let kept = blocking(move || store.append_turn(&id, &text, now_millis()))
-            .await
-            .map_err(|e| e.to_string())?;
+        let (chats, store, id) = (
+            self.auth.chats.clone(),
+            self.auth.store.clone(),
+            self.conversation.clone(),
+        );
+        let kept = blocking(move || {
+            let mut runs = chats.runs();
+            let kept = store.append_turn(&id, &text, now_millis())?;
+            // What was being written is now among the turns.
+            if let Some(run) = runs.get_mut(&id) {
+                run.writing.clear();
+            }
+            Ok::<_, StoreError>(kept)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
         if !kept {
             self.stop.store(true, Ordering::SeqCst);
-        }
-        // What was being written is now among the turns.
-        if let Some(run) = self.auth.chats.runs().get_mut(&self.conversation) {
-            run.writing.clear();
-            run.follows += usize::from(kept);
         }
         Ok(())
     }
@@ -606,8 +589,15 @@ pub async fn list(State(auth): State<Auth>, actor: Extension<Actor>, by_agent: O
     let user_id = actor.id.clone();
     match store_call(move || store.conversations_of(&user_id)).await {
         Ok(conversations) => {
-            let conversations: Vec<ConversationSummary> =
-                conversations.into_iter().map(|c| summary(&auth, c)).collect();
+            let runs = auth.chats.runs();
+            let running = |id: &str| runs.get(id).is_some_and(|r| r.running);
+            let conversations: Vec<ConversationSummary> = conversations
+                .into_iter()
+                .map(|c| {
+                    let running = running(&c.id);
+                    summary(c, running)
+                })
+                .collect();
             no_store(Envelope::ok(json!({"conversations": conversations})))
         }
         Err(response) => *response,
@@ -646,18 +636,25 @@ pub async fn read(
         Ok(c) => c,
         Err(refused) => return *refused,
     };
-    let store = auth.store.clone();
-    let turns = match store_call(move || store.turns_of(&id)).await {
-        Ok(turns) => turns,
+    let (chats, store) = (auth.chats.clone(), auth.store.clone());
+    let read = store_call(move || {
+        let runs = chats.runs();
+        Ok((store.turns_of(&id)?, runs.get(&id).cloned()))
+    });
+    let (turns, run) = match read.await {
+        Ok(read) => read,
         Err(response) => return *response,
     };
-    let run = auth.chats.runs().get(&conversation.id).cloned();
+    let running = run.as_ref().is_some_and(|r| r.running);
     let parsed: Vec<Turn> = turns.iter().filter_map(|t| serde_json::from_str(t).ok()).collect();
     let last = last_answer(&parsed);
     let body = ConversationDto {
-        summary: summary(&auth, conversation),
+        summary: summary(conversation, running),
         ended: run.as_ref().and_then(|r| r.ended).map(Ended::as_str),
-        writing: run.as_ref().and_then(|r| r.writing(turns.len())),
+        writing: run
+            .as_ref()
+            .filter(|r| r.running && !r.writing.is_empty())
+            .map(|r| r.writing.clone()),
         error: run.and_then(|r| r.error),
         items: turns.iter().flat_map(|t| items(t)).collect(),
         model: last.and_then(|r| r.model.clone()),
@@ -731,11 +728,15 @@ pub async fn delete(
     if let Err(refused) = owned(&auth, &actor, &id).await {
         return *refused;
     }
-    if let Some(run) = auth.chats.runs().remove(&id) {
-        run.stop.store(true, Ordering::SeqCst);
-    }
-    let store = auth.store.clone();
-    match store_call(move || store.delete_conversation(&id)).await {
+    let (chats, store) = (auth.chats.clone(), auth.store.clone());
+    let deleted = store_call(move || {
+        let mut runs = chats.runs();
+        if let Some(run) = runs.remove(&id) {
+            run.stop.store(true, Ordering::SeqCst);
+        }
+        store.delete_conversation(&id)
+    });
+    match deleted.await {
         Ok(_) => no_store(Envelope::done()),
         Err(response) => *response,
     }
@@ -765,32 +766,5 @@ pub async fn sweep(auth: Auth) {
                 "could not delete the conversations nobody added to"
             ),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn writing(text: &str, follows: usize) -> Run {
-        Run {
-            stop: Arc::default(),
-            running: true,
-            ended: None,
-            error: None,
-            writing: text.to_string(),
-            follows,
-        }
-    }
-
-    #[test]
-    fn what_is_being_written_is_shown_until_it_is_kept() {
-        assert_eq!(writing("Answer", 1).writing(1).as_deref(), Some("Answer"));
-    }
-
-    /// A read between the answer being kept and `writing` being cleared would show the answer twice.
-    #[test]
-    fn what_is_being_written_is_not_shown_once_a_read_finds_it_kept() {
-        assert_eq!(writing("Answer", 1).writing(2), None);
     }
 }
