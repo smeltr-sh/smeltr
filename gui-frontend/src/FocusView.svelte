@@ -72,7 +72,7 @@
     editHash,
     onedit,
     onclose,
-    footer,
+    controls,
     gap,
     onroute,
   }: {
@@ -100,8 +100,8 @@
      * switches scope here first. */
     onedit?: () => void;
     onclose: () => void;
-    /** The map's own controls for the selection, at the panel's foot. */
-    footer?: Snippet;
+    /** The map's own controls for the selection. */
+    controls?: Snippet;
     /** What arrives at a source that no route takes (`map.ts`, gaps). */
     gap?: SourceGap;
     /** Opens a new route on this source, taking what `condition` selects, or all of it. */
@@ -328,8 +328,8 @@
   {/if}
 
   <!-- Above the readings, so they cannot move it as they arrive. -->
-  {#if footer}
-    <div class="footer">{@render footer()}</div>
+  {#if controls}
+    <div class="controls">{@render controls()}</div>
   {/if}
 
   <div class="tabs">
@@ -660,7 +660,7 @@
 </MapPanel>
 
 <style>
-  .footer {
+  .controls {
     margin-top: 1rem;
   }
 
