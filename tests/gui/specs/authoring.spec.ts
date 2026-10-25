@@ -796,7 +796,9 @@ test('A2: the parser proposes its declared fields from a sample, and the analyst
   await suggested.getByRole('button', { name: 'Add all' }).click();
   await expect(suggested.getByRole('group')).toHaveCount(0);
   await suggested.getByRole('button', { name: 'Done' }).click();
-  await expect(admin.getByRole('button', { name: /^Parser _raw as JSON \(3 declared\)/ })).toBeVisible();
+  await expect(
+    admin.getByRole('button', { name: /^Parser _raw as JSON \(3 declared\)/ }),
+  ).toBeVisible();
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Saved.')).toBeVisible();
