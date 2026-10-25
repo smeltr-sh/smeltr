@@ -186,7 +186,7 @@
         <table>
           <thead>
             <tr>
-              <th class="tick">
+              <th class="tick pin">
                 <input
                   type="checkbox"
                   aria-label="Select every record shown"
@@ -198,13 +198,13 @@
                     )}
                 />
               </th>
-              <th>#</th>
+              <th class="num pin">#</th>
               {#each columns as c (c.name)}
                 <th class="mono"
                   >{c.name}{#if c.type}<small>{c.type}</small>{/if}</th
                 >
               {/each}
-              <th></th>
+              <th class="pin end"></th>
             </tr>
           </thead>
           <tbody>
@@ -218,7 +218,7 @@
                 onclick={(e) => open(e, r.key)}
                 onfocusin={(e) => open(e, r.key)}
               >
-                <td class="tick">
+                <td class="tick pin">
                   <input
                     type="checkbox"
                     aria-label={`Select record ${r.key + 1}`}
@@ -226,7 +226,7 @@
                     onchange={(e) => tick([r.key], e.currentTarget.checked)}
                   />
                 </td>
-                <td class="mono dim">{r.key + 1}</td>
+                <td class="mono dim num pin">{r.key + 1}</td>
                 {#each columns as c (c.name)}
                   {#if editing === r.key}
                     <td>
@@ -261,7 +261,7 @@
                     </td>
                   {/if}
                 {/each}
-                <td class="right">
+                <td class="right pin end">
                   <button
                     type="button"
                     class="compact"
@@ -378,17 +378,38 @@
   }
   .tick {
     width: 2rem;
+    box-sizing: border-box;
+  }
+  /* With every field a column the table runs past the screen and scrolls; a record's tick, number and remove stay in
+     view at its edges. Opaque, so the fields scroll under them. */
+  .pin {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--panel);
+  }
+  .num.pin {
+    left: 2rem;
+  }
+  .pin.end {
+    left: auto;
+    right: 0;
   }
   .right {
     text-align: right;
   }
   /* The record being edited: the open rail every open thing takes. */
-  tr.open {
+  tr.open > .tick {
     box-shadow: inset 3px 0 0 var(--accent);
   }
   /* A record changed in this draft, marked as a diff marks one (STYLE_GUIDE.md, "Cards"). */
   tr.changed {
-    box-shadow: inset 3px 0 0 var(--added);
     background: color-mix(in oklch, var(--added) 7%, transparent);
+  }
+  tr.changed > .tick {
+    box-shadow: inset 3px 0 0 var(--added);
+  }
+  tr.changed > .pin {
+    background: color-mix(in oklch, var(--added) 7%, var(--panel));
   }
 </style>
