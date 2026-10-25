@@ -143,6 +143,7 @@ fn a_destination_under_an_identity_delivers_to_a_broker_that_demands_one() {
         default_topic: topic(),
         service: smeltr::plan::topology::KafkaService::Kafka,
         compression: smeltr::plan::topology::Compression::None,
+        acks: smeltr::plan::topology::Acks::All,
         // `flush` fails once a record sits undelivered this long. Short, so a refused handshake fails fast.
         stall_after: Duration::from_secs(10),
         buffer_bytes: 16 * 1024 * 1024,

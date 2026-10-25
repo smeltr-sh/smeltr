@@ -54,6 +54,7 @@ fn dest_for(brokers: &str, topic: &str) -> KafkaDestination {
         &KafkaDestinationConfig {
             payload: smeltr::plan::config::Payload::Record,
             compression: smeltr::plan::topology::Compression::None,
+            acks: smeltr::plan::topology::Acks::All,
             stall_after: std::time::Duration::from_secs(30),
             brokers: brokers.to_string(),
             default_topic: topic.to_string(),
@@ -166,6 +167,7 @@ fn operator_properties_reach_the_producer() {
         &KafkaDestinationConfig {
             payload: smeltr::plan::config::Payload::Record,
             compression: smeltr::plan::topology::Compression::None,
+            acks: smeltr::plan::topology::Acks::All,
             stall_after: std::time::Duration::from_secs(30),
             brokers: UNREACHABLE.into(),
             default_topic: "t".into(),
@@ -204,6 +206,7 @@ fn a_credential_this_worker_cannot_obtain_is_a_clear_error() {
         &KafkaDestinationConfig {
             payload: smeltr::plan::config::Payload::Record,
             compression: smeltr::plan::topology::Compression::None,
+            acks: smeltr::plan::topology::Acks::All,
             stall_after: std::time::Duration::from_secs(30),
             brokers: UNREACHABLE.into(),
             default_topic: "t".into(),
@@ -246,6 +249,7 @@ fn a_stored_credential_the_leader_has_not_sent_yet_is_a_clear_error() {
             &KafkaDestinationConfig {
                 payload: smeltr::plan::config::Payload::Record,
                 compression: smeltr::plan::topology::Compression::None,
+                acks: smeltr::plan::topology::Acks::All,
                 stall_after: std::time::Duration::from_secs(30),
                 brokers: UNREACHABLE.into(),
                 default_topic: "t".into(),
@@ -275,6 +279,7 @@ fn kafka_destination_construction_does_not_require_a_reachable_broker() {
     let config = KafkaDestinationConfig {
         payload: smeltr::plan::config::Payload::Record,
         compression: smeltr::plan::topology::Compression::None,
+        acks: smeltr::plan::topology::Acks::All,
         stall_after: std::time::Duration::from_secs(30),
         brokers: UNREACHABLE.to_string(),
         default_topic: "out".to_string(),
@@ -1018,6 +1023,7 @@ fn the_producer_buffer_bound_reaches_librdkafka() {
         &KafkaDestinationConfig {
             payload: smeltr::plan::config::Payload::Record,
             compression: smeltr::plan::topology::Compression::None,
+            acks: smeltr::plan::topology::Acks::All,
             stall_after: std::time::Duration::from_secs(30),
             brokers: UNREACHABLE.into(),
             default_topic: "t".into(),
@@ -1038,6 +1044,7 @@ fn the_producer_buffer_bound_reaches_librdkafka() {
         &KafkaDestinationConfig {
             payload: smeltr::plan::config::Payload::Record,
             compression: smeltr::plan::topology::Compression::None,
+            acks: smeltr::plan::topology::Acks::All,
             stall_after: std::time::Duration::from_secs(30),
             brokers: UNREACHABLE.into(),
             default_topic: "t".into(),
@@ -1875,6 +1882,7 @@ fn live_an_event_hubs_source_reads_and_commits_through_the_kafka_endpoint() {
         &KafkaDestinationConfig {
             payload: smeltr::plan::config::Payload::Record,
             compression: smeltr::plan::topology::Compression::None,
+            acks: smeltr::plan::topology::Acks::All,
             stall_after: Duration::from_secs(30),
             brokers: config.brokers.clone(),
             default_topic: hub.to_string(),
@@ -2149,6 +2157,7 @@ fn live_an_event_hubs_start_moved_to_a_time_skips_what_came_before() {
         &KafkaDestinationConfig {
             payload: smeltr::plan::config::Payload::Record,
             compression: smeltr::plan::topology::Compression::None,
+            acks: smeltr::plan::topology::Acks::All,
             stall_after: Duration::from_secs(30),
             brokers: config.brokers.clone(),
             default_topic: hub.to_string(),

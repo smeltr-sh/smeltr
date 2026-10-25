@@ -42,6 +42,7 @@
     type SchemaRegistry,
     type HttpCompression,
     COMPRESSIONS,
+    ACKS,
     STORAGE_CLASSES,
     SFTP_MIN_STALL_AFTER,
   } from './api';
@@ -95,6 +96,7 @@
     return (
       hasProps(d) ||
       (d.compression ?? 'none') !== 'none' ||
+      (d.acks ?? 'all') !== 'all' ||
       (d.stallAfterSecs ?? LIMITS.stallAfterSecs.default) !== LIMITS.stallAfterSecs.default ||
       byteCount(d.bufferBytes, LIMITS.bufferBytes.default) !== LIMITS.bufferBytes.default
     );
@@ -213,6 +215,25 @@
         >
           {#each COMPRESSIONS as codec (codec)}
             <option value={codec}>{codec}</option>
+          {/each}
+        </select>
+      </Field>
+      <Field optional field="acks" label="acks">
+        {#snippet help()}
+          How many replicas must hold a batch before it counts as delivered. All is recommended: with
+          one or none, a broker that fails can lose records Smeltr already counted as delivered.
+        {/snippet}
+        <select
+          value={destination.acks ?? 'all'}
+          onchange={(e) => {
+            if (destination.type !== 'kafka') return;
+            const v = e.currentTarget.value as (typeof ACKS)[number];
+            if (v === 'all') delete destination.acks;
+            else destination.acks = v;
+          }}
+        >
+          {#each ACKS as acks (acks)}
+            <option value={acks}>{acks}</option>
           {/each}
         </select>
       </Field>

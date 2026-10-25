@@ -2681,6 +2681,28 @@ impl Compression {
     }
 }
 
+/// How many brokers hold a Kafka batch before it counts as delivered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Acks {
+    /// Delivered once sent.
+    None,
+    /// Once the partition's leader has written it.
+    One,
+    /// Once every in-sync replica has written it.
+    All,
+}
+
+impl Acks {
+    /// librdkafka's `acks` value.
+    pub fn as_property(self) -> &'static str {
+        match self {
+            Acks::None => "0",
+            Acks::One => "1",
+            Acks::All => "all",
+        }
+    }
+}
+
 /// Which HEC endpoint a destination sends to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Endpoint {
@@ -2774,6 +2796,7 @@ pub struct KafkaDestinationConfig {
     /// What each message's value is.
     pub payload: Payload,
     pub compression: Compression,
+    pub acks: Acks,
     /// How long one batch may take to deliver before it is a stall.
     pub stall_after: std::time::Duration,
     pub brokers: String,
@@ -4717,6 +4740,7 @@ mod tests {
         let k = KafkaDestinationConfig {
             payload: crate::plan::config::Payload::Record,
             compression: Compression::None,
+            acks: Acks::All,
             stall_after: std::time::Duration::from_secs(30),
             brokers: "k:9092".into(),
             default_topic: "t".into(),

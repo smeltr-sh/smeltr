@@ -73,7 +73,8 @@ const CLIENT_ID: &str = "smeltr";
 /// one after another, so an unreachable broker costs a deployment this much, three times over, per destination.
 const LINK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Produce requests one connection keeps in flight: what idempotence pins `max.in.flight.requests.per.connection` to.
+/// Produce requests one connection keeps in flight at the least. A batch is sized for this many, and a batch the
+/// broker's ceiling caps gets more in flight.
 const IN_FLIGHT_PER_CONNECTION: usize = 5;
 
 /// librdkafka's own `batch.size` and `message.max.bytes`. The floor of a derived batch: a link that needs no more
@@ -1164,6 +1165,8 @@ struct Sizes {
     messages: usize,
     /// `linger.ms`.
     linger: Duration,
+    /// `max.in.flight.requests.per.connection`: as many batches as the buffer holds.
+    in_flight: usize,
 }
 
 /// Asks the broker what the link is: partitions and a timed round trip from one metadata call, the request ceiling
@@ -1218,17 +1221,20 @@ fn request_ceiling(admin: &AdminClient<DefaultClientContext>, topic: &str) -> Op
 
 /// What one buffer buys over one link: a batch of `bufferBytes` spread over the partitions and the requests in
 /// flight, never smaller than librdkafka's own and never larger than the broker takes; a linger of half the round
-/// trip, so a batch fills while the one before it is in flight.
+/// trip, so a batch fills while the one before it is in flight; as many requests in flight as the buffer holds batches,
+/// so a far link whose batch the broker caps still has the buffer on the wire.
 fn derive_sizes(buffer_bytes: usize, link: &Link) -> Sizes {
     let ceiling = link.ceiling.clamp(MIN_MESSAGE_BYTES, MAX_MESSAGE_BYTES);
     let share = buffer_bytes / link.partitions.max(1) / IN_FLIGHT_PER_CONNECTION;
     let batch = share.clamp(DEFAULT_BATCH_BYTES.min(ceiling), ceiling);
     let messages = (batch / SMALLEST_RECORD_BYTES).clamp(DEFAULT_BATCH_MESSAGES, MAX_BATCH_MESSAGES);
     let linger = (link.round_trip / 2).clamp(MIN_LINGER, MAX_LINGER);
+    let in_flight = (buffer_bytes / batch).max(IN_FLIGHT_PER_CONNECTION);
     Sizes {
         batch,
         messages,
         linger,
+        in_flight,
     }
 }
 
@@ -1252,11 +1258,11 @@ impl KafkaDestination {
         let mut producer_config = ClientConfig::new();
         producer_config
             .set("bootstrap.servers", &config.brokers)
-            // Off by default. With `retries` effectively infinite and `acks=all`, a retried produce can both duplicate
-            // a record and reorder it against its neighbors. Turning this on pins
-            // `max.in.flight.requests.per.connection=5`, `retries=INT32_MAX`, `acks=all` and `queuing.strategy=fifo`.
-            // Needs broker 0.11+.
-            .set("enable.idempotence", "true")
+            // Not idempotent: an idempotent producer keeps at most five requests in flight and, at librdkafka 2.12
+            // to 2.16, sends about one batch a round trip while its broker thread spins a core, so a link 200ms away
+            // carries a fifth of what it can. Without it a retried produce may duplicate a record, as a batch
+            // smeltr sends again already may (at-least-once), or reorder it against its neighbors.
+            .set("acks", config.acks.as_property())
             // Bounds a stalled producer's memory; librdkafka's default is 1 GB. The egress queue in front of this
             // one holds the other half of `bufferBytes` and counts rows a little differently, so a full producer
             // queue is reachable from egress: `deliver` polls it down, and a queue that stays full is the stall it
@@ -1287,13 +1293,15 @@ impl KafkaDestination {
                     batch_bytes = sizes.batch,
                     batch_messages = sizes.messages,
                     linger_ms = sizes.linger.as_millis() as u64,
+                    in_flight = sizes.in_flight,
                     "sized the producer for its link"
                 );
                 producer_config
                     .set("batch.size", sizes.batch.to_string())
                     .set("message.max.bytes", sizes.batch.to_string())
                     .set("batch.num.messages", sizes.messages.to_string())
-                    .set("linger.ms", sizes.linger.as_millis().to_string());
+                    .set("linger.ms", sizes.linger.as_millis().to_string())
+                    .set("max.in.flight.requests.per.connection", sizes.in_flight.to_string());
             }
             None => tracing::warn!(
                 target: "kafka.link",
@@ -1548,11 +1556,13 @@ mod tests {
             "a megabyte of small records"
         );
         assert_eq!(near.linger, MIN_LINGER);
+        assert_eq!(near.in_flight, (64 << 20) / DEFAULT_BATCH_BYTES, "as many batches as the buffer holds");
 
         // 64 MiB over 12 partitions, five in flight: 1.1 MB each, and the broker takes it.
         let far = derive_sizes(64 << 20, &link(12, 120, 8 << 20));
         assert_eq!(far.batch, (64 << 20) / 12 / 5);
         assert_eq!(far.linger, Duration::from_millis(60));
+        assert_eq!(far.in_flight, 12 * 5);
 
         // 1 GiB over one partition wants 214 MB a request; the broker's ceiling says 8 MiB.
         let capped = derive_sizes(1 << 30, &link(1, 300, 8 << 20));
@@ -1563,6 +1573,7 @@ mod tests {
             "enough small records to fill it"
         );
         assert_eq!(capped.linger, Duration::from_millis(150));
+        assert_eq!(capped.in_flight, (1 << 30) / (8 << 20), "a capped batch gets more in flight");
         let huge = derive_sizes(1 << 30, &link(1, 300, 1 << 30));
         assert_eq!(huge.messages, MAX_BATCH_MESSAGES);
 
@@ -1577,6 +1588,7 @@ mod tests {
         let slow = derive_sizes(64 << 20, &link(0, 5_000, 1 << 30));
         assert_eq!(slow.linger, MAX_LINGER);
         assert_eq!(slow.batch, (64 << 20) / 5);
+        assert_eq!(slow.in_flight, IN_FLIGHT_PER_CONNECTION);
     }
 
     #[test]
@@ -2184,6 +2196,7 @@ mod tests {
             &KafkaDestinationConfig {
                 payload: crate::plan::config::Payload::Record,
                 compression: crate::plan::topology::Compression::None,
+                acks: crate::plan::topology::Acks::All,
                 stall_after: Duration::from_secs(30),
                 brokers: mock.bootstrap_servers(),
                 default_topic: "down-topic".to_string(),
@@ -2390,6 +2403,7 @@ mod tests {
             &KafkaDestinationConfig {
                 payload: crate::plan::config::Payload::Record,
                 compression: crate::plan::topology::Compression::None,
+                acks: crate::plan::topology::Acks::All,
                 stall_after: Duration::from_secs(30),
                 brokers: mock.bootstrap_servers(),
                 default_topic: "stats-topic".to_string(),

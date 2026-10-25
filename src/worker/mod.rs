@@ -5239,6 +5239,7 @@ mod tests {
             kind: DestinationKind::Kafka(KafkaDestinationConfig {
                 payload: crate::plan::config::Payload::Record,
                 compression: crate::plan::topology::Compression::None,
+                acks: crate::plan::topology::Acks::All,
                 stall_after: Duration::from_secs(30),
                 brokers: "k:9092".into(),
                 default_topic: "dlq".into(),

@@ -3709,6 +3709,27 @@
             ]
           },
           {
+            "name": "acks",
+            "type": "string",
+            "default": "all",
+            "examples": ["one"],
+            "what": "How many replicas must hold each batch before it counts as delivered.",
+            "values": [
+              {
+                "value": "none",
+                "what": "Counts a batch delivered once it is sent, without waiting for a replica."
+              },
+              {
+                "value": "one",
+                "what": "Waits for the partition's leader replica to write it."
+              },
+              {
+                "value": "all",
+                "what": "Waits for every in-sync replica to write it. Recommended."
+              }
+            ]
+          },
+          {
             "name": "stallAfterSecs",
             "type": "integer",
             "default": 30,
@@ -3762,6 +3783,7 @@
             "section": "Delivery and client properties",
             "settings": [
               "compression",
+              "acks",
               "stallAfterSecs",
               "bufferBytes",
               "properties",

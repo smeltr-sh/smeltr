@@ -1304,6 +1304,20 @@ const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
         "compression.codec",
         "librdkafka's other spelling of `compression.type`, which is set from this destination's own `compression` field",
     ),
+    ("acks", "set from this destination's own `acks` field"),
+    (
+        "request.required.acks",
+        "librdkafka's other spelling of `acks`, which is set from this destination's own `acks` field",
+    ),
+    (
+        "max.in.flight.requests.per.connection",
+        "derived from this destination's `bufferBytes` and its link, as many requests as the buffer holds batches",
+    ),
+    (
+        "max.in.flight",
+        "librdkafka's other spelling of `max.in.flight.requests.per.connection`, which smeltr derives from this \
+         destination's `bufferBytes` and its link",
+    ),
     (
         "queued.max.messages.kbytes",
         "set from this source's own `fetchBytes` field, which is what makes a reader's memory footprint a number this deployment chose",
@@ -1356,7 +1370,7 @@ const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
     ),
     (
         "enable.idempotence",
-        "required for the producer not to duplicate or reorder records on retry, which at-least-once delivery and the Elasticsearch dedupe story both rely on",
+        "off, so the producer keeps as many requests in flight as its link needs: an idempotent producer keeps at most five",
     ),
     (
         "transactional.id",
@@ -5097,6 +5111,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             identity,
             props,
             compression,
+            acks,
             stall_after_secs,
             buffer_bytes,
             format,
@@ -5109,6 +5124,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             props: to_kafka_props(props),
             default_topic: default_topic.clone(),
             compression: compression.to_plan(),
+            acks: acks.to_plan(),
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),
             buffer_bytes: buffer_bytes.map_or(BufferBytes::DEFAULT, |b| b.0),
             service: KafkaService::Kafka,
@@ -5134,6 +5150,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
                 brokers,
                 default_topic: default_event_hub.clone(),
                 compression: compression.to_plan(),
+                acks: crate::plan::topology::Acks::All,
                 stall_after: std::time::Duration::from_secs(stall_after_secs.0),
                 buffer_bytes: buffer_bytes.map_or(BufferBytes::DEFAULT, |b| b.0),
                 service: KafkaService::EventHubs,
@@ -6961,6 +6978,8 @@ mod tests {
         for (alias, canonical) in [
             ("metadata.broker.list", "bootstrap.servers"),
             ("compression.codec", "compression.type"),
+            ("request.required.acks", "acks"),
+            ("max.in.flight", "max.in.flight.requests.per.connection"),
         ] {
             let json = example_json().replacen(
                 r#""groupId": "smeltr""#,
@@ -7032,6 +7051,8 @@ mod tests {
             "fetch.message.max.bytes",
             "receive.message.max.bytes",
             "batch.num.messages",
+            "acks",
+            "max.in.flight.requests.per.connection",
         ] {
             let json = example_json().replacen(
                 r#""groupId": "smeltr""#,

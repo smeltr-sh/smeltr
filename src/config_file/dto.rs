@@ -1376,6 +1376,8 @@ pub enum DestinationKindDto {
         field: Option<String>,
         #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
         compression: CompressionDto,
+        #[serde(default, skip_serializing_if = "AcksDto::is_default")]
+        acks: AcksDto,
         /// Seconds one batch may take to deliver before it is a stall.
         #[serde(default, skip_serializing_if = "StallAfter::is_default")]
         stall_after_secs: StallAfter,
@@ -2812,6 +2814,32 @@ impl RequestBytes {
 impl Default for RequestBytes {
     fn default() -> Self {
         RequestBytes(Self::DEFAULT)
+    }
+}
+
+/// How many brokers hold a Kafka batch before it counts as delivered. Kafka's `acks` in `props` is reserved, so this is
+/// the one place it is set.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AcksDto {
+    None,
+    One,
+    #[default]
+    All,
+}
+
+impl AcksDto {
+    pub fn is_default(&self) -> bool {
+        *self == AcksDto::All
+    }
+
+    pub fn to_plan(self) -> crate::plan::topology::Acks {
+        use crate::plan::topology::Acks;
+        match self {
+            AcksDto::None => Acks::None,
+            AcksDto::One => Acks::One,
+            AcksDto::All => Acks::All,
+        }
     }
 }
 
