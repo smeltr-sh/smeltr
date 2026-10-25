@@ -2468,15 +2468,12 @@ pub fn issued_certificates_due(
                 };
                 if root.fingerprint != signing {
                     let message = format!(
-                        "this leader issued it under an authority it no longer signs with, and it {when}. {renew}"
+                        "issued before the authority was rotated, so a connection that trusts only the new authority \
+                         refuses it. {renew}"
                     );
                     (remaining <= 0, None, message)
                 } else if now_ms >= renew_after {
-                    (
-                        remaining <= 0,
-                        Some(renew_after),
-                        format!("this leader issued it, and it {when}. {renew}"),
-                    )
+                    (remaining <= 0, Some(renew_after), format!("{when}. {renew}"))
                 } else {
                     continue;
                 }
@@ -2484,7 +2481,7 @@ pub fn issued_certificates_due(
             _ => (
                 false,
                 None,
-                format!("this leader cannot read its newest version. {renew}"),
+                format!("this leader cannot tell when its newest version expires. {renew}"),
             ),
         };
         out.push(Warning {

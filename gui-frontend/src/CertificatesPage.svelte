@@ -227,7 +227,7 @@
         <Field
           required
           label="Issued for"
-          help="DNS names and IP addresses, one per line. This leader signs it with its own authority, which whatever connects to it must trust. Before it expires the leader warns you to renew it."
+          help="DNS names and IP addresses, one per line. This leader signs it with its own authority, which whatever connects to it must trust. Before it expires the leader warns you on the Issues page to renew it."
         >
           <textarea
             bind:value={issuedNames}
@@ -312,7 +312,7 @@
                 {#if c.served}<span class="badge">leader</span>{/if}
                 {#if c.issuedFor}<span
                     class="badge"
-                    title="Issued by this leader, which issues its next version when you press Renew, so it has no Replace button. To use your own certificate, add one under another name."
+                    title="Issued by this leader, which issues its next version when you choose Renew, so it has no Replace button. To use your own certificate, add one under another name."
                     >issued</span
                   >{/if}
                 {#if c.description}<small class="note">{c.description}</small>{/if}

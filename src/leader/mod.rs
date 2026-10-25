@@ -5920,7 +5920,11 @@ mod certificate_list_tests {
         let said = warnings::issued_certificates_due(&issued, "another root", now);
         assert_eq!(said.len(), 1);
         assert_eq!(said[0].since_millis, None);
-        assert!(said[0].message.contains("no longer signs with"), "{}", said[0].message);
+        assert!(
+            said[0].message.contains("before the authority was rotated"),
+            "{}",
+            said[0].message
+        );
         let unreadable = [("acme".to_string(), Vec::new())];
         assert_eq!(warnings::issued_certificates_due(&unreadable, &signing, now).len(), 1);
     }

@@ -84,8 +84,9 @@
     DNS names and IP addresses it is for under <strong>Issued for</strong>, choose how long it lasts
     under <strong>Valid for</strong>, and choose <strong>Add</strong>. The leader signs it with its
     own authority, so a client verifies it against the leader's
-    <a href="#download">ca.pem</a>. Two thirds of the way through its life, or after you
-    <a href="#rotation">rotate the authority</a>, the Issues page says it is due for renewal. Choose
+    <a href="#download">ca.pem</a>. When a third of its life remains (30 days of 90, about four
+    months of a year), or after you <a href="#rotation">rotate the authority</a>, the Issues page
+    says it is due for renewal. Choose
     <strong>Renew</strong> on its row: the leader issues the next version, valid for the same length of
     time, and opens a change that points the connection identities presenting it at that version. Deploy
     that change before the old version expires.
