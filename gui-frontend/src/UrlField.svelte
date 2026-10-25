@@ -4,8 +4,9 @@
   URL at all is the save's to say: the leader refuses it on this `field`
   (`config_file::load::web_url`), and the `Field` shows that like any save error.
   `sends` is whether a credential goes with a request besides one in the URL;
-  `instead` is where this form names a user and password. `optional` leaves a
-  cleared field unset rather than empty.
+  `instead` is where this form names a user and password. `required` and
+  `optional` are the `Field`'s, and `optional` also leaves a cleared field unset rather
+  than empty.
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
@@ -18,6 +19,7 @@
     value = $bindable(),
     sends,
     instead,
+    required = false,
     optional = false,
     error = null,
     placeholder,
@@ -30,6 +32,7 @@
     value: string | undefined;
     sends: boolean;
     instead?: string;
+    required?: boolean;
     optional?: boolean;
     error?: string | null;
     placeholder?: string;
@@ -41,7 +44,7 @@
   const warning = $derived(urlWarning(value ?? '', sends, instead) ?? null);
 </script>
 
-<Field {label} {field} {error} {warning} {help} {note}>
+<Field {label} {field} {error} {warning} {help} {note} {required} {optional}>
   <input
     type="text"
     class:mono
