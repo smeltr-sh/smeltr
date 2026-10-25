@@ -176,6 +176,13 @@ describe('pastedRecords', () => {
     });
   });
 
+  it('takes a whole record as it is, internal fields and all, and other JSON as text', () => {
+    const record = '{"_raw":"a","__source":{"offset":9}}';
+    expect(pastedRecords(`${record}\n{"id":4}`, editColumns(kafka))).toEqual({
+      records: [{ _raw: 'a', __source: { offset: 9 } }, { _raw: '{"id":4}' }],
+    });
+  });
+
   it('takes a JSON object a line for a sample of fields, and names a line that is not one', () => {
     const columns = editColumns(sql);
     expect(pastedRecords('{"invoice_id":3}', columns)).toEqual({ records: [{ invoice_id: 3 }] });

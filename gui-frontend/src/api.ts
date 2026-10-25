@@ -2864,16 +2864,33 @@ export function discardCapture(session: string): Promise<{ ok: boolean }> {
  * value becomes one record. That covers a pretty-printed object and a JSON
  * array, which one-record-per-line does not. Anything that is not one JSON
  * value -- NDJSON, JSONL, a plain log file -- falls back to one record per
- * non-empty line. Either way each record is a byte record whose `_raw` is
- * one line: a parsed element is re-serialized with `JSON.stringify`. */
+ * non-empty line. Each record is a byte record whose `_raw` is one line: a
+ * parsed element is re-serialized with `JSON.stringify`. An object that has a
+ * `_raw` field is a whole record already, internal fields and all, and is
+ * taken as it is. */
 export function recordsFromText(text: string): SampleRecordDto[] {
   const elements = pastedElements(text);
-  if (elements) return elements.map((el) => ({ _raw: JSON.stringify(el) }));
+  if (elements) return elements.map((el) => wholeRecord(el) ?? { _raw: JSON.stringify(el) });
   return text
     .split('\n')
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
-    .map((line) => ({ _raw: line }));
+    .map((line) => wholeRecord(parsedLine(line)) ?? { _raw: line });
+}
+
+/** `value` when it is a record: an object with a `_raw` field. */
+function wholeRecord(value: unknown): SampleRecordDto | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && '_raw' in value
+    ? (value as SampleRecordDto)
+    : null;
+}
+
+function parsedLine(line: string): unknown {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
 }
 
 /** `text` as one JSON value's records: an array's elements, or the value itself. `null` when `text` is not one JSON

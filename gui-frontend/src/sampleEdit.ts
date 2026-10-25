@@ -175,16 +175,15 @@ function base64(text: string): string {
 }
 
 /** Records pasted into a sample whose records are `columns`, read as Add sample reads a paste (`recordsFromText`): one
- * JSON value, an array's elements a record, or else a line a record. A sample of `_raw` text takes them as text; one
- * of other fields takes each as a JSON object of its fields. `error` names the first that is not one. */
+ * JSON value, an array's elements a record, or else a line a record. A sample with `_raw` takes a whole record, an
+ * object with a `_raw` field, as it is, and anything else as `_raw` text; one without takes each as a JSON object of
+ * its fields. `error` names the first that is not one. */
 export function pastedRecords(
   text: string,
   columns: EditColumn[],
 ): { records: SampleRecordDto[] } | { error: string } {
-  // A record's internal fields are not what a paste gives.
-  const own = columns.filter((c) => !isInternal(c.name));
-  const raw = own.length === 0 || (own.length === 1 && own[0].name === '_raw');
-  if (raw) return { records: recordsFromText(text) };
+  if (columns.length === 0 || columns.some((c) => c.name === '_raw'))
+    return { records: recordsFromText(text) };
   const isObject = (v: unknown) => v !== null && typeof v === 'object' && !Array.isArray(v);
   const elements = pastedElements(text);
   if (elements) {
