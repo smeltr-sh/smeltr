@@ -45,7 +45,7 @@ pub struct PreviewRequest {
     #[serde(default)]
     pub filter: Option<String>,
     /// Say, on each row, which steps changed each of its fields and which step dropped it (`touched`). It keeps every
-    /// field's every value for the whole run and compares them, so an editor asks for it once typing settles.
+    /// field's every value for the whole run and compares them, which costs about one more run.
     #[serde(default)]
     pub attribution: bool,
     /// What may follow a `.` in an expression of the config. Asked, the preview answers it instead of running the

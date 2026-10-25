@@ -825,7 +825,7 @@
     requestError = '';
     const sample = selectedSample;
     try {
-      const res = await fetchPreview(steps, sample);
+      const res = await fetchPreview(steps, sample, undefined, undefined, true);
       // A run of a sample put away while it ran answers for nothing on screen.
       if (sample !== selectedSample) return;
       result = res;
@@ -987,7 +987,7 @@
       const at = Date.now() * 1000;
       const [beforeRes, afterRes] = await Promise.all([
         fetchPreview(before, sample, at),
-        fetchPreview(after, sample, at),
+        fetchPreview(after, sample, at, undefined, true),
       ]);
       // A later pause answers for the screen.
       if (asked !== pauseAsked) return;
@@ -1187,33 +1187,8 @@
   let gridRows = $derived(pause && pauseRun ? pauseRun.after : (lastGoodResult?.rows ?? null));
 
   // Which steps touched each field of a row, dropped it and raised its
-  // exceptions, for the records shown. The leader runs the pipeline once per
-  // step for it, so it is asked for once typing settles, and it stands only
-  // for the run it was asked about.
-  const ATTRIBUTE_MS = 1000;
-  let attributed = $state<{ rows: PreviewRow[]; byRow: Map<number, PreviewRow> } | null>(null);
-  $effect(() => {
-    const rows = gridRows;
-    const cut = pause && pauseRun ? pause.after : steps;
-    const sample = lastSample;
-    void signature;
-    if (!rows || rows.length === 0 || !sample) return;
-    let current = true;
-    const timer = setTimeout(async () => {
-      try {
-        const res = await fetchPreview(cut, sample, undefined, undefined, true);
-        if (current && res.ok && res.rows.length === rows.length)
-          attributed = { rows, byRow: new Map(res.rows.map((r) => [r.row, r])) };
-      } catch {
-        // The records stand without it.
-      }
-    }, ATTRIBUTE_MS);
-    return () => {
-      current = false;
-      clearTimeout(timer);
-    };
-  });
-  let attribution = $derived(attributed && attributed.rows === gridRows ? attributed.byRow : null);
+  // exceptions: the grid's own run carries it, by row.
+  let attribution = $derived(gridRows ? new Map(gridRows.map((r) => [r.row, r])) : null);
 
   /** Each step by id, with its number in the step list. */
   let stepNumbers = $derived(
