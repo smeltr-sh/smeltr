@@ -792,10 +792,6 @@
     font-size: var(--text-note);
   }
 
-  .dim {
-    color: var(--dim);
-  }
-
   .toolbar {
     display: flex;
     gap: 0.6rem;

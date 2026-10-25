@@ -225,9 +225,6 @@
 </SectionShell>
 
 <style>
-  .dim {
-    color: var(--dim);
-  }
   .small {
     font-size: var(--text-micro);
   }

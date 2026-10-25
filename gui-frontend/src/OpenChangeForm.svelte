@@ -310,10 +310,6 @@
     margin-left: auto;
   }
 
-  .dim {
-    color: var(--dim);
-  }
-
   .pass,
   .added {
     color: var(--added);

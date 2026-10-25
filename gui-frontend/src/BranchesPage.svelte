@@ -412,9 +412,6 @@
     font-family: var(--mono);
     min-width: 16rem;
   }
-  .dim {
-    color: var(--dim);
-  }
   .failed {
     color: var(--error);
   }

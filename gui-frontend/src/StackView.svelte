@@ -37,10 +37,6 @@
     font-size: var(--text-label);
   }
 
-  .dim {
-    color: var(--dim);
-  }
-
   .controls {
     margin-top: 1rem;
   }

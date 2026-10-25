@@ -356,9 +356,6 @@
     gap: 0.5rem;
     margin: 1.2rem 0;
   }
-  .dim {
-    color: var(--dim);
-  }
   .mono {
     font-family: var(--mono);
   }

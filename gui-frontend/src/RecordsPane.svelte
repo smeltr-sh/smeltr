@@ -924,14 +924,6 @@
 </section>
 
 <style>
-  .dim {
-    color: var(--dim);
-  }
-
-  .grow {
-    flex-grow: 1;
-  }
-
   .output-search {
     display: flex;
     align-items: center;

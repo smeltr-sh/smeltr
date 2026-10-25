@@ -39,7 +39,4 @@
   input {
     max-width: 8rem;
   }
-  .dim {
-    color: var(--dim);
-  }
 </style>

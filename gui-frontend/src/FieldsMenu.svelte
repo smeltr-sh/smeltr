@@ -200,14 +200,6 @@
     gap: 0.4rem;
   }
 
-  .grow {
-    flex-grow: 1;
-  }
-
-  .dim {
-    color: var(--dim);
-  }
-
   .list {
     max-height: 26rem;
     overflow-y: auto;

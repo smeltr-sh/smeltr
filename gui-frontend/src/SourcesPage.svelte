@@ -289,10 +289,6 @@
     max-width: var(--width-prose);
   }
 
-  .dim {
-    color: var(--dim);
-  }
-
   input {
     font-family: var(--mono);
   }

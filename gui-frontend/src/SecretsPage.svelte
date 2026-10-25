@@ -577,10 +577,6 @@
     font-size: var(--text-note);
   }
 
-  .dim {
-    color: var(--dim);
-  }
-
   .mono {
     font-family: var(--mono);
   }

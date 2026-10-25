@@ -423,7 +423,9 @@
     font-family: ui-monospace, monospace;
     font-size: 0.9em;
   }
+  /* Faded rather than in the dim color, so a dim link keeps its link color. */
   .dim {
+    color: inherit;
     opacity: 0.65;
   }
   .pager {

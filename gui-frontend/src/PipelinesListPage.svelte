@@ -232,10 +232,6 @@
     background: oklch(var(--scope-l) var(--scope-c) var(--shared-h, 260));
   }
 
-  .dim {
-    color: var(--dim);
-  }
-
   .sample-banner {
     font-size: var(--text-body);
     color: var(--ink);

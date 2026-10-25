@@ -242,9 +242,6 @@
     font-size: var(--text-body);
     line-height: 1.5;
   }
-  .dim {
-    color: var(--dim);
-  }
   .mono {
     font-family: var(--mono);
   }

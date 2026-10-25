@@ -388,14 +388,6 @@
 </SectionShell>
 
 <style>
-  .grow {
-    flex-grow: 1;
-  }
-
-  .dim {
-    color: var(--dim);
-  }
-
   .mono {
     font-family: var(--mono);
   }

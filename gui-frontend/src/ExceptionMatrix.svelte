@@ -274,9 +274,6 @@
     padding: 0 0 0 0.35rem;
     font-size: inherit;
   }
-  .dim {
-    color: var(--dim);
-  }
   /* A speck where the column is open, a hollow ring where the row inherits, a filled dot where it is set here, half
      of one where only some kinds take it, and a dash where it is not possible. */
   button.dot {

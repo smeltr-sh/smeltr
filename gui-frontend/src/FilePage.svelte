@@ -63,9 +63,3 @@
     readOnly={!canEdit(scopeOf(path))}
   />
 {/if}
-
-<style>
-  .dim {
-    color: var(--dim);
-  }
-</style>

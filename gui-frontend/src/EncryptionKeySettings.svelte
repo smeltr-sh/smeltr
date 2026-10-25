@@ -159,10 +159,6 @@
     font-family: var(--mono);
   }
 
-  .dim {
-    color: var(--dim);
-  }
-
   .bad {
     color: var(--error);
     font-weight: 600;

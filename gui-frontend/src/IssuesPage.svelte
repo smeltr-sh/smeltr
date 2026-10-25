@@ -195,9 +195,6 @@
 </SectionShell>
 
 <style>
-  .dim {
-    color: var(--dim);
-  }
   /* An empty state is a sentence someone reads, so it is ink. */
   .empty {
     color: var(--ink);
