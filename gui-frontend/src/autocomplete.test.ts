@@ -66,6 +66,25 @@ describe('rankedSuggestions', () => {
     expect(rankedSuggestions(CONDITION_FUNCTIONS, 'substring')[0].name).toBe('slice');
   });
 
+  it.each([
+    ['strip', 'trim'],
+    ['lstrip', 'trimStart'],
+    ['ltrim', 'trimStart'],
+    ['rstrip', 'trimEnd'],
+    ['rtrim', 'trimEnd'],
+    ['find', 'indexOf'],
+    ['rjust', 'padStart'],
+    ['ljust', 'padEnd'],
+    ['sorted', 'sort'],
+    ['items', 'entries'],
+    ['strptime', 'parseTime'],
+    ['urlparse', 'parseUrl'],
+    ['timestamp', 'epochSeconds'],
+    ['hash', 'sha256'],
+  ])('finds a function by its name elsewhere: %s is %s', (word, name) => {
+    expect(rankedSuggestions(CONDITION_FUNCTIONS, word).map((f) => f.name)).toContain(name);
+  });
+
   it('a word matching nothing returns an empty list', () => {
     expect(rankedSuggestions(CONDITION_FUNCTIONS, 'toInt')).toEqual([]);
   });

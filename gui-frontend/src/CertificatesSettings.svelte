@@ -667,7 +667,7 @@
             <Collapsible open={!!rotationError || !!rotationMessage}>
               {#snippet summary()}Rotate authority{/snippet}
               <div class="rotation-settings">
-                <Field label="Authority lifetime" note="A new authority defaults to 10 years.">
+                <Field label="Authority lifetime">
                   <select bind:value={authorityValidityDays}>
                     {#each AUTHORITY_VALIDITY_DAYS as days}
                       <option value={days}>{days / 365} {days === 365 ? 'year' : 'years'}</option>
@@ -763,14 +763,17 @@
             </select>
           </Field>
           {#if preset === OTHER}
-            <Field label="Directory URL" note="https://, as the authority publishes it">
+            <Field
+              label="Directory URL"
+              help="Where your certificate authority publishes its ACME directory. It starts with https://."
+            >
               <input type="url" bind:value={directoryUrl} spellcheck="false" />
             </Field>
           {/if}
           <Field
             label="Names"
             group
-            note="What the certificate carries, and where the authority reaches this leader."
+            help="Press Enter or type a comma after each name. A wildcard such as *.example.com needs DNS-01, and DNS-01 cannot prove an IP address."
           >
             <TokenListInput bind:values={nameList} placeholder="leader.example.com" />
           </Field>
@@ -794,8 +797,8 @@
               <div class="challenge-group">
                 <Field
                   label="Challenge"
-                  note={challenge === 'http-01'
-                    ? `The authority asks on port 80; this leader answers on port ${acme.httpPort}.`
+                  note={challenge === 'http-01' && acme.httpPort !== 80
+                    ? `Forward port 80 to port ${acme.httpPort} on this leader; the authority checks there.`
                     : undefined}
                 >
                   {#snippet help()}How the certificate authority checks this leader holds the names.{/snippet}
@@ -812,10 +815,15 @@
                         <option value="cloudflare">Cloudflare</option>
                       </select>
                     </Field>
-                    <Field
-                      label="API token"
-                      note="Needs Zone · Zone · Read and Zone · DNS · Edit on the zones that hold the names."
-                    >
+                    <Field label="API token">
+                      {#snippet help()}
+                        It must be able to read the zones that hold the names and edit their DNS
+                        records: <a
+                          href="https://developers.cloudflare.com/fundamentals/api/get-started/create-token/"
+                          target="_blank"
+                          rel="noreferrer">Cloudflare's Create API token</a
+                        >.
+                      {/snippet}
                       <LeaderSecretField
                         bind:value={cloudflareToken}
                         bind:replacing={replacingToken}
@@ -828,17 +836,20 @@
               </div>
               <Field
                 label="Authority"
-                note="Optional. PEM, the root a private authority issues under, where the platform does not trust it."
+                help="The root certificate of a private authority, as PEM, if this leader doesn't already trust it. Leave it empty for a public authority."
               >
                 <textarea bind:value={acmeAuthority} rows="4" spellcheck="false"></textarea>
               </Field>
               <Field
                 label="EAB key ID"
-                note="Optional. External account binding, for an authority that requires an account with it."
+                help="Your certificate authority gives it for external account binding. Leave it empty if it gave you none."
               >
                 <input bind:value={eabKeyId} spellcheck="false" />
               </Field>
-              <Field label="EAB HMAC key" note="Optional. Stored encrypted and never shown again.">
+              <Field
+                label="EAB HMAC key"
+                help="Your certificate authority gives it with the EAB key ID. It is stored encrypted and never shown again."
+              >
                 <PasswordField
                   bind:value={eabHmac}
                   ariaLabel="EAB HMAC key"
