@@ -1207,6 +1207,19 @@ impl Store for SqliteStore {
         Ok(out)
     }
 
+    fn set_issued(&self, name: &str, issued: &Issued) -> Result<(), StoreError> {
+        let names = serde_json::to_string(&issued.names).map_err(|e| StoreError(e.to_string()))?;
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE issued_certificates SET names = ?2, validity_days = ?3 WHERE name = ?1",
+            (name, names, issued.validity_days),
+        )?;
+        if updated == 0 {
+            return Err(StoreError(format!("this leader does not issue {name:?}")));
+        }
+        Ok(())
+    }
+
     fn add_secret_version(&self, name: &str, value: &str) -> Result<i64, StoreError> {
         self.add_version(name, value, None)
     }

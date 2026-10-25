@@ -162,6 +162,7 @@ fn start_leader_tls() -> (
 
     let data_dir = temp_dir("leader-data");
     let returned_data_dir = data_dir.clone();
+    crate::harness::leader_tls::listing(&data_dir.join("tls"));
     let materials = smeltr::leader::tls::ensure(
         &data_dir.join("tls"),
         vec!["localhost".to_string(), "127.0.0.1".to_string()],

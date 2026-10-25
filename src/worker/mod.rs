@@ -4792,6 +4792,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("smeltr-pin-blocks-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let authority = |name: &str| {
+            crate::leader::tls::tests::listing(&dir.join(name));
             let materials = crate::leader::tls::ensure(
                 &dir.join(name),
                 vec!["localhost".to_string()],
@@ -5103,6 +5104,7 @@ mod tests {
         // certificate this process is about to serve is the one now on disk -- minting an enrollment code checks that.
         let names = vec!["127.0.0.1".to_string()];
         let validity = Duration::from_secs(3600);
+        crate::leader::tls::tests::listing(&tls_dir);
         let first = crate::leader::tls::ensure(&tls_dir, names.clone(), validity, &[]).expect("an authority, created");
         let ca_pem = first.ca_pem.clone();
         crate::leader::tls::ensure(&tls_dir, names, validity, &[]).expect("a certificate, reissued");

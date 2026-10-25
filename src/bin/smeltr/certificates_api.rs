@@ -11,7 +11,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{get, post, put};
 
 use smeltr::leader::resolver::Resolver;
 use smeltr::leader::store::Actor;
@@ -60,8 +60,6 @@ pub fn router(auth: Auth, tls: Option<Arc<Tls>>, leader: smeltr::leader::AppStat
     axum::Router::new()
         .route("/api/settings/certificates", get(show).put(install))
         .route("/api/certificates/:name", put(replace))
-        .route("/api/settings/certificates/reissue", post(reissue))
-        .route("/api/settings/certificates/supplied", delete(uninstall))
         .route(
             "/api/settings/certificates/rotation",
             post(begin_rotation).delete(abandon_rotation),
@@ -85,8 +83,8 @@ struct CertificatesDto {
     authority: Option<tls::Described>,
     /// What a client is shown.
     served: Option<tls::Described>,
-    /// Whether an operator supplied what is being served. False means this leader's own authority signed it, and
-    /// reissuing is free; true means replacing it is theirs to do.
+    /// Whether an operator supplied what is being served. False means it is this leader's own entry, which it
+    /// renews itself; true means replacing it is theirs to do.
     supplied: bool,
     /// Where it came from: this leader's own authority, an upload, or an order from a certificate authority.
     source: acme::Source,
@@ -477,121 +475,6 @@ async fn replace(
         return refuse(status, &e);
     }
     stored.into_response()
-}
-
-/// `DELETE /api/settings/certificates/supplied`: go back to this leader's own authority.
-async fn uninstall(State(state): State<Certificates>, actor: axum::Extension<Actor>) -> Response {
-    let serving = match serving(&state) {
-        Ok(serving) => serving,
-        Err(response) => return *response,
-    };
-    let _ordered = state.auth.settings_writes.lock().await;
-
-    // Read under the lock, and before anything is minted or recorded. Without it a second withdrawal reissues the
-    // leader's own certificate and writes a row saying a certificate was withdrawn, neither of which was asked
-    // for and neither of which happened.
-    if let Err(e) = tls::rotation_may_begin(&serving.dir, tls::Installs::Own) {
-        return refused(&e);
-    }
-
-    // Minted while the list entry is still served. The certificate beneath has been sitting unused for as
-    // long as that one was serving, and the names this leader answers to may have changed meanwhile; one that
-    // cannot be minted has to be found out before the thing it would replace is gone.
-    let own = match tls::ensure_own(&serving.dir, serving.names.clone(), serving.validity) {
-        Ok(own) => own,
-        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    };
-    let fingerprint = match tls::describe(&own.served, "the certificate") {
-        Ok(described) => described.fingerprint,
-        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    };
-    // An entry under this leader's own authority is withdrawn at once: every worker verifies by that root already.
-    // Under another root the leader's own goes out to the fleet first, and the entry keeps serving until the fleet
-    // holds it -- unless a start could not serve it, when no worker verifying by its root reaches this leader.
-    let rotates = match tls::withdrawing_changes_root(&serving.dir) {
-        Ok(rotates) => rotates && tls::unserved(&serving.dir).is_none(),
-        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    };
-    // As a rotation, against the leader's own root, when the entry keeps serving until the fleet holds it;
-    // the withdrawal itself is recorded only where it happens now.
-    let subject = if rotates {
-        match root_in_force(&serving.dir) {
-            Ok(root) => ("authority-rotation-begun", root),
-            Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-        }
-    } else {
-        ("certificate-withdrawn", fingerprint)
-    };
-    if let Err(e) = record(&state.auth, &actor, subject.0, &subject.1).await {
-        return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
-    }
-
-    if rotates {
-        let now_ms = smeltr::leader::warnings::now_millis();
-        if let Err(e) = tls::begin_own_rotation(&serving.dir, now_ms) {
-            return refuse(StatusCode::CONFLICT, &e);
-        }
-        return answer(&state).await;
-    }
-    if let Err(e) = tls::uninstall(&serving.dir) {
-        return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
-    }
-    serve_what_is_on_disk(&state, &serving).await
-}
-
-/// `POST /api/settings/certificates/reissue`: a new certificate from this leader's own authority.
-///
-/// What a restart would do, without the restart. Every worker already trusts the authority, so nothing outside
-/// this process is involved.
-async fn reissue(State(state): State<Certificates>, actor: axum::Extension<Actor>) -> Response {
-    let serving = match serving(&state) {
-        Ok(serving) => serving,
-        Err(response) => return *response,
-    };
-    let _ordered = state.auth.settings_writes.lock().await;
-    // Read under the lock. An upload landing between the check and the reissue would have its certificate replaced
-    // by this leader's own, and the operator would never be told.
-    match tls::current(&serving.dir) {
-        Ok(materials) if materials.supplied => {
-            return refuse(
-                StatusCode::CONFLICT,
-                "this leader is serving a certificate you supplied. Withdraw it first, or upload a new one.",
-            );
-        }
-        Ok(_) => {}
-        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    }
-
-    // `ensure_own` issues on every call, so this is exactly what the next start would have done. The disk changes
-    // before the audit row here alone, because minting the leader's own certificate is what every start does
-    // anyway: there is no previous state to preserve and nothing to roll back to.
-    let own = match tls::ensure_own(&serving.dir, serving.names.clone(), serving.validity) {
-        Ok(own) => own,
-        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    };
-    if own.authority_created {
-        // The authority's files were gone, so this reissue minted a new one. Every worker is pinned to the old
-        // one and none of them will verify this leader again until they are given the new `ca.pem`.
-        tracing::warn!(
-            target: "leader.tls_authority_created",
-            path = %serving.dir.join(tls::CA_CERT).display(),
-            "a reissue found no certificate authority on disk and created one: every worker is pinned to the one \
-             that is gone, and has to be given this file before it can reach this leader again"
-        );
-    }
-    let fingerprint = match tls::describe(&own.served, "the certificate") {
-        Ok(described) => described.fingerprint,
-        Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-    };
-    let what = if own.authority_created {
-        "certificate-authority-created"
-    } else {
-        "certificate-reissued"
-    };
-    if let Err(e) = record(&state.auth, &actor, what, &fingerprint).await {
-        return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
-    }
-    serve_what_is_on_disk(&state, &serving).await
 }
 
 /// The audit row for a certificate change, written while the change is still undone: a row that did not land,

@@ -5329,6 +5329,7 @@ mod authority_delivery_tests {
 
     fn a_leader_with_an_authority(label: &str) -> std::path::PathBuf {
         let data_dir = temp_dir(label);
+        tls::tests::listing(&tls::dir_of(&data_dir));
         tls::ensure(
             &tls::dir_of(&data_dir),
             vec!["localhost".to_string()],
@@ -5745,7 +5746,7 @@ mod certificate_list_tests {
         tls_dir
     }
 
-    /// The entry served is the one chosen, and none once the leader goes back to its own.
+    /// The entry served is the one chosen, and the leader's own once it goes back to it.
     #[test]
     fn the_leader_serves_the_entry_chosen_by_name() {
         let dir = own("chosen");
@@ -5756,8 +5757,8 @@ mod certificate_list_tests {
         tls::tests::install(&dir, &chain, &key, &theirs.ca_pem, &names(), &[]).unwrap();
         assert_eq!(served_names(&dir).unwrap(), ["supplied"]);
 
-        tls::uninstall(&dir).unwrap();
-        assert!(served_names(&dir).unwrap().is_empty());
+        tls::tests::give_back(&dir).unwrap();
+        assert_eq!(served_names(&dir).unwrap(), [tls::OWN_ENTRY]);
     }
 
     /// The version the leader serves stays in the list until another is served: not deleted, not forgotten, and
@@ -5770,29 +5771,29 @@ mod certificate_list_tests {
         let own = tls::ensure(&dir, names(), A_YEAR, &[]).unwrap();
         let (_, chain, key) = tls::to_serve(&dir).unwrap();
         let (chain, key) = (String::from_utf8(chain).unwrap(), String::from_utf8(key).unwrap());
-        state.store.create_certificate("leader", "", &chain, &key).unwrap();
+        state.store.create_certificate("chosen", "", &chain, &key).unwrap();
         let entry = tls::Entry {
-            name: "leader".to_string(),
+            name: "chosen".to_string(),
             version: 1,
             ca: String::from_utf8(own.ca_pem).unwrap(),
         };
         tls::serve(&dir, &entry, &names(), &[]).unwrap();
 
-        let refused = delete_secret(State(state.clone()), Path("leader".to_string())).await;
+        let refused = delete_secret(State(state.clone()), Path("chosen".to_string())).await;
         assert!(!refused.0.ok, "the served entry was deleted");
-        let refused = forget_secret_version(State(state.clone()), Path(("leader".to_string(), 1))).await;
+        let refused = forget_secret_version(State(state.clone()), Path(("chosen".to_string(), 1))).await;
         assert!(!refused.0.ok, "the served version was forgotten");
 
         for _ in 0..crate::startup_config::leader_secret_versions() + 1 {
-            let stored = store_value(state.clone(), "leader".to_string(), key.clone(), Some(chain.clone())).await;
+            let stored = store_value(state.clone(), "chosen".to_string(), key.clone(), Some(chain.clone())).await;
             assert!(stored.0.ok, "{:?}", stored.0.errors);
         }
         assert!(
-            state.store.certificate_chain("leader", 1).unwrap().is_some(),
+            state.store.certificate_chain("chosen", 1).unwrap().is_some(),
             "the served version was pruned"
         );
         assert!(
-            state.store.certificate_chain("leader", 2).unwrap().is_none(),
+            state.store.certificate_chain("chosen", 2).unwrap().is_none(),
             "nothing was pruned"
         );
     }
@@ -5802,6 +5803,7 @@ mod certificate_list_tests {
     /// A leader with an authority and a bundle whose receiver presents the certificate `acme`.
     fn issuing(label: &str) -> AppState {
         let state = super::secrets_delivery_tests::state(label);
+        tls::read_list(&tls::dir_of(&state.data_dir), state.store.clone());
         tls::ensure(&tls::dir_of(&state.data_dir), names(), A_YEAR, &[]).expect("an authority");
         let repo = git::repo_path(&state.data_dir);
         let head = git::main_head(&repo).unwrap();
@@ -5881,7 +5883,7 @@ mod certificate_list_tests {
         let state = issuing("issue-no-names");
         assert!(!issue(&state, "acme", &[" "]).await.ok);
         assert!(!issue_lasting(&state, "acme", &["a.example.com"], 0).await.ok);
-        assert!(listed_names(&state).await.is_empty());
+        assert_eq!(listed_names(&state).await, [tls::OWN_ENTRY]);
     }
 
     async fn listed_names(state: &AppState) -> Vec<String> {
@@ -6023,7 +6025,8 @@ mod certificate_list_tests {
         let acme = store::Unopenable::Certificate("acme".to_string());
         assert!(state.store.regenerate_key(&event).unwrap().unopenable.contains(&acme));
 
-        assert_eq!(renewed(&state, leaf.not_before_millis + 1).await, ["acme"]);
+        // The leader's own too: its key was sealed by the same key.
+        assert_eq!(renewed(&state, leaf.not_before_millis + 1).await, ["acme", tls::OWN_ENTRY]);
         assert!(!state.store.key_standing().unwrap().unopenable.contains(&acme));
         let (_, chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
         tls::is_pair(chain.as_bytes(), key.as_bytes()).expect("the new key is the new certificate's");
@@ -6036,7 +6039,7 @@ mod certificate_list_tests {
         let (chain, key) =
             tls::issue(&tls::dir_of(&state.data_dir), vec!["a.example.com".to_string()], A_YEAR).unwrap();
         state.store.create_certificate("uploaded", "", &chain, &key).unwrap();
-        assert!(renewed(&state, i64::MAX / 2).await.is_empty());
+        assert_eq!(renewed(&state, i64::MAX / 2).await, [tls::OWN_ENTRY]);
     }
 
     /// One issued under a root the leader no longer signs with is due at once, whatever its age, and so is one
