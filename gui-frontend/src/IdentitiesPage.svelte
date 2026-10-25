@@ -186,8 +186,9 @@
   >
     {#snippet help()}
       The certificate this worker shows the far end, chosen from the list on
-      <a href="#/admin/certificates">Admin &rarr; Certificates</a>: a client certificate when it
-      connects out, and the certificate a receiver serves.
+      <a href="#/admin/certificates">Admin &rarr; Certificates</a>. For a source or destination it is
+      the client certificate, needed only when the far end requires one; for a receiver it is the
+      certificate the receiver serves.
     {/snippet}
   </CertificatePicker>
 
@@ -237,7 +238,7 @@
     <PageHeader title="Connection identities">
       {#snippet help()}
         An identity is the TLS setup a connector names: the certificate this worker presents, and
-        the authorities it trusts the far end against. A source or destination names it as its
+        the authorities it uses to check the far end. A source or destination names it as its
         client identity, and a receiver as its server identity.
       {/snippet}
     </PageHeader>
