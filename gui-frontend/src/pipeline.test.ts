@@ -755,6 +755,7 @@ describe('a parser writes into the object it names', () => {
   it('names its object in its summary, and not the record', () => {
     expect(stepSummary(parser({ into: 'app' }))).toBe('_raw as JSON into app');
     expect(stepSummary(parser({ into: '$' }))).toBe('_raw as JSON');
+    expect(stepSummary(parser({ into: '' }))).toBe('_raw as JSON');
     expect(stepSummary(parser())).toBe('_raw as JSON');
   });
 });

@@ -619,7 +619,7 @@ export function stepSummary(step: Step): string {
         ? step.pairs.map((p) => `${p.from || '…'} → ${p.to || '…'}`).join(', ')
         : '(no pairs)';
     case 'parser':
-      return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${step.into.trim() !== '$' ? ` into ${step.into.trim()}` : ''}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
+      return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${['$', ''].includes(step.into.trim()) ? '' : ` into ${step.into.trim()}`}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
     case 'lookup':
       return `${step.input || '…'} → ${step.outputs.map((o) => o.field || '…').join(', ') || '(no outputs)'}`;
     case 'unroll':
