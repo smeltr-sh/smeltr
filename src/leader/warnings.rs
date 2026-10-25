@@ -96,6 +96,7 @@ pub enum Condition {
     SecretNeedsValue,
     AcmeRenewalFailing,
     LeaderCertificateRunningOut,
+    IssuedCertificateDue,
 }
 
 impl Condition {
@@ -135,6 +136,7 @@ impl Condition {
         Condition::SecretNeedsValue,
         Condition::AcmeRenewalFailing,
         Condition::LeaderCertificateRunningOut,
+        Condition::IssuedCertificateDue,
     ];
 
     /// What this is called on the wire. The match is what makes a new entry a compile error here.
@@ -173,6 +175,7 @@ impl Condition {
             Condition::SecretNeedsValue => "secretNeedsValue",
             Condition::AcmeRenewalFailing => "acmeRenewalFailing",
             Condition::LeaderCertificateRunningOut => "leaderCertificateRunningOut",
+            Condition::IssuedCertificateDue => "issuedCertificateDue",
         }
     }
 }
@@ -2442,6 +2445,60 @@ fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
     }
 }
 
+/// The certificates this leader issued that are due for renewal: two thirds of the way through their newest
+/// version's life, as an ordered one is, or ending at a root other than `signing`, which a rotation's cutover leaves
+/// them doing. Each entry is a name and its newest chain described, empty where that cannot be read, which is due
+/// too. Nothing renews one until an admin does, so each says to.
+pub fn issued_certificates_due(
+    issued: &[(String, Vec<crate::leader::tls::Described>)],
+    signing: &str,
+    now_ms: i64,
+) -> Vec<Warning> {
+    let mut out = Vec::new();
+    for (name, chain) in issued {
+        let renew = format!("Renew it in {CERTIFICATE_LIST} and deploy the change it opens");
+        let (expired, since_millis, message) = match (chain.first(), chain.last()) {
+            (Some(leaf), Some(root)) => {
+                let renew_after = leaf.not_before_millis + (leaf.not_after_millis - leaf.not_before_millis) * 2 / 3;
+                let remaining = leaf.not_after_millis - now_ms;
+                let when = if remaining <= 0 {
+                    "has expired".to_string()
+                } else {
+                    format!("expires in {} days", remaining / (24 * 60 * 60 * 1000))
+                };
+                if root.fingerprint != signing {
+                    let message = format!(
+                        "issued before the authority was rotated, so a connection that trusts only the new authority \
+                         refuses it. {renew}"
+                    );
+                    (remaining <= 0, None, message)
+                } else if now_ms >= renew_after {
+                    (remaining <= 0, Some(renew_after), format!("{when}. {renew}"))
+                } else {
+                    continue;
+                }
+            }
+            _ => (
+                false,
+                None,
+                format!("this leader cannot tell when its newest version expires. {renew}"),
+            ),
+        };
+        out.push(Warning {
+            scope: None,
+            condition: Condition::IssuedCertificateDue,
+            subject_kind: SubjectKind::Certificate,
+            site: None,
+            subject_id: name.clone(),
+            group: None,
+            severity: if expired { Severity::Failed } else { Severity::Warning },
+            since_millis,
+            message,
+        });
+    }
+    out
+}
+
 /// What the key's failure is about, as the Issues page names it.
 const KEY_SUBJECT: &str = "secrets encryption key";
 
@@ -2460,7 +2517,12 @@ pub fn encryption_key_facts(standing: &KeyStanding) -> HashSet<FactKey> {
 /// A key that is missing or wrong, as one failure: nothing sealed can be stored or changed until it is fixed. Once
 /// it holds again, each value it cannot open is a warning of its own, which clears when that value is entered again.
 /// A warning rather than a failure, because a running worker still holds what it was given.
-pub fn encryption_key_warnings(standing: &KeyStanding, starts: &HashMap<FactKey, i64>) -> Vec<Warning> {
+/// `issued` names the certificates this leader issued, which are renewed rather than replaced.
+pub fn encryption_key_warnings(
+    standing: &KeyStanding,
+    issued: &HashSet<String>,
+    starts: &HashMap<FactKey, i64>,
+) -> Vec<Warning> {
     let leader = |condition, subject_id: String, severity, message| Warning {
         scope: None,
         condition,
@@ -2489,10 +2551,12 @@ pub fn encryption_key_warnings(standing: &KeyStanding, starts: &HashMap<FactKey,
                     SubjectKind::Secret,
                     "encrypted with a key this leader no longer has. Store a new version".to_string(),
                 ),
-                Unopenable::Certificate(_) => (
+                Unopenable::Certificate(name) => (
                     SubjectKind::Certificate,
-                    "encrypted with a key this leader no longer has. Replace the certificate under Certificates"
-                        .to_string(),
+                    format!(
+                        "encrypted with a key this leader no longer has. {} it in {CERTIFICATE_LIST}",
+                        if issued.contains(name) { "Renew" } else { "Replace" }
+                    ),
                 ),
                 Unopenable::Setting(key) => (
                     SubjectKind::Leader,
@@ -6651,7 +6715,7 @@ mod tests {
         );
         let facts = encryption_key_facts(&broken);
         let starts: HashMap<FactKey, i64> = facts.iter().map(|f| (f.clone(), NOW)).collect();
-        let said = encryption_key_warnings(&broken, &starts);
+        let said = encryption_key_warnings(&broken, &HashSet::new(), &starts);
         assert_eq!(said.len(), 1, "{said:?}");
         assert_eq!(said[0].condition, Condition::SecretsKeyUnusable);
         assert_eq!(said[0].severity, Severity::Failed);
@@ -6682,10 +6746,12 @@ mod tests {
                 Unopenable::Secret("es-auth".to_string()),
                 Unopenable::Setting(crate::leader::oidc::CLIENT_SECRET_KEY.to_string()),
                 Unopenable::Certificate("ingest-tls".to_string()),
+                Unopenable::Certificate("receiver-tls".to_string()),
             ],
         );
-        let said = encryption_key_warnings(&held, &HashMap::new());
-        assert_eq!(said.len(), 3);
+        let issued = HashSet::from(["receiver-tls".to_string()]);
+        let said = encryption_key_warnings(&held, &issued, &HashMap::new());
+        assert_eq!(said.len(), 4);
         assert!(
             said.iter()
                 .all(|w| w.condition == Condition::SecretNeedsValue && w.severity == Severity::Warning)
@@ -6711,15 +6777,21 @@ mod tests {
             (SubjectKind::Certificate, "ingest-tls")
         );
         assert!(
-            said[2].message.ends_with("Replace the certificate under Certificates"),
+            said[2].message.ends_with("Replace it in Admin → Certificates"),
             "{}",
             said[2].message
+        );
+        assert!(
+            said[3].message.ends_with("Renew it in Admin → Certificates"),
+            "{}",
+            said[3].message
         );
         assert!(said.iter().all(|w| w.group.is_none()), "an administrator's to act on");
 
         assert!(
             encryption_key_warnings(
                 &standing(crate::leader::store::KeyState::Absent, vec![]),
+                &HashSet::new(),
                 &HashMap::new()
             )
             .is_empty()

@@ -1795,6 +1795,13 @@ export function deletePipeline(id: string): Promise<MutationResult> {
  * again when the sample is read. */
 export type SampleRecordDto = Record<string, unknown>;
 
+/** Whether the root key of `path`, a field's path, is internal: smeltr's own, starting `__`, as
+ * `plan::tree::is_internal` reads one. A root key the path has to quote
+ * (`["__a.b"]`) counts as well. */
+export function isInternal(path: string): boolean {
+  return path.startsWith('__') || path.startsWith('["__');
+}
+
 /** The fields a sample record's source set, if it was read from one. */
 export function sampleSource(record: SampleRecordDto): Record<string, unknown> | undefined {
   const source = record.__source;
@@ -1829,6 +1836,12 @@ export interface SampleDto {
   records: SampleRecordDto[];
 }
 
+/** When `sample` was captured, in unix milliseconds, if it was. */
+export function capturedAt(sample: { captured?: string }): number | undefined {
+  const at = sample.captured ? Date.parse(sample.captured) : NaN;
+  return Number.isNaN(at) ? undefined : at;
+}
+
 /** A library listing: everything but the records. */
 export interface SampleSummary {
   id: string;
@@ -1836,7 +1849,10 @@ export interface SampleSummary {
   source?: string;
   records: number;
   /** Unix seconds: when the leader last wrote the sample. */
-  captured?: number;
+  written?: number;
+  /** When its records were captured, RFC 3339: the first record's
+   * `__capture.timestamp`. A pasted or uploaded sample has none. */
+  captured?: string;
 }
 
 export interface ListSamplesResult {
@@ -2480,7 +2496,8 @@ export type WarningCondition =
   | 'secretsKeyUnusable'
   | 'secretNeedsValue'
   | 'acmeRenewalFailing'
-  | 'leaderCertificateRunningOut';
+  | 'leaderCertificateRunningOut'
+  | 'issuedCertificateDue';
 
 /** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. *Info*: a fact worth
  * knowing that asks nothing; the leader sends it only to a caller that asks (`listWarnings({ info: true })`). */
@@ -2588,6 +2605,8 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'ACME renewal failing';
     case 'leaderCertificateRunningOut':
       return 'Leader certificate running out';
+    case 'issuedCertificateDue':
+      return 'Certificate due for renewal';
   }
 }
 
@@ -3528,6 +3547,8 @@ export type CertificateDto = {
   chain: DescribedCertificate[];
   /** Whether the leader serves a copy of it. */
   served: boolean;
+  /** The names this leader issues it for, where this leader issued it. */
+  issuedFor?: string[];
 };
 
 export function listCertificates(): Promise<CertificateDto[]> {
@@ -3548,7 +3569,29 @@ export function createCertificate(
   });
 }
 
+/** Has this leader issue a certificate for `names` under its own authority. */
+export function issueCertificate(
+  name: string,
+  description: string,
+  names: string[],
+  validityDays: number,
+): Promise<AdminActionResult> {
+  return apiJson('/api/certificates/issued', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description, names, validityDays }),
+  });
+}
+
+/** The lifetimes offered for a certificate this leader issues. Each renewal lasts the same. */
+export const ISSUED_VALIDITY_DAYS = [90, 365, 2 * 365, 3 * 365] as const;
+
 /** Stores a new version, which the leader serves too where it serves this certificate. */
+/** Issues the next version of a certificate this leader issued, for the same names and lifetime. */
+export function renewCertificate(name: string): Promise<AdminActionResult> {
+  return apiJson(`/api/certificates/${encodeURIComponent(name)}/renew`, { method: 'POST' });
+}
+
 export function replaceCertificate(
   name: string,
   certificate: string,

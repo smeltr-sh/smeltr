@@ -772,7 +772,7 @@ test('A2: the parser proposes its declared fields from a sample, and the analyst
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   // The sample in the URL is chosen once the samples have loaded; Suggest fields before then has none to read.
   await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
-  await admin.getByRole('button', { name: /_raw as JSON/ }).click();
+  await admin.getByRole('button', { name: /^Parser _raw as JSON/ }).click();
   await admin.getByRole('button', { name: 'Suggest fields' }).click();
 
   // Suggested in the step's own card: the sample stays where it was.
@@ -821,13 +821,13 @@ test('A2: a parser writes into the object it names, and its fields are suggested
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
-  await admin.getByRole('button', { name: /_raw as JSON/ }).click();
+  await admin.getByRole('button', { name: /^Parser _raw as JSON/ }).click();
   await admin.getByRole('button', { name: /^Advanced/ }).click();
   const into = admin.getByRole('textbox', { name: 'write into' });
   await expect(into).toHaveValue('$');
   await into.fill('order');
   await expect(
-    admin.getByRole('button', { name: /_raw as JSON into order \(1 declared\)/ }),
+    admin.getByRole('button', { name: /^Parser _raw as JSON into order \(1 declared\)/ }),
   ).toBeVisible();
 
   // The parse's own keys, not where they land: `id` is declared already, and `total` lands at `order.total`.
@@ -861,7 +861,7 @@ test('A3: the proposal says which fields some rows lack and where rows disagree 
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
-  await admin.getByRole('button', { name: /_raw as JSON/ }).click();
+  await admin.getByRole('button', { name: /^Parser _raw as JSON/ }).click();
   await admin.getByRole('button', { name: 'Suggest fields' }).click();
 
   const suggested = admin.getByRole('group', { name: 'Suggested fields' });
@@ -1120,7 +1120,10 @@ test('A4: a compile error is written once, on its step, and the error chip jumps
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
-  await admin.getByRole('button', { name: /line\(s\) of code/ }).click();
+  await admin
+    .locator('.card-head')
+    .getByRole('button', { name: /line\(s\) of code/ })
+    .click();
   const body = admin.locator('textarea').last();
   await body.fill('x = ipVersion();');
 
@@ -1270,7 +1273,10 @@ test('A4: after a refused save, a new compile error is still shown', async ({
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
-  await admin.getByRole('button', { name: /line\(s\) of code/ }).click();
+  await admin
+    .locator('.card-head')
+    .getByRole('button', { name: /line\(s\) of code/ })
+    .click();
   const body = admin.locator('textarea').last();
   await body.fill('x = ipVersion();');
   await expect(admin.getByRole('button', { name: /Compile failed · 1/ })).toBeVisible();
@@ -1305,7 +1311,10 @@ test('A4: a code field is laid out when it is left, and a warning is written on 
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
-  await admin.getByRole('button', { name: /line\(s\) of code/ }).click();
+  await admin
+    .locator('.card-head')
+    .getByRole('button', { name: /line\(s\) of code/ })
+    .click();
   const body = admin.locator('textarea').last();
   await body.fill('let n=1\nif(_raw!=""){x=1}else{x=2}');
   await body.blur();
@@ -1324,7 +1333,10 @@ test('A4: a save pressed from a code field saves its layout', async ({ admin, le
   });
 
   await goto(admin, leader, '#/build/pipelines/orders');
-  await admin.getByRole('button', { name: /line\(s\) of code/ }).click();
+  await admin
+    .locator('.card-head')
+    .getByRole('button', { name: /line\(s\) of code/ })
+    .click();
   const body = admin.locator('textarea').last();
   await body.fill('x=2');
   await admin.route('**/api/format', async (route) => {

@@ -444,7 +444,7 @@ export function stepToDto(step: Step): unknown {
 }
 
 /** Every lookup table id any `lookup` step, at any depth, refers to. */
-export function collectLookupTables(steps: Step[]): string[] {
+function collectLookupTables(steps: Step[]): string[] {
   const found = new Set<string>();
   for (const s of flatSteps(steps))
     if (s.type === 'lookup' && s.table.trim() !== '') found.add(s.table.trim());

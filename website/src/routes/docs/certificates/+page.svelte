@@ -79,6 +79,18 @@
     that present it are pointed at the new version in a change, which reaches workers when you deploy
     it. The certificate the leader serves cannot be deleted.
   </p>
+  <p>
+    To have the leader issue one instead, choose <strong>Issued by this leader</strong>, enter the
+    DNS names and IP addresses it is for under <strong>Issued for</strong>, choose how long it lasts
+    under <strong>Valid for</strong>, and choose <strong>Add</strong>. The leader signs it with its
+    own authority, so a client verifies it against the leader's
+    <a href="#download">ca.pem</a>. When a third of its life remains (30 days of 90, about four
+    months of a year), or after you <a href="#rotation">rotate the authority</a>, the Issues page
+    says it is due for renewal. Choose
+    <strong>Renew</strong> on its row: the leader issues the next version, valid for the same length of
+    time, and opens a change that points the connection identities presenting it at that version. Deploy
+    that change before the old version expires.
+  </p>
   <h2 id="names">Names a certificate must cover</h2>
   <p>
     A certificate this leader serves must cover the name your browser reaches it by. If this leader

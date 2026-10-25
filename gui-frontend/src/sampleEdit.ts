@@ -3,6 +3,7 @@
 // reads where a record was read from runs as before. A record added by paste was read from nowhere and has none.
 
 import {
+  isInternal,
   pastedElements,
   recordsFromText,
   sampleSource,
@@ -168,7 +169,9 @@ export function pastedRecords(
   text: string,
   columns: EditColumn[],
 ): { records: SampleRecordDto[] } | { error: string } {
-  const raw = columns.length === 0 || (columns.length === 1 && columns[0].name === '_raw');
+  // A record's internal fields are not what a paste gives.
+  const own = columns.filter((c) => !isInternal(c.name));
+  const raw = own.length === 0 || (own.length === 1 && own[0].name === '_raw');
   if (raw) return { records: recordsFromText(text) };
   const isObject = (v: unknown) => v !== null && typeof v === 'object' && !Array.isArray(v);
   const elements = pastedElements(text);

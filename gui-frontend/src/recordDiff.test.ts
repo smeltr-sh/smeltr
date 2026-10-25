@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { isInternal } from './api';
 import {
   changedLines,
   changeFitsInline,
@@ -192,7 +193,7 @@ describe('diffTree', () => {
   });
 
   it('drops a field it is told not to keep, and a struct left empty', () => {
-    const root = diffTree(null, { __source: { a: 1 }, x: 1 }, (p) => !p.startsWith('__'));
+    const root = diffTree(null, { __source: { a: 1 }, x: 1 }, (p) => !isInternal(p));
     expect(root.children.map((c) => c.key)).toEqual(['x']);
   });
 });

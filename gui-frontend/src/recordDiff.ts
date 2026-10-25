@@ -522,7 +522,7 @@ export function changedLines(root: DiffNode, choices: Choices = {}): RecordLine[
 /** Both sides of a change on one line, or only the new value with the old one
  * a click away. A fixed budget rather than the true edge of the panel: a value
  * that only just fits would otherwise change shape as the divider moves. */
-export const INLINE_BUDGET_CHARS = 48;
+const INLINE_BUDGET_CHARS = 48;
 
 export function changeFitsInline(
   before: unknown,
