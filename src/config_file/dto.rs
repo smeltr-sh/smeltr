@@ -960,8 +960,9 @@ pub struct SourcetypeDto {
     pub line_breaker: Option<String>,
 }
 
+/// `$`. serde's default is a function, and Rust cannot name one `$`.
 fn root() -> String {
-    crate::plan::tree::ROOT.to_string()
+    "$".to_string()
 }
 
 fn root_path() -> String {
