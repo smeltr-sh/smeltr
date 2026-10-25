@@ -33,6 +33,9 @@ const CERTIFICATES = {
   served: described('leader.example'),
   supplied: false,
   source: 'own',
+  entry: null,
+  names: ['localhost', '127.0.0.1', 'leader.example'],
+  workerName: null,
   restartRequired: false,
   rotation: {
     incoming: described('smeltr authority 2'),
