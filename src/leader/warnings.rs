@@ -2554,7 +2554,7 @@ pub fn encryption_key_warnings(
                 Unopenable::Certificate(name) => (
                     SubjectKind::Certificate,
                     format!(
-                        "encrypted with a key this leader no longer has. {} it under Certificates",
+                        "encrypted with a key this leader no longer has. {} it in {CERTIFICATE_LIST}",
                         if issued.contains(name) { "Renew" } else { "Replace" }
                     ),
                 ),
@@ -6777,12 +6777,12 @@ mod tests {
             (SubjectKind::Certificate, "ingest-tls")
         );
         assert!(
-            said[2].message.ends_with("Replace it under Certificates"),
+            said[2].message.ends_with("Replace it in Admin → Certificates"),
             "{}",
             said[2].message
         );
         assert!(
-            said[3].message.ends_with("Renew it under Certificates"),
+            said[3].message.ends_with("Renew it in Admin → Certificates"),
             "{}",
             said[3].message
         );
