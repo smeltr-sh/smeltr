@@ -24,6 +24,7 @@
   import { pageValidation, type Placed } from './validation.svelte';
   import type { Attachment } from 'svelte/attachments';
   import { editable } from './access';
+  import { lessMotion } from './glide';
   import type { DeliverRuleDto, RouteDto } from './api';
   import { answerText, type Answer } from './exceptions';
   import {
@@ -541,7 +542,7 @@
       return;
     }
     wasLine = now;
-    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    if (lessMotion()) return;
     void tick().then(() => {
       const ms = 450;
       for (const el of flowEl?.querySelectorAll<HTMLElement>('[data-node]') ?? []) {
