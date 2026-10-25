@@ -22,6 +22,7 @@
   import { formatDiffValue } from './diff';
   import { stepName, type Step } from './pipeline';
   import StepGlyph from './StepGlyph.svelte';
+  import { float } from './float';
   import {
     changedLines,
     changeFitsInline,
@@ -69,6 +70,21 @@
 
   // The reader's choices, by a struct's or an array's path: open or folded,
   // and how many pages past the first it draws.
+  // The field whose steps are listed, while the pointer or focus is on its glyph or the list. Leaving
+  // waits a moment, so the pointer can cross the gap between the two.
+  let byOpen = $state<string | null>(null);
+  let byAnchor: HTMLElement | undefined;
+  let byClosing: ReturnType<typeof setTimeout> | undefined;
+  function showBy(path: string, at: HTMLElement) {
+    clearTimeout(byClosing);
+    byAnchor = at;
+    byOpen = path;
+  }
+  function hideBy() {
+    clearTimeout(byClosing);
+    byClosing = setTimeout(() => (byOpen = null), 150);
+  }
+
   let folds = $state(new SvelteMap<string, boolean>());
   let pages = $state(new SvelteMap<string, number>());
 
@@ -162,7 +178,14 @@
     <span class="gutter">{GLYPH[line.state]}</span>
     {#if touched}
       {@const by = touched(line.path)}
-      <span class="by">
+      <span
+        class="by"
+        role="group"
+        onpointerenter={(e) => showBy(line.path, e.currentTarget)}
+        onpointerleave={hideBy}
+        onfocusin={(e) => showBy(line.path, e.currentTarget)}
+        onfocusout={hideBy}
+      >
         {#if by.length > 0}
           {@const last = by[by.length - 1]}
           <button
@@ -171,13 +194,19 @@
             aria-label={stepName(last.step, last.number)}
             onclick={() => onjump?.(last.step)}><StepGlyph type={last.step.type} /></button
           >
-          <span class="by-list">
-            {#each by as t (t.step.id)}
-              <button type="button" onclick={() => onjump?.(t.step)}
-                ><StepGlyph type={t.step.type} /> {stepName(t.step, t.number)}</button
-              >
-            {/each}
-          </span>
+          {#if byOpen === line.path}
+            <span
+              class="by-list"
+              popover="manual"
+              {@attach float(() => byAnchor?.getBoundingClientRect())}
+            >
+              {#each by as t (t.step.id)}
+                <button type="button" onclick={() => onjump?.(t.step)}
+                  ><StepGlyph type={t.step.type} /> {stepName(t.step, t.number)}</button
+                >
+              {/each}
+            </span>
+          {/if}
         {/if}
       </span>
     {/if}
@@ -370,7 +399,6 @@
 
   /* The step that last touched the field, and on hover every step that did. */
   .by {
-    position: relative;
     flex-shrink: 0;
     width: 1rem;
     margin-left: -0.3rem;
@@ -389,11 +417,7 @@
   }
 
   .by-list {
-    display: none;
-    position: absolute;
-    z-index: 5;
-    top: 1.5em;
-    left: 0;
+    display: flex;
     flex-direction: column;
     padding: 0.25rem;
     background: var(--panel);
@@ -401,11 +425,6 @@
     border-radius: var(--radius-card);
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
     white-space: nowrap;
-  }
-
-  .by:hover .by-list,
-  .by:focus-within .by-list {
-    display: flex;
   }
 
   .by-list button {

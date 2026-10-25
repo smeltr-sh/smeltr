@@ -327,7 +327,7 @@
 
 <!-- One required text field of an SFTP server's. -->
 {#snippet serverField(key: string, label: string, about: string, placeholder = '')}
-  <Field field={key} {label}>
+  <Field required field={key} {label}>
     {#snippet help()}{about}{/snippet}
     <input
       type="text"
@@ -344,7 +344,7 @@
   {#if store === 'sftp'}
     <div class="pair">
       {@render serverField('host', 'host', "The server's host name or address.")}
-      <Field field="port" label="port">
+      <Field optional field="port" label="port">
         {#snippet help()}The server's SSH port.{/snippet}
         <input
           type="number"
@@ -357,7 +357,11 @@
     </div>
     {@render serverField('username', 'username', 'The user it signs in as.')}
   {/if}
-  <Field label={store === 'iceberg' ? 'storage credential' : 'credential'}>
+  <Field
+    label={store === 'iceberg' ? 'storage credential' : 'credential'}
+    required={store === 'sftp'}
+    optional={store !== 'sftp'}
+  >
     {#snippet help()}
       {#if store === 'sftp'}
         What the user signs in with: a password, or an unencrypted private key in OpenSSH's format.
@@ -389,7 +393,7 @@
         {@const v = fields(value)[f.key]}
         {@const about = help[f.key] ?? f.help}
         {#snippet fieldHelp()}{about}{/snippet}
-        <Field field={f.key} label={f.name} help={about ? fieldHelp : undefined}>
+        <Field required field={f.key} label={f.name} help={about ? fieldHelp : undefined}>
           {#if f.secret}
             <SecretRefInput
               value={v as SecretRef | undefined}
@@ -434,7 +438,7 @@
         {#snippet help()}{f.help}{/snippet}
       </UrlField>
     {:else if shown(store, value, f.key)}
-      <Field field={f.key} label={f.name} error={errors[f.key] ?? null}>
+      <Field optional field={f.key} label={f.name} error={errors[f.key] ?? null}>
         {#snippet help()}{f.help}{/snippet}
         <input
           type="text"

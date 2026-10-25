@@ -204,12 +204,18 @@
             >
               <tr hidden={ownShown[n] === false} onfocusin={() => (focused = p)}>
                 <td class="name">
-                  <Field bare field="id" label="name" error={grokNameProblem(p.id, taken(n))}>
+                  <Field
+                    required
+                    bare
+                    field="id"
+                    label="name"
+                    error={grokNameProblem(p.id, taken(n))}
+                  >
                     <input type="text" placeholder="NAME" bind:value={p.id} />
                   </Field>
                 </td>
                 <td>
-                  <Field bare field="pattern" label="pattern">
+                  <Field required bare field="pattern" label="pattern">
                     <ValidatedField
                       ariaLabel={(p.id || 'unnamed') + ' pattern'}
                       placeholder={'%{WORD:vendor},%{GREEDYDATA:rest}'}

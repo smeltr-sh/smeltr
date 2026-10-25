@@ -248,7 +248,7 @@
 
     <div class="card fields">
       <div class="grow">
-        <Field label="Name">
+        <Field required label="Name">
           <input
             bind:value={name}
             placeholder="what this test checks"

@@ -56,7 +56,7 @@
   const readOnly = !editable();
 </script>
 
-<Field {field} {label} group {help}>
+<Field {field} {label} group optional {help}>
   <div class="rows">
     {#each rows as row, i (i)}
       <div class="row">
