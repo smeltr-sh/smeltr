@@ -2036,7 +2036,7 @@ impl Writer<'_> {
                 };
                 func(FunctionKind::Parser {
                     input: self.name(p.input),
-                    into: p.into.clone().unwrap_or_default(),
+                    into: p.into.clone().unwrap_or_else(|| "$".into()),
                     kind,
                     declared: p
                         .declared

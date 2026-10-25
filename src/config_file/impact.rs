@@ -464,7 +464,7 @@ mod tests {
             filter: None,
             disabled: false,
             input: "_raw".to_string(),
-            into: String::new(),
+            into: crate::plan::tree::ROOT.to_string(),
             kind: crate::config_file::ParserKindDto::Grok {
                 patterns: vec![pattern.to_string()],
                 custom_patterns: vec![],

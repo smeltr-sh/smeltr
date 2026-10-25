@@ -79,7 +79,10 @@ export function parsePath(
 ): { ok: true; name: string } | { ok: false; message: string } {
   const fail = (message: string) => ({ ok: false as const, message });
   let out = '';
-  let rest = text;
+  // `$` is the record, so `$.a` is the name `a`, as the language reads it.
+  if (text === '$') return { ok: true, name: '$' };
+  let rest =
+    text.startsWith('$[') || (text.startsWith('$.') && text.length > 2) ? text.slice(text[1] === '.' ? 2 : 1) : text;
   while (rest !== '') {
     if (rest.startsWith('[')) {
       const quoted = jsonString(rest.slice(1));

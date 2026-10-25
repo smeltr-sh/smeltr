@@ -1348,14 +1348,14 @@ const writeInto: Move = {
     await save(j, () => expect(page.getByText('Saved.')).toBeVisible());
     await editingIsSaved(j);
     const truth = await j.truth();
-    const written: (string | undefined)[] = [];
+    const written: string[] = [];
     for (const scope of ['shared', 'default']) {
       const res = await truth.get(
         `/api/config?branch=${encodeURIComponent(world.branch!)}&scope=${scope}`,
       );
       for (const p of res.config.pipelines as {
         name: string;
-        steps: { type: string; into?: string }[];
+        steps: { type: string; into: string }[];
       }[])
         if (p.name === pipeline)
           for (const step of p.steps) if (step.type === 'parser') written.push(step.into);

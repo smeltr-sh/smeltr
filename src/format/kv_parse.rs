@@ -98,7 +98,7 @@ mod tests {
                 0,
                 FunctionKind::Parser {
                     input: "_raw".into(),
-                    into: String::new(),
+                    into: crate::plan::tree::ROOT.to_string(),
                     kind: ParserKind::KeyValue(config),
                     declared: declared
                         .iter()

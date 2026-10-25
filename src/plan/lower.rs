@@ -62,11 +62,7 @@ pub fn names(kind: &FunctionKind) -> Result<FunctionKind, String> {
             declared,
         } => {
             *input = name(input)?;
-            // `$` names the record, as empty does.
-            *into = match into.trim() {
-                "" | ROOT => String::new(),
-                _ => name(into)?,
-            };
+            *into = name(into)?;
             for d in declared {
                 // A csv column is a header, the key the parser reads: its name is that key's.
                 d.name = match kind {
@@ -110,7 +106,7 @@ pub fn drop(cond: Option<Expr>) -> Vec<Stmt> {
 }
 
 /// `Object.assign(into, json(input))`, and the call each other kind makes, after a declaration of each of `fields`
-/// under `into`. An empty `into` is the record.
+/// under `into`.
 pub fn parser(
     input: &str,
     into: &str,
@@ -157,10 +153,6 @@ pub fn parser(
         ParserKind::Variant => unreachable!("no step spreads a variant"),
     };
     let parse = with_value(parse, "splitDots", boolean(kind.split_dots()));
-    let into = match into {
-        "" => ROOT,
-        into => into,
-    };
     let typed = fields
         .iter()
         .map(|d| (d.name.as_str(), d.ty.clone(), d.time_source.as_ref()));
@@ -231,28 +223,20 @@ fn declare_around<'f>(
     let open = || DataType::Struct(Vec::new(), true);
     // `Object.assign` merges into an object a name holds, so `into` is made one first. Its own entry comes before the
     // fields under it, which `nest` lays inside it.
-    if into != ROOT {
-        match held(into) {
-            Held::Bound(_) => {}
-            Held::Free => match tree::ancestors(into).find(|above| matches!(held(above), Held::Free)) {
-                Some(top) => objects.push((top, vec![(tree::key_under(top, into).to_string(), open())])),
-                None => objects.push((into, Vec::new())),
-            },
-            Held::Key => lowered.body.push(Stmt::Assign {
-                target: into.to_string(),
-                value: declared(into, Some(open()), field(into)),
-                typed: true,
-            }),
-        }
+    match held(into) {
+        Held::Bound(_) => {}
+        Held::Free => match tree::ancestors(into).find(|above| matches!(held(above), Held::Free)) {
+            Some(top) => objects.push((top, vec![(tree::key_under(top, into).to_string(), open())])),
+            None => objects.push((into, Vec::new())),
+        },
+        Held::Key => lowered.body.push(Stmt::Assign {
+            target: into.to_string(),
+            value: declared(into, Some(open()), field(into)),
+            typed: true,
+        }),
     }
     let names: Vec<_> = fields
-        .map(|(key, ty, time)| {
-            let name = match into {
-                ROOT => key.to_string(),
-                _ => tree::join(into, key),
-            };
-            (key, name, ty, time)
-        })
+        .map(|(key, ty, time)| (key, tree::join(into, key), ty, time))
         .collect();
     for (key, name, ty, time) in &names {
         let (name, ty) = (name.as_str(), ty.clone());

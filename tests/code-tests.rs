@@ -54,7 +54,7 @@ fn parse(id: FunctionId, declared: &[(&str, DataType)]) -> Step {
         id,
         FunctionKind::Parser {
             input: "_raw".to_string(),
-            into: String::new(),
+            into: "$".into(),
             kind,
             declared,
         },
@@ -5287,7 +5287,7 @@ fn a_later_parser_keeps_what_its_input_lacks() {
             1,
             FunctionKind::Parser {
                 input: "inner".to_string(),
-                into: String::new(),
+                into: "$".into(),
                 kind: ParserKind::Json { split_dots: false },
                 declared: declared
                     .iter()
@@ -5429,7 +5429,7 @@ fn a_later_parsers_declared_name_replaces_what_an_earlier_one_found_under_it() {
             id,
             FunctionKind::Parser {
                 input: "inner".to_string(),
-                into: String::new(),
+                into: "$".into(),
                 kind: ParserKind::Json { split_dots: false },
                 declared: vec![DeclaredField {
                     name: "o".to_string(),
@@ -5447,7 +5447,7 @@ fn a_later_parsers_declared_name_replaces_what_an_earlier_one_found_under_it() {
         1,
         FunctionKind::Parser {
             input: "inner".to_string(),
-            into: String::new(),
+            into: "$".into(),
             kind: ParserKind::Grok(smeltr::plan::config::GrokConfig {
                 split_dots: true,
                 patterns: vec!["%{INT:o}".to_string()],
@@ -5501,7 +5501,7 @@ fn a_later_parsers_declared_name_replaces_the_paths_declared_under_it() {
             1,
             FunctionKind::Parser {
                 input: "inner".to_string(),
-                into: String::new(),
+                into: "$".into(),
                 kind: ParserKind::Json { split_dots: false },
                 declared: declared_o(),
             },
@@ -5518,7 +5518,7 @@ fn a_later_parsers_declared_name_replaces_the_paths_declared_under_it() {
         1,
         FunctionKind::Parser {
             input: "inner".to_string(),
-            into: String::new(),
+            into: "$".into(),
             kind: ParserKind::Grok(smeltr::plan::config::GrokConfig {
                 split_dots: true,
                 patterns: vec!["%{INT:o}".to_string()],

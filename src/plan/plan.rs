@@ -4497,8 +4497,8 @@ impl Compiler<'_> {
 
     /// What the tree holds at `name`, for a step's declarations.
     fn held(&self, name: &str) -> lower::Held {
-        match self.syms.node(name) {
-            Some(node) => lower::Held::Bound(node_type(&self.syms, node)),
+        match self.syms.named(name).1 {
+            Some(node) => lower::Held::Bound(node_type(&self.syms, &node)),
             None if self.record_key(name, Span::default()).is_some() => lower::Held::Key,
             None => lower::Held::Free,
         }
@@ -4768,7 +4768,7 @@ mod tests {
                 0,
                 FunctionKind::Parser {
                     input: "_raw".into(),
-                    into: String::new(),
+                    into: tree::ROOT.to_string(),
                     kind: ParserKind::Json { split_dots: false },
                     declared: vec![field("srcip"), field("service")],
                 },

@@ -54,7 +54,6 @@
     STR_OUTPUT,
     SPLIT_DOTS_DEFAULT,
     PARSER_FORMAT_NAMES,
-    intoObject,
     splitsDots,
     setSplitDots,
     declaredTypeGroups,
@@ -225,7 +224,7 @@
       case 'parser':
         return [
           step.input,
-          ...(intoObject(step.into) ? [step.into] : []),
+          step.into,
           ...(step.kind.type === 'csv' || step.kind.type === 'grok'
             ? []
             : step.declared.map((d) => d.name)),
@@ -385,7 +384,7 @@
     const kind = ps.kind;
     const values: { label: string; value: string }[] = [];
     if (ps.input !== parseInput) values.push({ label: 'input', value: ps.input });
-    if (intoObject(ps.into)) values.push({ label: 'into', value: ps.into.trim() });
+    if (ps.into.trim() !== '$') values.push({ label: 'into', value: ps.into.trim() });
     if (ps.filter.trim() !== '') values.push({ label: 'filter', value: ps.filter });
     if (kind.type === 'grok' && kind.customPatterns.length > 0)
       values.push({ label: 'pattern definitions', value: String(kind.customPatterns.length) });
@@ -403,11 +402,7 @@
   /** How many of a parser's Advanced boxes mark an error, as each box would. */
   function advancedErrors(ps: ParserStep): number {
     const input = fieldError(ps.input, stepErrorMessages, nameError(ps.input));
-    const into = fieldError(
-      ps.into,
-      stepErrorMessages,
-      intoObject(ps.into) ? nameError(ps.into) : null,
-    );
+    const into = fieldError(ps.into, stepErrorMessages, nameError(ps.into));
     const filter = fieldError(ps.filter, stepErrorMessages, null);
     return (input ? 1 : 0) + (into ? 1 : 0) + (filter ? 1 : 0);
   }
@@ -1134,14 +1129,13 @@
               <Field
                 optional
                 label="write into"
-                help="The object the parsed fields go under, such as app. Leave empty (or $) to put them at the top level of the record."
+                help="The object the parsed fields go under, such as app. $ is the top level of the record."
               >
                 <ValidatedField
                   bind:value={ps.into}
-                  placeholder="$"
                   errors={stepErrorMessages}
                   warnings={stepWarningMessages}
-                  forced={intoObject(ps.into) ? nameError(ps.into) : null}
+                  forced={nameError(ps.into)}
                 />
               </Field>
               <Field optional label="filter">

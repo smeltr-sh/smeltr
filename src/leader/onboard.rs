@@ -365,7 +365,7 @@ fn parser(kind: ParserKindDto, declared: Vec<FieldDto>) -> StepDto {
         filter: None,
         disabled: false,
         input: "_raw".to_string(),
-        into: String::new(),
+        into: crate::plan::tree::ROOT.to_string(),
         kind,
         declared,
     }

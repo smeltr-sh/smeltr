@@ -204,9 +204,9 @@ pub fn head(name: &str) -> &str {
     &name[..first(name).1]
 }
 
-/// `name` and `path`, a name under it, joined.
+/// `name` and `path`, a name under it, joined. Under `$`, the record, `path` is its own name.
 pub fn join(name: &str, path: &str) -> String {
-    match (name.is_empty(), path.is_empty()) {
+    match (name.is_empty() || name == ROOT && !path.is_empty(), path.is_empty()) {
         (true, _) => path.to_string(),
         (_, true) => name.to_string(),
         _ if path.starts_with('[') => format!("{name}{path}"),
@@ -251,7 +251,12 @@ pub fn ancestors(name: &str) -> impl Iterator<Item = &str> {
 /// that is not plain as a JSON string in brackets. The error says what is wrong with it.
 pub fn parse_name(text: &str) -> Result<String, String> {
     let mut out = String::new();
-    let mut rest = text;
+    // `$` is the record, so `$.a` is the name `a`, as the language reads it.
+    let mut rest = match text.strip_prefix(ROOT) {
+        Some("") => return Ok(ROOT.to_string()),
+        Some(r) if r.starts_with('[') || r.len() > 1 && r.starts_with('.') => r.strip_prefix('.').unwrap_or(r),
+        _ => text,
+    };
     while !rest.is_empty() {
         if let Some(quoted) = rest.strip_prefix('[') {
             let Some((key, len)) = json_string(quoted).filter(|(_, len)| quoted.as_bytes().get(*len) == Some(&b']'))
@@ -551,5 +556,15 @@ mod tests {
             assert!(parse_name(bad).is_err(), "{bad}");
         }
         assert_eq!(parse_name(r#"a["b"]"#).as_deref(), Ok("a.b"));
+    }
+
+    #[test]
+    fn a_name_under_the_record_is_its_own() {
+        for (text, want) in [("$", "$"), ("$.a", "a"), ("$.a.b", "a.b"), (r#"$["a.b"]"#, r#"["a.b"]"#), ("$a", "$a")] {
+            assert_eq!(parse_name(text).as_deref(), Ok(want), "{text}");
+        }
+        assert!(parse_name("$.").is_err());
+        assert_eq!(join(ROOT, "a.b"), "a.b");
+        assert_eq!(join(ROOT, ""), ROOT);
     }
 }

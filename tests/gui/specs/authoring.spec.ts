@@ -822,7 +822,7 @@ test('A2: a parser writes into the object it names, and its fields are suggested
   await admin.getByRole('button', { name: /_raw as JSON/ }).click();
   await admin.getByRole('button', { name: /^Advanced/ }).click();
   const into = admin.getByRole('textbox', { name: 'write into' });
-  await expect(into).toHaveAttribute('placeholder', '$');
+  await expect(into).toHaveValue('$');
   await into.fill('order');
   await expect(
     admin.getByRole('button', { name: /_raw as JSON into order \(1 declared\)/ }),

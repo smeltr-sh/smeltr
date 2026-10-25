@@ -46,9 +46,9 @@
           {
             "name": "into",
             "type": "field",
-            "absent": "the top level of the record",
+            "absent": "`$`, the top level of the record",
             "examples": ["app", "event.original"],
-            "what": "The object the parsed fields go under, such as `app`. In the GUI this is **write into**, under **Advanced**. Declared fields are named as the parse finds them, so a declared `status` lands typed at `app.status`. If `app` already holds an object, each parsed key replaces the key of its name and the others stay. If an earlier step made `app` something other than an object, the step does not compile. If a record arrives with an `app` that is not an object, the parsed object replaces it and the record gets a [`CoercionRefused`](/docs/code-reference#exceptions) exception. Leave it out, or give [`$`](/docs/code-reference#names), the record itself, for the top level."
+            "what": "The object the parsed fields go under, such as `app`. In the GUI this is **write into**, under **Advanced**. Declared fields are named as the parse finds them, so a declared `status` lands typed at `app.status`. If `app` already holds an object, each parsed key replaces the key of its name and the others stay. If an earlier step made `app` something other than an object, the step does not compile. If a record arrives with an `app` that is not an object, the parsed object replaces it and the record gets a [`CoercionRefused`](/docs/code-reference#exceptions) exception. [`$`](/docs/code-reference#names) is the record itself, its top level."
           },
           {
             "name": "kind",
