@@ -1903,6 +1903,9 @@ export interface PreviewRequest {
   /** A Bool over the pipeline's output: only the rows it is true for come back.
    * One that does not compile fails at the `filter` stage. */
   filter?: string;
+  /** Say which steps changed each row's fields and dropped it. The leader
+   * runs the pipeline once more per step for it. */
+  attribution?: boolean;
   /** Asks what may follow a `.` instead of running the sample. */
   afterDot?: { text: string; dot: number; at: DotAt };
   /** A capture filter at a destination to check against each route delivering there. Asked, the preview answers it
@@ -1934,6 +1937,8 @@ export interface PreviewException {
   /** The answer the exception's kind takes. */
   answer: 'ignore' | 'tag' | 'drop' | 'block';
   message: string;
+  /** The step that raised it, by id; absent for one raised reading the record. */
+  step?: string;
 }
 
 export interface PreviewRow {
@@ -1941,6 +1946,11 @@ export interface PreviewRow {
   /** `null` when the row did not survive the pipeline. */
   json: unknown | null;
   exceptions: PreviewException[];
+  /** With `attribution`: each field a step changed or added, by path, and
+   * those steps by id in the order they ran. */
+  steps?: Record<string, string[]>;
+  /** With `attribution`: the step after which the row was gone. */
+  droppedBy?: string;
 }
 
 /** One field a parser step read from the sample. `suggested` is a declared
@@ -2013,6 +2023,7 @@ export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
       show_internal: req.showInternal ?? false,
       at_micros: req.atMicros ?? null,
       filter: req.filter ?? null,
+      attribution: req.attribution ?? false,
       after_dot: req.afterDot ?? null,
       capture_filter: req.captureFilter ?? null,
     },
