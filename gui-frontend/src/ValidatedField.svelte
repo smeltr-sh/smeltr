@@ -28,6 +28,7 @@
 -->
 <script lang="ts">
   import { tick } from 'svelte';
+  import Clamped from './Clamped.svelte';
   import { float, type Anchor } from './float';
   import {
     ASSIGNMENT_FUNCTIONS,
@@ -252,6 +253,8 @@
   let inputEl: HTMLInputElement | HTMLTextAreaElement | undefined = $state();
   let open = $state(false);
   let highlighted = $state(0);
+  /** The suggestion whose description the reader opened past its clamp, by signature. */
+  let openDescription = $state<string | null>(null);
 
   function currentWord() {
     return wordAt(value, inputEl?.selectionStart ?? value.length);
@@ -604,10 +607,19 @@
           {#if fn.warning}
             <span class="fn-warn">&#9888; {fn.warning}</span>
           {/if}
-          <span class="fn-desc"
-            >{#each describedRuns(fn.description) as p, j (j)}{#if p.code}<code>{p.text}</code
-                >{:else}{p.text}{/if}{/each}</span
-          >
+          <span class="fn-desc">
+            <Clamped
+              text={describedRuns(fn.description)
+                .map((p) => p.text)
+                .join('')}
+              open={openDescription === fn.signature}
+              ontoggle={() =>
+                (openDescription = openDescription === fn.signature ? null : fn.signature)}
+              label={fn.signature}
+              >{#each describedRuns(fn.description) as p, j (j)}{#if p.code}<code>{p.text}</code
+                  >{:else}{p.text}{/if}{/each}</Clamped
+            >
+          </span>
         </li>
       {/each}
     </ul>
@@ -919,13 +931,9 @@
   }
 
   .fn-desc {
+    display: block;
     font-size: var(--text-micro);
     color: var(--dim);
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 3;
-    line-clamp: 3;
-    overflow: hidden;
   }
 
   /* Fields first, then functions: a rule between them, as the eye skims. */
