@@ -68,7 +68,7 @@
         {
           "name": "entries",
           "signature": "object.entries()",
-          "summary": "Each key with its value, as `{key, value}`, in the order of `keys`. Every value must be of one type.",
+          "summary": "Each key with its value, as `{key, value}`, in the order of `keys`. Every value must be of one type. Other languages call this `items`.",
           "examples": [
             {
               "expr": "{\"a\": 1, \"b\": 2}.entries()",
@@ -1133,7 +1133,7 @@
         {
           "name": "indexOf",
           "signature": "value.indexOf(search)",
-          "summary": "Where `search` first occurs in a string, or which element of an array equals it. `-1` when it does not.",
+          "summary": "Where `search` first occurs in a string, or which element of an array equals it. `-1` when it does not. Other languages call this `find`.",
           "examples": [
             {
               "expr": "line.indexOf(\",\")",
@@ -1313,7 +1313,7 @@
         {
           "name": "trim",
           "signature": "value.trim()",
-          "summary": "Whitespace removed from both ends.",
+          "summary": "Whitespace removed from both ends. Other languages call this `strip`.",
           "examples": [
             {
               "expr": "raw.trim()",
@@ -1336,7 +1336,7 @@
         {
           "name": "trimStart",
           "signature": "value.trimStart()",
-          "summary": "Whitespace removed from the start only.",
+          "summary": "Whitespace removed from the start only. Other languages call this `lstrip` or `ltrim`.",
           "examples": [
             {
               "expr": "\"  indented\".trimStart()",
@@ -1352,7 +1352,7 @@
         {
           "name": "trimEnd",
           "signature": "value.trimEnd()",
-          "summary": "Whitespace removed from the end only.",
+          "summary": "Whitespace removed from the end only. Other languages call this `rstrip` or `rtrim`.",
           "examples": [
             {
               "expr": "\"trailing   \".trimEnd()",
@@ -1368,7 +1368,7 @@
         {
           "name": "padStart",
           "signature": "value.padStart(length, pad = \" \")",
-          "summary": "Pads the front with `pad` — a space by default — until the string is `length` characters. Already long enough is returned unchanged.",
+          "summary": "Pads the front with `pad` — a space by default — until the string is `length` characters. Already long enough is returned unchanged. Other languages call this `rjust`.",
           "examples": [
             {
               "expr": "\"7\".padStart(3, \"0\")",
@@ -1404,7 +1404,7 @@
         {
           "name": "padEnd",
           "signature": "value.padEnd(length, pad = \" \")",
-          "summary": "Pads the end with `pad`, a space by default, until the string is `length` characters. Already long enough is returned unchanged.",
+          "summary": "Pads the end with `pad`, a space by default, until the string is `length` characters. Already long enough is returned unchanged. Other languages call this `ljust`.",
           "examples": [
             {
               "expr": "\"id\".padEnd(5, \".\")",
@@ -1450,7 +1450,7 @@
         {
           "name": "md5",
           "signature": "value.md5()",
-          "summary": "The MD5 digest of the bytes, or of a text's UTF-8 bytes, in lowercase hex. A fingerprint for spotting repeats, never a security check.",
+          "summary": "The MD5 hash of the bytes, or of a text's UTF-8 bytes, in lowercase hex. A fingerprint for spotting repeats, never a security check.",
           "examples": [
             {
               "expr": "\"abc\".md5()",
@@ -1461,7 +1461,7 @@
         {
           "name": "sha1",
           "signature": "value.sha1()",
-          "summary": "The SHA-1 digest of the bytes, or of a text's UTF-8 bytes, in lowercase hex.",
+          "summary": "The SHA-1 hash of the bytes, or of a text's UTF-8 bytes, in lowercase hex.",
           "examples": [
             {
               "expr": "\"abc\".sha1()",
@@ -1472,7 +1472,7 @@
         {
           "name": "sha256",
           "signature": "value.sha256()",
-          "summary": "The SHA-256 digest of the bytes, or of a text's UTF-8 bytes, in lowercase hex.",
+          "summary": "The SHA-256 hash of the bytes, or of a text's UTF-8 bytes, in lowercase hex.",
           "examples": [
             {
               "expr": "\"abc\".sha256()",
@@ -1483,7 +1483,7 @@
         {
           "name": "sha512",
           "signature": "value.sha512()",
-          "summary": "The SHA-512 digest of the bytes, or of a text's UTF-8 bytes, in lowercase hex.",
+          "summary": "The SHA-512 hash of the bytes, or of a text's UTF-8 bytes, in lowercase hex.",
           "examples": [
             {
               "expr": "\"abc\".sha512().slice(0, 16)",
@@ -1877,7 +1877,7 @@
         {
           "name": "sort",
           "signature": "array.sort(descending)",
-          "summary": "The elements in order: text by its bytes, numbers by value, `false` before `true`. `descending` is optional. Equal elements keep their order and nulls go last.",
+          "summary": "The elements in order: text by its bytes, numbers by value, `false` before `true`. `descending` is optional. Equal elements keep their order and nulls go last. Other languages call this `sorted`.",
           "examples": [
             {
               "expr": "[\"b\", \"c\", \"a\"].sort()",
@@ -1964,7 +1964,7 @@
           "name": "parseTime",
           "signature": "value.parseTime([format][, reference = now()])",
           "group": "Reading text",
-          "summary": "Parses text into a datetime. With no format, a run of digits is a compact date when it reads as one (`YYYYMMDD` or `YYYYMMDDHHMMSS`), else a Unix epoch whose unit comes from its magnitude — seconds below 10^11, then milliseconds, microseconds and nanoseconds at each further thousand — and other text is matched against the common shapes — ISO 8601, `YYYY-MM-DD HH:MM:SS`, `YYYY/MM/DD HH:MM:SS`, syslog's `Mon  D HH:MM:SS`, and Apache's `[D/Mon/YYYY:HH:MM:SS +ZZZZ]`. Give a `strftime` format to pin it, and a reference instant to fix the year a syslog stamp does not carry. A parser's declared `datetime` field is this call: the bare type detects, and `{\"type\":\"datetime\",\"format\":...}` pins.",
+          "summary": "Parses text into a datetime. With no format, a run of digits is a compact date when it reads as one (`YYYYMMDD` or `YYYYMMDDHHMMSS`), else a Unix epoch whose unit comes from its magnitude — seconds below 10^11, then milliseconds, microseconds and nanoseconds at each further thousand — and other text is matched against the common shapes — ISO 8601, `YYYY-MM-DD HH:MM:SS`, `YYYY/MM/DD HH:MM:SS`, syslog's `Mon  D HH:MM:SS`, and Apache's `[D/Mon/YYYY:HH:MM:SS +ZZZZ]`. Give a `strftime` format to pin it, and a reference instant to fix the year a syslog stamp does not carry. A parser's declared `datetime` field is this call: the bare type detects, and `{\"type\":\"datetime\",\"format\":...}` pins. Other languages call this `strptime`.",
           "examples": [
             {
               "expr": "\"1998-08-30T12:00:00Z\".parseTime()",
@@ -2386,7 +2386,7 @@
           "name": "epochSeconds",
           "signature": "epochSeconds(value)",
           "group": "Epoch counts",
-          "summary": "Whole seconds since the Unix epoch, flooring so a time before it counts backward rather than toward zero.",
+          "summary": "The Unix timestamp: whole seconds since the epoch, rounded down. A time before the epoch is negative and rounds away from zero.",
           "examples": [
             {
               "expr": "epochSeconds(parseTime(\"1998-08-30T12:00:00Z\"))",
@@ -2803,7 +2803,7 @@
         {
           "name": "parseUrl",
           "signature": "text.parseUrl()",
-          "summary": "A URL's parts as an object: `domain`, `fragment`, `path`, `extension`, `port`, `query`, `scheme`, `user_info`, `username` and `password`. Text that reads as an RFC 3986 URI or relative reference, such as a bare path, has its path, query, fragment and user info decoded. An `http`, `https`, `ftp`, `file` or `jar` URL that does not, holding a space or a `|` say, is split as written, undecoded. `extension` is what follows the last `.` of the path's last segment. `username` is the user info up to its first `:`, all of it where there is none, and `password` what follows that `:`. A part the URL lacks is null.",
+          "summary": "A URL's parts as an object: `domain`, `fragment`, `path`, `extension`, `port`, `query`, `scheme`, `user_info`, `username` and `password`. Text that reads as an RFC 3986 URI or relative reference, such as a bare path, has its path, query, fragment and user info decoded. An `http`, `https`, `ftp`, `file` or `jar` URL that does not, holding a space or a `|` say, is split as written, undecoded. `extension` is what follows the last `.` of the path's last segment. `username` is the user info up to its first `:`, all of it where there is none, and `password` what follows that `:`. A part the URL lacks is null. Other languages call this `urlparse`.",
           "examples": [
             {
               "expr": "\"https://www.example.com:8443/files/report.pdf?x=1#top\".parseUrl()",
