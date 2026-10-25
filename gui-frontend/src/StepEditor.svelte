@@ -32,8 +32,7 @@
   import ChipPicker from './ChipPicker.svelte';
   import MoreIcon from './MoreIcon.svelte';
   import DisableIcon from './DisableIcon.svelte';
-  import { flip } from 'svelte/animate';
-  import { glide } from './glide';
+  import { glideTo } from './glide';
   import FieldRow from './FieldRow.svelte';
   import TypePicker from './TypePicker.svelte';
   import DatetimeFormat from './DatetimeFormat.svelte';
@@ -1001,7 +1000,7 @@
                 >
               {/if}
               {#each ps.declared as field, i (field)}
-                <div class="glide-row" animate:flip={{ duration: glide() }}>
+                <div class="glide-row" animate:glideTo>
                   {#snippet fieldActions()}
                     {#if isCsv}
                       <button
