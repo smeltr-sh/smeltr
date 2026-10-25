@@ -1759,7 +1759,7 @@
     flex-shrink: 0;
   }
 
-  /* Controls arrive when wanted: on the head's hover or focus, while the
+  /* Controls arrive when wanted: on the head's hover or keyboard focus, while the
      step is open, and while their menu is open; dimming and the pause chip
      show a lit one. On the head, so a step in an if does not wake the if's.
      Where nothing hovers they stay, since the More menu only takes their
@@ -1769,7 +1769,7 @@
      away. An if's head keeps them in line, since its condition is a field. */
   @media (hover: hover) {
     .card:not(.open)
-      > .card-head:not(:hover, :focus-within, :has([aria-expanded='true']))
+      > .card-head:not(:hover, :has(:focus-visible, [aria-expanded='true']))
       > .controls {
       opacity: 0;
       pointer-events: none;
@@ -1781,7 +1781,7 @@
 
     /* The counts step aside for the controls, rather than sit under them. */
     .card:not(.open, .if-card)
-      > .card-head:is(:hover, :focus-within, :has([aria-expanded='true']))
+      > .card-head:is(:hover, :has(:focus-visible, [aria-expanded='true']))
       > .counts {
       margin-right: 10.6rem;
     }
