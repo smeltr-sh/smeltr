@@ -365,7 +365,7 @@ test('an identity presents a certificate from the list, and replacing it points 
   const row = admin.getByRole('row').filter({ hasText: 'client-tls' });
   await row.getByRole('button', { name: 'Replace' }).click();
   const replace = admin.getByRole('dialog', { name: /^replace / });
-  await replace.getByRole('textbox', { name: /^Certificate\b/ }).fill(fullChain(pki));
+  await replace.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
   await replace.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
   await replace.getByRole('button', { name: 'Replace', exact: true }).click();
   await expect(
