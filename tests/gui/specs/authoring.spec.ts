@@ -709,7 +709,9 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
   // Once the draft differs from what is saved, an expression waits on the save and keeps every record.
   await find.fill('__source.offset > 100');
   await expect(
-    records.getByText('Save first: an expression filters the saved records.'),
+    records.getByText(
+      'Not applied: an expression filters the saved sample, and you have unsaved changes.',
+    ),
   ).toBeVisible();
   await expect(ticks).toHaveCount(2);
   await find.fill('');

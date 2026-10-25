@@ -216,7 +216,9 @@
       </div>
       <InlineError message={findError} />
       {#if find.kind === 'paused'}
-        <p class="dim">Save first: an expression filters the saved records.</p>
+        <p class="dim">
+          Not applied: an expression filters the saved sample, and you have unsaved changes.
+        </p>
       {/if}
       <div class="table-wrap">
         <table>
