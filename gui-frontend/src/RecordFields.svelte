@@ -1,7 +1,7 @@
 <!--
   One record, as the preview draws it (`recordDiff.ts`). Nesting is indent and
-  a longer name rather than braces; what a step did to a field is a character
-  in the gutter and a color on the field's name, so the values themselves
+  a longer name rather than braces; what a step did to a field is a color on
+  the mark in the gutter and on the field's name, so the values themselves
   stay plain text at one left edge. The name column is as wide as the
   record's longest name, up to a cap past which a name wraps at its dots, and
   the types sit in a column beside it.
@@ -9,8 +9,9 @@
   What the step removed waits on one folded line at the end, so a rename
   reads as its new name alone.
 
-  Beside the mark, the sign of the last step that touched the field; held,
-  it lists every step that did, and each jumps to its step.
+  The mark is the sign of the last step that touched the field, or +, ~ or −
+  where no step is named; held, it lists every step that did, and each jumps
+  to its step.
 
   Structs and arrays draw a page at a time, and one too big for what is left
   of its page starts folded (`recordLines`). Filtered to what changed, the
@@ -144,7 +145,6 @@
 {#snippet more(depth: number, shown: number, total: number, onmore: () => void)}
   <div class="line">
     <span class="gutter"></span>
-    {#if touched}<span class="by"></span>{/if}
     <span class="dim" style:margin-left={`${depth * INDENT_CH}ch`}
       >{shown} of {total} shown ·&nbsp;</span
     ><button type="button" class="more" onclick={onmore}>show more</button>
@@ -154,41 +154,40 @@
 {#snippet field(line: Extract<RecordLine, { kind: 'field' }>)}
   {@const inline = line.state === 'changed' && changeFitsInline(line.before, line.after)}
   {@const body = formatDiffValue(line.state === 'removed' ? line.before : line.after)}
+  {@const by = touched?.(line.path) ?? []}
   <div class="line state-{line.state}">
-    <span class="gutter">{GLYPH[line.state]}</span>
-    {#if touched}
-      {@const by = touched(line.path)}
+    {#if by.length > 0}
+      {@const last = by[by.length - 1]}
       <span
-        class="by"
+        class="gutter"
         role="group"
         onpointerenter={(e) => showBy(line.path, e.currentTarget)}
         onpointerleave={hideBy}
         onfocusin={(e) => showBy(line.path, e.currentTarget)}
         onfocusout={hideBy}
       >
-        {#if by.length > 0}
-          {@const last = by[by.length - 1]}
-          <button
-            type="button"
-            class="by-glyph"
-            aria-label={stepName(last.step, last.number)}
-            onclick={() => onjump?.(last.step)}><StepGlyph type={last.step.type} /></button
+        <button
+          type="button"
+          class="by-glyph"
+          aria-label={stepName(last.step, last.number)}
+          onclick={() => onjump?.(last.step)}><StepGlyph type={last.step.type} /></button
+        >
+        {#if byOpen === line.path}
+          <span
+            class="by-list"
+            popover="manual"
+            {@attach float(() => byAnchor?.getBoundingClientRect())}
           >
-          {#if byOpen === line.path}
-            <span
-              class="by-list"
-              popover="manual"
-              {@attach float(() => byAnchor?.getBoundingClientRect())}
-            >
-              {#each by as t (t.step.id)}
-                <button type="button" onclick={() => onjump?.(t.step)}
-                  ><StepGlyph type={t.step.type} /> {stepName(t.step, t.number)}</button
-                >
-              {/each}
-            </span>
-          {/if}
+            {#each by as t (t.step.id)}
+              <button type="button" onclick={() => onjump?.(t.step)}
+                ><StepGlyph type={t.step.type} /> {stepName(t.step, t.number)}</button
+              >
+            {/each}
+          </span>
         {/if}
       </span>
+    {:else}
+      <span class="gutter">{GLYPH[line.state]}</span>
     {/if}
     <span class="key">
       <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}>
@@ -241,12 +240,7 @@
   <span class="dim">no change at this step</span>
 {:else}
   <!-- A character's slack, so a name that just fits does not wrap on a rounding. -->
-  <div
-    class="fields"
-    class:by-steps={!!touched}
-    style:--name-w={`${nameCh + 1}ch`}
-    style:--type-w={`${typeCh}ch`}
-  >
+  <div class="fields" style:--name-w={`${nameCh + 1}ch`} style:--type-w={`${typeCh}ch`}>
     {#each lines as line (line.kind + line.path + line.depth)}
       {#if line.kind === 'group'}
         <button
@@ -256,7 +250,6 @@
           onclick={() => folds.set(line.path, !line.open)}
         >
           <span class="gutter chevron">{line.open ? '▾︎' : '▸︎'}</span>
-          {#if touched}<span class="by"></span>{/if}
           <span class="key">
             <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}
               >{@render name(line.label)}</span
@@ -365,18 +358,12 @@
     color: var(--dim);
   }
 
-  /* The step that last touched the field, and on hover every step that did. */
-  .by {
-    flex-shrink: 0;
-    width: 1rem;
-    margin-left: -0.3rem;
-  }
-
+  /* The step that last touched the field, in the color of what it did, and on hover every step that did. */
   .by-glyph {
     border: 0;
     background: none;
     padding: 0;
-    color: var(--dim);
+    color: inherit;
     cursor: pointer;
   }
 
@@ -473,11 +460,13 @@
     padding: 0 0.3rem;
   }
 
-  .state-added .gutter {
+  .state-added .gutter,
+  .state-added .name {
     color: var(--added);
   }
 
-  .state-changed .gutter {
+  .state-changed .gutter,
+  .state-changed .name {
     color: var(--changed);
   }
 
@@ -522,11 +511,6 @@
     font: inherit;
     text-align: left;
     cursor: pointer;
-  }
-
-  /* Past the step's sign too. */
-  .by-steps .held {
-    padding-left: calc(2.95rem + var(--key-w));
   }
 
   .held:hover .held-rule,
