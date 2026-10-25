@@ -221,7 +221,8 @@
       <Field optional field="acks" label="acks">
         {#snippet help()}
           How many replicas must hold a batch before it counts as delivered. Choose all unless you
-          accept losing records: with none or one, a broker that fails can lose records Smeltr already counted as delivered.
+          accept losing records: with none or one, a broker that fails can lose records Smeltr
+          already counted as delivered.
         {/snippet}
         <select
           value={destination.acks ?? 'all'}
