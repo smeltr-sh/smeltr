@@ -2011,7 +2011,7 @@ const askAgentInPanel: Move = {
   run: async (j) => {
     const { page, leader, model, rng, world } = j;
     await goto(page, leader, rng.pick(['#/build/sources', '#/map', '#/admin/system/agents']));
-    const chip = page.getByRole('button', { name: 'Agent panel' });
+    const chip = page.getByRole('button', { name: 'Agent panel', exact: true });
     if ((await chip.getAttribute('aria-pressed')) !== 'true') await chip.click();
     const panel = page.getByRole('complementary', { name: 'Agent' });
     const going = world.conversations.length > 0 && rng.chance(2);
