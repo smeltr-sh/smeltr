@@ -34,11 +34,6 @@ fn hand(dest: &mut dyn Destination, rows: &[OutgoingRecord<'_>]) {
 /// The name the key is held under. An identity names a credential like every other connector does.
 const CERTIFICATE: &str = "smeltr-tls-client";
 
-const CLIENT: smeltr::plan::topology::PresentedAs = smeltr::plan::topology::PresentedAs {
-    client: true,
-    server: false,
-};
-
 /// What `up.sh` wrote, as an identity and the secrets a worker would hold for it.
 ///
 /// `None` when the rig is not up, which `live::service` has already decided is a skip or a failure.
@@ -67,7 +62,7 @@ fn rig(test_name: &str) -> Option<(String, Identity, HeldSecrets)> {
         }),
         authorities: Some(authorities),
         trust_public: true,
-        presented: CLIENT,
+        presented: smeltr::plan::topology::PresentedAs::CLIENT,
     };
     Some((brokers, identity, secrets))
 }
@@ -197,7 +192,7 @@ fn an_identity_that_presents_nothing_is_refused_by_a_broker_that_demands_one() {
         certificate: None,
         authorities: identity.authorities,
         trust_public: true,
-        presented: CLIENT,
+        presented: smeltr::plan::topology::PresentedAs::CLIENT,
     };
 
     assert_eq!(

@@ -509,11 +509,15 @@ fn built(case: &Case, system: &super::LoadedSystem) -> Result<(), String> {
 fn presents(case: &Case) -> Option<String> {
     let identity = case.source.get("identity").and_then(Value::as_str);
     IDENTITIES.iter().find(|i| Some(i.id) == identity && i.serves)?;
-    let (what, refuses) = HELD[case.held];
-    Some(format!(
+    Some(held_label(HELD[case.held]))
+}
+
+/// What a worker holding one of [`HELD`] reaches.
+fn held_label((what, refuses): (&str, bool)) -> String {
+    format!(
         "a worker holding {what} {}",
         if refuses { "refuses it" } else { "serves it" }
-    ))
+    )
 }
 
 /// Every option of a HEC receiver, by its name in the file.
@@ -596,12 +600,7 @@ fn known_hec_receiver_configs_get_the_verdict_the_rules_give() {
         .into_iter()
         .flat_map(|a| [format!("accepted admitting {a}"), format!("refused admitting {a}")])
         .chain(["refused admitting nobody".to_string()]);
-    let held = HELD.map(|(what, refuses)| {
-        format!(
-            "a worker holding {what} {}",
-            if refuses { "refuses it" } else { "serves it" }
-        )
-    });
+    let held = HELD.map(held_label);
     run(1..2_000, known, refusals.chain(verdicts).chain(held).collect());
 }
 

@@ -1335,6 +1335,19 @@ pub struct PresentedAs {
     pub server: bool,
 }
 
+impl PresentedAs {
+    /// Connecting out alone.
+    pub const CLIENT: PresentedAs = PresentedAs {
+        client: true,
+        server: false,
+    };
+    /// To a receiver's senders alone.
+    pub const SERVER: PresentedAs = PresentedAs {
+        client: false,
+        server: true,
+    };
+}
+
 /// A Confluent Schema Registry: where it is, and who signs in to it. Reached under its connector's identity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SchemaRegistry {
@@ -4245,28 +4258,23 @@ mod tests {
         h
     }
 
-    const CLIENT: PresentedAs = PresentedAs {
-        client: true,
-        server: false,
-    };
-    const SERVER: PresentedAs = PresentedAs {
-        client: false,
-        server: true,
-    };
-
     /// A certificate whose Extended Key Usage leaves out the side it is presented from is refused before anything
     /// is torn down, rather than at the handshake.
     #[test]
     fn a_certificate_is_held_to_the_side_its_bundle_presents_it_from() {
         let (chain, key) = certificate_and_key(vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth]);
         let held = holding_certificate(Some(chain), key);
-        let errors = presenting(CLIENT).identity_certificate_errors(&held);
+        let errors = presenting(PresentedAs::CLIENT).identity_certificate_errors(&held);
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(
             errors[0].contains("acme") && errors[0].contains("client authentication"),
             "{errors:?}"
         );
-        assert!(presenting(SERVER).identity_certificate_errors(&held).is_empty());
+        assert!(
+            presenting(PresentedAs::SERVER)
+                .identity_certificate_errors(&held)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -4283,7 +4291,8 @@ mod tests {
     /// A stored secret that is not a certificate entry has no chain, so there is nothing to present.
     #[test]
     fn a_secret_that_is_not_a_certificate_is_refused() {
-        let errors = presenting(CLIENT).identity_certificate_errors(&holding_certificate(None, "hunter2".into()));
+        let errors =
+            presenting(PresentedAs::CLIENT).identity_certificate_errors(&holding_certificate(None, "hunter2".into()));
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(errors[0].contains("not a certificate"), "{errors:?}");
     }
@@ -4292,7 +4301,7 @@ mod tests {
     #[test]
     fn an_identity_whose_certificate_this_worker_lacks_is_not_this_checks_concern() {
         assert!(
-            presenting(CLIENT)
+            presenting(PresentedAs::CLIENT)
                 .identity_certificate_errors(&HeldSecrets::default())
                 .is_empty()
         );

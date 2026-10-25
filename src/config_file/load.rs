@@ -786,13 +786,8 @@ pub fn sql_connection(
     identity: Option<&IdentityDto>,
 ) -> Option<crate::plan::topology::SqlDatabase> {
     // An SQL source connects out.
-    let client = PresentedAs {
-        client: true,
-        server: false,
-    };
-    let identities: Identities = identity
-        .iter()
-        .map(|i| (i.id.clone(), to_identity(i, client)))
+    let identities: Identities = (identity.iter())
+        .map(|i| (i.id.clone(), to_identity(i, PresentedAs::CLIENT)))
         .collect();
     sql_database(&source.kind, &identities)
 }

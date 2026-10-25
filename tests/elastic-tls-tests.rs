@@ -123,10 +123,7 @@ fn identity(presents: bool, authorities: Option<&str>) -> Identity {
         }),
         authorities: authorities.map(str::to_string),
         trust_public: true,
-        presented: smeltr::plan::topology::PresentedAs {
-            client: true,
-            server: false,
-        },
+        presented: smeltr::plan::topology::PresentedAs::CLIENT,
     }
 }
 

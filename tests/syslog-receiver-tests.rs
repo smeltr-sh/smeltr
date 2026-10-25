@@ -259,10 +259,7 @@ fn a_sender_is_served_over_tls() {
         }),
         authorities: None,
         trust_public: true,
-        presented: smeltr::plan::topology::PresentedAs {
-            client: false,
-            server: true,
-        },
+        presented: smeltr::plan::topology::PresentedAs::SERVER,
     };
     let at = free_port();
     let mut source = receiver(at, &["127.0.0.1"], Some(identity), 1 << 16, &secrets);

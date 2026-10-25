@@ -640,10 +640,7 @@ fn a_forwarder_is_served_over_tls() {
         }),
         authorities: None,
         trust_public: true,
-        presented: smeltr::plan::topology::PresentedAs {
-            client: false,
-            server: true,
-        },
+        presented: smeltr::plan::topology::PresentedAs::SERVER,
     };
     let at = free_port();
     let mut source = receiver(at, None, Some(identity), &mut secrets);

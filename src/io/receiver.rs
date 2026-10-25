@@ -3803,10 +3803,7 @@ mod tests {
             }),
             authorities: None,
             trust_public: true,
-            presented: crate::plan::topology::PresentedAs {
-                client: false,
-                server: true,
-            },
+            presented: crate::plan::topology::PresentedAs::SERVER,
         };
         let tls = server_tls(&identity, &secrets).unwrap();
         assert!(tls.alpn_protocols.is_empty(), "a stream offers no application protocol");

@@ -200,10 +200,7 @@ pub fn build(
             }),
             authorities: (tls == Tls::Vouched).then(|| pki.authority.pem.clone()),
             trust_public: true,
-            presented: smeltr::plan::topology::PresentedAs {
-                client: false,
-                server: true,
-            },
+            presented: smeltr::plan::topology::PresentedAs::SERVER,
         })
     });
     let config = ReceiverConfig {
