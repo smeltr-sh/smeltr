@@ -28,11 +28,11 @@
     lookupTables = [],
     grokPatterns = [],
     parseInput = '_raw',
-    selectedStep = null,
+    pausedAt = null,
     ran = null,
     counts = new Map(),
     onCount = () => {},
-    onSelectStep = () => {},
+    onPause = () => {},
     onPropose = () => {},
     proposal = null,
     askAt,
@@ -48,16 +48,15 @@
     grokPatterns?: GrokPatternDto[];
     /** The field a new parse step reads. */
     parseInput?: string;
-    /** The step driving the diff view, threaded down so a nested step can
-     * be selected. */
-    selectedStep?: Step | null;
+    /** The step the records are paused after, threaded down so a nested step can be paused at. */
+    pausedAt?: Step | null;
     /** The steps the records have been through, while they are paused; the rest are dimmed. */
     ran?: Set<Step> | null;
     /** How many records each step dropped and failed, in the records shown. */
     counts?: Map<Step, { dropped: number; failed: number }>;
     /** Filter the records to those the step dropped or failed. */
     onCount?: (step: Step, kind: 'dropped' | 'failed') => void;
-    onSelectStep?: (step: Step | null) => void;
+    onPause?: (step: Step | null) => void;
     /** Ask a parser step to propose its declared fields from the sample. */
     onPropose?: (step: Step) => void;
     /** The field proposal open on some parser step, shown in that step's card. */
@@ -119,11 +118,11 @@
         {lookupTables}
         {grokPatterns}
         {parseInput}
-        {selectedStep}
+        {pausedAt}
         {ran}
         {counts}
         {onCount}
-        {onSelectStep}
+        {onPause}
         {onPropose}
         {proposal}
         {askAt}

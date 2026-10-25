@@ -55,8 +55,11 @@
     color: var(--accent);
   }
 
-  .chip.accent .chip-remove {
+  .chip.accent .chip-remove:not(:hover) {
     color: inherit;
+  }
+
+  .chip.accent .chip-remove {
     font-size: inherit;
   }
 
