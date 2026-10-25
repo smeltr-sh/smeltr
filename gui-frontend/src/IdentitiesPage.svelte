@@ -198,8 +198,9 @@
     version={isLeaderStored(identity.certificate) ? identity.certificate.version : undefined}
   >
     {#snippet help()}
-      The client certificate this worker shows the far end, needed only when the far end requires
-      one, from the list on <a href="#/admin/certificates">Admin &rarr; Certificates</a>.
+      The client certificate this worker shows the far end, chosen from the list on
+      <a href="#/admin/certificates">Admin &rarr; Certificates</a>. Needed only when the far end
+      requires one.
     {/snippet}
   </CertificatePicker>
 

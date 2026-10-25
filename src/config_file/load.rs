@@ -2094,8 +2094,8 @@ fn validate_identities(file: &FileConfig, attributed: &mut Vec<ValidationError>)
 
         match &i.certificate {
             Some(SecretRefDto::WorkerLocal(_)) => errors.at("certificate").push(format!(
-                "{what} has a certificate pasted into the bundle. An identity presents a certificate from the \
-                 leader's list: upload it under Certificates, then choose it here"
+                "{what} has a pasted certificate. An identity presents a certificate from the leader's list: add \
+                 it under Admin → Certificates, then choose it here"
             )),
             Some(SecretRefDto::LeaderStored(l)) if l.secret.trim().is_empty() => errors.at("certificate").push(
                 format!("{what} names a certificate by a blank name. Choose one from the list"),
@@ -2105,8 +2105,8 @@ fn validate_identities(file: &FileConfig, attributed: &mut Vec<ValidationError>)
         // A pasted certificate's message covers the key beside it: choosing a certificate takes both out.
         if i.key.is_some() && !matches!(i.certificate, Some(SecretRefDto::WorkerLocal(_))) {
             errors.at("certificate").push(format!(
-                "{what} names a private key of its own. A certificate from the list holds its key: choose one \
-                 here, which takes the key out"
+                "{what} has its own private key. A certificate from the list already holds its key, so choose \
+                 one here and the key is removed"
             ));
         }
 
@@ -7182,7 +7182,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.field == Some("certificate") && e.contains("private key of its own")),
+                .any(|e| e.field == Some("certificate") && e.contains("its own private key")),
             "{errors:?}"
         );
     }

@@ -353,7 +353,7 @@ test('an identity presents a certificate from the list, and replacing it points 
   await dialog.getByRole('textbox', { name: 'id' }).fill('acme');
   const presents = dialog.getByRole('combobox', { name: /^presents/ });
   await presents.selectOption('client-tls');
-  await expect(dialog.getByText(/^v1/)).toBeVisible();
+  await expect(dialog.getByText(/^version 1/)).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('identity-presents.png') });
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
@@ -370,7 +370,7 @@ test('an identity presents a certificate from the list, and replacing it points 
   await replace.getByRole('button', { name: 'Replace', exact: true }).click();
   await expect(
     admin.getByText(
-      'Replaced, and pointed 1 identity across shared at it. It deploys when the change does.',
+      'Replaced. 1 identity in group shared will present the new version once you deploy the open change.',
     ),
   ).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('certificate-replaced.png') });

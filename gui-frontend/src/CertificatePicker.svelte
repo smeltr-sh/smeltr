@@ -50,7 +50,7 @@
 <Field {label} {help} {field}>
   {#snippet note()}
     {#if version !== undefined && value}
-      v{version}{#if chosen}&nbsp;·&nbsp;{/if}
+      version {version}{#if chosen}&nbsp;·{/if}
     {/if}
     {#if chosen}
       {chosen.names.join(', ') || chosen.subject} · {expiry(chosen.notAfterMillis)}

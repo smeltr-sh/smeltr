@@ -116,13 +116,14 @@
     if (version === undefined) return;
     const pointed = await pointSecretNow(name, version);
     if (!pointed.ok) {
-      replacedNote = `Replaced, but nothing was pointed at it: ${errorText(pointed.errors) || 'the change was not drafted'}.`;
+      replacedNote = `Replaced, but no identity could be updated to use it: ${errorText(pointed.errors) || 'the change was not drafted'}`;
     } else if (pointed.references === 0) {
       replacedNote = 'Replaced.';
     } else {
-      replacedNote =
-        `Replaced, and pointed ${pointed.references} identit${pointed.references === 1 ? 'y' : 'ies'} ` +
-        `across ${pointed.groups.join(', ')} at it. It deploys when the change does.`;
+      const identities =
+        pointed.references === 1 ? '1 identity' : `${pointed.references} identities`;
+      const groups = `group${pointed.groups.length === 1 ? '' : 's'} ${pointed.groups.join(', ')}`;
+      replacedNote = `Replaced. ${identities} in ${groups} will present the new version once you deploy the open change.`;
     }
   }
 
