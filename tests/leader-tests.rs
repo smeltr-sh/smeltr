@@ -154,15 +154,14 @@ fn start_leader_tls() -> (String, Vec<u8>) {
     let validity = std::time::Duration::from_secs(60 * 60);
     let first = smeltr::leader::tls::ensure(&tls_dir, names.clone(), validity, &[]).expect("an authority, created");
     let ca_pem = first.ca_pem.clone();
-    let issued_first = std::fs::read(&first.server_cert_path).unwrap();
+    let issued_first = first.served.clone();
 
     let materials = smeltr::leader::tls::ensure(&tls_dir, names, validity, &[]).expect("a certificate, reissued");
     // What `main` says once it has built the socket from these files: it has what is on disk.
     smeltr::leader::tls::socket_took(&tls_dir, smeltr::leader::tls::disk_generation(&tls_dir));
     assert_eq!(materials.ca_pem, ca_pem, "the authority is kept across starts");
-    let cert_pem = std::fs::read(&materials.server_cert_path).unwrap();
+    let (_, cert_pem, key_pem) = smeltr::leader::tls::to_serve(&tls_dir).unwrap();
     assert_ne!(cert_pem, issued_first, "the served certificate is a new one");
-    let key_pem = std::fs::read(&materials.server_key_path).unwrap();
 
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {

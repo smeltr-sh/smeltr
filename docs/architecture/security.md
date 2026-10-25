@@ -64,8 +64,8 @@ proves it holds each name on the port it serves (TLS-ALPN-01), on port 80
 (HTTP-01), listened on only while an order is open, or with a TXT record
 published through the zone's DNS provider (DNS-01), removed when the order is
 over, and orders again two
-thirds of the way through the certificate's life, for as long as what it
-issued is what is served. The account it holds at
+thirds of the way through the certificate's life, whether or not it is
+served, and at once when a regenerated key cannot open the newest order. The account it holds at
 the authority lives beside its certificates and outlives them. A worker gone quiet is still expected: what it last
 said it holds never ages out, so going quiet never ends the wait for it. A
 revoked worker is not expected, and neither is a forgotten one. Signing first
@@ -264,9 +264,14 @@ replaces.
 The key is a leader-stored secret, sealed, versioned and retained as any is;
 the certificate's chain is public and kept beside each version of it, so
 listing certificates opens nothing. The Certificates page lists them and the
-Secrets page leaves them out. The leader serves a copy of the one an operator
-chooses and records which entry the copy came from. A new version of that
-entry has to be one the leader can serve, and is served once stored.
+Secrets page leaves them out. The leader serves the version an operator
+chooses straight from the list, with the root workers verify it by, fixed when
+it is chosen. What is served changes by one write, and the version served is
+never deleted, forgotten or pruned while it is. A new version of that entry
+has to be one the leader can serve, and is served once stored. A start that
+cannot serve it -- its key does not open, or it no longer passes the checks it
+was chosen under -- serves the leader's own certificate and says why, and
+workers keep the root they hold until a certificate is served again.
 
 ### The secrets encryption key
 
