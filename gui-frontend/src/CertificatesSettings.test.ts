@@ -155,18 +155,6 @@ describe('the certificate actions', () => {
     await vi.waitFor(() => expect(posts).toEqual(['/api/settings/certificates/rotation/cutover']));
   });
 
-  it('issues a new certificate only once it is confirmed', async () => {
-    await show();
-    ask.mockResolvedValueOnce(false);
-    button('Issue a new one')!.click();
-    await settle();
-    expect(ask).toHaveBeenCalledTimes(1);
-    expect(posts).toEqual([]);
-
-    ask.mockResolvedValueOnce(true);
-    button('Issue a new one')!.click();
-    await vi.waitFor(() => expect(posts).toEqual(['/api/settings/certificates/reissue']));
-  });
 });
 
 describe('the source', () => {
@@ -185,14 +173,14 @@ describe('the source', () => {
     flushSync();
     expect(button('Switch to Leader issued')).toBeDefined();
     expect(button('Serve this certificate')).toBeUndefined();
-    expect(deletes).toEqual([]);
+    expect(puts).toEqual([]);
 
     button('Switch to Leader issued')!.click();
-    await vi.waitFor(() => expect(deletes).toEqual(['/api/settings/certificates/supplied']));
+    await vi.waitFor(() => expect(puts).toEqual([{ certificate: 'leader' }]));
   });
 
   it('offers rotation only under Leader issued', async () => {
-    await show({ ...CERTIFICATES, rotation: null }, 'Issue a new one');
+    await show({ ...CERTIFICATES, rotation: null }, '▸ Rotate authority');
     expect(target.textContent).toContain('Rotate authority');
     option('Uploaded')!.click();
     flushSync();
@@ -212,7 +200,6 @@ describe('the source', () => {
     await show(switching, 'Abandon switch');
     expect(target.textContent).toContain('Switch to Uploaded in progress');
     expect(button('Serve this certificate')).toBeUndefined();
-    expect(button('Issue a new one')).toBeUndefined();
     expect(option('Leader issued')!.getAttribute('aria-current')).toBe('true');
     option('Uploaded')!.click();
     flushSync();
@@ -275,7 +262,7 @@ describe('the source', () => {
       }),
     );
     page = mount(CertificatesSettings, { target });
-    await vi.waitFor(() => expect(button('Issue a new one')).toBeDefined());
+    await vi.waitFor(() => expect(button('▸ Rotate authority')).toBeDefined());
     option('Uploaded')!.click();
     flushSync();
     const chooser = target.querySelector('select')!;
@@ -350,7 +337,7 @@ describe('ACME', () => {
   const IN_FORCE = { ...CERTIFICATES, supplied: true, source: 'acme', rotation: null };
 
   it('orders only once the terms are agreed to, and fills the names from the certificate', async () => {
-    await show({ ...CERTIFICATES, rotation: null }, 'Issue a new one');
+    await show({ ...CERTIFICATES, rotation: null }, '▸ Rotate authority');
     option('ACME')!.click();
     flushSync();
     const get = button('Get certificate')!;

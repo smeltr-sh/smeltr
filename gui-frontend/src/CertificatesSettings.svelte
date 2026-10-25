@@ -19,10 +19,9 @@
     cutOverRotation,
     getCertificates,
     putCertificate,
-    reissueCertificate,
+    OWN_CERTIFICATE,
     setRotationDeadline,
     refused,
-    withdrawCertificate,
     ROTATION_WAIT_HOURS,
     AUTHORITY_VALIDITY_DAYS,
     ACME_DIRECTORIES,
@@ -528,8 +527,9 @@
             Serves the certificate "{certificates.entry}" from
             <a href="#/admin/certificates">Admin → Certificates</a>. Replace it there to renew it.
           {:else}
-            What this leader serves, signed by the current authority and issued afresh at every
-            start.
+            Serves the certificate "{OWN_CERTIFICATE}" from
+            <a href="#/admin/certificates">Admin → Certificates</a>, which this leader issues under the
+            current authority and renews on its own.
           {/if}
         </Help>
       {/snippet}
@@ -615,34 +615,22 @@
       {#if source === 'own' && !switching}
         <div class="setting actions">
           {@render status(formError, message)}
-          <div class="buttons">
-            {#if certificates.supplied}
+          {#if certificates.supplied}
+            <div class="buttons">
               <button
                 class="primary"
                 type="button"
                 disabled={busy}
                 onclick={() =>
-                  act(() => withdrawCertificate(), switched('back to this leader’s own authority'))}
+                  act(
+                    () => putCertificate(OWN_CERTIFICATE),
+                    switched('back to this leader’s own authority'),
+                  )}
               >
                 Switch to Leader issued
               </button>
-            {:else}
-              <button
-                type="button"
-                disabled={busy}
-                onclick={async () => {
-                  const ok = await ask({
-                    title: 'issue certificate',
-                    body: 'This leader serves a new certificate under the current authority.',
-                    action: 'Issue a new one',
-                  });
-                  if (ok) act(() => reissueCertificate(), 'a new certificate is in force');
-                }}
-              >
-                Issue a new one
-              </button>
-            {/if}
-          </div>
+            </div>
+          {/if}
         </div>
         {#if certificates.rotation}
           <div class="setting">

@@ -2293,7 +2293,7 @@ const uploadCertificate: Move = {
   weight: (w) => (w.password && !w.supplied ? 1 : 0),
   leadsTo: ['withdraw-certificate'],
   run: async (j) => {
-    const pki = await j.fleet.externalPki();
+    const pki = j.fleet.externalPki();
     j.world.certificates.set(await switchToUploaded(j.page, pki), pki);
     j.world.supplied = true;
     const { supplied, rotation } = await (await j.truth()).get('/api/settings/certificates');
@@ -2379,28 +2379,6 @@ const acmeUnderNewRoot: Move = {
     expect(after.authority.fingerprint).not.toBe(before.authority.fingerprint);
     await fleetStillHeard(j);
     return `the authority issues under a new root, with ${heartbeating(j.world).length} workers following`;
-  },
-};
-
-const reissueCertificate: Move = {
-  name: 'reissue-certificate',
-  weight: (w) => (w.password && !w.supplied ? 1 : 0),
-  run: async (j) => {
-    const { page } = j;
-    await openAdmin(page, 'System');
-    await page
-      .getByRole('navigation', { name: 'System settings' })
-      .getByRole('link', { name: 'Leader certificate', exact: true })
-      .click();
-    const served = page.getByRole('region', { name: /^Leader certificate/ });
-    const fingerprint = served.getByText(/^[0-9a-f]{16}…[0-9a-f]{8}$/);
-    const before = await fingerprint.innerText();
-    await served.getByRole('button', { name: 'Issue a new one' }).click();
-    await page.getByRole('dialog').getByRole('button', { name: 'Issue a new one' }).click();
-    await expect(served.getByRole('status')).toHaveText('a new certificate is in force');
-    await expect(fingerprint).not.toHaveText(before);
-    await fleetStillHeard(j);
-    return 'reissue the leader certificate';
   },
 };
 
@@ -2610,7 +2588,6 @@ export const MOVES: readonly Move[] = [
   refusedSignIn,
   roleFromGroup,
   sessions,
-  reissueCertificate,
   uploadCertificate,
   withdrawCertificate,
   orderAcme,
