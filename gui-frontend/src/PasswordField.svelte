@@ -26,7 +26,7 @@
     ariaLabel?: string;
     /** How tall it grows once it has to. */
     rows?: number;
-    /** Said to a screen reader, as a required `Field` says it of its own control. */
+    /** Said to a screen reader only, as `aria-required`: the browser does not refuse it empty. */
     required?: boolean;
   } = $props();
 
