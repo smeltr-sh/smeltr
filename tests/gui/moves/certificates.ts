@@ -32,7 +32,8 @@ export function source(served: Locator, label: string): Locator {
  * next heartbeats; a leader with nobody to wait for takes it on the page's next read. */
 export async function inForce(served: Locator, label: string) {
   await expect(source(served, label)).toHaveAttribute('aria-current', 'true', { timeout: 60_000 });
-  await expect(served.getByText(/in progress|new root/)).toHaveCount(0);
+  // A new root keeps the source, which is in force all along: this is the wait.
+  await expect(served.getByText(/in progress|new root/)).toHaveCount(0, { timeout: 60_000 });
 }
 
 /** Waits for the page to say the switch just opened is being published, under `heading`, with every worker
