@@ -1516,8 +1516,8 @@
     return { start, end, above: tops[start], below: tops[n] - tops[end] };
   });
 
-  // Widths fixed per column, from the values a column holds, so a column does
-  // not jump as rows scroll past. Read off the first rows of the run rather
+  // Widths fixed per column, from its head and the values it holds, so a column
+  // does not jump as rows scroll past. Read off the first rows of the run rather
   // than all of them: enough to size by, and the same whichever are drawn.
   const COLUMN_CH = 28;
   const COLUMN_MIN_CH = 6;
@@ -1525,7 +1525,9 @@
   let columnWidths = $derived.by(() => {
     const sized = rowsMaps.slice(0, SIZED_ROWS);
     return columns.map((path) => {
-      let w = COLUMN_MIN_CH;
+      const type = showTypes ? columnTypes.get(path) : null;
+      // The name, its type and the sort arrow.
+      let w = Math.max(COLUMN_MIN_CH, path.length + (type ? type.length + 1 : 0) + 2);
       for (const m of sized) {
         if (w >= COLUMN_CH) break;
         if (m.after.has(path) || m.before.has(path))
@@ -2120,8 +2122,7 @@
                                   ><span class="path-prefix">{name.prefix}</span>{name.leaf}</span
                                 >{#if showTypes && columnTypes.get(path)}{' '}<span
                                     class="head-type">{columnTypes.get(path)}</span
-                                  >{/if}
-                                ></SortButton
+                                  >{/if}</SortButton
                               ></th
                             >
                           {/each}
@@ -2185,7 +2186,11 @@
                               aria-label={`record ${row.row}`}
                               bind:offsetHeight={openHeights[row.row]}
                             >
-                              <td class="expanded-cell" colspan={columns.length + 2}>
+                              <td
+                                class="expanded-cell"
+                                colspan={columns.length + 2}
+                                style:--pane-width={`${paneWidth}px`}
+                              >
                                 <div class="row-head-wrap">
                                   <div class="row-head">
                                     <span class="row-index">row {row.row}</span>
@@ -2218,10 +2223,7 @@
                                     </p>
                                   {/each}
                                 </div>
-                                <div
-                                  class="record-body"
-                                  style:max-width={`calc(${paneWidth}px - 1.5rem)`}
-                                >
+                                <div class="record-body">
                                   <RecordFields
                                     before={sides.before}
                                     after={sides.after}
@@ -2627,9 +2629,7 @@
 
   /* A rule under it, not just a gap, so the row it names and the fields
      below it read as three things -- the folded row above, this head, the
-     record -- rather than one tinted block. On the wrapper, not `.row-head`
-     itself, so it spans the cell's full width rather than shrinking to the
-     sticky content's `width: max-content`. */
+     record -- rather than one tinted block. */
   .row-head-wrap {
     padding: 0.4rem 0;
     margin-bottom: 0.4rem;
@@ -2701,7 +2701,7 @@
     font-size: var(--text-micro);
     position: sticky;
     top: 0;
-    /* Above the open record's body, which is sticky too and later in the page. */
+    /* Above the rows scrolling under it, which come later in the page. */
     z-index: 1;
     background: var(--bg);
   }
@@ -2746,11 +2746,11 @@
     padding: 0.5rem 0.5rem 0.5rem 0.75rem;
   }
 
-  /* The record follows the left edge as the grid scrolls sideways, and wraps
-     to what shows of it rather than to the width of every column. */
+  /* The record moves with its row as the grid scrolls sideways, and wraps to
+     the pane's width rather than to the width of every column. */
+  .row-head-wrap,
   .record-body {
-    position: sticky;
-    left: 0.75rem;
+    max-width: calc(var(--pane-width) - 1.5rem);
   }
 
   /* A row that failed is the one to read, so it is the one that stands out. */
@@ -2779,8 +2779,6 @@
   }
 
   .exception {
-    position: sticky;
-    left: 0.75rem;
     width: max-content;
     max-width: 100%;
     margin: 0.3rem 0 0;
@@ -2803,20 +2801,15 @@
     text-overflow: ellipsis;
   }
 
+  /* In a column too narrow for both, the type gives way before the name. */
   .head-type {
+    min-width: 0;
+    flex-shrink: 10;
+    overflow: hidden;
+    text-overflow: ellipsis;
     font-family: var(--mono);
     opacity: 0.7;
     white-space: nowrap;
-  }
-
-  /* The head of an open record follows the left edge rather than scrolling
-     away: this cell is as wide as the whole table. A floor rather than
-     shrink-to-fit, so the row's own identity and its summary have room to
-     sit at opposite ends instead of crowding together on the left. */
-  .expanded-cell .row-head {
-    position: sticky;
-    left: 0.75rem;
-    width: max-content;
   }
 
   /* The nesting recedes so the eye lands on the field's own name. */
