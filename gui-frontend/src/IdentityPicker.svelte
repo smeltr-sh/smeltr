@@ -38,7 +38,7 @@
   label={farEnd === 'sender' ? 'server identity' : 'client identity'}
   note={chosen && linked ? edit : undefined}
   warning={!chosen && farEnd === 'sender'
-    ? 'If none, then traffic is received plaintext and unencrypted. Strongly recommended to set an identity certificate.'
+    ? 'If none, traffic is received unencrypted. Strongly recommended to set a server identity.'
     : null}
 >
   {#snippet help()}
