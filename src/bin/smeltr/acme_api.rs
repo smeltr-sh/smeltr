@@ -362,6 +362,12 @@ async fn order_once(
         ("certificate-ordered", issued.certificate.fingerprint.clone())
     };
     certificates_api::record(auth, actor, what, &subject).await?;
+    let store = auth.store.clone();
+    let dir = serving.dir.clone();
+    let listed = issued.clone();
+    tokio::task::spawn_blocking(move || acme::list(store.as_ref(), &dir, &listed))
+        .await
+        .map_err(|e| e.to_string())??;
     acme::take(&serving.dir, settings, &issued, &serving.names, required, now_ms)?;
     if !issued.rotates {
         certificates_api::reload_socket(serving)?;

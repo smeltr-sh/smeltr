@@ -35,7 +35,7 @@ use rustls::pki_types::pem::PemObject;
 use super::acme_dns;
 use super::private_file;
 use super::resolver::Resolver;
-use super::store::{Store, StoreError};
+use super::store::{Kept, Store, StoreError};
 use super::tls::{self, Described};
 
 pub const ENABLED_KEY: &str = "acme.enabled";
@@ -58,6 +58,8 @@ pub const EAB_HMAC_KEY: &str = "acme.eab_hmac";
 
 /// Under `tls/`.
 pub const DIR: &str = "acme";
+/// The certificate list entry each order is a version of.
+pub const ENTRY: &str = "acme";
 const ACCOUNT: &str = "account.json";
 const STATE: &str = "state.json";
 
@@ -282,6 +284,7 @@ pub trait Issuer: Send + Sync {
 }
 
 /// What an order produced, before anything serves it.
+#[derive(Clone)]
 pub struct Issued {
     pub chain: Vec<u8>,
     pub key: Vec<u8>,
@@ -376,6 +379,34 @@ fn root_of(chain: &[u8], authority: &str) -> Result<(Vec<u8>, String), String> {
          trusts. Add the root to the authority setting."
             .to_string()
     })
+}
+
+/// Stores `issued` as the newest version of [`ENTRY`], which the first order creates, and records that what `tls/`
+/// is about to hold is a copy of it. Refuses an entry of that name the leader does not order.
+pub fn list(store: &dyn Store, tls_dir: &Path, issued: &Issued) -> Result<(), String> {
+    let chain = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&issued.chain).trim_end(),
+        String::from_utf8_lossy(&issued.ca).trim_end()
+    );
+    let key = String::from_utf8_lossy(&issued.key);
+    let known = store
+        .list_secrets()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .any(|r| r.name == ENTRY);
+    match store.kept_certificates().map_err(|e| e.to_string())?.get(ENTRY) {
+        Some(Kept::Acme) => store.add_certificate_version(ENTRY, &chain, &key).map(|_| ()),
+        _ if known => {
+            return Err(format!(
+                "the certificate list already holds {ENTRY:?}, which this leader does not order. Delete it, or \
+                 rename it by adding it again under another name, then order again"
+            ));
+        }
+        _ => store.create_kept_certificate(ENTRY, "Ordered over ACME", &Kept::Acme, &chain, &key),
+    }
+    .map_err(|e| e.to_string())?;
+    super::record_copy(tls_dir, &issued.certificate.fingerprint, ENTRY)
 }
 
 /// Serves `issued`: at once under the root in force, else as the rotation an upload under another root begins.
@@ -1278,6 +1309,59 @@ mod tests {
         assert!(refused.contains("already rotating"), "{refused}");
         assert_eq!(state(&dir).unwrap(), before);
         assert_eq!(source(&dir).unwrap(), Source::Acme);
+    }
+
+    /// Each order is a version of the one list entry, which the leader serves a copy of; an entry of that name the
+    /// leader does not order is never written over.
+    #[test]
+    fn each_order_is_a_version_of_the_acme_entry() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = scratch("listed");
+        let port = free_port();
+        let proving = proving(&dir, port);
+        let issuer = FakeIssuer {
+            authority: Authority::new("listed"),
+            challenge: Challenge::TlsAlpn01,
+            fails: Fails::Never,
+            http_port: port,
+        };
+        let ordered = settings(names(), Challenge::TlsAlpn01, issuer.authority.pem.clone());
+        let key = dir.with_extension("key");
+        let store = crate::leader::sqlite_store::SqliteStore::open(Path::new(":memory:"), &key).unwrap();
+        for _ in 0..2 {
+            let issued = runtime
+                .block_on(order(&dir, &ordered, &issuer, &proving, &names(), &[]))
+                .unwrap();
+            list(&store, &dir, &issued).unwrap();
+            take(&dir, &ordered, &issued, &names(), &[], now()).unwrap();
+            if issued.rotates {
+                tls::cut_over(&dir, names(), A_YEAR).unwrap();
+            }
+            let (chain, _) = crate::leader::newest_certificate(&store, ENTRY).unwrap().unwrap();
+            assert_eq!(
+                tls::describe(chain.as_bytes(), "c").unwrap().fingerprint,
+                issued.certificate.fingerprint
+            );
+        }
+        let entry = store
+            .list_secrets()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.name == ENTRY)
+            .unwrap();
+        assert_eq!(entry.versions.len(), 2);
+        assert_eq!(store.kept_certificates().unwrap().get(ENTRY), Some(&Kept::Acme));
+        assert_eq!(crate::leader::served_names(&dir).unwrap(), [ENTRY]);
+
+        let other = scratch("listed-taken");
+        let taken = crate::leader::sqlite_store::SqliteStore::open(Path::new(":memory:"), &key).unwrap();
+        let (chain, key) = tls::issue(&other, names(), A_YEAR).unwrap();
+        taken.create_certificate(ENTRY, "", &chain, &key).unwrap();
+        let issued = runtime
+            .block_on(order(&other, &ordered, &issuer, &proving, &names(), &[]))
+            .unwrap();
+        let refused = list(&taken, &other, &issued).unwrap_err();
+        assert!(refused.contains("which this leader does not order"), "{refused}");
     }
 
     /// An authority that must not be asked.
