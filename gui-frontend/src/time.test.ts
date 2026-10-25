@@ -148,15 +148,10 @@ describe('isPipelinePath', () => {
 
 describe('expiringSoon', () => {
   const DAY = 86_400_000;
-  it('gives thirty days notice to a short-lived certificate', () => {
+  it('gives a certificate the last tenth of its life', () => {
     const cert = { notBeforeMillis: 0, notAfterMillis: 90 * DAY };
-    expect(expiringSoon(cert, 59 * DAY)).toBe(false);
-    expect(expiringSoon(cert, 60 * DAY)).toBe(true);
-  });
-  it('gives a tenth of its life to a long-lived one', () => {
-    const cert = { notBeforeMillis: 0, notAfterMillis: 1000 * DAY };
-    expect(expiringSoon(cert, 899 * DAY)).toBe(false);
-    expect(expiringSoon(cert, 900 * DAY)).toBe(true);
+    expect(expiringSoon(cert, 80 * DAY)).toBe(false);
+    expect(expiringSoon(cert, 81 * DAY)).toBe(true);
   });
 });
 

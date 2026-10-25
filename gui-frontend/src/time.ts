@@ -35,13 +35,12 @@ export function expiry(unixMillis: number, now: number = Date.now()): string {
 const DAY = 86_400_000;
 
 /** Whether a certificate is running out, by the leader's rule for its warning
- * (`leader::warnings::notice_millis`): within the last tenth of its life, or
- * thirty days, whichever is longer. */
+ * (`leader::warnings::notice_millis`): within the last tenth of its life. */
 export function expiringSoon(
   cert: { notBeforeMillis: number; notAfterMillis: number },
   now: number = Date.now(),
 ): boolean {
-  const notice = Math.max((cert.notAfterMillis - cert.notBeforeMillis) / 10, 30 * DAY);
+  const notice = (cert.notAfterMillis - cert.notBeforeMillis) / 10;
   return cert.notAfterMillis - now <= notice;
 }
 
