@@ -133,8 +133,6 @@
   } = $props();
 
   const readOnly = !editable();
-  // `id` is shadowed where a sample's id is in hand.
-  const routeId = $derived(id);
 
   // The id this pipeline is saved under: empty until a new one's first
   // save, and distinct from the route param `id`, which may be `new`.
@@ -654,7 +652,8 @@
       // `sample` came in from the URL (a sample row's "Run in a pipeline"
       // link, or a pipeline opened from the list while it held one). With
       // none, or a stale one not on this branch, the editor opens on the
-      // picker: which records to run is the author's to choose.
+      // last one this pipeline ran over, else on none: which records to run is
+      // the author's to choose.
       lastUsed = readLastUsed();
       const opening = sample || lastUsed;
       if (!selectedSample && opening && samples.some((s) => s.id === opening)) {
@@ -712,7 +711,7 @@
       try {
         window.localStorage.setItem(sampleKey(pipeline), id);
       } catch {
-        // Storage refused: the editor opens on the picker next time.
+        // Storage refused: the editor opens on no sample next time.
       }
     }
     sampleRows = [];
