@@ -3536,6 +3536,8 @@ export type CertificateDto = {
   served: boolean;
   /** The names this leader issues it for, where this leader issued it. */
   issuedFor?: string[];
+  /** Whether this leader orders it over ACME, and renews it. */
+  acme?: boolean;
 };
 
 export function listCertificates(): Promise<CertificateDto[]> {
@@ -3574,11 +3576,6 @@ export function issueCertificate(
 export const ISSUED_VALIDITY_DAYS = [90, 365, 2 * 365, 3 * 365] as const;
 
 /** Stores a new version, which the leader serves too where it serves this certificate. */
-/** Issues the next version of a certificate this leader issued, for the same names and lifetime. */
-export function renewCertificate(name: string): Promise<AdminActionResult> {
-  return apiJson(`/api/certificates/${encodeURIComponent(name)}/renew`, { method: 'POST' });
-}
-
 export function replaceCertificate(
   name: string,
   certificate: string,

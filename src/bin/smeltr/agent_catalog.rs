@@ -813,14 +813,8 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/certificates/issued",
-        what: "Add a certificate this leader issues under its own authority for the DNS names and IP addresses given, valid for validityDays (365 if left out). No query.",
+        what: "Add a certificate this leader issues under its own authority for the DNS names and IP addresses given, valid for validityDays (365 if left out), which it renews on its own. No query.",
         body: "{ name: string, description?: string, names: string[], validityDays?: number }",
-    },
-    Route {
-        method: "POST",
-        path: "/api/certificates/:name/renew",
-        what: "Issue the next version of a certificate this leader issued, for the same names and lifetime; point what names it at the new version after. No query.",
-        body: "",
     },
     Route {
         method: "PUT",

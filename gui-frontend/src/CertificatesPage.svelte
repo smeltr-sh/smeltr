@@ -23,7 +23,6 @@
     issueCertificate,
     ISSUED_VALIDITY_DAYS,
     replaceCertificate,
-    renewCertificate,
     pointSecretNow,
     deleteSecret,
     currentVersion,
@@ -129,19 +128,19 @@
     }
   }
 
-  /** What the last replace or renewal did to the identities naming it. */
+  /** What the last replace or update did to the identities naming it. */
   let replacedNote = $state('');
 
   /** Points every identity naming `name` at its new version, as storing a secret's value does: the change deploys
    * it, on the branch already being edited. */
-  async function pointAt(name: string, done: 'Replaced' | 'Renewed') {
+  async function pointAt(name: string, done: 'Replaced' | 'Updated') {
     const version = currentVersion(certificates.find((c) => c.name === name)!)?.version;
     if (version === undefined) return;
     const pointed = await pointSecretNow(name, version);
     if (!pointed.ok) {
       replacedNote = `${done}, but no identity could be updated to use it: ${errorText(pointed.errors) || 'the change was not drafted'}`;
     } else if (pointed.references === 0) {
-      replacedNote = `${done}.`;
+      replacedNote = done === 'Updated' ? 'No identity needed updating.' : `${done}.`;
     } else {
       const identities =
         pointed.references === 1 ? '1 identity' : `${pointed.references} identities`;
@@ -150,15 +149,12 @@
     }
   }
 
-  /** Issues the next version, then points what names it there, as a replace does. */
-  async function renew(name: string) {
+  /** Points what names a certificate the leader renews at its newest version, as a replace does. */
+  async function updateIdentities(name: string) {
     if (saving) return;
     saving = true;
     try {
-      const res = await renewCertificate(name);
-      if (!res.ok) return;
-      await load();
-      await pointAt(name, 'Renewed');
+      await pointAt(name, 'Updated');
     } catch (e) {
       reported(e);
     } finally {
@@ -227,7 +223,7 @@
         <Field
           required
           label="Issued for"
-          help="DNS names and IP addresses, one per line. This leader signs it with its own authority, which whatever connects to it must trust. Before it expires the leader warns you on the Issues page to renew it."
+          help="DNS names and IP addresses, one per line. This leader signs it with its own authority, which whatever connects to it must trust. The leader renews it on its own before it expires; the Issues page then asks you to update the identities that present it."
         >
           <textarea
             bind:value={issuedNames}
@@ -312,8 +308,13 @@
                 {#if c.served}<span class="badge">leader</span>{/if}
                 {#if c.issuedFor}<span
                     class="badge"
-                    title="Issued by this leader, which issues its next version when you choose Renew, so it has no Replace button. To use your own certificate, add one under another name."
+                    title="Issued by this leader, which renews it on its own, so it has no Replace button. To use your own certificate, add one under another name."
                     >issued</span
+                  >{/if}
+                {#if c.acme}<span
+                    class="badge"
+                    title="Ordered over ACME by this leader, which renews it on its own, so it has no Replace button. To use your own certificate, add one under another name."
+                    >ACME</span
                   >{/if}
                 {#if c.description}<small class="note">{c.description}</small>{/if}
               </td>
@@ -323,9 +324,9 @@
               </td>
               <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
               <td class="row-actions">
-                {#if c.issuedFor}
-                  <button type="button" disabled={saving} onclick={() => renew(c.name)}
-                    >Renew</button
+                {#if c.issuedFor || c.acme}
+                  <button type="button" disabled={saving} onclick={() => updateIdentities(c.name)}
+                    >Update identities</button
                   >
                 {:else}
                   <button type="button" onclick={() => open(c.name)}>Replace</button>
