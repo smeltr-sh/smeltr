@@ -155,7 +155,7 @@
   /* Drawn rather than written, with no alt text: a screen reader hears `aria-required`
      instead, and the field's name stays its label. */
   .required::after {
-    content: '*' / '';
+    content: '\2009*' / '';
     margin-left: -0.3rem;
     color: var(--error);
   }
