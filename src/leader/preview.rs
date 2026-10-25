@@ -362,15 +362,6 @@ pub struct RoutePreviewDocument {
     pub destination: std::collections::BTreeMap<&'static str, String>,
 }
 
-/// What a record a block held says about why, beside its fields (`worker::capture::EXCEPTION_MESSAGE`).
-const EXCEPTION: &str = "__exception";
-
-/// The columns of a sample that are its records' own: not why a record blocked, which is about the record and no
-/// pipeline reads.
-pub fn replayed(columns: &[crate::heartbeat::CaptureColumn]) -> impl Iterator<Item = &crate::heartbeat::CaptureColumn> {
-    columns.iter().filter(|c| c.name.split('.').next() != Some(EXCEPTION))
-}
-
 /// A sample's records as a source's meta reads them.
 pub struct SampleRead {
     pub records: Vec<crate::io::SourceRecord>,
@@ -400,7 +391,7 @@ pub fn read_sample(
             .map(std::borrow::Cow::into_owned)
     };
     let own = |name: &str| !head(name).is_some_and(|h| crate::plan::tree::is_internal(&h));
-    let captured: Vec<_> = replayed(columns).filter(|c| own(&c.name)).collect();
+    let captured: Vec<_> = columns.iter().filter(|c| own(&c.name)).collect();
     let declared = meta.record_fields();
     // An open record keeps a top-level field no declared field claims.
     let kept = |name: &str| meta.is_open() && !declared.iter().any(|(d, _)| head(d) == head(name));
@@ -446,7 +437,6 @@ pub fn read_sample(
             if from_source {
                 object.retain(|key, _| !crate::plan::tree::is_internal(key));
             }
-            object.remove(EXCEPTION);
             for name in &gone {
                 remove_at(&mut object, name);
             }
@@ -748,7 +738,7 @@ fn after_dot(
             let step = p
                 .function_id(step)
                 .ok_or_else(|| format!("this pipeline has no step {step:?}"))?;
-            let meta = SourceMeta::of_columns(&replayed(columns).cloned().collect::<Vec<_>>())?;
+            let meta = SourceMeta::of_columns(columns)?;
             let cut = plan::dot::cut_at(&asked.text, asked.dot);
             expr.and_then(|e| plan::plan::type_at(p, &meta, step, &e, cut))
         }
@@ -846,7 +836,7 @@ pub fn run_preview(
     // A pipeline preview is of the pipeline alone, over the columns its sample was captured under, each read from the
     // record as it was stored, `__source` fields included. Not the metadata of a source that routes to this pipeline,
     // which would make `__source.topic` compile here and read null against records that never carried one.
-    let meta = match SourceMeta::of_columns(&replayed(columns).cloned().collect::<Vec<_>>()) {
+    let meta = match SourceMeta::of_columns(columns) {
         Ok(meta) => meta,
         Err(e) => return Preview::failed("sample", vec![ApiError::new(e)], pipeline_names),
     };
