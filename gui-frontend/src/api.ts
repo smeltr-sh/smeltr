@@ -2499,7 +2499,8 @@ export interface WarningDto {
     | 'enrollmentCode'
     | 'identity'
     | 'pipeline'
-    | 'secret';
+    | 'secret'
+    | 'certificate';
   /** Unique only within `group`, not fleet-wide -- a worker's own id is the exception. */
   subjectId: string;
   /** Which group this is about, or null where there is none to report -- an enrolled worker
@@ -2582,7 +2583,7 @@ export function conditionLabel(condition: WarningCondition): string {
     case 'secretsKeyUnusable':
       return 'Secrets encryption key unusable';
     case 'secretNeedsValue':
-      return 'Secret needs a new value';
+      return 'Secret or certificate needs a new value';
     case 'acmeRenewalFailing':
       return 'ACME renewal failing';
     case 'leaderCertificateRunningOut':
@@ -3584,7 +3585,7 @@ export interface EncryptionKeyDto {
   keyId: string | null;
   path: string;
   /** Each value whose newest copy the key cannot open: what to enter again. */
-  unopenable: { kind: 'secret' | 'setting'; name: string; label: string }[];
+  unopenable: { kind: 'secret' | 'certificate' | 'setting'; name: string; label: string }[];
 }
 
 export function getEncryptionKey(): Promise<EncryptionKeyDto> {

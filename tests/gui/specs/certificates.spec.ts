@@ -136,7 +136,7 @@ test('a renewal is served while the switch back to Leader issued waits for a wor
   );
 
   // The chooser is still there under the switch, and a renewal under the uploaded root is served at once.
-  served = await chooseUploaded(page, renewal);
+  ({ served } = await chooseUploaded(page, renewal));
   await served.getByRole('button', { name: 'Serve this certificate' }).click();
   await expect(served.getByRole('status')).toHaveText(
     /^this leader is serving the certificate "uploaded-\d+"$/,

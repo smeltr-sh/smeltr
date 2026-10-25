@@ -44,6 +44,7 @@
     'acme.dns.cloudflare.token': { label: 'Certificates', href: '#/admin/system/certificates' },
   };
   const SECRETS_PLACE = { label: 'Secrets', href: '#/admin/secrets' };
+  const CERTIFICATES_PLACE = { label: 'Certificates', href: '#/admin/certificates' };
 
   async function regenerate() {
     const ok = await ask({
@@ -105,7 +106,11 @@
       <ul class="fields">
         {#each key.unopenable as item (`${item.kind}|${item.name}`)}
           {@const place =
-            item.kind === 'secret' ? SECRETS_PLACE : (SETTING_PLACES[item.name] ?? SECRETS_PLACE)}
+            item.kind === 'certificate'
+              ? CERTIFICATES_PLACE
+              : item.kind === 'secret'
+                ? SECRETS_PLACE
+                : (SETTING_PLACES[item.name] ?? SECRETS_PLACE)}
           <li><code>{item.label}</code> <a href={place.href}>{place.label}</a></li>
         {/each}
       </ul>
