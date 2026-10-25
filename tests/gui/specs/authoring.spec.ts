@@ -851,14 +851,15 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
   // The locked sample first, though `other` sorts before it by name.
   await expect(picker.getByRole('row').nth(1)).toContainText('orders');
   await expect(picker.getByTitle('Locked by the test orders parse')).toBeVisible();
-  // No sample, but the steps compiled: the dictionary is there.
-  await admin.getByRole('tab', { name: /Data dictionary/ }).click();
-  await expect(admin.getByRole('cell', { name: 'total', exact: true })).toBeVisible();
-  await admin.getByRole('tab', { name: /Output/ }).click();
+  // No sample, but the steps compiled: the Fields menu lists what they declare.
+  await admin.getByRole('button', { name: 'Choose fields' }).click();
+  const fields = admin.getByRole('group', { name: 'Fields' });
+  await expect(fields.getByText('total', { exact: true })).toBeVisible();
+  await admin.keyboard.press('Escape');
 
   await picker.getByRole('button', { name: 'orders', exact: true }).click();
-  await expect(admin.getByRole('tab', { name: /Output/ })).toContainText('3');
-  const search = admin.getByRole('searchbox', { name: 'Search the output' });
+  await expect(admin.getByText('3 rows', { exact: true })).toBeVisible();
+  const search = admin.getByRole('combobox', { name: 'Search the output' });
   await search.fill('SPRING');
   await expect(admin.getByText('2 of 3 rows')).toBeVisible();
   await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
@@ -868,11 +869,21 @@ test('A2: a sample is picked from a table, its output searched by keyword or exp
   // One that does not compile to a Bool is a keyword.
   await search.fill('total +');
   await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
+  // Left with an expression in it, the box offers it again, under the kinds of row a chip keeps.
+  await search.fill('total > 15');
+  await expect(admin.getByText('ƒ expression')).toBeVisible();
+  await search.blur();
+  await search.fill('');
+  const offered = admin.getByRole('listbox', { name: 'Suggestions' });
+  await expect(offered.getByRole('option', { name: 'total > 15' })).toBeVisible();
+  await offered.getByRole('option', { name: /Changed by a step/ }).click();
+  await expect(admin.getByRole('button', { name: 'remove changed' })).toBeVisible();
+  await expect(admin.getByText('3 of 3 rows')).toBeVisible();
   await admin.screenshot({ path: 'results/sample-pane-search.png', fullPage: true });
 
   await admin.getByRole('button', { name: '← Back' }).click();
   await expect(picker).toBeVisible();
-  await expect(admin.getByRole('tab', { name: /Output/ })).not.toContainText('3');
+  await expect(admin.getByText('3 rows', { exact: true })).toHaveCount(0);
 });
 
 /** A source, destinations and a `web` pipeline routed from one to them: every record to `es-web`, a server error
@@ -902,6 +913,55 @@ async function webRoutes(api: Api, sampleRecords: string[]) {
 }
 
 // A4, the whole trip.
+// The default shows the fields most records hold, so it moves with the sample. A field the reader
+// chose stays as they chose it.
+test('A2: a field shown from the Fields menu stays shown on a sample that would have hidden it', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/pipelines/wide${ON}`, {
+    id: 'wide',
+    name: 'wide',
+    steps: [{ type: 'parser', id: 'body', input: '_raw', kind: { type: 'json' } }],
+  });
+  // 55 fields. In `few`, f50 to f54 are in one record of three, so the 50 shown by default leave
+  // them out; in `many`, f0 to f4 are, so f52 is in the default there.
+  const record = (rare: (i: number) => boolean, i: number) =>
+    Object.fromEntries(
+      Array.from({ length: 55 }, (_, f) => [`f${f}`, f]).filter(
+        ([, f]) => !rare(f as number) || i === 0,
+      ),
+    );
+  for (const [id, rare] of [
+    ['few', (f: number) => f >= 50],
+    ['many', (f: number) => f < 5],
+  ] as const)
+    await api.put(`/api/samples${ON}`, {
+      id,
+      name: id,
+      records: [0, 1, 2].map((i) => ({ _raw: JSON.stringify(record(rare, i)) })),
+    });
+
+  const grid = admin.getByRole('table');
+  const head = grid.getByRole('button', { name: /^f52\b/ });
+  await goto(admin, leader, '#/build/pipelines/wide/for/few');
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await expect(head).toHaveCount(0);
+  await admin.getByRole('button', { name: 'Choose fields' }).click();
+  await admin.getByRole('searchbox', { name: 'Find a field' }).fill('f52');
+  await admin.getByRole('group', { name: 'Fields' }).getByRole('checkbox').check();
+  await admin.keyboard.press('Escape');
+  await expect(head).toHaveCount(1);
+
+  await admin.getByRole('button', { name: '← Back' }).click();
+  const picker = admin.getByRole('table').filter({ hasText: 'Captured' });
+  await picker.getByRole('button', { name: 'many', exact: true }).click();
+  await expect(admin.getByText('Sample many')).toBeVisible();
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await expect(head).toHaveCount(1);
+});
+
 test('A4: a route preview shows each output row, the route it matched and the destinations it reaches', async ({
   admin,
   leader,
