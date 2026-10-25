@@ -71,7 +71,7 @@
       else root.scrollIntoView({ block: 'center' });
     });
   });
-  // The `*` is hidden from a screen reader, which hears this instead.
+  // A screen reader hears this rather than the `*`.
   $effect(() => {
     const control = root.querySelector('input, select, textarea');
     if (!control) return;
@@ -94,8 +94,7 @@
 
 {#snippet name()}
   <span class="name" class:bare id={nameId}
-    >{label}{#if required}<span class="required" aria-hidden="true">*</span>{/if}{#if help}<Help
-        {label}
+    ><span class:required>{label}</span>{#if help}<Help {label}
         >{#if required}<strong>Required.</strong>{' '}{:else if optional}<strong>Optional.</strong
           >{' '}{/if}{#if typeof help === 'string'}{help}{:else}{@render help()}{/if}</Help
       >{/if}</span
@@ -154,9 +153,10 @@
     font-weight: 600;
   }
 
-  /* Pulled to the name: the gap is for the `?`. */
-  .required {
-    margin-left: -0.15rem;
+  /* Drawn rather than written, with no alt text: a screen reader hears `aria-required`
+     instead, and the field's name stays its label. */
+  .required::after {
+    content: '*' / '';
     color: var(--error);
   }
 
