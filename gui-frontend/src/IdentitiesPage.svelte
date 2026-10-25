@@ -164,7 +164,7 @@
 {/snippet}
 
 {#snippet fields(identity: IdentityDto)}
-  <Field field="description" label="description">
+  <Field optional field="description" label="description">
     <input
       type="text"
       value={identity.description ?? ''}
@@ -173,7 +173,7 @@
     />
   </Field>
 
-  <Field field="certificate" label="presents">
+  <Field optional field="certificate" label="presents">
     {#snippet help()}
       The client certificate this worker shows the far end, needed only when the far end requires
       one. PEM, with any intermediates after it.
@@ -186,7 +186,7 @@
   </Field>
   {@render describedCertificate(identity.certificate)}
 
-  <Field field="key" label="private key">
+  <Field optional field="key" label="private key">
     {#snippet help()}
       The key for the certificate in presents, as an unencrypted PEM. Store it on
       <a href="#/admin/secrets">Admin &rarr; Secrets</a>, then name it here.
@@ -199,7 +199,7 @@
     />
   </Field>
 
-  <Field field="authorities" label="trusts">
+  <Field optional field="authorities" label="trusts">
     {#snippet help()}
       Authorities a far end's certificate may chain to, added to the public roots. A receiver admits
       a sender whose certificate chains to these alone. PEM, one or more certificates.
@@ -321,7 +321,7 @@
             <article class="card">
               <div class="card-head">
                 <div class="grow">
-                  <Field field="id" label="id">
+                  <Field required field="id" label="id">
                     <input type="text" bind:value={identity.id} />
                   </Field>
                 </div>
@@ -354,7 +354,7 @@
         {#if adding}
           {@const draft = adding}
           <div class="form-body">
-            <Field label="id" error={idProblem(draft.id, unavailable())}>
+            <Field required label="id" error={idProblem(draft.id, unavailable())}>
               <input type="text" bind:value={draft.id} />
             </Field>
             {@render fields(draft)}

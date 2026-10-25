@@ -636,6 +636,8 @@
   let selectedSample = $state('');
   let sampleRows: SampleRecordDto[] = $state([]);
   let capturing = $state(false);
+  /** The dialog is open on its catalog, for a sample pasted, uploaded or captured. */
+  let adding = $state(false);
 
   let result = $state<PreviewResult | null>(null);
   // The grid's own state: the last run that actually produced rows, kept
@@ -687,6 +689,7 @@
 
   async function captured(id: string) {
     capturing = false;
+    adding = false;
     captureAt = null;
     await loadSamples();
     await chooseSample(id);
@@ -1860,11 +1863,12 @@
         >
           <InlineError message={proposeError} />
           <AddSampleDialog
-            open={capturing}
-            start="capture"
+            open={capturing || adding}
+            start={capturing ? 'capture' : undefined}
             target={captureAt ?? captureTarget}
             oncancel={() => {
               capturing = false;
+              adding = false;
               captureAt = null;
             }}
             onsaved={captured}
@@ -1900,7 +1904,7 @@
                 pipeline={loadedId}
                 mayCapture={(c) => mayCapture(sourceTarget(c))}
                 onpick={chooseSample}
-                onsaved={captured}
+                onadd={() => (adding = true)}
                 oncapture={(c) => {
                   captureAt = sourceTarget(c);
                   capturing = true;

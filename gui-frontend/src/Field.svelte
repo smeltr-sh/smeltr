@@ -12,6 +12,10 @@
   shown disabled: every form on such a page is read through this.
   `bare` hides the name from sight, for a field in a table cell whose column
   head shows it; it still names the control.
+  `required` is a field the save refuses empty: a `*` after its name, and
+  `aria-required` on its control. `optional` is one that may be left empty.
+  Either one opens the `?` with "Required." or "Optional.". A field that
+  always holds a value, such as a toggle or a select, is neither.
 -->
 <script module lang="ts">
   let seq = 0;
@@ -32,6 +36,8 @@
     field,
     group = false,
     bare = false,
+    required = false,
+    optional = false,
     children,
   }: {
     label: string;
@@ -42,6 +48,8 @@
     field?: string;
     group?: boolean;
     bare?: boolean;
+    required?: boolean;
+    optional?: boolean;
     children: Snippet;
   } = $props();
 
@@ -52,16 +60,22 @@
   const message = $derived(
     error ?? (context && field ? context.validation.message(context.id(), field) : null),
   );
+  const control = () => root.querySelector<HTMLElement>('input, select, textarea');
   $effect(() => {
     if (!context || !field) return;
     return context.validation.mount(context.id(), field, () => {
       // A control before a button: the label's own `?` is a button too.
-      const control =
-        root.querySelector<HTMLElement>('input, select, textarea') ??
-        root.querySelector<HTMLElement>('button:not(.ask)');
-      if (control) control.focus();
+      const target = control() ?? root.querySelector<HTMLElement>('button:not(.ask)');
+      if (target) target.focus();
       else root.scrollIntoView({ block: 'center' });
     });
+  });
+  // A screen reader hears this rather than the `*`. A group's first control is not the group, so it gets none.
+  $effect(() => {
+    const c = control();
+    if (!c || group) return;
+    if (required) c.setAttribute('aria-required', 'true');
+    else c.removeAttribute('aria-required');
   });
   // The item's id before an edit reaches the control. An edit to the id
   // field renames the item, and the item's errors go with it.
@@ -78,9 +92,10 @@
 </script>
 
 {#snippet name()}
-  <span class="name" class:bare id={nameId}
+  <span class="name" class:bare class:required id={nameId}
     >{label}{#if help}<Help {label}
-        >{#if typeof help === 'string'}{help}{:else}{@render help()}{/if}</Help
+        >{#if required}<strong>Required.</strong>{' '}{:else if optional}<strong>Optional.</strong
+          >{' '}{/if}{#if typeof help === 'string'}{help}{:else}{@render help()}{/if}</Help
       >{/if}</span
   >
 {/snippet}
@@ -135,6 +150,19 @@
     gap: 0.3rem;
     font-size: var(--text-label);
     font-weight: 600;
+  }
+
+  /* Drawn rather than written, with no alt text: a screen reader hears `aria-required`
+     instead, and the field's name stays its label. */
+  .required::after {
+    content: '\2009*' / '';
+    margin-left: -0.3rem;
+    color: var(--error);
+  }
+
+  /* After the star, which comes last in the name. */
+  .name > :global(.ask) {
+    order: 1;
   }
 
   .name.bare {

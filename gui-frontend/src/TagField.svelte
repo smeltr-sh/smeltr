@@ -21,7 +21,7 @@
 <!-- Only the field is locked: a reader can still open Advanced to see it. -->
 <Advanced modified={!!value?.tagField}>
   <Locked>
-    <Field label="Tag field">
+    <Field label="Tag field" optional>
       {#snippet help()}The field a tagged or delivered record carries its exceptions in. Empty means
         <code>{placeholder}</code>.{/snippet}
       <input

@@ -36,6 +36,7 @@
   import { ago, count, shortCommit, pathSummary } from './time';
   import { nameOf, pipelineNamesAt, type PipelineNames } from './pipelineNames';
   import SectionShell from './SectionShell.svelte';
+  import Tabs from './Tabs.svelte';
   import PageHeader from './PageHeader.svelte';
   import PencilIcon from './PencilIcon.svelte';
   import { ask } from './Confirm.svelte';
@@ -83,7 +84,8 @@
   let deploying = $state(false);
 
   /** Which part of the change the left column shows. */
-  let tab = $state<'conversation' | 'saves' | 'tests'>('conversation');
+  const TABS = ['conversation', 'saves', 'tests'] as const;
+  let tab = $state<(typeof TABS)[number]>('conversation');
   let dockHeight = $state(0);
 
   let events = $state<TimelineEvent[]>([]);
@@ -474,29 +476,19 @@
             </div>
           {/if}
 
-          <div class="subtabs" role="tablist" aria-label="Change">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'conversation'}
-              onclick={() => (tab = 'conversation')}>Conversation</button
-            >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'saves'}
-              onclick={() => (tab = 'saves')}
-              >Saves <span class="pill">{timelineLoading ? '…' : saves.length}</span></button
-            >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'tests'}
-              onclick={() => (tab = 'tests')}
-              >Tests <span class="pill"
-                >{testsLoading ? '…' : `${tally.passed}/${tally.total}`}</span
-              ></button
-            >
+          <div class="subtabs">
+            <Tabs tabs={TABS} selected={tab} onselect={(t) => (tab = t)} ariaLabel="Change">
+              {#snippet label(t)}
+                {#if t === 'conversation'}Conversation
+                {:else if t === 'saves'}Saves <span class="pill"
+                    >{timelineLoading ? '…' : saves.length}</span
+                  >
+                {:else}Tests <span class="pill"
+                    >{testsLoading ? '…' : `${tally.passed}/${tally.total}`}</span
+                  >
+                {/if}
+              {/snippet}
+            </Tabs>
           </div>
 
           <div role="tabpanel">
@@ -719,30 +711,8 @@
     color: var(--dim);
   }
 
-  /* The left column's own sections, drawn as Lookup tables draws its tabs. */
   .subtabs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1.2rem;
     margin: 1rem 0 0.9rem;
-    border-bottom: 1px solid var(--border);
-  }
-  .subtabs button {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    background: none;
-    padding: 0.35rem 0;
-    border-width: 0 0 3px;
-    border-radius: 0;
-    border-color: transparent;
-    color: var(--dim);
-    font-size: var(--text-body);
-  }
-  .subtabs button[aria-selected='true'] {
-    color: var(--ink);
-    font-weight: 600;
-    border-color: var(--accent);
   }
   .pill {
     padding: 0 0.4rem;
