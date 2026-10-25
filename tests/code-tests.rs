@@ -5418,6 +5418,9 @@ fn a_parser_writes_into_the_object_it_names() {
 
     let e = err(vec![code(0, &json("app: str;")), into(1, "_raw", "app", vec![])]);
     assert!(e.contains("a spread takes an object, not str"), "{e}");
+    // A blank `into` names nothing, as a blank input does.
+    let e = err(vec![into(0, "_raw", "", vec![])]);
+    assert!(e.contains("`` is not a field"), "{e}");
 }
 
 /// A later parser's declared name replaces what an earlier parser passed through under it, as an assignment does.

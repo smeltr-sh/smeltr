@@ -1129,7 +1129,7 @@
               <Field
                 optional
                 label="write into"
-                help="The object the parsed fields go under, such as app. $ is the top level of the record."
+                help="The object the parsed fields go under, such as app. Leave it as $ to put them at the top level of the record."
               >
                 <ValidatedField
                   bind:value={ps.into}
