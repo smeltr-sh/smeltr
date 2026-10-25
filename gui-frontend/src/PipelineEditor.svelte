@@ -904,7 +904,7 @@
   let showTypes = $state(true);
 
   /** The step ◎ paused at. */
-  let selectedStep: Step | null = $state(null);
+  let pauseChoice: Step | null = $state(null);
   /** The first step the preview's compile errors name. */
   let brokenStep = $derived(orderedStepErrors(steps, compileErrorsByStep)[0]?.step ?? null);
 
@@ -925,14 +925,14 @@
   /** ◎'s pause, unless the steps it runs do not compile: then the compile error's. */
   let pause = $derived.by((): Pause | null => {
     const flat = flatSteps(steps);
-    const run = selectedStep && stepsRun(steps, selectedStep, true);
-    if (selectedStep && run && !(brokenStep && run.has(brokenStep)))
+    const run = pauseChoice && stepsRun(steps, pauseChoice, true);
+    if (pauseChoice && run && !(brokenStep && run.has(brokenStep)))
       return {
-        step: selectedStep,
-        number: flat.indexOf(selectedStep) + 1,
+        step: pauseChoice,
+        number: flat.indexOf(pauseChoice) + 1,
         run,
-        before: truncateSteps(steps, selectedStep, false)!,
-        after: truncateSteps(steps, selectedStep, true)!,
+        before: truncateSteps(steps, pauseChoice, false)!,
+        after: truncateSteps(steps, pauseChoice, true)!,
         chosen: true,
       };
     if (!brokenStep) return null;
@@ -962,15 +962,15 @@
     stage ? stage[0].toUpperCase() + stage.slice(1) : 'Preview';
   let pauseError = $state('');
 
-  function onSelectStep(step: Step | null) {
-    selectedStep = step;
+  function onPause(step: Step | null) {
+    pauseChoice = step;
   }
 
   let pauseAsked = 0;
-  async function loadPause() {
+  async function loadPause(pause: Pause | null, sample: string) {
     pauseError = '';
     const asked = ++pauseAsked;
-    if (!pause || !lastSample) {
+    if (!pause || !sample) {
       pauseRun = null;
       return;
     }
@@ -981,8 +981,8 @@
       // the step.
       const at = Date.now() * 1000;
       const [beforeRes, afterRes] = await Promise.all([
-        fetchPreview(before, lastSample, at),
-        fetchPreview(after, lastSample, at),
+        fetchPreview(before, sample, at),
+        fetchPreview(after, sample, at),
       ]);
       // A later pause answers for the screen.
       if (asked !== pauseAsked) return;
@@ -1006,9 +1006,16 @@
     }
   }
 
-  // Tracks `pause` and `lastSample`: both read before the first `await`.
+  // Run as the steps settle, as the whole pipeline's preview is.
   $effect(() => {
-    loadPause();
+    const [p, sample] = [pause, lastSample];
+    const timer = setTimeout(() => void loadPause(p, sample), RECOMPUTE_MS);
+    return () => clearTimeout(timer);
+  });
+
+  // A step deleted while the records are paused after it takes the pause with it.
+  $effect(() => {
+    if (pauseChoice && !flatSteps(steps).includes(pauseChoice)) pauseChoice = null;
   });
 
   // -- a pipeline for a route being made ---------------------------------------
@@ -1701,7 +1708,7 @@
           accent
           label="Paused"
           removeLabel="Show the whole pipeline"
-          onremove={pause.chosen ? () => onSelectStep(null) : undefined}
+          onremove={pause.chosen ? () => onPause(null) : undefined}
         >
           ◉ {pause.step
             ? `After step ${pause.number} · ${STEP_LABELS[pause.step.type].toUpperCase()}`
@@ -1807,9 +1814,9 @@
             {lookupTables}
             {grokPatterns}
             parseInput={parseInputFor(sampleRows[0])}
-            selectedStep={pause?.step ?? null}
+            pausedAt={pause?.step ?? null}
             ran={pause?.run ?? null}
-            {onSelectStep}
+            {onPause}
             onPropose={readOnly ? undefined : proposeFields}
             proposal={openProposal}
             {askAt}
