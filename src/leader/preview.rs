@@ -1200,7 +1200,9 @@ mod tests {
     /// `BUNDLE` without the condition and the `when` being typed: a destination's filter compiles over the whole
     /// topology, which compiles only once they are written.
     fn compiling() -> String {
-        BUNDLE.replace(r#""condition":"_raw.","#, "").replace(r#""when":"n.","#, "")
+        BUNDLE
+            .replace(r#""condition":"_raw.","#, "")
+            .replace(r#""when":"n.","#, "")
     }
 
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {
