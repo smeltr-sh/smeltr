@@ -77,6 +77,8 @@
     if (!c || group) return;
     if (required) c.setAttribute('aria-required', 'true');
     else c.removeAttribute('aria-required');
+    // Named by the label's text alone: the `?` inside the `<label>` would add "About …" to the name.
+    if (!c.getAttribute('aria-label')) c.setAttribute('aria-labelledby', nameId);
   });
   // The item's id before an edit reaches the control. An edit to the id
   // field renames the item, and the item's errors go with it.
@@ -93,8 +95,8 @@
 </script>
 
 {#snippet name()}
-  <span class="name" class:bare class:required id={nameId}
-    >{label}{#if help}<Help {label}
+  <span class="name" class:bare class:required
+    ><span id={nameId}>{label}</span>{#if help}<Help {label}
         >{#if required}<strong>Required.</strong>{' '}{:else if optional}<strong>Optional.</strong
           >{' '}{/if}{#if typeof help === 'string'}{help}{:else}{@render help()}{/if}</Help
       >{/if}</span

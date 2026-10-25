@@ -114,12 +114,12 @@ test('a visitor captures a sample, saves it on a branch and previews a pipeline 
   await page.getByRole('button', { name: 'Add sample' }).click();
   const dialog = page.locator('dialog[open]');
   await dialog.locator('button.tile', { hasText: 'Capture' }).click();
-  await dialog.locator("label:has(> .name:text-is('Group')) select").selectOption('network');
+  await dialog.getByRole('combobox', { name: 'Group', exact: true }).selectOption('network');
   await dialog
-    .locator("label:has(> .name:text-is('Capture target')) select")
+    .getByRole('combobox', { name: 'Capture target', exact: true })
     .selectOption('panw-firewalls');
   await dialog
-    .locator("label:has(> .name:text-is('Keep records where')) textarea")
+    .getByRole('textbox', { name: 'Keep records where', exact: true })
     .fill('_raw.includes("TRAFFIC")');
   await dialog.locator("input[aria-label='records']").fill('50');
   await dialog.locator('button[type=submit]', { hasText: 'Start' }).click();
