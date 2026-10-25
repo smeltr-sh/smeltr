@@ -303,6 +303,32 @@
     inputEl?.focus();
   }
 
+  /** The most the list shows before it scrolls. */
+  const LIST_HEIGHT = 280;
+  /** Shows the list in the top layer, so no box that scrolls or clips cuts it off, under the field, or over it where
+   * there is more room there. It follows the field as anything around it scrolls. */
+  const float: Attachment<HTMLElement> = (list) => {
+    list.showPopover();
+    const place = () => {
+      if (!inputEl) return;
+      const r = inputEl.getBoundingClientRect();
+      const below = window.innerHeight - r.bottom - 12;
+      const above = r.top - 12;
+      const under = below >= Math.min(LIST_HEIGHT, list.scrollHeight) || below >= above;
+      list.style.maxHeight = `${Math.min(LIST_HEIGHT, under ? below : above)}px`;
+      list.style.top = under ? `${r.bottom + 4}px` : 'auto';
+      list.style.bottom = under ? 'auto' : `${window.innerHeight - r.top + 4}px`;
+      list.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - list.offsetWidth - 8))}px`;
+    };
+    place();
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+    };
+  };
+
   function onKeydown(e: KeyboardEvent) {
     // A `wrap` field is one line of text in a textarea: the box wraps it, a key does not.
     if (wrap && e.key === 'Enter' && !showDropdown) e.preventDefault();
@@ -422,7 +448,7 @@
     </button>
   {/if}
   {#if showDropdown}
-    <ul class="suggestions" role="listbox">
+    <ul class="suggestions" role="listbox" popover="manual" {@attach float}>
       {#if suggestions.length === 0}
         <li class="no-match">
           <span class="fn-desc">
@@ -708,14 +734,12 @@
     transform: none;
   }
 
+  /* Placed by `float`; `inset: auto` drops the rule that centres a popover. */
   .suggestions {
-    position: absolute;
-    z-index: 21;
-    top: calc(100% + 4px);
-    left: 0;
+    position: fixed;
+    inset: auto;
     min-width: 260px;
     max-width: min(380px, calc(100vw - 2rem));
-    max-height: 280px;
     overflow-y: auto;
     margin: 0;
     padding: 0.25rem;
