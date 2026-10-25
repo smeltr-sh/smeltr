@@ -30,11 +30,11 @@
 
   <h2 id="configuration">What Git holds</h2>
   <p>
-    Sources, destinations, routes, pipelines, tests, and supporting resource files
-    are versioned together. Each worker group has its own configuration under
+    Sources, destinations, routes, pipelines, tests, and supporting resource files are versioned
+    together. Each worker group has its own configuration under
     <code>groups/&lt;group-id&gt;/</code>. Reusable configuration lives under <code>shared/</code>.
-    A worker loads its group's configuration together with the shared content at the same commit.
-    A saved sample is kept on your branch and deploys only when a test uses it. Deploying the change
+    A worker loads its group's configuration together with the shared content at the same commit. A
+    saved sample is kept on your branch and deploys only when a test uses it. Deploying the change
     leaves out the others, and they are deleted with the branch.
   </p>
   <p>
