@@ -26,7 +26,6 @@
     pointSecretNow,
     deleteSecret,
     currentVersion,
-    errorText,
     type CertificateDto,
   } from './api';
   import { ago, expiringSoon, expiry } from './time';
@@ -138,11 +137,11 @@
     if (version === undefined) return;
     const pointed = await pointSecretNow(name, version);
     if (!pointed.ok) {
-      const why = errorText(pointed.errors) || 'the change was not drafted';
+      // The banner already says why; the note says what did not happen.
       replacedNote =
         done === 'Updated'
-          ? `No identity could be updated: ${why}`
-          : `${done}, but no identity could be updated to use it: ${why}`;
+          ? 'No identity could be updated.'
+          : `${done}, but no identity could be updated to use it.`;
     } else if (pointed.references === 0) {
       replacedNote = done === 'Updated' ? 'No identity needed updating.' : `${done}.`;
     } else {
@@ -309,7 +308,9 @@
             <tr>
               <td>
                 <span class="mono">{c.name}</span>
-                {#if c.served}<span class="badge">leader</span>{/if}
+                {#if c.served}<span class="badge" title="The certificate this leader serves."
+                    >leader</span
+                  >{/if}
                 {#if c.issuedFor}<span
                     class="badge"
                     title="Issued by this leader, which renews it on its own, so it has no Replace button. To use your own certificate, add one under another name."

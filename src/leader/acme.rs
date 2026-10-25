@@ -403,7 +403,7 @@ pub fn list(store: &dyn Store, tls_dir: &Path, issued: &Issued) -> Result<(), St
                  it, then order again"
             ));
         }
-        _ => store.create_kept_certificate(ENTRY, "Ordered over ACME", &Kept::Acme, &chain, &key),
+        _ => store.create_kept_certificate(ENTRY, "", &Kept::Acme, &chain, &key),
     }
     .map_err(|e| e.to_string())?;
     super::record_copy(tls_dir, &issued.certificate.fingerprint, ENTRY)
