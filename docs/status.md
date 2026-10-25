@@ -97,7 +97,7 @@ document's systems.
 | A default worker group (Control plane) | built |
 | Worker↔leader authentication, TLS, enrollment codes, authority rotation for every certificate source (Security) | built |
 | A certificate ordered from a certificate authority over ACME and renewed (Security) | built: TLS-ALPN-01, HTTP-01, and DNS-01 through Cloudflare |
-| One list of certificates beside the secrets, the leader serving a copy of one (Security) | built (`leader::newest_certificate`, `/api/certificates`). Not built: identities naming a certificate from the list; the leader's own and ACME certificates as entries in it |
+| One list of certificates beside the secrets, the leader serving a copy of one (Security) | built (`leader::newest_certificate`, `/api/certificates`), and identities name a certificate from it by name and version. Not built: the leader's own and ACME certificates as entries in it |
 | Config distribution (Control plane) | built; serving smart-HTTP still spawns `git`, so the leader needs it installed. A corrupt worker clone is never re-cloned |
 | One repository, one `main`, a subtree per group and `shared/` (Control plane) | built |
 | Upgrades (Control plane) | built. Not built: config file converters (there is one `system.json` version), the *Upgrade config files* action, and a supported floor |

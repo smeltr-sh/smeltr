@@ -629,8 +629,7 @@ fn bundle(draw: &Draw) -> Value {
         let pki = pki();
         let mut identity = json!({"id": "client", "authorities": pki.authority.pem});
         if presents {
-            identity["certificate"] = json!(pki.client.certificate);
-            identity["key"] = json!({"secret": "client-key", "version": 1});
+            identity["certificate"] = json!({"secret": "client", "version": 1});
         }
         b["identities"] = json!([identity]);
     }
@@ -638,10 +637,10 @@ fn bundle(draw: &Draw) -> Value {
 }
 
 /// What the worker holds: every leader-stored credential the destination names, at the version it names, and the
-/// identity's key. `true` beside it when the destination names a credential this worker does not hold: a variable no
+/// identity's certificate. `true` beside it when the destination names a credential this worker does not hold: a variable no
 /// worker sets.
 fn held(draw: &Draw, stored: &Stored) -> (HeldSecrets, bool) {
-    let mut values = vec![("client-key".to_string(), 1, pki().client.key.clone())];
+    let mut values = Vec::new();
     let mut unheld = false;
     if let Some(Value::Object(c)) = draw.destination.get("credentials") {
         for v in c.values() {
@@ -658,6 +657,13 @@ fn held(draw: &Draw, stored: &Stored) -> (HeldSecrets, bool) {
     }
     let mut secrets = HeldSecrets::default();
     secrets.set_stored(values);
+    secrets.take([smeltr::heartbeat::SecretDelivery {
+        name: "client".to_string(),
+        version: 1,
+        value: pki().client.key.clone(),
+        chain: Some(pki().client.certificate.clone()),
+    }]);
+
     (secrets, unheld)
 }
 

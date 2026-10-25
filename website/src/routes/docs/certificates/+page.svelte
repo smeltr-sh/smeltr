@@ -75,8 +75,9 @@
   </p>
   <p>
     To renew a certificate, choose <strong>Replace</strong> and paste the new version. If the leader serves
-    it, the leader switches to the new version; there's no need to choose it again. The certificate the
-    leader serves cannot be deleted.
+    it, the leader switches to the new version; there's no need to choose it again. Connection identities
+    that present it are pointed at the new version in a change, which reaches workers when you deploy
+    it. The certificate the leader serves cannot be deleted.
   </p>
   <h2 id="names">Names a certificate must cover</h2>
   <p>

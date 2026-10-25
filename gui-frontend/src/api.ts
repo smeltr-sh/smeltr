@@ -89,9 +89,10 @@ export const secretLabel = (r: LeaderSecret) => `${r.secret} @ v${r.version}`;
 export type IdentityDto = {
   id: string;
   description?: string;
-  /** PEM, leaf first, with any intermediates after it. */
-  certificate?: string;
-  /** Where `certificate`'s private key lives, never the key itself. */
+  /** The certificate it presents, from the list, by name and version. A string is a certificate pasted into a
+   * bundle written before identities named one from the list: the leader refuses it, and says to choose one. */
+  certificate?: SecretRef;
+  /** The private key such a bundle named beside its pasted certificate. Refused the same way. */
   key?: SecretRef;
   /** PEM. A trust store holds more than one root, so several may follow one another. */
   authorities?: string;
