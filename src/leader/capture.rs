@@ -677,7 +677,11 @@ mod tests {
         });
 
         let taken = captures.sample_capture("s1").unwrap();
-        assert!(taken.timestamp.ends_with('Z') && taken.timestamp.contains('T'), "{}", taken.timestamp);
+        assert!(
+            taken.timestamp.ends_with('Z') && taken.timestamp.contains('T'),
+            "{}",
+            taken.timestamp
+        );
         assert_eq!(taken.source.as_deref(), Some("orders"));
         assert_eq!(taken.destination, None);
         assert_eq!(taken.group, "prod-west");

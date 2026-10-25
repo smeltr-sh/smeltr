@@ -3393,6 +3393,7 @@ mod tests {
             source: Some("orders".to_string()),
             records: vec![smeltr::io::raw_object("{}".to_string())],
             columns: Vec::new(),
+            capture: None,
         };
         let at = config_file::BundleAt::Dir(std::path::PathBuf::from("."));
         let declared_at = super::single_origin_declared_at(config, &at);
