@@ -1556,7 +1556,11 @@ mod tests {
             "a megabyte of small records"
         );
         assert_eq!(near.linger, MIN_LINGER);
-        assert_eq!(near.in_flight, (64 << 20) / DEFAULT_BATCH_BYTES, "as many batches as the buffer holds");
+        assert_eq!(
+            near.in_flight,
+            (64 << 20) / DEFAULT_BATCH_BYTES,
+            "as many batches as the buffer holds"
+        );
 
         // 64 MiB over 12 partitions, five in flight: 1.1 MB each, and the broker takes it.
         let far = derive_sizes(64 << 20, &link(12, 120, 8 << 20));
@@ -1573,7 +1577,11 @@ mod tests {
             "enough small records to fill it"
         );
         assert_eq!(capped.linger, Duration::from_millis(150));
-        assert_eq!(capped.in_flight, (1 << 30) / (8 << 20), "a capped batch gets more in flight");
+        assert_eq!(
+            capped.in_flight,
+            (1 << 30) / (8 << 20),
+            "a capped batch gets more in flight"
+        );
         let huge = derive_sizes(1 << 30, &link(1, 300, 1 << 30));
         assert_eq!(huge.messages, MAX_BATCH_MESSAGES);
 
