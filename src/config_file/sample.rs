@@ -99,10 +99,9 @@ pub struct SampleSummary {
     /// fills it from `config.git`'s history; a sample is not stored with it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub written: Option<i64>,
-    /// The first record's `__capture` fields: how a sample saved from a capture was taken. A sample pasted or
-    /// uploaded has none.
+    /// When its records were captured: the first record's `__capture.timestamp`. A sample pasted or uploaded has none.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub capture: Option<serde_json::Map<String, serde_json::Value>>,
+    pub captured: Option<String>,
     /// The file it was read from, within its bundle.
     #[serde(skip)]
     pub path: String,
@@ -116,10 +115,11 @@ impl SampleDto {
             source: self.source.clone(),
             records: self.records.len(),
             written: None,
-            capture: match self.records.first().and_then(|r| r.get("__capture")) {
-                Some(serde_json::Value::Object(capture)) => Some(capture.clone()),
-                _ => None,
-            },
+            captured: self
+                .records
+                .first()
+                .and_then(|r| r.get("__capture")?.get("timestamp")?.as_str())
+                .map(str::to_string),
             path: String::new(),
         }
     }
@@ -270,8 +270,8 @@ mod tests {
         assert_eq!(read.source.as_deref(), Some("orders-west"));
         assert_eq!(read.records[0], sample.records[0]);
         assert_eq!(
-            read.summary().capture.unwrap()["timestamp"],
-            "2026-10-25T13:57:12.000000Z",
+            read.summary().captured.as_deref(),
+            Some("2026-10-25T13:57:12.000000Z"),
             "a listing says when a captured sample was taken"
         );
     }

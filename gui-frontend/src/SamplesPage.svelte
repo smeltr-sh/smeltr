@@ -69,14 +69,6 @@
     }),
   );
 
-  /** Where and how `s` was captured, for its time's hover. */
-  function captureTitle(s: SampleSummary): string | undefined {
-    const c = s.capture;
-    if (!c) return undefined;
-    const from = c.destination ? `destination ${c.destination}` : `source ${c.source}`;
-    return `Captured from ${from} by the workers in group ${c.group}${c.filter ? `, keeping records where ${c.filter}` : ''}.`;
-  }
-
   /** The sample name a test row shows: its id when the sample is gone. */
   function sampleNameOf(t: TestSummary): string {
     return samples.find((s) => s.id === t.sample)?.name ?? t.sample;
@@ -244,7 +236,7 @@
               <td><strong>{s.name}</strong></td>
               <td class="mono dim">{s.source ?? 'pasted'}</td>
               <td class="mono">{s.records}</td>
-              <td class="dim" title={captureTitle(s)}
+              <td class="dim"
                 >{#if capturedAt(s) !== undefined}{dateTime(capturedAt(s)! / 1000)}{/if}</td
               >
               <td class="right">

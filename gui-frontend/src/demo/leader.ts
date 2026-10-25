@@ -8,14 +8,7 @@
 // and sample it is about. Everything else is what the staged fleet answered when `just demo-fixtures` recorded it,
 // moved to the visitor's now.
 
-import type {
-  ApiError,
-  CaptureBatchDto,
-  CaptureEndDto,
-  CaptureStatusDto,
-  SampleCapture,
-  SampleDto,
-} from '../api';
+import type { ApiError, CaptureBatchDto, CaptureEndDto, CaptureStatusDto, SampleDto } from '../api';
 import { CHANGED_EVENT } from './guide';
 import { bareError } from '../errors.svelte';
 
@@ -549,7 +542,7 @@ export class DemoLeader {
           name: s.name,
           source: s.source,
           records: s.records.length,
-          capture: s.records[0]?.__capture as SampleCapture | undefined,
+          captured: (s.records[0]?.__capture as { timestamp?: string } | undefined)?.timestamp,
         }));
         return ok({ samples, commit: branch.commit });
       }

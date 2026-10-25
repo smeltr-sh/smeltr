@@ -1829,25 +1829,9 @@ export interface SampleDto {
   records: SampleRecordDto[];
 }
 
-/** How a captured record was taken: its `__capture` fields
- * (`leader::capture::Captures::capture_fields`). */
-export interface SampleCapture {
-  /** When the capture opened, UTC, RFC 3339. */
-  timestamp: string;
-  /** What it read: one source or one destination, by name. */
-  source?: string;
-  destination?: string;
-  group: string;
-  filter?: string;
-  /** The commit the fleet ran when it opened. */
-  config?: string;
-  /** Each worker that stopped capturing on an error. */
-  failed?: { worker: string; reason: string }[];
-}
-
 /** When `sample` was captured, in unix milliseconds, if it was. */
-export function capturedAt(sample: { capture?: SampleCapture }): number | undefined {
-  const at = sample.capture ? Date.parse(sample.capture.timestamp) : NaN;
+export function capturedAt(sample: { captured?: string }): number | undefined {
+  const at = sample.captured ? Date.parse(sample.captured) : NaN;
   return Number.isNaN(at) ? undefined : at;
 }
 
@@ -1859,8 +1843,9 @@ export interface SampleSummary {
   records: number;
   /** Unix seconds: when the leader last wrote the sample. */
   written?: number;
-  /** The first record's `__capture` fields. A pasted or uploaded sample has none. */
-  capture?: SampleCapture;
+  /** When its records were captured, RFC 3339: the first record's
+   * `__capture.timestamp`. A pasted or uploaded sample has none. */
+  captured?: string;
 }
 
 export interface ListSamplesResult {
