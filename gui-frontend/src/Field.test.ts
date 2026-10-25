@@ -105,14 +105,14 @@ describe('a field where the scope is not yours to change', () => {
 describe('a required or optional field', () => {
   it('marks a required name with a star and its control with aria-required', () => {
     const control = input({ required: true, help: 'The name a route uses.' });
-    expect(target.querySelector('.name .required')).not.toBeNull();
+    expect(target.querySelector('.name.required')).not.toBeNull();
     expect(control.getAttribute('aria-required')).toBe('true');
     expect(target.querySelector('.pop')!.textContent).toBe('Required. The name a route uses.');
   });
 
   it("opens an optional field's help with Optional, and marks its name with nothing", () => {
     const control = input({ optional: true, help: 'The name a route uses.' });
-    expect(target.querySelector('.name .required')).toBeNull();
+    expect(target.querySelector('.name.required')).toBeNull();
     expect(control.hasAttribute('aria-required')).toBe(false);
     expect(target.querySelector('.pop')!.textContent).toBe('Optional. The name a route uses.');
   });

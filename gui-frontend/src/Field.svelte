@@ -93,8 +93,8 @@
 </script>
 
 {#snippet name()}
-  <span class="name" class:bare id={nameId}
-    ><span class:required>{label}</span>{#if help}<Help {label}
+  <span class="name" class:bare class:required id={nameId}
+    >{label}{#if help}<Help {label}
         >{#if required}<strong>Required.</strong>{' '}{:else if optional}<strong>Optional.</strong
           >{' '}{/if}{#if typeof help === 'string'}{help}{:else}{@render help()}{/if}</Help
       >{/if}</span
@@ -157,7 +157,13 @@
      instead, and the field's name stays its label. */
   .required::after {
     content: '*' / '';
+    margin-left: -0.3rem;
     color: var(--error);
+  }
+
+  /* After the star, which comes last in the name. */
+  .name > :global(.ask) {
+    order: 1;
   }
 
   .name.bare {
