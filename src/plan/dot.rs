@@ -85,7 +85,7 @@ pub fn cut_at(src: &str, dot: usize) -> Option<Cut> {
     // The statement starts after the last `;`, `{` or `}` before what the dot follows.
     let ends = |t: &&Spanned| matches!(t.token, Token::Punct(Punct::Semi | Punct::LBrace | Punct::RBrace));
     let kept: Vec<&Spanned> = toks.iter().filter(|t| (t.span.end as usize) <= start).collect();
-    let n = kept.iter().rposition(|t| ends(t)).map_or(0, |i| i + 1);
+    let n = kept.iter().rposition(ends).map_or(0, |i| i + 1);
     let open = kept[..n].iter().fold(0usize, |open, t| match t.token {
         Token::Punct(Punct::LBrace) => open + 1,
         Token::Punct(Punct::RBrace) => open.saturating_sub(1),
