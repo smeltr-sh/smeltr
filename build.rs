@@ -34,7 +34,6 @@ fn main() {
             "website/src/lib/foundry",
             "website/src/lib/reference.json",
             "website/src/lib/code-language.json",
-            "website/src/lib/signatures.json",
         ] {
             watch(&manifest.join(watched));
         }

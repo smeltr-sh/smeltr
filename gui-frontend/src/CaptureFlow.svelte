@@ -13,7 +13,6 @@
   Closing this discards whatever session it still holds.
 -->
 <script lang="ts">
-  import { sourceRecord } from './fieldTypes';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import { onDestroy, onMount } from 'svelte';
@@ -50,6 +49,7 @@
     type IdentityDto,
     type SourceDto,
     type WorkerGroupDto,
+    afterDot,
   } from './api';
 
   let {
@@ -167,6 +167,21 @@
   let captureDestination = $derived(
     destinations.find((d) => targetKey('destination', d.id) === selected) ?? null,
   );
+  /** Asks the engine what may follow a dot in a filter on `source`'s records, over a bundle of that source alone. */
+  const askSource = (source: SourceDto) => (text: string, dot: number) =>
+    afterDot({
+      config: JSON.stringify({
+        version: 1,
+        sources: [source],
+        destinations: [],
+        routes: [],
+        pipelines: [],
+        identities: [...identities, ...sharedIdentities],
+      }),
+      at: { source: source.id },
+      text,
+      dot,
+    });
   /** What the filter reads: a source's record, or a destination's row. */
   let at: CaptureAt = $derived(captureDestination ? 'destination' : 'source');
   // Sent with the source rather than named: a worker follows main, and this
@@ -320,7 +335,7 @@
           bind:value={filter}
           placeholder={filterPlaceholder(at)}
           autocomplete="condition"
-          fields={at === 'source' ? sourceRecord(captureSource) : undefined}
+          ask={captureSource ? askSource(captureSource) : undefined}
           wrap
         />
       </Field>

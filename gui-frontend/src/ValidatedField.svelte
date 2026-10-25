@@ -40,14 +40,19 @@
     describedRuns,
     rankedSuggestions,
     memberSuggestions,
+    type Member,
     inGrokMacroName,
   } from './autocomplete';
-  import { contextFieldTypes, memberBefore, type FieldTypes } from './fieldTypes';
-  import { highlight, KEYWORDS, LITERALS } from '../../website/src/lib/highlight/highlight';
+  import {
+    highlight,
+    KEYWORDS,
+    LITERALS,
+    tokenize,
+  } from '../../website/src/lib/highlight/highlight';
   import { wrapCondition } from './conditionWrap';
   import type { Attachment } from 'svelte/attachments';
   import { fieldError, holdsName, markRuns, quotedTokens } from './errorMarks';
-  import { formatCode } from './api';
+  import { formatCode, type DotAnswer } from './api';
   import { beginReconcile, endReconcile } from './grokFields';
 
   let {
@@ -63,7 +68,7 @@
     rows = 6,
     paint,
     wrap = false,
-    fields,
+    ask,
   }: {
     value: string;
     errors?: string[];
@@ -93,11 +98,10 @@
     paint?: (text: string) => string;
     /** Left, the text is drawn broken before its operators, to the room it has: see the comment at the top. */
     wrap?: boolean;
-    /** The record the expression reads, for what may follow a dot. Absent, the record a component above provides
-     * (`provideFieldTypes`). */
-    fields?: FieldTypes;
+    /** Asks the engine what may follow the `.` at `dot` in `text`, where this expression sits (`afterDot`). Absent,
+     * every function written on a value may. */
+    ask?: (text: string, dot: number) => Promise<DotAnswer | null>;
   } = $props();
-  const provided = contextFieldTypes();
 
   /** A `wrap` field being written in: left, it shows its text laid out instead. */
   let editing = $state(false);
@@ -232,11 +236,51 @@
 
   let grokActive = $derived(autocomplete === 'grok' && inGrokMacroName(value, currentWord().pos));
 
-  /** What the chain before the dot the word follows is, or null where the word follows no dot. */
-  let member = $derived.by(() => {
+  /** The `.` the word follows, or null where it follows none: a dot in a string, a comment or a number is not one. */
+  let dot = $derived.by(() => {
     const { start } = currentWord();
     if (!functions || value[start - 1] !== '.') return null;
-    return memberBefore(value, start - 1, fields ?? provided?.());
+    const last = tokenize(value.slice(0, start)).at(-1);
+    return last?.kind === 'plain' && last.text === '.' ? start - 1 : null;
+  });
+
+  /** The engine's answers, by the text up to the dot they are about, kept while the field is being written in. */
+  const answers = new Map<string, DotAnswer | null>();
+  const asking = new Set<string>();
+  /** Bumped as an answer arrives, so what reads `answers` reads it again. */
+  let answered = $state(0);
+
+  /** What the dot follows: unknown until the engine answers, null where it follows no value. */
+  let member = $derived.by((): Member | null => {
+    if (dot === null) return null;
+    void answered;
+    const answer = answers.get(value.slice(0, dot + 1));
+    if (answer === undefined) return { kind: 'unknown' };
+    return answer && { kind: 'typed', ...answer };
+  });
+
+  // Asks once per text up to a dot: the letters after it filter the answer here.
+  $effect(() => {
+    if (dot === null || !ask) return;
+    const head = value.slice(0, dot + 1);
+    if (answers.has(head) || asking.has(head)) return;
+    asking.add(head);
+    ask(value, dot).then(
+      (answer) => {
+        asking.delete(head);
+        // The highlight stays on the item it was moved to, so the reorder never changes what Enter picks.
+        const moved = highlighted > 0 ? suggestions[highlighted]?.name : undefined;
+        answers.set(head, answer);
+        answered++;
+        if (moved !== undefined)
+          highlighted = Math.max(
+            0,
+            suggestions.findIndex((f) => f.name === moved),
+          );
+        if (answer === null && dot !== null && value.slice(0, dot + 1) === head) open = false;
+      },
+      () => asking.delete(head),
+    );
   });
 
   let suggestions = $derived.by((): StdFuncEntry[] => {
@@ -271,6 +315,8 @@
    * and so does text changed while the leader answered. A one-line field takes only a one-line layout. */
   async function onBlur() {
     open = false;
+    // The record may change before the field is written in again.
+    answers.clear();
     // Focus leaving the window is not leaving the field.
     if (!functions || !document.hasFocus()) return;
     const sent = value;

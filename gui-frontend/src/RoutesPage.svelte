@@ -19,7 +19,6 @@
   // ```
   //
   // The new route is held unsaved (`edits.ts`) while the pipeline is made, as any edit here is.
-  import { sourceRecord } from './fieldTypes';
   import EditInShared from './EditInShared.svelte';
   import OnlyNotice from './OnlyNotice.svelte';
   import { Narrowing } from './narrowing.svelte';
@@ -70,6 +69,8 @@
     type IdentityDto,
     type SecretDto,
     type FileConfigDto,
+    type DotAt,
+    afterDot,
     TAG_FIELD,
   } from './api';
   import { mintRouteId } from './ids';
@@ -170,6 +171,9 @@
   });
   /** A save's errors on a route's condition and its rules' `when`, drawn on them by `RouteFlow`. */
   const validation = provideValidation('routes');
+  /** Asks the engine what may follow a dot in a route's expression, over the routes as they are being written. */
+  const askAt = (at: DotAt) => (text: string, dot: number) =>
+    afterDot({ config: JSON.stringify({ ...loadedConfig, routes }), at, text, dot });
   const routesEditor = new SectionEditor<RouteDto[]>('routes', {
     get: () => routes,
     set: (value) => (routes = value.map(withRules)),
@@ -614,7 +618,7 @@
             {/snippet}
             <RouteFlow
               routes={card.routes}
-              record={sourceRecord(loadedConfig?.sources.find((s) => s.id === card.source))}
+              {askAt}
               {sourceIds}
               {pipelineIds}
               {destinationIds}

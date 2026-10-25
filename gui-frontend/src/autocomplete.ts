@@ -2,7 +2,7 @@
 // is being typed, and which functions match it, in what order.
 
 import type { StdFuncEntry } from './stdlib';
-import { takes, type Member } from './fieldTypes';
+import type { DotAnswer } from './api';
 
 export interface CurrentWord {
   word: string;
@@ -97,15 +97,20 @@ export function rankedSuggestions(
     .map(({ f }) => f);
 }
 
+/** What a `.` follows, as the engine answered (`afterDot`), or `unknown` before it has. */
+export type Member = { kind: 'unknown' } | ({ kind: 'typed' } & DotAnswer);
+
 /** The most types a warning names before it names only the mismatch: a longer list wraps in a narrow list. */
 const MOST_TYPES_NAMED = 3;
 
-/** Why a function does not fit the `type` before its dot: the types it works on, from its signature (`takes`), or
- * the kind its reference writes it on (`object.keys()`). */
-function misfitWarning(takes: string, signature: string, type: string): string {
-  if (!takes) return `works on ${signature.split('.')[0]}s, not ${type}`;
-  if (takes.split('/').length > MOST_TYPES_NAMED) return `doesn't work on ${type}`;
-  return `works on ${takes}, not ${type}`;
+/** Why a function does not take `type`: the types it works on, as the engine spells its first parameter. */
+function misfitWarning(takes: string, type: string): string {
+  const types = takes.split('/');
+  if (types.length > MOST_TYPES_NAMED) return `doesn't work on ${type}`;
+  // A kind of value reads as a plural; a type's name reads as it is spelled.
+  const named =
+    types.length === 1 && (takes === 'object' || takes === 'array') ? `${takes}s` : takes;
+  return `works on ${named}, not ${type}`;
 }
 
 /** What may follow a dot, best first: an object's fields, then the functions that take what is before the dot, then
@@ -123,30 +128,26 @@ export function memberSuggestions(
     word,
     { usage },
   );
-  if (member.kind === 'unknown') return methods;
-  const fields: StdFuncEntry[] =
-    member.kind === 'object'
-      ? rankedSuggestions(
-          member.fields.map((f) => ({
-            name: f.name,
-            signature: `${f.name}: ${f.type}`,
-            description: '',
-            field: true,
-          })),
-          word,
-          { matchDescription: false },
-        )
-      : [];
-  const type = member.kind === 'object' ? 'object' : member.type;
-  const kind = member.kind === 'object' ? 'object' : type.startsWith('array<') ? 'array' : null;
+  if (member.kind === 'unknown' || member.ty === undefined) return methods;
+  const fields = rankedSuggestions(
+    member.fields.map(([name, type]) => ({
+      name,
+      signature: `${name}: ${type.startsWith('{') ? 'object' : type}`,
+      description: '',
+      field: true,
+    })),
+    word,
+    { matchDescription: false },
+  );
+  // An object's type is spelled whole (`{path: str, ...}`); a warning names it by its kind.
+  const type = member.ty.startsWith('{') ? 'object' : member.ty;
+  const byName = new Map(member.methods.map((m) => [m.name, m]));
   const fit: StdFuncEntry[] = [];
   const misfit: StdFuncEntry[] = [];
   for (const f of methods) {
-    // A function the signatures do not type is written on the kind its reference names: `object.keys()`.
-    const known = takes(f.name, type);
-    const fits = known.fits ?? (kind !== null && f.signature.startsWith(`${kind}.`));
-    if (fits) fit.push(f);
-    else misfit.push({ ...f, warning: misfitWarning(known.takes, f.signature, type) });
+    const m = byName.get(f.name);
+    if (!m || m.fits) fit.push(f);
+    else misfit.push({ ...f, warning: misfitWarning(m.takes, type) });
   }
   return [...fields, ...fit, ...misfit];
 }

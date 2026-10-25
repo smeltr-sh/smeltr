@@ -449,6 +449,8 @@ struct Compiler<'p> {
     untyped: Option<Untyped>,
     /// The vectorized loops being compiled, innermost last (`array_fold`).
     folding: Vec<Folding>,
+    /// What `type_at` asks: the type of an expression where a step begins.
+    probe: Option<std::rc::Rc<Probe>>,
 }
 
 /// A vectorized loop being compiled: its accumulators, each one's write with the type it binds once compiled, and
@@ -515,29 +517,71 @@ enum Resolved {
     Ir(Ir),
 }
 
+/// The type `expr` has where step `step` of `p` begins: what the names in it read there, every step before it run.
+/// `None` where it does not resolve, or `step` is not one the pipeline reaches. The pipeline need not compile: an
+/// error elsewhere, the half-typed expression the question is about among them, leaves the names before `step` bound.
+pub fn type_at(p: &PipelineConfig, meta: &SourceMeta, step: FunctionId, expr: &Expr) -> Option<DataType> {
+    let ingest = ingest_fields(meta);
+    let probe = std::rc::Rc::new(Probe {
+        step,
+        expr: expr.clone(),
+        found: std::cell::RefCell::new(None),
+    });
+    let mut c = Compiler::new(p, &ingest, Some(probe.clone()));
+    c.block(&p.body, None);
+    probe.found.take()
+}
+
+/// What `type_at` asks the compiler, and its answer once the compiler reaches the step. Shared, since a step can be
+/// compiled on a copy of the compiler that is thrown away: a later round's answer replaces an earlier one's.
+struct Probe {
+    step: FunctionId,
+    expr: Expr,
+    found: std::cell::RefCell<Option<DataType>>,
+}
+
+impl<'p> Compiler<'p> {
+    fn new(p: &'p PipelineConfig, ingest: &[(&str, DataType)], probe: Option<std::rc::Rc<Probe>>) -> Compiler<'p> {
+        Compiler {
+            tables: &p.lookup_tables,
+            grok_patterns: &p.grok_patterns,
+            ingest: ingest.iter().map(|(n, _)| n.to_string()).collect(),
+            tries: 0,
+            regions: Vec::new(),
+            untyped: None,
+            folding: Vec::new(),
+            syms: SymbolTable::new(ingest),
+            res: ResourceBuilder::default(),
+            instrs: Vec::new(),
+            errors: Vec::new(),
+            outer: Vec::new(),
+            loop_firsts: Vec::new(),
+            scope_marks: Vec::new(),
+            catch_scopes: Vec::new(),
+            hoisted: HashMap::new(),
+            pass: Pass::Outside,
+            probe,
+        }
+    }
+
+    /// Answer the probe, where `step` is the one it asks about.
+    fn answer_probe(&self, step: FunctionId) {
+        let Some(probe) = self.probe.clone().filter(|p| p.step == step) else {
+            return;
+        };
+        let mut syms = self.syms.clone();
+        let ty = resolve(&probe.expr, &mut syms, &mut ResourceBuilder::default())
+            .ok()
+            .map(|ir| ir.ty);
+        *probe.found.borrow_mut() = ty;
+    }
+}
+
 /// Compile one pipeline against the fields `meta` declares: the instructions, in one pass, then slot liveness. Every
 /// error is collected rather than the first one returned, so one compile reports everything wrong with a pipeline.
 pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<CompileError>> {
     let ingest = ingest_fields(meta);
-    let mut c = Compiler {
-        tables: &p.lookup_tables,
-        grok_patterns: &p.grok_patterns,
-        ingest: ingest.iter().map(|(n, _)| n.to_string()).collect(),
-        tries: 0,
-        regions: Vec::new(),
-        untyped: None,
-        folding: Vec::new(),
-        syms: SymbolTable::new(&ingest),
-        res: ResourceBuilder::default(),
-        instrs: Vec::new(),
-        errors: Vec::new(),
-        outer: Vec::new(),
-        loop_firsts: Vec::new(),
-        scope_marks: Vec::new(),
-        catch_scopes: Vec::new(),
-        hoisted: HashMap::new(),
-        pass: Pass::Outside,
-    };
+    let mut c = Compiler::new(p, &ingest, None);
 
     c.block(&p.body, None);
 
@@ -4239,6 +4283,10 @@ impl Compiler<'_> {
 
     fn block(&mut self, body: &[Step], guard: Option<SlotId>) {
         for step in body {
+            self.answer_probe(match step {
+                Step::If { id, .. } => *id,
+                Step::Function(f) => f.id,
+            });
             match step {
                 Step::If { id, cond, then, else_ } => {
                     let Some(cond_ir) = self.expr(cond, *id) else {
