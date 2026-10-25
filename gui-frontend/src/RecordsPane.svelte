@@ -8,9 +8,6 @@
   stage and the pause) over the grid, and `head` above everything.
 -->
 <script module lang="ts">
-  /** How long typing settles before a preview runs over it: the steps', and the find box's expression. */
-  export const RECOMPUTE_MS = 400;
-
   /** A chip in the find box: the rows it keeps. */
   export type FindChip =
     | { kind: 'failing' | 'dropped' | 'changed' }
@@ -31,7 +28,7 @@
   import { store, storedJson } from './stored';
   import { stepName, type Step } from './pipeline';
   import RecordFields from './RecordFields.svelte';
-  import SearchBox from './SearchBox.svelte';
+  import FindBox, { type FindFilter } from './FindBox.svelte';
   import RemovableChip from './RemovableChip.svelte';
   import FieldsMenu from './FieldsMenu.svelte';
   import SortButton from './SortButton.svelte';
@@ -50,7 +47,6 @@
   } from './recordDiff';
   import {
     isInternal,
-    previewFailure,
     sampleSource,
     type PreviewResult,
     type PreviewRow,
@@ -459,11 +455,8 @@
   const gridSort = new TableSort<string>();
   // -- the find box ----------------------------------------------------------
   //
-  // A keyword by default: a row stays when one of its shown cells holds the
-  // text. Text with an operator or a call in it is tried as an expression over
-  // the pipeline's output (`PreviewRequest.filter`). One that compiles to a
-  // Bool filters the rows on the leader; anything else stays a keyword, so a
-  // bare word like `slow` is searched for rather than read as a field. Chips
+  // A keyword keeps a row when one of its shown cells holds the text; an
+  // expression runs over the pipeline's output (`FindBox.svelte`). Chips
   // beside the text keep the rows that are failing, dropped, changed by a step
   // or hold a field, each on top of the text and of each other.
 
@@ -541,11 +534,8 @@
     changed: '~ Changed by a step',
   } as const;
 
-  // What the find box offers: the kinds of row a chip keeps, with how many there are, and the
-  // expressions this pipeline was last filtered by, each narrowed to what is typed.
-  type FindItem =
-    | { kind: keyof typeof CHIP_LABELS; count: number; section?: undefined }
-    | { kind: 'recent'; expression: string; section: string };
+  // What the find box offers: the kinds of row a chip keeps, with how many there are, narrowed to what is typed.
+  type FindItem = { kind: keyof typeof CHIP_LABELS; count: number; section?: undefined };
   let findItems = $derived.by((): FindItem[] => {
     const rows = gridRows ?? [];
     const q = outputQuery.trim().toLowerCase();
@@ -554,100 +544,37 @@
       dropped: () => rows.filter((r) => r.json === null).length,
       changed: () => rows.filter((_, i) => rowChanged(i)).length,
     };
-    const kinds = (Object.keys(CHIP_LABELS) as (keyof typeof CHIP_LABELS)[])
+    return (Object.keys(CHIP_LABELS) as (keyof typeof CHIP_LABELS)[])
       .filter((kind) => !chips.some((c) => c.kind === kind))
       .filter((kind) => CHIP_LABELS[kind].toLowerCase().includes(q))
       .map((kind) => ({ kind, count: counts[kind]() }))
       .filter((k) => k.count > 0);
-    const recent = recentExpressions
-      .filter((e) => e !== outputQuery.trim() && e.toLowerCase().includes(q))
-      .map((expression) => ({ kind: 'recent' as const, expression, section: 'Recent' }));
-    return [...kinds, ...recent];
   });
 
   function pickFind(item: FindItem): boolean {
-    if (item.kind === 'recent') outputQuery = item.expression;
-    else addChip({ kind: item.kind });
+    addChip({ kind: item.kind });
     return true;
   }
 
-  const RECENT_EXPRESSIONS = 5;
-  const expressionsKey = (pipeline: string) => `smeltr-workspace-expressions:${pipeline}`;
-  let recentExpressions = $state<string[]>([]);
-  $effect(() => {
-    const key = expressionsKey(pipelineId);
-    untrack(() => {
-      const saved = storedJson<unknown>(key, []);
-      recentExpressions = Array.isArray(saved)
-        ? saved.filter((e): e is string => typeof e === 'string')
-        : [];
-    });
-  });
-
-  /** Keeps the expression the rows are filtered by, once the box is left with it. */
-  function rememberExpression() {
-    const q = outputQuery.trim();
-    if (!q || expressionRows === null) return;
-    recentExpressions = [q, ...recentExpressions.filter((e) => e !== q)].slice(
-      0,
-      RECENT_EXPRESSIONS,
-    );
-    store(expressionsKey(pipelineId), JSON.stringify(recentExpressions));
-  }
-
   let outputQuery = $state('');
-  /** The row numbers the expression kept, or null while the search is a keyword. */
-  let expressionRows = $state<Set<number> | null>(null);
-  const looksLikeExpression = (q: string) => /[=<>!&|()]/.test(q);
-  /** How the reader said the text is read, by the mode beside it, over what it looks like. Cleared with the text. */
-  let readAs = $state<'keyword' | 'expression' | null>(null);
-  /** Why the text does not compile, while it is read as an expression it is not. */
-  let expressionError = $state('');
-  $effect(() => {
-    if (!outputQuery.trim()) readAs = null;
-  });
-  /** What the mode beside the box says: the reader's choice at once, else the guess the preview confirmed. */
-  let asExpression = $derived(readAs ? readAs === 'expression' : expressionRows !== null);
-
-  $effect(() => {
-    const [q, sample, as] = [outputQuery.trim(), lastSample, readAs];
+  let find = $state<FindFilter>({ kind: 'none' });
+  let findError = $state('');
+  // Paused, the expression reads the records where they stand.
+  let evaluate = $derived.by(() => {
+    const [sample, cut] = [lastSample, pause?.after];
     void signature;
-    // Paused, the expression reads the records where they stand.
-    const cut = pause?.after;
-    expressionError = '';
-    if (!q || !sample || as === 'keyword' || (as === null && !looksLikeExpression(q))) {
-      expressionRows = null;
-      return;
-    }
-    // Asked for, an expression that does not compile keeps no rows and says why; guessed, it stays a keyword.
-    const failed = (error: string) => {
-      expressionRows = as === 'expression' ? new Set() : null;
-      expressionError = as === 'expression' ? error : '';
-    };
-    let current = true;
-    const timer = setTimeout(async () => {
-      try {
-        const res = await preview(cut ?? untrack(() => steps), sample, q);
-        if (!current) return;
-        if (res.ok) expressionRows = new Set(res.rows.map((r) => r.row));
-        else failed(previewFailure(res));
-      } catch (e) {
-        if (current) failed(String(e));
-      }
-    }, RECOMPUTE_MS);
-    return () => {
-      current = false;
-      clearTimeout(timer);
-    };
+    return sample
+      ? (expression: string) => preview(cut ?? untrack(() => steps), sample, expression)
+      : null;
   });
 
   function matches(i: number): boolean {
     const row = gridRows?.[i];
     if (!row) return false;
     if (!chips.every((c) => chipKeeps(c, i))) return false;
-    const q = outputQuery.trim().toLowerCase();
-    if (!q) return true;
-    if (expressionRows) return expressionRows.has(row.row);
+    if (find.kind === 'expression') return find.rows.has(row.row);
+    if (find.kind !== 'keyword') return true;
+    const q = find.text.toLowerCase();
     const m = rowsMaps[i];
     return columns.some(
       (path) =>
@@ -702,15 +629,17 @@
     <div class="output-search">
       {@render sampleMenu()}
       {#if gridRows && gridRows.length > 0}
-        <SearchBox
+        <FindBox
           bind:query={outputQuery}
+          bind:filter={find}
+          bind:error={findError}
+          {evaluate}
+          remember={`smeltr-workspace-expressions:${pipelineId}`}
           items={findItems}
           onpick={pickFind}
-          onleave={rememberExpression}
           id="find"
           label="Search the output"
           placeholder="Search the output, or filter with an expression such as status >= 500"
-          mono={expressionRows !== null}
         >
           {#snippet before()}<span aria-hidden="true">⌕</span
             >{#each chips as c (chipKey(c))}<RemovableChip
@@ -718,23 +647,12 @@
                 onremove={() => toggleChip(c)}
                 ><span class="find-chip">{chipLabel(c)}</span></RemovableChip
               >{/each}{/snippet}
-          {#snippet after()}{#if outputQuery.trim()}<button
-                type="button"
-                class="mode"
-                class:expression={asExpression}
-                onclick={() => (readAs = asExpression ? 'keyword' : 'expression')}
-                >{asExpression ? 'ƒ expression' : 'keyword'}</button
-              >{/if}{/snippet}
           {#snippet option(item)}
-            {#if item.kind === 'recent'}
-              <code>{item.expression}</code>
-            {:else}
-              <span>{CHIP_LABELS[item.kind]}</span>
-              <span></span>
-              <span class="dim">{item.count}</span>
-            {/if}
+            <span>{CHIP_LABELS[item.kind]}</span>
+            <span></span>
+            <span class="dim">{item.count}</span>
           {/snippet}
-        </SearchBox>
+        </FindBox>
         {#if outputQuery.trim() || chips.length > 0}
           <span class="dim count">{gridOrder.length} of {gridRows.length} rows</span>
         {/if}
@@ -753,7 +671,7 @@
         {@render fieldsMenu(null)}
       {/if}
     </div>
-    <InlineError message={expressionError} />
+    <InlineError message={findError} />
     {#if selectedSample}
       {@render stage()}
       <div class="output-actions">
@@ -950,23 +868,6 @@
     display: flex;
     align-items: center;
     gap: 0.7rem;
-  }
-  .mode {
-    flex: none;
-    background: none;
-    cursor: pointer;
-    font: inherit;
-    font-size: var(--text-note);
-    color: var(--dim);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 0 0.5rem;
-    white-space: nowrap;
-  }
-  .mode.expression {
-    color: var(--accent);
-    border-color: var(--accent);
-    font-family: var(--mono);
   }
   .count {
     font-size: var(--text-note);
