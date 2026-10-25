@@ -6,7 +6,7 @@
 <script lang="ts">
   import ChipPicker from './ChipPicker.svelte';
   import LockIcon from './LockIcon.svelte';
-  import Tabs from './Tabs.svelte';
+  import SecondaryTabs from './SecondaryTabs.svelte';
   import { count } from './time';
   import { getConnections, type Connected, type SampleSummary } from './api';
 
@@ -111,7 +111,7 @@
   {/snippet}
   {#snippet children()}
     <div class="menu">
-      <Tabs tabs={TABS} selected={tab} onselect={show} ariaLabel="Sample">
+      <SecondaryTabs tabs={TABS} active={tab} onselect={show} ariaLabel="Sample">
         {#snippet label(t)}
           {t === 'saved' ? 'Saved' : 'Capture'}
           <span class="dim">{t === 'saved' ? samples.length : sources.length}</span>
@@ -126,7 +126,7 @@
             }}>Paste or file</button
           >
         {/snippet}
-      </Tabs>
+      </SecondaryTabs>
 
       {#if tab === 'saved'}
         <!-- svelte-ignore a11y_autofocus -->

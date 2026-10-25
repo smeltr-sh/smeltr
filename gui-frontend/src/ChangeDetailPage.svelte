@@ -36,7 +36,7 @@
   import { ago, count, shortCommit, pathSummary } from './time';
   import { nameOf, pipelineNamesAt, type PipelineNames } from './pipelineNames';
   import SectionShell from './SectionShell.svelte';
-  import Tabs from './Tabs.svelte';
+  import SecondaryTabs from './SecondaryTabs.svelte';
   import PageHeader from './PageHeader.svelte';
   import PencilIcon from './PencilIcon.svelte';
   import { ask } from './Confirm.svelte';
@@ -477,7 +477,7 @@
           {/if}
 
           <div class="subtabs">
-            <Tabs tabs={TABS} selected={tab} onselect={(t) => (tab = t)} ariaLabel="Change">
+            <SecondaryTabs tabs={TABS} active={tab} onselect={(t) => (tab = t)} ariaLabel="Change">
               {#snippet label(t)}
                 {#if t === 'conversation'}Conversation
                 {:else if t === 'saves'}Saves <span class="pill"
@@ -488,7 +488,7 @@
                   >
                 {/if}
               {/snippet}
-            </Tabs>
+            </SecondaryTabs>
           </div>
 
           <div role="tabpanel">
