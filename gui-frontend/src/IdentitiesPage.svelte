@@ -33,13 +33,10 @@
   import {
     sharedConfig,
     putIdentities,
-    listCertificates,
-    currentVersion,
     isLeaderStored,
     describeCertificates,
     errorMessage,
     type IdentityDto,
-    type CertificateDto,
     type DescribedCertificate,
   } from './api';
   import { expiry } from './time';
@@ -73,25 +70,16 @@
 
   void editor.load();
 
-  /** The certificate list, so a pick names the version it is at now. */
-  let certificates: CertificateDto[] = $state([]);
-  listCertificates()
-    .then((c) => (certificates = c))
-    .catch(() => (certificates = []));
-
-  /** Names `name` at the version it is at now: a reference written today presents today's certificate, and
-   * replacing it on the list is what moves the reference. A pick takes out what a pasted certificate left. */
-  function choose(identity: IdentityDto, name: string | undefined) {
+  /** Names the certificate picked at the version it is at now: a reference written today presents today's
+   * certificate, and replacing it on the list is what moves the reference. A pick takes out what a pasted
+   * certificate left. */
+  function choose(identity: IdentityDto, name: string | undefined, version: number | undefined) {
     delete identity.key;
     if (name === undefined) {
       delete identity.certificate;
       return;
     }
-    const entry = certificates.find((c) => c.name === name);
-    identity.certificate = {
-      secret: name,
-      version: (entry && currentVersion(entry)?.version) ?? 1,
-    };
+    identity.certificate = { secret: name, version: version ?? 1 };
   }
 
   /** A row at rest, in one line. */
@@ -191,10 +179,8 @@
     label="presents"
     field="certificate"
     optional
-    bind:value={
-      () => (isLeaderStored(identity.certificate) ? identity.certificate.secret : undefined),
-      (name) => choose(identity, name)
-    }
+    value={isLeaderStored(identity.certificate) ? identity.certificate.secret : undefined}
+    onpick={(name, version) => choose(identity, name, version)}
     version={isLeaderStored(identity.certificate) ? identity.certificate.version : undefined}
   >
     {#snippet help()}

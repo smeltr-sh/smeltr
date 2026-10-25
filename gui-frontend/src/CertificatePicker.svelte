@@ -20,6 +20,7 @@
     field,
     version,
     optional = false,
+    onpick,
   }: {
     value: string | undefined;
     label?: string;
@@ -32,14 +33,17 @@
     version?: number;
     /** Offers "none", for a choice that may present nothing. */
     optional?: boolean;
+    /** A pick, with the version the certificate is at now, for a reference that names one. */
+    onpick?: (name: string | undefined, version: number | undefined) => void;
   } = $props();
 
-  let certificates: CertificateDto[] = $state([]);
+  /** `undefined` until the list arrives, so a name it does not hold is not offered as missing before then. */
+  let certificates: CertificateDto[] | undefined = $state();
   listCertificates()
     .then((listed) => (certificates = listed))
     .catch(reported);
 
-  const entry = $derived(certificates.find((c) => c.name === value));
+  const entry = $derived(certificates?.find((c) => c.name === value));
   /** The chain is the newest version's, so it describes the one named only when that is the newest. */
   const newest = $derived(
     entry && (version === undefined || version === currentVersion(entry)?.version),
@@ -61,16 +65,16 @@
     {/if}
     &mdash; <a href="#/admin/certificates/new">add a certificate</a>
   {/snippet}
-  <select bind:value>
+  <select bind:value onchange={() => onpick?.(value, entry && currentVersion(entry)?.version)}>
     {#if optional}
       <option value={undefined}>none</option>
     {:else}
       <option value={undefined} disabled>choose one</option>
     {/if}
-    {#each certificates as c (c.name)}
+    {#each certificates ?? [] as c (c.name)}
       <option value={c.name}>{c.name}</option>
     {/each}
-    {#if value !== undefined && certificates.length > 0 && !entry}
+    {#if value !== undefined && certificates && !entry}
       <option {value}>{value} (not listed)</option>
     {/if}
   </select>
