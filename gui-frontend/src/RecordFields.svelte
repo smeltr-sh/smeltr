@@ -84,6 +84,7 @@
     clearTimeout(byClosing);
     byClosing = setTimeout(() => (byOpen = null), 150);
   }
+  $effect(() => () => clearTimeout(byClosing));
 
   let folds = $state(new SvelteMap<string, boolean>());
   let pages = $state(new SvelteMap<string, number>());
