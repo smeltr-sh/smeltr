@@ -1003,6 +1003,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     // somebody is watching the rotation it promised would end.
     cut_over_if_due(state, now_ms).await;
     let (signing, rotating) = serving_authority(&state.data_dir);
+    let serving = serving_certificate(&state.data_dir);
     let presenting = enrollment_codes::Presenting::read(&tls::dir_of(&state.data_dir));
     // Read only while a rotation is open, which is the only time an enrollment code can be about to be stranded by one.
     // The steady state is every poll, and it does not pay for a table nothing would say anything about. Asked of the
@@ -1050,6 +1051,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     out.extend(deploy_warnings);
     out.extend(normal_warnings);
     out.extend(key_warnings);
+    out.extend(serving.map(|s| warnings::leader_certificate(&s, now_ms)).unwrap_or_default());
     for w in out
         .iter_mut()
         .filter(|w| w.subject_kind == warnings::SubjectKind::Pipeline)
@@ -1092,6 +1094,22 @@ fn serving_authority(data_dir: &std::path::Path) -> (Option<tls::Described>, war
         .filter(|(materials, _)| !materials.supplied)
         .and_then(|(materials, served)| tls::signing_root(&materials.ca_pem, &served).ok());
     (signing, rotating)
+}
+
+/// The certificate this leader serves, for its warnings. `None` where it serves plain HTTP, which has no certificate
+/// to run out, or where what it serves cannot be read, which the Leader certificate tab says.
+fn serving_certificate(data_dir: &std::path::Path) -> Option<warnings::Serving> {
+    if !crate::startup_config::leader_tls_enabled() {
+        return None;
+    }
+    let dir = tls::dir_of(data_dir);
+    let (_, served) = tls::in_force(&dir).ok()?;
+    Some(warnings::Serving {
+        certificate: tls::describe(&served, "the certificate this leader serves").ok()?,
+        source: acme::source(&dir).ok()?,
+        entry: entry_in_force(&dir).ok().flatten(),
+        acme: acme::state(&dir).unwrap_or_default(),
+    })
 }
 
 /// Every certificate the fleet is actually carrying, group by group.

@@ -2405,7 +2405,9 @@ export type WarningCondition =
   | 'newerRelease'
   | 'workerOnAnotherRelease'
   | 'secretsKeyUnusable'
-  | 'secretNeedsValue';
+  | 'secretNeedsValue'
+  | 'acmeRenewalFailing'
+  | 'leaderCertificateRunningOut';
 
 /** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. *Info*: a fact worth
  * knowing that asks nothing; the leader sends it only to a caller that asks (`listWarnings({ info: true })`). */
@@ -2508,6 +2510,10 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Secrets encryption key unusable';
     case 'secretNeedsValue':
       return 'Secret needs a new value';
+    case 'acmeRenewalFailing':
+      return 'ACME renewal failing';
+    case 'leaderCertificateRunningOut':
+      return 'Leader certificate running out';
   }
 }
 

@@ -92,6 +92,8 @@ pub enum Condition {
     StreamUnrouted,
     SecretsKeyUnusable,
     SecretNeedsValue,
+    AcmeRenewalFailing,
+    LeaderCertificateRunningOut,
 }
 
 impl Condition {
@@ -129,6 +131,8 @@ impl Condition {
         Condition::StreamUnrouted,
         Condition::SecretsKeyUnusable,
         Condition::SecretNeedsValue,
+        Condition::AcmeRenewalFailing,
+        Condition::LeaderCertificateRunningOut,
     ];
 
     /// What this is called on the wire. The match is what makes a new entry a compile error here.
@@ -165,6 +169,8 @@ impl Condition {
             Condition::StreamUnrouted => "streamUnrouted",
             Condition::SecretsKeyUnusable => "secretsKeyUnusable",
             Condition::SecretNeedsValue => "secretNeedsValue",
+            Condition::AcmeRenewalFailing => "acmeRenewalFailing",
+            Condition::LeaderCertificateRunningOut => "leaderCertificateRunningOut",
         }
     }
 }
@@ -629,6 +635,91 @@ fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &R
             ),
         },
     }]
+}
+
+/// The certificate this leader serves, as its warnings read it.
+pub struct Serving {
+    pub certificate: crate::leader::tls::Described,
+    pub source: crate::leader::acme::Source,
+    /// The entry in the certificate list it is a copy of, for an uploaded one.
+    pub entry: Option<String>,
+    /// What the last order left, for one ACME renews.
+    pub acme: crate::leader::acme::State,
+}
+
+/// The certificate this leader serves running out. One ACME renews is said once a renewal is due and the last try
+/// failed, which is two thirds of the way through its life rather than the last tenth: the leader has been trying,
+/// and the operator has most of a third to put it right. Any other is said in its last tenth, by [`notice_millis`].
+pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
+    let certificate = &serving.certificate;
+    let remaining = certificate.not_after_millis - now_ms;
+    let expired = remaining <= 0;
+    let when = if expired {
+        "has expired".to_string()
+    } else {
+        format!("expires in {} days", remaining / (24 * 60 * 60 * 1000))
+    };
+    let (condition, since_millis, message) = match serving.source {
+        crate::leader::acme::Source::Acme => {
+            let (Some(error), Some(due)) = (serving.acme.last_error.as_deref(), serving.acme.renew_after_millis) else {
+                return Vec::new();
+            };
+            if now_ms < due {
+                return Vec::new();
+            }
+            let error = one_line(error);
+            // The error last, so a long one clipped costs nothing and nothing after it reads as the authority's.
+            let message = if expired {
+                format!(
+                    "this leader could not renew its certificate, and the certificate has expired. Check the ACME \
+                     settings in Admin → System → Leader certificate. Last error: {error}"
+                )
+            } else {
+                format!(
+                    "this leader could not renew its certificate. It tries again every hour, and the certificate \
+                     {when}. Check the ACME settings in Admin → System → Leader certificate. Last error: {error}"
+                )
+            };
+            (Condition::AcmeRenewalFailing, due, message)
+        }
+        source => {
+            let notice = notice_millis(certificate.not_before_millis, certificate.not_after_millis);
+            if remaining > notice {
+                return Vec::new();
+            }
+            let message = match (source, &serving.entry) {
+                (crate::leader::acme::Source::Upload, Some(entry)) => format!(
+                    "this leader's certificate {entry:?} {when}. Replace it in Admin → Certificates, and the leader \
+                     serves the new version"
+                ),
+                _ => format!("this leader's certificate {when}. Issue a new one in Admin → System → Leader certificate"),
+            };
+            (Condition::LeaderCertificateRunningOut, certificate.not_after_millis - notice, message)
+        }
+    };
+    vec![Warning {
+        scope: None,
+        condition,
+        subject_kind: SubjectKind::Leader,
+        site: None,
+        subject_id: certificate.names.first().cloned().unwrap_or_else(|| certificate.subject.clone()),
+        group: None,
+        severity: if expired { Severity::Failed } else { Severity::Warning },
+        since_millis: Some(since_millis),
+        message,
+    }]
+}
+
+/// An authority's error as the end of a row: its first line, without a full stop, as no row ends in one, and short
+/// enough to leave the row readable.
+fn one_line(error: &str) -> String {
+    const LONGEST: usize = 200;
+    let line = error.lines().next().unwrap_or_default().trim().trim_end_matches('.');
+    match line.char_indices().nth(LONGEST) {
+        // At the last word that fits, so a clipped error does not end mid-word.
+        Some((cut, _)) => format!("{}…", line[..cut].rsplit_once(' ').map_or(&line[..cut], |(kept, _)| kept)),
+        None => line.to_string(),
+    }
 }
 
 /// The outstanding enrollment codes that name a root this rotation is about to retire.
@@ -3117,6 +3208,108 @@ mod tests {
             not_before_millis: NOW + remaining_days * day - life_days * day,
             not_after_millis: NOW + remaining_days * day,
         }
+    }
+
+    // -- the certificate this leader serves -----------------------------------
+
+    /// What this leader serves: a 45-day certificate with `remaining_days` left, from `source`.
+    fn serving(source: crate::leader::acme::Source, remaining_days: i64) -> Serving {
+        let not_after_millis = NOW + remaining_days * DAY;
+        Serving {
+            certificate: crate::leader::tls::Described {
+                subject: "smeltr.example.com".to_string(),
+                fingerprint: "cd".repeat(32),
+                names: vec!["smeltr.example.com".to_string()],
+                not_before_millis: not_after_millis - 45 * DAY,
+                not_after_millis,
+            },
+            source,
+            entry: None,
+            acme: crate::leader::acme::State {
+                renew_after_millis: Some(not_after_millis - 15 * DAY),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn failing(mut serving: Serving, error: &str) -> Serving {
+        serving.acme.last_error = Some(error.to_string());
+        serving
+    }
+
+    /// Said once a renewal is due and the last try failed, dated from when it fell due: the leader has been trying
+    /// since then.
+    #[test]
+    fn a_failing_acme_renewal_is_said_from_when_it_fell_due() {
+        let due = failing(serving(crate::leader::acme::Source::Acme, 12), "the authority refused the order.");
+        let said = leader_certificate(&due, NOW);
+        assert_eq!(said.len(), 1);
+        assert_eq!(said[0].condition, Condition::AcmeRenewalFailing);
+        assert_eq!(said[0].severity, Severity::Warning);
+        assert_eq!(said[0].since_millis, due.acme.renew_after_millis);
+        assert_eq!(said[0].subject_id, "smeltr.example.com");
+        assert!(
+            said[0].message.ends_with("Last error: the authority refused the order"),
+            "{}",
+            said[0].message
+        );
+        assert!(said[0].message.contains("expires in 12 days"), "{}", said[0].message);
+    }
+
+    /// A renewal not yet due, or one that has not failed, is nothing to say.
+    #[test]
+    fn an_acme_certificate_renewing_on_time_is_not_said() {
+        let early = failing(serving(crate::leader::acme::Source::Acme, 20), "the authority is down");
+        assert!(leader_certificate(&early, NOW).is_empty(), "failed before it was due");
+        let quiet = serving(crate::leader::acme::Source::Acme, 3);
+        assert!(leader_certificate(&quiet, NOW).is_empty(), "due, and nothing failed");
+    }
+
+    #[test]
+    fn an_acme_certificate_that_ran_out_is_a_failure() {
+        let expired = failing(serving(crate::leader::acme::Source::Acme, -1), "the authority is down");
+        let said = leader_certificate(&expired, NOW);
+        assert_eq!(said[0].severity, Severity::Failed);
+        assert!(
+            said[0].message.starts_with("this leader could not renew its certificate, and the certificate has expired"),
+            "{}",
+            said[0].message
+        );
+    }
+
+    /// An uploaded certificate is said in its last tenth, by the entry it is a copy of, where it is replaced.
+    #[test]
+    fn an_uploaded_certificate_is_said_in_its_last_tenth() {
+        let mut uploaded = serving(crate::leader::acme::Source::Upload, 5);
+        uploaded.entry = Some("web".to_string());
+        assert!(leader_certificate(&uploaded, NOW).is_empty(), "45 days, 5 left: not in its last tenth yet");
+
+        let mut uploaded = serving(crate::leader::acme::Source::Upload, 4);
+        uploaded.entry = Some("web".to_string());
+        let said = leader_certificate(&uploaded, NOW);
+        assert_eq!(said[0].condition, Condition::LeaderCertificateRunningOut);
+        assert_eq!(said[0].since_millis, Some(uploaded.certificate.not_after_millis - 45 * DAY / 10));
+        assert!(said[0].message.starts_with("this leader's certificate \"web\" expires in 4 days. Replace it"));
+    }
+
+    #[test]
+    fn the_leaders_own_certificate_is_issued_again_where_it_was_issued() {
+        let said = leader_certificate(&serving(crate::leader::acme::Source::Own, 0), NOW + 1);
+        assert_eq!(said[0].severity, Severity::Failed);
+        assert_eq!(
+            said[0].message,
+            "this leader's certificate has expired. Issue a new one in Admin → System → Leader certificate"
+        );
+    }
+
+    /// An authority's error goes inside a sentence, so it must not end the sentence or swamp the row.
+    #[test]
+    fn an_authority_error_is_one_clause() {
+        assert_eq!(one_line("refused.\ndetail"), "refused");
+        let long = "word ".repeat(60);
+        let clipped = one_line(&long);
+        assert!(clipped.chars().count() <= 201, "{clipped}");
+        assert!(clipped.ends_with("word…"), "{clipped}");
     }
 
     // -- a deployed identity's certificates -----------------------------------
