@@ -10,6 +10,7 @@
   deploys, an admin who read only the row's name would believe it is live.
 -->
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { reported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
@@ -64,7 +65,8 @@
   // Again on each tab: regenerating the key on the other one changes what every row here says.
   $effect(() => {
     void section;
-    load();
+    // Untracked: load reads the key it then writes, which would otherwise run it again.
+    untrack(load);
   });
 
   /** Which versions `main` runs -- more than one when two groups are on
