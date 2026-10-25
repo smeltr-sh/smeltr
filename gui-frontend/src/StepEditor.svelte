@@ -87,6 +87,7 @@
     grokPatterns = [],
     parseInput = '_raw',
     selectedStep = null,
+    ran = null,
     onSelectStep = () => {},
     onPropose = () => {},
     proposal = null,
@@ -105,6 +106,8 @@
     /** The field a new parse step reads. */
     parseInput?: string;
     selectedStep?: Step | null;
+    /** The steps the records have been through, while they are paused; the rest are dimmed. */
+    ran?: Set<Step> | null;
     onSelectStep?: (step: Step | null) => void;
     /** Ask the parser step to propose its declared fields from the sample. */
     onPropose?: (step: Step) => void;
@@ -155,6 +158,8 @@
     if (step.type === 'eval') step.assignments.splice(i, 1);
   }
   let isSelected = $derived(selectedStep === step);
+  // A broken step stays bright: its error is what to read.
+  let notRun = $derived(ran !== null && !ran.has(step) && stepErrors.length === 0);
   function toggleSelected() {
     onSelectStep(isSelected ? null : step);
   }
@@ -581,8 +586,8 @@
       type="button"
       class:active={isSelected}
       onclick={toggleSelected}
-      aria-label={isSelected ? 'Clear this step’s diff' : 'Show this step’s diff'}
-      title={isSelected ? 'Clear this step’s diff' : 'Show this step’s diff'}
+      aria-label={isSelected ? 'Show the whole pipeline' : 'Pause the records after this step'}
+      title={isSelected ? 'Show the whole pipeline' : 'Pause the records after this step'}
       >{isSelected ? '●︎' : '◎︎'}</button
     >
     {#if !readOnly}
@@ -606,6 +611,7 @@
     class="card if-card"
     class:has-error={stepErrors.length > 0}
     class:diff-selected={isSelected}
+    class:not-run={notRun}
   >
     <div class="card-head if-head">
       <span class="type-badge">
@@ -647,6 +653,7 @@
           {grokPatterns}
           {parseInput}
           {selectedStep}
+          {ran}
           {onSelectStep}
           {onPropose}
           {proposal}
@@ -665,6 +672,7 @@
           {grokPatterns}
           {parseInput}
           {selectedStep}
+          {ran}
           {onSelectStep}
           {onPropose}
           {proposal}
@@ -681,6 +689,7 @@
     class:has-error={stepErrors.length > 0}
     class:comment-card={step.type === 'comment'}
     class:diff-selected={isSelected}
+    class:not-run={notRun}
     class:step-disabled={step.type !== 'comment' && step.disabled}
   >
     <!-- The controls sit beside the button that opens the step: a button cannot hold
@@ -1545,12 +1554,20 @@
     opacity: 0.55;
   }
 
-  /* The step driving the diff view: a tint, per the flat-surfaces rule. */
+  /* The step the records are paused after: the pause chip's accent. */
   .diff-selected {
-    --card-surface: color-mix(in oklab, var(--ink) 6%, var(--field));
+    --card-surface: color-mix(in oklab, var(--accent) 10%, var(--field));
+  }
+  .diff-selected:not(.has-error) {
+    border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
   }
   .comment-card.diff-selected {
-    --card-surface: color-mix(in oklab, var(--ink) 6%, var(--comment-bg));
+    --card-surface: color-mix(in oklab, var(--accent) 10%, var(--comment-bg));
+  }
+
+  /* Steps the paused records have not been through yet. */
+  .not-run {
+    opacity: 0.55;
   }
 
   .card-head {
