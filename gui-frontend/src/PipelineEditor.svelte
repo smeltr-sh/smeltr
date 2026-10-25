@@ -2079,8 +2079,14 @@
                 >
                   Show only changed fields
                 </button>
-                <button type="button" onclick={() => (showTypes = !showTypes)}>
-                  {showTypes ? 'Hide types' : 'Show types'}
+                <button
+                  type="button"
+                  class="toggle"
+                  class:on={showTypes}
+                  aria-pressed={showTypes}
+                  onclick={() => (showTypes = !showTypes)}
+                >
+                  Show types
                 </button>
                 <span class="grow"></span>
                 {#if !readOnly}
