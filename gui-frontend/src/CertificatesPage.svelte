@@ -420,10 +420,6 @@
     color: var(--dim);
   }
 
-  .dim {
-    color: var(--dim);
-  }
-
   .mono {
     font-family: var(--mono);
   }

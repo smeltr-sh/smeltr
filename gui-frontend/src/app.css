@@ -32,6 +32,16 @@ body {
   padding: 2rem 1.5rem 4rem;
 }
 
+/* Text that says less than what is around it: a count, a hint, a state with nothing in it yet. */
+.dim {
+  color: var(--dim);
+}
+
+/* Takes the room a row has left, pushing what follows it to the far end. */
+.grow {
+  flex-grow: 1;
+}
+
 /* A button that reads as part of the text it sits in, underlined dotted: it opens or jumps rather than
    acts. */
 .link-button {

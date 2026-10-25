@@ -1160,10 +1160,6 @@
 </main>
 
 <style>
-  .dim {
-    color: var(--dim);
-  }
-
   .mono {
     font-family: var(--mono);
   }

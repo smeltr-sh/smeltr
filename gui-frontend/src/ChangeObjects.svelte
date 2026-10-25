@@ -668,17 +668,11 @@
     width: auto;
     max-width: 22rem;
   }
-  .dim {
-    color: var(--dim);
-  }
   .mono {
     font-family: var(--mono);
   }
   .note {
     font-size: var(--text-note);
-  }
-  .grow {
-    flex-grow: 1;
   }
   .ok {
     color: var(--added);

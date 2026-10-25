@@ -460,9 +460,6 @@
   td .mono + .dim {
     margin-left: 0.5rem;
   }
-  .dim {
-    color: var(--dim);
-  }
   .mono {
     font-family: var(--mono);
   }

@@ -1296,10 +1296,6 @@
     margin-bottom: 1.75rem;
   }
 
-  .dim {
-    color: var(--dim);
-  }
-
   /* A paragraph is a sentence someone reads, so it is ink; an id or a dash in a row stays dim. */
   .mono {
     font-family: var(--mono);

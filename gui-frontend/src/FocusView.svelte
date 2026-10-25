@@ -729,10 +729,6 @@
     margin: 0.7rem 0 0.2rem;
   }
 
-  .dim {
-    color: var(--dim);
-  }
-
   .mono {
     font-family: var(--mono);
   }

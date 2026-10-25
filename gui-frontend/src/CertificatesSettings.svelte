@@ -1012,10 +1012,6 @@
     color: var(--dim);
   }
 
-  .dim {
-    color: var(--dim);
-  }
-
   .when {
     width: auto;
     margin: 0 0.25rem;

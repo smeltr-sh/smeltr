@@ -476,7 +476,4 @@
   input.narrow {
     width: 5rem;
   }
-  .dim {
-    color: var(--dim);
-  }
 </style>

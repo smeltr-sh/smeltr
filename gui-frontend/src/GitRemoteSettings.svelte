@@ -244,10 +244,6 @@
     font-family: var(--mono);
   }
 
-  .dim {
-    color: var(--dim);
-  }
-
   p {
     margin: 0;
   }

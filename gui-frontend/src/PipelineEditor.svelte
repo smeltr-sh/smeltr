@@ -1458,10 +1458,6 @@
 {/if}
 
 <style>
-  .dim {
-    color: var(--dim);
-  }
-
   .head {
     display: flex;
     align-items: center;
@@ -1475,10 +1471,6 @@
     display: inline-flex;
     color: var(--dim);
     cursor: text;
-  }
-
-  .grow {
-    flex-grow: 1;
   }
 
   .changed-badge {
