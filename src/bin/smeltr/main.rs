@@ -2125,7 +2125,11 @@ async fn run_leader() {
 
     let app = app
         .merge(routes)
-        .merge(certificates_api::router(auth.clone(), certificates.clone(), list))
+        .merge(certificates_api::router(
+            auth.clone(),
+            certificates.clone(),
+            list.clone(),
+        ))
         .merge(acme_api::router(auth.clone(), certificates.clone()))
         .merge(auth_router(auth.clone()))
         // Before the SPA fallback, so an API path nobody serves answers as an API. Without it a mistyped route
@@ -2140,7 +2144,7 @@ async fn run_leader() {
     tokio::spawn(chat_api::sweep(auth.clone()));
     tokio::spawn(refresh_oidc_sessions(auth.clone()));
     if let Some(serving) = certificates {
-        tokio::spawn(acme_api::renew_due(auth.clone(), serving));
+        tokio::spawn(certificates_api::keep_renewed(auth.clone(), serving, list));
     }
     tokio::spawn(sweep_sessions(auth));
 

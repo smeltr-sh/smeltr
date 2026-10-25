@@ -96,7 +96,8 @@ pub enum Condition {
     SecretNeedsValue,
     AcmeRenewalFailing,
     LeaderCertificateRunningOut,
-    IssuedCertificateDue,
+    IssuedCertificateNotRenewed,
+    IdentityCertificateBehind,
 }
 
 impl Condition {
@@ -136,7 +137,8 @@ impl Condition {
         Condition::SecretNeedsValue,
         Condition::AcmeRenewalFailing,
         Condition::LeaderCertificateRunningOut,
-        Condition::IssuedCertificateDue,
+        Condition::IssuedCertificateNotRenewed,
+        Condition::IdentityCertificateBehind,
     ];
 
     /// What this is called on the wire. The match is what makes a new entry a compile error here.
@@ -175,7 +177,8 @@ impl Condition {
             Condition::SecretNeedsValue => "secretNeedsValue",
             Condition::AcmeRenewalFailing => "acmeRenewalFailing",
             Condition::LeaderCertificateRunningOut => "leaderCertificateRunningOut",
-            Condition::IssuedCertificateDue => "issuedCertificateDue",
+            Condition::IssuedCertificateNotRenewed => "issuedCertificateNotRenewed",
+            Condition::IdentityCertificateBehind => "identityCertificateBehind",
         }
     }
 }
@@ -438,6 +441,8 @@ pub struct DeployedCertificate {
     pub half: Half,
     pub not_before_millis: i64,
     pub not_after_millis: i64,
+    /// The certificate list entry it was read from, by name and version, where the identity presents one.
+    pub entry: Option<(String, i64)>,
 }
 
 /// A deployed identity's certificates running out, in time to replace them.
@@ -2445,55 +2450,111 @@ fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
     }
 }
 
-/// The certificates this leader issued that are due for renewal: two thirds of the way through their newest
-/// version's life, as an ordered one is, or ending at a root other than `signing`, which a rotation's cutover leaves
-/// them doing. Each entry is a name and its newest chain described, empty where that cannot be read, which is due
-/// too. Nothing renews one until an admin does, so each says to.
-pub fn issued_certificates_due(
-    issued: &[(String, Vec<crate::leader::tls::Described>)],
-    signing: &str,
-    now_ms: i64,
-) -> Vec<Warning> {
-    let mut out = Vec::new();
-    for (name, chain) in issued {
-        let renew = format!("Renew it in {CERTIFICATE_LIST} and deploy the change it opens");
-        let (expired, since_millis, message) = match (chain.first(), chain.last()) {
-            (Some(leaf), Some(root)) => {
-                let renew_after = leaf.not_before_millis + (leaf.not_after_millis - leaf.not_before_millis) * 2 / 3;
-                let remaining = leaf.not_after_millis - now_ms;
-                let when = if remaining <= 0 {
-                    "has expired".to_string()
-                } else {
-                    format!("expires in {} days", remaining / (24 * 60 * 60 * 1000))
-                };
-                if root.fingerprint != signing {
-                    let message = format!(
-                        "issued before the authority was rotated, so a connection that trusts only the new authority \
-                         refuses it. {renew}"
-                    );
-                    (remaining <= 0, None, message)
-                } else if now_ms >= renew_after {
-                    (remaining <= 0, Some(renew_after), format!("{when}. {renew}"))
-                } else {
-                    continue;
-                }
+/// What workers present that the list holds a newer version of, from what they run (`deployed`) and each
+/// certificate's newest version with when it was stored (`newest`). Nothing moves them on its own: an admin points
+/// the identities at the newest and deploys that change.
+pub fn identities_behind(deployed: &[DeployedCertificate], newest: &HashMap<String, (i64, i64)>) -> Vec<Warning> {
+    let mut behind: Vec<(&str, &str, &str, i64)> = deployed
+        .iter()
+        .filter_map(|c| {
+            let (name, version) = c.entry.as_ref()?;
+            Some((c.group.as_str(), c.identity.as_str(), name.as_str(), *version))
+        })
+        .filter(|(_, _, name, version)| newest.get(*name).is_some_and(|(n, _)| version < n))
+        .collect();
+    // A chain is several certificates and a rollout several commits; one warning per identity and version.
+    behind.sort();
+    behind.dedup();
+    behind
+        .into_iter()
+        .map(|(group, identity, name, version)| {
+            let (newest, since) = newest[name];
+            Warning {
+                scope: None,
+                condition: Condition::IdentityCertificateBehind,
+                subject_kind: SubjectKind::Identity,
+                site: None,
+                subject_id: identity.to_string(),
+                group: Some(group.to_string()),
+                severity: Severity::Warning,
+                since_millis: Some(since),
+                message: format!(
+                    "presents version {version} of the certificate {name:?}, and the newest is version {newest}. \
+                     Update it in {CERTIFICATE_LIST} and deploy the change it opens"
+                ),
             }
-            _ => (
-                false,
-                None,
-                format!("this leader cannot tell when its newest version expires. {renew}"),
-            ),
+        })
+        .collect()
+}
+
+/// A certificate this leader issued: its name, how it is issued, and its newest chain described.
+pub type IssuedChain = (String, crate::leader::store::Issued, Vec<crate::leader::tls::Described>);
+
+/// Why a certificate this leader issued is due for its next version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Due {
+    /// Two thirds of the way through its newest version's life, as an ordered one is, since the time it holds.
+    Aged(i64),
+    /// Ending at a root other than the one the leader signs under, which a rotation's cutover leaves it doing.
+    OtherRoot,
+    /// Its newest chain cannot be read, so nothing says it is not due.
+    Unreadable,
+}
+
+/// Whether the certificate whose newest chain is `chain`, described, is due for its next version under `signing`.
+pub fn issued_due(chain: &[crate::leader::tls::Described], signing: &str, now_ms: i64) -> Option<Due> {
+    let (Some(leaf), Some(root)) = (chain.first(), chain.last()) else {
+        return Some(Due::Unreadable);
+    };
+    let renew_after = leaf.not_before_millis + (leaf.not_after_millis - leaf.not_before_millis) * 2 / 3;
+    if root.fingerprint != signing {
+        Some(Due::OtherRoot)
+    } else if now_ms >= renew_after {
+        Some(Due::Aged(renew_after))
+    } else {
+        None
+    }
+}
+
+/// How long a certificate may stay due before it is a warning. The leader looks for one due every hour, so a day is
+/// a renewal that failed, not one that has yet to run.
+const RENEWAL_GRACE_MILLIS: i64 = 24 * 60 * 60 * 1000;
+
+/// The certificates this leader issued that it should have renewed and has not, by name and newest chain described.
+/// Only the aged ones: after a cutover every one is due at once and is renewed within the hour, and a failure there
+/// is in the log, as one here is.
+pub fn issued_certificates_not_renewed(issued: &[IssuedChain], signing: &str, now_ms: i64) -> Vec<Warning> {
+    let mut out = Vec::new();
+    for (name, _, chain) in issued {
+        let Some(Due::Aged(since)) = issued_due(chain, signing, now_ms) else {
+            continue;
+        };
+        if now_ms < since + RENEWAL_GRACE_MILLIS {
+            continue;
+        }
+        let remaining = chain[0].not_after_millis - now_ms;
+        let when = if remaining <= 0 {
+            "has expired".to_string()
+        } else {
+            format!("expires in {} days", remaining / (24 * 60 * 60 * 1000))
         };
         out.push(Warning {
             scope: None,
-            condition: Condition::IssuedCertificateDue,
+            condition: Condition::IssuedCertificateNotRenewed,
             subject_kind: SubjectKind::Certificate,
             site: None,
             subject_id: name.clone(),
             group: None,
-            severity: if expired { Severity::Failed } else { Severity::Warning },
-            since_millis,
-            message,
+            severity: if remaining <= 0 {
+                Severity::Failed
+            } else {
+                Severity::Warning
+            },
+            since_millis: Some(since),
+            message: format!(
+                "{when}, and this leader has not renewed it. The leader's log says why: Status → Logs \
+                 (leader.certificate_renewal_failed)"
+            ),
         });
     }
     out
@@ -2520,7 +2581,7 @@ pub fn encryption_key_facts(standing: &KeyStanding) -> HashSet<FactKey> {
 /// `issued` names the certificates this leader issued, which are renewed rather than replaced.
 pub fn encryption_key_warnings(
     standing: &KeyStanding,
-    issued: &HashSet<String>,
+    kept: &std::collections::BTreeMap<String, crate::leader::store::Kept>,
     starts: &HashMap<FactKey, i64>,
 ) -> Vec<Warning> {
     let leader = |condition, subject_id: String, severity, message| Warning {
@@ -2553,10 +2614,18 @@ pub fn encryption_key_warnings(
                 ),
                 Unopenable::Certificate(name) => (
                     SubjectKind::Certificate,
-                    format!(
-                        "encrypted with a key this leader no longer has. {} it in {CERTIFICATE_LIST}",
-                        if issued.contains(name) { "Renew" } else { "Replace" }
-                    ),
+                    match kept.get(name) {
+                        Some(crate::leader::store::Kept::Issued(_)) => format!(
+                            "encrypted with a key this leader no longer has. The leader issues a new version within \
+                             the hour; then update its identities in {CERTIFICATE_LIST}"
+                        ),
+                        Some(crate::leader::store::Kept::Acme) => format!(
+                            "encrypted with a key this leader no longer has. Order it again in {LEADER_CERTIFICATE_TAB}"
+                        ),
+                        None => {
+                            format!("encrypted with a key this leader no longer has. Replace it in {CERTIFICATE_LIST}")
+                        }
+                    },
                 ),
                 Unopenable::Setting(key) => (
                     SubjectKind::Leader,
@@ -3473,7 +3542,35 @@ mod tests {
             half,
             not_before_millis: NOW + remaining_days * DAY - life_days * DAY,
             not_after_millis: NOW + remaining_days * DAY,
+            entry: None,
         }
+    }
+
+    /// An identity on an older version than the list's newest warns once, whatever its chain holds, until what
+    /// workers run presents the newest.
+    #[test]
+    fn an_identity_on_an_older_version_warns_until_it_presents_the_newest() {
+        let on = |version: i64| {
+            let mut c = carried("receiver", Half::Presented, 90, 60);
+            c.entry = Some(("receiver-tls".to_string(), version));
+            [c.clone(), c]
+        };
+        let newest = HashMap::from([("receiver-tls".to_string(), (2, NOW - DAY))]);
+        let said = identities_behind(&on(1), &newest);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(said[0].condition, Condition::IdentityCertificateBehind);
+        assert_eq!(
+            (said[0].subject_id.as_str(), said[0].group.as_deref()),
+            ("receiver", Some("g"))
+        );
+        assert_eq!(said[0].since_millis, Some(NOW - DAY));
+        assert!(
+            said[0]
+                .message
+                .starts_with("presents version 1 of the certificate \"receiver-tls\", and the newest is version 2")
+        );
+        assert!(identities_behind(&on(2), &newest).is_empty());
+        assert!(identities_behind(&on(1), &HashMap::new()).is_empty());
     }
 
     #[test]
@@ -6715,7 +6812,7 @@ mod tests {
         );
         let facts = encryption_key_facts(&broken);
         let starts: HashMap<FactKey, i64> = facts.iter().map(|f| (f.clone(), NOW)).collect();
-        let said = encryption_key_warnings(&broken, &HashSet::new(), &starts);
+        let said = encryption_key_warnings(&broken, &Default::default(), &starts);
         assert_eq!(said.len(), 1, "{said:?}");
         assert_eq!(said[0].condition, Condition::SecretsKeyUnusable);
         assert_eq!(said[0].severity, Severity::Failed);
@@ -6747,11 +6844,21 @@ mod tests {
                 Unopenable::Setting(crate::leader::oidc::CLIENT_SECRET_KEY.to_string()),
                 Unopenable::Certificate("ingest-tls".to_string()),
                 Unopenable::Certificate("receiver-tls".to_string()),
+                Unopenable::Certificate("acme".to_string()),
             ],
         );
-        let issued = HashSet::from(["receiver-tls".to_string()]);
-        let said = encryption_key_warnings(&held, &issued, &HashMap::new());
-        assert_eq!(said.len(), 4);
+        let issued = crate::leader::store::Kept::Issued(crate::leader::store::Issued {
+            names: vec!["receiver.example.com".to_string()],
+            validity_days: 365,
+        });
+        let kept = [
+            ("receiver-tls".to_string(), issued),
+            ("acme".to_string(), crate::leader::store::Kept::Acme),
+        ]
+        .into_iter()
+        .collect();
+        let said = encryption_key_warnings(&held, &kept, &HashMap::new());
+        assert_eq!(said.len(), 5);
         assert!(
             said.iter()
                 .all(|w| w.condition == Condition::SecretNeedsValue && w.severity == Severity::Warning)
@@ -6782,16 +6889,25 @@ mod tests {
             said[2].message
         );
         assert!(
-            said[3].message.ends_with("Renew it in Admin → Certificates"),
+            said[3]
+                .message
+                .contains("The leader issues a new version within the hour"),
             "{}",
             said[3].message
+        );
+        assert!(
+            said[4]
+                .message
+                .ends_with("Order it again in Admin → System → Leader certificate"),
+            "{}",
+            said[4].message
         );
         assert!(said.iter().all(|w| w.group.is_none()), "an administrator's to act on");
 
         assert!(
             encryption_key_warnings(
                 &standing(crate::leader::store::KeyState::Absent, vec![]),
-                &HashSet::new(),
+                &Default::default(),
                 &HashMap::new()
             )
             .is_empty()

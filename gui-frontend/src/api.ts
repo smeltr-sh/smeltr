@@ -2497,7 +2497,8 @@ export type WarningCondition =
   | 'secretNeedsValue'
   | 'acmeRenewalFailing'
   | 'leaderCertificateRunningOut'
-  | 'issuedCertificateDue';
+  | 'issuedCertificateNotRenewed'
+  | 'identityCertificateBehind';
 
 /** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. *Info*: a fact worth
  * knowing that asks nothing; the leader sends it only to a caller that asks (`listWarnings({ info: true })`). */
@@ -2605,8 +2606,10 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'ACME renewal failing';
     case 'leaderCertificateRunningOut':
       return 'Leader certificate running out';
-    case 'issuedCertificateDue':
-      return 'Certificate due for renewal';
+    case 'issuedCertificateNotRenewed':
+      return 'Certificate not renewed';
+    case 'identityCertificateBehind':
+      return 'Identity on an older certificate';
   }
 }
 
@@ -3547,8 +3550,8 @@ export type CertificateDto = {
   chain: DescribedCertificate[];
   /** Whether the leader serves a copy of it. */
   served: boolean;
-  /** The names this leader issues it for, where this leader issued it. */
-  issuedFor?: string[];
+  /** How this leader keeps it up to date, where it renews it. */
+  kept?: 'issued' | 'acme';
 };
 
 export function listCertificates(): Promise<CertificateDto[]> {
@@ -3587,11 +3590,6 @@ export function issueCertificate(
 export const ISSUED_VALIDITY_DAYS = [90, 365, 2 * 365, 3 * 365] as const;
 
 /** Stores a new version, which the leader serves too where it serves this certificate. */
-/** Issues the next version of a certificate this leader issued, for the same names and lifetime. */
-export function renewCertificate(name: string): Promise<AdminActionResult> {
-  return apiJson(`/api/certificates/${encodeURIComponent(name)}/renew`, { method: 'POST' });
-}
-
 export function replaceCertificate(
   name: string,
   certificate: string,
