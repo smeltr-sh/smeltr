@@ -2484,42 +2484,6 @@ fn fingerprints_in_use(tls_dir: &std::path::Path) -> Result<Vec<String>, String>
     Ok(in_use)
 }
 
-/// The name a certificate uploaded before the list existed is listed under, or under with a number after it where an
-/// admin already has a secret or certificate by that name.
-pub const UPLOADED_BEFORE_THE_LIST: &str = "leader";
-
-/// Lists the certificate an operator uploaded for the leader before certificates were kept in a list, so the
-/// Certificates page shows what the leader serves and it can be chosen again. Run at start; does nothing once the
-/// copy in force has its name, or where the leader serves its own or an ordered certificate.
-pub fn list_uploaded_certificate(store: &dyn Store, tls_dir: &std::path::Path) -> Result<(), String> {
-    if acme::source(tls_dir)? != acme::Source::Upload {
-        return Ok(());
-    }
-    let (materials, served) = tls::in_force(tls_dir)?;
-    let fingerprint = tls::describe(&served, "the certificate")?.fingerprint;
-    if copies_from_the_list(tls_dir)?.contains_key(&fingerprint) {
-        return Ok(());
-    }
-    let key_path = &materials.server_key_path;
-    let key = std::fs::read_to_string(key_path).map_err(|e| format!("{}: {e}", key_path.display()))?;
-    let (_, root) = tls::signing_root_pem(&materials.ca_pem, &served)?;
-    let chain = format!("{}\n{root}", String::from_utf8_lossy(&served).trim_end());
-    let taken: Vec<String> = store
-        .list_secrets()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(|r| r.name)
-        .collect();
-    let name = std::iter::once(UPLOADED_BEFORE_THE_LIST.to_string())
-        .chain((2..).map(|n| format!("{UPLOADED_BEFORE_THE_LIST}-{n}")))
-        .find(|name| !taken.contains(name))
-        .expect("an unbounded run of names has a free one");
-    store
-        .create_certificate(&name, "", &chain, &key)
-        .map_err(|e| e.to_string())?;
-    record_copy(tls_dir, &fingerprint, &name)
-}
-
 async fn list_certificates(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<CertificateOut>>, (axum::http::StatusCode, String)> {
@@ -5597,35 +5561,6 @@ mod certificate_list_tests {
         tls_dir
     }
 
-    fn certificates(store: &dyn Store) -> Vec<String> {
-        let all = store.list_secrets().unwrap().into_iter();
-        all.filter(|r| r.certificate).map(|r| r.name).collect()
-    }
-
-    /// An upload from before the list is listed once, whole enough to be chosen and served again.
-    #[test]
-    fn an_uploaded_certificate_is_listed_once() {
-        let dir = own("uploaded");
-        let theirs = tls::ensure(&own("theirs"), names(), A_YEAR, &[]).unwrap();
-        let chain = std::fs::read(&theirs.server_cert_path).unwrap();
-        let key = std::fs::read(&theirs.server_key_path).unwrap();
-        tls::install(&dir, &chain, &key, &theirs.ca_pem, &names(), &[]).expect("an upload");
-        let store = SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("uploaded")).unwrap();
-
-        list_uploaded_certificate(&store, &dir).unwrap();
-        list_uploaded_certificate(&store, &dir).unwrap();
-
-        assert_eq!(certificates(&store), [UPLOADED_BEFORE_THE_LIST]);
-        let (listed, listed_key) = newest_certificate(&store, UPLOADED_BEFORE_THE_LIST).unwrap().unwrap();
-        assert_eq!(listed_key.as_bytes(), key);
-        let (served, root) = tls::split_root(listed.as_bytes(), b"")
-            .unwrap()
-            .expect("the chain ends at its root");
-        assert_eq!(served, chain);
-        assert_eq!(root.as_bytes(), theirs.ca_pem);
-        assert_eq!(served_names(&dir).unwrap(), [UPLOADED_BEFORE_THE_LIST]);
-    }
-
     /// The entry served is the one chosen, though another holds the same certificate, and none once the leader
     /// goes back to its own.
     #[test]
@@ -5642,34 +5577,5 @@ mod certificate_list_tests {
 
         tls::uninstall(&dir).unwrap();
         assert!(served_names(&dir).unwrap().is_empty());
-    }
-
-    #[test]
-    fn an_uploaded_certificate_takes_a_free_name() {
-        let dir = own("free-name");
-        let theirs = tls::ensure(&own("free-name-theirs"), names(), A_YEAR, &[]).unwrap();
-        let chain = std::fs::read(&theirs.server_cert_path).unwrap();
-        let key = std::fs::read(&theirs.server_key_path).unwrap();
-        tls::install(&dir, &chain, &key, &theirs.ca_pem, &names(), &[]).expect("an upload");
-        let store = SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("free-name")).unwrap();
-        store
-            .create_secret(
-                UPLOADED_BEFORE_THE_LIST,
-                crate::leader::store::Custody::LeaderStored,
-                "",
-                Some("an admin's"),
-            )
-            .unwrap();
-
-        list_uploaded_certificate(&store, &dir).unwrap();
-        assert_eq!(served_names(&dir).unwrap(), ["leader-2"]);
-    }
-
-    #[test]
-    fn the_leaders_own_certificate_is_not_listed() {
-        let dir = own("own");
-        let store = SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("own")).unwrap();
-        list_uploaded_certificate(&store, &dir).unwrap();
-        assert!(certificates(&store).is_empty());
     }
 }
