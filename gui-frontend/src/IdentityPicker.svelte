@@ -1,6 +1,7 @@
 <!--
   Which identity a connector connects under: what this worker shows the far end,
-  and which authority it verifies that far end against.
+  and which authority it verifies that far end against. A receiver's is its server
+  identity, every other connector's its client identity.
 
   A picker rather than three fields on the connector, because both halves are the
   same organization's PKI and a deployment usually speaks one. The identities are
@@ -34,16 +35,16 @@
 
 <Field
   field="identity"
-  label="identity"
+  label={farEnd === 'sender' ? 'server identity' : 'client identity'}
   note={chosen && linked ? edit : undefined}
   warning={!chosen && farEnd === 'sender'
-    ? 'With none, it serves plain HTTP, and tokens cross the network in the clear.'
+    ? 'If none, traffic is received unencrypted. Strongly recommended to set a server identity.'
     : null}
 >
   {#snippet help()}
     {#if farEnd === 'sender'}
-      The certificate and key it serves TLS with. If the identity has authorities, every sender must
-      present a certificate that chains to one of them.
+      The certificate and key this receiver serves TLS with. If the identity trusts authorities,
+      every sender must present a certificate that chains to one of them.
     {:else}
       Pick one when the {farEnd} requires a client certificate, or its own certificate comes from your
       organization's authority rather than a public one. With none, this client presents no certificate

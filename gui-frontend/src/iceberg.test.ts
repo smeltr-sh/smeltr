@@ -99,9 +99,9 @@ describe('an Iceberg destination', () => {
       render(IcebergFields, { props: { value: d, secrets: [], identities: [] } }).body;
     const none = shown(iceberg());
     expect(none).toContain('catalog sign-in');
-    expect(none).not.toContain('client id');
+    expect(none).not.toMatch(/client id\b/);
     const client = shown({ ...iceberg(), clientId: 'smeltr', clientSecret: 'CATALOG_SECRET' });
-    expect(client).toContain('client id');
+    expect(client).toMatch(/client id\b/);
     expect(client).not.toContain('signing service');
     const aws = shown({ ...iceberg(), signingName: 's3tables' });
     expect(aws).toContain('signing service');

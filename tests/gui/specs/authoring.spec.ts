@@ -2086,7 +2086,7 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
   await draft.fill('192.168.0.0/16');
   await draft.press('Enter');
   await admin.getByRole('button', { name: /^Advanced/ }).click();
-  const identity = admin.getByRole('combobox', { name: /^identity/ });
+  const identity = admin.getByRole('combobox', { name: /^server identity/ });
   await expect(identity).toBeVisible();
   const lineBreaker = admin.getByRole('textbox', { name: 'line breaker' });
   await lineBreaker.fill('(\\x00)');
