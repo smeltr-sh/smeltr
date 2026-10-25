@@ -4497,8 +4497,10 @@ impl Compiler<'_> {
 
     /// What the tree holds at `name`, for a step's declarations.
     fn held(&self, name: &str) -> lower::Held {
-        match self.syms.named(name).1 {
-            Some(node) => lower::Held::Bound(node_type(&self.syms, &node)),
+        match self.syms.node(name) {
+            Some(node) => lower::Held::Bound(node_type(&self.syms, node)),
+            // `$` is the record, which the tree names `""`.
+            None if name == tree::ROOT => lower::Held::Bound(node_type(&self.syms, &Node::Object(self.syms.record()))),
             None if self.record_key(name, Span::default()).is_some() => lower::Held::Key,
             None => lower::Held::Free,
         }

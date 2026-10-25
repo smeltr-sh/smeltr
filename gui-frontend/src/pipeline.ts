@@ -600,6 +600,13 @@ export function stepsRun(steps: Step[], target: Step, includeTarget: boolean): S
   return run;
 }
 
+/** The object a parser's `into` names, as its header and its Advanced show it: none for `$`, where every parser
+ * writes unless told otherwise, nor for a blank box, which names nothing. */
+export function shownInto(into: string): string | null {
+  const name = into.trim();
+  return name === '' || name === '$' ? null : name;
+}
+
 export function stepSummary(step: Step): string {
   switch (step.type) {
     case 'if':
@@ -619,7 +626,7 @@ export function stepSummary(step: Step): string {
         ? step.pairs.map((p) => `${p.from || '…'} → ${p.to || '…'}`).join(', ')
         : '(no pairs)';
     case 'parser':
-      return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${['$', ''].includes(step.into.trim()) ? '' : ` into ${step.into.trim()}`}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
+      return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${shownInto(step.into) ? ` into ${shownInto(step.into)}` : ''}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
     case 'lookup':
       return `${step.input || '…'} → ${step.outputs.map((o) => o.field || '…').join(', ') || '(no outputs)'}`;
     case 'unroll':

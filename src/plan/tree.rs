@@ -204,6 +204,16 @@ pub fn head(name: &str) -> &str {
     &name[..first(name).1]
 }
 
+/// `text`, a name as written, with the `$.` that names the record before it taken off: `$` is the record, so
+/// `$.a` is the name `a` and `$["a.b"]` the name `["a.b"]`. Any other text is as it was.
+pub fn under_record(text: &str) -> &str {
+    match text.strip_prefix(ROOT) {
+        Some(rest) if rest.starts_with('[') => rest,
+        Some(rest) if rest.len() > 1 && rest.starts_with('.') => &rest[1..],
+        _ => text,
+    }
+}
+
 /// `name` and `path`, a name under it, joined. Under `$`, the record, `path` is its own name.
 pub fn join(name: &str, path: &str) -> String {
     match (name.is_empty() || name == ROOT && !path.is_empty(), path.is_empty()) {
@@ -214,9 +224,12 @@ pub fn join(name: &str, path: &str) -> String {
     }
 }
 
-/// The name of the key `key` of the object `name`.
+/// The name of the key `key` of the object `name`. Under `$`, the record, it is the key's own name.
 pub fn child(name: &str, key: &str) -> String {
-    let mut out = name.to_string();
+    let mut out = match name {
+        ROOT => String::new(),
+        name => name.to_string(),
+    };
     push_key(&mut out, key);
     out
 }
@@ -251,12 +264,10 @@ pub fn ancestors(name: &str) -> impl Iterator<Item = &str> {
 /// that is not plain as a JSON string in brackets. The error says what is wrong with it.
 pub fn parse_name(text: &str) -> Result<String, String> {
     let mut out = String::new();
-    // `$` is the record, so `$.a` is the name `a`, as the language reads it.
-    let mut rest = match text.strip_prefix(ROOT) {
-        Some("") => return Ok(ROOT.to_string()),
-        Some(r) if r.starts_with('[') || r.len() > 1 && r.starts_with('.') => r.strip_prefix('.').unwrap_or(r),
-        _ => text,
-    };
+    if text == ROOT {
+        return Ok(ROOT.to_string());
+    }
+    let mut rest = under_record(text);
     while !rest.is_empty() {
         if let Some(quoted) = rest.strip_prefix('[') {
             let Some((key, len)) = json_string(quoted).filter(|(_, len)| quoted.as_bytes().get(*len) == Some(&b']'))
@@ -572,5 +583,6 @@ mod tests {
         assert!(parse_name("$.").is_err());
         assert_eq!(join(ROOT, "a.b"), "a.b");
         assert_eq!(join(ROOT, ""), ROOT);
+        assert_eq!(child(ROOT, "a.b"), r#"["a.b"]"#);
     }
 }

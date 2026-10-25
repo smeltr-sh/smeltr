@@ -42,6 +42,7 @@
   import DatetimeFormat from './DatetimeFormat.svelte';
   import {
     STEP_LABELS,
+    shownInto,
     stepSummary,
     MATCH_KINDS,
     MULTIPLICITIES,
@@ -384,7 +385,8 @@
     const kind = ps.kind;
     const values: { label: string; value: string }[] = [];
     if (ps.input !== parseInput) values.push({ label: 'input', value: ps.input });
-    if (ps.into.trim() !== '$') values.push({ label: 'into', value: ps.into.trim() });
+    const into = shownInto(ps.into);
+    if (into) values.push({ label: 'into', value: into });
     if (ps.filter.trim() !== '') values.push({ label: 'filter', value: ps.filter });
     if (kind.type === 'grok' && kind.customPatterns.length > 0)
       values.push({ label: 'pattern definitions', value: String(kind.customPatterns.length) });

@@ -61,8 +61,8 @@ pub fn names(kind: &FunctionKind) -> Result<FunctionKind, String> {
             kind,
             declared,
         } => {
-            *input = name(input)?;
-            // `into` has no blank of its own: a step without one writes into `$`.
+            // Each names a field, and a blank one names none.
+            *input = tree::parse_name(input)?;
             *into = tree::parse_name(into)?;
             for d in declared {
                 // A csv column is a header, the key the parser reads: its name is that key's.

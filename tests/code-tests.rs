@@ -5418,8 +5418,10 @@ fn a_parser_writes_into_the_object_it_names() {
 
     let e = err(vec![code(0, &json("app: str;")), into(1, "_raw", "app", vec![])]);
     assert!(e.contains("a spread takes an object, not str"), "{e}");
-    // A blank `into` names nothing, and the step says so alone.
+    // A blank `into` or input names nothing, and the step says so alone.
     let e = err(vec![into(0, "_raw", "", vec![field("ms", DataType::I64)])]);
+    assert_eq!(e, "function 0: a name is needed");
+    let e = err(vec![into(0, "", "$", vec![])]);
     assert_eq!(e, "function 0: a name is needed");
 }
 

@@ -306,9 +306,8 @@ impl<'a> Lexer<'a> {
                 let ends = matches!(k, Keyword::True | Keyword::False | Keyword::Null);
                 self.emit(Token::Keyword(k), start, ends)
             }
-            // `$` is the root object, so `$.a` is the name `a`.
             None => self.emit(
-                Token::Ident(text.strip_prefix("$.").unwrap_or(text).to_string()),
+                Token::Ident(crate::plan::tree::under_record(text).to_string()),
                 start,
                 true,
             ),
