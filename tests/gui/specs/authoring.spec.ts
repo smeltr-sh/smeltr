@@ -860,7 +860,7 @@ test('A2: a sample is picked from the Sample menu, its output searched by keywor
   const saved = admin.getByRole('listbox', { name: 'Saved samples' });
   await expect(saved.getByRole('option').first()).toContainText('orders');
   await expect(saved.getByTitle('Locked by the test orders parse')).toBeVisible();
-  await saved.getByRole('option', { name: /\borders 3$/ }).click();
+  await saved.getByRole('option', { name: /\borders 3 records$/ }).click();
   await expect(sampleMenu).toContainText('3 records');
   const search = admin.getByRole('combobox', { name: 'Search the output' });
   await search.fill('SPRING');
@@ -889,6 +889,58 @@ test('A2: a sample is picked from the Sample menu, its output searched by keywor
   await saved.getByRole('option', { name: /^other/ }).click();
   await expect(sampleMenu).toContainText('1 record');
   await expect(search).toHaveValue('');
+});
+
+// A2, records the workspace has no sample for yet: pasted, or captured from a source the pipeline is fed by, from the
+// Sample menu. Either is saved and is what the workspace runs over.
+test('A2: a sample pasted or captured from the Sample menu is saved and run', async ({
+  admin,
+  leader,
+  api,
+  fleet,
+}) => {
+  await jsonPipeline(api, 'orders', [{ name: 'total', type: 'f64' }], {
+    id: 'orders-sample',
+    name: 'orders',
+    records: ORDERS,
+  });
+  await api.put(`/api/sources${ON}`, [{ id: 'own-metrics', type: 'metrics', bucketSeconds: 1 }]);
+  await api.put(`/api/destinations${ON}`, [
+    { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
+  ]);
+  await api.put(`/api/routes${ON}`, [
+    {
+      id: 'r1',
+      source: 'own-metrics',
+      condition: null,
+      pipeline: 'orders',
+      deliver: [{ to: ['es-a'] }],
+    },
+  ]);
+  await fleet.startWorker(leader, api, 'default', 'w1');
+
+  await goto(admin, leader, '#/build/pipelines/orders');
+  const sampleMenu = admin.getByRole('button', { name: 'Choose a sample' });
+  await sampleMenu.click();
+  await admin.getByRole('button', { name: 'Paste or file' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Paste' }).click();
+  await dialog.getByLabel('Name').fill('two orders');
+  await dialog.getByLabel(/^Records/).fill('{"id":7,"total":1}\n{"id":8,"total":2}\n');
+  await dialog.getByRole('button', { name: 'Save sample' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(sampleMenu).toContainText('two orders');
+  await expect(sampleMenu).toContainText('2 records');
+
+  await sampleMenu.click();
+  await admin.getByRole('tab', { name: /^Capture/ }).click();
+  await admin
+    .getByRole('listbox', { name: 'Sources' })
+    .getByRole('option', { name: /own-metrics/ })
+    .click();
+  await captureThree(admin, 'metrics now');
+  await expect(sampleMenu).toContainText('metrics now');
+  await expect(sampleMenu).toContainText('3 records');
 });
 
 /** A source, destinations and a `web` pipeline routed from one to them: every record to `es-web`, a server error
