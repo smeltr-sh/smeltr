@@ -8,6 +8,9 @@
   stage and the pause) over the grid, and `head` above everything.
 -->
 <script module lang="ts">
+  /** How long typing settles before a preview runs over it: the steps', and the find box's expression. */
+  export const RECOMPUTE_MS = 400;
+
   /** A chip in the find box: the rows it keeps. */
   export type FindChip =
     | { kind: 'failing' | 'dropped' | 'changed' }
@@ -142,6 +145,9 @@
     return { before: byRow(d.before), after: byRow(d.after) };
   });
 
+  /** The types each side of the step shown: the pause's, or the whole pipeline's. */
+  let shownDeclared = $derived(pause && pauseRun ? pauseRun.declared : declared);
+
   /** The record on either side of the step shown: the selected step, or the
    * whole pipeline from its sample row. */
   function rowSides(row: PreviewRow): {
@@ -149,17 +155,17 @@
     after: unknown;
     declared: { before: Declared | null; after: Declared | null };
   } {
-    if (pausedByRow && pauseRun) {
+    if (pausedByRow) {
       return {
         before: withSource(pausedByRow.before.get(row.row)?.json ?? null, row.row),
         after: withSource(pausedByRow.after.get(row.row)?.json ?? null, row.row),
-        declared: pauseRun.declared,
+        declared: shownDeclared,
       };
     }
     return {
       before: withSource(sampleRows[row.row] ?? {}, row.row),
       after: withSource(row.json, row.row),
-      declared,
+      declared: shownDeclared,
     };
   }
 
@@ -167,11 +173,10 @@
    * the step removed the field. The head shows it as a declaration does, `status: i64`, so
    * a field nothing declares shows none. */
   let columnTypes = $derived.by(() => {
-    const sides = pausedByRow && pauseRun ? pauseRun.declared : declared;
     return new Map(
       columns.map((path) => {
-        const after = typeAt(sides.after, path);
-        const type = after === 'undeclared' ? typeAt(sides.before, path) : after;
+        const after = typeAt(shownDeclared.after, path);
+        const type = after === 'undeclared' ? typeAt(shownDeclared.before, path) : after;
         return [path, type === 'undeclared' ? null : type];
       }),
     );
@@ -587,8 +592,6 @@
   /** The row numbers the expression kept, or null while the search is a keyword. */
   let expressionRows = $state<Set<number> | null>(null);
   const looksLikeExpression = (q: string) => /[=<>!&|()]/.test(q);
-  /** How long the box settles before an expression is run, as long as the steps wait before theirs. */
-  const RECOMPUTE_MS = 400;
 
   $effect(() => {
     const [q, sample] = [outputQuery.trim(), lastSample];

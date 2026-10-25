@@ -97,7 +97,7 @@
   import { hold, verdictFor, drop } from './edits';
   import type { ChangeRow } from './diff';
   import AddSampleDialog from './AddSampleDialog.svelte';
-  import RecordsPane, { type PauseRun } from './RecordsPane.svelte';
+  import RecordsPane, { RECOMPUTE_MS, type PauseRun } from './RecordsPane.svelte';
   import SampleMenu from './SampleMenu.svelte';
   import PencilIcon from './PencilIcon.svelte';
   import { mintPipelineId } from './ids';
@@ -743,7 +743,7 @@
    * `previewPipeline`, like every other config call, so it carries the
    * branch being edited. The rows still being written stay out of it.
    *
-   * `atMicros` pins `now()`, which matters for the two sides of a diff:
+   * `at` pins `now()`, which matters for the two sides of a diff:
    * without it each side reads its own clock, and a `parseTime` given no
    * reference of its own -- a yearless syslog stamp takes its year from
    * `now()` -- can land on a different instant either side and be drawn as
@@ -751,9 +751,18 @@
   async function fetchPreview(
     stepsSubset: Step[],
     sample: string,
-    atMicros?: number,
-    filter?: string,
-    attribution?: boolean,
+    {
+      at,
+      filter,
+      attribution,
+    }: {
+      /** Microseconds since the epoch. */
+      at?: number;
+      /** An expression the rows must meet (`PreviewRequest.filter`). */
+      filter?: string;
+      /** Which steps touched, dropped and failed each row. */
+      attribution?: boolean;
+    } = {},
   ): Promise<PreviewResult> {
     const held = unfinished.hold(stepsSubset);
     const config = JSON.stringify(
@@ -772,7 +781,7 @@
       sample: sample || undefined,
       // Always: whether an internal field is shown is the Columns choice.
       showInternal: true,
-      atMicros,
+      atMicros: at,
       filter,
       attribution,
     });
@@ -805,7 +814,7 @@
     requestError = '';
     const sample = selectedSample;
     try {
-      const res = await fetchPreview(steps, sample, undefined, undefined, true);
+      const res = await fetchPreview(steps, sample, { attribution: true });
       // A run of a sample put away while it ran answers for nothing on screen.
       if (sample !== selectedSample) return;
       result = res;
@@ -832,7 +841,6 @@
   // run behind the typing rather than one button behind it. Runs compile from
   // `steps` in memory, so nothing is saved to see them. With no sample a run
   // still compiles, for the steps' errors and the data dictionary.
-  const RECOMPUTE_MS = 400;
   $effect(() => {
     const key = signature;
     void selectedSample;
@@ -956,8 +964,8 @@
       // the step.
       const at = Date.now() * 1000;
       const [beforeRes, afterRes] = await Promise.all([
-        fetchPreview(before, sample, at),
-        fetchPreview(after, sample, at, undefined, true),
+        fetchPreview(before, sample, { at }),
+        fetchPreview(after, sample, { at, attribution: true }),
       ]);
       // A later pause answers for the screen.
       if (asked !== pauseAsked) return;
@@ -1401,7 +1409,7 @@
           canLock={canLockTest}
           onlock={goLockTest}
           onjump={(step) => (jumpToStepId = step.id)}
-          preview={(steps, sample, filter) => fetchPreview(steps, sample, undefined, filter)}
+          preview={(steps, sample, filter) => fetchPreview(steps, sample, { filter })}
         >
           {#snippet head()}<InlineError message={proposeError} />{/snippet}
           {#snippet sampleMenu()}
