@@ -8,7 +8,6 @@
 //! key in order to serve workers.
 
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 
 use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
@@ -176,8 +175,9 @@ fn create(path: &Path) -> Result<EncryptionKey, KeyError> {
         private_file::create_dir(parent).map_err(|e| KeyError(format!("{}: {e}", parent.display())))?;
     }
     let material = auth::generate_secret();
-    let mut file = match private_file::create(path) {
-        Ok(file) => file,
+    // Whole or not at all: every store reads the key from disk, and one reading an empty file would fail.
+    match private_file::create_with(path, material.as_bytes()) {
+        Ok(()) => {}
         // Somebody wrote it between the caller's `load` and here -- two secrets stored at once, on a leader that
         // had none. There is only ever one key, and theirs is as good as this one, so read it rather than failing
         // a store over which call arrived first.
@@ -185,10 +185,7 @@ fn create(path: &Path) -> Result<EncryptionKey, KeyError> {
             return load(path)?.ok_or_else(|| KeyError(format!("{}: {e}", path.display())));
         }
         Err(e) => return Err(KeyError(format!("{}: {e}", path.display()))),
-    };
-    file.write_all(material.as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(|e| KeyError(format!("{}: {e}", path.display())))?;
+    }
     tracing::info!(
         target: "secrets.key_created",
         path = %path.display(),
