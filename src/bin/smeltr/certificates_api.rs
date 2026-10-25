@@ -288,7 +288,7 @@ async fn install(
     };
     let checked = match checked(&serving, &headers, &certificate, &key) {
         Ok(checked) => checked,
-        Err(response) => return *response,
+        Err((status, e)) => return refuse(status, &e),
     };
     serve(&state, &actor, &serving, &request.certificate, checked).await
 }
@@ -306,38 +306,36 @@ struct Checked {
 
 /// Everything serving `certificate` has to satisfy, before a byte is written, so a refusal leaves this leader
 /// serving exactly what it served before.
-fn checked(
-    serving: &Tls,
-    headers: &axum::http::HeaderMap,
-    certificate: &str,
-    key: &str,
-) -> Result<Checked, Box<Response>> {
+fn checked(serving: &Tls, headers: &axum::http::HeaderMap, certificate: &str, key: &str) -> Result<Checked, Refusal> {
     let (chain, ca) = match tls::split_root(certificate.as_bytes(), b"") {
         Ok(Some((chain, ca))) => (chain, ca.into_bytes()),
         Ok(None) => {
-            return Err(Box::new(refuse(
+            return Err((
                 StatusCode::BAD_REQUEST,
-                "the certificate's root is missing. End the chain with the root that issued it.",
-            )));
+                "the certificate's root is missing. End the chain with the root that issued it.".to_string(),
+            ));
         }
-        Err(e) => return Err(Box::new(refuse(StatusCode::BAD_REQUEST, &e))),
+        Err(e) => return Err((StatusCode::BAD_REQUEST, e)),
     };
     let key = key.as_bytes().to_vec();
     let required = must_serve(serving, headers);
     if let Err(e) = tls::check_supplied(&chain, &key, &ca, &serving.names, &required) {
-        return Err(Box::new(refuse(StatusCode::BAD_REQUEST, &e)));
+        return Err((StatusCode::BAD_REQUEST, e));
     }
     // A certificate under the root every worker already verifies by is served at once. One under another root
     // reaches the fleet the way a new authority does: published first, served once the fleet holds it.
-    let rotates = tls::supplying_changes_root(&serving.dir, &chain, &ca)
-        .map_err(|e| Box::new(refuse(StatusCode::SERVICE_UNAVAILABLE, &e)))?;
+    let rotates =
+        tls::supplying_changes_root(&serving.dir, &chain, &ca).map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
     // One rotation at a time: an upload that would begin one over an open rotation is refused, where a renewal
     // changes no root and is served whatever is open.
     if rotates && let Err(e) = tls::rotation_may_begin(&serving.dir, tls::Installs::Supplied) {
-        return Err(Box::new(refused(&e)));
+        return Err(match e {
+            tls::Refused::Conflict(message) => (StatusCode::CONFLICT, message),
+            tls::Refused::Unavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
+        });
     }
     let fingerprint = tls::describe(&chain, "the certificate")
-        .map_err(|e| Box::new(refuse(StatusCode::BAD_REQUEST, &e)))?
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?
         .fingerprint;
     Ok(Checked {
         chain,
@@ -349,8 +347,26 @@ fn checked(
     })
 }
 
-/// Serves a copy of the list entry `name`, as `checked` found it. Under the settings lock.
+/// Why serving a certificate was refused, with the status a request is answered with.
+type Refusal = (StatusCode, String);
+
+/// Serves a copy of the list entry `name`, as `checked` found it, and answers with what is in force. Under the
+/// settings lock.
 async fn serve(state: &Certificates, actor: &Actor, serving: &Arc<Tls>, name: &str, checked: Checked) -> Response {
+    match serve_copy(state, actor, serving, name, checked).await {
+        Ok(()) => answer(state).await,
+        Err((status, e)) => refuse(status, &e),
+    }
+}
+
+/// [`serve`], without the answer.
+async fn serve_copy(
+    state: &Certificates,
+    actor: &Actor,
+    serving: &Arc<Tls>,
+    name: &str,
+    checked: Checked,
+) -> Result<(), Refusal> {
     let Checked {
         chain,
         key,
@@ -365,35 +381,31 @@ async fn serve(state: &Certificates, actor: &Actor, serving: &Arc<Tls>, name: &s
     // A switch is recorded as the rotation it begins, against the root it rotates to: the certificate is served
     // only once the fleet holds that root, and the row for serving it would otherwise be written weeks early, or
     // for a switch that is then abandoned.
+    let unavailable = |e| (StatusCode::SERVICE_UNAVAILABLE, e);
     let subject = if rotates {
-        match root_in_force(&serving.dir) {
-            Ok(root) => ("authority-rotation-begun", root),
-            Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
-        }
+        (
+            "authority-rotation-begun",
+            root_in_force(&serving.dir).map_err(unavailable)?,
+        )
     } else {
         ("certificate-supplied", fingerprint.clone())
     };
-    if let Err(e) = record(&state.auth, actor, subject.0, &subject.1).await {
-        return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
-    }
-    if let Err(e) = smeltr::leader::record_copy(&serving.dir, &fingerprint, name) {
-        return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
-    }
+    record(&state.auth, actor, subject.0, &subject.1)
+        .await
+        .map_err(unavailable)?;
+    smeltr::leader::record_copy(&serving.dir, &fingerprint, name).map_err(unavailable)?;
 
     if rotates {
         let now_ms = smeltr::leader::warnings::now_millis();
-        let begun = tls::begin_supplied_rotation(&serving.dir, &chain, &key, &ca, &serving.names, &required, now_ms);
-        if let Err(e) = begun {
-            return refuse(StatusCode::CONFLICT, &e);
-        }
         // The socket is untouched: what is served has not moved, and the file that did is the one `/api/authority`
         // and the heartbeat read afresh. A fleet with nobody in it to wait for cuts over on the next read.
-        return answer(state).await;
+        tls::begin_supplied_rotation(&serving.dir, &chain, &key, &ca, &serving.names, &required, now_ms)
+            .map_err(|e| (StatusCode::CONFLICT, e))?;
+        return Ok(());
     }
-    if let Err(e) = tls::install(&serving.dir, &chain, &key, &ca, &serving.names, &required) {
-        return refuse(StatusCode::BAD_REQUEST, &e);
-    }
-    serve_what_is_on_disk(state, serving).await
+    tls::install(&serving.dir, &chain, &key, &ca, &serving.names, &required)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    reload_socket(serving).map_err(unavailable)
 }
 
 /// Keeps what this leader issues and orders up to date, for as long as it runs. Each hour it renews each certificate
@@ -451,17 +463,10 @@ async fn serve_newest(state: &Certificates, serving: &Arc<Tls>, name: &str) -> R
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("there is no certificate named {name:?}"))?;
-    let served = match checked(serving, &axum::http::HeaderMap::new(), &certificate, &key) {
-        Ok(checked) => serve(state, &Actor::system(), serving, name, checked).await,
-        Err(response) => *response,
-    };
-    if served.status().is_success() {
-        return Ok(());
-    }
-    let body = axum::body::to_bytes(served.into_body(), 64 * 1024)
+    let checked = checked(serving, &axum::http::HeaderMap::new(), &certificate, &key).map_err(|(_, e)| e)?;
+    serve_copy(state, &Actor::system(), serving, name, checked)
         .await
-        .unwrap_or_default();
-    Err(String::from_utf8_lossy(&body).into_owned())
+        .map_err(|(_, e)| e)
 }
 
 /// `PUT /api/certificates/:name`: a new version of a certificate in the list. Where the leader serves it, the new
@@ -486,7 +491,7 @@ async fn replace(
     }
     let checked = match checked(&serving, &headers, &request.certificate, &request.private_key) {
         Ok(checked) => checked,
-        Err(response) => return *response,
+        Err((status, e)) => return refuse(status, &e),
     };
     let stored = store(request).await;
     if !stored.ok {
