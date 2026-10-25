@@ -141,8 +141,8 @@
       <tbody>
         <tr
           ><th>Leader issued</th><td
-            >The leader's own authority signs it. <strong>Issue a new one</strong> replaces it under the
-            same authority.</td
+            >The certificate <strong>leader</strong> in <strong>Admin → Certificates</strong>, which the
+            leader's own authority signs and the leader renews.</td
           ></tr
         >
         <tr
