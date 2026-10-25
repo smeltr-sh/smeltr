@@ -117,16 +117,20 @@ pub fn ensure(dir: &Path, sans: Vec<String>, validity: Duration, required: &[Str
     let why = match served(dir)? {
         Some(entry) => match entry_serves(dir, &entry, &sans, required) {
             Ok(()) => return current(dir),
-            Err(e) => format!("{:?} cannot be served: {e}", entry.name),
+            Err(e) => format!("{:?} cannot be served because {e}. Choose a certificate under Source", entry.name),
         },
         None if dir.join(SUPPLIED_BEFORE_THE_LIST).exists() => format!(
-            "the certificate in {} was supplied before the leader kept a list of certificates. Add it to the \
-             list, then choose it",
+            "The certificate in {} is not in the certificate list. Add it under Admin → Certificates, then \
+             choose it under Source",
             dir.join(SUPPLIED_BEFORE_THE_LIST).display()
         ),
         None => return Ok(own),
     };
-    tracing::warn!(target: "leader.certificate_unserved", "{why}, so this leader serves its own");
+    tracing::warn!(
+        target: "leader.certificate_unserved",
+        reason = %why,
+        "this leader serves its own certificate instead of the one chosen"
+    );
     // Parted until something is served again: everything that reads what is in force waits for that.
     with_generations(dir, |held| {
         held.disk += 1;
@@ -190,6 +194,8 @@ fn entry_chain(dir: &Path, entry: &Entry) -> Result<Vec<u8>, String> {
 
 /// [`entry_chain`], and the private key: both PEM.
 fn entry_pair(dir: &Path, entry: &Entry) -> Result<(Vec<u8>, Vec<u8>), String> {
+    // The chain first: a version gone from the list is said as that, not as a key that does not open.
+    let chain = entry_chain(dir, entry)?;
     let opened = (list_of(dir)?)
         .secrets_for_delivery(&[(entry.name.clone(), entry.version)], &[])
         .map_err(|e| e.to_string())?;
@@ -199,7 +205,7 @@ fn entry_pair(dir: &Path, entry: &Entry) -> Result<(Vec<u8>, Vec<u8>), String> {
             entry.version, entry.name
         )
     })?;
-    Ok((entry_chain(dir, entry)?, key.value.into_bytes()))
+    Ok((chain, key.value.into_bytes()))
 }
 
 /// Everything serving `entry` has to satisfy, asked of it as the list holds it now.
@@ -1371,7 +1377,7 @@ pub fn cut_over(dir: &Path, sans: Vec<String>, validity: Duration) -> Result<(),
                 socket_agrees(dir)?;
                 let entry = incoming_serves(dir, &state)?;
                 entry_serves(dir, &entry, &sans, &[]).map_err(|e| {
-                    format!("the certificate this leader was switching to no longer serves: {e}. Abandon the switch and choose it again.")
+                    format!("the certificate this leader was switching to cannot be served because {e}. Choose Abandon switch, then choose it again under Source.")
                 })?;
                 write_served(dir, Some(&entry))?;
             }
@@ -1416,7 +1422,7 @@ fn incoming_serves(dir: &Path, state: &Rotation) -> Result<Entry, String> {
         .clone()
         .ok_or_else(|| "the rotation names no certificate to put in force".to_string())?;
     let chain = entry_chain(dir, &entry).map_err(|e| {
-        format!("the certificate this leader was switching to cannot be served: {e}. Abandon the switch and choose it again.")
+        format!("the certificate this leader was switching to cannot be served because {e}. Choose Abandon switch, then choose it again under Source.")
     })?;
     let now = OffsetDateTime::now_utc().unix_timestamp() * 1000;
     if describe(&chain, "the incoming certificate")?.not_after_millis <= now {
@@ -2621,7 +2627,7 @@ pub(crate) mod tests {
 
         let materials = ensure(&dir, names(), A_YEAR, &[]).expect("a start");
         assert_eq!(materials.ca_pem, own.ca_pem);
-        assert!(unserved(&dir).is_some_and(|why| why.contains("Add it to the list")));
+        assert!(unserved(&dir).is_some_and(|why| why.contains("is not in the certificate list")));
         assert!(
             !socket_has_what_is_on_disk(&dir),
             "workers were handed the leader's own root"

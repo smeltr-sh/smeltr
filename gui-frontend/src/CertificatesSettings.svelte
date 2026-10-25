@@ -498,8 +498,7 @@
     {/if}
     {#if certificates.unserved}
       <InlineError>
-        This leader is serving its own certificate instead, because {certificates.unserved}. Choose
-        a certificate under Source to serve one again.
+        This leader is serving a Leader issued certificate instead of the one chosen. {certificates.unserved}.
       </InlineError>
     {/if}
     <Panel>
