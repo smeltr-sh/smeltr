@@ -8,8 +8,6 @@
   stage and the pause) over the grid, and `head` above everything.
 -->
 <script module lang="ts">
-  export { RECOMPUTE_MS } from './FindBox.svelte';
-
   /** A chip in the find box: the rows it keeps. */
   export type FindChip =
     | { kind: 'failing' | 'dropped' | 'changed' }
