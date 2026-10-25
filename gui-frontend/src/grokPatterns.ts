@@ -8,6 +8,7 @@
 // know whether it is the right one.
 
 import type { StdFuncEntry } from './stdlib';
+import { escape } from '../../website/src/lib/highlight/highlight';
 
 export const GROK_BUILTIN_PATTERNS: StdFuncEntry[] = [
   {
@@ -275,11 +276,8 @@ export function builtinRegex(entry: StdFuncEntry): string | null {
   return /Regex: `(.*)`$/s.exec(entry.description)?.[1] ?? null;
 }
 
-const escape = (text: string) =>
-  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
 /** A macro, a named group's opening, a character class, an escape, a group's flags, or an operator. */
-const GROK_TOKEN =
+export const GROK_TOKEN =
   /%\{([A-Za-z0-9_]+)(?::([^}]*))?\}|\(\?P?<([^>]*)>|\[\^?\]?(?:\\.|[^\]\\])*\]|\\.|\(\?[A-Za-z-]*:?|[?*+|^$]|\{\d+(?:,\d*)?\}/g;
 
 /** `text`, a grok pattern, as escaped HTML: each macro's name as a function and its field as a key, a named group's

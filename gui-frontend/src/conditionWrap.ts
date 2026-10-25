@@ -58,23 +58,30 @@ export function wrapCondition(src: string, cols: number): string[] {
   return fit(0, src.length);
 }
 
-/** `src` cut into lines of at most `cols` characters at its spaces, packed greedily; a run with no space that is
- * longer than `cols` is cut every `cols` characters. */
-export function wrapWords(src: string, cols: number): string[] {
+/** `src` cut into lines of at most `cols` characters at its spaces, packed greedily, each break taking the one space
+ * it is at, so the lines joined by a space are `src` exactly. A space inside a match of `held` is never a break, and
+ * a run longer than `cols` stays whole. */
+export function wrapWords(src: string, cols: number, held?: RegExp): string[] {
+  const inside = new Set<number>();
+  for (const m of held ? src.matchAll(held) : [])
+    for (let i = m.index; i < m.index + m[0].length; i++) inside.add(i);
+  const runs: string[] = [];
+  let from = 0;
+  for (let i = 0; i < src.length; i++)
+    if (src[i] === ' ' && !inside.has(i)) {
+      runs.push(src.slice(from, i));
+      from = i + 1;
+    }
+  runs.push(src.slice(from));
   const out: string[] = [];
-  let cur = '';
-  for (let word of src.trim().split(/ +/)) {
-    if (cur && cur.length + 1 + word.length <= cols) {
-      cur += ' ' + word;
-      continue;
+  let cur: string | null = null;
+  for (const run of runs) {
+    if (cur !== null && cur.length + 1 + run.length <= cols) cur += ' ' + run;
+    else {
+      if (cur !== null) out.push(cur);
+      cur = run;
     }
-    if (cur) out.push(cur);
-    while (word.length > cols) {
-      out.push(word.slice(0, cols));
-      word = word.slice(cols);
-    }
-    cur = word;
   }
-  if (cur) out.push(cur);
+  if (cur !== null) out.push(cur);
   return out;
 }

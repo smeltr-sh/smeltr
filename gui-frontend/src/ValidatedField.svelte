@@ -36,7 +36,7 @@
     type StdFuncEntry,
   } from './stdlib';
   import { functionUsage } from './usage.svelte';
-  import { GROK_BUILTIN_PATTERNS, highlightGrok } from './grokPatterns';
+  import { GROK_BUILTIN_PATTERNS, GROK_TOKEN, highlightGrok } from './grokPatterns';
   import {
     currentWord as wordAt,
     describedRuns,
@@ -148,7 +148,9 @@
         const beside = room && box ? box.offsetWidth - el.offsetWidth : 0;
         const width = room ? room.clientWidth - beside : el.offsetWidth;
         const cols = Math.max(8, Math.floor((width - edges) / ch));
-        let lines = condition ? wrapCondition(src, cols) : wrapWords(src, cols);
+        let lines = condition
+          ? wrapCondition(src, cols)
+          : wrapWords(src, cols, autocomplete === 'grok' ? GROK_TOKEN : undefined);
         if (lines.length > WRAP_LINES) {
           lines = lines.slice(0, WRAP_LINES);
           lines[WRAP_LINES - 1] += ' …';

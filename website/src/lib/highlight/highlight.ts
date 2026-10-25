@@ -216,7 +216,7 @@ export function tokenize(src: string): Token[] {
   return out;
 }
 
-const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+export const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 /** `src` as escaped HTML, each colored run in a `<span class="tok-KIND">`. */
 export function highlight(src: string): string {

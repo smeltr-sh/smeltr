@@ -52,8 +52,10 @@ describe('wrapCondition', () => {
 });
 
 describe('wrapWords', () => {
-  it('packs words into lines at spaces, and cuts a word longer than a line', () => {
+  it('packs runs into lines at single spaces, keeping every space, and never breaks a held match', () => {
     expect(wrapWords('%{IP:a} %{WORD:b} %{INT:c}', 17)).toEqual(['%{IP:a} %{WORD:b}', '%{INT:c}']);
-    expect(wrapWords('abcdefghij k', 4)).toEqual(['abcd', 'efgh', 'ij k']);
+    expect(wrapWords('a  b ', 3).join(' ')).toBe('a  b ');
+    expect(wrapWords('abcdefghij k', 4)).toEqual(['abcdefghij', 'k']);
+    expect(wrapWords('x [^ ]+ y', 4, /\[[^\]]*\]/g)).toEqual(['x', '[^ ]+', 'y']);
   });
 });
