@@ -692,9 +692,15 @@ pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
                     "this leader's certificate {entry:?} {when}. Replace it in Admin → Certificates, and the leader \
                      serves the new version"
                 ),
-                _ => format!("this leader's certificate {when}. Issue a new one in Admin → System → Leader certificate"),
+                _ => {
+                    format!("this leader's certificate {when}. Issue a new one in Admin → System → Leader certificate")
+                }
             };
-            (Condition::LeaderCertificateRunningOut, certificate.not_after_millis - notice, message)
+            (
+                Condition::LeaderCertificateRunningOut,
+                certificate.not_after_millis - notice,
+                message,
+            )
         }
     };
     vec![Warning {
@@ -702,7 +708,11 @@ pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
         condition,
         subject_kind: SubjectKind::Leader,
         site: None,
-        subject_id: certificate.names.first().cloned().unwrap_or_else(|| certificate.subject.clone()),
+        subject_id: certificate
+            .names
+            .first()
+            .cloned()
+            .unwrap_or_else(|| certificate.subject.clone()),
         group: None,
         severity: if expired { Severity::Failed } else { Severity::Warning },
         since_millis: Some(since_millis),
@@ -717,7 +727,10 @@ fn one_line(error: &str) -> String {
     let line = error.lines().next().unwrap_or_default().trim().trim_end_matches('.');
     match line.char_indices().nth(LONGEST) {
         // At the last word that fits, so a clipped error does not end mid-word.
-        Some((cut, _)) => format!("{}…", line[..cut].rsplit_once(' ').map_or(&line[..cut], |(kept, _)| kept)),
+        Some((cut, _)) => format!(
+            "{}…",
+            line[..cut].rsplit_once(' ').map_or(&line[..cut], |(kept, _)| kept)
+        ),
         None => line.to_string(),
     }
 }
@@ -3241,7 +3254,10 @@ mod tests {
     /// since then.
     #[test]
     fn a_failing_acme_renewal_is_said_from_when_it_fell_due() {
-        let due = failing(serving(crate::leader::acme::Source::Acme, 12), "the authority refused the order.");
+        let due = failing(
+            serving(crate::leader::acme::Source::Acme, 12),
+            "the authority refused the order.",
+        );
         let said = leader_certificate(&due, NOW);
         assert_eq!(said.len(), 1);
         assert_eq!(said[0].condition, Condition::AcmeRenewalFailing);
@@ -3271,7 +3287,9 @@ mod tests {
         let said = leader_certificate(&expired, NOW);
         assert_eq!(said[0].severity, Severity::Failed);
         assert!(
-            said[0].message.starts_with("this leader could not renew its certificate, and the certificate has expired"),
+            said[0]
+                .message
+                .starts_with("this leader could not renew its certificate, and the certificate has expired"),
             "{}",
             said[0].message
         );
@@ -3282,14 +3300,24 @@ mod tests {
     fn an_uploaded_certificate_is_said_in_its_last_tenth() {
         let mut uploaded = serving(crate::leader::acme::Source::Upload, 5);
         uploaded.entry = Some("web".to_string());
-        assert!(leader_certificate(&uploaded, NOW).is_empty(), "45 days, 5 left: not in its last tenth yet");
+        assert!(
+            leader_certificate(&uploaded, NOW).is_empty(),
+            "45 days, 5 left: not in its last tenth yet"
+        );
 
         let mut uploaded = serving(crate::leader::acme::Source::Upload, 4);
         uploaded.entry = Some("web".to_string());
         let said = leader_certificate(&uploaded, NOW);
         assert_eq!(said[0].condition, Condition::LeaderCertificateRunningOut);
-        assert_eq!(said[0].since_millis, Some(uploaded.certificate.not_after_millis - 45 * DAY / 10));
-        assert!(said[0].message.starts_with("this leader's certificate \"web\" expires in 4 days. Replace it"));
+        assert_eq!(
+            said[0].since_millis,
+            Some(uploaded.certificate.not_after_millis - 45 * DAY / 10)
+        );
+        assert!(
+            said[0]
+                .message
+                .starts_with("this leader's certificate \"web\" expires in 4 days. Replace it")
+        );
     }
 
     #[test]

@@ -1051,7 +1051,11 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     out.extend(deploy_warnings);
     out.extend(normal_warnings);
     out.extend(key_warnings);
-    out.extend(serving.map(|s| warnings::leader_certificate(&s, now_ms)).unwrap_or_default());
+    out.extend(
+        serving
+            .map(|s| warnings::leader_certificate(&s, now_ms))
+            .unwrap_or_default(),
+    );
     for w in out
         .iter_mut()
         .filter(|w| w.subject_kind == warnings::SubjectKind::Pipeline)
