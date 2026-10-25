@@ -54,7 +54,8 @@ A glyph is drawn once and used wherever its operation is offered, so the sign
 and the operation stay one thing: `src/PencilIcon.svelte` is edit -- open this
 object's editor -- and `src/ColumnsIcon.svelte` is stats, how much went each
 way. `src/TrashIcon.svelte` is remove -- take this object out of the list
-it is in. Renaming is not its own sign: it is the editor a worker group happens to
+it is in. `src/DisableIcon.svelte` is disable -- keep a step in its pipeline but
+out of play. Renaming is not its own sign: it is the editor a worker group happens to
 have, having nothing else to change in place.
 
 A state can have a sign too, when the page routes on it. `src/FailedIcon.svelte`

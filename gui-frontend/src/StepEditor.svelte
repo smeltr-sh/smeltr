@@ -34,6 +34,7 @@
   import SeparatorInput from './SeparatorInput.svelte';
   import ChipPicker from './ChipPicker.svelte';
   import MoreIcon from './MoreIcon.svelte';
+  import DisableIcon from './DisableIcon.svelte';
   import FieldRow from './FieldRow.svelte';
   import TypePicker from './TypePicker.svelte';
   import DatetimeFormat from './DatetimeFormat.svelte';
@@ -571,7 +572,7 @@
         class:active={step.disabled}
         onclick={() => (step.disabled = !step.disabled)}
         aria-label={step.disabled ? 'Enable this step' : 'Disable this step'}
-        title={step.disabled ? 'Enable this step' : 'Disable this step'}>⏸︎</button
+        title={step.disabled ? 'Enable this step' : 'Disable this step'}><DisableIcon /></button
       >
     {/if}
     <button
