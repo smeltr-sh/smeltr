@@ -149,7 +149,7 @@
       </Field>
       {#if way === 'paste'}
         <Field label="Records">
-          {#snippet help()}One per line; each line becomes <code>_raw</code>.{/snippet}
+          {#snippet help()}One record per line; each line becomes <code>_raw</code>.{/snippet}
           <textarea bind:value={text} rows="8" spellcheck="false"></textarea>
         </Field>
       {/if}
