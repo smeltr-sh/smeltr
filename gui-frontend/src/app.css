@@ -35,6 +35,18 @@ body {
 /* An instruction that must be read before acting: data lost, a step that
    cannot be undone, a condition that blocks the task. The only prose a
    page shows unasked (STYLE_GUIDE.md, "Text"). */
+/* A button that reads as part of the text it sits in, underlined dotted: it opens or jumps rather than
+   acts. */
+.link-button {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+
 .critical {
   max-width: 68ch;
   margin: 0 0 1rem;

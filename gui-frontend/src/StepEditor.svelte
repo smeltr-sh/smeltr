@@ -69,7 +69,7 @@
   import { ago, count } from './time';
   import { parsePath, pushKey } from './names';
   import { SvelteMap } from 'svelte/reactivity';
-  import { STEP_GLYPHS } from './stepGlyphs';
+  import StepGlyph from './StepGlyph.svelte';
   import { errorText, grokCaptures, type GrokPatternDto, type LookupTableDto } from './api';
   import { sharedGrokSuggestions } from './grokPatterns';
   import { beginReconcile, endReconcile } from './grokFields';
@@ -622,13 +622,7 @@
   >
     <div class="card-head if-head">
       <span class="type-badge">
-        <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
-          <path
-            d={STEP_GLYPHS.if.d}
-            fill="currentColor"
-            fill-rule={STEP_GLYPHS.if.evenodd ? 'evenodd' : 'nonzero'}
-          />
-        </svg>
+        <StepGlyph type="if" />
         If
       </span>
       <div class="condition">
@@ -714,13 +708,7 @@
         onclick={() => setExpanded(!expanded)}
       >
         <span class="type-badge" class:comment-badge={step.type === 'comment'}>
-          <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
-            <path
-              d={STEP_GLYPHS[step.type].d}
-              fill="currentColor"
-              fill-rule={STEP_GLYPHS[step.type].evenodd ? 'evenodd' : 'nonzero'}
-            />
-          </svg>
+          <StepGlyph type={step.type} />
           <span class="type-name">{STEP_LABELS[step.type]}</span>
         </span>
         <span class="summary">{stepSummary(step)}</span>
@@ -731,13 +719,15 @@
       {#if stepCounts && (stepCounts.dropped > 0 || stepCounts.failed > 0)}
         <span class="counts">
           {#if stepCounts.dropped > 0}
-            <button type="button" class="count" onclick={() => onCount(step, 'dropped')}
+            <button type="button" class="count link-button" onclick={() => onCount(step, 'dropped')}
               >&minus;{stepCounts.dropped} dropped</button
             >
           {/if}
           {#if stepCounts.failed > 0}
-            <button type="button" class="count failed" onclick={() => onCount(step, 'failed')}
-              >{stepCounts.failed} failed</button
+            <button
+              type="button"
+              class="count failed link-button"
+              onclick={() => onCount(step, 'failed')}>{stepCounts.failed} failed</button
             >
           {/if}
         </span>
@@ -1681,7 +1671,7 @@
     flex-shrink: 0;
   }
 
-  .type-badge svg {
+  .type-badge :global(svg) {
     height: 1.15em;
     width: auto;
   }
@@ -1720,13 +1710,9 @@
 
   .count {
     flex: none;
-    border: 0;
-    background: none;
     padding: 0 0.3rem;
     font-size: var(--text-note);
     color: var(--dim);
-    text-decoration: underline dotted;
-    cursor: pointer;
   }
 
   .count.failed {

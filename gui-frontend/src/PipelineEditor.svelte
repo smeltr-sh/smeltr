@@ -2025,9 +2025,7 @@
                     >{#each chips as c (chipKey(c))}<RemovableChip
                         removeLabel={`remove ${chipKey(c)}`}
                         onremove={() => toggleChip(c)}
-                        ><span class="find-chip"
-                          >{chipLabel(c)}</span
-                        ></RemovableChip
+                        ><span class="find-chip">{chipLabel(c)}</span></RemovableChip
                       >{/each}{/snippet}
                   {#snippet after()}{#if outputQuery.trim()}<span
                         class="mode"
@@ -2218,7 +2216,7 @@
                                     <p class="exception">
                                       {#if by}<button
                                           type="button"
-                                          class="exception-step"
+                                          class="link-button"
                                           onclick={() => (jumpToStepId = by.step.id)}
                                           >{stepName(by.step, by.number)}</button
                                         >{': '}{/if}{a.message}
@@ -2757,16 +2755,6 @@
   }
 
   /* Why the row failed, under its head, in the words the step gave. */
-  .exception-step {
-    border: 0;
-    background: none;
-    padding: 0;
-    font: inherit;
-    color: inherit;
-    text-decoration: underline dotted;
-    cursor: pointer;
-  }
-
   .exception {
     position: sticky;
     left: 0.75rem;
