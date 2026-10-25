@@ -3,6 +3,7 @@ import {
   builtinRegex,
   GROK_BUILTIN_PATTERNS,
   grokNameProblem,
+  highlightGrok,
   sharedGrokSuggestions,
 } from './grokPatterns';
 
@@ -36,5 +37,16 @@ describe('builtinRegex', () => {
     );
     expect(GROK_BUILTIN_PATTERNS.filter((b) => builtinRegex(b) === null)).toEqual([]);
     expect(builtinRegex({ name: 'X', signature: '%{X}', description: 'no regex' })).toBeNull();
+  });
+});
+
+describe('highlightGrok', () => {
+  it('colors macros, named groups, classes, escapes and operators, and escapes the rest', () => {
+    expect(highlightGrok('^%{IP:client} <a>')).toBe(
+      '<span class="tok-keyword">^</span>%{<span class="tok-function">IP</span>:<span class="tok-key">client</span>} &lt;a&gt;',
+    );
+    expect(highlightGrok('(?P<x.y>[^\\]"]+)\\[')).toBe(
+      '(?P&lt;<span class="tok-key">x.y</span>&gt;<span class="tok-string">[^\\]"]</span><span class="tok-keyword">+</span>)<span class="tok-literal">\\[</span>',
+    );
   });
 });

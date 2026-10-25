@@ -24,6 +24,7 @@
   A `wrap` field is a condition shown whole in a narrow box. Left, it is drawn broken before its operators
   (`conditionWrap.ts`) to the width it has, three lines at most, and a click or focus opens it to edit. Inside a
   `[data-wrap-room]`, the room is that element's width, and the box (`[data-wrap-box]`) shrinks to the longest line.
+  Any other `wrap` field, a grok pattern, is broken at its spaces instead (`wrapWords`).
 -->
 <script lang="ts">
   import { tick } from 'svelte';
@@ -35,7 +36,7 @@
     type StdFuncEntry,
   } from './stdlib';
   import { functionUsage } from './usage.svelte';
-  import { GROK_BUILTIN_PATTERNS } from './grokPatterns';
+  import { GROK_BUILTIN_PATTERNS, GROK_TOKEN, highlightGrok } from './grokPatterns';
   import {
     currentWord as wordAt,
     describedRuns,
@@ -50,7 +51,7 @@
     LITERALS,
     tokenize,
   } from '../../website/src/lib/highlight/highlight';
-  import { wrapCondition } from './conditionWrap';
+  import { wrapCondition, wrapWords } from './conditionWrap';
   import type { Attachment } from 'svelte/attachments';
   import { fieldError, holdsName, markRuns, quotedTokens } from './errorMarks';
   import { formatCode, type DotAnswer } from './api';
@@ -124,6 +125,8 @@
     return measurer.measureText('0').width;
   }
 
+  /** A condition is laid out at its operators and colored; any other `wrap` text, at its spaces. */
+  let condition = $derived(autocomplete === 'condition');
   /** The most lines a left `wrap` field shows. */
   const WRAP_LINES = 3;
   /** The text the rest view draws, as it is laid out, for its marks. */
@@ -145,7 +148,9 @@
         const beside = room && box ? box.offsetWidth - el.offsetWidth : 0;
         const width = room ? room.clientWidth - beside : el.offsetWidth;
         const cols = Math.max(8, Math.floor((width - edges) / ch));
-        let lines = wrapCondition(src, cols);
+        let lines = condition
+          ? wrapCondition(src, cols)
+          : wrapWords(src, cols, autocomplete === 'grok' ? GROK_TOKEN : undefined);
         if (lines.length > WRAP_LINES) {
           lines = lines.slice(0, WRAP_LINES);
           lines[WRAP_LINES - 1] += ' …';
@@ -154,7 +159,9 @@
           const longest = Math.max(...lines.map((l) => l.length));
           el.style.width = `${Math.ceil(longest * ch + edges)}px`;
         }
-        el.innerHTML = lines.map(highlight).join('\n');
+        if (condition || painter)
+          el.innerHTML = lines.map(condition ? highlight : painter!).join('\n');
+        else el.textContent = lines.join('\n');
         restText = lines.join('\n');
       };
       draw();
@@ -180,9 +187,11 @@
           ? CODE_FUNCTIONS
           : null,
   );
-  let colored = $derived(functions !== null || paint !== undefined);
+  /** How the field colors text that is not an expression: its own `paint`, or a grok pattern's. */
+  let painter = $derived(paint ?? (autocomplete === 'grok' ? highlightGrok : undefined));
+  let colored = $derived(functions !== null || painter !== undefined);
   // The trailing newline gives a last empty line its height, as the textarea does.
-  let painted = $derived(colored ? (paint ?? highlight)(value) + '\n' : '');
+  let painted = $derived(colored ? (painter ?? highlight)(value) + '\n' : '');
 
   /** The names the field's errors quote that the text holds. A colored
    * field marks just those, as a code editor does; anything else marks the

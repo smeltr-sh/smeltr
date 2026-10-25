@@ -35,6 +35,7 @@
     builtinRegex,
     GROK_BUILTIN_PATTERNS,
     grokNameProblem,
+    highlightGrok,
     sharedGrokSuggestions,
   } from './grokPatterns';
   import { editable } from './access';
@@ -222,6 +223,7 @@
                       bind:value={p.pattern}
                       autocomplete="grok"
                       grokNamed={sharedGrokSuggestions(others(n))}
+                      wrap
                     />
                   </Field>
                 </td>
@@ -253,7 +255,7 @@
               <tr class="fixed" title={b.about}>
                 <td class="name mono">{b.id}</td>
                 {#if b.pattern}
-                  <td class="mono">{b.pattern}</td>
+                  <td class="mono tokens">{@html highlightGrok(b.pattern)}</td>
                 {:else}
                   <td class="dim">{b.about}</td>
                 {/if}
