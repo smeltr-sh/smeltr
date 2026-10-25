@@ -78,7 +78,7 @@
     if (required) c.setAttribute('aria-required', 'true');
     else c.removeAttribute('aria-required');
     // Named by the label's text alone: the `?` inside the `<label>` would add "About …" to the name.
-    if (!c.hasAttribute('aria-label')) c.setAttribute('aria-labelledby', nameId);
+    if (!c.getAttribute('aria-label')) c.setAttribute('aria-labelledby', nameId);
   });
   // The item's id before an edit reaches the control. An edit to the id
   // field renames the item, and the item's errors go with it.
