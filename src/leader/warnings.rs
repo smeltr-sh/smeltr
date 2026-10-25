@@ -2548,7 +2548,8 @@ pub fn encryption_key_warnings(standing: &KeyStanding, starts: &HashMap<FactKey,
                 ),
                 Unopenable::Certificate(_) => (
                     SubjectKind::Certificate,
-                    "encrypted with a key this leader no longer has. Replace the certificate under Certificates"
+                    "encrypted with a key this leader no longer has. Under Certificates, replace it, or renew it if \
+                     this leader issued it"
                         .to_string(),
                 ),
                 Unopenable::Setting(key) => (
@@ -6768,7 +6769,7 @@ mod tests {
             (SubjectKind::Certificate, "ingest-tls")
         );
         assert!(
-            said[2].message.ends_with("Replace the certificate under Certificates"),
+            said[2].message.ends_with("renew it if this leader issued it"),
             "{}",
             said[2].message
         );

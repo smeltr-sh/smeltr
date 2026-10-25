@@ -5903,6 +5903,24 @@ mod certificate_list_tests {
         assert!(issued_certificates_due(&state, now).await.unwrap().is_empty());
     }
 
+    /// A renewal needs nothing the old version sealed: after the key is regenerated, it issues a new key, and the
+    /// certificate is no longer one to enter again.
+    #[tokio::test]
+    async fn renewing_clears_a_certificate_a_regenerated_key_cannot_open() {
+        let state = issuing("renew-regenerated");
+        assert!(issue(&state, "acme", &["receiver.example.com"]).await.ok);
+        std::fs::remove_file(state.data_dir.with_extension("key")).unwrap();
+        let event = crate::leader::accounts::event_for(&store::Actor::system(), "key-regenerate", "", "ok");
+        let acme = store::Unopenable::Certificate("acme".to_string());
+        assert!(state.store.regenerate_key(&event).unwrap().unopenable.contains(&acme));
+
+        let out = renew(&state, "acme").await;
+        assert!(out.ok, "{:?}", out.errors);
+        assert!(!state.store.key_standing().unwrap().unopenable.contains(&acme));
+        let (chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
+        tls::is_pair(chain.as_bytes(), key.as_bytes()).expect("the new key is the new certificate's");
+    }
+
     #[tokio::test]
     async fn only_an_issued_certificate_is_renewed() {
         let state = issuing("renew-not-issued");
