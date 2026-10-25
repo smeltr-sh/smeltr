@@ -9,8 +9,6 @@
 // A failure names its seed and the moves that led there. `SMELTR_FUZZ_SEED=n` replays one; `SMELTR_FUZZ_SEEDS=n`
 // runs `n`; `SMELTR_PIPELINE_MOVES=n` makes each seed's journey `n` moves long. `pipeline-fuzz-coverage.spec.ts` checks
 // that the seeds made every move.
-import fs from 'node:fs';
-import path from 'node:path';
 import { test, expect, settled } from '../fleet';
 import { Rng, seeds } from '../fuzz';
 import { THEMES, VIEWPORTS } from '../gui-fuzz';
@@ -32,7 +30,7 @@ import {
   type Journey,
 } from '../moves/pipeline';
 import { listen, onScreen } from '../onscreen';
-import { RUN_DIR } from '../run';
+import { recordReached } from '../run';
 
 const MOVES_PER_SEED = Number(process.env.SMELTR_PIPELINE_MOVES ?? 40);
 
@@ -97,9 +95,7 @@ for (const seed of seeds(PIPELINE_SEEDS)) {
     } catch (e) {
       throw new Error(`${replay()}\n${e instanceof Error ? e.message : e}`);
     } finally {
-      const dir = path.join(process.env[RUN_DIR] ?? '', 'pipeline');
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, `${seed}.json`), JSON.stringify([...made]));
+      recordReached('pipeline', seed, made);
     }
     expect(problems, replay()).toEqual([]);
   });

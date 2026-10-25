@@ -9,8 +9,6 @@
 //
 // A failure names its seed and the steps that led there. `SMELTR_FUZZ_SEED=n` replays one; `SMELTR_FUZZ_SEEDS=n`
 // runs `n`. `gui-fuzz-coverage.spec.ts` then checks that the seeds reached every option below.
-import fs from 'node:fs';
-import path from 'node:path';
 import type { Browser, Page } from '@playwright/test';
 import {
   test,
@@ -27,7 +25,7 @@ import { Rng, seeds } from '../fuzz';
 import { ACTIONS, DEFAULT_SEEDS, THEMES, VIEWPORTS, WHO, type Action, type Who } from '../gui-fuzz';
 import { CLIENT_ID, CLIENT_SECRET, Provider } from '../oidc';
 import { CLICKABLE, TYPEABLE, listen, onScreen, screen } from '../onscreen';
-import { RUN_DIR } from '../run';
+import { recordReached } from '../run';
 
 /** Where a walk may start before it has seen a link: each tab, the authoring pages behind the scope chip, and what
  * belongs to the person, behind their name. */
@@ -368,9 +366,7 @@ async function walk(seed: number, browser: Browser, leader: Leader, api: Api | n
     // A test that ran out of time has had its context closed already.
     await context.close().catch(() => {});
     await provider?.stop();
-    const dir = path.join(process.env[RUN_DIR] ?? '', 'fuzz');
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, `${seed}.json`), JSON.stringify([...reached]));
+    recordReached('fuzz', seed, reached);
   }
 }
 

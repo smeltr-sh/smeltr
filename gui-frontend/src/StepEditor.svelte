@@ -1759,9 +1759,10 @@
     flex-shrink: 0;
   }
 
-  /* Controls arrive when wanted: on the head's hover or keyboard focus, while the
-     step is open, and while their menu is open; dimming and the pause chip
-     show a lit one. On the head, so a step in an if does not wake the if's.
+  /* Controls arrive when wanted: on the head's hover or keyboard focus,
+     while the step is open, and while their menu is open; dimming and the
+     pause chip show a lit one. On the head, so a step in an if does not wake
+     the if's.
      Where nothing hovers they stay, since the More menu only takes their
      place when the card is narrow. A closed step's summary runs the head's
      whole width, and its controls arrive over the summary's end, fading in
