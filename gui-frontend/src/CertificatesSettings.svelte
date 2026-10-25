@@ -288,6 +288,37 @@
     }
   }
 
+  /** What a supplied certificate has to cover, as the leader checks it (`tls::check_supplied`): the names the worker
+   * inside this leader and this browser reach it by, or failing both, one of its names. */
+  function mustCover(c: CertificatesDto, hostname: string): string {
+    const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    const browser = c.names.find((n) => n.toLowerCase() === host);
+    const worker = c.workerName;
+    if (!worker && !browser) return `It must cover one of ${listed(c.names, 'or')}.`;
+    const roles =
+      worker && browser && worker.toLowerCase() === browser.toLowerCase()
+        ? [`${worker} (used by the worker inside this leader and by your browser)`]
+        : [
+            ...(worker ? [`${worker} (used by the worker inside this leader)`] : []),
+            ...(browser ? [`${browser} (used by your browser)`] : []),
+          ];
+    const loopback = worker && ['localhost', '127.0.0.1', '::1'].includes(worker.toLowerCase());
+    return (
+      `It must cover ${roles.join(' and ')}.` +
+      (loopback
+        ? ` Public authorities don't issue certificates for ${worker}. To use a public certificate, set` +
+          ` SMELTR_LEADER_URL to a name this leader is reached by, then restart.`
+        : '')
+    );
+  }
+
+  /** `a`, `a or b`, `a, b or c`. */
+  function listed(names: string[], word: string): string {
+    return names.length < 2
+      ? names.join('')
+      : `${names.slice(0, -1).join(', ')} ${word} ${names[names.length - 1]}`;
+  }
+
   /** A change to what is served: takes the certificates it answers with, and the choice is spent. */
   function act(
     call: () => Promise<CertificatesDto | AccountRefusal>,
@@ -722,7 +753,7 @@
         <div class="setting">
           <CertificatePicker
             bind:value={chosen}
-            note="It must carry {certificates.served.names.join(' and ')}."
+            note={mustCover(certificates, location.hostname)}
           />
           {#if switching}
             <p class="dim">

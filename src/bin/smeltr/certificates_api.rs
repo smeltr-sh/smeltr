@@ -92,6 +92,10 @@ struct CertificatesDto {
     source: acme::Source,
     /// The list entry an upload was copied from, where one is recorded.
     entry: Option<String>,
+    /// The names this leader answers to. A supplied certificate covers at least one.
+    names: Vec<String>,
+    /// The name the worker inside this leader reaches it by, where one runs. A supplied certificate covers it.
+    worker_name: Option<String>,
     /// Set when a certificate reached the disk and the socket refused it. Everything above is then what `dir`
     /// holds rather than what a client is shown, and only a restart closes the gap.
     restart_required: bool,
@@ -139,6 +143,8 @@ async fn read(tls: Option<&Arc<Tls>>) -> Result<CertificatesDto, String> {
             supplied: false,
             source: acme::Source::Own,
             entry: None,
+            names: Vec::new(),
+            worker_name: None,
             restart_required: false,
             rotation: None,
         });
@@ -163,6 +169,8 @@ async fn read(tls: Option<&Arc<Tls>>) -> Result<CertificatesDto, String> {
         supplied: materials.supplied,
         source: acme::source(&serving.dir)?,
         entry: smeltr::leader::entry_in_force(&serving.dir)?,
+        names: serving.names.clone(),
+        worker_name: serving.from_inside.clone(),
         restart_required: !tls::socket_has_what_is_on_disk(&serving.dir),
         rotation: rotation
             .map(|state| {

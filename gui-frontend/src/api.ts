@@ -4870,6 +4870,10 @@ export interface CertificatesDto {
   source: CertificateSource;
   /** The name of the list entry an upload was copied from, where one is recorded. */
   entry: string | null;
+  /** The names this leader answers to. A supplied certificate covers at least one. */
+  names: string[];
+  /** The name the worker inside this leader reaches it by, where one runs. A supplied certificate covers it. */
+  workerName: string | null;
   /** Set when a certificate reached the leader's disk and its socket refused it.
    * Everything above is then what the disk holds rather than what a client is
    * shown, and only a restart closes the gap. */
