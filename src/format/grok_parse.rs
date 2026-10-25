@@ -95,6 +95,7 @@ mod tests {
                 0,
                 FunctionKind::Parser {
                     input: "_raw".into(),
+                    into: String::new(),
                     kind: ParserKind::Grok(config),
                     declared: declared
                         .iter()

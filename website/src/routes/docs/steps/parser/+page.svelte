@@ -43,6 +43,11 @@
   </p>
   <StepExample example={examples.json} />
   <p>Both declared fields arrive typed, and the undeclared <code>region</code> passes through.</p>
+  <p>
+    With <code>into</code>, the same fields go under one object instead. In the GUI,
+    <strong>write into</strong> is under <strong>Advanced</strong>.
+  </p>
+  <StepExample example={examples.into} />
 
   <h2 id="settings">Settings</h2>
   <p>It also takes the settings <a href="/docs/steps#settings">every step</a> takes.</p>

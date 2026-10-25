@@ -84,6 +84,7 @@ mod tests {
                 0,
                 FunctionKind::Parser {
                     input: "_raw".into(),
+                    into: String::new(),
                     kind: ParserKind::Csv(config),
                     declared: declared
                         .iter()

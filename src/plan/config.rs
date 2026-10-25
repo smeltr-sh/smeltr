@@ -229,6 +229,8 @@ pub enum FunctionKind {
     /// (`ParserKind::is_dynamic`) lays every other key into the unclaimed fields as it arrived.
     Parser {
         input: String,
+        /// The object the parse writes into, its `declared` names under it; empty, the record.
+        into: String,
         kind: ParserKind,
         declared: Vec<DeclaredField>,
     },

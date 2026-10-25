@@ -1297,6 +1297,7 @@ fn a_parser_declaring_a_name_and_a_path_under_it_is_a_compile_error() {
     ];
     let parser = FunctionKind::Parser {
         input: "_raw".into(),
+        into: String::new(),
         kind: ParserKind::Json { split_dots: false },
         declared,
     };

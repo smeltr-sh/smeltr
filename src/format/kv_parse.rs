@@ -98,6 +98,7 @@ mod tests {
                 0,
                 FunctionKind::Parser {
                     input: "_raw".into(),
+                    into: String::new(),
                     kind: ParserKind::KeyValue(config),
                     declared: declared
                         .iter()

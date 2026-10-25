@@ -4421,7 +4421,12 @@ impl Compiler<'_> {
                 lower::Lowered::from(lower::drop(cond))
             }
             FunctionKind::Rename { pairs } => lower::Lowered::from(lower::rename(pairs)),
-            FunctionKind::Parser { input, kind, declared } => lower::parser(input, kind, declared, |n| self.held(n)),
+            FunctionKind::Parser {
+                input,
+                into,
+                kind,
+                declared,
+            } => lower::parser(input, into, kind, declared, |n| self.held(n)),
             FunctionKind::Lookup {
                 input,
                 table,
@@ -4763,6 +4768,7 @@ mod tests {
                 0,
                 FunctionKind::Parser {
                     input: "_raw".into(),
+                    into: String::new(),
                     kind: ParserKind::Json { split_dots: false },
                     declared: vec![field("srcip"), field("service")],
                 },

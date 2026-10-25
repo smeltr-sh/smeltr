@@ -3167,6 +3167,8 @@ pub enum StepDto {
         #[serde(default)]
         disabled: bool,
         input: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        into: String,
         kind: ParserKindDto,
         #[serde(default)]
         declared: Vec<FieldDto>,

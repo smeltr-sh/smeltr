@@ -12,7 +12,7 @@ use smeltr::core::ctx::Ctx;
 use smeltr::core::error::{ErrorSink, ExceptionKind};
 use smeltr::core::id::FunctionId;
 use smeltr::metrics::{MetricValue, Metrics, MetricsHandle};
-use smeltr::plan::config::{DeclaredField, FunctionKind, ParserKind, PipelineConfig, Step};
+use smeltr::plan::config::{DeclaredField, FunctionKind, ParserKind, PipelineConfig, Step, TimeSource};
 use smeltr::plan::exec::{DEFAULT_LOOP_BUDGET, run_scoped};
 use smeltr::plan::output::run_to_json_marked;
 use smeltr::plan::plan::{Op, Plan, compile};
@@ -54,6 +54,7 @@ fn parse(id: FunctionId, declared: &[(&str, DataType)]) -> Step {
         id,
         FunctionKind::Parser {
             input: "_raw".to_string(),
+            into: String::new(),
             kind,
             declared,
         },
@@ -5286,6 +5287,7 @@ fn a_later_parser_keeps_what_its_input_lacks() {
             1,
             FunctionKind::Parser {
                 input: "inner".to_string(),
+                into: String::new(),
                 kind: ParserKind::Json { split_dots: false },
                 declared: declared
                     .iter()
@@ -5326,6 +5328,87 @@ fn a_later_parser_keeps_what_its_input_lacks() {
     );
 }
 
+/// A parser with an `into` writes under that object what it would write into the record: its declared fields and
+/// every key it finds. `$` names the record. An object the name already holds takes the parse's keys over its own; a
+/// name holding anything else is a compile error.
+#[test]
+fn a_parser_writes_into_the_object_it_names() {
+    let into = |id, input: &str, into: &str, declared: Vec<DeclaredField>| {
+        func(
+            id,
+            FunctionKind::Parser {
+                input: input.to_string(),
+                into: into.to_string(),
+                kind: ParserKind::Json { split_dots: false },
+                declared,
+            },
+        )
+    };
+    let field = |name: &str, ty: DataType| DeclaredField {
+        name: name.to_string(),
+        ty,
+        time_source: None,
+    };
+    let doc = r#"{"user":"ana","ms":12}"#;
+
+    let plan = ok(vec![into(0, "_raw", "app", vec![field("ms", DataType::I64)])]);
+    let row = run(&plan, &[doc]).remove(0);
+    assert_eq!(row["app"], json!({"user": "ana", "ms": 12}));
+    assert_eq!((row.get("user"), row.get("ms")), (None, None), "{row}");
+
+    let plan = ok(vec![into(0, "_raw", "app", vec![])]);
+    assert_eq!(run(&plan, &[doc])[0]["app"], json!({"user": "ana", "ms": 12}));
+
+    let plan = ok(vec![into(0, "_raw", "a.b", vec![field("ms", DataType::I64)])]);
+    assert_eq!(run(&plan, &[doc])[0]["a"], json!({"b": {"user": "ana", "ms": 12}}));
+
+    let plan = ok(vec![into(0, "_raw", "$", vec![field("ms", DataType::I64)])]);
+    let row = run(&plan, &[doc]).remove(0);
+    assert_eq!((&row["user"], &row["ms"]), (&json!("ana"), &json!(12)));
+
+    // `app` is a key the record holds, then a field an earlier step declared: the parse merges into it either way.
+    let doc = r#"{"app":{"user":"bo","z":1},"inner":"{\"user\":\"ana\",\"ms\":12}"}"#;
+    let want = json!({"user": "ana", "ms": 12, "z": 1});
+    let plan = ok(vec![
+        code(0, &json("inner: str;")),
+        into(1, "inner", "app", vec![field("ms", DataType::I64)]),
+    ]);
+    assert_eq!(run(&plan, &[doc])[0]["app"], want);
+    let plan = ok(vec![
+        code(0, &json("inner: str; app: {user: str, ...};")),
+        into(1, "inner", "app", vec![field("ms", DataType::I64)]),
+    ]);
+    assert_eq!(run(&plan, &[doc])[0]["app"], want);
+
+    // A formatted `datetime` is read by the parse's own key, not the name it lands at.
+    let ts = DeclaredField {
+        name: "ts".to_string(),
+        ty: DataType::DateTime,
+        time_source: Some(TimeSource::Format("%d/%m/%Y %H:%M".into())),
+    };
+    let plan = ok(vec![into(0, "_raw", "app", vec![ts])]);
+    let row = run(&plan, &[r#"{"ts":"15/03/2024 07:30"}"#]).remove(0);
+    assert_eq!(row["app"]["ts"], json!("2024-03-15T07:30:00.000000Z"));
+
+    // Under a filter, only the rows it takes are parsed.
+    let Step::Function(mut filtered) = into(0, "_raw", "app", vec![field("ms", DataType::I64)]) else {
+        unreachable!("a function step")
+    };
+    filtered.filter = Some(r#"startsWith(_raw, "{\"u")"#.into());
+    let plan = ok(vec![Step::Function(filtered)]);
+    let rows = run(&plan, &[r#"{"user":"ana","ms":12}"#, r#"{"ms":7}"#]);
+    assert_eq!(rows[0]["app"], json!({"user": "ana", "ms": 12}));
+    assert_eq!(
+        rows[1].get("app").filter(|a| !a.is_null() && *a != &json!({})),
+        None,
+        "{}",
+        rows[1]
+    );
+
+    let e = err(vec![code(0, &json("app: str;")), into(1, "_raw", "app", vec![])]);
+    assert!(e.contains("a spread takes an object, not str"), "{e}");
+}
+
 /// A later parser's declared name replaces what an earlier parser passed through under it, as an assignment does.
 /// Under a guard, the earlier parser's declared value stands where the guard does not hold.
 #[test]
@@ -5335,6 +5418,7 @@ fn a_later_parsers_declared_name_replaces_what_an_earlier_one_found_under_it() {
             id,
             FunctionKind::Parser {
                 input: "inner".to_string(),
+                into: String::new(),
                 kind: ParserKind::Json { split_dots: false },
                 declared: vec![DeclaredField {
                     name: "o".to_string(),
@@ -5352,6 +5436,7 @@ fn a_later_parsers_declared_name_replaces_what_an_earlier_one_found_under_it() {
         1,
         FunctionKind::Parser {
             input: "inner".to_string(),
+            into: String::new(),
             kind: ParserKind::Grok(smeltr::plan::config::GrokConfig {
                 split_dots: true,
                 patterns: vec!["%{INT:o}".to_string()],
@@ -5405,6 +5490,7 @@ fn a_later_parsers_declared_name_replaces_the_paths_declared_under_it() {
             1,
             FunctionKind::Parser {
                 input: "inner".to_string(),
+                into: String::new(),
                 kind: ParserKind::Json { split_dots: false },
                 declared: declared_o(),
             },
@@ -5421,6 +5507,7 @@ fn a_later_parsers_declared_name_replaces_the_paths_declared_under_it() {
         1,
         FunctionKind::Parser {
             input: "inner".to_string(),
+            into: String::new(),
             kind: ParserKind::Grok(smeltr::plan::config::GrokConfig {
                 split_dots: true,
                 patterns: vec!["%{INT:o}".to_string()],

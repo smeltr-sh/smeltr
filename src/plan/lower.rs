@@ -55,8 +55,18 @@ pub fn names(kind: &FunctionKind) -> Result<FunctionKind, String> {
                 (*from, *to) = (name(from)?, name(to)?);
             }
         }
-        FunctionKind::Parser { input, kind, declared } => {
+        FunctionKind::Parser {
+            input,
+            into,
+            kind,
+            declared,
+        } => {
             *input = name(input)?;
+            // `$` names the record, as empty does.
+            *into = match into.trim() {
+                ROOT => String::new(),
+                _ => name(into)?,
+            };
             for d in declared {
                 // A csv column is a header, the key the parser reads: its name is that key's.
                 d.name = match kind {
@@ -99,8 +109,15 @@ pub fn drop(cond: Option<Expr>) -> Vec<Stmt> {
     .collect()
 }
 
-/// `Object.assign($, json(input))`, and the call each other kind makes, after a declaration of each of `fields`.
-pub fn parser(input: &str, kind: &ParserKind, fields: &[DeclaredField], held: impl Fn(&str) -> Held) -> Lowered {
+/// `Object.assign(into, json(input))`, and the call each other kind makes, after a declaration of each of `fields`
+/// under `into`. An empty `into` is the record.
+pub fn parser(
+    input: &str,
+    into: &str,
+    kind: &ParserKind,
+    fields: &[DeclaredField],
+    held: impl Fn(&str) -> Held,
+) -> Lowered {
     let text = field(input);
     let parse = match kind {
         ParserKind::Json { .. } => call("json", vec![text]),
@@ -140,10 +157,14 @@ pub fn parser(input: &str, kind: &ParserKind, fields: &[DeclaredField], held: im
         ParserKind::Variant => unreachable!("no step spreads a variant"),
     };
     let parse = with_value(parse, "splitDots", boolean(kind.split_dots()));
+    let into = match into {
+        "" => ROOT,
+        into => into,
+    };
     let typed = fields
         .iter()
         .map(|d| (d.name.as_str(), d.ty.clone(), d.time_source.as_ref()));
-    declare_around(typed, parse, kind.is_dynamic(), held)
+    declare_around(into, typed, parse, kind.is_dynamic(), held)
 }
 
 /// `Object.assign($, lookup(table, input, {…}))`, after a declaration of each output.
@@ -189,14 +210,16 @@ pub fn lookup(
         };
         (o.field.as_str(), ty, o.time_source.as_ref())
     });
-    declare_around(typed, parse, false, held)
+    declare_around(ROOT, typed, parse, false, held)
 }
 
-/// `Object.assign($, parse)`, each field declared before it where the name does not hold its type, and a formatted
-/// `datetime` read by the parse's `formats`. Fields under an object nothing holds yet declare it once, open, with all
-/// of them. A key the record may hold converts after a `dynamic` parse, which lays it as it finds it, and before any
-/// other, whose fields are typed by what the name holds; a formatted one is read as text and converted after.
+/// `Object.assign(into, parse)`, each field declared under `into` before it where the name does not hold its type,
+/// and a formatted `datetime` read by the parse's `formats`. Fields under an object nothing holds yet declare it once,
+/// open, with all of them; so does an `into` nothing holds. A key the record may hold converts after a `dynamic` parse,
+/// which lays it as it finds it, and before any other, whose fields are typed by what the name holds; a formatted one is
+/// read as text and converted after.
 fn declare_around<'f>(
+    into: &str,
     fields: impl Iterator<Item = (&'f str, DataType, Option<&'f TimeSource>)>,
     parse: Expr,
     dynamic: bool,
@@ -205,7 +228,34 @@ fn declare_around<'f>(
     let mut lowered = Lowered::default();
     let mut objects: Vec<(&str, Vec<(String, DataType)>)> = Vec::new();
     let mut formats = Vec::new();
-    for (name, ty, time) in fields {
+    let open = || DataType::Struct(Vec::new(), true);
+    // `Object.assign` merges into an object a name holds, so `into` is made one first. Its own entry comes before the
+    // fields under it, which `nest` lays inside it.
+    if into != ROOT {
+        match held(into) {
+            Held::Bound(_) => {}
+            Held::Free => match tree::ancestors(into).find(|above| matches!(held(above), Held::Free)) {
+                Some(top) => objects.push((top, vec![(tree::key_under(top, into).to_string(), open())])),
+                None => objects.push((into, Vec::new())),
+            },
+            Held::Key => lowered.body.push(Stmt::Assign {
+                target: into.to_string(),
+                value: declared(into, Some(open()), field(into)),
+                typed: true,
+            }),
+        }
+    }
+    let names: Vec<_> = fields
+        .map(|(key, ty, time)| {
+            let name = match into {
+                ROOT => key.to_string(),
+                _ => tree::join(into, key),
+            };
+            (key, name, ty, time)
+        })
+        .collect();
+    for (key, name, ty, time) in &names {
+        let (name, ty) = (name.as_str(), ty.clone());
         let format = match time {
             Some(TimeSource::Format(f)) => Some(f),
             _ => None,
@@ -256,13 +306,14 @@ fn declare_around<'f>(
                 continue;
             }
         }
+        // The parse's own key, not the name it lands at.
         if let Some(format) = format {
-            formats.push((name, string(format)));
+            formats.push((*key, string(format)));
         }
     }
     let parse = with_option(parse, "formats", formats);
     let objects = objects.into_iter().map(|(name, fields)| {
-        let mut ty = DataType::Struct(Vec::new(), true);
+        let mut ty = open();
         for (path, leaf) in fields {
             nest(&mut ty, &path, leaf);
         }
@@ -271,8 +322,8 @@ fn declare_around<'f>(
     });
     lowered.body.splice(0..0, objects);
     lowered.body.push(Stmt::Assign {
-        target: ROOT.to_string(),
-        value: call("Object.assign", vec![field(ROOT), parse]),
+        target: into.to_string(),
+        value: call("Object.assign", vec![field(into), parse]),
         typed: false,
     });
     lowered

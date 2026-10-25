@@ -44,6 +44,13 @@
             "what": "The text field to read. Defaults to `_raw`."
           },
           {
+            "name": "into",
+            "type": "field",
+            "absent": "the top level of the record",
+            "examples": ["app", "event.original"],
+            "what": "The object the parsed fields go under, such as `app`. Leave it out, or give `$`, to put them at the top level of the record."
+          },
+          {
             "name": "kind",
             "type": "format",
             "required": true,
