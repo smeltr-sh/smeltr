@@ -201,6 +201,7 @@
       el.scrollTop = inputEl.scrollTop;
       el.scrollLeft = inputEl.scrollLeft;
     }
+    placeList?.();
   }
 
   // An edit, a caret move or a drag can scroll the input without a scroll
@@ -305,15 +306,46 @@
 
   /** The most the list shows before it scrolls. */
   const LIST_HEIGHT = 280;
-  /** The least room under the field the list takes before it goes over the field: about three items. */
+  /** The least room under the word the list takes before it goes over it: about three items. */
   const LIST_FLOOR = 160;
-  /** Shows the list in the top layer, so no box that scrolls or clips cuts it off, under the field, or over it where
-   * there is too little room under it and more over it. It follows the field as anything around it scrolls. */
+
+  /** The line box of the word being typed, on screen, held inside the field where the word is scrolled out of it.
+   * The painted copy is laid out and scrolled as the field is, so a range over it finds the word. A field with no
+   * painted copy gives its own box. */
+  function wordBox(): { top: number; bottom: number; left: number } | undefined {
+    if (!inputEl) return undefined;
+    const field = inputEl.getBoundingClientRect();
+    if (!paintEl) return field;
+    let left = currentWord().start;
+    const walk = document.createTreeWalker(paintEl, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      const length = n.textContent?.length ?? 0;
+      if (left > length) {
+        left -= length;
+        continue;
+      }
+      const range = document.createRange();
+      range.setStart(n, left);
+      range.setEnd(n, Math.min(left + 1, length));
+      const word = range.getClientRects()[0] ?? range.getBoundingClientRect();
+      const top = Math.min(Math.max(word.top, field.top), field.bottom);
+      const bottom = Math.max(Math.min(word.bottom, field.bottom), field.top);
+      return { top, bottom, left: Math.min(Math.max(word.left, field.left), field.right) };
+    }
+    return field;
+  }
+
+  /** Places the open list at the word being typed. Set while the list is open. */
+  let placeList: (() => void) | undefined;
+
+  /** Shows the list in the top layer, so no box that scrolls or clips cuts it off, under the word being typed, or
+   * over it where there is too little room under it and more over it. It follows the word as the caret moves and as
+   * anything around the field scrolls. */
   const float: Attachment<HTMLElement> = (list) => {
     list.showPopover();
     const place = () => {
-      if (!inputEl) return;
-      const r = inputEl.getBoundingClientRect();
+      const r = wordBox();
+      if (!r) return;
       const below = window.innerHeight - r.bottom - 12;
       const above = r.top - 12;
       const under = below >= Math.min(LIST_FLOOR, list.scrollHeight) || below >= above;
@@ -323,9 +355,11 @@
       list.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - list.offsetWidth - 8))}px`;
     };
     place();
+    placeList = place;
     window.addEventListener('scroll', place, true);
     window.addEventListener('resize', place);
     return () => {
+      placeList = undefined;
       window.removeEventListener('scroll', place, true);
       window.removeEventListener('resize', place);
     };
