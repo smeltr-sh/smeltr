@@ -91,8 +91,10 @@
       A receiver always admits by its identity's authorities alone.
     </li>
     <li>
-      For client authentication, supply the client certificate chain and a secret reference for its
-      private key. Provide the certificate and key together.
+      For client authentication, add the client certificate and its private key under Admin →
+      <a href="/docs/certificates#list">Certificates</a>, then choose it in
+      <strong>presents</strong>. The identity names the version you chose. Replacing the certificate
+      points every identity that presents it at the new version, in a change you review and deploy.
     </li>
     <li>
       An identity can contain trust authorities, a client certificate, or both. With no identity
@@ -100,10 +102,9 @@
     </li>
   </ul>
   <p>
-    Review and deploy the identity with the connector that uses it. Check certificate names and
-    secret availability from each worker. You configure leader/browser certificates separately in <a
-      href="/docs/certificates">Certificates &amp; TLS</a
-    >.
+    Review and deploy the identity with the connector that uses it. Check that the name each worker
+    connects to is on the far end's certificate. You configure leader/browser certificates
+    separately in <a href="/docs/certificates">Certificates &amp; TLS</a>.
   </p>
 
   <h2 id="kafka">Kafka security</h2>

@@ -41,6 +41,31 @@ pub struct PreviewRequest {
     /// sample, and `Preview::after_dot` holds the answer.
     #[serde(default)]
     pub after_dot: Option<AfterDotRequest>,
+    /// A capture filter at a destination, checked against each route delivering there. Asked, the preview answers it
+    /// instead of running the sample, and `Preview::capture_filter` holds the answer.
+    #[serde(default)]
+    pub capture_filter: Option<CaptureFilterRequest>,
+}
+
+/// A capture filter's text, and the destination, by its id, it would run at.
+#[derive(serde::Deserialize)]
+pub struct CaptureFilterRequest {
+    pub text: String,
+    pub destination: String,
+}
+
+/// The routes delivering to a destination a capture filter there passes over, each with why: it does not compile
+/// against that route's output (`runtime`). `reads` is how many it runs on.
+#[derive(Default, serde::Serialize)]
+pub struct CaptureFilterCheck {
+    pub reads: usize,
+    pub skips: Vec<RouteSkip>,
+}
+
+#[derive(serde::Serialize)]
+pub struct RouteSkip {
+    pub route: String,
+    pub error: String,
 }
 
 /// A `.` an author has just typed: the expression's text, the dot's byte offset in it, and where the expression sits,
@@ -99,6 +124,9 @@ pub struct Preview {
     /// or a number.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after_dot: Option<AfterDot>,
+    /// The answer to `PreviewRequest::capture_filter`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_filter: Option<CaptureFilterCheck>,
 }
 
 /// The record by its compiled types alone, and with the sample's output filling what only a row knows. `sampled` is
@@ -632,6 +660,58 @@ pub fn format_code(req: FormatRequest) -> Envelope<Formatted> {
     )
 }
 
+/// `system` compiled, and the id of its destination `name`: what a capture filter there is compiled over, as a worker
+/// compiles it (`runtime`). The whole topology compiles, so an error anywhere in `system` leaves a destination no answer.
+fn at_destination(
+    system: &config_file::LoadedSystem,
+    name: &str,
+) -> Result<(plan::topology::CompiledTopology, crate::core::id::DestId), String> {
+    let dest = (system.topology.destinations.iter())
+        .find(|d| d.name == *name)
+        .ok_or_else(|| format!("this config has no destination {name:?}"))?
+        .id;
+    let compiled = system
+        .compile_topology()
+        .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))?;
+    Ok((compiled, dest))
+}
+
+/// Route `r`'s pipeline, compiled over what its source gives, and that metadata.
+fn route_plan(
+    system: &config_file::LoadedSystem,
+    r: &plan::topology::RouteConfig,
+) -> Result<(plan::plan::Plan, SourceMeta), String> {
+    let meta = (system.topology.sources.iter())
+        .find(|s| s.id == r.source)
+        .map(|s| s.kind.meta())
+        .unwrap_or(SourceMeta::NONE);
+    let p = (system.pipelines.iter())
+        .find(|p| p.id == r.pipeline)
+        .ok_or_else(|| format!("this config has no pipeline {:?}", r.pipeline))?;
+    let plan = plan::plan::compile(p, &meta)
+        .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))?;
+    Ok((plan, meta))
+}
+
+/// What a capture filter at a destination makes of each route delivering there, as a worker compiles it.
+fn capture_filter(
+    asked: &CaptureFilterRequest,
+    system: &config_file::LoadedSystem,
+) -> Result<CaptureFilterCheck, String> {
+    let (compiled, dest) = at_destination(system, &asked.destination)?;
+    let mut check = CaptureFilterCheck::default();
+    for (idx, filter) in compiled.capture_filters(dest, &asked.text) {
+        match filter {
+            Ok(_) => check.reads += 1,
+            Err(e) => check.skips.push(RouteSkip {
+                route: compiled.routes[idx].id.clone(),
+                error: e.to_string(),
+            }),
+        }
+    }
+    Ok(check)
+}
+
 /// The answer to `asked` against `system`. A step's names read the record its pipeline's sample was captured under, as
 /// a preview of that pipeline does; a source's, the record the source gives; a `when`'s, the route's pipeline's output
 /// for that source. `Err` names an id `system` does not hold.
@@ -651,13 +731,7 @@ fn after_dot(
     // What `e` is over a route's pipeline's output. The pipeline compiles on its own: a half-typed expression after it
     // is not in it.
     let over_output = |r: &plan::topology::RouteConfig, e: &crate::expr::ast::Expr| {
-        let meta = (system.topology.sources.iter())
-            .find(|s| s.id == r.source)
-            .map(|s| s.kind.meta())
-            .unwrap_or(SourceMeta::NONE);
-        let plan = (system.pipelines.iter())
-            .find(|p| p.id == r.pipeline)
-            .and_then(|p| plan::plan::compile(p, &meta).ok())?;
+        let (plan, meta) = route_plan(system, r).ok()?;
         type_in(
             e,
             &plan::topology::output_symbols(&plan, &r.on_exception.tag_field, &meta),
@@ -689,22 +763,12 @@ fn after_dot(
             expr.and_then(|e| over_output(r, &e))
         }
         DotAt::Destination(id) => {
-            let dest = (system.topology.destinations.iter())
-                .find(|d| d.name == *id)
-                .ok_or_else(|| format!("this config has no destination {id:?}"))?;
-            // A filter there compiles once for each route that delivers to it (`runtime`), so a name has a type
-            // only where every one of them gives it one, and holds what all of those have in common.
-            let delivers = |r: &&plan::topology::RouteConfig| {
-                r.deliver.iter().any(|rule| rule.to.contains(&dest.id))
-                    || r.on_exception.answers.iter().any(|a| a.targets().contains(&dest.id))
-            };
-            let mut types = system
-                .topology
-                .routes
-                .iter()
-                .filter(delivers)
-                .map(|r| over_output(r, expr.as_ref()?));
-            (types.next().flatten()).and_then(|first| types.try_fold(first, |t, other| plan::dot::common(&t, &other?)))
+            // A filter there runs on each route delivering to it that it compiles on (`runtime`), so a name has
+            // what any of them gives it.
+            let (compiled, dest) = at_destination(system, id)?;
+            (compiled.delivering(dest))
+                .filter_map(|(_, r)| type_in(expr.as_ref()?, &compiled.output_of(r)))
+                .reduce(|a, b| plan::dictionary::meet(a, &b))
         }
     };
     Ok(Some(match ty {
@@ -741,6 +805,17 @@ pub fn run_preview(
     };
 
     let pipeline_names: Vec<String> = system.pipelines.iter().map(|p| p.name.clone()).collect();
+
+    if let Some(asked) = &req.capture_filter {
+        return match capture_filter(asked, &system) {
+            Ok(check) => Envelope::ok(Preview {
+                pipeline_names,
+                capture_filter: Some(check),
+                ..Preview::default()
+            }),
+            Err(e) => Preview::failed("config", vec![ApiError::new(e)], pipeline_names),
+        };
+    }
 
     if let Some(asked) = &req.after_dot {
         return match after_dot(asked, &system, req.pipeline.as_deref(), columns) {
@@ -816,6 +891,7 @@ pub fn run_preview(
             stage: None,
             pipeline_names,
             after_dot: None,
+            capture_filter: None,
             rows: vec![],
             unfiltered: filter.as_ref().map(|_| 0),
             parsers: vec![],
@@ -925,6 +1001,7 @@ pub fn run_preview(
         stage: None,
         pipeline_names,
         after_dot: None,
+        capture_filter: None,
         dictionary: Some(DictionaryOut {
             compiled: Dictionary::of(&record),
             sampled: Some(Dictionary::of(&sampled)),
@@ -1026,6 +1103,7 @@ pub fn run_pipeline_actual(
             at_micros: Some(locked_at),
             filter: None,
             after_dot: None,
+            capture_filter: None,
         },
         declared_at,
         columns,
@@ -1119,10 +1197,22 @@ mod tests {
         "routes":[{"id":"r","source":"in","pipeline":"p","condition":"_raw.","deliver":[{"when":"n.","to":["out","both"]}]},
             {"id":"r2","source":"in","pipeline":"q","deliver":[{"to":["both"]}]}]}"#;
 
+    /// `BUNDLE` without the condition and the `when` being typed: a destination's filter compiles over the whole
+    /// topology, which compiles only once they are written.
+    fn compiling() -> String {
+        BUNDLE
+            .replace(r#""condition":"_raw.","#, "")
+            .replace(r#""when":"n.","#, "")
+    }
+
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {
+        let config = match at {
+            DotAt::Destination(_) => compiling(),
+            _ => BUNDLE.into(),
+        };
         let previewed = run_preview(
             PreviewRequest {
-                config: BUNDLE.into(),
+                config,
                 pipeline: Some("p".into()),
                 sample: None,
                 show_internal: false,
@@ -1133,6 +1223,7 @@ mod tests {
                     text: text.into(),
                     at,
                 }),
+                capture_filter: None,
             },
             Default::default(),
             &[],
@@ -1196,14 +1287,51 @@ mod tests {
         assert!(after("n.", DotAt::Source("in".into())).unwrap().ty.is_none());
     }
 
-    /// A destination fed by routes of different types reads what all of them have in common.
+    /// A destination fed by routes of different types reads what any of them gives.
     #[test]
-    fn a_destination_reads_what_every_route_delivering_there_has_in_common() {
+    fn a_destination_reads_what_any_route_delivering_there_gives() {
         let at = || DotAt::Destination("both".into());
         assert_eq!(after("n.", at()).unwrap().ty.as_deref(), Some("f64"));
         let u = after("u.", at()).unwrap();
-        assert_eq!(u.fields, vec![("path".to_string(), "str".to_string())]);
-        assert_eq!(after("x.", at()).unwrap().ty, None);
+        assert!(u.fields.contains(&("path".into(), "str".into())), "{:?}", u.fields);
+        assert!(u.fields.contains(&("domain".into(), "str".into())), "{:?}", u.fields);
+        assert!(u.fields.contains(&("seen".into(), "bool".into())), "{:?}", u.fields);
+        assert_eq!(after("x.", at()).unwrap().ty.as_deref(), Some("i64"));
+        assert_eq!(after("nope.", at()).unwrap().ty, None);
+    }
+
+    /// A capture filter at a destination runs on the routes it compiles on and names each it passes over.
+    #[test]
+    fn a_capture_filter_at_a_destination_names_the_routes_it_skips() {
+        let check = |text: &str| {
+            let previewed = run_preview(
+                PreviewRequest {
+                    config: compiling(),
+                    pipeline: None,
+                    sample: None,
+                    show_internal: false,
+                    at_micros: None,
+                    filter: None,
+                    after_dot: None,
+                    capture_filter: Some(CaptureFilterRequest {
+                        text: text.into(),
+                        destination: "both".into(),
+                    }),
+                },
+                Default::default(),
+                &[],
+                Vec::new(),
+            );
+            assert!(previewed.ok);
+            previewed.body.capture_filter.unwrap()
+        };
+        let both = check("n > 1");
+        assert_eq!((both.reads, both.skips.len()), (2, 0));
+        let one = check("x > 1");
+        assert_eq!(one.reads, 1);
+        assert_eq!(one.skips.iter().map(|s| s.route.as_str()).collect::<Vec<_>>(), ["r2"]);
+        assert!(one.skips[0].error.contains('x'), "{}", one.skips[0].error);
+        assert_eq!(check("nope > 1").reads, 0);
     }
 
     /// A dot in a string follows no value; an id the bundle does not hold fails.
@@ -1223,6 +1351,7 @@ mod tests {
                     dot: 4,
                     at: DotAt::Source("nope".into()),
                 }),
+                capture_filter: None,
             },
             Default::default(),
             &[],

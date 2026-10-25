@@ -122,11 +122,10 @@ fn ssl_opts(identity: Option<&Identity>, secrets: &HeldSecrets) -> Result<SslOpt
         .with_root_certs(vec![super::trust::pem(identity)?.into_bytes().into()])
         .with_disable_built_in_roots(true);
     if let Some(identity) = identity
-        && let Some(certificate) = &identity.certificate
         && let Some(presented) = super::trust::presented(identity, secrets)?
     {
         ssl = ssl.with_client_identity(Some(ClientIdentity::new(
-            certificate.as_bytes().to_vec().into(),
+            presented.chain_pem.into_bytes().into(),
             presented.key_pem.into_bytes().into(),
         )));
     }

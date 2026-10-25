@@ -565,8 +565,7 @@ fn bundle(draw: &Draw, pki: &Pki) -> Value {
             b["identities"] = json!([{
                 "id": "client",
                 "authorities": pki.authority.pem,
-                "certificate": pki.client.certificate,
-                "key": {"secret": "client-key", "version": 1},
+                "certificate": {"secret": "client", "version": 1},
             }])
         }
     }
@@ -576,7 +575,7 @@ fn bundle(draw: &Draw, pki: &Pki) -> Value {
 /// The secrets the worker holds for `draw`: every credential the leader stores. And whether `draw` names one unheld:
 /// a worker-local one, which it never has.
 fn secrets_held(draw: &Draw, pki: &Pki) -> (HeldSecrets, bool) {
-    let mut stored = vec![("client-key".to_string(), 1, pki.client.key.clone())];
+    let mut stored = Vec::new();
     let mut unheld = false;
     match draw.destination.get("auth").or(draw.destination.get("password")) {
         Some(Value::Object(o)) => stored.push((
@@ -589,6 +588,12 @@ fn secrets_held(draw: &Draw, pki: &Pki) -> (HeldSecrets, bool) {
     }
     let mut secrets = HeldSecrets::default();
     secrets.set_stored(stored);
+    secrets.take([smeltr::heartbeat::SecretDelivery {
+        name: "client".to_string(),
+        version: 1,
+        value: pki.client.key.clone(),
+        chain: Some(pki.client.certificate.clone()),
+    }]);
     (secrets, unheld)
 }
 

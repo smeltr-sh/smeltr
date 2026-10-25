@@ -1095,9 +1095,9 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await expect(failed).toContainText('"status":503');
 });
 
-// A4, the whole trip. A step that does not compile says why once, on the step; the box above the sample only
-// names it, and takes the author there.
-test('A4: a compile error is written once, on its step, and the box above the sample jumps to it', async ({
+// A4, the whole trip. A step that does not compile says why once, on the step; the error chip above the records
+// lists it and takes the author there, and the records stand after the last step that compiles.
+test('A4: a compile error is written once, on its step, and the error chip jumps to it', async ({
   admin,
   leader,
   api,
@@ -1123,19 +1123,62 @@ test('A4: a compile error is written once, on its step, and the box above the sa
   await body.fill('x = ipVersion();');
 
   const message = '`ipVersion` takes 1 argument, found 0';
-  await expect(admin.getByText('compile failed')).toBeVisible();
+  const failed = admin.getByRole('button', { name: /Compile failed · 1/ });
+  await expect(failed).toBeVisible();
   // Focus is where the field's popup used to repeat it.
   await body.focus();
   await expect(admin.getByText(message, { exact: true })).toHaveCount(1);
-  // The sample from before stays under the box.
-  await expect(admin.getByText('Showing the sample from before this.')).toBeVisible();
+  // The records stand where the pipeline still compiles: after the parser.
+  await expect(admin.getByLabel('Paused')).toHaveText('◉ After step 1 · PARSER');
+  await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
 
-  await admin.getByRole('button', { name: /1 line\(s\) of code Jump/ }).click();
+  await failed.click();
+  await admin.getByRole('button', { name: /takes 1 argument, found 0 Jump/ }).click();
   await expect(body).toBeInViewport();
 });
 
+// ◎ pauses the records after a step: the steps after it are dimmed, a record a later step drops is back, and ✕
+// shows the whole pipeline again.
+test('◎ pauses the records after a step', async ({ admin, leader, api }) => {
+  await api.put(`/api/pipelines/orders${ON}`, {
+    id: 'orders',
+    name: 'orders',
+    steps: [
+      { type: 'parser', id: 'body', input: '_raw', kind: { type: 'json' }, declared: [] },
+      {
+        type: 'drop',
+        id: 'no-coupon',
+        filter: 'true',
+        disabled: false,
+        condition: 'coupon == null',
+      },
+    ],
+  });
+  await api.put(`/api/samples${ON}`, {
+    id: 'orders-sample',
+    name: 'orders',
+    records: ORDERS.map((raw) => ({ _raw: raw })),
+  });
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  const grid = admin.getByRole('table');
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toBeVisible();
+  const dropped = grid.getByRole('row', { name: /^row 1 / });
+  await expect(dropped).toHaveClass(/dropped/);
+
+  await admin.getByRole('button', { name: 'Pause the records after this step' }).first().click();
+  const paused = admin.getByLabel('Paused');
+  await expect(paused).toHaveText(/◉ After step 1 · PARSER/);
+  await expect(dropped).not.toHaveClass(/dropped/);
+  await expect(admin.locator('#step-no-coupon')).toHaveClass(/not-run/);
+
+  await paused.getByRole('button', { name: 'Show the whole pipeline' }).click();
+  await expect(paused).toBeHidden();
+  await expect(dropped).toHaveClass(/dropped/);
+});
+
 // A4, the whole trip. A refused save's errors stay on the steps until the next save; a preview error after it is
-// still written somewhere, in the box above the sample.
+// still written somewhere, in the error chip above the records.
 test('A4: after a refused save, a new compile error is still shown', async ({
   admin,
   leader,
@@ -1157,13 +1200,14 @@ test('A4: after a refused save, a new compile error is still shown', async ({
   await admin.getByRole('button', { name: /line\(s\) of code/ }).click();
   const body = admin.locator('textarea').last();
   await body.fill('x = ipVersion();');
-  await expect(admin.getByText('compile failed')).toBeVisible();
+  await expect(admin.getByRole('button', { name: /Compile failed · 1/ })).toBeVisible();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(
     admin.locator('.error-bar').getByRole('link', { name: /line\(s\) of code/ }),
   ).toBeVisible();
 
   await body.fill('x = ipVersion(1, 2);');
+  await admin.getByRole('button', { name: /Compile failed · 1/ }).click();
   await expect(
     admin.getByText('`ipVersion` takes 1 argument, found 2', { exact: true }),
   ).toBeVisible();

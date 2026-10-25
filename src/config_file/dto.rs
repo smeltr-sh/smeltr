@@ -48,19 +48,20 @@ impl SecretRefDto {
 
 /// One identity a worker connects out under, as a bundle holds it. See [`crate::plan::topology::Identity`].
 ///
-/// A certificate is public, so it is committed here in full. Its private key is a credential, so this names one.
-/// `config_file::load` refuses an identity that declares neither half, and one whose halves are not both present
-/// or both absent.
+/// Its certificate is an entry of the leader's certificate list, named by name and version like any stored secret:
+/// the entry holds the chain and its private key together. `config_file::load` refuses an identity that declares
+/// neither a certificate nor an authority.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct IdentityDto {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// PEM, leaf first, with any intermediates after it.
+    /// The certificate entry it presents. A bare string is a PEM pasted into a bundle written before identities
+    /// named an entry: it parses, so the bundle loads and says what to choose, and `config_file::load` refuses it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub certificate: Option<String>,
-    /// The credential holding `certificate`'s private key, never the key itself.
+    pub certificate: Option<SecretRefDto>,
+    /// The private key such a bundle named beside its pasted certificate. Read for the same reason, and refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<SecretRefDto>,
     /// PEM. A trust store holds more than one root, so several may follow one another.
@@ -72,14 +73,20 @@ pub struct IdentityDto {
 }
 
 impl IdentityDto {
-    /// Every credential this identity names, by the field naming it.
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
-        self.key.iter().map(|r| ("key", r)).collect()
+    /// The certificate entry this identity names, where it names one from the list.
+    pub fn listed_certificate(&self) -> Option<&LeaderSecretDto> {
+        match &self.certificate {
+            Some(SecretRefDto::LeaderStored(l)) => Some(l),
+            _ => None,
+        }
     }
 
-    /// `secrets`, for the leader to move one onto a new version.
+    /// `listed_certificate`, for the leader to move it onto a new version.
     pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
-        self.key.iter_mut().collect()
+        self.certificate
+            .iter_mut()
+            .filter(|r| matches!(r, SecretRefDto::LeaderStored(_)))
+            .collect()
     }
 }
 

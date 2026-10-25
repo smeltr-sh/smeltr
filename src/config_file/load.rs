@@ -31,9 +31,10 @@ use crate::plan::topology::{
     Endpoint, EntraSignIn, Framing, GcsAccess, GcsStore, HttpDestinationConfig, IcebergDestinationConfig, Identity,
     KafkaDestinationConfig, KafkaProps, KafkaService, KafkaSourceConfig, ListPlace, ListStart,
     LogAnalyticsDestinationConfig, NamedSecret, Newlines, ObjectFormat, ObjectQueue, ObjectSourceConfig,
-    ObjectsDestinationConfig, OktaSignIn, PrometheusDestinationConfig, RemoteWriteVersion, RequestBody, RouteConfig,
-    S3Access, S3Store, SftpAccess, SftpCredential, SftpStore, SourceConfig, SourceKind, SplunkHecDestinationConfig,
-    StartPosition, StopPosition, TopologyConfig, Transport, UnityCatalogTable, identity_secret,
+    ObjectsDestinationConfig, OktaSignIn, PresentedAs, PrometheusDestinationConfig, RemoteWriteVersion, RequestBody,
+    RouteConfig, S3Access, S3Store, SftpAccess, SftpCredential, SftpStore, SourceConfig, SourceKind,
+    SplunkHecDestinationConfig, StartPosition, StopPosition, TopologyConfig, Transport, UnityCatalogTable,
+    identity_secret,
 };
 
 use super::CURRENT_VERSION;
@@ -317,7 +318,9 @@ pub(crate) fn from_file_config_at(
 
     // Every name resolves and every id is unique: `required_fields` refused the bundle otherwise, so a connector's
     // identity is a lookup that cannot miss.
-    let identities: Identities = file.identities.iter().map(|i| (i.id.clone(), to_identity(i))).collect();
+    let identities: Identities = (file.identities.iter())
+        .map(|i| (i.id.clone(), to_identity(i, presented_as(&file, &i.id))))
+        .collect();
     let sources = file
         .sources
         .iter()
@@ -698,13 +701,13 @@ fn to_csv_columns(columns: &[FieldDto]) -> Result<(Vec<Option<String>>, Vec<Decl
 /// connectors usually name one, and each carries a certificate and a set of authorities.
 type Identities = HashMap<String, std::sync::Arc<Identity>>;
 
-fn to_identity(dto: &IdentityDto) -> std::sync::Arc<Identity> {
+fn to_identity(dto: &IdentityDto, presented: PresentedAs) -> std::sync::Arc<Identity> {
     std::sync::Arc::new(Identity {
         id: dto.id.clone(),
-        certificate: dto.certificate.clone(),
-        key: dto.key.as_ref().map(to_secret_ref),
+        certificate: dto.certificate.as_ref().map(to_secret_ref),
         authorities: dto.authorities.clone(),
         trust_public: dto.trust_public != Some(false),
+        presented,
     })
 }
 
@@ -782,7 +785,10 @@ pub fn sql_connection(
     source: &SourceDto,
     identity: Option<&IdentityDto>,
 ) -> Option<crate::plan::topology::SqlDatabase> {
-    let identities: Identities = identity.iter().map(|i| (i.id.clone(), to_identity(i))).collect();
+    // An SQL source connects out.
+    let identities: Identities = (identity.iter())
+        .map(|i| (i.id.clone(), to_identity(i, PresentedAs::CLIENT)))
+        .collect();
     sql_database(&source.kind, &identities)
 }
 
@@ -2016,7 +2022,7 @@ const TLS_PROTOCOLS: &[&str] = &["SSL", "SASL_SSL"];
 ///
 /// Each section's DER is parsed as X.509, not just labeled `CERTIFICATE`: a `CERTIFICATE` section wrapping
 /// malformed or truncated DER passes the label check and only surfaces at the TLS handshake, in a chain member
-/// `refuse_unless_usable` never reads (it looks at the leaf alone) or in an authorities bundle
+/// `io::trust::refuse_unless_usable` never reads (it looks at the leaf alone) or in an authorities bundle
 /// nothing else here reads at all.
 fn refuse_unless_certificates(pem: &str) -> Result<(), String> {
     use rustls::pki_types::pem::{PemObject, SectionKind};
@@ -2043,64 +2049,6 @@ fn refuse_unless_certificates(pem: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Which end of a TLS handshake a certificate is presented from.
-#[derive(Clone, Copy)]
-enum Presented {
-    /// By a connector connecting out.
-    AsClient,
-    /// By a receiver, to its senders.
-    AsServer,
-}
-
-/// Refuses a presented certificate that cannot authenticate as `presented`: Extended Key Usage naming purposes
-/// that leave out that end's, or Key Usage naming permissions that do not include the handshake signature either
-/// end makes. Read with the same library the connectors build their TLS configs against, for the same reason
-/// `refuse_unless_certificates` is: a save must not accept what a handshake would go on to refuse. Either
-/// extension absent entirely rules nothing out -- RFC 5280's own default -- so only one naming purposes or
-/// permissions and excluding what this needs is refused.
-fn refuse_unless_usable(pem: &str, presented: Presented) -> Result<(), String> {
-    use rustls::pki_types::pem::PemObject;
-
-    let leaf = rustls::pki_types::CertificateDer::pem_slice_iter(pem.as_bytes())
-        .next()
-        .ok_or_else(|| "it holds no certificate".to_string())?
-        .map_err(|e| format!("{e}"))?;
-    let (_, cert) = x509_parser::parse_x509_certificate(leaf.as_ref())
-        .map_err(|e| format!("that is not a certificate this can read: {e}"))?;
-    match (cert.extended_key_usage(), presented) {
-        (Ok(Some(eku)), Presented::AsClient) if !eku.value.client_auth => {
-            return Err(
-                "whose Extended Key Usage does not permit client authentication, so a far end enforcing it \
-                 refuses this certificate at the handshake -- a connector connecting out presents it as a client \
-                 certificate"
-                    .to_string(),
-            );
-        }
-        (Ok(Some(eku)), Presented::AsServer) if !eku.value.server_auth => {
-            return Err(
-                "whose Extended Key Usage does not permit server authentication, so a sender refuses this \
-                 certificate at the handshake -- a receiver presents it as a server certificate"
-                    .to_string(),
-            );
-        }
-        (Ok(_), _) => {}
-        (Err(e), _) => return Err(format!("whose Extended Key Usage could not be read: {e}")),
-    }
-    // Either end signs the handshake, which is what digitalSignature names permission for: rustls offers only
-    // ephemeral key exchange, so no end encrypts with its certificate's key. Present but false is a certificate
-    // meant for key exchange, not signing -- the Extended Key Usage names the purpose, this the means, and a far
-    // end enforcing KeyUsage checks both.
-    match cert.key_usage() {
-        Ok(Some(usage)) if !usage.value.digital_signature() => Err(
-            "whose Key Usage does not permit a digital signature, so it cannot sign the handshake a far end \
-             enforcing it requires"
-                .to_string(),
-        ),
-        Ok(_) => Ok(()),
-        Err(e) => Err(format!("whose Key Usage could not be read: {e}")),
-    }
-}
-
 /// A receiver speaking `receiver`, with what every receiver takes. It listens on `port` at every address of the host,
 /// IPv4 and IPv6: `[::]`, which the receiver opens dual-stack. The worker that runs it narrows that to the address its
 /// own startup settings name (`startup_config::worker_listen_address`), since an address is a fact about one host.
@@ -2119,15 +2067,15 @@ fn receiver_config<'a>(
     })
 }
 
-/// Whether a connector connecting out presents `identity`'s certificate. One no connector names yet is held to that
-/// too, as what it is most often named for; one only receivers name is checked where they name it.
-fn presented_as_client(file: &FileConfig, identity: &str) -> bool {
+/// How this bundle's connectors present `identity`'s certificate: connecting out, or as a receiver to its senders.
+fn presented_as(file: &FileConfig, identity: &str) -> PresentedAs {
     let named = |by: Option<&str>| by == Some(identity);
     let served = |s: &SourceDto| s.kind.receiver_port().is_some();
-    let receivers = file.sources.iter().filter(|s| served(s) && named(s.identity())).count();
-    receivers == 0
-        || file.sources.iter().any(|s| !served(s) && named(s.identity()))
-        || file.destinations.iter().any(|d| named(d.identity()))
+    PresentedAs {
+        client: file.sources.iter().any(|s| !served(s) && named(s.identity()))
+            || file.destinations.iter().any(|d| named(d.identity())),
+        server: file.sources.iter().any(|s| served(s) && named(s.identity())),
+    }
 }
 
 /// Checks what an identity says about itself, before anything names it.
@@ -2139,18 +2087,22 @@ fn validate_identities(file: &FileConfig, attributed: &mut Vec<ValidationError>)
             errors.at("id").push("an identity has no id".to_string());
         }
 
-        // A certificate is presented by signing with its key, so one without the other is configuration that
-        // cannot act.
-        match (&i.certificate, &i.key) {
-            (Some(_), None) => errors.at("key").push(format!(
-                "{what} has a certificate and no private key. A certificate is presented by signing \
-                 with its key, so name the credential holding it"
+        match &i.certificate {
+            Some(SecretRefDto::WorkerLocal(_)) => errors.at("certificate").push(format!(
+                "{what} has a pasted certificate. An identity presents a certificate from the leader's list: add \
+                 it under Admin → Certificates, then choose it here"
             )),
-            (None, Some(_)) => errors.at("certificate").push(format!(
-                "{what} names a private key and has no certificate. A key alone identifies nothing -- \
-                 paste the certificate it was issued for, or take the key out"
-            )),
+            Some(SecretRefDto::LeaderStored(l)) if l.secret.trim().is_empty() => errors.at("certificate").push(
+                format!("{what} names a certificate by a blank name. Choose one from the list"),
+            ),
             _ => {}
+        }
+        // A pasted certificate's message covers the key beside it: choosing a certificate takes both out.
+        if i.key.is_some() && !matches!(i.certificate, Some(SecretRefDto::WorkerLocal(_))) {
+            errors.at("certificate").push(format!(
+                "{what} has its own private key. A certificate from the list already holds its key, so choose \
+                 one here and the key is removed"
+            ));
         }
 
         if i.certificate.is_none() && i.authorities.is_none() {
@@ -2158,22 +2110,6 @@ fn validate_identities(file: &FileConfig, attributed: &mut Vec<ValidationError>)
                 "{what} declares neither a certificate to present nor an authority to trust, so naming \
                  it changes nothing. Fill one of them, or take the identity out"
             ));
-        }
-
-        if let Some(certificate) = &i.certificate {
-            if let Err(why) = refuse_unless_certificates(certificate) {
-                errors.at("certificate").push(format!(
-                    "{what} has a certificate that is not one: {why}. It is committed to the config \
-                     repository and read in review, so a certificate belongs here and a private key is \
-                     named under `key` instead"
-                ));
-            } else if presented_as_client(file, &i.id)
-                && let Err(why) = refuse_unless_usable(certificate, Presented::AsClient)
-            {
-                errors
-                    .at("certificate")
-                    .push(format!("{what} presents a certificate {why}"));
-            }
         }
 
         if i.trust_public == Some(false) && i.authorities.is_none() {
@@ -2853,17 +2789,11 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
     check_receiver_ports(file, attributed);
 
     // A credential that names nothing is refused here, or it surfaces only when a worker fails to look it up.
-    let named = (file.sources.iter().map(|s| ("sources", "source", &s.id, s.secrets())))
-        .chain(
-            file.destinations
-                .iter()
-                .map(|d| ("destinations", "destination", &d.id, d.secrets())),
-        )
-        .chain(
-            file.identities
-                .iter()
-                .map(|i| ("identities", "identity", &i.id, i.secrets())),
-        );
+    let named = (file.sources.iter().map(|s| ("sources", "source", &s.id, s.secrets()))).chain(
+        file.destinations
+            .iter()
+            .map(|d| ("destinations", "destination", &d.id, d.secrets())),
+    );
     for (section, what, id, secrets) in named {
         let errors = &mut ItemErrors::new(attributed, section, id);
         let mut fields: Vec<_> = secrets
@@ -4550,22 +4480,11 @@ fn check_listener(what: &str, listener: &ReceiverSettingsDto, file: &FileConfig,
     let declared = identity
         .as_ref()
         .and_then(|name| file.identities.iter().find(|i| &i.id == name));
-    match declared.and_then(|i| i.certificate.as_deref()).filter(|c| !blank(c)) {
-        None if declared.is_some() => errors.at("identity").push(format!(
+    if declared.is_some_and(|i| i.certificate.is_none()) {
+        errors.at("identity").push(format!(
             "{what} serves TLS under the identity {identity:?}, which holds no certificate; a receiver presents one \
              to every sender"
-        )),
-        Some(certificate) => {
-            // One that is not a certificate is reported where the identity is declared.
-            if refuse_unless_certificates(certificate).is_ok()
-                && let Err(why) = refuse_unless_usable(certificate, Presented::AsServer)
-            {
-                errors.at("identity").push(format!(
-                    "{what} serves TLS under the identity {identity:?}, which presents a certificate {why}"
-                ));
-            }
-        }
-        None => {}
+        ));
     }
     if !(MaxRequestBytes::MIN..=MaxRequestBytes::MAX).contains(&max_request_bytes.0) {
         errors.at("maxRequestBytes").push(format!(
@@ -7236,23 +7155,42 @@ mod tests {
 
     const TLS: &str = r#", "properties": {"security.protocol": "SSL"}, "identity": "acme""#;
 
+    /// A bundle written before identities named a certificate from the list pasted the certificate and named its
+    /// key. It still parses, so it loads to say what to choose, once, where the choice is made.
     #[test]
-    fn an_identity_presenting_a_certificate_with_no_key_is_refused() {
+    fn a_pasted_certificate_and_its_key_parse_and_are_refused_once() {
         let identity = format!(
-            r#"{{"id": "acme", "certificate": {}}}"#,
+            r#"{{"id": "acme", "certificate": {}, "key": {{"secret": "acme-key", "version": 1}}}}"#,
             serde_json::to_string(&a_certificate()).unwrap()
         );
         let errors = validation_errors(with_identity(&identity, TLS));
-        assert!(errors.iter().any(|e| e.contains("no private key")), "{errors:?}");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].field, Some("certificate"));
+        assert!(errors[0].message.contains("pasted"), "{errors:?}");
+    }
+
+    /// A key beside a certificate from the list is one the list already holds.
+    #[test]
+    fn a_key_beside_a_listed_certificate_is_refused() {
+        let errors = validation_errors(with_identity(
+            r#"{"id": "acme", "certificate": {"secret": "acme", "version": 1}, "key": "ACME_KEY"}"#,
+            TLS,
+        ));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.field == Some("certificate") && e.contains("its own private key")),
+            "{errors:?}"
+        );
     }
 
     #[test]
-    fn an_identity_naming_a_key_with_no_certificate_is_refused() {
+    fn an_identity_naming_a_listed_certificate_is_accepted() {
         let errors = validation_errors(with_identity(
-            r#"{"id": "acme", "key": "ACME_KEY", "authorities": null}"#,
+            r#"{"id": "acme", "certificate": {"secret": "acme", "version": 1}}"#,
             TLS,
         ));
-        assert!(errors.iter().any(|e| e.contains("no certificate")), "{errors:?}");
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     /// An identity with neither half is the one combination refused: every other says something about a
@@ -7261,63 +7199,6 @@ mod tests {
     fn an_identity_that_declares_neither_half_is_refused() {
         let errors = validation_errors(with_identity(r#"{"id": "acme"}"#, TLS));
         assert!(errors.iter().any(|e| e.contains("changes nothing")), "{errors:?}");
-    }
-
-    /// The bundle is committed and read in review, so what goes in the certificate field is checked for being one.
-    #[test]
-    fn a_private_key_in_an_identitys_certificate_is_refused() {
-        let identity = r#"{"id": "acme", "certificate": "-----BEGIN PRIVATE KEY-----\nMIIEvQ\n-----END PRIVATE KEY-----", "key": "ACME_KEY"}"#;
-        let errors = validation_errors(with_identity(identity, TLS));
-        assert!(errors.iter().any(|e| e.contains("holds a private key")), "{errors:?}");
-    }
-
-    /// A certificate good for server authentication only presents fine to a browser and refuses at the handshake
-    /// with a far end that enforces Extended Key Usage -- a connector connecting out presents an identity's
-    /// certificate as a client certificate.
-    #[test]
-    fn a_certificate_restricted_to_server_auth_is_refused() {
-        let key = rcgen::KeyPair::generate().unwrap();
-        let mut params = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
-        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-        let certificate = params.self_signed(&key).unwrap().pem();
-        let identity = format!(
-            r#"{{"id": "acme", "certificate": {}, "key": "ACME_KEY"}}"#,
-            serde_json::to_string(&certificate).unwrap()
-        );
-        let errors = validation_errors(with_identity(&identity, TLS));
-        assert!(errors.iter().any(|e| e.contains("client authentication")), "{errors:?}");
-    }
-
-    /// Extended Key Usage names the purpose, Key Usage the means: a leaf naming clientAuth but restricted to key
-    /// encipherment cannot sign the handshake client authentication needs, whatever it claims its purpose is.
-    #[test]
-    fn a_certificate_that_cannot_sign_is_refused_though_its_purpose_names_client_auth() {
-        let key = rcgen::KeyPair::generate().unwrap();
-        let mut params = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
-        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
-        params.key_usages = vec![rcgen::KeyUsagePurpose::KeyEncipherment];
-        let certificate = params.self_signed(&key).unwrap().pem();
-        let identity = format!(
-            r#"{{"id": "acme", "certificate": {}, "key": "ACME_KEY"}}"#,
-            serde_json::to_string(&certificate).unwrap()
-        );
-        let errors = validation_errors(with_identity(&identity, TLS));
-        assert!(errors.iter().any(|e| e.contains("digital signature")), "{errors:?}");
-    }
-
-    /// The ordinary case: nothing restricts an identity's certificate, which is what an unremarkable leaf
-    /// certificate carries -- Extended Key Usage absent entirely rules nothing out.
-    #[test]
-    fn a_certificate_naming_no_extended_key_usage_is_not_refused() {
-        let identity = format!(
-            r#"{{"id": "acme", "certificate": {}, "key": "ACME_KEY"}}"#,
-            serde_json::to_string(&a_certificate()).unwrap()
-        );
-        let errors = validation_errors(with_identity(&identity, TLS));
-        assert!(
-            !errors.iter().any(|e| e.contains("client authentication")),
-            "{errors:?}"
-        );
     }
 
     /// `CertificateDer`'s own PEM reader selects certificate sections rather than proving there is nothing else,
@@ -7335,11 +7216,8 @@ mod tests {
 
     #[test]
     fn an_identity_trusting_no_public_root_and_no_authority_is_refused() {
-        let identity = format!(
-            r#"{{"id": "acme", "trustPublic": false, "certificate": {}, "key": "ACME_KEY"}}"#,
-            serde_json::to_string(&a_certificate()).unwrap()
-        );
-        let errors = validation_errors(with_identity(&identity, TLS));
+        let identity = r#"{"id": "acme", "trustPublic": false, "certificate": {"secret": "acme", "version": 1}}"#;
+        let errors = validation_errors(with_identity(identity, TLS));
         assert!(errors.iter().any(|e| e.contains("trusts no public root")), "{errors:?}");
     }
 
@@ -7626,8 +7504,7 @@ mod tests {
     fn a_connector_carries_the_identity_it_names() {
         let certificate = a_certificate();
         let identity = format!(
-            r#"{{"id": "acme", "certificate": {}, "key": "ACME_KEY", "authorities": {}}}"#,
-            serde_json::to_string(&certificate).unwrap(),
+            r#"{{"id": "acme", "certificate": {{"secret": "acme", "version": 3}}, "authorities": {}}}"#,
             serde_json::to_string(&certificate).unwrap()
         );
         let json = example_json()
@@ -7649,10 +7526,17 @@ mod tests {
             .expect("a kafka source");
         let carried = kafka.identity.as_ref().expect("the identity it names");
         assert_eq!(carried.id, "acme");
-        assert_eq!(carried.certificate.as_deref(), Some(certificate.as_str()));
         assert_eq!(
-            carried.key,
-            Some(crate::plan::topology::SecretRef::WorkerLocal("ACME_KEY".into()))
+            carried.certificate,
+            Some(crate::plan::topology::SecretRef::LeaderStored {
+                name: "acme".into(),
+                version: 3
+            })
+        );
+        assert_eq!(carried.authorities.as_deref(), Some(certificate.as_str()));
+        assert!(
+            carried.presented.client && !carried.presented.server,
+            "a Kafka source connects out"
         );
     }
 
@@ -7695,15 +7579,11 @@ mod tests {
         assert_eq!(in_use, vec!["acme".to_string()]);
     }
 
-    /// A key a worker cannot obtain has to refuse the deploy before the running one is stopped, which is what
-    /// `named_secrets` is asked. An identity's key is as much a named credential as a SASL password.
+    /// A certificate a worker cannot obtain has to refuse the deploy before the running one is stopped, which is
+    /// what `named_secrets` is asked. An identity's certificate is as much a named credential as a SASL password.
     #[test]
-    fn an_identitys_key_is_a_credential_the_bundle_names() {
-        let certificate = a_certificate();
-        let identity = format!(
-            r#"{{"id": "acme", "certificate": {}, "key": {{"secret": "acme-key", "version": 3}}}}"#,
-            serde_json::to_string(&certificate).unwrap()
-        );
+    fn an_identitys_certificate_is_a_credential_the_bundle_names() {
+        let identity = r#"{"id": "acme", "certificate": {"secret": "acme", "version": 3}}"#;
         let json = example_json()
             .replacen(r#""groupId": "smeltr""#, &format!(r#""groupId": "smeltr"{TLS}"#), 1)
             .replacen(
@@ -7717,7 +7597,7 @@ mod tests {
             named.iter().any(|n| matches!(
                 &n.reference,
                 crate::plan::topology::SecretRef::LeaderStored { name, version }
-                    if name == "acme-key" && *version == 3
+                    if name == "acme" && *version == 3
             )),
             "{:?}",
             named.iter().map(|n| n.what.as_str()).collect::<Vec<_>>()
@@ -8251,31 +8131,6 @@ mod tests {
             named,
             vec![(secret, r#"destination "lake": unityCatalog.clientSecret"#)]
         );
-    }
-
-    /// Half of a pair names the half that is missing, since that is where the fix goes.
-    #[test]
-    fn an_identity_with_half_a_pair_names_the_missing_half() {
-        let mut file: FileConfig = serde_json::from_str(example_json()).unwrap();
-        file.identities.push(
-            serde_json::from_value(serde_json::json!({
-                "id": "half", "key": "TLS_KEY"
-            }))
-            .unwrap(),
-        );
-        let errors = validation_errors(file);
-        let half = errors
-            .iter()
-            .find(|e| e.contains("names a private key and has no certificate"))
-            .unwrap();
-        assert_eq!(
-            half.item,
-            Some(ItemRef {
-                section: "identities",
-                id: "half".into()
-            })
-        );
-        assert_eq!(half.field, Some("certificate"));
     }
 
     /// Steps nest, and a blank field inside an `if` is as broken as one outside it.

@@ -306,7 +306,7 @@ fn managed_identity_query(props: &KafkaProps, client_id: Option<&str>) -> Option
 }
 
 /// Sets the inline PEM properties an identity carries. librdkafka reads each of these from memory, so nothing is
-/// written to the worker's disk. The key comes through `trust::presented`, so one librdkafka could not read is
+/// written to the worker's disk. The chain and key come through `trust::presented`, so one librdkafka could not read is
 /// refused in the words every other client uses, before any handshake.
 ///
 /// The security protocol is not set here: an identity says what this client presents and trusts, not whether SASL
@@ -319,10 +319,8 @@ fn apply_identity(
 ) -> Result<(), IoError> {
     let Some(identity) = identity else { return Ok(()) };
     config.set("ssl.ca.pem", super::trust::pem(Some(identity))?);
-    if let Some(certificate) = &identity.certificate
-        && let Some(presented) = super::trust::presented(identity, secrets)?
-    {
-        config.set("ssl.certificate.pem", certificate);
+    if let Some(presented) = super::trust::presented(identity, secrets)? {
+        config.set("ssl.certificate.pem", presented.chain_pem);
         config.set("ssl.key.pem", presented.key_pem);
     }
     Ok(())

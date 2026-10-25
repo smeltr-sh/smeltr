@@ -20,8 +20,10 @@
     listCertificates,
     createCertificate,
     replaceCertificate,
+    pointSecretNow,
     deleteSecret,
     currentVersion,
+    errorText,
     type CertificateDto,
   } from './api';
   import { ago, expiringSoon, expiry } from './time';
@@ -55,6 +57,7 @@
 
   function open(name: string | null) {
     editing = { name };
+    replacedNote = '';
     newName = '';
     newDescription = '';
     pem = '';
@@ -87,6 +90,7 @@
           ? await createCertificate(newName.trim(), newDescription.trim(), pem, privateKey)
           : await replaceCertificate(editing.name, pem, privateKey);
       if (!res.ok) return;
+      const replaced = editing.name;
       editing = null;
       privateKey = '';
       if (startAdding) {
@@ -94,10 +98,32 @@
         return;
       }
       await load();
+      if (replaced !== null) await pointAt(replaced);
     } catch (e) {
       reported(e);
     } finally {
       saving = false;
+    }
+  }
+
+  /** What the last replace did to the identities naming it. */
+  let replacedNote = $state('');
+
+  /** Points every identity naming `name` at its new version, as storing a secret's value does: the change deploys
+   * it, on the branch already being edited. */
+  async function pointAt(name: string) {
+    const version = currentVersion(certificates.find((c) => c.name === name)!)?.version;
+    if (version === undefined) return;
+    const pointed = await pointSecretNow(name, version);
+    if (!pointed.ok) {
+      replacedNote = `Replaced, but no identity could be updated to use it: ${errorText(pointed.errors) || 'the change was not drafted'}`;
+    } else if (pointed.references === 0) {
+      replacedNote = 'Replaced.';
+    } else {
+      const identities =
+        pointed.references === 1 ? '1 identity' : `${pointed.references} identities`;
+      const groups = `group${pointed.groups.length === 1 ? '' : 's'} ${pointed.groups.join(', ')}`;
+      replacedNote = `Replaced. ${identities} in ${groups} will present the new version once you deploy the open change.`;
     }
   }
 
@@ -142,6 +168,7 @@
     <button type="button" class="primary" onclick={() => open(null)} disabled={editing !== null}>
       + Add certificate
     </button>
+    {#if replacedNote}<span class="dim">{replacedNote}</span>{/if}
   </div>
 
   <Dialog

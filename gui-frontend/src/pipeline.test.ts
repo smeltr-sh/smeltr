@@ -7,11 +7,13 @@ import {
   proposedTypeSpec,
   newStep,
   parseInputFor,
+  flatSteps,
   orderedStepErrors,
   parsePipelineDtoJson,
   stepSummary,
   stepToDto,
   stepsFromDto,
+  stepsRun,
   truncateSteps,
   type Step,
   type FieldSpec,
@@ -108,6 +110,26 @@ describe('truncateSteps', () => {
       untouchedIf,
       ifStep('second', 'b', [], []),
     ]);
+  });
+});
+
+describe('flatSteps', () => {
+  it('lists an if before its branches, then before else', () => {
+    const [a, t, e, z] = [ev('a'), ev('t'), ev('e'), ev('z')];
+    const branch = ifStep('check', 'cond', [t], [e]);
+    expect(flatSteps([a, branch, z])).toEqual([a, branch, t, e, z]);
+  });
+});
+
+describe('stepsRun', () => {
+  it('holds the steps truncateSteps keeps, as the caller holds them', () => {
+    const [a, t, e, z] = [ev('a'), ev('t'), ev('e'), ev('z')];
+    const branch = ifStep('check', 'cond', [t], [e]);
+    const steps = [a, branch, z];
+    expect(stepsRun(steps, e, true)).toEqual(new Set([a, branch, e]));
+    expect(stepsRun(steps, t, false)).toEqual(new Set([a, branch]));
+    expect(stepsRun(steps, branch, true)).toEqual(new Set([a, branch, t, e]));
+    expect(stepsRun(steps, ev('gone'), true)).toBeNull();
   });
 });
 

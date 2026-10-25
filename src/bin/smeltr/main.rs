@@ -1008,10 +1008,10 @@ async fn setup_leader(
             get(worker_groups_api::list_worker_groups).post(worker_groups_api::create_worker_group),
         )
         .route("/api/worker-groups/:id/hue", put(worker_groups_api::set_group_hue))
-        // Not on `app` below with the rest of the config routes: saving an identity asks the secret store whether
-        // its certificate and the key it names are a pair, which needs `State<AppState>`.
+        // Not on `app` below with the rest of the config routes: saving an identity asks the certificate list
+        // whether it holds the certificate named, which needs `State<AppState>`.
         .route("/api/identities", put(config_api::put_identities))
-        // Here for the same reason: undoing an identity runs the same pairing check.
+        // Here for the same reason: undoing an identity runs the same check.
         .route("/api/undo", post(config_api::undo))
         // Not on `app` below with the rest of the config routes: retention after an upload keeps what the fleet runs,
         // which the registry knows. A lookup file is streamed to disk, so the limit is what a disk takes rather than
@@ -2074,15 +2074,6 @@ async fn run_leader() {
     ));
 
     let LeaderSetup { routes, tls, leader } = setup_leader(port, auth.clone(), store, registry).await;
-    // After `setup_leader`, which recovers an upload a crash interrupted, so what is listed is what is served.
-    if tls.is_some()
-        && let Err(e) = smeltr::leader::list_uploaded_certificate(
-            leader.store.as_ref(),
-            &smeltr::leader::tls::dir_of(&leader.data_dir),
-        )
-    {
-        tracing::warn!(target: "leader.certificates", "the uploaded certificate the leader serves was not listed: {e}");
-    }
     // Before `leader` goes into the certificate state, which a leader serving plain HTTP has none of.
     let list = leader.clone();
     let certificates = tls.as_ref().map(|(resolver, _)| {
@@ -2416,6 +2407,7 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 after_dot: None,
+                capture_filter: None,
             },
             Default::default(),
             &[
@@ -2473,6 +2465,7 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 after_dot: None,
+                capture_filter: None,
             },
             Default::default(),
             columns,
@@ -2494,6 +2487,7 @@ mod tests {
                 at_micros: None,
                 filter: Some(filter.to_string()),
                 after_dot: None,
+                capture_filter: None,
             },
             Default::default(),
             &[],
@@ -2549,6 +2543,7 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 after_dot: None,
+                capture_filter: None,
             },
             Default::default(),
             &[],
@@ -2945,6 +2940,7 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 after_dot: None,
+                capture_filter: None,
             },
         );
 
@@ -2978,6 +2974,7 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 after_dot: None,
+                capture_filter: None,
             },
         );
         assert!(!response.ok, "{} rows", response.rows.len());
