@@ -334,6 +334,8 @@ struct Parse {
     input: usize,
     /// The object it writes into, each of `declared` a field of it; `None`, the record.
     into: Option<String>,
+    /// Whether `into` is an object the program bound, rather than a key the record may hold.
+    into_bound: bool,
     /// Each field it writes, with whether this parse is its first write, which declares it.
     declared: Vec<(usize, bool)>,
 }
@@ -1569,11 +1571,17 @@ impl Gen {
 
     /// A parse of a text field, with the eval step that writes the text first at the top level. Under a guard the
     /// parse reads a text field already bound, and is of a kind that declares every key it writes. At the top level it
-    /// may write into an object of its own, its fields new.
+    /// may write into an object, its fields new: one of its own, `o`, which holds fields already, or `zz`, a key some
+    /// records hold as text.
     fn parse_steps(&mut self, top: bool) -> Option<Vec<(Form, Vec<S>)>> {
         let kinds: Vec<Parser> = Parser::ALL.into_iter().filter(|k| top || !k.dynamic()).collect();
         let kind = *self.rng.pick(&kinds);
-        let into = (top && self.rng.chance(3)).then(|| format!("p{}", self.bindings.len()));
+        let into = (top && self.rng.chance(3)).then(|| match self.rng.below(3) {
+            0 => "o".to_string(),
+            1 => "zz".to_string(),
+            _ => format!("p{}", self.bindings.len()),
+        });
+        let into_bound = into.as_deref() == Some("o");
         let mut declared = Vec::new();
         for _ in 0..1 + self.rng.below(3) {
             let ty = self
@@ -1606,6 +1614,7 @@ impl Gen {
             split_dots: self.rng.chance(2),
             input,
             into,
+            into_bound,
             declared,
         };
         out.push((Form::Parser, vec![S::Parse(parse)]));
@@ -1883,7 +1892,7 @@ impl Writer<'_> {
             S::Parse(p) => {
                 // What `plan::lower` writes for an object the open record may hold as a key: it, converted to an
                 // object, before the fields that convert under it.
-                if let Some(into) = &p.into {
+                if let Some(into) = p.into.as_ref().filter(|_| !p.into_bound) {
                     out.push_str(&format!("{into}: {{...}} = {into}; "));
                 }
                 if !p.kind.dynamic() {
@@ -2280,6 +2289,8 @@ const CONSTRUCTS: &[&str] = &[
     "drop",
     "bare call",
     "parse into",
+    "parse into an object",
+    "parse into a record key",
 ];
 
 /// What `p` writes, by the names `expected` gives.
@@ -2360,6 +2371,8 @@ fn covers(p: &Program) -> BTreeSet<String> {
                 },
                 Node::S(S::Drop) => "drop".into(),
                 Node::S(S::Bare(_)) => "bare call".into(),
+                Node::S(S::Parse(p)) if p.into_bound => "parse into an object".into(),
+                Node::S(S::Parse(p)) if p.into.as_deref() == Some("zz") => "parse into a record key".into(),
                 Node::S(S::Parse(p)) if p.into.is_some() => "parse into".into(),
                 Node::S(S::Parse(p)) => format!("{} call", p.kind.name()),
                 Node::S(S::Lookup(_)) => "lookup call".into(),

@@ -5330,7 +5330,7 @@ fn a_later_parser_keeps_what_its_input_lacks() {
 
 /// A parser with an `into` writes under that object what it would write into the record: its declared fields and
 /// every key it finds. `$` names the record. An object the name already holds takes the parse's keys over its own; a
-/// name holding anything else is a compile error.
+/// name an earlier step bound to anything else is a compile error, and a record key that is no object is replaced.
 #[test]
 fn a_parser_writes_into_the_object_it_names() {
     let into = |id, input: &str, into: &str, declared: Vec<DeclaredField>| {
@@ -5404,6 +5404,17 @@ fn a_parser_writes_into_the_object_it_names() {
         "{}",
         rows[1]
     );
+
+    // A record whose own `app` is no object: the parsed object replaces it, and the row is marked.
+    let docs = [r#"{"app":"x","inner":"{\"a\":1}"}"#];
+    let plan = ok(vec![code(0, &json("inner: str;")), into(1, "inner", "app", vec![])]);
+    assert_eq!(run(&plan, &docs)[0]["app"], json!({"a": 1}));
+    let marks: Vec<_> = run_scoped_on(&plan, &docs, None)
+        .entries()
+        .iter()
+        .map(|e| e.kind.label())
+        .collect();
+    assert_eq!(marks, ["CoercionRefused"]);
 
     let e = err(vec![code(0, &json("app: str;")), into(1, "_raw", "app", vec![])]);
     assert!(e.contains("a spread takes an object, not str"), "{e}");
