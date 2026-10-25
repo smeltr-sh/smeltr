@@ -18,6 +18,7 @@
   import { tick, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import Help from './Help.svelte';
+  import { float } from './float';
   import PickOrNew from './PickOrNew.svelte';
   import ValidatedField from './ValidatedField.svelte';
   import { pageValidation, type Placed } from './validation.svelte';
@@ -588,23 +589,9 @@
     menu = { ...m, at };
     void tick().then(() => {
       if (!menuEl || !menu) return;
-      place(menu.at);
       // A menu with nothing to choose takes focus itself, so focus can leave it and close it.
       (menuEl.querySelector<HTMLElement>('button') ?? menuEl).focus();
     });
-  }
-  /** The menu is fixed, so it is placed from the anchor's box and pulled back inside the window; it flips above
-   * the anchor when below runs off the bottom. */
-  function place(at: DOMRect) {
-    if (!menuEl) return;
-    const w = menuEl.offsetWidth;
-    const h = menuEl.offsetHeight;
-    menuEl.style.left = `${Math.max(8, Math.min(at.left, window.innerWidth - w - 8))}px`;
-    const below = at.bottom + 4;
-    const flip = below + h > window.innerHeight - 8 && at.top - h - 4 > 8;
-    // Its height is capped to the window, so a menu that fits neither side still lands wholly inside it.
-    const top = flip ? at.top - h - 4 : below;
-    menuEl.style.top = `${Math.max(8, Math.min(top, window.innerHeight - h - 8))}px`;
   }
   function closeMenu(restoreFocus = false) {
     const opener = trigger;
@@ -787,11 +774,9 @@
     }
   }}
   onscrollcapture={(e) => {
-    // The menu is fixed and its anchor is not, so a scroll under it moves it with its anchor. Opening it can scroll
-    // the card to bring the anchor into view. A menu with no anchor left points at nothing, and closes.
+    // A menu with no anchor left points at nothing, and closes.
     if (!menu || (e.target instanceof Node && menuEl?.contains(e.target))) return;
-    if (trigger?.isConnected) place(trigger.getBoundingClientRect());
-    else closeMenu();
+    if (!trigger?.isConnected) closeMenu();
   }}
 />
 
@@ -1195,7 +1180,9 @@
   <div
     class="menu"
     tabindex="-1"
+    popover="manual"
     bind:this={menuEl}
+    {@attach float(() => (trigger?.isConnected ? trigger.getBoundingClientRect() : menu?.at))}
     onfocusout={(e) => {
       if (e.relatedTarget instanceof Node && !menuEl?.contains(e.relatedTarget)) closeMenu();
     }}
@@ -1752,8 +1739,7 @@
     outline: none;
   }
   .menu {
-    position: fixed;
-    z-index: 20;
+    color: var(--ink);
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
@@ -1763,8 +1749,6 @@
     flex-direction: column;
     gap: 2px;
     min-width: 190px;
-    max-height: calc(100vh - 16px);
-    overflow-y: auto;
     box-sizing: border-box;
   }
   .menu button {

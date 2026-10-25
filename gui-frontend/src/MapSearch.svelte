@@ -6,6 +6,7 @@
 <script lang="ts">
   import type { MapNode } from './api';
   import { applySuggestion, type Suggestion } from './mapTerms';
+  import { float } from './float';
 
   let {
     query = $bindable(),
@@ -103,6 +104,8 @@
       id="map-suggestions"
       role="listbox"
       aria-label="Suggestions"
+      popover="manual"
+      {@attach float(() => input?.getBoundingClientRect(), { matchWidth: true })}
       onmousedown={(e) => e.preventDefault()}
     >
       {#each items as s, i (i)}
@@ -166,14 +169,8 @@
   }
 
   .suggestions {
-    position: absolute;
-    z-index: 21;
-    top: calc(100% + 4px);
-    left: 0;
-    right: 0;
+    color: var(--ink);
     max-height: 26rem;
-    overflow-y: auto;
-    margin: 0;
     padding: 0.25rem;
     list-style: none;
     background: var(--panel);
