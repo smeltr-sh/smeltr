@@ -54,7 +54,7 @@ committed. Samples and tests sit beside the bundle and no worker reads them.
 
 A sample reaches `main` only when a test beside it names it. Deploying a change
 leaves out every sample it adds or changes that no test names, and its review
-sets those apart as not deployed: they are the branch's scratch, and go with the
+sets those apart as left out: they are the branch's scratch, and go with the
 branch. A sample removed is removed, and a bundle holding a test that does not
 read keeps every sample, since what that test names cannot be known.
 

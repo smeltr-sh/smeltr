@@ -619,7 +619,7 @@
         >{count(
           deployed.length,
           'object',
-        )}{#if notDeployed.length > 0}{` · ${notDeployed.length} not deployed`}{/if}</span
+        )}{#if notDeployed.length > 0}{` · ${count(notDeployed.length, 'sample')} left out`}{/if}</span
       >
     {/if}
     <select class="saves" aria-label="Saves" bind:value={range}>
@@ -669,7 +669,7 @@
     {/each}
     {#if notDeployed.length > 0}
       <div class="card not-deployed">
-        <h2 class="card-note">Not deployed</h2>
+        <h2 class="card-note">Left out</h2>
         <p class="card-note">
           No test uses these samples. They stay on <code>{branch.name}</code> until it is deployed, then
           are deleted with it. To deploy one, lock it as a test.

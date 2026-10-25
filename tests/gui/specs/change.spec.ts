@@ -511,10 +511,10 @@ test('a review sets apart the samples no test uses, which the deploy leaves out'
 
   await goto(admin, leader, '#/changes/review/scratch');
   const staying = admin.locator('.not-deployed');
-  await expect(staying.getByRole('heading', { name: 'Not deployed' })).toBeVisible();
+  await expect(staying.getByRole('heading', { name: 'Left out' })).toBeVisible();
   await expect(staying.getByText('capture 14:20', { exact: true })).toBeVisible();
   await expect(staying.getByRole('button', { name: 'Undo changes' })).toHaveCount(0);
-  await expect(admin.getByText('1 sample not deployed', { exact: true })).toBeVisible();
+  await expect(admin.getByText('1 sample left out', { exact: true })).toBeVisible();
 
   await api.deploy('scratch');
   const main = await api.get('/api/samples?branch=main&scope=shared');
