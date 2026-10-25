@@ -32,7 +32,8 @@ export function source(served: Locator, label: string): Locator {
  * next heartbeats; a leader with nobody to wait for takes it on the page's next read. */
 export async function inForce(served: Locator, label: string) {
   await expect(source(served, label)).toHaveAttribute('aria-current', 'true', { timeout: 60_000 });
-  await expect(served.getByText(/in progress|new root/)).toHaveCount(0);
+  // A new root keeps the source, which is in force all along: this is the wait.
+  await expect(served.getByText(/in progress|new root/)).toHaveCount(0, { timeout: 60_000 });
 }
 
 /** Waits for the page to say the switch just opened is being published, under `heading`, with every worker
@@ -49,8 +50,11 @@ async function publishing(served: Locator, heading: RegExp) {
 let uploads = 0;
 
 /** Adds `pki` to the certificate list through the chooser's add link, which comes back to the Leader certificate
- * card, and picks it there. Returns the card. */
-export async function chooseUploaded(page: Page, pki: Pki): Promise<Locator> {
+ * card, and picks it there. Returns the card, and the name it was added under. */
+export async function chooseUploaded(
+  page: Page,
+  pki: Pki,
+): Promise<{ served: Locator; name: string }> {
   const name = `uploaded-${++uploads}`;
   let served = await openCertificates(page);
   await source(served, 'Uploaded').click();
@@ -63,21 +67,29 @@ export async function chooseUploaded(page: Page, pki: Pki): Promise<Locator> {
   served = page.getByRole('region', { name: /^Leader certificate/ });
   await source(served, 'Uploaded').click();
   await served.getByRole('combobox', { name: 'Certificate' }).selectOption(name);
-  return served;
+  return { served, name };
 }
 
-/** Serves `pki` in place of the leader's own, and waits until it is in force. */
-export async function switchToUploaded(page: Page, pki: Pki) {
-  const served = await chooseUploaded(page, pki);
+/** Serves `pki` in place of the leader's own, and waits until it is in force. Returns the name it was added
+ * under. */
+export async function switchToUploaded(page: Page, pki: Pki): Promise<string> {
+  const { served, name } = await chooseUploaded(page, pki);
   await served.getByRole('button', { name: 'Serve this certificate' }).click();
   await publishing(served, /^Switch to Uploaded in progress/);
   await inForce(served, 'Uploaded');
+  return name;
 }
 
 /** Replaces the certificate the leader serves with `pki`, on the Certificates page, which serves it too. */
 export async function replaceServed(page: Page, pki: Pki) {
+  await replaceCertificate(page, 'leader', pki);
+}
+
+/** Replaces the certificate in the row that says `text`, its name or the badge of the one the leader serves, with
+ * `pki` on the Certificates page. */
+export async function replaceCertificate(page: Page, text: string, pki: Pki) {
   await openAdmin(page, 'Certificates');
-  const row = page.getByRole('row').filter({ has: page.getByText('leader', { exact: true }) });
+  const row = page.getByRole('row').filter({ has: page.getByText(text, { exact: true }) });
   await row.getByRole('button', { name: 'Replace' }).click();
   const dialog = page.getByRole('dialog', { name: /^replace / });
   await dialog.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));

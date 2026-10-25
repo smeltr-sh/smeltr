@@ -29,6 +29,7 @@
 <script lang="ts">
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
+  import { store, storedJson } from './stored';
   import Locked from './Locked.svelte';
   import SectionShell from './SectionShell.svelte';
   import { ask } from './Confirm.svelte';
@@ -534,17 +535,12 @@
   );
   const EXPANDED_GROUPS_KEY = 'smeltr-status-expanded-groups';
   function loadExpandedGroups(): Record<string, boolean> {
-    if (typeof window === 'undefined') return {};
-    try {
-      const saved = JSON.parse(window.localStorage.getItem(EXPANDED_GROUPS_KEY) ?? '{}');
-      return saved && typeof saved === 'object' ? saved : {};
-    } catch {
-      return {};
-    }
+    const saved = storedJson<unknown>(EXPANDED_GROUPS_KEY, {});
+    return saved && typeof saved === 'object' ? (saved as Record<string, boolean>) : {};
   }
   let expandedGroups: Record<string, boolean> = $state(loadExpandedGroups());
   function saveExpandedGroups() {
-    window.localStorage.setItem(EXPANDED_GROUPS_KEY, JSON.stringify(expandedGroups));
+    store(EXPANDED_GROUPS_KEY, JSON.stringify(expandedGroups));
   }
   // A group nobody has folded yet starts open.
   function isExpanded(group: string): boolean {

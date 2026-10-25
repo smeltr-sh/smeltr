@@ -49,6 +49,7 @@ export interface MutationResult {
 }
 
 import { funnyBranchName } from './branchNames';
+import { store, stored } from './stored';
 import { csrf, recheck, signedOut, type AccessDto, type AccessLevel } from './session';
 import { bareError, errors, Reported, type Call, type Weight } from './errors.svelte';
 
@@ -1251,8 +1252,7 @@ const BRANCH_KEY = 'smeltr-branch';
  * was on screen. A browser that remembers none opens on `main`, what the fleet
  * runs, so its first edit asks where to go (W1). */
 function loadBranch(): string {
-  if (typeof window === 'undefined') return MAIN_BRANCH;
-  return window.localStorage.getItem(BRANCH_KEY) || MAIN_BRANCH;
+  return stored(BRANCH_KEY) || MAIN_BRANCH;
 }
 
 let branch = loadBranch();
@@ -1288,7 +1288,7 @@ function startBranch(chosen: string): void {
 export function setBranch(name: string): void {
   branch = name;
   baseCommit = null;
-  if (typeof window !== 'undefined') window.localStorage.setItem(BRANCH_KEY, name);
+  store(BRANCH_KEY, name);
 }
 
 /** Where a call against `current` must land. `main` is what deploys move
@@ -1339,8 +1339,7 @@ export const SHARED_SCOPE = 'shared';
 const SCOPE_KEY = 'smeltr-scope';
 
 function loadScope(): string {
-  if (typeof window === 'undefined') return SHARED_SCOPE;
-  return window.localStorage.getItem(SCOPE_KEY) || SHARED_SCOPE;
+  return stored(SCOPE_KEY) || SHARED_SCOPE;
 }
 
 let scope = loadScope();
@@ -1356,8 +1355,8 @@ export function currentScope(): string {
 export function setScope(name: string, hash?: string): void {
   scope = name;
   baseCommit = null;
+  store(SCOPE_KEY, name);
   if (typeof window !== 'undefined') {
-    window.localStorage.setItem(SCOPE_KEY, name);
     // The shell draws the scope -- the chip, the rail's hue and the page
     // itself -- from its own copy. A scope switched from anywhere else has to
     // reach it, or the page says one group while the writes go to another.
@@ -1903,6 +1902,9 @@ export interface PreviewRequest {
   /** A Bool over the pipeline's output: only the rows it is true for come back.
    * One that does not compile fails at the `filter` stage. */
   filter?: string;
+  /** Say which steps changed each row's fields and dropped it. The leader
+   * runs the pipeline once more per step for it. */
+  attribution?: boolean;
   /** Asks what may follow a `.` instead of running the sample. */
   afterDot?: { text: string; dot: number; at: DotAt };
   /** A capture filter at a destination to check against each route delivering there. Asked, the preview answers it
@@ -1934,6 +1936,8 @@ export interface PreviewException {
   /** The answer the exception's kind takes. */
   answer: 'ignore' | 'tag' | 'drop' | 'block';
   message: string;
+  /** The step that raised it, by id; absent for one raised reading the record. */
+  step?: string;
 }
 
 export interface PreviewRow {
@@ -1941,6 +1945,11 @@ export interface PreviewRow {
   /** `null` when the row did not survive the pipeline. */
   json: unknown | null;
   exceptions: PreviewException[];
+  /** With `attribution`: each field a step changed or added, by path, and
+   * those steps by id in the order they ran. */
+  steps?: Record<string, string[]>;
+  /** With `attribution`: the step after which the row was gone. */
+  droppedBy?: string;
 }
 
 /** One field a parser step read from the sample. `suggested` is a declared
@@ -2013,6 +2022,7 @@ export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
       show_internal: req.showInternal ?? false,
       at_micros: req.atMicros ?? null,
       filter: req.filter ?? null,
+      attribution: req.attribution ?? false,
       after_dot: req.afterDot ?? null,
       capture_filter: req.captureFilter ?? null,
     },
@@ -2489,7 +2499,8 @@ export interface WarningDto {
     | 'enrollmentCode'
     | 'identity'
     | 'pipeline'
-    | 'secret';
+    | 'secret'
+    | 'certificate';
   /** Unique only within `group`, not fleet-wide -- a worker's own id is the exception. */
   subjectId: string;
   /** Which group this is about, or null where there is none to report -- an enrolled worker
@@ -2572,7 +2583,7 @@ export function conditionLabel(condition: WarningCondition): string {
     case 'secretsKeyUnusable':
       return 'Secrets encryption key unusable';
     case 'secretNeedsValue':
-      return 'Secret needs a new value';
+      return 'Secret or certificate needs a new value';
     case 'acmeRenewalFailing':
       return 'ACME renewal failing';
     case 'leaderCertificateRunningOut':
@@ -3574,7 +3585,7 @@ export interface EncryptionKeyDto {
   keyId: string | null;
   path: string;
   /** Each value whose newest copy the key cannot open: what to enter again. */
-  unopenable: { kind: 'secret' | 'setting'; name: string; label: string }[];
+  unopenable: { kind: 'secret' | 'certificate' | 'setting'; name: string; label: string }[];
 }
 
 export function getEncryptionKey(): Promise<EncryptionKeyDto> {

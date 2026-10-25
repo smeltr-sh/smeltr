@@ -11,7 +11,9 @@
 -->
 <script lang="ts">
   import InlineError from './InlineError.svelte';
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
+  import { opening } from './StepEditor.svelte';
+  import { store, stored, storedJson } from './stored';
   import StepList from './StepList.svelte';
   import Connections from './Connections.svelte';
   import SectionShell from './SectionShell.svelte';
@@ -28,6 +30,7 @@
     unknownLookupTables,
     truncateSteps,
     flatSteps,
+    stepName,
     STEP_LABELS,
     stepsRun,
     parseInputFor,
@@ -59,6 +62,7 @@
     leafMap,
     pathsOf,
     splitPath,
+    typeAt,
     type Declared,
   } from './recordDiff';
   import {
@@ -490,10 +494,15 @@
     // A step's id is a string like any other and a hand-edited pipeline can
     // legally give one "" -- null, not falsy, is what "nothing to jump to" means.
     if (jumpToStepId === null) return;
-    document
-      .getElementById(`step-${jumpToStepId}`)
-      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const id = jumpToStepId;
     jumpToStepId = null;
+    // Opened first, so the scroll lands on the card as it will stand.
+    opening.id = id;
+    void tick().then(() =>
+      document
+        .getElementById(`step-${id}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
+    );
   });
 
   /** Reverts to what was last loaded or saved, dropping every edit since --
@@ -700,11 +709,7 @@
   const sampleKey = (pipeline: string) => `smeltr-workspace-sample:${pipeline}`;
   let lastUsed = $state('');
   function readLastUsed(): string {
-    try {
-      return window.localStorage.getItem(sampleKey(pipelineId)) ?? '';
-    } catch {
-      return '';
-    }
+    return stored(sampleKey(pipelineId)) ?? '';
   }
 
   async function chooseSample(id: string) {
@@ -712,11 +717,7 @@
     selectedSample = id;
     if (id) {
       lastUsed = id;
-      try {
-        window.localStorage.setItem(sampleKey(pipeline), id);
-      } catch {
-        // Storage refused: the editor opens on no sample next time.
-      }
+      store(sampleKey(pipeline), id);
     }
     sampleRows = [];
     // The rows on screen were the last sample's.
@@ -772,6 +773,7 @@
     sample: string,
     atMicros?: number,
     filter?: string,
+    attribution?: boolean,
   ): Promise<PreviewResult> {
     const held = unfinished.hold(stepsSubset);
     const config = JSON.stringify(
@@ -792,6 +794,7 @@
       showInternal: true,
       atMicros,
       filter,
+      attribution,
     });
     return { ...res, errors: res.errors.map(held.restore) };
   }
@@ -863,11 +866,13 @@
   //
   // The steps column takes half the width when the work is the steps and is
   // narrow when it is inside one of them. Drag it, or double-click to snap
-  // between the two. `null` is the half.
+  // between the two. `null` is the half. The width is the reader's, remembered in this browser.
 
   const STEPS_NARROW = 240;
   const STEPS_MIN = 200;
-  let stepsWidth = $state<number | null>(null);
+  const STEPS_WIDTH_KEY = 'smeltr-workspace-steps-width';
+  let stepsWidth = $state<number | null>(Number(stored(STEPS_WIDTH_KEY)) || null);
+  $effect(() => store(STEPS_WIDTH_KEY, stepsWidth === null ? null : String(stepsWidth)));
 
   function drag(e: PointerEvent) {
     const bar = e.currentTarget as HTMLElement;
@@ -904,7 +909,7 @@
   let showTypes = $state(true);
 
   /** The step ◎ paused at. */
-  let selectedStep: Step | null = $state(null);
+  let pauseChoice: Step | null = $state(null);
   /** The first step the preview's compile errors name. */
   let brokenStep = $derived(orderedStepErrors(steps, compileErrorsByStep)[0]?.step ?? null);
 
@@ -925,14 +930,14 @@
   /** ◎'s pause, unless the steps it runs do not compile: then the compile error's. */
   let pause = $derived.by((): Pause | null => {
     const flat = flatSteps(steps);
-    const run = selectedStep && stepsRun(steps, selectedStep, true);
-    if (selectedStep && run && !(brokenStep && run.has(brokenStep)))
+    const run = pauseChoice && stepsRun(steps, pauseChoice, true);
+    if (pauseChoice && run && !(brokenStep && run.has(brokenStep)))
       return {
-        step: selectedStep,
-        number: flat.indexOf(selectedStep) + 1,
+        step: pauseChoice,
+        number: flat.indexOf(pauseChoice) + 1,
         run,
-        before: truncateSteps(steps, selectedStep, false)!,
-        after: truncateSteps(steps, selectedStep, true)!,
+        before: truncateSteps(steps, pauseChoice, false)!,
+        after: truncateSteps(steps, pauseChoice, true)!,
         chosen: true,
       };
     if (!brokenStep) return null;
@@ -962,15 +967,15 @@
     stage ? stage[0].toUpperCase() + stage.slice(1) : 'Preview';
   let pauseError = $state('');
 
-  function onSelectStep(step: Step | null) {
-    selectedStep = step;
+  function onPause(step: Step | null) {
+    pauseChoice = step;
   }
 
   let pauseAsked = 0;
-  async function loadPause() {
+  async function loadPause(pause: Pause | null, sample: string) {
     pauseError = '';
     const asked = ++pauseAsked;
-    if (!pause || !lastSample) {
+    if (!pause || !sample) {
       pauseRun = null;
       return;
     }
@@ -981,8 +986,8 @@
       // the step.
       const at = Date.now() * 1000;
       const [beforeRes, afterRes] = await Promise.all([
-        fetchPreview(before, lastSample, at),
-        fetchPreview(after, lastSample, at),
+        fetchPreview(before, sample, at),
+        fetchPreview(after, sample, at),
       ]);
       // A later pause answers for the screen.
       if (asked !== pauseAsked) return;
@@ -1006,9 +1011,16 @@
     }
   }
 
-  // Tracks `pause` and `lastSample`: both read before the first `await`.
+  // Run as the steps settle, as the whole pipeline's preview is.
   $effect(() => {
-    loadPause();
+    const [p, sample] = [pause, lastSample];
+    const timer = setTimeout(() => void loadPause(p, sample), RECOMPUTE_MS);
+    return () => clearTimeout(timer);
+  });
+
+  // A step deleted while the records are paused after it takes the pause with it.
+  $effect(() => {
+    if (pauseChoice && !flatSteps(steps).includes(pauseChoice)) pauseChoice = null;
   });
 
   // -- a pipeline for a route being made ---------------------------------------
@@ -1174,6 +1186,79 @@
   /** The rows the grid shows: the pause's, once run, or else the whole pipeline's. */
   let gridRows = $derived(pause && pauseRun ? pauseRun.after : (lastGoodResult?.rows ?? null));
 
+  // Which steps touched each field of a row, dropped it and raised its
+  // exceptions, for the records shown. The leader runs the pipeline once per
+  // step for it, so it is asked for once typing settles, and it stands only
+  // for the run it was asked about.
+  const ATTRIBUTE_MS = 1000;
+  let attributed = $state<{ rows: PreviewRow[]; byRow: Map<number, PreviewRow> } | null>(null);
+  $effect(() => {
+    const rows = gridRows;
+    const cut = pause && pauseRun ? pause.after : steps;
+    const sample = lastSample;
+    void signature;
+    if (!rows || rows.length === 0 || !sample) return;
+    let current = true;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetchPreview(cut, sample, undefined, undefined, true);
+        if (current && res.ok && res.rows.length === rows.length)
+          attributed = { rows, byRow: new Map(res.rows.map((r) => [r.row, r])) };
+      } catch {
+        // The records stand without it.
+      }
+    }, ATTRIBUTE_MS);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  });
+  let attribution = $derived(attributed && attributed.rows === gridRows ? attributed.byRow : null);
+
+  /** Each step by id, with its number in the step list. */
+  let stepNumbers = $derived(
+    new Map(flatSteps(steps).map((step, i) => [step.id, { step, number: i + 1 }])),
+  );
+
+  /** The steps that touched each field of `row`, in the order they ran. A
+   * list is compared whole, so a field inside one takes the list's. */
+  function touchedOn(row: number) {
+    const touched = attribution?.get(row)?.steps;
+    return (path: string) => {
+      let at = path;
+      while (touched && !(at in touched)) {
+        const up = at.replace(/(\.[^.[]*|\[[^\]]*\])$/, '');
+        if (up === at || up === '') break;
+        at = up;
+      }
+      return (touched?.[at] ?? []).flatMap((id) => {
+        const t = stepNumbers.get(id);
+        return t ? [t] : [];
+      });
+    };
+  }
+
+  /** How many of the records shown each step dropped and failed. */
+  let stepCounts = $derived.by(() => {
+    const counts = new Map<Step, { dropped: number; failed: number }>();
+    const of = (id: string | undefined) => {
+      const step = id ? stepNumbers.get(id)?.step : undefined;
+      if (!step) return null;
+      let c = counts.get(step);
+      if (!c) counts.set(step, (c = { dropped: 0, failed: 0 }));
+      return c;
+    };
+    for (const r of gridRows ?? []) {
+      for (const id of new Set(r.exceptions.map((e) => e.step))) {
+        const c = of(id);
+        if (c) c.failed++;
+      }
+      const c = of(attribution?.get(r.row)?.droppedBy);
+      if (c) c.dropped++;
+    }
+    return counts;
+  });
+
   // The pause's runs by row, so a row finds its sides without a search.
   let pausedByRow = $derived.by(() => {
     const d = pause ? pauseRun : null;
@@ -1202,6 +1287,21 @@
       declared: { before: sampleDeclared, after: runDeclared },
     };
   }
+
+  /** Each column's type, from the side the grid's cells show: after the step, or before where
+   * the step removed the field. The head shows it as a declaration does, `status: i64`, so
+   * a field nothing declares shows none. */
+  let columnTypes = $derived.by(() => {
+    const declared =
+      pausedByRow && pauseRun ? pauseRun.declared : { before: sampleDeclared, after: runDeclared };
+    return new Map(
+      columns.map((path) => {
+        const after = typeAt(declared.after, path);
+        const type = after === 'undeclared' ? typeAt(declared.before, path) : after;
+        return [path, type === 'undeclared' ? null : type];
+      }),
+    );
+  });
 
   // Each row's leaves, both sides, by path: what a cell, the search and the
   // sort read, without diffing a row nobody is looking at. The sample's side
@@ -1294,28 +1394,18 @@
     const key = fieldsKey(pipelineId);
     untrack(() => {
       chosenFields.clear();
-      try {
-        const saved: unknown = JSON.parse(window.localStorage.getItem(key) ?? '{}');
-        if (saved && typeof saved === 'object' && !Array.isArray(saved))
-          for (const [path, shown] of Object.entries(saved))
-            if (typeof shown === 'boolean') chosenFields.set(path, shown);
-      } catch {
-        // Nothing usable stored: the default stands.
-      }
+      const saved = storedJson<unknown>(key, {});
+      if (saved && typeof saved === 'object' && !Array.isArray(saved))
+        for (const [path, shown] of Object.entries(saved))
+          if (typeof shown === 'boolean') chosenFields.set(path, shown);
     });
   });
   $effect(() => {
     const saved = JSON.stringify(Object.fromEntries(chosenFields));
-    try {
-      if (saved === '{}') window.localStorage.removeItem(untrack(() => fieldsKey(pipelineId)));
-      else
-        window.localStorage.setItem(
-          untrack(() => fieldsKey(pipelineId)),
-          saved,
-        );
-    } catch {
-      // Storage refused: the choice lasts as long as the page.
-    }
+    store(
+      untrack(() => fieldsKey(pipelineId)),
+      saved === '{}' ? null : saved,
+    );
   });
 
   // A record is a line until asked for, and any number can be open at once:
@@ -1451,8 +1541,8 @@
     return { start, end, above: tops[start], below: tops[n] - tops[end] };
   });
 
-  // Widths fixed per column, from the values a column holds, so a column does
-  // not jump as rows scroll past. Read off the first rows of the run rather
+  // Widths fixed per column, from its head and the values it holds, so a column
+  // does not jump as rows scroll past. Read off the first rows of the run rather
   // than all of them: enough to size by, and the same whichever are drawn.
   const COLUMN_CH = 28;
   const COLUMN_MIN_CH = 6;
@@ -1460,7 +1550,9 @@
   let columnWidths = $derived.by(() => {
     const sized = rowsMaps.slice(0, SIZED_ROWS);
     return columns.map((path) => {
-      let w = COLUMN_MIN_CH;
+      const type = showTypes ? columnTypes.get(path) : null;
+      // The name, `: ` and its type, and the sort arrow.
+      let w = Math.max(COLUMN_MIN_CH, path.length + (type ? type.length + 2 : 0) + 2);
       for (const m of sized) {
         if (w >= COLUMN_CH) break;
         if (m.after.has(path) || m.before.has(path))
@@ -1489,9 +1581,27 @@
   // beside the text keep the rows that are failing, dropped, changed by a step
   // or hold a field, each on top of the text and of each other.
 
-  type FindChip = { kind: 'failing' | 'dropped' | 'changed' } | { kind: 'has'; path: string };
+  type FindChip =
+    | { kind: 'failing' | 'dropped' | 'changed' }
+    | { kind: 'has'; path: string }
+    | { kind: 'droppedBy' | 'failedAt'; step: string };
   let chips = $state<FindChip[]>([]);
-  const chipKey = (c: FindChip) => (c.kind === 'has' ? `has ${c.path}` : c.kind);
+  const chipKey = (c: FindChip) =>
+    c.kind === 'has'
+      ? `has ${c.path}`
+      : c.kind === 'droppedBy'
+        ? `dropped by ${c.step}`
+        : c.kind === 'failedAt'
+          ? `failed at ${c.step}`
+          : c.kind;
+  function chipLabel(c: FindChip): string {
+    if (c.kind === 'has') return `has ${c.path}`;
+    if (c.kind === 'droppedBy' || c.kind === 'failedAt') {
+      const number = stepNumbers.get(c.step)?.number ?? '?';
+      return c.kind === 'droppedBy' ? `⌫ Dropped by step ${number}` : `⚠ Failed at step ${number}`;
+    }
+    return CHIP_LABELS[c.kind];
+  }
 
   const hasChip = (c: FindChip) => chips.some((x) => chipKey(x) === chipKey(c));
 
@@ -1529,6 +1639,8 @@
     const row = gridRows![i];
     if (c.kind === 'failing') return row.exceptions.length > 0;
     if (c.kind === 'dropped') return row.json === null;
+    if (c.kind === 'droppedBy') return attribution?.get(row.row)?.droppedBy === c.step;
+    if (c.kind === 'failedAt') return row.exceptions.some((e) => e.step === c.step);
     return rowChanged(i);
   }
 
@@ -1576,11 +1688,10 @@
   $effect(() => {
     const key = expressionsKey(pipelineId);
     untrack(() => {
-      try {
-        recentExpressions = JSON.parse(window.localStorage.getItem(key) ?? '[]') as string[];
-      } catch {
-        recentExpressions = [];
-      }
+      const saved = storedJson<unknown>(key, []);
+      recentExpressions = Array.isArray(saved)
+        ? saved.filter((e): e is string => typeof e === 'string')
+        : [];
     });
   });
 
@@ -1592,11 +1703,7 @@
       0,
       RECENT_EXPRESSIONS,
     );
-    try {
-      window.localStorage.setItem(expressionsKey(pipelineId), JSON.stringify(recentExpressions));
-    } catch {
-      // Storage refused: they last as long as the page.
-    }
+    store(expressionsKey(pipelineId), JSON.stringify(recentExpressions));
   }
 
   let outputQuery = $state('');
@@ -1701,7 +1808,7 @@
           accent
           label="Paused"
           removeLabel="Show the whole pipeline"
-          onremove={pause.chosen ? () => onSelectStep(null) : undefined}
+          onremove={pause.chosen ? () => onPause(null) : undefined}
         >
           ◉ {pause.step
             ? `After step ${pause.number} · ${STEP_LABELS[pause.step.type].toUpperCase()}`
@@ -1807,9 +1914,16 @@
             {lookupTables}
             {grokPatterns}
             parseInput={parseInputFor(sampleRows[0])}
-            selectedStep={pause?.step ?? null}
+            pausedAt={pause?.step ?? null}
             ran={pause?.run ?? null}
-            {onSelectStep}
+            counts={stepCounts}
+            onCount={(step, kind) =>
+              addChip(
+                kind === 'dropped'
+                  ? { kind: 'droppedBy', step: step.id }
+                  : { kind: 'failedAt', step: step.id },
+              )}
+            {onPause}
             onPropose={readOnly ? undefined : proposeFields}
             proposal={openProposal}
             {askAt}
@@ -1924,9 +2038,7 @@
                     >{#each chips as c (chipKey(c))}<RemovableChip
                         removeLabel={`remove ${chipKey(c)}`}
                         onremove={() => toggleChip(c)}
-                        ><span class="find-chip"
-                          >{c.kind === 'has' ? `has ${c.path}` : CHIP_LABELS[c.kind]}</span
-                        ></RemovableChip
+                        ><span class="find-chip">{chipLabel(c)}</span></RemovableChip
                       >{/each}{/snippet}
                   {#snippet after()}{#if outputQuery.trim()}<span
                         class="mode"
@@ -1971,10 +2083,16 @@
                   aria-pressed={changedOnly}
                   onclick={() => (changedOnly = !changedOnly)}
                 >
-                  Changed only
+                  Show only changed fields
                 </button>
-                <button type="button" onclick={() => (showTypes = !showTypes)}>
-                  {showTypes ? 'Hide types' : 'Show types'}
+                <button
+                  type="button"
+                  class="toggle"
+                  class:on={showTypes}
+                  aria-pressed={showTypes}
+                  onclick={() => (showTypes = !showTypes)}
+                >
+                  Show types
                 </button>
                 <span class="grow"></span>
                 {#if !readOnly}
@@ -2027,7 +2145,9 @@
                               ><SortButton sort={gridSort} key={path}
                                 ><span class="head-name"
                                   ><span class="path-prefix">{name.prefix}</span>{name.leaf}</span
-                                ></SortButton
+                                >{#if showTypes && columnTypes.get(path)}<span class="head-type"
+                                    >{': '}{columnTypes.get(path)}</span
+                                  >{/if}</SortButton
                               ></th
                             >
                           {/each}
@@ -2091,7 +2211,11 @@
                               aria-label={`record ${row.row}`}
                               bind:offsetHeight={openHeights[row.row]}
                             >
-                              <td class="expanded-cell" colspan={columns.length + 2}>
+                              <td
+                                class="expanded-cell"
+                                colspan={columns.length + 2}
+                                style:--pane-width={`${paneWidth}px`}
+                              >
                                 <div class="row-head-wrap">
                                   <div class="row-head">
                                     <span class="row-index">row {row.row}</span>
@@ -2113,13 +2237,18 @@
                                     {/if}
                                   </div>
                                   {#each row.exceptions as a}
-                                    <p class="exception">{a.message}</p>
+                                    {@const by = a.step ? stepNumbers.get(a.step) : undefined}
+                                    <p class="exception">
+                                      {#if by}<button
+                                          type="button"
+                                          class="link-button"
+                                          onclick={() => (jumpToStepId = by.step.id)}
+                                          >{stepName(by.step, by.number)}</button
+                                        >{': '}{/if}{a.message}
+                                    </p>
                                   {/each}
                                 </div>
-                                <div
-                                  class="record-body"
-                                  style:max-width={`calc(${paneWidth}px - 1.5rem)`}
-                                >
+                                <div class="record-body">
                                   <RecordFields
                                     before={sides.before}
                                     after={sides.after}
@@ -2127,6 +2256,8 @@
                                     declared={sides.declared}
                                     {changedOnly}
                                     {showTypes}
+                                    touched={touchedOn(row.row)}
+                                    onjump={(step) => (jumpToStepId = step.id)}
                                   />
                                 </div>
                               </td>
@@ -2476,9 +2607,7 @@
 
   /* A rule under it, not just a gap, so the row it names and the fields
      below it read as three things -- the folded row above, this head, the
-     record -- rather than one tinted block. On the wrapper, not `.row-head`
-     itself, so it spans the cell's full width rather than shrinking to the
-     sticky content's `width: max-content`. */
+     record -- rather than one tinted block. */
   .row-head-wrap {
     padding: 0.4rem 0;
     margin-bottom: 0.4rem;
@@ -2550,7 +2679,7 @@
     font-size: var(--text-micro);
     position: sticky;
     top: 0;
-    /* Above the open record's body, which is sticky too and later in the page. */
+    /* Above the rows scrolling under it, which come later in the page. */
     z-index: 1;
     background: var(--bg);
   }
@@ -2595,11 +2724,11 @@
     padding: 0.5rem 0.5rem 0.5rem 0.75rem;
   }
 
-  /* The record follows the left edge as the grid scrolls sideways, and wraps
-     to what shows of it rather than to the width of every column. */
+  /* The record moves with its row as the grid scrolls sideways, and wraps to
+     the pane's width rather than to the width of every column. */
+  .row-head-wrap,
   .record-body {
-    position: sticky;
-    left: 0.75rem;
+    max-width: calc(var(--pane-width) - 1.5rem);
   }
 
   /* A row that failed is the one to read, so it is the one that stands out. */
@@ -2618,8 +2747,6 @@
 
   /* Why the row failed, under its head, in the words the step gave. */
   .exception {
-    position: sticky;
-    left: 0.75rem;
     width: max-content;
     max-width: 100%;
     margin: 0.3rem 0 0;
@@ -2642,14 +2769,18 @@
     text-overflow: ellipsis;
   }
 
-  /* The head of an open record follows the left edge rather than scrolling
-     away: this cell is as wide as the whole table. A floor rather than
-     shrink-to-fit, so the row's own identity and its summary have room to
-     sit at opposite ends instead of crowding together on the left. */
-  .expanded-cell .row-head {
-    position: sticky;
-    left: 0.75rem;
-    width: max-content;
+  /* In a column too narrow for both, the type gives way before the name. Its
+     colon sits against the name, as a declaration writes it, inside the sort
+     button's gap. */
+  .head-type {
+    margin-left: -0.25rem;
+    min-width: 0;
+    flex-shrink: 10;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--mono);
+    opacity: 0.7;
+    white-space: nowrap;
   }
 
   /* The nesting recedes so the eye lands on the field's own name. */

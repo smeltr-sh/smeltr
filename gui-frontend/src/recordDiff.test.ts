@@ -10,6 +10,7 @@ import {
   leafLines,
   leafMap,
   parseDeclared,
+  typeAt,
   pathsOf,
   PAGE_LINES,
   recordLines,
@@ -94,6 +95,18 @@ describe('diffTree', () => {
       state: 'added',
       after: 'L',
     });
+  });
+
+  it('names the type declared at a path', () => {
+    const declared = declaredRecord([
+      ['hits', 'array<{host: str, "a.b": i64, ...}>'],
+      ['url.path', 'str'],
+    ]);
+    expect(typeAt(declared, 'url.path')).toBe('str');
+    expect(typeAt(declared, 'url')).toBe('struct');
+    expect(typeAt(declared, 'hits[0]["a.b"]')).toBe('i64');
+    expect(typeAt(declared, 'loose')).toBe('undeclared');
+    expect(typeAt(null, 'url.path')).toBeNull();
   });
 
   it('names each value by the type its side declares', () => {

@@ -607,6 +607,12 @@ export function shownInto(into: string): string | null {
   return name === '' || name === '$' ? null : name;
 }
 
+/** A step as the records name it: its number in the step list, its type and
+ * what it does. */
+export function stepName(step: Step, number: number): string {
+  return `Step ${number} · ${STEP_LABELS[step.type]} · ${stepSummary(step)}`;
+}
+
 export function stepSummary(step: Step): string {
   switch (step.type) {
     case 'if':

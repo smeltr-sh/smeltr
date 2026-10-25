@@ -20,6 +20,7 @@
     type Route,
   } from './nav';
   import AuthScreen from './AuthScreen.svelte';
+  import { store, stored } from './stored';
   import ErrorBar from './ErrorBar.svelte';
   import { isAdministrator, settleScope } from './access';
   import { pages, preload } from './pages.svelte';
@@ -298,8 +299,8 @@
 
   let identityPicking = $state(false);
   /** Whether the agent panel is folded up, for this browser tab. */
-  let agentPanel = $state(sessionStorage.getItem('smeltr-agent-panel') === 'open');
-  $effect(() => sessionStorage.setItem('smeltr-agent-panel', agentPanel ? 'open' : ''));
+  let agentPanel = $state(stored('smeltr-agent-panel', 'session') === 'open');
+  $effect(() => store('smeltr-agent-panel', agentPanel ? 'open' : '', 'session'));
 
   // -- theme -------------------------------------------------------------
   // Light/dark and the palette, each remembered across visits. The root
@@ -329,14 +330,12 @@
   ];
 
   function loadTheme(): Theme {
-    if (typeof window === 'undefined') return 'system';
-    const saved = window.localStorage.getItem(THEME_KEY);
+    const saved = stored(THEME_KEY);
     return saved === 'light' || saved === 'dark' ? saved : 'system';
   }
 
   function loadPalette(): Palette {
-    if (typeof window === 'undefined') return 'foundry';
-    const saved = window.localStorage.getItem(PALETTE_KEY);
+    const saved = stored(PALETTE_KEY);
     return PALETTES.find((p) => p.value === saved)?.value ?? 'foundry';
   }
 
@@ -346,7 +345,7 @@
   $effect(() => {
     if (typeof document === 'undefined') return;
     const root = document.documentElement;
-    window.localStorage.setItem(THEME_KEY, theme);
+    store(THEME_KEY, theme);
     if (theme !== 'system') {
       root.setAttribute('data-theme', theme);
       return;
@@ -363,7 +362,7 @@
     // Foundry is the bare `:root`, so the default carries no attribute.
     if (palette === 'foundry') document.documentElement.removeAttribute('data-palette');
     else document.documentElement.setAttribute('data-palette', palette);
-    window.localStorage.setItem(PALETTE_KEY, palette);
+    store(PALETTE_KEY, palette);
   });
 
   // The pipeline editor is a two-pane workspace with its own draggable

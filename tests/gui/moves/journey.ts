@@ -33,9 +33,11 @@ import {
   acmeNewRoot,
   renewAcme,
   refuseDns01,
+  replaceCertificate,
   switchToAcme,
   switchToLeaderIssued,
   switchToUploaded,
+  type Pki,
 } from './certificates';
 import { historyRow } from './change';
 
@@ -90,6 +92,8 @@ export type World = {
   workers: Map<string, { state: 'heartbeating' | 'revoked'; group: string }>;
   /** Each secret's newest version. */
   secrets: Map<string, number>;
+  /** Each certificate added to the list, by name. */
+  certificates: Map<string, Pki>;
   /** For names nothing has used yet. */
   made: number;
   /** When the administrator signed in, the API's own sign-in among them: the leader allows five a minute. */
@@ -131,6 +135,7 @@ export function newWorld(): World {
     closed: false,
     workers: new Map(),
     secrets: new Map(),
+    certificates: new Map(),
     made: 0,
     signIns: [],
     accounts: new Map(),
@@ -1204,8 +1209,24 @@ const regenerateKey: Move = {
       return key.unopenable.map((u) => u.name).sort();
     };
     expect(await unopenable()).toEqual(
-      [...world.secrets.keys(), ...settings.map((s) => s.key)].sort(),
+      [...world.secrets.keys(), ...world.certificates.keys(), ...settings.map((s) => s.key)].sort(),
     );
+    // Each certificate is entered again from its link, as it was uploaded.
+    for (const [name, pki] of world.certificates) {
+      await page
+        .getByRole('listitem')
+        .filter({ has: page.getByText(name, { exact: true }) })
+        .getByRole('link', { name: 'Certificates' })
+        .click();
+      await expect(page).toHaveURL(/#\/admin\/certificates$/);
+      await replaceCertificate(page, name, pki);
+      await openAdmin(page, 'Secrets');
+      await page
+        .getByRole('navigation', { name: 'Secrets' })
+        .getByRole('link', { name: 'Encryption key', exact: true })
+        .click();
+      await expect(page.getByText(name, { exact: true })).toHaveCount(0);
+    }
     for (const setting of settings) {
       await page.getByRole('listitem').filter({ hasText: setting.label }).getByRole('link').click();
       // A value the key cannot open reads as none stored, so the page offers an empty input, not Replace.
@@ -1222,9 +1243,8 @@ const regenerateKey: Move = {
       await expect(page.getByText(setting.label, { exact: true })).toHaveCount(0);
     }
     expect(await unopenable()).toEqual([...world.secrets.keys()].sort());
-    const entered = settings.length
-      ? `, ${settings.map((s) => s.label).join(' and ')} entered again`
-      : '';
+    const again = [...world.certificates.keys(), ...settings.map((s) => s.label)];
+    const entered = again.length ? `, ${again.join(' and ')} entered again` : '';
     return `regenerate the key, ${world.secrets.size} to enter again${entered}`;
   },
 };
@@ -2235,7 +2255,7 @@ const uploadCertificate: Move = {
   leadsTo: ['withdraw-certificate'],
   run: async (j) => {
     const pki = await j.fleet.externalPki();
-    await switchToUploaded(j.page, pki);
+    j.world.certificates.set(await switchToUploaded(j.page, pki), pki);
     j.world.supplied = true;
     const { supplied, rotation } = await (await j.truth()).get('/api/settings/certificates');
     expect({ supplied, rotation }).toEqual({ supplied: true, rotation: null });
