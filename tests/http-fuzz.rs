@@ -27,7 +27,9 @@ use smeltr::plan::topology::{
     Compression, DestinationKind, HeldSecrets, HttpDestinationConfig, RequestBody, SecretRef, take_zone,
 };
 
-use crate::harness::destination::{self, Broken, Pki, Reached, connector_secrets, unknown_key_taken};
+use crate::harness::destination::{
+    self, Broken, ClientTls, Pki, Reached, connector_secrets, set_tls, unknown_key_taken,
+};
 use crate::harness::fuzz::Rng;
 use crate::harness::http::{self, Answer, Answers, Id, Seen, Sent, Service, fnv, gunzip, json_array_rows};
 use crate::live;
@@ -227,7 +229,14 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, stored: &mut Stored) -
             "tls.trustedAuthorities"
         });
         tls = Some(presents);
-        set_tls(&mut d, presents);
+        set_tls(
+            &mut d,
+            if presents {
+                ClientTls::Presents
+            } else {
+                ClientTls::Trusts
+            },
+        );
     }
     d.insert("url".into(), json!(url(rng, cov, target, https)));
     let zone = if live {
@@ -484,7 +493,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
             "certificate"
         }
         "tls.plainHttp" => {
-            set_tls(d, false);
+            set_tls(d, ClientTls::Trusts);
             draw.tls = Some(false);
             let url = d["url"].as_str().unwrap().trim().to_string();
             let rest = &url[url.find("://").unwrap()..];
@@ -612,17 +621,6 @@ fn size_of(v: &Value) -> usize {
             }
         }
         v => v.as_u64().unwrap() as usize,
-    }
-}
-
-/// Stands for the authority's PEM until `bundle` has it.
-const AUTHORITIES: &str = "@authorities";
-
-/// Sets TLS on `d`: the authority as [`AUTHORITIES`], and a certificate to present when `presents`.
-fn set_tls(d: &mut Map<String, Value>, presents: bool) {
-    d.insert("trustedAuthorities".into(), json!(AUTHORITIES));
-    if presents {
-        d.insert("certificate".into(), json!("client"));
     }
 }
 

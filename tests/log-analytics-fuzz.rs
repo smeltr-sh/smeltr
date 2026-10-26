@@ -28,7 +28,7 @@ use smeltr::plan::topology::{
     Compression, DestinationKind, EntraSignIn, HeldSecrets, LogAnalyticsDestinationConfig, RequestBody, SecretRef,
 };
 
-use crate::harness::destination::{self, Broken, Pki, Reached, connector_secrets, unknown_key_taken};
+use crate::harness::destination::{self, AUTHORITIES, Broken, Pki, Reached, connector_secrets, unknown_key_taken};
 use crate::harness::fuzz::Rng;
 use crate::harness::http::{self, Answer, Answers, Id, Seen, Sent, Service, fnv, gunzip, json_array_rows};
 use crate::live;
@@ -398,9 +398,6 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
         other => unreachable!("{other}"),
     }
 }
-
-/// Stands for the authority's PEM until `bundle` has it.
-const AUTHORITIES: &str = "@authorities";
 
 /// `draw` as a whole bundle: a Kafka source, one route to the destination, and the authority it trusts.
 fn bundle(draw: &Draw) -> Value {

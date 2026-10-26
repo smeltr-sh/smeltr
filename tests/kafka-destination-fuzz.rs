@@ -34,7 +34,7 @@ use smeltr::io::{Destination, Dispatched, IoError, OutgoingRecord, OwnedRecord, 
 use smeltr::plan::config::Payload;
 use smeltr::plan::topology::{DestinationKind, HeldSecrets, KafkaDestinationConfig, KafkaService, SecretRef};
 
-use crate::harness::destination::{self, Broken, Pki, Reached, unknown_key_taken};
+use crate::harness::destination::{self, Broken, ClientTls, Pki, Reached, set_tls, unknown_key_taken};
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::live;
 
@@ -127,26 +127,6 @@ enum Target<'a> {
     Offline(&'a str),
     /// The broker at these bootstrap servers.
     Live(&'a str),
-}
-
-/// The TLS a destination sets on itself.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum ClientTls {
-    /// An authority to verify the brokers against.
-    Trusts,
-    /// That, and a certificate to present.
-    Presents,
-}
-
-/// Stands for the authority's PEM until `bundle` has it.
-const AUTHORITIES: &str = "@authorities";
-
-/// Sets `tls` on `d`, the authority as [`AUTHORITIES`].
-fn set_tls(d: &mut Map<String, Value>, tls: ClientTls) {
-    d.insert("trustedAuthorities".into(), json!(AUTHORITIES));
-    if tls == ClientTls::Presents {
-        d.insert("certificate".into(), json!("client"));
-    }
 }
 
 /// One drawn destination.

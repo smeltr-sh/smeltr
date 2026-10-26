@@ -27,7 +27,9 @@ use smeltr::plan::topology::{
     Acknowledgement, DestinationKind, Endpoint, HeldSecrets, SecretRef, SplunkHecDestinationConfig, take_zone,
 };
 
-use crate::harness::destination::{self, Broken, Pki, Reached, connector_secrets, unknown_key_taken};
+use crate::harness::destination::{
+    self, AUTHORITIES, Broken, ClientTls, Pki, Reached, connector_secrets, set_tls, unknown_key_taken,
+};
 use crate::harness::fuzz::Rng;
 use crate::live;
 
@@ -285,7 +287,14 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target) -> Draw {
         } else {
             "tls.trustedAuthorities"
         });
-        set_tls(&mut d, certificate);
+        set_tls(
+            &mut d,
+            if certificate {
+                ClientTls::Presents
+            } else {
+                ClientTls::Trusts
+            },
+        );
     }
 
     draw_limits(rng, cov, target, &mut d);
@@ -527,17 +536,6 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Broken {
 fn pki() -> &'static Pki {
     static PKI: OnceLock<Pki> = OnceLock::new();
     PKI.get_or_init(|| Pki::new("smeltr hec fuzz", "hec.internal", &["localhost"]))
-}
-
-/// Stands for the authority's PEM until `bundle` has it.
-const AUTHORITIES: &str = "@authorities";
-
-/// Sets TLS on `d`: the authority as [`AUTHORITIES`], and a certificate to present when `presents`.
-fn set_tls(d: &mut Map<String, Value>, presents: bool) {
-    d.insert("trustedAuthorities".into(), json!(AUTHORITIES));
-    if presents {
-        d.insert("certificate".into(), json!("client"));
-    }
 }
 
 /// `draw` as a whole bundle: a Kafka source, one route to the destination, and the authority it trusts.

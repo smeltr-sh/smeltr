@@ -31,7 +31,7 @@ use smeltr::io::elastic_mapping::{Ecs, mapping};
 use smeltr::plan::topology::{DestinationKind, DocIdPolicy, ElasticDestinationConfig, HeldSecrets, SecretRef};
 
 use crate::harness::destination::{
-    self, Broken, Head, Pki, Reached, connector_secrets, read_request, unknown_key_taken,
+    self, Broken, ClientTls, Head, Pki, Reached, connector_secrets, read_request, set_tls, unknown_key_taken,
 };
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::live;
@@ -140,26 +140,6 @@ enum Target<'a> {
     Offline(u16),
     /// The cluster at this base URL.
     Live(&'a str),
-}
-
-/// The TLS a destination sets on itself.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum ClientTls {
-    /// An authority to verify the cluster against.
-    Trusts,
-    /// That, and a certificate to present.
-    Presents,
-}
-
-/// Stands for the authority's PEM until `bundle` has it.
-const AUTHORITIES: &str = "@authorities";
-
-/// Sets `tls` on `d`, the authority as [`AUTHORITIES`].
-fn set_tls(d: &mut Map<String, Value>, tls: ClientTls) {
-    d.insert("trustedAuthorities".into(), json!(AUTHORITIES));
-    if tls == ClientTls::Presents {
-        d.insert("certificate".into(), json!("client"));
-    }
 }
 
 /// Where the drawn URL leads.
