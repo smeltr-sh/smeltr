@@ -102,11 +102,22 @@ pub struct Entry {
 /// not stop a start. The leader serves its own entry and [`unserved`] says why, while `served.json` still names the
 /// entry: workers keep verifying by its root, and serving it again brings them back. A certificate supplied as
 /// files, before the list kept certificates, is one of these.
+///
+/// Where the list cannot hold the leader's own entry because the secrets encryption key is lost, a start serves a
+/// certificate it issues and holds in memory only, so an admin can reach the page that regenerates the key.
 pub fn ensure(dir: &Path, sans: Vec<String>, validity: Duration, required: &[String]) -> Result<Materials, String> {
     private_file::create_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     recover_rotation(dir)?;
     let _replacing = changing();
-    let (own, authority_created) = own_entry(dir, &sans, validity)?;
+    let (own, authority_created) = match own_entry(dir, &sans, validity) {
+        Ok(own) => {
+            if temporary(dir).is_some() {
+                replaced_what_is_served(dir);
+            }
+            own
+        }
+        Err(e) => return serve_temporary(dir, &sans, validity, e),
+    };
     let why = match served(dir)? {
         Some(entry) if entry.name != OWN_ENTRY => match entry_serves(dir, &entry, &sans, required) {
             Ok(()) => return current_held(dir),
@@ -141,6 +152,51 @@ pub fn ensure(dir: &Path, sans: Vec<String>, validity: Duration, required: &[Str
         authority_created,
         ..current_held(dir)?
     })
+}
+
+/// Serves a certificate held in memory only, where `failed` is the leader's own entry failing because the secrets
+/// encryption key cannot open or seal it. Any other failure is returned as it is.
+fn serve_temporary(dir: &Path, sans: &[String], validity: Duration, failed: String) -> Result<Materials, String> {
+    let problem = (list_of(dir)?.key_standing())
+        .map_err(|e| e.to_string())?
+        .problem()
+        .ok_or(failed)?;
+    let (chain, key) = issue_held(
+        dir,
+        sans.to_vec(),
+        validity,
+        "the leader's certificate names are not usable",
+    )?;
+    let (chain, ca) = split_root(chain.as_bytes(), b"")?
+        .ok_or_else(|| "the temporary certificate does not end with the root that issued it".to_string())?;
+    let entry = Entry {
+        name: OWN_ENTRY.to_string(),
+        version: 0,
+        ca,
+    };
+    let why = format!(
+        "This leader is serving a temporary certificate, because {problem}. It keeps its own certificate in the \
+         certificate list once the key opens again."
+    );
+    tracing::warn!(target: "leader.certificate_unserved", "{why}");
+    with_generations(dir, |held| {
+        held.disk += 1;
+        held.unserved = Some(why);
+        held.temporary = Some(Temporary {
+            entry,
+            chain,
+            key: key.into_bytes(),
+        });
+    });
+    current_held(dir)
+}
+
+/// The certificate [`serve_temporary`] holds, if it holds one.
+fn temporary(dir: &Path) -> Option<Temporary> {
+    let held = GENERATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    held.as_ref()
+        .and_then(|all| all.get(dir))
+        .and_then(|held| held.temporary.clone())
 }
 
 /// What an admin is told while the list entry this leader serves is not what its socket presents, since the start
@@ -365,8 +421,14 @@ pub fn current(dir: &Path) -> Result<Materials, String> {
 
 /// [`current`], for a caller already holding [`changing`].
 fn current_held(dir: &Path) -> Result<Materials, String> {
-    let entry = presented(dir)?;
-    let served = entry_chain(dir, &entry)?;
+    let (entry, served) = match temporary(dir) {
+        Some(held) => (held.entry, held.chain),
+        None => {
+            let entry = presented(dir)?;
+            let served = entry_chain(dir, &entry)?;
+            (entry, served)
+        }
+    };
     // The entry's root, and during a rotation the incoming one beside it: what every worker is given is derived, so
     // a rotation's overlap is published by writing its intent and gone with it.
     let ca_pem = match rotation(dir)? {
@@ -446,6 +508,16 @@ struct Held {
     disk: u64,
     socket: u64,
     unserved: Option<String>,
+    temporary: Option<Temporary>,
+}
+
+/// A certificate of the leader's own, held in memory only ([`serve_temporary`]): its chain without the root, and
+/// its private key, both PEM.
+#[derive(Clone)]
+struct Temporary {
+    entry: Entry,
+    chain: Vec<u8>,
+    key: Vec<u8>,
 }
 
 /// The state of `dir` on disk, and the state of it the socket loaded.
@@ -522,6 +594,7 @@ fn replaced_what_is_served(dir: &Path) {
     with_generations(dir, |held| {
         held.disk += 1;
         held.unserved = None;
+        held.temporary = None;
     });
     reload(dir);
 }
@@ -579,7 +652,10 @@ pub fn current_if_agreed(dir: &Path) -> Result<Materials, Refused> {
 pub fn to_serve(dir: &Path) -> Result<(u64, Vec<u8>, Vec<u8>), String> {
     let _reading = changing();
     let generation = disk_generation(dir);
-    let (chain, key) = entry_pair(dir, &presented(dir)?)?;
+    let (chain, key) = match temporary(dir) {
+        Some(held) => (held.chain, held.key),
+        None => entry_pair(dir, &presented(dir)?)?,
+    };
     Ok((generation, chain, key))
 }
 
@@ -2578,6 +2654,35 @@ pub(crate) mod tests {
         install(&dir, &chain, &key, &ca, &names(), &[]).expect("served again");
         assert!(unserved(&dir).is_none());
         assert!(current(&dir).unwrap().supplied);
+    }
+
+    /// A start whose secrets key is lost serves a certificate it holds in memory only, under the same authority, and
+    /// stores nothing. Once the key opens again, the next start serves the leader's own from the list.
+    #[test]
+    fn a_start_with_its_secrets_key_lost_serves_a_temporary_certificate() {
+        let dir = scratch("key-lost");
+        let own = ensure(&dir, names(), A_YEAR, &[]).expect("the leader's own");
+        let key = dir.with_extension("key");
+        let kept = key.with_extension("kept");
+        std::fs::rename(&key, &kept).expect("the secrets key");
+
+        let materials = ensure(&dir, names(), A_YEAR, &[]).expect("a start with its key lost");
+        assert!(!materials.supplied);
+        assert_eq!(materials.ca_pem, own.ca_pem, "workers keep the root they verify by");
+        assert!(unserved(&dir).is_some_and(|why| why.contains("temporary")));
+        let (_, chain, key_pem) = to_serve(&dir).unwrap();
+        is_pair(&chain, &key_pem).expect("the temporary key is its certificate's");
+        assert_ne!(chain, own.served, "the stored version was served");
+        assert_eq!(chain, current(&dir).unwrap().served);
+        assert!(describe(&chain, "the certificate").unwrap().names.contains(&names()[0]));
+        let stored = crate::leader::certificate_versions(list_in(&dir).as_ref()).unwrap();
+        assert_eq!(stored.get(OWN_ENTRY), Some(&1), "the temporary certificate was stored");
+
+        std::fs::rename(&kept, &key).unwrap();
+        ensure(&dir, names(), A_YEAR, &[]).expect("a start with its key back");
+        assert!(unserved(&dir).is_none());
+        let (_, chain, _) = to_serve(&dir).unwrap();
+        assert_eq!(chain, own.served, "the stored version is served again");
     }
 
     /// A certificate supplied as files before the list is not served, and the start says where it goes.
