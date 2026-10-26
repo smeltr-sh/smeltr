@@ -3566,7 +3566,7 @@ mod deployed_certificate_tests {
         let json = example_json().replacen(
             r#""groupId": "smeltr""#,
             &format!(
-                r#""groupId": "smeltr", "properties": {{"security.protocol": "SSL"}}, "authorities": {}"#,
+                r#""groupId": "smeltr", "properties": {{"security.protocol": "SSL"}}, "trustedAuthorities": {}"#,
                 serde_json::to_string(authorities).unwrap()
             ),
             1,
@@ -3612,7 +3612,7 @@ mod deployed_certificate_tests {
     /// `authorities`.
     fn commit_group(repo: &std::path::Path, parent: &str, group: &str, authorities: &str, message: &str) -> String {
         let source = format!(
-            r#"[{{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g","properties":{{"security.protocol":"SSL"}},"certificate":"acme","authorities":{}}}]"#,
+            r#"[{{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g","properties":{{"security.protocol":"SSL"}},"certificate":"acme","trustedAuthorities":{}}}]"#,
             serde_json::to_string(authorities).unwrap()
         );
         let edits = [

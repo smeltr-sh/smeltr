@@ -309,7 +309,7 @@ fn random_system(rng: &mut Rng, authority: &str) -> (String, Vec<String>) {
         } else {
             json!(authority)
         };
-        d.insert("authorities".into(), authorities);
+        d.insert("trustedAuthorities".into(), authorities);
     }
     if rng.chance(4) {
         let certificate = if loose(rng) {
@@ -453,7 +453,7 @@ const SETTINGS: [&str; 10] = [
     "headers",
     "credentials",
     "certificate",
-    "authorities",
+    "trustedAuthorities",
     "trustPublic",
     "maxRequestBytes",
     "bufferBytes",

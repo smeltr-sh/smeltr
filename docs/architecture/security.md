@@ -200,7 +200,7 @@ A receiver is where a worker takes the data it did not fetch: every
 worker of the group listens on the receiver's port, and whoever is admitted
 there puts records into the group's pipelines. So a receiver admits a sender
 that presents one of its tokens, each a credential like any other, or, served
-under a certificate with authorities, a sender whose certificate chains to one
+under a certificate with trusted authorities, a sender whose certificate chains to one
 of them, and a receiver that would admit anyone is refused at load. A token
 crosses the network in every request; without a certificate it crosses in the
 clear, which suits a receiver behind a balancer that ends TLS for it. A
@@ -208,7 +208,7 @@ token is checked before any of the body is read, and the bodies being read
 count against what the receiver may hold, so a sender without one cannot
 make a worker hold anything. A gzip body counts as it inflates, and is held
 to the receiver's request limit. The health path needs no token, and says
-only whether the receiver takes requests; a receiver that names authorities
+only whether the receiver takes requests; a receiver that names trusted authorities
 admits no connection without a certificate that chains to them,
 the health path's included. Syslog carries no token, so a syslog receiver admits
 by the networks a sender connects from, or by its certificate. Over UDP it has

@@ -41,7 +41,7 @@
   let described = $state<Record<string, Described>>({});
 
   $effect(() => {
-    const text = (value.authorities ?? '').trim();
+    const text = (value.trustedAuthorities ?? '').trim();
     if (text === '' || text in described) return;
     described[text] = null;
     describeCertificates(text)
@@ -50,7 +50,7 @@
   });
 
   const readBack = $derived.by((): Described => {
-    const text = (value.authorities ?? '').trim();
+    const text = (value.trustedAuthorities ?? '').trim();
     return text === '' ? null : (described[text] ?? null);
   });
 
@@ -82,7 +82,7 @@
   {/snippet}
 </CertificatePicker>
 
-<Field optional field="authorities" label="authorities">
+<Field optional field="trustedAuthorities" label="trusted authorities">
   {#snippet help()}
     {#if serves}
       Authorities a sender's certificate must chain to. With any, every sender must present a
@@ -97,8 +97,8 @@
   <textarea
     rows="4"
     spellcheck="false"
-    value={value.authorities ?? ''}
-    oninput={(e) => (value.authorities = optional(e.currentTarget.value))}></textarea>
+    value={value.trustedAuthorities ?? ''}
+    oninput={(e) => (value.trustedAuthorities = optional(e.currentTarget.value))}></textarea>
 </Field>
 {#if readBack && 'error' in readBack}
   <div class="read-back bad"><InlineError message={readBack.error} /></div>
@@ -118,7 +118,7 @@
     <Field field="trustPublic" label="trust public roots">
       {#snippet help()}
         Whether this worker also trusts the public roots: Mozilla's and its host's own. Off, only
-        certificates from the authorities above are accepted.
+        certificates from the trusted authorities above are accepted.
       {/snippet}
       <Toggle
         bind:checked={

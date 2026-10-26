@@ -191,10 +191,10 @@ fn known(rng: &mut Rng) -> Case {
                 refused.insert("certificate");
             }
             if serving.vouches && !clean && rng.chance(4) {
-                fields.insert("authorities".into(), "not a certificate".into());
-                refused.insert("authorities");
+                fields.insert("trustedAuthorities".into(), "not a certificate".into());
+                refused.insert("trustedAuthorities");
             } else if serving.vouches {
-                fields.insert("authorities".into(), AUTHORITY.into());
+                fields.insert("trustedAuthorities".into(), AUTHORITY.into());
             }
             serving.vouches
         }
@@ -307,7 +307,7 @@ fn garbage(rng: &mut Rng) -> Case {
             fields.insert(key.into(), garbage_value(rng, PIECES, pool, density));
         }
     }
-    for (key, sound) in [("certificate", "receiver"), ("authorities", AUTHORITY)] {
+    for (key, sound) in [("certificate", "receiver"), ("trustedAuthorities", AUTHORITY)] {
         if rng.chance(2) {
             let value = match rng.chance(density) {
                 true => random_value(rng, PIECES),
@@ -387,8 +387,8 @@ impl Pems {
 fn bundle(case: &Case, pems: &Pems) -> String {
     let mut file = parse(example_json());
     let mut source = case.source.clone();
-    if source.get("authorities").and_then(Value::as_str) == Some(AUTHORITY) {
-        source["authorities"] = pems.authority.clone().into();
+    if source.get("trustedAuthorities").and_then(Value::as_str) == Some(AUTHORITY) {
+        source["trustedAuthorities"] = pems.authority.clone().into();
     }
     file["sources"].as_array_mut().unwrap().push(source);
     file.to_string()
@@ -511,7 +511,7 @@ fn held_label((what, refuses): (&str, bool)) -> String {
 const OPTIONS: [&str; 8] = [
     "port",
     "certificate",
-    "authorities",
+    "trustedAuthorities",
     "maxRequestBytes",
     "tokens",
     "acknowledgement",
@@ -540,9 +540,9 @@ fn options(case: &Case) -> Vec<&'static str> {
 
 /// How a sender reaches the accepted or refused receiver: plain, or over TLS, and how it is admitted.
 fn admits(case: &Case) -> &'static str {
-    let tls = case.source.get("certificate").is_some() || case.source.get("authorities").is_some();
+    let tls = case.source.get("certificate").is_some() || case.source.get("trustedAuthorities").is_some();
     let tokens = (case.source.get("tokens").and_then(Value::as_object)).is_some_and(|t| !t.is_empty());
-    let vouches = case.source.get("authorities").is_some();
+    let vouches = case.source.get("trustedAuthorities").is_some();
     match (tls, tokens, vouches) {
         (false, true, _) => "a token in the clear",
         (true, true, _) => "a token over TLS",

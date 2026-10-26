@@ -80,7 +80,7 @@ const OPTIONS: &[&str] = &[
     "acknowledgement.indexer",
     "acknowledgement.default",
     "acknowledgement.receipt",
-    "tls.authorities",
+    "tls.trustedAuthorities",
     "tls.certificate",
     "inFlight",
     "maxRequestBytes",
@@ -283,7 +283,7 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target) -> Draw {
         cov.reach(if certificate {
             "tls.certificate"
         } else {
-            "tls.authorities"
+            "tls.trustedAuthorities"
         });
         set_tls(&mut d, certificate);
     }
@@ -470,7 +470,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Broken {
         }
         "tls.plainHttp" => {
             // TLS settings on a URL that never negotiates TLS, so nothing they say would be used.
-            set("authorities", json!(AUTHORITIES));
+            set("trustedAuthorities", json!(AUTHORITIES));
             set("url", json!("http://127.0.0.1:8088"));
             draw.tls = Some(false);
             Broken::Field(Some("url"))
@@ -534,7 +534,7 @@ const AUTHORITIES: &str = "@authorities";
 
 /// Sets TLS on `d`: the authority as [`AUTHORITIES`], and a certificate to present when `presents`.
 fn set_tls(d: &mut Map<String, Value>, presents: bool) {
-    d.insert("authorities".into(), json!(AUTHORITIES));
+    d.insert("trustedAuthorities".into(), json!(AUTHORITIES));
     if presents {
         d.insert("certificate".into(), json!("client"));
     }
@@ -549,7 +549,7 @@ fn bundle(draw: &Draw) -> Value {
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["hec"]}]}],
     });
-    if let Some(authorities) = b["destinations"][0].get_mut("authorities") {
+    if let Some(authorities) = b["destinations"][0].get_mut("trustedAuthorities") {
         *authorities = json!(pki().authority.pem);
     }
     b

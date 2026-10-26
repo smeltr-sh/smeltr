@@ -124,7 +124,7 @@ session timeout before the group hands it on.
 
 A connector's TLS is its own settings: the certificate it presents, which is
 an entry of the leader's list named by name (`security.md`, A certificate
-travels with its key), and the authorities it verifies the far end against,
+travels with its key), and the trusted authorities it verifies the far end against,
 PEM in the bundle. A worker presents the entry's newest version. A client
 trusts the authorities on top of the public roots, Mozilla's and its host's,
 unless told to trust the authorities alone; a receiver serves the certificate

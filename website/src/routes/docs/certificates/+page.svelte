@@ -99,13 +99,13 @@
   </p>
   <ul>
     <li>
-      <strong>Authorities</strong> are the certificates of the authorities you trust, as PEM, pasted into
-      the connector. A source or destination trusts them beside the public roots, Mozilla's and the worker
-      host's own. A receiver with authorities admits only senders whose certificate chains to one of them,
-      and trusts no public root.
+      <strong>Trusted authorities</strong> are the certificates of the authorities you trust, as PEM,
+      pasted into the connector. A source or destination trusts them beside the public roots, Mozilla's
+      and the worker host's own. A receiver with trusted authorities admits only senders whose certificate
+      chains to one of them, and trusts no public root.
     </li>
     <li>
-      To trust your own authorities alone, turn off <strong>trust public roots</strong> under Advanced
+      To trust only the trusted authorities, turn off <strong>trust public roots</strong> under Advanced
       TLS. Then only certificates from those authorities are accepted.
     </li>
     <li>

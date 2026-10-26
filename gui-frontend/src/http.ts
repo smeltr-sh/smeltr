@@ -97,13 +97,15 @@ export function urlWarning(
 /** Whether `tls` sets anything, as `config_file::dto::TlsDto::is_set` reads it. */
 export function tlsSet(tls: TlsDto): boolean {
   return (
-    tls.certificate !== undefined || tls.authorities !== undefined || tls.trustPublic !== undefined
+    tls.certificate !== undefined ||
+    tls.trustedAuthorities !== undefined ||
+    tls.trustPublic !== undefined
   );
 }
 
 /** What a connector reached over plain HTTP is told of its TLS settings. */
 export const PLAIN_HTTP_TLS =
-  'Plain HTTP negotiates no TLS, so the certificate and authorities would go unused. Use an https:// URL.';
+  'Plain HTTP negotiates no TLS, so the certificate and trusted authorities would go unused. Use an https:// URL.';
 
 /** Why `url` cannot carry `tls`, or nothing. Plain HTTP negotiates no TLS for the settings to answer. Whether it is
  * a URL at all is the save's to say. */

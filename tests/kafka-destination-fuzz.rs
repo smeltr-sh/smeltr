@@ -76,7 +76,7 @@ const OPTIONS: &[&str] = &[
     "stallAfterSecs",
     "bufferBytes",
     "bufferBytes.text",
-    "tls.authorities",
+    "tls.trustedAuthorities",
     "tls.certificate",
     "properties",
     "properties.plaintext",
@@ -143,7 +143,7 @@ const AUTHORITIES: &str = "@authorities";
 
 /// Sets `tls` on `d`, the authority as [`AUTHORITIES`].
 fn set_tls(d: &mut Map<String, Value>, tls: ClientTls) {
-    d.insert("authorities".into(), json!(AUTHORITIES));
+    d.insert("trustedAuthorities".into(), json!(AUTHORITIES));
     if tls == ClientTls::Presents {
         d.insert("certificate".into(), json!("client"));
     }
@@ -259,7 +259,7 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target) -> Draw {
         if rng.chance(4) {
             // Over TLS, which the mock does not speak.
             let own = if rng.chance(2) {
-                cov.reach("tls.authorities");
+                cov.reach("tls.trustedAuthorities");
                 ClientTls::Trusts
             } else {
                 cov.reach("tls.certificate");
@@ -506,7 +506,7 @@ fn bundle(draw: &Draw, pki: &Pki) -> Value {
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["kafka"]}]}],
     });
-    if let Some(authorities) = b["destinations"][0].get_mut("authorities") {
+    if let Some(authorities) = b["destinations"][0].get_mut("trustedAuthorities") {
         *authorities = json!(pki.authority.pem);
     }
     b
@@ -958,7 +958,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
         if !reached.reached("properties.sasl") && !rng.chance(6) {
             reached.forget(&[
                 "brokers.elsewhere",
-                "tls.authorities",
+                "tls.trustedAuthorities",
                 "tls.certificate",
                 "properties.sasl",
             ]);
@@ -967,7 +967,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
         build().map_err(|e| format!("does not build: {e:?}\n{json}"))?;
         reached.keep_only(&[
             "brokers.elsewhere",
-            "tls.authorities",
+            "tls.trustedAuthorities",
             "tls.certificate",
             "properties.sasl",
         ]);

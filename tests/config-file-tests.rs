@@ -5472,7 +5472,7 @@ fn otlp_receivers_of_different_signals_share_a_port() {
     ]));
     assert!(
         e.contains(
-            r#"source "b" shares port 4318 with source "a", which serves it; give both the same certificate and authorities"#
+            r#"source "b" shares port 4318 with source "a", which serves it; give both the same certificate and trusted authorities"#
         ),
         "{e}"
     );
@@ -5641,7 +5641,7 @@ fn a_hec_receiver_that_admits_anyone_is_refused() {
 fn an_http_receiver_with_authorities_and_no_certificate_is_refused() {
     let json = r#"{"version":1,
         "sources":[{"id":"hook","type":"httpReceiver","port":8088,
-            "authorities":"-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n"}]}"#;
+            "trustedAuthorities":"-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n"}]}"#;
     assert!(
         refused_at(json, "certificate", "names no certificate"),
         "{}",
@@ -5651,7 +5651,7 @@ fn an_http_receiver_with_authorities_and_no_certificate_is_refused() {
 
 /// The TLS settings of an S2S receiver that presents the certificate `s2s-tls` and admits a forwarder whose
 /// certificate chains to its authorities, which `s2s_receiver_config` fills in.
-const S2S_TLS: &str = r#","certificate":"s2s-tls","authorities":"@authorities""#;
+const S2S_TLS: &str = r#","certificate":"s2s-tls","trustedAuthorities":"@authorities""#;
 
 /// An S2S receiver of `extra` on port 9997, with [`S2S_TLS`]'s authorities filled in.
 fn s2s_receiver_config(extra: &str) -> String {

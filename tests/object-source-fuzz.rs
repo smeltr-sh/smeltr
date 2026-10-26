@@ -307,7 +307,7 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, only: Option<Kind>) ->
     let tls = kind != Kind::Sftp && !target.live() && all_https(&d) && rng.chance(4);
     if tls {
         cov.reach("tls");
-        d.insert("authorities".into(), json!(authority_pem()));
+        d.insert("trustedAuthorities".into(), json!(authority_pem()));
     }
     let mut draw = Draw {
         kind,
@@ -483,7 +483,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
                 Kind::Sftp => unreachable!("an SFTP source sets no TLS"),
             };
             d.insert("endpoint".into(), json!(endpoint));
-            d.insert("authorities".into(), json!(authority_pem()));
+            d.insert("trustedAuthorities".into(), json!(authority_pem()));
             draw.tls = true;
             Some(field)
         }

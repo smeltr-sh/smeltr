@@ -103,20 +103,20 @@
             "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "fetchBytes",
@@ -248,7 +248,7 @@
               "schemaRegistry",
               "fields",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic"
             ]
           },
@@ -649,20 +649,20 @@
             "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "region",
@@ -789,7 +789,7 @@
               "framing",
               "lineBreaker",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic"
             ]
           },
@@ -888,20 +888,20 @@
             "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "afterCommit",
@@ -1074,7 +1074,7 @@
               "framing",
               "lineBreaker",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic",
               "afterCommit",
               "movePrefix"
@@ -1163,20 +1163,20 @@
             "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "afterCommit",
@@ -1309,7 +1309,7 @@
               "framing",
               "lineBreaker",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic",
               "afterCommit",
               "movePrefix"
@@ -1443,20 +1443,20 @@
             "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "afterCommit",
@@ -1605,7 +1605,7 @@
               "framing",
               "lineBreaker",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic",
               "afterCommit",
               "movePrefix"
@@ -1977,20 +1977,20 @@
             "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "endpoint",
@@ -2100,7 +2100,7 @@
               "framing",
               "lineBreaker",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic"
             ]
           },
@@ -2174,20 +2174,20 @@
             "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "pubsubEndpoint",
@@ -2281,7 +2281,7 @@
               "framing",
               "lineBreaker",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic"
             ]
           },
@@ -2437,20 +2437,20 @@
             "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version. Only on an `https://` URL."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one. Only on an `https://` URL."
+            "what": "Trusted authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one. Only on an `https://` URL."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "records",
@@ -2550,7 +2550,7 @@
             "settings": [
               "headers",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic",
               "keyId",
               "scope",
@@ -2621,20 +2621,20 @@
             "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "start",
@@ -2671,7 +2671,7 @@
             "settings": [
               "keyId",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic",
               "start",
               "pollIntervalSecs"
@@ -2750,20 +2750,20 @@
             "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version. Only with `tls` `require`."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one. Only with `tls` `require`."
+            "what": "Trusted authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one. Only with `tls` `require`."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "query",
@@ -2883,7 +2883,7 @@
               "port",
               "tls",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic",
               "pollIntervalSecs",
               "batch"
@@ -2962,20 +2962,20 @@
             "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version. Only with `tls` `require`."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one. Only with `tls` `require`."
+            "what": "Trusted authorities the source's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one. Only with `tls` `require`."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "query",
@@ -3095,7 +3095,7 @@
               "port",
               "tls",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic",
               "pollIntervalSecs",
               "batch"
@@ -3135,7 +3135,7 @@
                 "jenkins": "JENKINS_HOOK_TOKEN"
               }
             ],
-            "what": "Each token's name to the [credential](/docs/secrets) holding it. A sender presents one as `Authorization: Bearer <token>`, and any other request is refused `401`. A receiver with no token needs `authorities`."
+            "what": "Each token's name to the [credential](/docs/secrets) holding it. A sender presents one as `Authorization: Bearer <token>`, and any other request is refused `401`. A receiver with no token needs `trustedAuthorities`."
           },
           {
             "name": "certificate",
@@ -3145,13 +3145,13 @@
             "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "none",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
+            "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
             "name": "records",
@@ -3196,7 +3196,7 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "authorities", "maxRequestBytes"]
+            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
           }
         ]
       },
@@ -3232,7 +3232,7 @@
                 }
               }
             ],
-            "what": "Each token's name to its `token`, the [credential](/docs/secrets) holding it, and `acknowledgement`. A sender presents a token as `Authorization: Splunk <token>`, and any other request is refused with code `2`, `3` or `4`. With `acknowledgement` true, as Splunk's `useACK`, its senders name a channel and are answered at once with an `ackId`, and one that names none is refused code `10`; without it, a request is held until delivered and `/services/collector/ack` answers code `14`. A receiver with no token needs `authorities`, and holds every request."
+            "what": "Each token's name to its `token`, the [credential](/docs/secrets) holding it, and `acknowledgement`. A sender presents a token as `Authorization: Splunk <token>`, and any other request is refused with code `2`, `3` or `4`. With `acknowledgement` true, as Splunk's `useACK`, its senders name a channel and are answered at once with an `ackId`, and one that names none is refused code `10`; without it, a request is held until delivered and `/services/collector/ack` answers code `14`. A receiver with no token needs `trustedAuthorities`, and holds every request."
           },
           {
             "name": "certificate",
@@ -3242,13 +3242,13 @@
             "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "none",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
+            "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
             "name": "sourcetypes",
@@ -3289,7 +3289,7 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "authorities", "sourcetypes", "maxRequestBytes"]
+            "settings": ["certificate", "trustedAuthorities", "sourcetypes", "maxRequestBytes"]
           }
         ]
       },
@@ -3318,7 +3318,7 @@
                 "branches": "BRANCH_FORWARDER_TOKEN"
               }
             ],
-            "what": "Each token's name to the [credential](/docs/secrets) holding it. A forwarder presents one as its outputs.conf `token`, and one that presents none or another is cut off. A receiver with no token needs `authorities`."
+            "what": "Each token's name to the [credential](/docs/secrets) holding it. A forwarder presents one as its outputs.conf `token`, and one that presents none or another is cut off. A receiver with no token needs `trustedAuthorities`."
           },
           {
             "name": "certificate",
@@ -3328,13 +3328,13 @@
             "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "none",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities a forwarder's certificate must chain to, as PEM. With any, every forwarder must present a certificate."
+            "what": "Trusted authorities a forwarder's certificate must chain to, as PEM. With any, every forwarder must present a certificate."
           },
           {
             "name": "sourcetypes",
@@ -3383,7 +3383,7 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "authorities", "maxRequestBytes"]
+            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
           }
         ]
       },
@@ -3397,7 +3397,7 @@
             "type": "integer",
             "required": true,
             "examples": [4318, 14318],
-            "what": "The port it listens on. Every worker of the group binds it, so no two receivers share one, but OTLP receivers of different signals may, with the same `certificate` and `authorities`."
+            "what": "The port it listens on. Every worker of the group binds it, so no two receivers share one, but OTLP receivers of different signals may, with the same `certificate` and `trustedAuthorities`."
           },
           {
             "name": "signal",
@@ -3435,7 +3435,7 @@
                 }
               }
             ],
-            "what": "Each token's name to the [credential](/docs/secrets) holding it. An exporter presents one as `Authorization: Bearer <token>`, and any other request is refused `401`. A receiver with no token needs `authorities`."
+            "what": "Each token's name to the [credential](/docs/secrets) holding it. An exporter presents one as `Authorization: Bearer <token>`, and any other request is refused `401`. A receiver with no token needs `trustedAuthorities`."
           },
           {
             "name": "certificate",
@@ -3445,13 +3445,13 @@
             "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "none",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
+            "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
             "name": "maxRequestBytes",
@@ -3476,14 +3476,14 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "authorities", "maxRequestBytes"]
+            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
           }
         ]
       },
       {
         "type": "syslogReceiver",
         "name": "Syslog receiver",
-        "summary": "Takes what syslog senders send to its port, over TCP or UDP: rsyslog, syslog-ng, network devices and appliances. Messages are RFC 5424 or RFC 3164. Over TCP each is framed by its octet count or ended by a newline (RFC 6587). With `lineBreaker` set, it ends where the pattern breaks instead of at a newline. With a `certificate`, TCP is served over TLS (RFC 5425). Over UDP each datagram is one message (RFC 5426), served without TLS. Every worker of the group listens, and a sender, or a balancer in front of the workers, picks one. Syslog carries no token, so a receiver admits senders by the networks in `allowFrom`, by a certificate that chains to its `authorities`, or both; over UDP by `allowFrom` alone. Syslog has no acknowledgement: delivery is best-effort. What a connection carries when it is cut, and what a worker holds when it stops, is lost. A full or blocked receiver stops reading TCP, so the sender's TCP window fills and the sender buffers or drops by its own rules. It drops a datagram that arrives while it is full or blocked, and counts it in `smeltr_source_dropped_total`. Each message is a record whose `_raw` is the message as sent, its PRI header included; a pipeline parses the header.",
+        "summary": "Takes what syslog senders send to its port, over TCP or UDP: rsyslog, syslog-ng, network devices and appliances. Messages are RFC 5424 or RFC 3164. Over TCP each is framed by its octet count or ended by a newline (RFC 6587). With `lineBreaker` set, it ends where the pattern breaks instead of at a newline. With a `certificate`, TCP is served over TLS (RFC 5425). Over UDP each datagram is one message (RFC 5426), served without TLS. Every worker of the group listens, and a sender, or a balancer in front of the workers, picks one. Syslog carries no token, so a receiver admits senders by the networks in `allowFrom`, by a certificate that chains to its `trustedAuthorities`, or both; over UDP by `allowFrom` alone. Syslog has no acknowledgement: delivery is best-effort. What a connection carries when it is cut, and what a worker holds when it stops, is lost. A full or blocked receiver stops reading TCP, so the sender's TCP window fills and the sender buffers or drops by its own rules. It drops a datagram that arrives while it is full or blocked, and counts it in `smeltr_source_dropped_total`. Each message is a record whose `_raw` is the message as sent, its PRI header included; a pipeline parses the header.",
         "settings": [
           {
             "name": "port",
@@ -3514,7 +3514,7 @@
             "type": "list of strings",
             "absent": "every address TLS admits",
             "examples": [["10.0.0.0/8"], ["10.20.0.0/16", "192.168.1.20", "fd00::/8"]],
-            "what": "The networks a sender may connect from: CIDR blocks such as `10.0.0.0/8`, or single addresses. A connection from anywhere else is closed before any of it is read, and a datagram from anywhere else is dropped. Without it, a TCP receiver needs `authorities`, and admits every sender whose certificate chains to one of them. A UDP receiver needs it. A datagram's source address is whatever its sender writes, so over UDP it admits whoever can reach the port and claim an address in these networks."
+            "what": "The networks a sender may connect from: CIDR blocks such as `10.0.0.0/8`, or single addresses. A connection from anywhere else is closed before any of it is read, and a datagram from anywhere else is dropped. Without it, a TCP receiver needs `trustedAuthorities`, and admits every sender whose certificate chains to one of them. A UDP receiver needs it. A datagram's source address is whatever its sender writes, so over UDP it admits whoever can reach the port and claim an address in these networks."
           },
           {
             "name": "certificate",
@@ -3524,13 +3524,13 @@
             "what": "The certificate it serves TLS with (RFC 5425), named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version. A UDP receiver takes none."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "none",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate. A UDP receiver takes none."
+            "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate. A UDP receiver takes none."
           },
           {
             "name": "maxRequestBytes",
@@ -3575,7 +3575,13 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "authorities", "maxRequestBytes", "encoding", "lineBreaker"]
+            "settings": [
+              "certificate",
+              "trustedAuthorities",
+              "maxRequestBytes",
+              "encoding",
+              "lineBreaker"
+            ]
           }
         ]
       },
@@ -3606,7 +3612,7 @@
                 }
               }
             ],
-            "what": "Each token's name to the [credential](/docs/secrets) holding it. A sender presents one as `Authorization: Bearer <token>`, and any other request is refused `401`. A receiver with no token needs `authorities`."
+            "what": "Each token's name to the [credential](/docs/secrets) holding it. A sender presents one as `Authorization: Bearer <token>`, and any other request is refused `401`. A receiver with no token needs `trustedAuthorities`."
           },
           {
             "name": "certificate",
@@ -3616,13 +3622,13 @@
             "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "none",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
+            "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
             "name": "maxRequestBytes",
@@ -3639,7 +3645,7 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "authorities", "maxRequestBytes"]
+            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
           }
         ]
       },
@@ -3670,7 +3676,7 @@
                 }
               }
             ],
-            "what": "Each token's name to the [credential](/docs/secrets) holding it. A sender presents one as `Authorization: Bearer <token>`, as `ApiKey <token>`, the key as sent or its `id:key`, or as a Basic password, and any other request is refused `401`. A receiver with no token needs `authorities`."
+            "what": "Each token's name to the [credential](/docs/secrets) holding it. A sender presents one as `Authorization: Bearer <token>`, as `ApiKey <token>`, the key as sent or its `id:key`, or as a Basic password, and any other request is refused `401`. A receiver with no token needs `trustedAuthorities`."
           },
           {
             "name": "certificate",
@@ -3680,13 +3686,13 @@
             "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "none",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
+            "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
             "name": "maxRequestBytes",
@@ -3711,7 +3717,7 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "authorities", "maxRequestBytes"]
+            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
           }
         ]
       }
@@ -3958,20 +3964,20 @@
             "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "compression",
@@ -4057,7 +4063,7 @@
               "schemaRegistry",
               "field",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic"
             ]
           },
@@ -4291,20 +4297,20 @@
             "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "auth",
@@ -4417,7 +4423,7 @@
               "url",
               "defaultIndex",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic",
               "auth",
               "username",
@@ -4579,20 +4585,20 @@
             "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "inFlight",
@@ -4638,7 +4644,7 @@
               "host",
               "acknowledgement",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic"
             ]
           },
@@ -4762,20 +4768,20 @@
             "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version. Only on an `https://` URL."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one. Only on an `https://` URL."
+            "what": "Trusted authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one. Only on an `https://` URL."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "compression",
@@ -4832,7 +4838,7 @@
             "section": "Advanced",
             "settings": [
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic",
               "compression",
               "inFlight",
@@ -4922,20 +4928,20 @@
             "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version. Only on an `https://` URL."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one. Only on an `https://` URL."
+            "what": "Trusted authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one. Only on an `https://` URL."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "inFlight",
@@ -4984,7 +4990,7 @@
             "settings": [
               "authEndpoint",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic",
               "inFlight",
               "maxRequestBytes",
@@ -5056,20 +5062,20 @@
             "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version. Only on an `https://` URL."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one. Only on an `https://` URL."
+            "what": "Trusted authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one. Only on an `https://` URL."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "maxRequestBytes",
@@ -5102,7 +5108,7 @@
             "section": "Advanced",
             "settings": [
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic",
               "maxRequestBytes",
               "bufferBytes",
@@ -5216,20 +5222,20 @@
             "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           }
         ],
         "reads": ["__destination.prefix"],
@@ -5244,7 +5250,7 @@
               "field",
               "newlines",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic"
             ]
           },
@@ -5316,20 +5322,20 @@
             "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           }
         ],
         "reads": ["__destination.prefix"],
@@ -5343,7 +5349,7 @@
               "field",
               "newlines",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic"
             ]
           },
@@ -5474,20 +5480,20 @@
             "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           }
         ],
         "reads": ["__destination.prefix"],
@@ -5507,7 +5513,7 @@
               "field",
               "newlines",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic"
             ]
           },
@@ -5803,20 +5809,20 @@
             "what": "The certificate this worker presents to the catalog and the store, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the catalog and the store requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the catalog and the store's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the catalog and the store's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "compression",
@@ -5896,7 +5902,7 @@
               "clientSecret",
               "signingName",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic"
             ]
           },
@@ -6045,20 +6051,20 @@
             "what": "The certificate this worker presents to the store, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the store requires a client certificate. Workers use its newest version."
           },
           {
-            "name": "authorities",
+            "name": "trustedAuthorities",
             "type": "string",
             "absent": "public roots",
             "examples": [
               "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
             ],
-            "what": "Authorities the store's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
+            "what": "Trusted authorities the store's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one."
           },
           {
             "name": "trustPublic",
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `authorities`. `false` trusts the authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the authorities alone."
           },
           {
             "name": "compression",
@@ -6135,7 +6141,7 @@
               "accessKeyId",
               "secretAccessKey",
               "certificate",
-              "authorities",
+              "trustedAuthorities",
               "trustPublic"
             ]
           },

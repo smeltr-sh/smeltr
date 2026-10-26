@@ -76,7 +76,7 @@ const OPTIONS: &[&str] = &[
     "auth.basic",
     "auth.userPassword",
     "auth.lineBreak",
-    "tls.authorities",
+    "tls.trustedAuthorities",
     "tls.certificate",
     "docId.auto",
     "docId.dedupe",
@@ -156,7 +156,7 @@ const AUTHORITIES: &str = "@authorities";
 
 /// Sets `tls` on `d`, the authority as [`AUTHORITIES`].
 fn set_tls(d: &mut Map<String, Value>, tls: ClientTls) {
-    d.insert("authorities".into(), json!(AUTHORITIES));
+    d.insert("trustedAuthorities".into(), json!(AUTHORITIES));
     if tls == ClientTls::Presents {
         d.insert("certificate".into(), json!("client"));
     }
@@ -336,7 +336,7 @@ fn draw_url(rng: &mut Rng, cov: &mut Reached, port: u16) -> (String, Endpoint, O
     };
     let tls = |rng: &mut Rng, cov: &mut Reached| {
         if rng.chance(2) {
-            cov.reach("tls.authorities");
+            cov.reach("tls.trustedAuthorities");
             ClientTls::Trusts
         } else {
             cov.reach("tls.certificate");
@@ -569,7 +569,7 @@ fn bundle(draw: &Draw, pki: &Pki) -> Value {
         "pipelines": [{"id": "p", "name": "p", "steps": steps}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["es"]}]}],
     });
-    if let Some(authorities) = b["destinations"][0].get_mut("authorities") {
+    if let Some(authorities) = b["destinations"][0].get_mut("trustedAuthorities") {
         *authorities = json!(pki.authority.pem);
     }
     b

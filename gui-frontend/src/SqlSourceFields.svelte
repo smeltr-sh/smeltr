@@ -119,7 +119,7 @@
       source.user,
       source.tls,
       source.certificate,
-      source.authorities,
+      source.trustedAuthorities,
       source.trustPublic,
     ]);
 
@@ -344,7 +344,7 @@
       source.tls = v === 'require' ? undefined : v;
       if (v === 'disable') {
         source.certificate = undefined;
-        source.authorities = undefined;
+        source.trustedAuthorities = undefined;
         source.trustPublic = undefined;
       }
     }}

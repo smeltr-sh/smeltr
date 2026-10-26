@@ -151,8 +151,8 @@ token = 0d2a5f6c-4b1e-4c3a-9f7d-2e8b6a1c5d40`;
   <h2 id="senders">Tokens and certificates</h2>
   <p>
     Anyone a receiver admits can put records into the group's pipelines, so a receiver needs
-    <code>tokens</code>, an <code>certificate</code> and <code>authorities</code>, or both. The
-    leader refuses a receiver with neither.
+    <code>tokens</code>, an <code>certificate</code> and <code>trustedAuthorities</code>, or both.
+    The leader refuses a receiver with neither.
   </p>
   <ul>
     <li>
@@ -163,8 +163,8 @@ token = 0d2a5f6c-4b1e-4c3a-9f7d-2e8b6a1c5d40`;
     <li>
       <strong>Client certificates:</strong> with a
       <a href="/docs/certificates#connectors">certificate</a>, the receiver serves TLS with it. With
-      <code>authorities</code>, every forwarder must present a certificate that chains to one of
-      them.
+      <code>trustedAuthorities</code>, every forwarder must present a certificate that chains to one
+      of them.
     </li>
   </ul>
   <p>With both, a forwarder presents a certificate and a token.</p>
@@ -230,8 +230,8 @@ token = 0d2a5f6c-4b1e-4c3a-9f7d-2e8b6a1c5d40`;
     <dt><strong>The forwarder cannot connect</strong></dt>
     <dd>
       Check that the port is open on every worker and that the forwarder's addresses reach them. A
-      receiver with <code>authorities</code> refuses a connection without a certificate that chains to
-      one of them.
+      receiver with <code>trustedAuthorities</code> refuses a connection without a certificate that chains
+      to one of them.
     </dd>
     <dt><strong>The receiver closes the forwarder's connections at once</strong></dt>
     <dd>

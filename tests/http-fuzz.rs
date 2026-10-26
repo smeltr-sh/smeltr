@@ -111,7 +111,7 @@ const OPTIONS: &[&str] = &[
     "secret.workerLocal",
     "secret.workerLocalUnset",
     "secret.lineBreak",
-    "tls.authorities",
+    "tls.trustedAuthorities",
     "tls.certificate",
     "inFlight",
     "maxRequestBytes",
@@ -221,7 +221,7 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, stored: &mut Stored) -
     let mut tls = None;
     if https {
         let presents = rng.chance(2);
-        cov.reach(if presents { "tls.certificate" } else { "tls.authorities" });
+        cov.reach(if presents { "tls.certificate" } else { "tls.trustedAuthorities" });
         tls = Some(presents);
         set_tls(&mut d, presents);
     }
@@ -616,7 +616,7 @@ const AUTHORITIES: &str = "@authorities";
 
 /// Sets TLS on `d`: the authority as [`AUTHORITIES`], and a certificate to present when `presents`.
 fn set_tls(d: &mut Map<String, Value>, presents: bool) {
-    d.insert("authorities".into(), json!(AUTHORITIES));
+    d.insert("trustedAuthorities".into(), json!(AUTHORITIES));
     if presents {
         d.insert("certificate".into(), json!("client"));
     }
@@ -631,7 +631,7 @@ fn bundle(draw: &Draw) -> Value {
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["hook"]}]}],
     });
-    if let Some(authorities) = b["destinations"][0].get_mut("authorities") {
+    if let Some(authorities) = b["destinations"][0].get_mut("trustedAuthorities") {
         *authorities = json!(pki().authority.pem);
     }
     b

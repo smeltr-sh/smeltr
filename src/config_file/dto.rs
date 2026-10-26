@@ -57,7 +57,7 @@ pub struct TlsDto {
     pub certificate: Option<String>,
     /// PEM. A trust store holds more than one root, so several may follow one another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub authorities: Option<String>,
+    pub trusted_authorities: Option<String>,
     /// Absent is true: a client also trusts the public roots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_public: Option<bool>,
@@ -66,7 +66,7 @@ pub struct TlsDto {
 impl TlsDto {
     /// Whether the connector says anything about its TLS.
     pub fn is_set(&self) -> bool {
-        self.certificate.is_some() || self.authorities.is_some() || self.trust_public.is_some()
+        self.certificate.is_some() || self.trusted_authorities.is_some() || self.trust_public.is_some()
     }
 }
 
@@ -79,20 +79,20 @@ pub struct ServedTlsDto {
     pub certificate: Option<String>,
     /// PEM, one or more certificates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub authorities: Option<String>,
+    pub trusted_authorities: Option<String>,
 }
 
 impl ServedTlsDto {
     /// Whether the receiver says anything about its TLS.
     pub fn is_set(&self) -> bool {
-        self.certificate.is_some() || self.authorities.is_some()
+        self.certificate.is_some() || self.trusted_authorities.is_some()
     }
 
     /// The same settings as any connector's.
     pub fn tls(&self) -> TlsDto {
         TlsDto {
             certificate: self.certificate.clone(),
-            authorities: self.authorities.clone(),
+            trusted_authorities: self.trusted_authorities.clone(),
             trust_public: None,
         }
     }

@@ -106,12 +106,14 @@ describe('changeText, one object changed one way', () => {
         type: 'kafka',
         brokers: 'b',
         topics: [],
-        authorities: 'cert-v1',
+        trustedAuthorities: 'cert-v1',
       });
     });
     const next = structuredClone(before);
-    (next.sources.at(-1) as { authorities?: string }).authorities = 'cert-v2';
-    expect(text(next, before).subject).toBe('Update source acme: authorities cert-v1 → cert-v2');
+    (next.sources.at(-1) as { trustedAuthorities?: string }).trustedAuthorities = 'cert-v2';
+    expect(text(next, before).subject).toBe(
+      'Update source acme: trustedAuthorities cert-v1 → cert-v2',
+    );
   });
 
   it('never lets a multiline PEM value break the subject onto a second line', () => {
@@ -121,11 +123,12 @@ describe('changeText, one object changed one way', () => {
         type: 'kafka',
         brokers: 'b',
         topics: [],
-        authorities: '-----BEGIN CERTIFICATE-----\nMIIBCjCBtAIBADAA\n-----END CERTIFICATE-----',
+        trustedAuthorities:
+          '-----BEGIN CERTIFICATE-----\nMIIBCjCBtAIBADAA\n-----END CERTIFICATE-----',
       });
     });
     const next = structuredClone(before);
-    (next.sources.at(-1) as { authorities?: string }).authorities =
+    (next.sources.at(-1) as { trustedAuthorities?: string }).trustedAuthorities =
       '-----BEGIN CERTIFICATE-----\nMIIBDkCBtAIBADAA\n-----END CERTIFICATE-----';
     const { subject } = text(next, before);
     expect(subject.split('\n')).toHaveLength(1);

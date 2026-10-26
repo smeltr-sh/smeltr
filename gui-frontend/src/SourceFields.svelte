@@ -941,7 +941,7 @@
           // The load refuses TLS settings and a line breaker under UDP, which serves no TLS and frames nothing.
           if (v === 'udp') {
             source.certificate = undefined;
-            source.authorities = undefined;
+            source.trustedAuthorities = undefined;
             delete source.lineBreaker;
           }
         }}
@@ -976,8 +976,8 @@
           a sender, and a UDP sender's address can be spoofed.
         {:else}
           The networks a sender may connect from, each a CIDR block. Syslog carries no token, so the
-          receiver needs these networks, authorities a sender's certificate must chain to, or both.
-          With both, a sender must connect from a listed network and present a certificate.
+          receiver needs these networks, trusted authorities a sender's certificate must chain to,
+          or both. With both, a sender must connect from a listed network and present a certificate.
         {/if}
       {/snippet}
       <TokenListInput
@@ -1007,7 +1007,7 @@
           Each token a sender may present as <code>Authorization: Bearer &lt;token&gt;</code>, by
           name.
         {/if}
-        With no token, the receiver needs authorities a sender's certificate must chain to.
+        With no token, the receiver needs trusted authorities a sender's certificate must chain to.
       {/snippet}
     </ReceiverTokens>
   {/if}

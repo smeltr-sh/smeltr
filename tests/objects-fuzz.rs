@@ -170,7 +170,7 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, only: Option<Store>) -
         if !target.live() && https && rng.chance(4) {
             cov.reach("tls");
             tls = true;
-            d.insert("authorities".into(), json!(authority_pem()));
+            d.insert("trustedAuthorities".into(), json!(authority_pem()));
         }
     }
     draw_objects(rng, cov, store, &mut d);
@@ -356,7 +356,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
                 set("certificate", json!(" "));
                 Some("certificate")
             } else {
-                set("authorities", json!(authority_pem()));
+                set("trustedAuthorities", json!(authority_pem()));
                 set("endpoint", json!("http://127.0.0.1:9000"));
                 draw.tls = true;
                 Some("endpoint")

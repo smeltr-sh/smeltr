@@ -945,7 +945,7 @@ fn source_options(o: &mut Options<'_>) -> serde_json::Value {
         ),
         ("tls", &[json!("require"), json!("disable")], &[json!("prefer")]),
         ("certificate", &[json!("pg-client")], &[json!(""), json!(" ")]),
-        ("authorities", &[json!(pem)], &[json!("nope"), json!("")]),
+        ("trustedAuthorities", &[json!(pem)], &[json!("nope"), json!("")]),
         ("trustPublic", &[json!(true)], &[json!("yes")]),
         ("pollIntervalSecs", &[json!(1), json!(60)], &[json!(0), json!(u64::MAX)]),
         (
@@ -966,16 +966,16 @@ fn source_options(o: &mut Options<'_>) -> serde_json::Value {
     // TLS settings are for an encrypted connection; a sound draw turns encryption on for them. Whether public roots
     // are trusted says nothing on its own, so a sound draw gives it an authority to stand beside.
     if !o.breaking
-        && ["certificate", "authorities", "trustPublic"]
+        && ["certificate", "trustedAuthorities", "trustPublic"]
             .iter()
             .any(|k| source.get(k).is_some())
     {
         source["tls"] = json!("require");
         if source.get("trustPublic").is_some()
             && source.get("certificate").is_none()
-            && source.get("authorities").is_none()
+            && source.get("trustedAuthorities").is_none()
         {
-            source["authorities"] = json!(pem);
+            source["trustedAuthorities"] = json!(pem);
         }
     }
     source
@@ -997,7 +997,7 @@ fn any_sql_source_a_file_declares_loads_or_is_refused() {
         "config password",
         "config tls",
         "config certificate",
-        "config authorities",
+        "config trustedAuthorities",
         "config trustPublic",
         "config pollIntervalSecs",
         "config batch",

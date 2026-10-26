@@ -690,7 +690,7 @@ fn to_tls(dto: &TlsDto, of: &str, side: Side) -> Option<Tls> {
     dto.is_set().then(|| Tls {
         of: of.to_string(),
         certificate: dto.certificate.as_deref().map(|c| c.trim().to_string()),
-        authorities: dto.authorities.clone(),
+        authorities: dto.trusted_authorities.clone(),
         trust_public: side == Side::Client && dto.trust_public != Some(false),
         side,
     })
@@ -2056,22 +2056,22 @@ fn check_tls(tls: &TlsDto, what: &str, errors: &mut ItemErrors<'_>) {
             "{what} names a certificate by a blank name. Choose one from the list"
         ));
     }
-    if tls.certificate.is_none() && tls.authorities.is_none() && tls.trust_public == Some(true) {
+    if tls.certificate.is_none() && tls.trusted_authorities.is_none() && tls.trust_public == Some(true) {
         errors.at("trustPublic").push(format!(
-            "{what} names neither a certificate nor authorities, so trust public roots changes nothing. Choose a \
-             certificate or paste authorities, or leave trust public roots at its default"
+            "{what} names neither a certificate nor trusted authorities, so trust public roots changes nothing. Choose a \
+             certificate or paste trusted authorities, or leave trust public roots at its default"
         ));
     }
-    if tls.trust_public == Some(false) && tls.authorities.is_none() {
+    if tls.trust_public == Some(false) && tls.trusted_authorities.is_none() {
         errors.at("trustPublic").push(format!(
-            "{what} trusts no public root and names no authority, so nothing it connects to could be verified. \
-             Paste the authorities it trusts, or trust public roots"
+            "{what} trusts no public root and names no trusted authority, so nothing it connects to could be verified. \
+             Paste its trusted authorities, or trust public roots"
         ));
     }
-    if let Some(authorities) = &tls.authorities
+    if let Some(authorities) = &tls.trusted_authorities
         && let Err(why) = refuse_unless_certificates(authorities)
     {
-        errors.at("authorities").push(format!(
+        errors.at("trustedAuthorities").push(format!(
             "{what} trusts what is not a certificate authority: {why}. Leave it out to verify a far end against \
              the public roots"
         ));
@@ -2089,7 +2089,7 @@ fn check_tls_reaches(tls: &TlsDto, urls: &[(&'static str, &str)], what: &str, er
     {
         errors.at(field).push(format!(
             "{what} sets TLS and is reached over {url:?}, which does not negotiate TLS, so nothing its certificate or \
-             authorities say would be used. Give it an https:// URL, or take them off it"
+             trusted authorities say would be used. Give it an https:// URL, or take them off it"
         ));
     }
 }
@@ -2115,12 +2115,12 @@ fn check_kafka_tls(tls: &TlsDto, props: &KafkaPropsDto, what: &str, errors: &mut
         Some(protocol) if TLS_PROTOCOLS.contains(&protocol.to_ascii_uppercase().as_str()) => {}
         Some(protocol) => errors.at("properties.security.protocol").push(format!(
             "{what} sets TLS and sets \"security.protocol\" to {protocol:?}, which does not negotiate TLS, so \
-             nothing its certificate or authorities say would be used. Set {} or {}, or take them off it",
+             nothing its certificate or trusted authorities say would be used. Set {} or {}, or take them off it",
             TLS_PROTOCOLS[0], TLS_PROTOCOLS[1]
         )),
         None => errors.at("properties.security.protocol").push(format!(
             "{what} sets TLS and does not set \"security.protocol\", which librdkafka defaults to plaintext, so \
-             nothing its certificate or authorities say would be used. Set it to {} or {} in `properties`, or take \
+             nothing its certificate or trusted authorities say would be used. Set it to {} or {} in `properties`, or take \
              them off it",
             TLS_PROTOCOLS[0], TLS_PROTOCOLS[1]
         )),
@@ -3141,7 +3141,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 let what = format!("source {:?}", s.id);
                 if tls.is_set() && *encrypted == SqlTlsDto::Disable {
                     errors.at("certificate").push(format!(
-                        "{what} sets TLS and turns it off, so nothing its certificate or authorities say would be \
+                        "{what} sets TLS and turns it off, so nothing its certificate or trusted authorities say would be \
                          used. Set tls to \"require\", or take them off it"
                     ));
                 }
@@ -4343,7 +4343,7 @@ fn check_receiver<T>(
     let vouches = check_listener(what, listener, tls, errors);
     if tokens.is_empty() && !vouches {
         errors.at("tokens").push(format!(
-            "{what} admits anyone who can reach its port; give it a token, or authorities a sender's certificate \
+            "{what} admits anyone who can reach its port; give it a token, or trusted authorities a sender's certificate \
              must chain to"
         ));
     }
@@ -4369,7 +4369,7 @@ fn check_syslog_receiver(
     let vouches = check_listener(what, listener, tls, errors);
     if transport == Transport::Udp && tls.is_set() {
         errors.at("certificate").push(format!(
-            "{what} takes UDP, which it serves without TLS; take its certificate and authorities off, or switch it to \
+            "{what} takes UDP, which it serves without TLS; take its certificate and trusted authorities off, or switch it to \
              TCP to serve TLS"
         ));
     }
@@ -4377,7 +4377,7 @@ fn check_syslog_receiver(
     if allow_from.is_empty() && !vouches {
         errors.at("allowFrom").push(format!(
             "{what} admits anyone who can reach its port; give it the networks its senders connect from, or \
-             authorities a sender's certificate must chain to"
+             trusted authorities a sender's certificate must chain to"
         ));
     }
     for block in allow_from {
@@ -4417,7 +4417,7 @@ fn check_listener(what: &str, listener: &ReceiverSettingsDto, tls: &ServedTlsDto
             MaxRequestBytes::MAX
         ));
     }
-    tls.authorities.as_deref().is_some_and(|a| !blank(a))
+    tls.trusted_authorities.as_deref().is_some_and(|a| !blank(a))
 }
 
 /// Refuses two receivers on one port: every worker of the group binds each, and the second bind would fail on every
@@ -4453,7 +4453,7 @@ fn check_receiver_ports(file: &FileConfig, attributed: &mut Vec<ValidationError>
                 } else if tls != theirs {
                     Some(format!(
                         "source {:?} shares port {port} with source {:?}, which serves it; give both the same \
-                         certificate and authorities, or this one another port",
+                         certificate and trusted authorities, or this one another port",
                         s.id, first.id
                     ))
                 } else {
@@ -7083,7 +7083,7 @@ mod tests {
 
     /// The source's authorities, as a JSON field.
     fn trusting(pem: &str) -> String {
-        format!(r#", "authorities": {}"#, serde_json::to_string(pem).unwrap())
+        format!(r#", "trustedAuthorities": {}"#, serde_json::to_string(pem).unwrap())
     }
 
     #[test]

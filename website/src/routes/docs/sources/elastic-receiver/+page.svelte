@@ -181,8 +181,8 @@ setup.ilm.enabled: false`;
   <h2 id="senders">Tokens and certificates</h2>
   <p>
     Anyone a receiver admits can put records into the group's pipelines, so a receiver needs
-    <code>tokens</code>, an <code>certificate</code> and <code>authorities</code>, or both. The
-    leader refuses a receiver with neither.
+    <code>tokens</code>, an <code>certificate</code> and <code>trustedAuthorities</code>, or both.
+    The leader refuses a receiver with neither.
   </p>
   <ul>
     <li>
@@ -206,8 +206,8 @@ setup.ilm.enabled: false`;
     <li>
       <strong>Client certificates:</strong> with a
       <a href="/docs/certificates#connectors">certificate</a>, the receiver serves TLS with it. With
-      <code>authorities</code>, every connection, health checks included, must present a certificate
-      that chains to one of them.
+      <code>trustedAuthorities</code>, every connection, health checks included, must present a
+      certificate that chains to one of them.
     </li>
   </ul>
   <p>With both, a sender presents a certificate and a token.</p>
@@ -261,7 +261,7 @@ setup.ilm.enabled: false`;
     <code>GET /health</code> on the receiver's port answers 200 while the receiver takes requests
     and 429 while it is full, blocked or stopping. It needs no token. Point a balancer's health
     check or a readiness probe at it, so a busy worker gets no requests until it can take them. With
-    <code>authorities</code>
+    <code>trustedAuthorities</code>
     with authorities it needs a client certificate like any other request.
   </p>
 
@@ -308,8 +308,8 @@ setup.ilm.enabled: false`;
     <dt><strong>The sender cannot connect</strong></dt>
     <dd>
       Check that the port is open on every worker and that the sender's address reaches them. A
-      receiver with <code>authorities</code> refuses a connection without a certificate that chains to
-      one of them.
+      receiver with <code>trustedAuthorities</code> refuses a connection without a certificate that chains
+      to one of them.
     </dd>
     <dt><strong>Every request gets 401</strong></dt>
     <dd>

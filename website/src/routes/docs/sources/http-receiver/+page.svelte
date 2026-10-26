@@ -88,7 +88,7 @@
   <h2 id="senders">Tokens and certificates</h2>
   <p>
     Whoever a receiver admits puts records into the group's pipelines, so a receiver needs
-    <code>tokens</code>, an <code>certificate</code> and <code>authorities</code>, or both. A
+    <code>tokens</code>, an <code>certificate</code> and <code>trustedAuthorities</code>, or both. A
     receiver with neither is refused at load.
   </p>
   <ul>
@@ -101,8 +101,8 @@
     <li>
       <strong>Client certificates:</strong> under a
       <a href="/docs/certificates#connectors">certificate</a>, the receiver serves TLS with it. With
-      <code>authorities</code>, every connection must present a certificate that chains to one of
-      them, health checks included.
+      <code>trustedAuthorities</code>, every connection must present a certificate that chains to
+      one of them, health checks included.
     </li>
   </ul>
   <p>With both, a sender presents a certificate and a token.</p>
@@ -144,8 +144,8 @@
     <code>GET /health</code> on the receiver's port answers 200 while the receiver takes requests
     and 503 while it is full, blocked or stopping. It needs no token, and says only whether the
     receiver takes requests. Point a balancer's health check or a readiness probe at it, so a busy
-    worker gets no requests until it can take them. With <code>authorities</code> it needs a client certificate
-    like any other request.
+    worker gets no requests until it can take them. With <code>trustedAuthorities</code> it needs a client
+    certificate like any other request.
   </p>
 
   <h2 id="port">Open its port</h2>
@@ -177,7 +177,8 @@
     <dt><strong>The sender cannot connect</strong></dt>
     <dd>
       Check that the port is open on every worker and that the sender's address reaches them. A
-      receiver with <code>authorities</code> refuses a connection with no certificate that chains to them.
+      receiver with <code>trustedAuthorities</code> refuses a connection with no certificate that chains
+      to them.
     </dd>
     <dt><strong>Every request is answered 401</strong></dt>
     <dd>

@@ -168,7 +168,7 @@ log { source(s_src); destination(d_smeltr); };`;
   <p>
     Anyone a receiver admits can put records into the group's pipelines. Syslog carries no token, so
     a receiver needs <code>allowFrom</code>, an <code>certificate</code> and
-    <code>authorities</code>, or both. The leader refuses a receiver with neither.
+    <code>trustedAuthorities</code>, or both. The leader refuses a receiver with neither.
   </p>
   <ul>
     <li>
@@ -180,8 +180,8 @@ log { source(s_src); destination(d_smeltr); };`;
       <strong>Client certificates:</strong> with a
       <a href="/docs/certificates#connectors">certificate</a>, the receiver serves TLS (RFC 5425)
       with it. With
-      <code>authorities</code>, every sender must present a certificate that chains to one of them.
-      With <code>allowFrom</code> empty, every sender TLS admits is admitted.
+      <code>trustedAuthorities</code>, every sender must present a certificate that chains to one of
+      them. With <code>allowFrom</code> empty, every sender TLS admits is admitted.
     </li>
   </ul>
   <p>With both, a sender must connect from a listed network and present a certificate.</p>
@@ -353,8 +353,8 @@ log { source(s_src); destination(d_smeltr); };`;
     <dt><strong>The sender cannot connect</strong></dt>
     <dd>
       Check that the port is open on every worker and that the sender's address reaches them. A
-      receiver with <code>authorities</code> refuses a connection without a certificate that chains to
-      one of them.
+      receiver with <code>trustedAuthorities</code> refuses a connection without a certificate that chains
+      to one of them.
     </dd>
     <dt><strong>The sender connects and is closed at once</strong></dt>
     <dd>

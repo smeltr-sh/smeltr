@@ -74,7 +74,7 @@ const OPTIONS: &[&str] = &[
     "secret.leaderStored",
     "secret.workerLocal",
     "secret.workerLocalUnset",
-    "tls.authorities",
+    "tls.trustedAuthorities",
     "inFlight",
     "maxRequestBytes",
     "bufferBytes",
@@ -155,8 +155,8 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, stored: &mut String) -
 
     let https = !live && rng.chance(4);
     if https {
-        cov.reach("tls.authorities");
-        d.insert("authorities".into(), json!(AUTHORITIES));
+        cov.reach("tls.trustedAuthorities");
+        d.insert("trustedAuthorities".into(), json!(AUTHORITIES));
     }
     let (endpoint, rule, stream) = match target {
         Target::Live(s) => (s.endpoint.clone(), s.rule_id.clone(), s.stream.clone()),
@@ -411,7 +411,7 @@ fn bundle(draw: &Draw) -> Value {
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["logAnalytics"]}]}],
     });
-    if let Some(authorities) = b["destinations"][0].get_mut("authorities") {
+    if let Some(authorities) = b["destinations"][0].get_mut("trustedAuthorities") {
         *authorities = json!(pki().authority.pem);
     }
     b

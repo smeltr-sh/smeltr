@@ -56,7 +56,7 @@ describe('an Iceberg destination', () => {
     expect(catalogRefusal({ ...iceberg(), catalog: '' })).toBeUndefined();
     const plain = { ...iceberg(), catalog: 'http://localhost:8181' };
     expect(catalogRefusal(plain)).toBeUndefined();
-    expect(catalogRefusal({ ...plain, authorities: 'lake-ca' })).toMatch(/https/);
+    expect(catalogRefusal({ ...plain, trustedAuthorities: 'lake-ca' })).toMatch(/https/);
   });
 
   it('refuses a namespace with an empty level', () => {

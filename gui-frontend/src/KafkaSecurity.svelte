@@ -72,7 +72,7 @@
       <code>SSL</code> and <code>SASL_SSL</code> use TLS; the two <code>SASL_</code> protocols also
       log in.
       {#if negotiatesTls && hasTls}
-        The certificate, the key and the authorities come from the TLS settings above.
+        The certificate, the key and the trusted authorities come from the TLS settings above.
       {:else if negotiatesTls}
         No TLS setting is filled, so this client presents no certificate and trusts the public
         roots.

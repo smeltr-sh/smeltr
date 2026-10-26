@@ -87,8 +87,8 @@ export type TlsDto = {
   certificate?: string;
   /** PEM. What the far end's certificate must chain to; several may follow one another. A receiver admits a sender
    * by these alone. */
-  authorities?: string;
-  /** Absent is true: a client trusts the public roots and `authorities` both. False trusts `authorities` alone. */
+  trustedAuthorities?: string;
+  /** Absent is true: a client trusts the public roots and `trustedAuthorities` both. False trusts `trustedAuthorities` alone. */
   trustPublic?: boolean;
 };
 
@@ -878,7 +878,7 @@ export type ApiRecords = 'body' | 'lines' | 'array';
 /** What every receiver takes, mirroring `config_file::dto::ReceiverSettingsDto`: where it listens, the TLS it serves
  * and how large a request it reads. Every worker of the group listens on `port`, at the address its own startup
  * settings name. */
-export interface ReceiverSettings extends Pick<TlsDto, 'certificate' | 'authorities'> {
+export interface ReceiverSettings extends Pick<TlsDto, 'certificate' | 'trustedAuthorities'> {
   port: number;
   /** Absent is `LIMITS.receiverRequestBytes.default`. */
   maxRequestBytes?: number;
