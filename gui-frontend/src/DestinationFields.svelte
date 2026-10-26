@@ -144,7 +144,6 @@
   const OBJECT_FORMATS = ['ndjson', 'json', 'parquet', 'avro', 'csv', 'text', 'bytes'] as const;
   /** A format's option, where its name alone does not say what each record becomes. */
   const STREAM_LABELS = { avro: 'avro — one Avro message per record' };
-  const OBJECT_LABELS = { avro: 'avro — one Avro file' };
 
   /** An empty text box unsets the field rather than naming `""`. */
   function optional(value: string): string | undefined {
@@ -823,7 +822,7 @@
         }}
       />
     </Field>
-    {@render formatFields(o, OBJECT_FORMATS, 'ndjson', objectFormatHelp, OBJECT_LABELS)}
+    {@render formatFields(o, OBJECT_FORMATS, 'ndjson', objectFormatHelp)}
     {#if o.format === 'bytes'}
       <Nested>
         <Field field="newlines" label="newlines">
