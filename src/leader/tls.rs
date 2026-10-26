@@ -4068,6 +4068,9 @@ mod certificate_fuzz {
         "crash-torn-cutover",
         "crash-stray",
         "restart",
+        "restart-renamed",
+        "renew-own",
+        "key-lost",
     ];
 
     /// An operator's PKI, issuing again from the same authority when asked.
@@ -4245,7 +4248,7 @@ mod certificate_fuzz {
                 coverage.reach("rotate-own");
                 Ok("the leader's own rotation".to_string())
             }
-            "cutover-nextKey" | "cutover-supplied" | "cutover-own" => {
+            "cutover-nextKey" | "cutover-supplied" => {
                 let Some(state) = open else {
                     cut_over(dir, names(), A_YEAR)
                         .err()
@@ -4303,7 +4306,7 @@ mod certificate_fuzz {
                 coverage.reach(what);
                 Ok(what.to_string())
             }
-            "abandon-nextKey" | "abandon-supplied" | "abandon-own" => {
+            "abandon-nextKey" | "abandon-supplied" => {
                 let Some(state) = open else {
                     return Ok("nothing to abandon".to_string());
                 };
@@ -4377,6 +4380,78 @@ mod certificate_fuzz {
                 restart(dir)?;
                 coverage.reach(step);
                 Ok("a start".to_string())
+            }
+            "restart-renamed" => {
+                // Reached at one more name, then at the names again: the leader's own follows each.
+                let mut more = names();
+                more.push("leader.example.com".to_string());
+                for names in [more, names()] {
+                    ensure(dir, names.clone(), A_YEAR, &[]).map_err(|e| format!("a start refused: {e}"))?;
+                    match list_of(dir)?
+                        .kept_certificates()
+                        .map_err(|e| e.to_string())?
+                        .get(OWN_ENTRY)
+                    {
+                        Some(Kept::Issued(issued)) if issued.names == names => {}
+                        kept => {
+                            return Err(format!(
+                                "the leader's own is kept as {kept:?} after a start at {names:?}"
+                            ));
+                        }
+                    }
+                    let (_, chain, _) = own_newest(dir)?;
+                    if !describe(chain.as_bytes(), "the certificate")?
+                        .names
+                        .contains(names.last().unwrap())
+                    {
+                        return Err(format!("the leader's own newest does not carry {names:?}"));
+                    }
+                }
+                settled(dir)?;
+                coverage.reach(step);
+                Ok("a start at another name, then at the names again".to_string())
+            }
+            "renew-own" => {
+                // As the renewal pass does: a new version, served where the leader serves its own.
+                let (chain, key) = issue(dir, names(), A_YEAR)?;
+                let version =
+                    (list_of(dir)?.add_certificate_version(OWN_ENTRY, &chain, &key)).map_err(|e| e.to_string())?;
+                let (_, ca) = split_root(chain.as_bytes(), b"")?.ok_or("a renewal without its root")?;
+                let entry = Entry {
+                    name: OWN_ENTRY.to_string(),
+                    version,
+                    ca,
+                };
+                if served(dir)?.is_some_and(|served| served.name == OWN_ENTRY) && open.is_none() {
+                    serve(dir, &entry, &names(), &[])?;
+                    if current(dir)?.served != entry_chain(dir, &entry)? {
+                        return Err("the renewed version of the leader's own is not what is served".to_string());
+                    }
+                }
+                coverage.reach(step);
+                Ok(format!("the leader's own renewed to v{version}"))
+            }
+            "key-lost" => {
+                // An open rotation names what is served on either side of it; a leader that lost its key serves
+                // neither until it has the key back.
+                if open.is_some() {
+                    return Ok("the key is kept while a rotation is open".to_string());
+                }
+                let key = dir.with_extension("key");
+                let aside = key.with_extension("aside");
+                std::fs::rename(&key, &aside).map_err(|e| e.to_string())?;
+                ensure(dir, names(), A_YEAR, &[]).map_err(|e| format!("a start with its key lost refused: {e}"))?;
+                if !unserved(dir).is_some_and(|why| why.contains("temporary")) {
+                    return Err("a start with its key lost did not say it serves a temporary certificate".to_string());
+                }
+                serves(dir)?;
+                std::fs::rename(&aside, &key).map_err(|e| e.to_string())?;
+                restart(dir)?;
+                if unserved(dir).is_some_and(|why| why.contains("temporary")) {
+                    return Err("a start with its key back still serves a temporary certificate".to_string());
+                }
+                coverage.reach(step);
+                Ok("the key lost, a start, the key back, a start".to_string())
             }
             _ => unreachable!(),
         }
