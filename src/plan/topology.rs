@@ -3063,7 +3063,14 @@ pub fn certificate_error(tls: &Tls, held: &HeldSecrets) -> Option<String> {
     let (chain, _) = held.certificate(tls.certificate.as_ref()?)?;
     crate::io::trust::refuse_unless_usable(&chain, tls.side)
         .err()
-        .map(|why| format!("{} presents a certificate {why}", tls.of))
+        .map(|why| {
+            let verb = if tls.side == crate::io::trust::Side::Server {
+                "serves"
+            } else {
+                "presents"
+            };
+            format!("{} {verb} a certificate {why}", tls.of)
+        })
 }
 
 impl TopologyConfig {
