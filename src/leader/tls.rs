@@ -255,7 +255,10 @@ fn own_entry(dir: &Path, sans: &[String], validity: Duration) -> Result<(Entry, 
 fn own_current(dir: &Path, issued: &Issued) -> Result<Entry, String> {
     let list = list_of(dir)?;
     if list.kept_certificates().map_err(|e| e.to_string())?.get(OWN_ENTRY) != Some(&Kept::Issued(issued.clone())) {
-        return Err(format!("this leader does not issue {OWN_ENTRY:?} for {:?}", issued.names));
+        return Err(format!(
+            "this leader does not issue {OWN_ENTRY:?} for {:?}",
+            issued.names
+        ));
     }
     let (entry, stored, key) = own_newest(dir)?;
     let signing = authority_held(dir)?.2.fingerprint;
@@ -263,7 +266,13 @@ fn own_current(dir: &Path, issued: &Issued) -> Result<Entry, String> {
     if let Some(due) = super::warnings::issued_due(&described, &signing, super::warnings::now_millis()) {
         return Err(format!("{OWN_ENTRY:?} is due: {due:?}"));
     }
-    check_supplied(&entry_chain(dir, &entry)?, key.as_bytes(), entry.ca.as_bytes(), &issued.names, &[])?;
+    check_supplied(
+        &entry_chain(dir, &entry)?,
+        key.as_bytes(),
+        entry.ca.as_bytes(),
+        &issued.names,
+        &[],
+    )?;
     Ok(entry)
 }
 
@@ -1739,9 +1748,7 @@ pub fn describe_each(pem: &[u8], what: &str) -> Result<Vec<Described>, String> {
 pub fn signing_root(ca_pem: &[u8], chain: &[u8]) -> Result<Described, String> {
     // The last certificate in a chain is the one a root signed: a leaf alone, or the highest intermediate.
     let chain = ders(chain, "the certificate")?;
-    let topmost = chain
-        .last()
-        .ok_or_else(|| "the certificate holds none".to_string())?;
+    let topmost = chain.last().ok_or_else(|| "the certificate holds none".to_string())?;
     let (_, signed) = x509_parser::parse_x509_certificate(topmost.as_ref())
         .map_err(|e| format!("the certificate is not one this can read: {e}"))?;
 
@@ -2434,7 +2441,10 @@ pub(crate) mod tests {
 
         let second = ensure(&dir, names(), A_YEAR, &[]).expect("a start");
         assert!(!second.authority_created);
-        assert_eq!(second.served, first.served, "a start reissued a certificate that serves");
+        assert_eq!(
+            second.served, first.served,
+            "a start reissued a certificate that serves"
+        );
 
         let mut more = names();
         more.push("leader.example.com".to_string());
@@ -2443,7 +2453,10 @@ pub(crate) mod tests {
         assert_ne!(third.served, first.served);
         assert_ne!(served_key(&dir).unwrap(), first_key);
         assert!(
-            describe(&third.served, "the certificate").unwrap().names.contains(&"leader.example.com".to_string())
+            describe(&third.served, "the certificate")
+                .unwrap()
+                .names
+                .contains(&"leader.example.com".to_string())
         );
         assert_eq!(
             list_in(&dir).kept_certificates().unwrap().get(OWN_ENTRY),
@@ -2510,11 +2523,7 @@ pub(crate) mod tests {
     pub(super) fn elsewhere(tag: &str, names: Vec<String>) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let dir = scratch(tag);
         let materials = ensure(&dir, names, A_YEAR, &[]).expect("an authority of their own");
-        (
-            materials.served.clone(),
-            served_key(&dir).unwrap(),
-            materials.ca_pem,
-        )
+        (materials.served.clone(), served_key(&dir).unwrap(), materials.ca_pem)
     }
 
     #[test]
@@ -3540,11 +3549,7 @@ pub(crate) mod tests {
                 .join(format!("smeltr-tls-{}-renewal-theirs", std::process::id()))
                 .join("tls");
             let materials = ensure(&theirs, names(), A_YEAR, &[]).expect("a renewal");
-            (
-                materials.served.clone(),
-                served_key(&theirs).unwrap(),
-                materials.ca_pem,
-            )
+            (materials.served.clone(), served_key(&theirs).unwrap(), materials.ca_pem)
         };
         assert!(!supplying_changes_root(&dir, &renewed, &ca).unwrap());
         let refused = rotate_to(&dir, &renewed, &renewed_key, &ca, &names(), &[], NOW).expect_err("nothing to rotate");
@@ -3675,10 +3680,7 @@ pub(crate) mod tests {
                 .join(format!("smeltr-tls-{}-renewal-while-open-theirs", std::process::id()))
                 .join("tls");
             let materials = ensure(&theirs, names(), A_YEAR, &[]).expect("a renewal");
-            (
-                materials.served.clone(),
-                served_key(&theirs).unwrap(),
-            )
+            (materials.served.clone(), served_key(&theirs).unwrap())
         };
         assert!(!supplying_changes_root(&dir, &renewed, &ca).unwrap());
         install(&dir, &renewed, &renewed_key, &ca, &names(), &[]).expect("a renewal during the switch");
@@ -3702,7 +3704,9 @@ pub(crate) mod tests {
         let dir = rotating("switch-waits");
         let (chain, key, ca) = elsewhere("switch-waits-theirs", names());
         let state = rotate_to(&dir, &chain, &key, &ca, &names(), &[], NOW).expect("a rotation");
-        let served_until = describe(&what_is_served(&dir), "the certificate").unwrap().not_after_millis;
+        let served_until = describe(&what_is_served(&dir), "the certificate")
+            .unwrap()
+            .not_after_millis;
         assert_eq!(state.deadline_millis, served_until - CUTOVER_MARGIN.as_millis() as i64);
 
         let behind = vec![vec![state.outgoing.clone()]];

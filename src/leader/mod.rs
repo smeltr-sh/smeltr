@@ -5789,7 +5789,10 @@ mod certificate_list_tests {
         let refused = forget_secret_version(State(state.clone()), Path(("chosen".to_string(), 1))).await;
         assert!(!refused.0.ok, "the served version was forgotten");
         let refused = delete_secret(State(state.clone()), Path(tls::OWN_ENTRY.to_string())).await;
-        assert!(!refused.0.ok, "the leader's own entry was deleted while another was served");
+        assert!(
+            !refused.0.ok,
+            "the leader's own entry was deleted while another was served"
+        );
 
         for _ in 0..crate::startup_config::leader_secret_versions() + 1 {
             let stored = store_value(state.clone(), "chosen".to_string(), key.clone(), Some(chain.clone())).await;
@@ -6033,7 +6036,10 @@ mod certificate_list_tests {
         assert!(state.store.regenerate_key(&event).unwrap().unopenable.contains(&acme));
 
         // The leader's own too: its key was sealed by the same key.
-        assert_eq!(renewed(&state, leaf.not_before_millis + 1).await, ["acme", tls::OWN_ENTRY]);
+        assert_eq!(
+            renewed(&state, leaf.not_before_millis + 1).await,
+            ["acme", tls::OWN_ENTRY]
+        );
         assert!(!state.store.key_standing().unwrap().unopenable.contains(&acme));
         let (_, chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
         tls::is_pair(chain.as_bytes(), key.as_bytes()).expect("the new key is the new certificate's");
