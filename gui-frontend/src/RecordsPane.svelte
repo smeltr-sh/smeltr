@@ -877,6 +877,11 @@
     align-items: center;
     gap: 0.7rem;
   }
+
+  /* Room for a few words and the mode beside them: the row wraps before the box gets narrower. */
+  .output-search :global(.search-wrap) {
+    min-width: 18rem;
+  }
   .count {
     font-size: var(--text-note);
     white-space: nowrap;

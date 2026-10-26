@@ -159,10 +159,9 @@
 </div>
 
 <style>
-  /* Room for a few words and the mode beside them, and no narrower: a caller's row wraps first. */
   .search-wrap {
     flex: 1;
-    min-width: 18rem;
+    min-width: 0;
   }
 
   /* The box is the label, so what sits in it beside the text reads as part of it. */
