@@ -48,8 +48,7 @@
   } from './api';
   import { numberOrUnset } from './page';
   import BytesInput from './BytesInput.svelte';
-  import LinkEstimate from './LinkEstimate.svelte';
-  import { byteCount, exactBytes, type ByteCount } from './bytes';
+  import { byteCount, exactBytes } from './bytes';
   import {
     httpModified,
     isCloud,
@@ -74,10 +73,6 @@
     /** The SASL mechanisms this leader's build can select. */
     mechanisms: string[];
   } = $props();
-
-  /** The buffer a Kafka card is showing, default filled in: what the derived block splits. */
-  const kafkaBuffer = (d: { bufferBytes?: ByteCount }) =>
-    byteCount(d.bufferBytes, LIMITS.bufferBytes.default);
 
   /** Properties set by hand: the security section's own are its business,
    * and Advanced's marker speaks only for what Advanced hides. */
@@ -258,7 +253,6 @@
           The most one worker holds for this destination, accepted but not yet acknowledged by the
           brokers. Over a slow link it caps throughput.
         {/snippet}
-        {#snippet note()}<LinkEstimate bufferBytes={kafkaBuffer(destination)} />{/snippet}
         <BytesInput
           value={destination.bufferBytes}
           fallback={LIMITS.bufferBytes.default}
@@ -340,7 +334,6 @@
           The most one worker holds for this destination, accepted but not yet acknowledged by Event
           Hubs. Over a slow link it caps throughput.
         {/snippet}
-        {#snippet note()}<LinkEstimate bufferBytes={kafkaBuffer(destination)} />{/snippet}
         <BytesInput
           value={destination.bufferBytes}
           fallback={LIMITS.bufferBytes.default}
