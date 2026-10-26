@@ -1,7 +1,7 @@
 <!--
   A small calculator beside a Kafka destination's buffer: what the worker would make of that buffer
-  over a link, worked out here before anything is deployed (`linkEstimate.ts`, a mirror of the
-  worker's `derive_sizes`). An estimate, and it says so: the worker measures the round trip and asks
+  over a link, and the buffer a throughput needs, worked out here before anything is deployed
+  (`linkEstimate.ts`, a mirror of the worker's `derive_sizes` and `held_bytes`). An estimate, and it says so: the worker measures the round trip and asks
   the broker for its ceiling at deployment, and those two figures are typed here.
 
   The same native `popover` as `Help.svelte`, placed under its own button by `float.ts`.
@@ -12,7 +12,12 @@
 
 <script lang="ts">
   import { bytes, parseBytes, exactBytes } from './bytes';
-  import { DEFAULT_BROKER_CEILING, estimateLink } from './linkEstimate';
+  import {
+    bufferFor,
+    DEFAULT_BROKER_CEILING,
+    estimateLink,
+    MESSAGE_OVERHEAD_BYTES,
+  } from './linkEstimate';
   import CalculatorIcon from './CalculatorIcon.svelte';
   import { follow } from './float';
 
@@ -27,12 +32,26 @@
   let roundTripMs = $state(100);
   let partitions = $state(12);
   let ceilingText = $state('');
+  let recordText = $state('');
+  let wantText = $state('');
+
+  /** A record as a syslog line or a small JSON event comes out, when none is typed. */
+  const DEFAULT_RECORD_BYTES = 300;
 
   let buffer = $derived(parseBytes(bufferText) ?? bufferBytes);
   let ceiling = $derived(parseBytes(ceilingText) ?? DEFAULT_BROKER_CEILING);
+  let record = $derived(parseBytes(recordText) ?? DEFAULT_RECORD_BYTES);
+  let want = $derived(parseBytes(wantText));
   let estimate = $derived(
-    estimateLink({ bufferBytes: buffer, roundTripMs, partitions, brokerCeiling: ceiling }),
+    estimateLink({
+      bufferBytes: buffer,
+      roundTripMs,
+      partitions,
+      brokerCeiling: ceiling,
+      recordBytes: record,
+    }),
   );
+  let needed = $derived(want ? bufferFor(want, roundTripMs, record) : undefined);
 
   let stop: (() => void) | undefined;
 
@@ -107,12 +126,38 @@
         oninput={(e) => (ceilingText = e.currentTarget.value)}
       />
     </label>
+    <label>
+      <span>average record</span>
+      <input
+        type="text"
+        inputmode="decimal"
+        spellcheck="false"
+        placeholder={bytes(DEFAULT_RECORD_BYTES)}
+        value={recordText}
+        oninput={(e) => (recordText = e.currentTarget.value)}
+      />
+    </label>
+    <label>
+      <span>throughput wanted, per second</span>
+      <input
+        type="text"
+        inputmode="decimal"
+        spellcheck="false"
+        placeholder="100 MB"
+        value={wantText}
+        oninput={(e) => (wantText = e.currentTarget.value)}
+      />
+    </label>
   </div>
   <dl class="out">
     <dt>ceiling per worker</dt>
     <dd class="mono lead-figure">{bytes(estimate.ceilingPerSecond)}/s</dd>
+    {#if needed !== undefined}
+      <dt>buffer it needs</dt>
+      <dd class="mono lead-figure">{bytes(needed)}</dd>
+    {/if}
     <dt>in flight</dt>
-    <dd class="mono">{bytes(estimate.producerBytes)}</dd>
+    <dd class="mono">{bytes(estimate.inFlightBytes)}</dd>
     <dt>batch</dt>
     <dd class="mono">{bytes(estimate.batchBytes)}</dd>
     <dt>linger</dt>
@@ -121,8 +166,8 @@
     <dd class="mono">{estimate.requestsInFlight}</dd>
   </dl>
   <p class="foot">
-    Half the buffer is in flight at a time. Past the point where the brokers throttle, a bigger
-    buffer adds no throughput.
+    Half the buffer is in flight at a time, and each record takes about {MESSAGE_OVERHEAD_BYTES} bytes
+    of it beyond its own. Past the point where the brokers throttle, a bigger buffer adds no throughput.
   </p>
 </div>
 

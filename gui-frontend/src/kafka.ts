@@ -258,12 +258,17 @@ const RESERVED: Record<string, string> = {
     'chosen with the destination stall threshold, so a failing destination cannot rebalance the group',
   'compression.type': 'set from this destination’s own compression field',
   'compression.codec': 'librdkafka’s other spelling of compression.type',
+  acks: 'set from this destination’s own acks field',
+  'request.required.acks': 'librdkafka’s other spelling of acks',
+  'max.in.flight.requests.per.connection':
+    'set from this destination’s own producer buffer and its link',
+  'max.in.flight': 'librdkafka’s other spelling of max.in.flight.requests.per.connection',
   'queued.max.messages.kbytes': 'set from this source’s own fetch buffer',
   'queue.buffering.max.kbytes': 'set from this destination’s own producer buffer',
-  'queue.buffering.max.messages':
-    'left at librdkafka’s default, so it cannot undercut the producer buffer',
+  'queue.buffering.max.messages': 'set to its maximum so the producer buffer bounds the queue',
   'statistics.interval.ms': 'smeltr reports librdkafka’s statistics as metrics of its own',
-  'enable.idempotence': 'required for the producer not to duplicate or reorder on retry',
+  'enable.idempotence':
+    'smeltr runs the producer with it off: an idempotent producer keeps too few requests in flight for a far link',
   'transactional.id':
     'smeltr never begins a transaction, and a transactional producer refuses every record sent outside one',
   'partition.assignment.strategy':
