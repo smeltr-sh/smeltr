@@ -2,8 +2,8 @@
   One record, as the preview draws it (`recordDiff.ts`). Nesting is indent and
   a longer name rather than braces. What the steps did is a bar beside each run
   of lines they changed, from the depth where the run starts and in the color
-  of what they did, so names and values stay plain text. The name column is as wide as the
-  record's longest name, up to a cap past which a name wraps at its dots, and
+  of what they did, so names and values stay plain text. The name column is as
+  wide as the record's longest name, up to a cap past which a name wraps at its dots, and
   the types sit in a column beside it.
 
   What the step removed waits on one folded line at the end, so a rename
@@ -112,9 +112,11 @@
   const nameWidth = (l: RecordLine) =>
     l.kind === 'more' ? 0 : l.depth * INDENT_CH + LEAD_CH + l.label.length;
 
-  const stepOf = (path: string) => touched?.(path).at(-1)?.step.id ?? null;
-  let marks = $derived(runMarks(lines, stepOf));
-  let removedMarks = $derived(runMarks(removed, stepOf));
+  type Touched = { step: Step; number: number };
+  const stepOf = (path: string) => touched?.(path).at(-1) ?? null;
+  const same = (a: Touched | null, b: Touched | null) => a?.step.id === b?.step.id;
+  let marks = $derived(runMarks(lines, stepOf, same));
+  let removedMarks = $derived(runMarks(removed, stepOf, same));
   let nameCh = $derived(
     Math.min(NAME_CH, Math.max(0, ...lines.map(nameWidth), ...removed.map(nameWidth))),
   );
@@ -164,54 +166,63 @@
   </div>
 {/snippet}
 
-{#snippet run(mark: RunMark)}
+{#snippet run(mark: RunMark<Touched>)}
   {#if mark.state !== 'unchanged'}<span
       class="bar state-{mark.state}"
       style:left={`${mark.depth * INDENT_CH}ch`}
     ></span>{/if}
 {/snippet}
 
-{#snippet field(line: Extract<RecordLine, { kind: 'field' }>, mark: RunMark)}
+<!-- A run's sign: its step, or +, ~ or − where no one step is named. A field's lists, held, every
+     step that touched it; a group's is inside the group's own button, so it only names its step. -->
+{#snippet sign(mark: RunMark<Touched>, field: string | null)}
+  <span class="sign state-{mark.state}">
+    {#if mark.sign && mark.step && field !== null}
+      {@const by = touched?.(field) ?? []}
+      <span
+        class="by"
+        role="group"
+        onpointerenter={(e) => showBy(field, e.currentTarget)}
+        onpointerleave={hideBy}
+        onfocusin={(e) => showBy(field, e.currentTarget)}
+        onfocusout={hideBy}
+      >
+        <button
+          type="button"
+          class="by-glyph"
+          aria-label={stepName(mark.step.step, mark.step.number)}
+          onclick={() => onjump?.(mark.step!.step)}><StepGlyph type={mark.step.step.type} /></button
+        >
+        {#if byOpen === field}
+          <span
+            class="by-list"
+            popover="manual"
+            {@attach float(() => byAnchor?.getBoundingClientRect())}
+          >
+            {#each by as t (t.step.id)}
+              <button type="button" onclick={() => onjump?.(t.step)}
+                ><StepGlyph type={t.step.type} /> {stepName(t.step, t.number)}</button
+              >
+            {/each}
+          </span>
+        {/if}
+      </span>
+    {:else if mark.sign && mark.step}
+      <span title={stepName(mark.step.step, mark.step.number)}
+        ><StepGlyph type={mark.step.step.type} /></span
+      >
+    {:else if mark.sign}{GLYPH[mark.state]}{/if}
+  </span>
+{/snippet}
+
+{#snippet field(line: Extract<RecordLine, { kind: 'field' }>, mark: RunMark<Touched>)}
   {@const inline = line.state === 'changed' && changeFitsInline(line.before, line.after)}
   {@const body = formatDiffValue(line.state === 'removed' ? line.before : line.after)}
-  {@const by = touched?.(line.path) ?? []}
-  {@const last = by.at(-1)}
   <div class="line state-{line.state}" class:run-start={mark.start}>
     {@render run(mark)}
     <span class="key">
       <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}>
-        <span class="sign state-{mark.state}">
-          {#if mark.sign && last}
-            <span
-              class="by"
-              role="group"
-              onpointerenter={(e) => showBy(line.path, e.currentTarget)}
-              onpointerleave={hideBy}
-              onfocusin={(e) => showBy(line.path, e.currentTarget)}
-              onfocusout={hideBy}
-            >
-              <button
-                type="button"
-                class="by-glyph"
-                aria-label={stepName(last.step, last.number)}
-                onclick={() => onjump?.(last.step)}><StepGlyph type={last.step.type} /></button
-              >
-              {#if byOpen === line.path}
-                <span
-                  class="by-list"
-                  popover="manual"
-                  {@attach float(() => byAnchor?.getBoundingClientRect())}
-                >
-                  {#each by as t (t.step.id)}
-                    <button type="button" onclick={() => onjump?.(t.step)}
-                      ><StepGlyph type={t.step.type} /> {stepName(t.step, t.number)}</button
-                    >
-                  {/each}
-                </span>
-              {/if}
-            </span>
-          {:else if mark.sign}{GLYPH[line.state]}{/if}
-        </span><span class="chevron"></span>
+        {@render sign(mark, line.path)}<span class="chevron"></span>
         {#if fullPaths}
           {@const parts = splitPath(line.label)}
           <span class="path-prefix">{@render name(parts.prefix)}</span>{parts.leaf}
@@ -275,13 +286,8 @@
           {@render run(mark)}
           <span class="key">
             <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}
-              ><span class="sign state-{mark.state}"
-                >{#if mark.sign}{@const by = mark.step
-                    ? touched?.(line.fields[0].path).at(-1)
-                    : null}{#if by}<span title={stepName(by.step, by.number)}
-                      ><StepGlyph type={by.step.type} /></span
-                    >{:else if !touched}{GLYPH[mark.state]}{/if}{/if}</span
-              ><span class="chevron">{line.open ? '▾︎' : '▸︎'}</span>{@render name(line.label)}</span
+              >{@render sign(mark, null)}<span class="chevron">{line.open ? '▾︎' : '▸︎'}</span
+              >{@render name(line.label)}</span
             >
             {#if showTypes}<span class="type">{line.type ?? ''}</span>{/if}
           </span>

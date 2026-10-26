@@ -440,7 +440,11 @@ describe('countStates', () => {
 describe('runMarks', () => {
   const marks = (before: unknown, after: unknown, steps: Record<string, string> = {}) => {
     const lines = recordLines(diffTree(before, after));
-    return runMarks(lines, (p) => steps[p] ?? null).map((m, i) => {
+    return runMarks(
+      lines,
+      (p) => steps[p] ?? null,
+      (a, b) => a === b,
+    ).map((m, i) => {
       const l = lines[i];
       const name = l.kind === 'more' ? 'more' : l.label;
       return `${name} ${m.state}${m.start ? ' start' : ''} @${m.depth}${m.sign ? ` sign:${m.step}` : ''}`;
@@ -471,6 +475,20 @@ describe('runMarks', () => {
       'b added @0 sign:e',
       'c added @0',
     ]);
+  });
+
+  it('runs a folded struct as changed when what is in it differs, with no one step', () => {
+    const lines = recordLines(diffTree({ s: { a: 1 } }, { s: { a: 2, b: 1 } }), {
+      open: () => false,
+    });
+    const steps: Record<string, string> = { 's.a': 'e', 's.b': 'p' };
+    expect(
+      runMarks(
+        lines,
+        (p) => steps[p] ?? null,
+        (a, b) => a === b,
+      ),
+    ).toEqual([{ state: 'changed', step: null, start: true, depth: 0, sign: true }]);
   });
 
   it('starts a run inside an unchanged struct at the depth of the change', () => {
