@@ -1232,16 +1232,19 @@ const regenerateKey: Move = {
         .sort();
     };
     // An ordered certificate is not entered again: the leader orders it again while ordering is on, and keeps
-    // it sealed while ordering is off.
+    // it sealed while ordering is off. The leader's own certificate is renewed at once, so only what an admin
+    // entered is left to enter again.
     const ordered = world.ordered && !world.acme ? ['acme'] : [];
-    expect(await unopenable()).toEqual(
-      [
-        ...world.secrets.keys(),
-        ...world.certificates.keys(),
-        ...ordered,
-        ...settings.map((s) => s.key),
-      ].sort(),
-    );
+    await expect
+      .poll(unopenable, { timeout: 30_000 })
+      .toEqual(
+        [
+          ...world.secrets.keys(),
+          ...world.certificates.keys(),
+          ...ordered,
+          ...settings.map((s) => s.key),
+        ].sort(),
+      );
     // Each certificate is entered again from its link, as it was uploaded.
     for (const [name, pki] of world.certificates) {
       await page

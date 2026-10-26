@@ -2328,12 +2328,11 @@ async fn regenerate_encryption_key(
     axum::Extension(actor): axum::Extension<store::Actor>,
 ) -> Json<Envelope<EncryptionKeyOut>> {
     let event = accounts::event_for(&actor, "key-regenerate", "", "ok");
-    Json(
-        run_store(state.store, move |s| s.regenerate_key(&event))
-            .await
-            .map(EncryptionKeyOut::from)
-            .into(),
-    )
+    let regenerated = run_store(state.store, move |s| s.regenerate_key(&event)).await;
+    if regenerated.is_ok() {
+        RENEW_NOW.notify_one();
+    }
+    Json(regenerated.map(EncryptionKeyOut::from).into())
 }
 
 /// Stores a new value and forgets what retention no longer keeps.
@@ -2675,6 +2674,10 @@ async fn issued_certificates_not_renewed(state: &AppState, now_ms: i64) -> Resul
     })
     .await
 }
+
+/// Asks the renewal pass to run now rather than at its next hour: a regenerated encryption key leaves every
+/// certificate this leader issued unopenable, its own among them, and the socket cannot reload until it is renewed.
+pub static RENEW_NOW: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 /// Issues the next version of each certificate this leader issued that is due ([`warnings::issued_due`]), or whose
 /// newest version a regenerated encryption key cannot open, for the names and lifetime it was issued with. What the
@@ -5778,6 +5781,27 @@ mod certificate_list_tests {
 
         tls::tests::give_back(&dir).unwrap();
         assert_eq!(served_names(&dir).unwrap(), [tls::OWN_ENTRY]);
+    }
+
+    /// Regenerating the key asks the renewal pass to run now: everything this leader issued, its own among them, is
+    /// unopenable until it does.
+    #[tokio::test]
+    async fn regenerating_the_key_renews_at_once() {
+        let state = issuing("regenerate-renews");
+        std::fs::remove_file(state.data_dir.with_extension("key")).unwrap();
+        let regenerated =
+            regenerate_encryption_key(State(state.clone()), axum::Extension(store::Actor::system())).await;
+        assert!(regenerated.0.ok, "{:?}", regenerated.0.errors);
+        tokio::time::timeout(Duration::from_secs(1), RENEW_NOW.notified())
+            .await
+            .expect("the renewal pass was not asked to run");
+        let renewed: Vec<String> = renew_issued(&state, crate::leader::warnings::now_millis())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(renewed.contains(&tls::OWN_ENTRY.to_string()), "{renewed:?}");
     }
 
     /// The leader's own entry keeps its newest version, served or not: switching back serves it.

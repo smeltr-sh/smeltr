@@ -394,8 +394,9 @@ async fn serve_newest(
     reload_socket(serving).map_err(unavailable)
 }
 
-/// Keeps what this leader issues and orders up to date, for as long as it runs. Each hour it renews each certificate
-/// it issued that is due, serving the new version where it serves that one, then orders over ACME where that is due.
+/// Keeps what this leader issues and orders up to date, for as long as it runs. Each hour, and at once after the
+/// encryption key is regenerated ([`smeltr::leader::RENEW_NOW`]), it renews each certificate it issued that is due,
+/// serving the new version where it serves that one, then orders over ACME where that is due.
 /// A new version reaches the workers presenting it on their next heartbeat (`leader::heartbeat`).
 pub async fn keep_renewed(auth: Auth, serving: Arc<Tls>, leader: smeltr::leader::AppState) {
     let state = Certificates {
@@ -404,7 +405,10 @@ pub async fn keep_renewed(auth: Auth, serving: Arc<Tls>, leader: smeltr::leader:
         leader,
     };
     loop {
-        tokio::time::sleep(crate::acme_api::RENEWAL_TICK).await;
+        tokio::select! {
+            _ = tokio::time::sleep(crate::acme_api::RENEWAL_TICK) => {}
+            _ = smeltr::leader::RENEW_NOW.notified() => {}
+        }
         renew_issued(&state, &serving).await;
         crate::acme_api::renew_if_due(&auth, &serving).await;
     }
