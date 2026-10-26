@@ -225,10 +225,9 @@ flowchart LR
   Q1 -->|acknowledged| P
 ```
 
-Its memory is what its startup configuration names,
-or else its container's limit, except inside a leader, whose share of the
-container has no fixed size. With neither, every unset cap takes its default,
-since a host's memory is shared with whatever else runs there.
+Its memory is what its startup configuration names, or else most of its
+container's limit, or of the host's memory without one. The rest is left to
+what runs beside it: a leader in the same process, or the host's own.
 
 ## A stalled destination stops every source feeding it and nothing else
 

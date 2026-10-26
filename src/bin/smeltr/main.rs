@@ -858,7 +858,7 @@ fn start_worker(
     // Every setting here can refuse, so all are read before anything says a worker is starting.
     cfg::worker_listen_address();
     let thread_limit = cfg::worker_thread_limit();
-    let memory = smeltr::worker::memory_to_fit(in_leader);
+    let memory = smeltr::worker::memory_to_fit();
     let heartbeat_interval = cfg::worker_heartbeat_interval();
     let stop_after_unreachable_secs = cfg::worker_stop_after_unreachable_secs();
     let leader_trust_public = cfg::leader_trust_public();

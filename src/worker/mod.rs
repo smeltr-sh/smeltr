@@ -785,16 +785,15 @@ pub fn process_memory_budget() -> MemoryBudget {
         .clone()
 }
 
-/// The bytes a worker sizes its deployments to: `worker.runtime.memory` when set, else its container's memory limit.
-/// `None` where neither is known, since a host's whole memory is shared with whatever else runs there, and for a worker
-/// inside a leader without the setting, since the container's limit is shared with a leader of no fixed size.
-pub fn memory_to_fit(in_leader: bool) -> Option<usize> {
-    crate::startup_config::worker_memory_bytes().or_else(|| {
-        (!in_leader)
-            .then(crate::resources::container_memory_limit_bytes)
-            .flatten()
-            .map(|limit| limit as usize)
-    })
+/// The share of its container's limit, or of the host's memory, a worker sizes to when nothing states its memory. The
+/// rest is left to what runs beside it: a leader in the same process, or the host's own.
+const MACHINE_SHARE: f64 = 0.9;
+
+/// The bytes a worker sizes its deployments to: `worker.runtime.memory` when set, else [`MACHINE_SHARE`] of its
+/// container's memory limit or, with none, of the host's memory. `None` only where neither could be read.
+pub fn memory_to_fit() -> Option<usize> {
+    crate::startup_config::worker_memory_bytes()
+        .or_else(|| crate::resources::memory_limit_bytes().map(|limit| (limit as f64 * MACHINE_SHARE) as usize))
 }
 
 /// One source's reader thread.
