@@ -3836,7 +3836,6 @@ impl Supervisor {
                         .lock()
                         .unwrap()
                         .keep_only(&validated.named, &validated.presented);
-                    *self.presenting.lock().unwrap() = validated.presented.iter().map(|c| c.name.clone()).collect();
                     // The runtime it replaced is gone, so nothing maps a file this one does not name.
                     crate::lookup::store::keep_only(&self.repo_dir, &validated.lookup_files);
                     // Nor listens on an address this one does not.
@@ -3856,6 +3855,7 @@ impl Supervisor {
                     running = None;
                     content = None;
                     self.forget_runtime();
+                    self.presenting.lock().unwrap().clear();
                     // Nothing runs, so nothing may look as if it listens: a sender is refused at once rather than
                     // left waiting in a queue nobody takes from. The retry binds again.
                     self.receiver_sockets.lock().unwrap().keep_only(&[]);
@@ -3885,6 +3885,9 @@ impl Supervisor {
     ) -> Begun {
         tracing::info!(target: "worker.redeploying", subject = %target.commit, "redeploying to a new commit");
         self.phase("starting");
+        // Before the runtime is handed its certificates, so a new version arriving while it starts restarts it
+        // rather than leaving it on the one it was handed.
+        *self.presenting.lock().unwrap() = validated.presented.iter().map(|c| c.name.clone()).collect();
         let spec = child::StartSpec {
             state_dir: self.config.state_dir.clone(),
             repo_dir: self.repo_dir.clone(),
