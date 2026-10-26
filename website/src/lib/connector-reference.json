@@ -100,7 +100,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["kafka-client"],
-            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -646,7 +646,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["aws-proxy"],
-            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -885,7 +885,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["aws-proxy"],
-            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -1160,7 +1160,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["gcp-proxy"],
-            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -1440,7 +1440,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["azure-proxy"],
-            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -1974,7 +1974,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["azure-proxy"],
-            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -2171,7 +2171,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["gcp-proxy"],
-            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -2434,7 +2434,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["api-client"],
-            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers present its newest version. Only on an `https://` URL."
+            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version. Only on an `https://` URL."
           },
           {
             "name": "authorities",
@@ -2618,7 +2618,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["okta-client"],
-            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -2747,7 +2747,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["auth-db-client"],
-            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers present its newest version. Only with `tls` `require`."
+            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version. Only with `tls` `require`."
           },
           {
             "name": "authorities",
@@ -2959,7 +2959,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["auth-db-client"],
-            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers present its newest version. Only with `tls` `require`."
+            "what": "The certificate this worker presents to the source, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the source requires a client certificate. Workers use its newest version. Only with `tls` `require`."
           },
           {
             "name": "authorities",
@@ -3142,7 +3142,7 @@
             "type": "certificate",
             "absent": "plain HTTP",
             "examples": ["receiver-tls"],
-            "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers present its newest version."
+            "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version."
           },
           {
             "name": "authorities",
@@ -3239,7 +3239,7 @@
             "type": "certificate",
             "absent": "plain HTTP",
             "examples": ["receiver-tls"],
-            "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers present its newest version."
+            "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version."
           },
           {
             "name": "authorities",
@@ -3325,7 +3325,7 @@
             "type": "certificate",
             "absent": "plain TCP",
             "examples": ["s2s-tls"],
-            "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers present its newest version."
+            "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version."
           },
           {
             "name": "authorities",
@@ -3442,7 +3442,7 @@
             "type": "certificate",
             "absent": "plain HTTP",
             "examples": ["receiver-tls"],
-            "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers present its newest version."
+            "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version."
           },
           {
             "name": "authorities",
@@ -3521,7 +3521,7 @@
             "type": "certificate",
             "absent": "plain TCP",
             "examples": ["syslog-tls"],
-            "what": "The certificate it serves TLS with (RFC 5425), named from the list on [Admin → Certificates](/docs/certificates). Workers present its newest version. A UDP receiver takes none."
+            "what": "The certificate it serves TLS with (RFC 5425), named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version. A UDP receiver takes none."
           },
           {
             "name": "authorities",
@@ -3613,7 +3613,7 @@
             "type": "certificate",
             "absent": "plain HTTP",
             "examples": ["receiver-tls"],
-            "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers present its newest version."
+            "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version."
           },
           {
             "name": "authorities",
@@ -3677,7 +3677,7 @@
             "type": "certificate",
             "absent": "plain HTTP",
             "examples": ["receiver-tls"],
-            "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers present its newest version."
+            "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version."
           },
           {
             "name": "authorities",
@@ -3955,7 +3955,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["kafka-client"],
-            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -4288,7 +4288,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["elastic-client"],
-            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -4576,7 +4576,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["splunk-client"],
-            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -4759,7 +4759,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["intake-client"],
-            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers present its newest version. Only on an `https://` URL."
+            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version. Only on an `https://` URL."
           },
           {
             "name": "authorities",
@@ -4919,7 +4919,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["intake-client"],
-            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers present its newest version. Only on an `https://` URL."
+            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version. Only on an `https://` URL."
           },
           {
             "name": "authorities",
@@ -5053,7 +5053,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["prometheus-client"],
-            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers present its newest version. Only on an `https://` URL."
+            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version. Only on an `https://` URL."
           },
           {
             "name": "authorities",
@@ -5213,7 +5213,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["store-client"],
-            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -5313,7 +5313,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["store-client"],
-            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -5471,7 +5471,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["store-client"],
-            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -5800,7 +5800,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["catalog-client"],
-            "what": "The certificate this worker presents to the catalog and the store, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the catalog and the store requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the catalog and the store, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the catalog and the store requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",
@@ -6042,7 +6042,7 @@
             "type": "certificate",
             "absent": "none",
             "examples": ["store-client"],
-            "what": "The certificate this worker presents to the store, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the store requires a client certificate. Workers present its newest version."
+            "what": "The certificate this worker presents to the store, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the store requires a client certificate. Workers use its newest version."
           },
           {
             "name": "authorities",

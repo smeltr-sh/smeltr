@@ -183,7 +183,7 @@
         <Field
           required
           label="Issued for"
-          help="DNS names and IP addresses, one per line. This leader signs it with its own authority, which whatever connects to it must trust. The leader renews it on its own before it expires, and workers present the new version from their next heartbeat."
+          help="DNS names and IP addresses, one per line. This leader signs it with its own authority, which whatever connects to it must trust. The leader renews it on its own before it expires, and workers use the new version from their next heartbeat."
         >
           <textarea
             bind:value={issuedNames}

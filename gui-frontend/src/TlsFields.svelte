@@ -77,7 +77,7 @@
     {:else}
       The certificate this worker presents to the {farEnd}, chosen from the list on
       <a href="#/admin/certificates">Admin &rarr; Certificates</a>. Needed only when the {farEnd} requires
-      a client certificate. Workers present its newest version.
+      a client certificate. Workers use its newest version.
     {/if}
   {/snippet}
 </CertificatePicker>

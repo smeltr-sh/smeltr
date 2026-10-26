@@ -2056,10 +2056,10 @@ fn check_tls(tls: &TlsDto, what: &str, errors: &mut ItemErrors<'_>) {
             "{what} names a certificate by a blank name. Choose one from the list"
         ));
     }
-    if tls.certificate.is_none() && tls.authorities.is_none() && tls.trust_public.is_some() {
+    if tls.certificate.is_none() && tls.authorities.is_none() && tls.trust_public == Some(true) {
         errors.at("trustPublic").push(format!(
             "{what} names neither a certificate nor authorities, so trust public roots changes nothing. Choose a \
-             certificate or paste authorities, or take trust public roots out"
+             certificate or paste authorities, or leave trust public roots at its default"
         ));
     }
     if tls.trust_public == Some(false) && tls.authorities.is_none() {
@@ -4405,7 +4405,7 @@ fn check_listener(what: &str, listener: &ReceiverSettingsDto, tls: &ServedTlsDto
     }
     if tls.is_set() && tls.certificate.is_none() {
         errors.at("certificate").push(format!(
-            "{what} serves TLS and names no certificate; a receiver presents one to every sender. Choose one from \
+            "{what} serves TLS and names no certificate; a receiver serves one to every sender. Choose one from \
              the list"
         ));
     }

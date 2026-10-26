@@ -50,7 +50,8 @@
   {:else if note}
     {note}
   {/if}
-  &mdash; <a href="#/admin/certificates/new">add a certificate</a>
+  {#if chosen || note}&mdash;{/if}
+  <a href="#/admin/certificates/new">add a certificate</a>
 {/snippet}
 
 <Field {label} {help} {field} {optional} {warning} note={shownNote}>

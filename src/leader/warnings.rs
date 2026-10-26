@@ -543,15 +543,15 @@ fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Wa
                 since_millis: Some(certificate.not_after_millis - notice),
                 message: match (certificate.half, not_yet_valid, expired) {
                     (Half::Presented, true, _) => format!(
-                        "the certificate {what} {id:?} presents is not valid yet, so it fails at the handshake \
+                        "the certificate {what} {id:?} uses is not valid yet, so it fails at the handshake \
                          until it is. Check its start date in {CERTIFICATE_LIST}"
                     ),
                     (Half::Presented, _, true) => format!(
-                        "the certificate {what} {id:?} presents has expired, so it fails at the handshake. Replace \
+                        "the certificate {what} {id:?} uses has expired, so it fails at the handshake. Replace \
                          it in {CERTIFICATE_LIST}"
                     ),
                     (Half::Presented, false, false) => format!(
-                        "the certificate {what} {id:?} presents expires in {days} days; replace it in \
+                        "the certificate {what} {id:?} uses expires in {days} days; replace it in \
                          {CERTIFICATE_LIST} before then"
                     ),
                     (Half::Trusted, true, _) => format!(

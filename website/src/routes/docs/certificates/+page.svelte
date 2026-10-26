@@ -87,15 +87,15 @@
     own authority, so a client verifies it against the leader's
     <a href="#download">ca.pem</a>. When a third of its life remains (30 days of 90, about four
     months of a year), or after you <a href="#rotation">rotate the authority</a>, the leader issues
-    the next version on its own, valid for the same length of time, and workers present it from
-    their next heartbeat.
+    the next version on its own, valid for the same length of time, and workers use it from their
+    next heartbeat.
   </p>
   <h2 id="connectors">Give a connector a certificate</h2>
   <p>
     A source, destination or receiver names a certificate from this list by name, under its TLS
     settings. A source or destination presents it as a client, when the far end asks for one. A
-    receiver serves TLS with it, and without one takes plain traffic. Workers present the newest
-    version of the certificate, and switch to a new version on their own.
+    receiver serves TLS with it, and without one takes plain traffic. Workers use the newest version
+    of the certificate, and switch to a new version on their own.
   </p>
   <ul>
     <li>
@@ -185,8 +185,7 @@
     Let's Encrypt and other certificate authorities issue certificates automatically over ACME. The
     authority checks that each name on the certificate reaches this leader, then issues it. The
     leader renews it on its own. Each order is a new version of the <strong>acme</strong> entry in Admin
-    → Certificates, which a connector can name too; its workers present each new version from their next
-    heartbeat.
+    → Certificates, which a connector can name too; its workers use each new version from their next heartbeat.
   </p>
   <h3>Before you start</h3>
   <ul>
