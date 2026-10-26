@@ -14,9 +14,9 @@
   to its step.
 
   Structs and arrays draw a page at a time, and one too big for what is left
-  of its page starts folded (`recordLines`). Filtered to what changed, the
-  tree is dropped and each field states its whole path: at four or five lines
-  an outline costs more than it explains.
+  of its page starts folded (`recordLines`). With full paths the tree is
+  dropped and each field states its whole path (`pathLines`). Either way it
+  can be filtered to what changed.
 -->
 <script lang="ts">
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
@@ -26,11 +26,11 @@
   import Clamped from './Clamped.svelte';
   import { float } from './float';
   import {
-    changedLines,
     changeFitsInline,
     diffTree,
     leafLines,
     PAGE_LINES,
+    pathLines,
     recordLines,
     splitPath,
     withoutRemoved,
@@ -44,6 +44,7 @@
     keep,
     declared,
     changedOnly = false,
+    fullPaths = false,
     showTypes = true,
     touched,
     onjump,
@@ -55,6 +56,8 @@
     /** Whether a field the grid draws as one cell is drawn here. */
     keep?: (path: string) => boolean;
     changedOnly?: boolean;
+    /** Each field by its whole path, rather than nested. */
+    fullPaths?: boolean;
     showTypes?: boolean;
     /** The steps that touched a field on this record, in the order they ran,
      * each with its number in the step list. Without it no step is shown. */
@@ -93,7 +96,9 @@
 
   let lines = $derived.by(() => {
     const choices = { open: (p: string) => folds.get(p), pages: (p: string) => pages.get(p) };
-    return changedOnly ? changedLines(tree, choices) : recordLines(tree, choices);
+    return fullPaths
+      ? pathLines(tree, choices, changedOnly)
+      : recordLines(tree, choices, changedOnly);
   });
 
   // In characters: the column is monospace, and a name's length is its width.
@@ -191,7 +196,7 @@
     {/if}
     <span class="key">
       <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}>
-        {#if changedOnly}
+        {#if fullPaths}
           {@const parts = splitPath(line.label)}
           <span class="path-prefix">{@render name(parts.prefix)}</span>{parts.leaf}
         {:else}

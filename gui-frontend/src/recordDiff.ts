@@ -444,25 +444,37 @@ function chain(n: DiffNode): { label: string; node: DiffNode } {
   return { label, node: n };
 }
 
+/** Whether a node holds anything a step added, changed or removed. */
+const changed = (n: DiffNode) =>
+  n.kind === 'leaf'
+    ? n.leaf!.state !== 'unchanged'
+    : n.marks.added + n.marks.changed + n.marks.removed > 0;
+
 /** The lines to draw. The record's top level and each opened struct or array
  * draw their children a page at a time, then a `more` line; a child starts
  * open only if all of it fits in what is left of the page, so a small value
- * reads whole and a large one folds to one line until asked for. */
-export function recordLines(root: DiffNode, choices: Choices = {}): RecordLine[] {
+ * reads whole and a large one folds to one line until asked for. With
+ * `changedOnly`, a child that holds no change is left out. */
+export function recordLines(
+  root: DiffNode,
+  choices: Choices = {},
+  changedOnly = false,
+): RecordLine[] {
   const out: RecordLine[] = [];
   const pagesOf = (path: string) => PAGE_LINES * (1 + (choices.pages?.(path) ?? 0));
 
   const children = (n: DiffNode, depth: number): number => {
     const budget = pagesOf(n.path);
+    const kids = changedOnly ? n.children.filter(changed) : n.children;
     let used = 0;
     let i = 0;
-    for (; i < n.children.length; i++) {
+    for (; i < kids.length; i++) {
       // At least one, however long: a page is never empty.
       if (i > 0 && used >= budget) break;
-      used += draw(n.children[i], depth, budget - used);
+      used += draw(kids[i], depth, budget - used);
     }
-    if (i < n.children.length) {
-      out.push({ kind: 'more', path: n.path, depth, shown: i, total: n.children.length });
+    if (i < kids.length) {
+      out.push({ kind: 'more', path: n.path, depth, shown: i, total: kids.length });
       used++;
     }
     return used;
@@ -499,23 +511,26 @@ export function recordLines(root: DiffNode, choices: Choices = {}): RecordLine[]
   return out;
 }
 
-/** Every field a step changed, by its whole path, a page at a time. */
-export function changedLines(root: DiffNode, choices: Choices = {}): RecordLine[] {
-  const changed: DiffNode[] = [];
+/** Every field by its whole path, a page at a time; with `changedOnly`, only
+ * the fields a step changed. */
+export function pathLines(
+  root: DiffNode,
+  choices: Choices = {},
+  changedOnly = false,
+): RecordLine[] {
+  const fields: DiffNode[] = [];
   const walk = (n: DiffNode) => {
-    if (n.kind === 'leaf') {
-      if (n.leaf!.state !== 'unchanged') changed.push(n);
-      return;
-    }
-    if (n.marks.added + n.marks.changed + n.marks.removed > 0) n.children.forEach(walk);
+    if (changedOnly && !changed(n)) return;
+    if (n.kind === 'leaf') fields.push(n);
+    else n.children.forEach(walk);
   };
   walk(root);
-  const shown = Math.min(changed.length, PAGE_LINES * (1 + (choices.pages?.(root.path) ?? 0)));
-  const out: RecordLine[] = changed
+  const shown = Math.min(fields.length, PAGE_LINES * (1 + (choices.pages?.(root.path) ?? 0)));
+  const out: RecordLine[] = fields
     .slice(0, shown)
     .map((n) => ({ ...n.leaf!, kind: 'field', depth: 0, label: n.path, type: n.type }));
-  if (shown < changed.length)
-    out.push({ kind: 'more', path: root.path, depth: 0, shown, total: changed.length });
+  if (shown < fields.length)
+    out.push({ kind: 'more', path: root.path, depth: 0, shown, total: fields.length });
   return out;
 }
 

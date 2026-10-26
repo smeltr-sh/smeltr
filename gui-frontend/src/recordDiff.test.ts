@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isInternal } from './api';
 import {
-  changedLines,
+  pathLines,
   changeFitsInline,
   countStates,
   declaredRecord,
@@ -205,6 +205,20 @@ describe('recordLines', () => {
     expect(shape(recordLines(diffTree(null, { a: { b: { c: 1 } } })))).toEqual(['a.b.c']);
   });
 
+  it('leaves out what holds no change, when asked, and keeps the tree', () => {
+    const tree = diffTree(
+      { source: { ip: 'a', port: 1 }, host: 'h' },
+      { source: { ip: 'a', port: 2, geo: { city: 'c', country: 'SE' } }, host: 'h' },
+    );
+    expect(shape(recordLines(tree, {}, true))).toEqual([
+      'source',
+      '  geo',
+      '    city',
+      '    country',
+      '  port',
+    ]);
+  });
+
   it('joins a key in brackets without a dot', () => {
     const lines = recordLines(diffTree(null, { labels: { 'a.b': 1 } }));
     expect(shape(lines)).toEqual(['labels["a.b"]']);
@@ -291,17 +305,26 @@ describe('recordLines', () => {
   });
 });
 
-describe('changedLines', () => {
+describe('pathLines', () => {
   it('lists every changed field by its whole path, folded or not', () => {
-    const lines = changedLines(diffTree({ a: { b: 1, c: [1, 2] } }, { a: { b: 1, c: [1, 3] } }));
+    const lines = pathLines(
+      diffTree({ a: { b: 1, c: [1, 2] } }, { a: { b: 1, c: [1, 3] } }),
+      {},
+      true,
+    );
     expect(lines.map((l) => l.kind === 'field' && [l.label, l.state])).toEqual([
       ['a.c[1]', 'changed'],
     ]);
   });
 
+  it('lists every field by its whole path, changed or not', () => {
+    const lines = pathLines(diffTree({ a: { b: 1, c: [1, 2] } }, { a: { b: 1, c: [1, 3] } }));
+    expect(lines.map((l) => l.kind === 'field' && l.label)).toEqual(['a.b', 'a.c[0]', 'a.c[1]']);
+  });
+
   it('draws a page at a time', () => {
     const tags = Array.from({ length: 100 }, (_, i) => i);
-    const lines = changedLines(diffTree(null, { tags }));
+    const lines = pathLines(diffTree(null, { tags }), {}, true);
     expect(lines.at(-1)).toEqual({ kind: 'more', path: '', depth: 0, shown: 40, total: 100 });
   });
 });
