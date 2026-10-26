@@ -2188,7 +2188,7 @@ pub(crate) mod tests {
     /// The root this leader signs the certificate it serves under.
     fn signing(dir: &Path) -> String {
         let pem = std::fs::read(dir.join(CA_CERT)).expect("the authority");
-        let served = served_cert(&dir).expect("the certificate");
+        let served = served_cert(dir).expect("the certificate");
         signing_root(&pem, &served).expect("a signer").fingerprint
     }
 
