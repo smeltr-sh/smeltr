@@ -142,8 +142,6 @@
   /** A Kafka or Event Hubs destination's: Avro registers its schema in a schema registry. */
   const AVRO_STREAM_FORMATS = [...STREAM_FORMATS, 'avro'] as const;
   const OBJECT_FORMATS = ['ndjson', 'json', 'parquet', 'avro', 'csv', 'text', 'bytes'] as const;
-  /** A format's option, where its name alone does not say what each record becomes. */
-  const STREAM_LABELS = { avro: 'avro — one Avro message per record' };
 
   /** An empty text box unsets the field rather than naming `""`. */
   function optional(value: string): string | undefined {
@@ -173,13 +171,7 @@
     <Field required field="defaultTopic" label="default topic">
       <input type="text" bind:value={destination.defaultTopic} />
     </Field>
-    {@render formatFields(
-      destination,
-      AVRO_STREAM_FORMATS,
-      'json',
-      streamFormatHelp,
-      STREAM_LABELS,
-    )}
+    {@render formatFields(destination, AVRO_STREAM_FORMATS, 'json', streamFormatHelp)}
     <IdentityPicker
       value={destination.identity}
       {identities}
@@ -273,13 +265,7 @@
         connectionString: "Where the namespace's connection string lives, with the Send right.",
       }}
     />
-    {@render formatFields(
-      destination,
-      AVRO_STREAM_FORMATS,
-      'json',
-      streamFormatHelp,
-      STREAM_LABELS,
-    )}
+    {@render formatFields(destination, AVRO_STREAM_FORMATS, 'json', streamFormatHelp)}
     <Advanced label="Delivery" modified={eventHubsModified(destination)}>
       <ConnectorAccess store="eventHubs" value={destination} show="advanced" />
       <Field field="compression" label="compression">
@@ -994,7 +980,6 @@
   formats: readonly string[],
   fallback: string,
   help: Snippet<[readonly string[]]>,
-  labels: Record<string, string> = {},
 )}
   {#snippet formatHelp()}{@render help(formats)}{/snippet}
   <Field field="format" label="format" help={formatHelp}>
@@ -1014,7 +999,7 @@
         if (v === 'avro' && d.compression === 'lz4') delete d.compression;
       }}
     >
-      {#each formats as f (f)}<option value={f}>{labels[f] ?? f}</option>{/each}
+      {#each formats as f (f)}<option value={f}>{f}</option>{/each}
     </select>
   </Field>
   {#if d.format === 'avro' && d.schemaRegistry}
