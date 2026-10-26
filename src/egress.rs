@@ -31,7 +31,7 @@ use crate::handoff::Ready;
 use crate::io::{BatchCompletion, BatchId, Destination, Dispatched, HeldRefusal, IoError, OwnedRecord, Rejection};
 use crate::metrics::MetricsHandle;
 use crate::worker::capture::{Captures, HeldAt};
-use pacing::{Completion, Pacing};
+use pacing::{Completion, Pacing, Sent};
 
 /// Which reader a unit came from, and where its completion goes.
 type ReaderId = u64;
@@ -40,8 +40,8 @@ type ReaderId = u64;
 struct Owed {
     rejections: Vec<Rejection>,
     unit: Unit,
-    /// When it was handed to the destination, for the pacing model's round trip.
-    sent_at: Instant,
+    /// What the pacing model knew when it was handed to the destination, once the queue is paced.
+    sent: Option<Sent>,
     /// Nothing else was waiting when it went: the source, not the link, bounded it. See `pacing::Completion`.
     app_limited: bool,
 }
@@ -702,12 +702,9 @@ fn run(
         if let Some(unit) = next {
             let local = next_local;
             next_local += 1;
-            let sent_at = Instant::now();
             // A re-send is never the source's doing: it counts as the link's.
             let app_limited = !pressing;
-            if let Some(p) = &mut pacing {
-                p.dispatched(unit.bytes);
-            }
+            let sent = pacing.as_mut().map(|p| p.dispatched(unit.bytes, Instant::now()));
             // Borrowed: the unit is kept until acknowledged, to send again or to hand a refused row back.
             match destination.deliver(local, Cow::Borrowed(&unit.rows)) {
                 Err(e) => {
@@ -729,7 +726,7 @@ fn run(
                         metrics,
                         id,
                         unit.bytes,
-                        sent_at,
+                        sent,
                         app_limited,
                     );
                     finish(queue, returns, metrics, id, unit, rejections, &mut waiting);
@@ -745,7 +742,7 @@ fn run(
                         Owed {
                             rejections,
                             unit,
-                            sent_at,
+                            sent,
                             app_limited,
                         },
                     );
@@ -780,7 +777,7 @@ fn run(
                         metrics,
                         id,
                         owed.unit.bytes,
-                        owed.sent_at,
+                        owed.sent,
                         owed.app_limited,
                     );
                     finish(queue, returns, metrics, id, owed.unit, owed.rejections, &mut waiting);
@@ -843,16 +840,16 @@ fn pace(
     metrics: &MetricsHandle,
     id: DestId,
     bytes: usize,
-    sent_at: Instant,
+    sent: Option<Sent>,
     app_limited: bool,
 ) {
-    let Some(p) = pacing else { return };
+    let (Some(p), Some(sent)) = (pacing, sent) else { return };
     let before = p.target();
     p.set_ceiling(queue.share());
     p.completed(
         Completion {
             bytes,
-            dispatched_at: sent_at,
+            sent,
             app_limited,
         },
         Instant::now(),

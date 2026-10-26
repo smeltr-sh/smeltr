@@ -7,7 +7,8 @@
 //! while a fast one grows for as long as each step still raises the rate. The destination's own in-flight bound reads
 //! the same number, so one figure governs the queue, a Kafka producer's copy and an HTTP pool's senders alike.
 //!
-//! The model is BBR's, cut to what a batch pipeline needs. A rate sample taken while the source had nothing more to
+//! The model is BBR's, cut to what a batch pipeline needs. The target is counted in whole batches, rounded up, since
+//! the queue holds whole batches and a target short of one more holds none of it. A rate sample taken while the source had nothing more to
 //! send says how fast the source produces, not how fast the link carries, and may raise the estimate but never lower
 //! it: a slow source never makes its destination look slow. Startup doubles the target each round trip until the rate
 //! stops growing; after that an eight-step cycle probes at 1.25 and drains at 0.75, so the round-trip filter sees an
@@ -36,13 +37,23 @@ const STARTUP_GAIN: f64 = 2.0;
 /// The steady-state cycle, one step per round trip: probe, drain, cruise.
 const PROBE_CYCLE: [f64; 8] = [1.25, 0.75, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
 
+/// What the model knew when a batch was handed to the destination, kept with the batch until it comes back.
+#[derive(Clone, Copy, Debug)]
+pub struct Sent {
+    /// When the batch was handed over.
+    at: Instant,
+    /// Bytes acknowledged by then, and when the last of them was.
+    delivered: u64,
+    delivered_at: Instant,
+}
+
 /// One delivery, as the model is told of it.
 #[derive(Clone, Copy, Debug)]
 pub struct Completion {
     /// The bytes acknowledged.
     pub bytes: usize,
-    /// When the batch was handed to the destination.
-    pub dispatched_at: Instant,
+    /// What [`Pacing::dispatched`] answered for the batch.
+    pub sent: Sent,
     /// Nothing else was waiting in the queue when it was dispatched, so the link was not the bound on this sample:
     /// the source was.
     pub app_limited: bool,
@@ -56,18 +67,20 @@ pub struct Pacing {
     /// The most the target may be right now: the destination's fair share of the pool, or a stated buffer.
     ceiling: usize,
     target: usize,
-    /// Bytes handed to the destination so far, and bytes it acknowledged.
+    /// Bytes handed to the destination so far, and bytes it acknowledged, with when the last of them was.
     dispatched: u64,
     delivered: u64,
-    /// `delivered` as it stood at each completion, oldest first, for the rate over a window.
-    history: VecDeque<(Instant, u64)>,
+    delivered_at: Option<Instant>,
     /// Round-trip samples within [`RTT_WINDOW`], oldest first. The least is the estimate.
     rtts: VecDeque<(Instant, Duration)>,
     /// Rate samples, in bytes a second, within the rate window, oldest first. The greatest is the estimate.
     rates: VecDeque<(Instant, f64)>,
-    /// A round trip ends when `delivered` passes what was `dispatched` at its start.
-    round_ends_at: u64,
+    /// `delivered` when this round trip began: it ends once a batch sent after that comes back.
+    round_starts_at: u64,
     rounds: u32,
+    /// Whether a sample this round was the link's, not the source's: only such a round can say the rate stopped
+    /// growing.
+    round_link_bound: bool,
     /// Whether startup is over, and what the rate was at the last round where it grew enough, with how many rounds
     /// have passed since.
     full_pipe: bool,
@@ -85,11 +98,12 @@ impl Pacing {
             target: floor,
             dispatched: 0,
             delivered: 0,
-            history: VecDeque::new(),
+            delivered_at: None,
             rtts: VecDeque::new(),
             rates: VecDeque::new(),
-            round_ends_at: 0,
+            round_starts_at: 0,
             rounds: 0,
+            round_link_bound: false,
             full_pipe: false,
             rate_at_last_growth: 0.0,
             rounds_without_growth: 0,
@@ -117,15 +131,20 @@ impl Pacing {
         self.rates.iter().map(|(_, r)| *r).fold(0.0, f64::max)
     }
 
-    /// A batch of `bytes` was handed to the destination.
-    pub fn dispatched(&mut self, bytes: usize) {
+    /// A batch of `bytes` was handed to the destination at `now`. The answer goes back with its [`Completion`].
+    pub fn dispatched(&mut self, bytes: usize, now: Instant) -> Sent {
         self.dispatched += bytes as u64;
+        Sent {
+            at: now,
+            delivered: self.delivered,
+            delivered_at: *self.delivered_at.get_or_insert(now),
+        }
     }
 
     /// A batch came back acknowledged. Updates the estimates and the target.
     pub fn completed(&mut self, c: Completion, now: Instant) {
         self.delivered += c.bytes as u64;
-        let rtt = now.saturating_duration_since(c.dispatched_at);
+        let rtt = now.saturating_duration_since(c.sent.at);
         self.rtts.push_back((now, rtt));
         while self
             .rtts
@@ -136,30 +155,15 @@ impl Pacing {
         }
         let least_rtt = self.round_trip().unwrap_or(rtt).max(Duration::from_micros(1));
 
-        // The rate over the last round trip: what was acknowledged since the completion one round trip back, over
-        // the time since it. One batch over its own time would read as a burst; a window reads as a rate.
-        let since = now - least_rtt;
-        let base = self
-            .history
-            .iter()
-            .rev()
-            .find(|(at, _)| *at <= since)
-            .copied()
-            .or_else(|| self.history.front().copied());
-        self.history.push_back((now, self.delivered));
-        while self
-            .history
-            .front()
-            .is_some_and(|(at, _)| now.saturating_duration_since(*at) > RTT_WINDOW)
-        {
-            self.history.pop_front();
-        }
-        let rate = match base {
-            Some((at, delivered)) if now > at => {
-                (self.delivered - delivered) as f64 / now.saturating_duration_since(at).as_secs_f64()
-            }
-            // The first sample: this batch alone, over the least it could have taken.
-            _ => c.bytes as f64 / least_rtt.as_secs_f64(),
+        // BBR's sample: what was acknowledged while this batch was out, over at least its own round trip. Acks come
+        // in bursts -- a Kafka producer reports a batch only once its last record lands -- and a rate taken between
+        // two acks microseconds apart would read as a link far faster than any.
+        self.delivered_at = Some(now);
+        let interval = now.saturating_duration_since(c.sent.delivered_at).max(rtt);
+        let rate = if interval.is_zero() {
+            0.0
+        } else {
+            (self.delivered - c.sent.delivered) as f64 / interval.as_secs_f64()
         };
 
         let window = (least_rtt * RATE_WINDOW_ROUND_TRIPS).clamp(RATE_WINDOW_LEAST, RATE_WINDOW_MOST);
@@ -177,10 +181,13 @@ impl Pacing {
                 self.rates.pop_front();
             }
             self.rates.push_back((now, rate));
+            self.round_link_bound = true;
         }
 
-        if self.delivered >= self.round_ends_at {
-            self.round_ends_at = self.dispatched;
+        // BBR's round: it ends once a batch sent after it began comes back, which is a round trip whatever the
+        // batches' sizes.
+        if c.sent.delivered >= self.round_starts_at {
+            self.round_starts_at = self.delivered;
             self.rounds += 1;
             self.end_round();
         }
@@ -189,7 +196,9 @@ impl Pacing {
 
     /// A round trip ended: judge whether the pipe is full yet.
     fn end_round(&mut self) {
-        if self.full_pipe {
+        let link_bound = std::mem::take(&mut self.round_link_bound);
+        // A round the source set the pace of says nothing of whether the link has more.
+        if self.full_pipe || !link_bound {
             return;
         }
         let rate = self.rate();
@@ -214,7 +223,13 @@ impl Pacing {
 
     fn retarget(&mut self, least_rtt: Duration) {
         let bdp = self.rate() * least_rtt.as_secs_f64();
-        let wanted = (self.gain() * bdp).round();
+        // In whole batches, rounded up: the queue holds whole batches, so a target a little under three would hold
+        // two and the estimate, measured from what is held, would fall to two; and a probe a quarter over one batch
+        // must still admit a second, or a link held to one batch is never measured carrying two. A product a
+        // little over one batch is held at two while cruising, and at one while draining, so the round-trip
+        // filter still sees a batch go alone.
+        let batch = self.floor as f64;
+        let wanted = (self.gain() * bdp / batch - 0.01).ceil().max(1.0) * batch;
         let wanted = if wanted.is_finite() && wanted > 0.0 {
             wanted.min(usize::MAX as f64) as usize
         } else {
@@ -239,18 +254,18 @@ mod tests {
         let per_batch = Duration::from_secs_f64(BATCH as f64 / capacity);
         let start = Instant::now();
         let mut now = start;
-        // (lands at, sent at), in landing order.
-        let mut in_flight: VecDeque<(Instant, Instant)> = VecDeque::new();
+        // (lands at, as sent), in landing order.
+        let mut in_flight: VecDeque<(Instant, Sent)> = VecDeque::new();
         let mut link_free_at = start;
         let mut targets = Vec::new();
         let mut next_round = start + rtt;
         while targets.len() < rounds {
             let held = in_flight.len() * BATCH;
             if held == 0 || held + BATCH <= p.target() {
-                p.dispatched(BATCH);
+                let sent = p.dispatched(BATCH, now);
                 let lands = (now + rtt).max(link_free_at + per_batch);
                 link_free_at = lands;
-                in_flight.push_back((lands, now));
+                in_flight.push_back((lands, sent));
                 continue;
             }
             let (lands, sent) = in_flight.pop_front().expect("something in flight");
@@ -258,7 +273,7 @@ mod tests {
             p.completed(
                 Completion {
                     bytes: BATCH,
-                    dispatched_at: sent,
+                    sent,
                     app_limited,
                 },
                 now,
@@ -309,7 +324,8 @@ mod tests {
         // 10ms away, carrying 1 MiB/s: a product of 10 KiB, far below one batch.
         let mut p = Pacing::new(BATCH, 1024 * MIB);
         let targets = drive(&mut p, Duration::from_millis(10), MIB as f64, 20, false);
-        assert!(targets.iter().all(|t| *t <= 2 * BATCH), "{targets:?}");
+        // Two batches cruising, one draining, a third on a probe: one batch takes four seconds to send.
+        assert!(targets[5..].iter().all(|t| *t <= 3 * BATCH), "{targets:?}");
     }
 
     #[test]
@@ -323,11 +339,11 @@ mod tests {
         // The source goes quiet: one batch a round trip, with nothing waiting behind it.
         let mut now = Instant::now() + Duration::from_secs(60);
         for _ in 0..50 {
-            p.dispatched(BATCH);
+            let sent = p.dispatched(BATCH, now);
             p.completed(
                 Completion {
                     bytes: BATCH,
-                    dispatched_at: now,
+                    sent,
                     app_limited: true,
                 },
                 now + rtt,
@@ -347,14 +363,14 @@ mod tests {
         let rtt = Duration::from_millis(200);
         let mut p = Pacing::new(BATCH, 1024 * MIB);
         drive(&mut p, rtt, 100.0 * MIB as f64, 30, false);
-        assert!(p.target() > 4 * BATCH);
+        assert!(p.target() > 2 * BATCH);
         // Then one batch comes back after a very long time, with others still waiting.
         let late = Instant::now() + Duration::from_secs(120);
-        p.dispatched(BATCH);
+        let sent = p.dispatched(BATCH, late - Duration::from_secs(30));
         p.completed(
             Completion {
                 bytes: BATCH,
-                dispatched_at: late - Duration::from_secs(30),
+                sent,
                 app_limited: false,
             },
             late,
@@ -364,6 +380,48 @@ mod tests {
             "one batch over thirty seconds is no rate at all: {}",
             p.target()
         );
+    }
+
+    #[test]
+    fn acks_that_land_together_read_as_what_was_in_flight_over_the_round_trip() {
+        let rtt = Duration::from_millis(200);
+        let mut p = Pacing::new(BATCH, 1024 * MIB);
+        let start = Instant::now();
+        let sent: Vec<Sent> = (0..8).map(|_| p.dispatched(BATCH, start)).collect();
+        for s in sent {
+            p.completed(
+                Completion {
+                    bytes: BATCH,
+                    sent: s,
+                    app_limited: false,
+                },
+                start + rtt,
+            );
+        }
+        let most = 8.0 * BATCH as f64 / rtt.as_secs_f64();
+        assert!(p.rate() <= most * 1.01, "{} vs {most}", p.rate());
+        assert!(p.target() <= 2 * 8 * BATCH + BATCH, "{}", p.target());
+    }
+
+    #[test]
+    fn a_quiet_source_does_not_end_startup() {
+        let rtt = Duration::from_millis(200);
+        let mut p = Pacing::new(BATCH, 1024 * MIB);
+        drive(&mut p, rtt, 100.0 * MIB as f64, 20, true);
+        assert!(!p.full_pipe, "every round was the source's");
+        let targets = drive(&mut p, rtt, 100.0 * MIB as f64, 16, false);
+        assert!(targets[8..].iter().max().unwrap() >= &(5 * BATCH), "{targets:?}");
+    }
+
+    #[test]
+    fn a_target_held_to_one_batch_climbs_once_the_link_has_more() {
+        let rtt = Duration::from_millis(200);
+        let mut p = Pacing::new(BATCH, 1024 * MIB);
+        // Startup over, with the estimate at a single batch: the way a burst of quiet rounds could leave it.
+        p.full_pipe = true;
+        // 100 MiB/s, 200 ms: 20 MiB, five batches, on the wire.
+        let targets = drive(&mut p, rtt, 100.0 * MIB as f64, 80, false);
+        assert!(*targets.last().unwrap() >= 5 * BATCH, "{targets:?}");
     }
 
     #[test]
