@@ -240,6 +240,29 @@ fn a_sender_is_spawned_when_the_limit_reaches_it_and_not_before() {
     assert_eq!(pool.spawned(), 8, "never past the senders it owns");
 }
 
+/// A sender past the start is spawned only when it is lent its memory; refused, the limit stays at the senders
+/// spawned.
+#[test]
+fn a_sender_past_the_start_waits_to_be_lent_its_memory() {
+    let lent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1));
+    let mut pool = Pool::new((0..8).map(|_| Instant0).collect(), 2, MIB);
+    let left = lent.clone();
+    pool.lend_senders(Box::new(move || {
+        left.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |n| n.checked_sub(1),
+        )
+        .is_ok()
+    }));
+    pool.pace(8 * MIB);
+    assert_eq!(pool.spawned(), 3, "the two it started with, and the one lent");
+    assert_eq!(pool.limit(), 3, "no more outstanding than have a sender");
+    lent.store(5, std::sync::atomic::Ordering::Relaxed);
+    pool.pace(8 * MIB);
+    assert_eq!(pool.spawned(), 8);
+}
+
 /// A start above the senders is the pool's to refuse, not to honor: `limit` is what `submit` gates on, and a limit
 /// past the sender count would admit work no sender can take.
 #[test]

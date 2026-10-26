@@ -93,6 +93,9 @@ struct QueueState {
     bytes: usize,
     /// What of `bytes` is above the reserve, and so borrowed from the [`QueuePool`].
     borrowed: usize,
+    /// Borrowed besides, for the senders the destination spawned past those it started with
+    /// ([`Egress::charging_senders`]). Held while the destination lives: a spawned sender is kept.
+    senders: usize,
     next_seq: u64,
     closed: bool,
 }
@@ -118,6 +121,9 @@ struct Queue {
     holds_refusals: AtomicBool,
     /// Where bytes above a reserve come from, when this queue borrows. See [`Egress::borrowing`].
     lend: OnceLock<Lend>,
+    /// What one sender the destination spawns holds, when the queue's pool pays for them. See
+    /// [`Egress::charging_senders`].
+    sender_bytes: OnceLock<usize>,
     /// The captures told this destination is sent to here. See [`Egress::with_captures`].
     captures: OnceLock<Arc<crate::worker::capture::Captures>>,
 }
@@ -282,6 +288,7 @@ impl Queue {
             pool: Mutex::new(None),
             holds_refusals: AtomicBool::new(false),
             lend: OnceLock::new(),
+            sender_bytes: OnceLock::new(),
             captures: OnceLock::new(),
         }
     }
@@ -295,8 +302,11 @@ impl Queue {
             || st.bytes == 0
             || (st.bytes + bytes <= self.budget()
                 && self.lend.get().is_none_or(|l| {
-                    l.pool
-                        .fits(l.id, st.borrowed, l.borrowed(st.bytes + bytes) - st.borrowed)
+                    l.pool.fits(
+                        l.id,
+                        st.borrowed + st.senders,
+                        l.borrowed(st.bytes + bytes) - st.borrowed,
+                    )
                 }));
         if !room {
             self.pressed.store(true, Ordering::Relaxed);
@@ -310,13 +320,31 @@ impl Queue {
         self.pressed.swap(false, Ordering::Relaxed) || !st.units.is_empty()
     }
 
-    /// The most a paced budget may be: the queue bytes whose borrowing fits this queue's share of the pool, plus
-    /// the reserve, which is its own. Unbounded without a pool.
+    /// The most a paced budget may be: the queue bytes whose borrowing fits this queue's share of the pool, less
+    /// what its senders borrow, plus the reserve, which is its own. Unbounded without a pool.
     fn share(&self) -> usize {
         match self.lend.get() {
-            Some(l) => l.reserve.saturating_add(l.pool.share(l.id) / l.charge),
+            Some(l) => {
+                let senders = self.state.lock().unwrap().senders;
+                l.reserve
+                    .saturating_add(l.pool.share(l.id).saturating_sub(senders) / l.charge)
+            }
             None => usize::MAX,
         }
+    }
+
+    /// Borrow what one more sender holds, if the pool lends it: the destination asks before it spawns one past
+    /// those it started with. Refused, the sender is not spawned and the pool is contended, as for a unit.
+    fn take_sender(&self) -> bool {
+        let (Some(lend), Some(&bytes)) = (self.lend.get(), self.sender_bytes.get()) else {
+            return true;
+        };
+        let mut st = self.state.lock().unwrap();
+        if !lend.pool.take(lend.id, st.borrowed + st.senders, bytes, false) {
+            return false;
+        }
+        st.senders += bytes;
+        true
     }
 
     /// Bytes this queue may hold now.
@@ -350,7 +378,7 @@ impl Queue {
             let borrowed = lend.borrowed(st.bytes + unit.bytes);
             if !lend
                 .pool
-                .take(lend.id, st.borrowed, borrowed - st.borrowed, st.bytes == 0)
+                .take(lend.id, st.borrowed + st.senders, borrowed - st.borrowed, st.bytes == 0)
             {
                 self.pressed.store(true, Ordering::Relaxed);
                 return Err(Refused::NoRoom(unit));
@@ -402,7 +430,7 @@ impl Queue {
         st.bytes = st.bytes.saturating_sub(bytes);
         if let Some(lend) = self.lend.get() {
             let borrowed = lend.borrowed(st.bytes);
-            lend.pool.give(lend.id, borrowed, st.borrowed - borrowed);
+            lend.pool.give(lend.id, borrowed + st.senders, st.borrowed - borrowed);
             st.borrowed = borrowed;
         }
         drop(st);
@@ -416,7 +444,14 @@ impl Queue {
     }
 
     fn close(&self) {
-        self.state.lock().unwrap().closed = true;
+        let mut st = self.state.lock().unwrap();
+        st.closed = true;
+        // The destination and its senders end with the queue.
+        if let Some(lend) = self.lend.get() {
+            lend.pool.give(lend.id, st.borrowed, st.senders);
+            st.senders = 0;
+        }
+        drop(st);
         self.work.notify_all();
         if let Some(pool) = self.pool.lock().unwrap().as_ref() {
             pool.signal_all();
@@ -529,6 +564,14 @@ impl Egress {
         self
     }
 
+    /// Have each sender the destination spawns past those it started with borrow `bytes` from the pool this queue
+    /// borrows from, held for as long as the destination lives. The pacing target is then held to what the pool
+    /// lends besides, so the senders and the bytes they carry share one share. Without a pool, nothing is charged.
+    pub fn charging_senders(self, bytes: usize) -> Egress {
+        let _ = self.queue.sender_bytes.set(bytes);
+        self
+    }
+
     /// Keep what the destination refuses and send it again, completing a batch only once it lands: the destination is
     /// set to block. Otherwise a refusal goes back with the batch's completion, for the reader's side to answer.
     pub fn holding_refusals(self) -> Egress {
@@ -584,7 +627,7 @@ fn stall_log_due(stalled: Option<Instant>) -> bool {
 /// The egress thread. Owns the client for its whole life.
 fn run(
     mut destination: Box<dyn Destination>,
-    queue: &Queue,
+    queue: &Arc<Queue>,
     returns: &Returns,
     metrics: &MetricsHandle,
     id: DestId,
@@ -620,6 +663,10 @@ fn run(
         if pacing.is_none()
             && let Some(&floor) = queue.paced.get()
         {
+            if queue.sender_bytes.get().is_some() {
+                let queue = queue.clone();
+                destination.lend_senders(Box::new(move || queue.take_sender()));
+            }
             let mut p = Pacing::new(floor, queue.share());
             destination.pace(p.target());
             p.set_ceiling(queue.share());
@@ -1406,6 +1453,26 @@ mod tests {
         assert!(queue.offer(unit(2)).is_ok());
         assert!(pressed(queue.pop(Duration::ZERO)));
         assert!(!pressed(queue.pop(Duration::ZERO)));
+    }
+
+    #[test]
+    fn a_spawned_sender_borrows_from_the_pool_and_narrows_the_share() {
+        let pool = QueuePool::new(16);
+        let queue = borrowing(100, &pool, 4, 1);
+        let _ = queue.sender_bytes.set(6);
+        assert_eq!(queue.share(), 20);
+        assert!(queue.take_sender());
+        assert!(queue.take_sender());
+        assert_eq!(pool.lent(), 12);
+        assert_eq!(queue.share(), 4 + 4, "what the senders hold is not the queue's to hold");
+        assert!(!queue.take_sender(), "the pool lends no further");
+        assert!(queue.offer(unit(4)).is_ok(), "the reserve is the queue's own");
+        assert!(queue.offer(unit(4)).is_ok(), "the pool's rest is the queue's");
+        assert!(!queue.has_room(1));
+        queue.close();
+        assert_eq!(pool.lent(), 4, "the senders end with the queue");
+        queue.release(8);
+        assert_eq!(pool.lent(), 0);
     }
 
     #[test]

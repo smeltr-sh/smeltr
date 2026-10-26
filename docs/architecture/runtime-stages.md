@@ -193,10 +193,12 @@ whatever the others hold, and borrows above it up to its ceiling.
 Each lane and each reserve holds whole batches whatever the traffic, so they
 grow with the count of sources and destinations. When they would take more
 than half the memory, the worker cuts its batches smaller, down to a floor
-below which the work per batch outweighs the batch. A destination's senders
-are held whatever the traffic too, and are cut toward the count each starts
-with when together they would take more than a quarter of it. A sender gone
-idle hands back what its allocator holds free.
+below which the work per batch outweighs the batch. The senders a destination
+starts with are held whatever the traffic too. A paced destination spawns
+more as its target asks, each borrowing what it holds from the pool before it
+starts and keeping it while the destination lives, so its target is held to
+what the pool lends besides. A sender gone idle hands back what its allocator
+holds free.
 
 ```mermaid
 flowchart LR

@@ -657,6 +657,12 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
         }
     }
 
+    fn lend_senders(&mut self, lend: crate::io::Lend) {
+        if let Some(pool) = &mut self.pool {
+            pool.lend_senders(lend);
+        }
+    }
+
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
         // What a barrier saw land is reported before the pool is asked: a failure there would otherwise take it back.
         let drained = std::mem::take(&mut self.drained);

@@ -146,27 +146,32 @@ pub(super) fn receiver_reserve(kind: &SourceKind) -> Option<usize> {
 
 /// What one sender of an HTTP-like destination holds whatever it sends: its thread, its connection, and what the
 /// allocator keeps of the requests it sent. Measured under load at about 6 MiB.
-const SENDER_BYTES: usize = 6 * 1024 * 1024;
+pub(super) const SENDER_BYTES: usize = 6 * 1024 * 1024;
 
 /// What the senders of a destination hold: one per request it may have outstanding. 0 for a destination with none.
 pub(super) fn senders_bytes(kind: &DestinationKind) -> usize {
     senders(kind).map_or(0, |s| s.most) * SENDER_BYTES
 }
 
-/// The senders of a destination that sends requests: the most it may have outstanding, the count it starts with, and
-/// the bytes of one request. `None` for a destination with none.
+/// What the senders a destination starts with hold. A destination sized to the worker's memory holds these whatever
+/// the traffic; each it spawns past them borrows its own from the pool (`egress::Egress::charging_senders`).
+pub(super) fn starting_senders_bytes(kind: &DestinationKind) -> usize {
+    senders(kind).map_or(0, |s| s.start) * SENDER_BYTES
+}
+
+/// The senders of a destination that sends requests: the most it may have outstanding and the count it starts with.
+/// `None` for a destination with none.
 struct Senders {
     most: usize,
     start: usize,
-    request_bytes: usize,
 }
 
 fn senders(kind: &DestinationKind) -> Option<Senders> {
-    let (most, start, request_bytes) = match kind {
-        DestinationKind::Elasticsearch(e) => (e.max_in_flight(), e.in_flight, e.max_bulk_bytes),
-        DestinationKind::SplunkHec(s) => (s.max_in_flight(), s.in_flight, s.max_request_bytes),
-        DestinationKind::Http(h) => (h.max_in_flight(), h.in_flight, h.max_request_bytes),
-        DestinationKind::LogAnalytics(s) => (s.http.max_in_flight(), s.http.in_flight, s.http.max_request_bytes),
+    let (most, start) = match kind {
+        DestinationKind::Elasticsearch(e) => (e.max_in_flight(), e.in_flight),
+        DestinationKind::SplunkHec(s) => (s.max_in_flight(), s.in_flight),
+        DestinationKind::Http(h) => (h.max_in_flight(), h.in_flight),
+        DestinationKind::LogAnalytics(s) => (s.http.max_in_flight(), s.http.in_flight),
         // Prometheus sends from the destination's own thread, one request at a time.
         DestinationKind::Kafka(_)
         | DestinationKind::Prometheus(_)
@@ -177,25 +182,7 @@ fn senders(kind: &DestinationKind) -> Option<Senders> {
     Some(Senders {
         most,
         start: start.clamp(1, most),
-        request_bytes,
     })
-}
-
-/// Cuts each of `kinds`' senders toward the count it starts with, in proportion, until together they hold no more than
-/// `bytes`, and never below the least buffer a bundle may state. A destination's senders are as many as its
-/// `bufferBytes` holds requests, so that is what is cut.
-fn cut_senders<'a>(kinds: impl Iterator<Item = &'a mut DestinationKind>, bytes: usize) {
-    let mut kinds: Vec<&mut DestinationKind> = kinds.collect();
-    let wanted: usize = kinds.iter().map(|k| senders_bytes(k)).sum();
-    if wanted <= bytes {
-        return;
-    }
-    for kind in kinds.iter_mut() {
-        let Some(s) = senders(kind) else { continue };
-        let cut = (s.most as u128 * bytes as u128 / wanted as u128) as usize;
-        // A cut destination runs a configuration its bundle could state.
-        kind.set_buffer_bytes((cut.max(s.start) * s.request_bytes).max(BufferBytes::MIN));
-    }
 }
 
 /// What `destination` holds, at most: its buffer, its senders, and for a file destination (objects, a table) the
@@ -257,13 +244,12 @@ const LEAST_BATCH_BYTES: usize = 512 * 1024;
 /// The parts held whatever the traffic are set aside first:
 /// - the worker's two processes, and the lanes (`lane_batches` batches);
 /// - the fetch queue and buffer of every source and destination that states one;
-/// - the reserve of each destination queue the bundle leaves out (`TopologyConfig::fitted`), one batch, and every
-///   destination's senders;
+/// - the reserve of each destination queue the bundle leaves out (`TopologyConfig::fitted`), one batch, and the
+///   senders each starts with;
 /// - each receiver's reserve, one request of the largest it reads.
 ///
-/// Those grow with the count of sources and destinations, so two of them are cut when memory is short. A batch is
-/// 4 MiB, cut down to 512 KiB when the lanes and reserves would otherwise take more than half the memory. Senders are
-/// cut toward the count each destination starts with when together they would hold more than a quarter of it.
+/// Those grow with the count of sources and destinations, so the batch is cut when memory is short: 4 MiB, cut down
+/// to 512 KiB when the lanes and reserves would otherwise take more than half the memory.
 ///
 /// The rest is shared: the columnar budget, the fetch queues the bundle leaves out, the pool those destination queues
 /// borrow from above their reserves, and the pool the receivers borrow from above theirs. The columnar budget takes
@@ -294,17 +280,6 @@ pub(super) fn fit(
             delivered.contains(&d.id) && topology.fitted.destinations.contains(&d.id)
         })
         .collect();
-    // The senders are held whatever the traffic, as the lanes and reserves are, so they are cut the same way: to a
-    // quarter of the memory, down to the count each starts with.
-    cut_senders(
-        topology
-            .destinations
-            .iter_mut()
-            .enumerate()
-            .filter(|(i, _)| destinations.contains(i))
-            .map(|(_, d)| &mut d.kind),
-        memory.saturating_sub(2 * BASELINE_BYTES) / 4,
-    );
     let pooled = || destinations.iter().map(|&i| &topology.destinations[i].kind);
     let batches = lane_batches + pooled().map(queue_charge).sum::<usize>();
     let batch_bytes = (memory.saturating_sub(2 * BASELINE_BYTES) / 2 / batches.max(1))
@@ -337,7 +312,7 @@ pub(super) fn fit(
             .map(|p| p.bytes)
             .sum::<u64>()
         + pooled()
-            .map(|k| (batch_bytes * queue_charge(k) + senders_bytes(k)) as u64)
+            .map(|k| (batch_bytes * queue_charge(k) + starting_senders_bytes(k)) as u64)
             .sum::<u64>();
     let left = (memory as u64).saturating_sub(fixed) as usize;
 
@@ -650,8 +625,8 @@ mod tests {
     /// The reserves of the buffers the bundle leaves out: Elasticsearch's 4 MiB, and the object store's held twice.
     const RESERVES: usize = 4 * MIB + 2 * 4 * MIB + SENDERS;
 
-    /// Elasticsearch's senders: one per 5 MiB bulk request its default 64 MiB buffer holds.
-    const SENDERS: usize = 12 * SENDER_BYTES;
+    /// Elasticsearch's senders: the four it starts with. Those it spawns past them borrow from the pool.
+    const SENDERS: usize = 4 * SENDER_BYTES;
 
     #[test]
     fn the_columnar_budget_and_the_pool_share_what_the_bundle_leaves_half_each() {
@@ -801,63 +776,6 @@ mod tests {
         assert_eq!(fitted.pool, 0, "each queue still holds its reserve");
     }
 
-    #[test]
-    fn senders_are_cut_toward_their_start_when_they_would_hold_more_than_a_quarter_of_memory() {
-        let counts = |t: &TopologyConfig| -> Vec<(usize, usize)> {
-            t.destinations
-                .iter()
-                .filter_map(|d| senders(&d.kind))
-                .map(|s| (s.most, s.start))
-                .collect()
-        };
-        let senders_held =
-            |t: &TopologyConfig| -> usize { t.destinations.iter().map(|d| senders_bytes(&d.kind)).sum() };
-
-        let mut roomy = mix(1, 30, false);
-        let delivered = every(&roomy);
-        fit(&mut roomy, &delivered, 0, 32 * 1024 * MIB, 8, None);
-        assert!(
-            counts(&roomy).iter().all(|&(most, _)| most == 12),
-            "{:?}",
-            counts(&roomy)
-        );
-
-        let memory = 2048 * MIB;
-        let mut short = mix(1, 30, false);
-        fit(&mut short, &delivered, 0, memory, 8, None);
-        assert!(
-            counts(&short).iter().all(|&(most, start)| start <= most && most < 12),
-            "{:?}",
-            counts(&short)
-        );
-        assert!(senders_held(&short) <= (memory - 2 * BASELINE_BYTES) / 4);
-
-        let mut starved = mix(1, 600, false);
-        let delivered = every(&starved);
-        fit(&mut starved, &delivered, 0, memory, 8, None);
-        assert!(
-            counts(&starved).iter().all(|&(most, start)| most == start),
-            "never below the start"
-        );
-    }
-
-    #[test]
-    fn a_cut_buffer_is_never_below_what_a_bundle_may_state() {
-        let mut t = mix(1, 3, false);
-        let small = t
-            .destinations
-            .iter_mut()
-            .find_map(|d| match &mut d.kind {
-                DestinationKind::Elasticsearch(e) => Some(e),
-                _ => None,
-            })
-            .expect("the mix has an Elasticsearch destination");
-        small.max_bulk_bytes = MIB;
-        small.in_flight = 1;
-        cut_senders(t.destinations.iter_mut().map(|d| &mut d.kind), 0);
-        assert!(t.destinations.iter().all(|d| d.kind.buffer_bytes() >= BufferBytes::MIN));
-    }
-
     fn part(name: &str, bytes: u64) -> Part {
         Part {
             name: name.to_string(),
@@ -982,7 +900,7 @@ mod tests {
             + topology
                 .destinations
                 .iter()
-                .map(|d| (fitted.batch_bytes * queue_charge(&d.kind) + senders_bytes(&d.kind)) as u64)
+                .map(|d| (fitted.batch_bytes * queue_charge(&d.kind) + starting_senders_bytes(&d.kind)) as u64)
                 .sum::<u64>()
             + fitted.pool as u64
             + fitted.columnar as u64
@@ -1011,7 +929,7 @@ mod tests {
                     let reserves: u64 = topology
                         .destinations
                         .iter()
-                        .map(|d| (fitted.batch_bytes * queue_charge(&d.kind) + senders_bytes(&d.kind)) as u64)
+                        .map(|d| (fitted.batch_bytes * queue_charge(&d.kind) + starting_senders_bytes(&d.kind)) as u64)
                         .sum::<u64>()
                         + topology
                             .sources

@@ -1260,8 +1260,7 @@ fn deploy(
     let queue_pool = fitted.map(|f| crate::egress::QueuePool::new(f.pool));
     // And the receivers from one of their own.
     let receiver_pool = fitted.map(|f| crate::egress::QueuePool::new(f.receivers));
-    // A destination sized to the worker's memory keeps its default buffer, and so its senders. Its queue is paced:
-    // it starts at one batch and borrows from the pool as far as its throughput asks and its share allows, so the
+    // A destination sized to the worker's memory has its queue paced: it starts at one batch and borrows from the pool as far as its throughput asks and its share allows, so the
     // pool is the most it may hold, and what a reader may have outstanding toward it.
     let fitted_destinations = fitted.map(|_| &system.topology.fitted.destinations);
     let queue_budget = |d: &crate::plan::topology::DestinationConfig| match (fitted, fitted_destinations) {
@@ -1279,10 +1278,17 @@ fn deploy(
         // A paced Kafka producer is sized at build for the most its target may become, since librdkafka fixes its
         // queue's bound and its requests in flight then; `Destination::pace` holds it to the target from the first
         // send.
+        // A paced HTTP destination is built with as many senders as its target could use, spawned as it asks and
+        // each lent from the pool.
         let kind = match &d.kind {
             crate::plan::topology::DestinationKind::Kafka(_) if borrows(d).is_some() => {
                 let mut kind = d.kind.clone();
                 kind.set_buffer_bytes(queue_budget(d).saturating_mul(2));
+                std::borrow::Cow::Owned(kind)
+            }
+            kind if borrows(d).is_some() && memory::senders_bytes(kind) > 0 => {
+                let mut kind = kind.clone();
+                kind.set_buffer_bytes(queue_budget(d).max(kind.buffer_bytes()));
                 std::borrow::Cow::Owned(kind)
             }
             kind => std::borrow::Cow::Borrowed(kind),
@@ -1295,7 +1301,8 @@ fn deploy(
         let stage = match borrows(d) {
             Some(pool) => stage
                 .borrowing(pool.clone(), batch_bytes, memory::queue_charge(&d.kind))
-                .paced(batch_bytes),
+                .paced(batch_bytes)
+                .charging_senders(memory::SENDER_BYTES),
             None => stage,
         };
         // A destination set to block keeps what it refuses and sends it again, since the fix is usually its own.
@@ -1480,7 +1487,7 @@ fn deploy(
                     "reserve",
                     batch_bytes * memory::queue_charge(&d.kind),
                 ));
-                let senders = memory::senders_bytes(&d.kind);
+                let senders = memory::starting_senders_bytes(&d.kind);
                 if senders > 0 {
                     ceilings.push(memory::Part::destination(d, "senders", senders));
                 }

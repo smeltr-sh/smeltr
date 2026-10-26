@@ -109,6 +109,9 @@ pub fn build_source(
 /// `metrics` reaches a transport that reports on itself: librdkafka's statistics arrive on its own thread, and an HTTP
 /// destination's senders each run on one, not on the egress thread that owns this client. What an Elasticsearch or
 /// Prometheus store says it did not write is in its answer, which only the protocol reads.
+/// Leave to spawn one more sender: see [`Destination::lend_senders`].
+pub type Lend = Box<dyn FnMut() -> bool + Send>;
+
 pub fn build_destination(
     kind: &crate::plan::topology::DestinationKind,
     id: crate::core::id::DestId,
@@ -1278,6 +1281,11 @@ pub trait Destination: Send {
     /// producer's queue, a pool's requests -- sets that bound from it. Called when the target moves, from the thread
     /// that owns the destination. One without such a bound ignores it.
     fn pace(&mut self, _target_bytes: usize) {}
+
+    /// Where a destination that spawns senders as its pace asks gets leave to spawn one past those it started with:
+    /// `lend` answers whether the memory it holds is lent. Given once, before the first [`Destination::pace`]. One
+    /// that spawns none ignores it.
+    fn lend_senders(&mut self, _lend: Lend) {}
 
     /// How many requests this destination currently allows outstanding, for a transport that decides that for itself.
     /// `None` from one whose concurrency is not its own to report -- librdkafka's is inside librdkafka.

@@ -96,6 +96,11 @@ pub struct Pool<S: Sender> {
     handles: Vec<JoinHandle<()>>,
     /// Senders not yet given a thread: the limit has not reached them.
     parked: Vec<S>,
+    /// Asked before a sender past those spawned at the start gets its thread; a refusal leaves it parked and the
+    /// limit at the senders spawned. `None` spawns freely.
+    lend: Option<crate::io::Lend>,
+    /// Senders spawned at the start, which nothing is asked for.
+    started: usize,
     outstanding: usize,
     /// How many requests may be outstanding right now -- the pacing target over the request size, never above the
     /// number of senders.
@@ -132,6 +137,8 @@ impl<S: Sender> Pool<S> {
             done_tx: Some(done_tx),
             handles: Vec::new(),
             parked,
+            lend: None,
+            started: 0,
             outstanding: 0,
             limit: start.clamp(1, max_limit),
             max_limit,
@@ -140,15 +147,27 @@ impl<S: Sender> Pool<S> {
             failed: None,
         };
         pool.spawn_to_limit();
+        pool.started = pool.handles.len();
         pool
+    }
+
+    /// Ask `lend` before each sender spawned past those spawned at the start.
+    pub fn lend_senders(&mut self, lend: crate::io::Lend) {
+        self.lend = Some(lend);
     }
 
     /// Give each sender under the limit its thread.
     fn spawn_to_limit(&mut self) {
-        while self.handles.len() < self.limit
-            && let Some(mut s) = self.parked.pop()
-            && let Some(done_tx) = self.done_tx.clone()
-        {
+        while self.handles.len() < self.limit && !self.parked.is_empty() {
+            if self.handles.len() >= self.started
+                && let Some(lend) = &mut self.lend
+                && !lend()
+            {
+                break;
+            }
+            let (Some(mut s), Some(done_tx)) = (self.parked.pop(), self.done_tx.clone()) else {
+                break;
+            };
             let jobs = self.jobs.clone();
             self.handles.push(
                 std::thread::Builder::new()
@@ -167,6 +186,8 @@ impl<S: Sender> Pool<S> {
         if self.parked.is_empty() {
             self.done_tx = None;
         }
+        // No more than the senders that have a thread may be outstanding.
+        self.limit = self.limit.min(self.handles.len());
     }
 
     /// Senders given a thread so far.
