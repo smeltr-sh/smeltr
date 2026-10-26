@@ -72,6 +72,7 @@ document's systems.
 | Delivery: routes, exception answers, `Unmatched`/`Unprocessable`/`Refused` (Runtime stages) | built |
 | Reader/transform split, `Lane`s (Runtime stages) | built |
 | Egress: one thread per destination behind a `bufferBytes` queue (Runtime stages) | built |
+| A destination paced to its link, `egress::pacing`, and the pool's equal shares while queues contend (Runtime stages) | built. A paced HTTP destination's senders stop at the count its default buffer holds |
 | Commit tracker, `commit.rs` (Runtime stages) | built |
 | A worker sized to its memory, `worker::memory::fit` (Runtime stages) | built. Lookup tables are not counted: they are mapped files |
 | `MemoryBudget`, split on refusal (Runtime stages) | built; chunked materialization not built |

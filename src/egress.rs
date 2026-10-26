@@ -1092,8 +1092,9 @@ fn note_queue(metrics: &MetricsHandle, id: DestId, queue: &Queue, last: &mut Opt
 /// State what this queue may hold. Reported beside the fill because a fill alone says nothing: 6 MB is most of a
 /// Kafka queue and a rounding error against a destination that states a larger one.
 ///
-/// Written once, at [`Egress::start`]. The bound never moves, and every beat carries it on regardless: a gauge
-/// reports its current value whether or not it was written since (`Metrics::peek_delta`).
+/// Written at [`Egress::start`], and again each time the pacing model moves a paced queue's budget. Every beat
+/// carries it on between: a gauge reports its current value whether or not it was written since
+/// (`Metrics::peek_delta`).
 fn note_queue_budget(metrics: &MetricsHandle, id: DestId, queue: &Queue) {
     let label = id.to_string();
     metrics.gauge(

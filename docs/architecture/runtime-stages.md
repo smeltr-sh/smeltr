@@ -114,10 +114,27 @@ either side: it is polled, delivered and committed once, whatever its slices.
 Egress is one thread per destination, owning that destination's client and
 draining a queue every reader pushes to. Retry belongs to egress: it keeps
 each unit until acknowledged and re-sends it itself, so a reader carries
-offsets and nothing else. A destination's concurrency is found, not
-configured: a transport that answers per request discovers its limit from the
-destination's own refusals, backing off fast and recovering slowly. A
-destination states what it may hold in bytes, and its concurrency follows.
+offsets and nothing else. A destination that states what it may hold in
+bytes holds that, and its concurrency follows. One whose bundle leaves it out
+is paced: egress measures the rate its acknowledgments come back at and the
+least round trip they take, and holds their product, the bytes the link
+carries, with a gain over it while the rate still grows and a short probe
+above and below it after. That target is the queue's budget, and the
+destination's own in-flight bound reads the same figure, so the room reaches
+the wire. A sample taken while the source was not pressing on the queue may
+raise the estimate but never lower it, so a quiet source does not shrink a
+fast link's budget, and a slow link stops the queue growing where more bytes
+would buy no more throughput.
+
+```mermaid
+flowchart LR
+  A[acknowledgments] --> R[rate, windowed max]
+  A --> T[round trip, windowed min]
+  R --> X[rate x round trip x gain]
+  T --> X
+  X -->|clamped: one batch to its share| B[queue budget]
+  B --> D[destination in-flight bound]
+```
 
 ## Commit
 
@@ -158,13 +175,16 @@ no change to the bundle. The columnar budget stops at a fixed amount per
 transform thread, past which a thread no longer waits on it, and leaves the
 rest to the queues.
 
-Each destination queue the bundle leaves unset holds a small reserve of its
-own and borrows above it from the pool, up to a ceiling past which a busier
-destination gains little. So a busy destination takes what idle ones leave,
-and memory follows the traffic rather than the count of destinations. A full
-pool refuses an offer as a full queue does, and the batch waits on its lane.
-A stalled destination holds at most its ceiling, so the others keep the rest,
-and an empty queue always takes one batch, so every destination moves.
+Each destination queue the bundle leaves unset holds one batch as its reserve
+and borrows above it from the pool as far as its paced budget asks. Alone, a
+queue may take the whole pool. A queue the pool refused is wanting for a
+moment after; while any queue wants, each may hold only an equal share of the
+pool, and one above it gives back as its acknowledgments come in, never by
+taking back what is in flight. So a busy destination takes what idle ones
+leave, a slow one holds little, and memory follows the traffic rather than
+the count of destinations. A full pool refuses an offer as a full queue does,
+and the batch waits on its lane. A stalled destination's target falls to one
+batch, and an empty queue always takes one batch, so every destination moves.
 
 Receivers share a pool of their own the same way. Each holds one request of
 the largest it reads as its reserve, so every receiver takes a request
@@ -182,8 +202,8 @@ idle hands back what its allocator holds free.
 flowchart LR
   T[transform threads] -->|offer| Q1[queue: reserve]
   T -->|offer| Q2[queue: reserve]
-  Q1 -. above reserve, up to ceiling .-> P[(pool)]
-  Q2 -. above reserve, up to ceiling .-> P
+  Q1 -. above reserve, to its budget and share .-> P[(pool)]
+  Q2 -. above reserve, to its budget and share .-> P
   Q1 -->|acknowledged| P
 ```
 
