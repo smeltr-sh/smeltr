@@ -858,7 +858,7 @@
         Each partition stops reading at this point and goes idle.
       {/snippet}
       <select value={stopKind(source)} onchange={(e) => setStop(source, e.currentTarget.value)}>
-        <option value="never">never &mdash; keep reading</option>
+        <option value="never">never</option>
         <option value="timestamp">at a time</option>
       </select>
     </Field>
@@ -947,7 +947,7 @@
         }}
       >
         <option value="tcp">tcp</option>
-        <option value="udp">udp &mdash; one message per datagram</option>
+        <option value="udp">udp</option>
       </select>
     </Field>
   {/if}
