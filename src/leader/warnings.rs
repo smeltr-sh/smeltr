@@ -72,6 +72,7 @@ pub enum Condition {
     DestinationRefusing,
     DestinationUnreachable,
     LagClimbing,
+    DestinationMemoryBound,
     SourceRowsBelow,
     SourceRowsAbove,
     GroupNotDeployed,
@@ -113,6 +114,7 @@ impl Condition {
         Condition::DestinationRefusing,
         Condition::DestinationUnreachable,
         Condition::LagClimbing,
+        Condition::DestinationMemoryBound,
         Condition::SourceRowsBelow,
         Condition::SourceRowsAbove,
         Condition::GroupNotDeployed,
@@ -153,6 +155,7 @@ impl Condition {
             Condition::DestinationRefusing => "destinationRefusing",
             Condition::DestinationUnreachable => "destinationUnreachable",
             Condition::LagClimbing => "lagClimbing",
+            Condition::DestinationMemoryBound => "destinationMemoryBound",
             Condition::SourceRowsBelow => "sourceRowsBelow",
             Condition::SourceRowsAbove => "sourceRowsAbove",
             Condition::GroupNotDeployed => "groupNotDeployed",
@@ -1729,6 +1732,54 @@ fn trailing_climb(points: &[(i64, f64)]) -> (usize, i64) {
     (points.len() - start, points[start].0)
 }
 
+/// How long a paced destination's target must stand at its share of the pool before
+/// [`destinations_memory_bound`] says so: long enough that a burst filling it is not the reason.
+const MEMORY_BOUND_FOR: Duration = Duration::from_secs(5 * 60);
+
+/// Every (group, destination) whose pacing target has stood at its share of the pool, on every worker that paces
+/// it, for each ten-second bucket of the last [`MEMORY_BOUND_FOR`]: its throughput is held back by the memory its
+/// workers have, not by its link. An Info: nothing is wrong, and more memory would move it faster. A bucket with
+/// no reading breaks the run, so a destination that stopped reporting is not called bound.
+fn destinations_memory_bound(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> {
+    let Some(store) = store else { return Vec::new() };
+    let bucket = Tier::TenSeconds.bucket_ms();
+    let buckets = (MEMORY_BOUND_FOR.as_millis() as i64 / bucket) as usize;
+    let since = now_ms - MEMORY_BOUND_FOR.as_millis() as i64 - 2 * bucket;
+    let Ok(series) = store.series_since(crate::egress::PACE_HEADROOM_METRIC, Tier::TenSeconds, since) else {
+        return Vec::new();
+    };
+    let mut out: Vec<Warning> = series
+        .into_iter()
+        .filter_map(|(subject_key, points)| {
+            let at_share = points.iter().rev().take_while(|(_, headroom)| *headroom == 0.0).collect::<Vec<_>>();
+            let fresh = at_share.first().is_some_and(|(at, _)| now_ms - at <= 2 * bucket);
+            let unbroken = at_share.windows(2).all(|w| w[0].0 - w[1].0 == bucket);
+            if !fresh || !unbroken || at_share.len() < buckets {
+                return None;
+            }
+            let labels = subject_labels(&subject_key)?;
+            let (group, destination) = (label(&labels, "group")?, label(&labels, "destination")?);
+            Some(Warning {
+                scope: None,
+                condition: Condition::DestinationMemoryBound,
+                subject_kind: SubjectKind::Destination,
+                site: None,
+                subject_id: destination.to_string(),
+                group: Some(group.to_string()),
+                severity: Severity::Info,
+                since_millis: at_share.last().map(|(at, _)| *at),
+                message: format!(
+                    "destination {destination} in group {group:?} has used all the memory its workers can give it for \
+                     {} minutes; more memory for them would move it faster",
+                    MEMORY_BOUND_FOR.as_secs() / 60
+                ),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| (&a.group, &a.subject_id).cmp(&(&b.group, &b.subject_id)));
+    out
+}
+
 /// A delay of at least [`LAG_WARN_BEHIND`] in the largest whole unit that reads naturally.
 fn humanize_secs(secs: u64) -> String {
     match secs {
@@ -2366,6 +2417,7 @@ pub fn derive(
     out.extend(destination_refusing(snapshot, starts, now_ms, heartbeat_interval));
     out.extend(destination_unreachable(snapshot, starts, heartbeat_interval));
     out.extend(lag_climbing(series_store));
+    out.extend(destinations_memory_bound(series_store, now_ms));
     let logged = recent_logs(series_store, credentials, now_ms);
     out.extend(worker_logged_warnings(&logged));
     out.extend(group_not_deployed(snapshot, deployed_groups, starts));
@@ -6157,6 +6209,48 @@ mod tests {
             "one destination is one warning, however many workers dispatch to it"
         );
         assert!(warnings[0].message.contains("new wording"));
+    }
+
+    /// A store holding destination "out"'s pace headroom, one value per ten-second bucket, the last at `last`.
+    fn store_with_headroom(values: &[f64], last: i64) -> RegistryStore {
+        let store = RegistryStore::open(Path::new(":memory:")).unwrap();
+        let key = serde_json::to_string(&[("destination", "out"), ("group", "g")]).unwrap();
+        let first = last - (values.len() as i64 - 1) * 10_000;
+        for (i, v) in values.iter().enumerate() {
+            store
+                .record_gauge_max(crate::egress::PACE_HEADROOM_METRIC, &key, first + i as i64 * 10_000, *v)
+                .unwrap();
+        }
+        store
+    }
+
+    #[test]
+    fn a_destination_at_its_share_for_five_minutes_is_held_back_by_memory() {
+        let now = 1_000_000_000;
+        let store = store_with_headroom(&[4096.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], now);
+        let warnings = destinations_memory_bound(Some(&store), now);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].condition, Condition::DestinationMemoryBound);
+        assert_eq!(warnings[0].severity, Severity::Info);
+        assert_eq!(warnings[0].subject_id, "out");
+        assert_eq!(warnings[0].since_millis, Some(now - 29 * 10_000));
+    }
+
+    #[test]
+    fn a_destination_below_its_share_once_in_five_minutes_is_not_held_back() {
+        let now = 1_000_000_000;
+        let mut values = vec![0.0; 30];
+        values[10] = 1.0;
+        assert!(destinations_memory_bound(Some(&store_with_headroom(&values, now)), now).is_empty());
+        assert!(
+            destinations_memory_bound(Some(&store_with_headroom(&[0.0; 29], now)), now).is_empty(),
+            "less than five minutes"
+        );
+        assert!(
+            destinations_memory_bound(Some(&store_with_headroom(&[0.0; 30], now - 60_000)), now).is_empty(),
+            "a destination that stopped reporting is not called bound"
+        );
     }
 
     #[test]

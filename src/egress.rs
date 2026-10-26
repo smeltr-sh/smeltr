@@ -660,6 +660,8 @@ fn run(
     let mut holding: Option<crate::worker::capture::Holding> = None;
     // The pacing model, once the queue is paced. Its target is the queue's budget and the destination's bound.
     let mut pacing: Option<Pacing> = None;
+    // What the target last stood below its share by, written on change.
+    let mut headroom: Option<usize> = None;
 
     loop {
         if pacing.is_none()
@@ -734,6 +736,7 @@ fn run(
                         unit.bytes,
                         sent,
                         app_limited,
+                        &mut headroom,
                     );
                     finish(queue, returns, metrics, id, unit, rejections, &mut waiting);
                 }
@@ -785,6 +788,7 @@ fn run(
                         owed.unit.bytes,
                         owed.sent,
                         owed.app_limited,
+                        &mut headroom,
                     );
                     finish(queue, returns, metrics, id, owed.unit, owed.rejections, &mut waiting);
                 }
@@ -837,7 +841,8 @@ fn run(
 }
 
 /// Tell the pacing model a batch came back, and carry its target to the queue, the destination and the metrics
-/// when it moves. The ceiling is read each time: the pool's share moves as other queues come and go.
+/// when it moves. The ceiling is read each time: the pool's share moves as other queues come and go. What the
+/// target stands below the ceiling by is reported on change: none for long is a destination memory holds back.
 #[allow(clippy::too_many_arguments)]
 fn pace(
     pacing: &mut Option<Pacing>,
@@ -848,10 +853,12 @@ fn pace(
     bytes: usize,
     sent: Option<Sent>,
     app_limited: bool,
+    headroom: &mut Option<usize>,
 ) {
     let (Some(p), Some(sent)) = (pacing, sent) else { return };
     let before = p.target();
-    p.set_ceiling(queue.share());
+    let ceiling = queue.share();
+    p.set_ceiling(ceiling);
     p.completed(
         Completion {
             bytes,
@@ -865,7 +872,17 @@ fn pace(
         destination.pace(p.target());
         note_queue_budget(metrics, id, queue);
     }
+    let below = ceiling.saturating_sub(p.target());
+    if *headroom != Some(below) {
+        *headroom = Some(below);
+        let label = id.to_string();
+        metrics.gauge(PACE_HEADROOM_METRIC, &[("destination", label.as_str())], below as f64);
+    }
 }
+
+/// What a paced destination's target stands below its share of the pool by, in bytes. Read by the leader's
+/// `destinationMemoryBound` notice.
+pub const PACE_HEADROOM_METRIC: &str = "smeltr_destination_pace_headroom_bytes";
 
 /// A unit the destination has answered for. Each refusal gets its document back. A destination set to block keeps the
 /// rows it refused and sends them again after a wait, reporting the batch only once they land; any other refusal goes
