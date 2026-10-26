@@ -1225,10 +1225,15 @@ const regenerateKey: Move = {
         await j.truth()
       ).get('/api/encryption-key');
       expect(key.state).toBe('held');
-      return key.unopenable.map((u) => u.name).sort();
+      // One in force may be ordered again at once, so it may be sealed or not.
+      return key.unopenable
+        .map((u) => u.name)
+        .filter((name) => !(world.acme && name === 'acme'))
+        .sort();
     };
-    // An ordered certificate is not entered again: the leader's hourly renewal issues it a new key.
-    const ordered = world.ordered ? ['acme'] : [];
+    // An ordered certificate is not entered again: the leader orders it again while ordering is on, and keeps
+    // it sealed while ordering is off.
+    const ordered = world.ordered && !world.acme ? ['acme'] : [];
     expect(await unopenable()).toEqual(
       [
         ...world.secrets.keys(),
