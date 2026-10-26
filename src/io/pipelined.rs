@@ -11,7 +11,7 @@
 //! for Kafka: librdkafka pipelines on its own threads.
 
 use std::collections::VecDeque;
-use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -90,7 +90,12 @@ impl<J> Jobs<J> {
 pub struct Pool<S: Sender> {
     jobs: Arc<Jobs<S::Job>>,
     done: Receiver<(BatchId, Result<Delivered, IoError>)>,
+    /// What a sender spawned later reports on. Dropped once every sender is spawned, so the channel closes when they
+    /// have all stopped.
+    done_tx: Option<SyncSender<(BatchId, Result<Delivered, IoError>)>>,
     handles: Vec<JoinHandle<()>>,
+    /// Senders not yet given a thread: the limit has not reached them.
+    parked: Vec<S>,
     outstanding: usize,
     /// How many requests may be outstanding right now -- the pacing target over the request size, never above the
     /// number of senders.
@@ -105,12 +110,11 @@ pub struct Pool<S: Sender> {
 }
 
 impl<S: Sender> Pool<S> {
-    /// One thread per sender; each owns its own connection. A sender idle for longer than `IDLE` hands back the pages
-    /// its last request freed.
+    /// One thread per sender, each owning its own connection, spawned as the limit reaches it and kept from then on. A
+    /// sender idle for longer than `IDLE` hands back the pages its last request freed.
     ///
     /// `start` is where the limit begins, clamped into the pool, until the pacing model's first word
-    /// ([`Pool::pace`]); `request_bytes` is what one request carries. The senders above the limit are parked until
-    /// it reaches them.
+    /// ([`Pool::pace`]); `request_bytes` is what one request carries.
     pub fn new(senders: Vec<S>, start: usize, request_bytes: usize) -> Pool<S> {
         assert!(!senders.is_empty(), "a pool needs at least one sender");
         let jobs = Arc::new(Jobs {
@@ -118,12 +122,35 @@ impl<S: Sender> Pool<S> {
             arrived: Condvar::new(),
         });
         let (done_tx, done_rx) = sync_channel(senders.len() * 4);
+        let max_limit = senders.len();
+        let mut parked = senders;
+        // Spawned last first: the first sender is the first spawned.
+        parked.reverse();
+        let mut pool = Pool {
+            jobs,
+            done: done_rx,
+            done_tx: Some(done_tx),
+            handles: Vec::new(),
+            parked,
+            outstanding: 0,
+            limit: start.clamp(1, max_limit),
+            max_limit,
+            request_bytes: request_bytes.max(1),
+            stashed: Vec::new(),
+            failed: None,
+        };
+        pool.spawn_to_limit();
+        pool
+    }
 
-        let handles: Vec<JoinHandle<()>> = senders
-            .into_iter()
-            .map(|mut s| {
-                let jobs = jobs.clone();
-                let done_tx = done_tx.clone();
+    /// Give each sender under the limit its thread.
+    fn spawn_to_limit(&mut self) {
+        while self.handles.len() < self.limit
+            && let Some(mut s) = self.parked.pop()
+            && let Some(done_tx) = self.done_tx.clone()
+        {
+            let jobs = self.jobs.clone();
+            self.handles.push(
                 std::thread::Builder::new()
                     .name("smeltr-destination-sender".into())
                     .spawn(move || {
@@ -134,22 +161,17 @@ impl<S: Sender> Pool<S> {
                             }
                         }
                     })
-                    .expect("spawn destination sender")
-            })
-            .collect();
-
-        let max_limit = handles.len();
-        Pool {
-            jobs,
-            done: done_rx,
-            handles,
-            outstanding: 0,
-            limit: start.clamp(1, max_limit),
-            max_limit,
-            request_bytes: request_bytes.max(1),
-            stashed: Vec::new(),
-            failed: None,
+                    .expect("spawn destination sender"),
+            );
         }
+        if self.parked.is_empty() {
+            self.done_tx = None;
+        }
+    }
+
+    /// Senders given a thread so far.
+    pub fn spawned(&self) -> usize {
+        self.handles.len()
     }
 
     /// The most requests this pool will ever allow outstanding: its sender count.
@@ -160,6 +182,7 @@ impl<S: Sender> Pool<S> {
     /// The pacing target moved: as many requests as `target_bytes` holds of them, at least one, at most the senders.
     pub fn pace(&mut self, target_bytes: usize) {
         self.limit = (target_bytes / self.request_bytes).clamp(1, self.max_limit);
+        self.spawn_to_limit();
     }
 
     /// Requests currently allowed outstanding.

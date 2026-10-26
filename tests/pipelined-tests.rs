@@ -227,6 +227,19 @@ fn the_limit_starts_where_it_was_told_and_follows_the_pacing_target() {
     assert_eq!(pool.limit(), 8, "never past the senders it owns");
 }
 
+/// A sender gets its thread when the limit reaches it, and keeps it when the limit falls again.
+#[test]
+fn a_sender_is_spawned_when_the_limit_reaches_it_and_not_before() {
+    let mut pool = Pool::new((0..8).map(|_| Instant0).collect(), 2, MIB);
+    assert_eq!(pool.spawned(), 2, "only the senders the limit starts at");
+    pool.pace(5 * MIB);
+    assert_eq!(pool.spawned(), 5);
+    pool.pace(MIB);
+    assert_eq!(pool.spawned(), 5, "a spawned sender is kept");
+    pool.pace(1024 * MIB);
+    assert_eq!(pool.spawned(), 8, "never past the senders it owns");
+}
+
 /// A start above the senders is the pool's to refuse, not to honor: `limit` is what `submit` gates on, and a limit
 /// past the sender count would admit work no sender can take.
 #[test]
