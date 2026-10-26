@@ -691,7 +691,13 @@
             <span class="dim">{item.count}</span>
           {/snippet}
         </FindBox>
-        {#if outputQuery.trim() || chips.length > 0}
+      </div>
+    {/if}
+    <InlineError message={findError} />
+    {#if selectedSample}
+      {@render stage()}
+      <div class="output-actions">
+        {#if gridRows && (outputQuery.trim() || chips.length > 0)}
           <span class="dim count">{gridOrder.length} of {gridRows.length} rows</span>
         {/if}
         {#if failingCount > 0}
@@ -702,12 +708,6 @@
             onclick={() => toggleChip({ kind: 'failing' })}>⚠ {failingCount} failing</button
           >
         {/if}
-      </div>
-    {/if}
-    <InlineError message={findError} />
-    {#if selectedSample}
-      {@render stage()}
-      <div class="output-actions">
         <span class="grow"></span>
         <button
           type="button"
@@ -959,7 +959,8 @@
   .output-actions {
     display: flex;
     align-items: center;
-    margin-top: 0.75rem;
+    gap: 0.7rem;
+    margin-top: 0.5rem;
   }
 
   .results {
