@@ -657,7 +657,12 @@
       {@render sampleMenu()}
       {#if gridRows && gridRows.length > 0}
         <span class="grow"></span>
+        {@render fieldsMenu(gridRows.length)}
         {@render viewMenu()}
+      {:else if !selectedSample && dictionary}
+        <!-- No records to count, but the steps compiled: what they declare. -->
+        <span class="grow"></span>
+        {@render fieldsMenu(null)}
       {/if}
     </div>
     {#if gridRows && gridRows.length > 0}
@@ -697,13 +702,6 @@
             onclick={() => toggleChip({ kind: 'failing' })}>⚠ {failingCount} failing</button
           >
         {/if}
-        {@render fieldsMenu(gridRows.length)}
-      </div>
-    {:else if !selectedSample && dictionary}
-      <!-- No records to count, but the steps compiled: what they declare. -->
-      <div class="output-bar">
-        <span class="grow"></span>
-        {@render fieldsMenu(null)}
       </div>
     {/if}
     <InlineError message={findError} />
@@ -882,8 +880,8 @@
 </section>
 
 <style>
-  /* The sample and how it is viewed on one row, and what is searched and shown of it on the next:
-     the search has a row of its own to be read in. */
+  /* The sample and what is shown of it on one row, and the search on the next: the search has a
+     row of its own to be read in. */
   .output-bar {
     display: flex;
     align-items: center;
