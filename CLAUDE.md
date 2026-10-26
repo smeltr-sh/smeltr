@@ -52,10 +52,15 @@ What a leader stores and what builds send each other outlive the build that wrot
 
 ## Checks
 
-Run `just check` once, at the end of the work, before its push. Commit each task of the work without checking
-between them, then run `just check` and put what it finds in one last commit. John runs `just check-all` before a
-merge to main. Nothing runs on a PR. After a change to `Cargo.toml`, `Cargo.lock` or the
-Kerberos tests, also run `just check-kerberos`.
+One thread watches nightly. On each commit that lands there it runs `just check`, which on nightly itself is
+`just check-all`, and the whole of `just check-gui`, and it fixes a failure in a PR of its own before other work. John
+runs `just check-all` before a merge to main. Nothing runs on a PR.
+
+Every other thread tests only what it changed, once, before its push: the tests of the modules it touched
+(`SMELTR_NO_GUI=1 cargo nextest run <module>::`, as the checks build them, so neither rebuilds for the other), and
+after a change to the GUI or the API it calls, the specs it touched (`just check-gui specs/<name>.spec.ts`). It runs no `just check`, `just check-all` or whole `just check-gui`. A thread
+that changes `Cargo.toml`, `Cargo.lock` or the Kerberos tests also runs `just check-kerberos`, which the nightly
+checks leave out.
 
 A dependency change also needs `just notices`: nothing else keeps
 `THIRD-PARTY-NOTICES.md` current.
@@ -71,10 +76,6 @@ integration directly and `just check` cannot cover it. Never run the whole
 the `SMELTR_LIVE_TESTS=required` and service variables the recipe sets for
 them. Start the Docker daemon first, then `just live-up`. Windows is checked
 nowhere.
-
-After a change to the GUI or the API it calls, also run `just check-gui`. While building, run only the specs the change
-touches (`just check-gui specs/<name>.spec.ts`), and the whole of it once, before the PR leaves draft. A base merged
-into a branch without a conflict needs only `just check`.
 
 While building, run the app with `just build-dev` or `just run-dev`, and take screenshots from it. `just build` and
 `just run` are for checking how a release build behaves.
