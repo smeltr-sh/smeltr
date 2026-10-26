@@ -3741,7 +3741,7 @@
             "type": "size",
             "absent": "64 MiB",
             "examples": ["256 MiB", "16 MiB", "1 GiB"],
-            "what": "The most one worker holds for this destination, accepted but not yet acknowledged by the brokers, half of it in the Kafka client. It holds what the connection to it can carry, up to this. 4 MiB to 1 GiB."
+            "what": "How much undelivered output it may hold. 4 MiB to 1 GiB."
           },
           {
             "name": "properties",
@@ -3945,7 +3945,7 @@
             "type": "size",
             "absent": "64 MiB",
             "examples": ["256 MiB", "16 MiB", "1 GiB"],
-            "what": "The most one worker holds for this destination, accepted but not yet acknowledged by the brokers, half of it in the Kafka client. It holds what the connection to it can carry, up to this. 4 MiB to 1 GiB."
+            "what": "How much undelivered output it may hold. 4 MiB to 1 GiB."
           }
         ],
         "reads": ["__destination.topic"],
@@ -4089,7 +4089,7 @@
             "type": "size",
             "absent": "64 MiB, or one bulk request if that is larger",
             "examples": ["256 MiB", "128 MiB", "1 GiB"],
-            "what": "The most one worker holds for this destination, queued or sent and not yet acknowledged. It holds what the connection to it can carry, up to this. 4 MiB to 1 GiB, and at least one bulk request."
+            "what": "How much undelivered output it may hold. 4 MiB to 1 GiB, and at least one bulk request."
           },
           {
             "name": "stallAfterSecs",
@@ -4298,7 +4298,7 @@
             "type": "size",
             "absent": "64 MiB, or one request if that is larger",
             "examples": ["256 MiB", "64 MiB", "1 GiB"],
-            "what": "The most one worker holds for this destination, queued or sent and not yet acknowledged. It holds what the connection to it can carry, up to this. 4 MiB to 1 GiB, and at least one request."
+            "what": "How much undelivered output it may hold. 4 MiB to 1 GiB, and at least one request."
           },
           {
             "name": "stallAfterSecs",
@@ -4480,7 +4480,7 @@
             "type": "size",
             "absent": "64 MiB, or one request if that is larger",
             "examples": ["256 MiB", "64 MiB", "1 GiB"],
-            "what": "The most one worker holds for this destination, queued or sent and not yet acknowledged. It holds what the connection to it can carry, up to this. 4 MiB to 1 GiB, and at least one request."
+            "what": "How much undelivered output it may hold. 4 MiB to 1 GiB, and at least one request."
           },
           {
             "name": "stallAfterSecs",
@@ -4605,7 +4605,7 @@
             "type": "size",
             "absent": "64 MiB, or one request if that is larger",
             "examples": ["256 MiB", "64 MiB", "1 GiB"],
-            "what": "The most one worker holds for this destination, queued or sent and not yet acknowledged. It holds what the connection to it can carry, up to this. 4 MiB to 1 GiB, and at least one request."
+            "what": "How much undelivered output it may hold. 4 MiB to 1 GiB, and at least one request."
           },
           {
             "name": "stallAfterSecs",
@@ -4714,7 +4714,7 @@
             "type": "size",
             "absent": "64 MiB, or one request if that is larger",
             "examples": ["256 MiB", "64 MiB", "1 GiB"],
-            "what": "The most one worker holds for this destination, queued or sent and not yet acknowledged. It holds what the connection to it can carry, up to this. 4 MiB to 1 GiB, and at least one request."
+            "what": "How much undelivered output it may hold. 4 MiB to 1 GiB, and at least one request."
           },
           {
             "name": "stallAfterSecs",
