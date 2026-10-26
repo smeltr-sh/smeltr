@@ -3508,6 +3508,10 @@ export type CertificateDto = {
   chain: DescribedCertificate[];
   /** Whether the leader serves a copy of it. */
   served: boolean;
+  /** Whether the newest version can be served, which a receiver and the leader do. */
+  forServers: boolean;
+  /** Whether the newest version can be presented by a connector connecting out. */
+  forClients: boolean;
   /** How this leader keeps it up to date, where it renews it. */
   kept?: 'issued' | 'acme';
 };

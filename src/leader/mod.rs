@@ -2477,6 +2477,10 @@ pub struct CertificateOut {
     pub chain: Vec<tls::Described>,
     /// Whether the leader serves a copy of it.
     pub served: bool,
+    /// Whether the newest version can be served, to a client enforcing its Extended Key Usage and Key Usage.
+    pub for_servers: bool,
+    /// Whether the newest version can be presented by a client, to a server enforcing them.
+    pub for_clients: bool,
     /// How this leader keeps it up to date, `issued` or `acme`, where it does.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kept: Option<&'static str>,
@@ -2550,9 +2554,13 @@ async fn list_certificates(
         let mut kept = s.kept_certificates()?;
         let mut out = Vec::new();
         for r in s.list_secrets()?.into_iter().filter(|r| r.certificate) {
-            let chain = newest_chain(s, &r.name)?
-                .and_then(|(_, chain)| tls::describe_each(chain.as_bytes(), "the certificate").ok())
-                .unwrap_or_default();
+            let pem = newest_chain(s, &r.name)?.map(|(_, chain)| chain).unwrap_or_default();
+            let chain = tls::describe_each(pem.as_bytes(), "the certificate").unwrap_or_default();
+            let usable = |side| !chain.is_empty() && crate::io::trust::refuse_unless_usable(&pem, side).is_ok();
+            let (for_servers, for_clients) = (
+                usable(crate::io::trust::Side::Server),
+                usable(crate::io::trust::Side::Client),
+            );
             let SecretOut {
                 name,
                 description,
@@ -2570,6 +2578,8 @@ async fn list_certificates(
                 versions,
                 chain,
                 served,
+                for_servers,
+                for_clients,
                 kept,
             });
         }

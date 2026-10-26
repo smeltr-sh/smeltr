@@ -388,6 +388,54 @@ test('a receiver names a certificate from the list, and replacing the certificat
   expect((await sources())[0].certificate).toBe('receiver-tls');
 });
 
+test('a new version a connector could not present is refused, naming the connector', async ({
+  admin,
+  api,
+  fleet,
+}) => {
+  // A leader's certificate is issued for servers alone, and a Kafka source presents its certificate as a client.
+  const pki = await fleet.externalPki();
+  await api.post('/api/certificates', {
+    name: 'kafka-tls',
+    description: '',
+    certificate: fullChain(pki),
+    privateKey: pki.privateKey,
+  });
+  const branch = 'present-to-kafka';
+  await api.put(`/api/sources?branch=${branch}&scope=default`, [
+    {
+      id: 'events',
+      type: 'kafka',
+      brokers: '127.0.0.1:9',
+      topics: ['t'],
+      groupId: 'g',
+      properties: { 'security.protocol': 'SSL' },
+      certificate: 'kafka-tls',
+    },
+  ]);
+  await api.openChange(branch, 'Read events over TLS');
+  await api.deploy(branch);
+
+  await openAdmin(admin, 'Certificates');
+  const row = admin.getByRole('row').filter({ hasText: 'kafka-tls' });
+  await expect(row.getByRole('cell', { name: 'Servers', exact: true })).toBeVisible();
+  await row.getByRole('button', { name: 'Replace' }).click();
+  const replace = admin.getByRole('dialog', { name: /^replace / });
+  await replace.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
+  await replace.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
+  await replace.getByRole('button', { name: 'Replace', exact: true }).click();
+  await expect(
+    replace.getByText(
+      /in the group "default", source "events" presents a certificate whose Extended Key Usage does not permit client authentication/,
+    ),
+  ).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('certificate-refused.png') });
+  const versions = (await api.get('/api/certificates')).find(
+    (c: { name: string }) => c.name === 'kafka-tls',
+  ).versions.length;
+  expect(versions).toBe(1);
+});
+
 test('the leader issues a certificate for the names given, and a receiver presents it', async ({
   admin,
   api,
@@ -408,6 +456,7 @@ test('the leader issues a certificate for the names given, and a receiver presen
   const row = admin.getByRole('row').filter({ hasText: 'receiver-tls' });
   await expect(row.getByText('issued', { exact: true })).toBeVisible();
   await expect(row.getByText('receiver.example.com, 10.0.0.7')).toBeVisible();
+  await expect(row.getByRole('cell', { name: 'Servers and clients', exact: true })).toBeVisible();
   await expect(row.getByRole('button', { name: 'Replace' })).toHaveCount(0);
   await admin.screenshot({ path: test.info().outputPath('certificate-issued.png') });
   const listed = (await api.get('/api/certificates')) as {

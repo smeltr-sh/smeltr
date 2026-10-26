@@ -141,11 +141,21 @@
 
   const leaf = (c: CertificateDto) => c.chain[0];
 
-  const sort = new TableSort<'name' | 'names' | 'expires' | 'setAt'>();
+  /** What the newest version can be used for, as its Extended Key Usage and Key Usage permit. */
+  const purpose = (c: CertificateDto) =>
+    c.forServers && c.forClients
+      ? 'Servers and clients'
+      : c.forServers
+        ? 'Servers'
+        : c.forClients
+          ? 'Clients'
+          : 'Neither';
+  const sort = new TableSort<'name' | 'names' | 'purpose' | 'expires' | 'setAt'>();
   let sorted = $derived(
     sort.apply(certificates, {
       name: (c) => c.name,
       names: (c) => leaf(c)?.names.join(', '),
+      purpose: (c) => (leaf(c) ? purpose(c) : undefined),
       expires: (c) => leaf(c)?.notAfterMillis,
       setAt: (c) => currentVersion(c)?.setAt,
     }),
@@ -250,6 +260,9 @@
             <th aria-sort={sort.aria('names')}
               ><SortButton {sort} key="names">Serves</SortButton></th
             >
+            <th aria-sort={sort.aria('purpose')}
+              ><SortButton {sort} key="purpose">For</SortButton></th
+            >
             <th aria-sort={sort.aria('expires')}
               ><SortButton {sort} key="expires">Expires</SortButton></th
             >
@@ -281,6 +294,11 @@
                 {#if c.description}<small class="note">{c.description}</small>{/if}
               </td>
               <td class="mono">{leaf(c)?.names.join(', ') || '--'}</td>
+              <td
+                class="one-line"
+                title="What its Extended Key Usage permits: a receiver serves a certificate, and a connector connecting out presents one as a client."
+                >{leaf(c) ? purpose(c) : '--'}</td
+              >
               <td class="one-line" class:soon={leaf(c) && expiringSoon(leaf(c))}>
                 {leaf(c) ? expiry(leaf(c).notAfterMillis) : '--'}
               </td>
