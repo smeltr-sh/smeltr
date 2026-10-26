@@ -184,51 +184,66 @@ pub enum Side {
     Server,
 }
 
-/// Refuses a presented certificate that cannot authenticate from `side`: Extended Key Usage naming purposes that
-/// leave out that side's, or Key Usage naming permissions that do not include the handshake signature either side
-/// makes. Read with the same library the connectors build their TLS configs against: a deploy must not accept what a
-/// handshake would go on to refuse. Either extension absent entirely rules nothing out -- RFC 5280's own default --
-/// so only one naming purposes or permissions and excluding what this needs is refused.
-pub fn refuse_unless_usable(pem: &str, side: Side) -> Result<(), String> {
+/// Why a certificate cannot authenticate from a side of the handshake.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Unusable {
+    /// Its Extended Key Usage names purposes that leave out that side's.
+    NotFor(Side),
+    /// Its Key Usage names permissions that leave out the signature either side makes.
+    NoSignature,
+    /// It could not be read, and why.
+    Unreadable(String),
+}
+
+/// Whether a presented certificate can authenticate from `side`. Read with the same library the connectors build
+/// their TLS configs against: a deploy must not accept what a handshake would go on to refuse. Either extension
+/// absent entirely rules nothing out -- RFC 5280's own default -- so only one naming purposes or permissions and
+/// excluding what this needs is refused.
+pub fn usable(pem: &str, side: Side) -> Result<(), Unusable> {
     let leaf = CertificateDer::pem_slice_iter(pem.as_bytes())
         .next()
-        .ok_or_else(|| "it holds no certificate".to_string())?
-        .map_err(|e| format!("{e}"))?;
+        .ok_or_else(|| Unusable::Unreadable("it holds no certificate".to_string()))?
+        .map_err(|e| Unusable::Unreadable(format!("{e}")))?;
     let (_, cert) = x509_parser::parse_x509_certificate(leaf.as_ref())
-        .map_err(|e| format!("that is not a certificate this can read: {e}"))?;
+        .map_err(|e| Unusable::Unreadable(format!("that is not a certificate this can read: {e}")))?;
     match (cert.extended_key_usage(), side) {
-        (Ok(Some(eku)), Side::Client) if !eku.value.client_auth => {
-            return Err(
-                "whose Extended Key Usage does not permit client authentication, so a far end enforcing it \
-                 refuses this certificate at the handshake: a connector connecting out presents it as a client \
-                 certificate. Choose a certificate issued for clients"
-                    .to_string(),
-            );
-        }
-        (Ok(Some(eku)), Side::Server) if !eku.value.server_auth => {
-            return Err(
-                "whose Extended Key Usage does not permit server authentication, so a sender refuses this \
-                 certificate at the handshake: a receiver serves it as a server certificate. Choose a certificate issued for \
-                 servers"
-                    .to_string(),
-            );
-        }
+        (Ok(Some(eku)), Side::Client) if !eku.value.client_auth => return Err(Unusable::NotFor(side)),
+        (Ok(Some(eku)), Side::Server) if !eku.value.server_auth => return Err(Unusable::NotFor(side)),
         (Ok(_), _) => {}
-        (Err(e), _) => return Err(format!("whose Extended Key Usage could not be read: {e}")),
+        (Err(e), _) => {
+            return Err(Unusable::Unreadable(format!(
+                "whose Extended Key Usage could not be read: {e}"
+            )));
+        }
     }
     // Either end signs the handshake, which is what digitalSignature names permission for: rustls offers only
     // ephemeral key exchange, so no end encrypts with its certificate's key. Present but false is a certificate
     // meant for key exchange, not signing -- the Extended Key Usage names the purpose, this the means, and a far
     // end enforcing KeyUsage checks both.
     match cert.key_usage() {
-        Ok(Some(usage)) if !usage.value.digital_signature() => Err(
-            "whose Key Usage does not permit a digital signature, so it cannot sign the handshake a far end \
-             enforcing it requires"
-                .to_string(),
-        ),
+        Ok(Some(usage)) if !usage.value.digital_signature() => Err(Unusable::NoSignature),
         Ok(_) => Ok(()),
-        Err(e) => Err(format!("whose Key Usage could not be read: {e}")),
+        Err(e) => Err(Unusable::Unreadable(format!("whose Key Usage could not be read: {e}"))),
     }
+}
+
+/// Refuses a presented certificate that cannot authenticate from `side` ([`usable`]), saying why as the clause
+/// after "a certificate", for a connector presenting it.
+pub fn refuse_unless_usable(pem: &str, side: Side) -> Result<(), String> {
+    usable(pem, side).map_err(|why| match why {
+        Unusable::NotFor(Side::Client) => "whose Extended Key Usage does not permit client authentication, so a far \
+             end enforcing it refuses this certificate at the handshake: a connector connecting out presents it as \
+             a client certificate. Choose a certificate issued for clients"
+            .to_string(),
+        Unusable::NotFor(Side::Server) => "whose Extended Key Usage does not permit server authentication, so a \
+             sender refuses this certificate at the handshake: a receiver serves it as a server certificate. Choose \
+             a certificate issued for servers"
+            .to_string(),
+        Unusable::NoSignature => "whose Key Usage does not permit a digital signature, so it cannot sign the \
+             handshake a far end enforcing it requires"
+            .to_string(),
+        Unusable::Unreadable(why) => why,
+    })
 }
 
 #[cfg(test)]

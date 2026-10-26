@@ -166,7 +166,9 @@
   <PageHeader title="Certificates">
     {#snippet help()}
       Certificates and their private keys, for the leader and for sources and destinations to
-      present.
+      present. Usable by says what a certificate's Extended Key Usage permits: the leader and a
+      receiver serve a certificate, and a connector connecting out presents one as a client. Neither
+      means no TLS connection accepts it, and -- means this leader cannot open it.
     {/snippet}
   </PageHeader>
 
@@ -261,7 +263,7 @@
               ><SortButton {sort} key="names">Serves</SortButton></th
             >
             <th aria-sort={sort.aria('purpose')}
-              ><SortButton {sort} key="purpose">For</SortButton></th
+              ><SortButton {sort} key="purpose">Usable by</SortButton></th
             >
             <th aria-sort={sort.aria('expires')}
               ><SortButton {sort} key="expires">Expires</SortButton></th
@@ -294,11 +296,7 @@
                 {#if c.description}<small class="note">{c.description}</small>{/if}
               </td>
               <td class="mono">{leaf(c)?.names.join(', ') || '--'}</td>
-              <td
-                class="one-line"
-                title="What its Extended Key Usage permits: a receiver serves a certificate, and a connector connecting out presents one as a client."
-                >{leaf(c) ? purpose(c) : '--'}</td
-              >
+              <td class="one-line">{leaf(c) ? purpose(c) : '--'}</td>
               <td class="one-line" class:soon={leaf(c) && expiringSoon(leaf(c))}>
                 {leaf(c) ? expiry(leaf(c).notAfterMillis) : '--'}
               </td>

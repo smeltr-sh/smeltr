@@ -771,8 +771,17 @@ pub fn check_supplied(
     }
 
     // A worker's rustls enforces Extended Key Usage, so a certificate not for servers is one every worker refuses.
-    crate::io::trust::refuse_unless_usable(&String::from_utf8_lossy(chain), crate::io::trust::Side::Server)
-        .map_err(|why| format!("this leader would serve a certificate {why}"))?;
+    use crate::io::trust::{Side, Unusable};
+    crate::io::trust::usable(&String::from_utf8_lossy(chain), Side::Server).map_err(|why| match why {
+        Unusable::NotFor(_) => "this leader would serve a certificate whose Extended Key Usage does not permit \
+             server authentication, so a worker or browser refuses this certificate at the handshake: this leader \
+             serves it as a server certificate. Choose a certificate issued for servers"
+            .to_string(),
+        Unusable::NoSignature => "this leader would serve a certificate whose Key Usage does not permit a digital \
+             signature, so it cannot sign the handshake a worker or browser requires"
+            .to_string(),
+        Unusable::Unreadable(why) => format!("this leader would serve a certificate {why}"),
+    })?;
 
     // Asked of the verifier rather than by comparing strings, and of every name this leader is reached at rather
     // than the first. A client matches a name against a certificate by rules a string comparison does not know:
