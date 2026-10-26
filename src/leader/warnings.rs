@@ -37,7 +37,7 @@ pub enum Severity {
 /// worker, this group"). A fleet or group view rolls warnings up by subject; that rollup is a query the caller runs,
 /// not a fifth
 /// kind of warning.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SubjectKind {
     Source,
@@ -450,12 +450,14 @@ pub struct DeployedCertificate {
 /// the last of them does, not the first.
 fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warning> {
     // Commit is part of the key: two commits are two separate trust stores, one per worker generation, and merging
-    // them would let a fresh root on one hide an exhausted one on the other.
-    let mut decisive: HashMap<(&str, &str, &str, Half), &DeployedCertificate> = HashMap::new();
+    // them would let a fresh root on one hide an exhausted one on the other. Kind is part of it because a source
+    // and a destination may share an id.
+    let mut decisive: HashMap<(&str, &str, SubjectKind, &str, Half), &DeployedCertificate> = HashMap::new();
     for certificate in deployed {
         let key = (
             certificate.group.as_str(),
             certificate.commit.as_str(),
+            certificate.subject_kind,
             certificate.subject_id.as_str(),
             certificate.half,
         );
@@ -484,11 +486,12 @@ fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Wa
     // only as good as its latest-starting one: every member has to hold right now, unlike a trust store's roots,
     // which are alternatives. `decisive` above tracks the first; this tracks the second, since the two can name
     // different members of the same chain.
-    let mut presented_starts: HashMap<(&str, &str, &str), i64> = HashMap::new();
+    let mut presented_starts: HashMap<(&str, &str, SubjectKind, &str), i64> = HashMap::new();
     for certificate in deployed.iter().filter(|c| c.half == Half::Presented) {
         let key = (
             certificate.group.as_str(),
             certificate.commit.as_str(),
+            certificate.subject_kind,
             certificate.subject_id.as_str(),
         );
         let start = presented_starts.entry(key).or_insert(certificate.not_before_millis);
@@ -510,6 +513,7 @@ fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Wa
                     let key = (
                         certificate.group.as_str(),
                         certificate.commit.as_str(),
+                        certificate.subject_kind,
                         certificate.subject_id.as_str(),
                     );
                     presented_starts.get(&key).is_some_and(|&start| now_ms < start)
@@ -3518,6 +3522,31 @@ mod tests {
         assert_eq!(said[0].group.as_deref(), Some("g"));
         assert_eq!(said[0].severity, Severity::Warning);
         assert!(said[0].message.contains("expires in 20 days"), "{}", said[0].message);
+    }
+
+    /// A source and a destination may share an id, and each is its own connector with its own certificate.
+    #[test]
+    fn a_source_and_a_destination_sharing_an_id_are_warned_about_apart() {
+        let source = carried("kafka", Half::Presented, 365, 5);
+        let destination = DeployedCertificate {
+            subject_kind: SubjectKind::Destination,
+            ..carried("kafka", Half::Presented, 365, 20)
+        };
+        let said = certificate_expiring(&[source, destination], NOW);
+        let messages: Vec<&str> = said.iter().map(|w| w.message.as_str()).collect();
+        assert_eq!(said.len(), 2, "{messages:?}");
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.starts_with("source \"kafka\"") && m.contains("in 5 days")),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.starts_with("destination \"kafka\"") && m.contains("in 20 days")),
+            "{messages:?}"
+        );
     }
 
     /// Working and something is off, until the day it is not working at all.

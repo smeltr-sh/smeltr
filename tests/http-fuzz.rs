@@ -221,7 +221,11 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, stored: &mut Stored) -
     let mut tls = None;
     if https {
         let presents = rng.chance(2);
-        cov.reach(if presents { "tls.certificate" } else { "tls.trustedAuthorities" });
+        cov.reach(if presents {
+            "tls.certificate"
+        } else {
+            "tls.trustedAuthorities"
+        });
         tls = Some(presents);
         set_tls(&mut d, presents);
     }
