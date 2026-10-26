@@ -90,7 +90,8 @@
 </Field>
 <Field optional field="bufferBytes" label="delivery buffer">
   {#snippet help()}
-    The most one worker holds for this destination, queued or sent and not yet acknowledged.
+    The most one worker holds for this destination, queued or sent and not yet acknowledged. It
+    holds what the connection to it can carry, up to this.
     {#if bufferHelp}{@render bufferHelp()}{:else}Divided by the {sizeLabel}, it is the most requests
       in flight.{/if} Left empty, the worker sizes it from its memory.
   {/snippet}

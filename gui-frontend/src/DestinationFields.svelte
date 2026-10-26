@@ -251,8 +251,8 @@
       <Field optional field="bufferBytes" label="buffer">
         {#snippet help()}
           The most one worker holds for this destination, accepted but not yet acknowledged by the
-          brokers. Over a slow link it caps throughput. Left empty, the worker sizes it from its
-          memory.
+          brokers. It holds what the connection to it can carry, up to this. Left empty, the worker
+          sizes it from its memory.
         {/snippet}
         <BytesInput
           value={destination.bufferBytes}
@@ -334,8 +334,8 @@
       <Field optional field="bufferBytes" label="buffer">
         {#snippet help()}
           The most one worker holds for this destination, accepted but not yet acknowledged by Event
-          Hubs. Over a slow link it caps throughput. Left empty, the worker sizes it from its
-          memory.
+          Hubs. It holds what the connection to it can carry, up to this. Left empty, the worker
+          sizes it from its memory.
         {/snippet}
         <BytesInput
           value={destination.bufferBytes}
