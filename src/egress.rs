@@ -660,8 +660,8 @@ fn run(
     let mut holding: Option<crate::worker::capture::Holding> = None;
     // The pacing model, once the queue is paced. Its target is the queue's budget and the destination's bound.
     let mut pacing: Option<Pacing> = None;
-    // What the target last stood below its share by, written on change.
-    let mut headroom: Option<usize> = None;
+    // How far the link stood below the share, averaged over each stretch and written at its end.
+    let mut headroom = Headroom::default();
 
     loop {
         if pacing.is_none()
@@ -842,7 +842,8 @@ fn run(
 
 /// Tell the pacing model a batch came back, and carry its target to the queue, the destination and the metrics
 /// when it moves. The ceiling is read each time: the pool's share moves as other queues come and go. The model's
-/// headroom under the ceiling is reported on change: none for long is a destination memory holds back.
+/// headroom under the ceiling is averaged over time and reported every [`HEADROOM_EVERY`]: none for long is a
+/// destination memory holds back.
 #[allow(clippy::too_many_arguments)]
 fn pace(
     pacing: &mut Option<Pacing>,
@@ -853,7 +854,7 @@ fn pace(
     bytes: usize,
     sent: Option<Sent>,
     app_limited: bool,
-    headroom: &mut Option<usize>,
+    headroom: &mut Headroom,
 ) {
     let (Some(p), Some(sent)) = (pacing, sent) else { return };
     let before = p.target();
@@ -872,17 +873,50 @@ fn pace(
         destination.pace(p.target());
         note_queue_budget(metrics, id, queue);
     }
-    let below = p.headroom();
-    if *headroom != Some(below) {
-        *headroom = Some(below);
+    let share = p.headroom() as f64 / ceiling.max(1) as f64;
+    if let Some(mean) = headroom.add(share, Instant::now()) {
         let label = id.to_string();
-        metrics.gauge(PACE_HEADROOM_METRIC, &[("destination", label.as_str())], below as f64);
+        metrics.gauge(PACE_HEADROOM_METRIC, &[("destination", label.as_str())], mean);
     }
 }
 
-/// How far a paced destination's link stands below its share of the pool, in bytes (`Pacing::headroom`). Read by the leader's
-/// `destinationMemoryBound` notice.
-pub const PACE_HEADROOM_METRIC: &str = "smeltr_destination_pace_headroom_bytes";
+/// How far a paced destination's link stood below its share of the pool, as a share of it (`Pacing::headroom`),
+/// averaged over time. Read by the leader's `destinationMemoryBound` notice.
+pub const PACE_HEADROOM_METRIC: &str = "smeltr_destination_pace_headroom_ratio";
+
+/// How often the averaged headroom is reported: the leader's finest bucket, so each bucket reads one stretch. The
+/// estimate dips for a moment as old rate samples lapse and the round trip is measured again; a mean over a stretch
+/// is not moved by that, where the bucket's greatest reading, which a gauge keeps, would be.
+const HEADROOM_EVERY: Duration = Duration::from_secs(10);
+
+/// The headroom, weighted by how long each reading stood, since the last report.
+#[derive(Default)]
+struct Headroom {
+    /// When this stretch began, and the last reading with when it was taken.
+    since: Option<Instant>,
+    last: Option<(Instant, f64)>,
+    /// The sum of each reading times the seconds it stood.
+    weighted: f64,
+}
+
+impl Headroom {
+    /// Takes the reading `share` at `now`, and answers the mean over the stretch once it is [`HEADROOM_EVERY`] long.
+    fn add(&mut self, share: f64, now: Instant) -> Option<f64> {
+        let since = *self.since.get_or_insert(now);
+        if let Some((at, last)) = self.last {
+            self.weighted += last * now.saturating_duration_since(at).as_secs_f64();
+        }
+        self.last = Some((now, share));
+        let span = now.saturating_duration_since(since);
+        if span < HEADROOM_EVERY {
+            return None;
+        }
+        let mean = self.weighted / span.as_secs_f64();
+        self.since = Some(now);
+        self.weighted = 0.0;
+        Some(mean)
+    }
+}
 
 /// A unit the destination has answered for. Each refusal gets its document back. A destination set to block keeps the
 /// rows it refused and sends them again after a wait, reporting the batch only once they land; any other refusal goes
@@ -1427,6 +1461,20 @@ mod tests {
             matches!(greedy.offer(unit(1)), Err(Refused::NoRoom(_))),
             "so greedy, at its share, gets no more"
         );
+    }
+
+    #[test]
+    fn headroom_is_reported_as_its_mean_over_time_so_a_moment_s_dip_barely_moves_it() {
+        let mut h = Headroom::default();
+        let start = Instant::now();
+        let at = |s: f64| start + Duration::from_secs_f64(s);
+        assert_eq!(h.add(0.0, at(0.0)), None);
+        assert_eq!(h.add(0.8, at(4.0)), None, "the estimate dips");
+        assert_eq!(h.add(0.0, at(4.5)), None);
+        let mean = h.add(0.0, at(10.0)).expect("a stretch is ten seconds");
+        assert!((mean - 0.04).abs() < 1e-9, "half a second at 0.8 over ten: {mean}");
+        assert_eq!(h.add(0.0, at(15.0)), None, "the next stretch starts afresh");
+        assert_eq!(h.add(0.0, at(20.0)), Some(0.0));
     }
 
     #[test]

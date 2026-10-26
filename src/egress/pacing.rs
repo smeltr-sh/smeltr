@@ -146,7 +146,9 @@ impl Pacing {
     /// carries at least the ceiling over the probe's gain. A model held at its ceiling measures no more than the
     /// ceiling lets through, so this is as near as it can come to saying the ceiling, not the link, is the bound.
     pub fn headroom(&self) -> usize {
-        let wanted = self.round_trip().map_or(0.0, |rtt| PROBE_CYCLE[0] * self.rate() * rtt.as_secs_f64());
+        let wanted = self
+            .round_trip()
+            .map_or(0.0, |rtt| PROBE_CYCLE[0] * self.rate() * rtt.as_secs_f64());
         if wanted >= self.ceiling as f64 {
             0
         } else {

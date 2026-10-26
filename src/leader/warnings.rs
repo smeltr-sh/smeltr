@@ -1732,34 +1732,59 @@ fn trailing_climb(points: &[(i64, f64)]) -> (usize, i64) {
     (points.len() - start, points[start].0)
 }
 
-/// How long a paced destination's target must stand at its share of the pool before
-/// [`destinations_memory_bound`] says so: long enough that a burst filling it is not the reason.
+/// How long a paced destination must run near its share of the pool before [`destinations_memory_bound`] says so:
+/// long enough that a burst filling it is not the reason.
 const MEMORY_BOUND_FOR: Duration = Duration::from_secs(5 * 60);
 
-/// Every (group, destination) whose link, on every worker that paces it, measured near enough its share of the pool
-/// to leave no headroom (`egress::pacing::Pacing::headroom`) in each ten-second bucket of the last
-/// [`MEMORY_BOUND_FOR`]: its workers' memory, more likely than its link, is what bounds it. A model cannot measure
-/// past the memory it has, so it cannot be sure, and the sentence says so. An Info: nothing is wrong. A bucket with
-/// no reading breaks the run, so a destination that stopped reporting is not called bound.
+/// The mean headroom, as a share of the pool's share (`egress::PACE_HEADROOM_METRIC`), under which a destination
+/// counts as running at its share.
+const MEMORY_BOUND_HEADROOM: f64 = 0.1;
+
+/// The ten-second buckets of [`MEMORY_BOUND_FOR`] a destination may deliver nothing in and still be judged. A
+/// destination that stops delivering keeps its last reading, so one that stalled must not be called bound.
+const MEMORY_BOUND_IDLE_BUCKETS: usize = 3;
+
+/// Every (group, destination) whose link measured near enough its share of the pool, on the mean of the last
+/// [`MEMORY_BOUND_FOR`], to leave less than [`MEMORY_BOUND_HEADROOM`] of it (`egress::pacing::Pacing::headroom`):
+/// its workers' memory, more likely than its link, is what bounds it. A model cannot measure past the memory it has,
+/// so it cannot be sure, and the sentence says so. An Info: nothing is wrong. Only buckets the destination delivered
+/// in are read, and it must have delivered in nearly all of them, so a destination that stalled or stopped reporting
+/// is not called bound.
 fn destinations_memory_bound(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> {
     let Some(store) = store else { return Vec::new() };
     let bucket = Tier::TenSeconds.bucket_ms();
     let buckets = (MEMORY_BOUND_FOR.as_millis() as i64 / bucket) as usize;
-    let since = now_ms - MEMORY_BOUND_FOR.as_millis() as i64 - 2 * bucket;
+    let since = now_ms - MEMORY_BOUND_FOR.as_millis() as i64;
     let Ok(series) = store.series_since(crate::egress::PACE_HEADROOM_METRIC, Tier::TenSeconds, since) else {
         return Vec::new();
     };
+    let mut delivered: HashMap<(String, String), HashSet<i64>> = HashMap::new();
+    for (key, points) in store
+        .series_since(super::BYTES_DELIVERED_METRIC, Tier::TenSeconds, since)
+        .unwrap_or_default()
+    {
+        let Some(labels) = subject_labels(&key) else { continue };
+        if let (Some(group), Some(destination)) = (label(&labels, "group"), label(&labels, "destination")) {
+            delivered
+                .entry((group.to_string(), destination.to_string()))
+                .or_default()
+                .extend(points.iter().filter(|(_, bytes)| *bytes > 0.0).map(|(at, _)| *at));
+        }
+    }
     let mut out: Vec<Warning> = series
         .into_iter()
         .filter_map(|(subject_key, points)| {
-            let at_share = points.iter().rev().take_while(|(_, headroom)| *headroom == 0.0).collect::<Vec<_>>();
-            let fresh = at_share.first().is_some_and(|(at, _)| now_ms - at <= 2 * bucket);
-            let unbroken = at_share.windows(2).all(|w| w[0].0 - w[1].0 == bucket);
-            if !fresh || !unbroken || at_share.len() < buckets {
-                return None;
-            }
             let labels = subject_labels(&subject_key)?;
             let (group, destination) = (label(&labels, "group")?, label(&labels, "destination")?);
+            let moving = delivered.get(&(group.to_string(), destination.to_string()))?;
+            let read: Vec<(i64, f64)> = points.into_iter().filter(|(at, _)| moving.contains(at)).collect();
+            if read.len() + MEMORY_BOUND_IDLE_BUCKETS < buckets {
+                return None;
+            }
+            let mean = read.iter().map(|(_, headroom)| headroom).sum::<f64>() / read.len() as f64;
+            if mean >= MEMORY_BOUND_HEADROOM {
+                return None;
+            }
             Some(Warning {
                 scope: None,
                 condition: Condition::DestinationMemoryBound,
@@ -1768,7 +1793,7 @@ fn destinations_memory_bound(store: Option<&RegistryStore>, now_ms: i64) -> Vec<
                 subject_id: destination.to_string(),
                 group: Some(group.to_string()),
                 severity: Severity::Info,
-                since_millis: at_share.last().map(|(at, _)| *at),
+                since_millis: read.first().map(|(at, _)| *at),
                 message: format!(
                     "destination {destination} in group {group:?} has run for {} minutes with its buffer as large as \
                      its workers' memory allows; if it should move faster, give its workers more memory",
@@ -6212,25 +6237,35 @@ mod tests {
         assert!(warnings[0].message.contains("new wording"));
     }
 
-    /// A store holding destination "out"'s pace headroom, one value per ten-second bucket, the last at `last`.
-    fn store_with_headroom(values: &[f64], last: i64) -> RegistryStore {
+    /// A store holding destination "out"'s mean pace headroom, one value per ten-second bucket, the last at `last`,
+    /// with bytes delivered in each bucket `delivered` says.
+    fn store_with_headroom(values: &[f64], delivered: impl Fn(usize) -> bool, last: i64) -> RegistryStore {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         let key = serde_json::to_string(&[("destination", "out"), ("group", "g")]).unwrap();
         let first = last - (values.len() as i64 - 1) * 10_000;
         for (i, v) in values.iter().enumerate() {
+            let at = first + i as i64 * 10_000;
             store
-                .record_gauge_max(crate::egress::PACE_HEADROOM_METRIC, &key, first + i as i64 * 10_000, *v)
+                .record_gauge_max(crate::egress::PACE_HEADROOM_METRIC, &key, at, *v)
                 .unwrap();
+            if delivered(i) {
+                store
+                    .record_delta(super::super::BYTES_DELIVERED_METRIC, &key, at, 4096.0)
+                    .unwrap();
+            }
         }
         store
     }
 
     #[test]
-    fn a_destination_at_its_share_for_five_minutes_is_held_back_by_memory() {
+    fn a_destination_near_its_share_for_five_minutes_is_held_back_by_memory() {
         let now = 1_000_000_000;
-        let store = store_with_headroom(&[4096.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], now);
-        let warnings = destinations_memory_bound(Some(&store), now);
+        // Mostly at its share, with the dips a running estimate makes.
+        let mut values = vec![0.0; 30];
+        for (i, dip) in [(3, 0.3), (6, 0.5), (11, 0.4), (18, 0.2), (24, 0.1)] {
+            values[i] = dip;
+        }
+        let warnings = destinations_memory_bound(Some(&store_with_headroom(&values, |_| true, now)), now);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert_eq!(warnings[0].condition, Condition::DestinationMemoryBound);
         assert_eq!(warnings[0].severity, Severity::Info);
@@ -6239,18 +6274,31 @@ mod tests {
     }
 
     #[test]
-    fn a_destination_below_its_share_once_in_five_minutes_is_not_held_back() {
+    fn a_destination_with_room_or_too_little_time_is_not_held_back() {
         let now = 1_000_000_000;
         let mut values = vec![0.0; 30];
-        values[10] = 1.0;
-        assert!(destinations_memory_bound(Some(&store_with_headroom(&values, now)), now).is_empty());
+        values[10] = 3.5;
         assert!(
-            destinations_memory_bound(Some(&store_with_headroom(&[0.0; 29], now)), now).is_empty(),
-            "less than five minutes"
+            destinations_memory_bound(Some(&store_with_headroom(&values, |_| true, now)), now).is_empty(),
+            "a mean of more than a tenth"
         );
         assert!(
-            destinations_memory_bound(Some(&store_with_headroom(&[0.0; 30], now - 60_000)), now).is_empty(),
-            "a destination that stopped reporting is not called bound"
+            destinations_memory_bound(Some(&store_with_headroom(&[0.0; 26], |_| true, now)), now).is_empty(),
+            "less than five minutes"
+        );
+    }
+
+    #[test]
+    fn a_destination_that_stopped_delivering_is_not_held_back() {
+        let now = 1_000_000_000;
+        // It stalled half way, and its last reading stood.
+        let store = store_with_headroom(&[0.0; 30], |i| i < 15, now);
+        assert!(destinations_memory_bound(Some(&store), now).is_empty());
+        let store = store_with_headroom(&[0.0; 30], |i| i != 7, now);
+        assert_eq!(
+            destinations_memory_bound(Some(&store), now).len(),
+            1,
+            "a quiet moment is not a stall"
         );
     }
 

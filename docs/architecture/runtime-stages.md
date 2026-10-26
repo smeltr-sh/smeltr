@@ -127,8 +127,9 @@ destination's own in-flight bound reads the same figure, so the room reaches
 the wire. A sample taken while the source was not pressing on the queue may
 raise the estimate but never lower it, so a quiet source does not shrink a
 fast link's budget, and a slow link stops the queue growing where more bytes
-would buy no more throughput. A target held at its share for five minutes is
-a notice: the destination's memory, not its link, is what bounds it.
+would buy no more throughput. A link measured at the destination's share, on
+average over five minutes of delivering, is a notice: the destination's memory,
+not its link, is what bounds it.
 
 ```mermaid
 flowchart LR
