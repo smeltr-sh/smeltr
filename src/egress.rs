@@ -105,6 +105,10 @@ struct Queue {
     budget: AtomicUsize,
     /// The least a paced queue's budget is, one batch, once the queue is paced.
     paced: OnceLock<usize>,
+    /// A source asked for room this queue did not have, since the last pop. The pacing model's mark that the link,
+    /// not the source, bounded what the next unit's sample measures: at steady state the queue is often empty with
+    /// everything in flight, so a backlog alone would read a full link as a quiet source.
+    pressed: AtomicBool,
     /// Signaled when a unit arrives, or on close.
     work: Condvar,
     /// The transform pool's wake-up, signaled when bytes are freed: a lane parked on this queue is the pool's to run
@@ -273,6 +277,7 @@ impl Queue {
             state: Mutex::new(QueueState::default()),
             budget: AtomicUsize::new(budget),
             paced: OnceLock::new(),
+            pressed: AtomicBool::new(false),
             work: Condvar::new(),
             pool: Mutex::new(None),
             holds_refusals: AtomicBool::new(false),
@@ -286,13 +291,23 @@ impl Queue {
     /// reaches the refusal that says so.
     fn has_room(&self, bytes: usize) -> bool {
         let st = self.state.lock().unwrap();
-        st.closed
+        let room = st.closed
             || st.bytes == 0
             || (st.bytes + bytes <= self.budget()
                 && self.lend.get().is_none_or(|l| {
                     l.pool
                         .fits(l.id, st.borrowed, l.borrowed(st.bytes + bytes) - st.borrowed)
-                }))
+                }));
+        if !room {
+            self.pressed.store(true, Ordering::Relaxed);
+        }
+        room
+    }
+
+    /// Whether the source is pressing on this queue: it was refused room since the last pop, or units wait behind
+    /// the one popped. Consumed: the mark is the next unit's.
+    fn pressing(&self, st: &QueueState) -> bool {
+        self.pressed.swap(false, Ordering::Relaxed) || !st.units.is_empty()
     }
 
     /// The most a paced budget may be: the queue bytes whose borrowing fits this queue's share of the pool, plus
@@ -328,6 +343,7 @@ impl Queue {
             return Err(Refused::Closed);
         }
         if st.bytes > 0 && st.bytes + unit.bytes > self.budget() {
+            self.pressed.store(true, Ordering::Relaxed);
             return Err(Refused::NoRoom(unit));
         }
         if let Some(lend) = self.lend.get() {
@@ -336,6 +352,7 @@ impl Queue {
                 .pool
                 .take(lend.id, st.borrowed, borrowed - st.borrowed, st.bytes == 0)
             {
+                self.pressed.store(true, Ordering::Relaxed);
                 return Err(Refused::NoRoom(unit));
             }
             st.borrowed = borrowed;
@@ -354,14 +371,14 @@ impl Queue {
     fn pop(&self, timeout: Duration) -> Popped {
         let mut st = self.state.lock().unwrap();
         if let Some(u) = st.units.pop_front() {
-            return Popped::Work(u, !st.units.is_empty());
+            return Popped::Work(u, self.pressing(&st));
         }
         if st.closed {
             return Popped::Closed;
         }
         let (mut st, _) = self.work.wait_timeout(st, timeout).unwrap();
         if let Some(u) = st.units.pop_front() {
-            return Popped::Work(u, !st.units.is_empty());
+            return Popped::Work(u, self.pressing(&st));
         }
         if st.closed {
             return Popped::Closed;
@@ -408,7 +425,7 @@ impl Queue {
 }
 
 enum Popped {
-    /// A unit, and whether more were waiting behind it.
+    /// A unit, and whether the source was pressing on the queue: refused room, or more waiting behind it.
     Work(Unit, bool),
     Idle,
     Closed,
@@ -619,7 +636,7 @@ fn run(
         note_queue(metrics, id, queue, &mut held_reported, &mut held_reported_at);
         // A re-send before anything new: it is older.
         let now = Instant::now();
-        let mut backlog = true;
+        let mut pressing = true;
         let next = match redo.pop_front() {
             Some(u) => Some(u),
             None => match waiting.iter().position(|(at, _)| *at <= now) {
@@ -627,8 +644,8 @@ fn run(
                 None => match queue.pop(POLL_INTERVAL) {
                     Popped::Closed => break,
                     Popped::Idle => None,
-                    Popped::Work(u, more) => {
-                        backlog = more;
+                    Popped::Work(u, pressed) => {
+                        pressing = pressed;
                         Some(u)
                     }
                 },
@@ -639,8 +656,8 @@ fn run(
             let local = next_local;
             next_local += 1;
             let sent_at = Instant::now();
-            // A re-send is never the source's doing: it counts as backlog.
-            let app_limited = !backlog;
+            // A re-send is never the source's doing: it counts as the link's.
+            let app_limited = !pressing;
             if let Some(p) = &mut pacing {
                 p.dispatched(unit.bytes);
             }
@@ -1360,6 +1377,34 @@ mod tests {
         assert!(!queue.has_room(1), "4 held is the budget");
         queue.release(4);
         assert!(queue.has_room(4));
+    }
+
+    #[test]
+    fn a_refusal_marks_the_next_unit_as_pressed_and_a_quiet_source_does_not() {
+        let queue = Queue::new(4);
+        let pressed = |p| match p {
+            Popped::Work(_, pressed) => pressed,
+            _ => panic!("a unit was queued"),
+        };
+        // A quiet source: one unit, nothing refused, nothing behind it.
+        assert!(queue.offer(unit(4)).is_ok());
+        assert!(!pressed(queue.pop(Duration::ZERO)));
+        // Everything in flight, the queue empty, and the source asks for room it does not get: the link is full.
+        assert!(!queue.has_room(1));
+        assert!(queue.offer(unit(4)).is_err());
+        queue.release(4);
+        assert!(queue.offer(unit(4)).is_ok());
+        assert!(pressed(queue.pop(Duration::ZERO)), "a refusal marks the next unit");
+        // The mark is consumed: the one after is quiet again.
+        queue.release(4);
+        assert!(queue.offer(unit(4)).is_ok());
+        assert!(!pressed(queue.pop(Duration::ZERO)));
+        // A backlog marks it too.
+        queue.release(4);
+        assert!(queue.offer(unit(2)).is_ok());
+        assert!(queue.offer(unit(2)).is_ok());
+        assert!(pressed(queue.pop(Duration::ZERO)));
+        assert!(!pressed(queue.pop(Duration::ZERO)));
     }
 
     #[test]
