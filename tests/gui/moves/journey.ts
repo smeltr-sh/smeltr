@@ -683,7 +683,7 @@ const fillAvro: Move = {
         .last()
         .selectOption('str');
     }
-    await form.getByRole('button', { name: /Advanced/ }).click();
+    await form.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
     await form.getByRole('textbox', { name: /^endpoint/ }).fill(bucket.url);
     await form.getByRole('textbox', { name: /^region/ }).fill('us-east-1');
 
@@ -1230,7 +1230,7 @@ const regenerateKey: Move = {
     for (const setting of settings) {
       await page.getByRole('listitem').filter({ hasText: setting.label }).getByRole('link').click();
       // A value the key cannot open reads as none stored, so the page offers an empty input, not Replace.
-      await page.getByLabel(setting.field, { exact: true }).fill(setting.value);
+      await page.getByRole('textbox', { name: setting.field, exact: true }).fill(setting.value);
       await page.getByRole('button', { name: 'Save', exact: true }).click();
       await expect(
         page.getByRole('button', { name: `replace the ${setting.field}` }),
@@ -1916,7 +1916,7 @@ const turnOnAgents: Move = {
     await expect(page.getByRole('combobox', { name: /^Provider\b/ })).toHaveValue('anthropic');
     await page.getByRole('textbox', { name: /^Endpoint URL\b/ }).fill(model.base);
     await expect(page.getByRole('textbox', { name: /^Model\b/ })).toHaveValue('claude-opus-5-5');
-    await page.getByLabel('API key', { exact: true }).fill(MODEL_KEY);
+    await page.getByRole('textbox', { name: 'API key', exact: true }).fill(MODEL_KEY);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByRole('button', { name: 'replace the API key' })).toBeVisible();
     world.agentsOn = true;
