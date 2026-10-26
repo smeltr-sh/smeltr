@@ -133,7 +133,7 @@ pub fn certificate_versions(store: &dyn Store) -> std::collections::HashMap<Stri
 
 /// Every version `quoted` runs: its secrets as quoted, and its certificates at `newest`. A name the list does not
 /// hold is left out, and the worker says so when it refuses the deploy.
-fn at_newest(quoted: &Quoted, newest: &std::collections::HashMap<String, i64>) -> Vec<SecretAt> {
+pub fn at_newest(quoted: &Quoted, newest: &std::collections::HashMap<String, i64>) -> Vec<SecretAt> {
     let certificates = (quoted.certificates.iter()).filter_map(|name| Some((name.clone(), *newest.get(name)?)));
     quoted.secrets.iter().cloned().chain(certificates).collect()
 }

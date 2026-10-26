@@ -134,9 +134,11 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
         match blocking(move || {
             // A certificate at the list's newest version, as a deployment runs it.
             let newest = smeltr::leader::certificate_versions(&*store);
-            let mut asked = wanted;
-            asked.extend(certificates.iter().filter_map(|c| Some((c.clone(), *newest.get(c)?))));
-            store.secrets_for_delivery(&asked, &[])
+            let quoted = smeltr::leader::Quoted {
+                secrets: wanted,
+                certificates,
+            };
+            store.secrets_for_delivery(&smeltr::leader::at_newest(&quoted, &newest), &[])
         })
         .await
         {
