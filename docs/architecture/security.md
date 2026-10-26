@@ -320,7 +320,8 @@ A worker is sent the entry's chain with its key. Before it tears down what it
 runs, it refuses a certificate it could not present the way its bundle
 presents it: connecting out, or serving a receiver's senders. A new version it
 refuses leaves the running deployment running on the version it was started
-with, and the worker reports why.
+with, and the worker reports why. The worker keeps only the newest version, so
+a runtime that exits after that starts on nothing until the entry is replaced.
 
 An entry is uploaded, issued by the leader under the authority it already
 holds, for the names and the lifetime an admin gives, so a sender verifies it
