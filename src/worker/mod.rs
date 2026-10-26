@@ -2949,7 +2949,7 @@ impl Supervisor {
                         tracing::info!(
                             target: "worker.certificate_renewed",
                             certificates = %renewed.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", "),
-                            "a certificate this deployment presents has a new version, so the deployment restarts"
+                            "a certificate this worker uses has a new version, so it restarts what uses it"
                         );
                         self.restart_due.store(true, Ordering::Relaxed);
                         self.arrived.notify_all();
@@ -3631,7 +3631,7 @@ impl Supervisor {
                     tracing::warn!(
                         target: "worker.restart_refused",
                         error = %why,
-                        "a restart was asked for, but the deployment would not start again, so it keeps running"
+                        "this worker keeps running as it was, because restarting with the certificates it holds now would fail"
                     );
                     self.note_failure(Some(&why));
                 } else {
