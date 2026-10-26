@@ -1736,7 +1736,11 @@ fn trailing_climb(points: &[(i64, f64)]) -> (usize, i64) {
 /// long enough that a burst filling it is not the reason.
 const MEMORY_BOUND_FOR: Duration = Duration::from_secs(5 * 60);
 
-/// The mean headroom, as a share of the pool's share (`egress::PACE_HEADROOM_METRIC`), under which a destination
+/// How far a paced destination's link stood below its share of the pool, as a share of it (`Pacing::headroom`),
+/// averaged over time, as egress reports it.
+const PACE_HEADROOM_METRIC: &str = "smeltr_destination_pace_headroom_ratio";
+
+/// The mean headroom, as a share of the pool's share (`PACE_HEADROOM_METRIC`), under which a destination
 /// counts as running at its share.
 const MEMORY_BOUND_HEADROOM: f64 = 0.1;
 
@@ -1755,7 +1759,7 @@ fn destinations_memory_bound(store: Option<&RegistryStore>, now_ms: i64) -> Vec<
     let bucket = Tier::TenSeconds.bucket_ms();
     let buckets = (MEMORY_BOUND_FOR.as_millis() as i64 / bucket) as usize;
     let since = now_ms - MEMORY_BOUND_FOR.as_millis() as i64;
-    let Ok(series) = store.series_since(crate::egress::PACE_HEADROOM_METRIC, Tier::TenSeconds, since) else {
+    let Ok(series) = store.series_since(PACE_HEADROOM_METRIC, Tier::TenSeconds, since) else {
         return Vec::new();
     };
     let mut delivered: HashMap<(String, String), HashSet<i64>> = HashMap::new();
@@ -6245,9 +6249,7 @@ mod tests {
         let first = last - (values.len() as i64 - 1) * 10_000;
         for (i, v) in values.iter().enumerate() {
             let at = first + i as i64 * 10_000;
-            store
-                .record_gauge_max(crate::egress::PACE_HEADROOM_METRIC, &key, at, *v)
-                .unwrap();
+            store.record_gauge_max(PACE_HEADROOM_METRIC, &key, at, *v).unwrap();
             if delivered(i) {
                 store
                     .record_delta(super::super::BYTES_DELIVERED_METRIC, &key, at, 4096.0)

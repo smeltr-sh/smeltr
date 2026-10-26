@@ -883,13 +883,13 @@ fn pace(
     let share = p.headroom() as f64 / ceiling.max(1) as f64;
     if let Some(mean) = headroom.add(share, Instant::now()) {
         let label = id.to_string();
-        metrics.gauge(PACE_HEADROOM_METRIC, &[("destination", label.as_str())], mean);
+        metrics.gauge(
+            "smeltr_destination_pace_headroom_ratio",
+            &[("destination", label.as_str())],
+            mean,
+        );
     }
 }
-
-/// How far a paced destination's link stood below its share of the pool, as a share of it (`Pacing::headroom`),
-/// averaged over time. Read by the leader's `destinationMemoryBound` notice.
-pub const PACE_HEADROOM_METRIC: &str = "smeltr_destination_pace_headroom_ratio";
 
 /// How often the averaged headroom is reported: the leader's finest bucket, so each bucket reads one stretch. The
 /// estimate dips for a moment as old rate samples lapse and the round trip is measured again; a mean over a stretch

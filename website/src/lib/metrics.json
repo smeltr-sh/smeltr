@@ -316,6 +316,13 @@
   },
   {
     "group": "Destinations",
+    "name": "smeltr_destination_pace_headroom_ratio",
+    "kind": "gauge",
+    "labels": ["destination"],
+    "what": "How far, as a share of its buffer, the destination's measured connection stands below it, on average over the last ten seconds. Near 0 for long, memory, not the connection, is what holds it back."
+  },
+  {
+    "group": "Destinations",
     "name": "smeltr_destination_queue_budget_bytes",
     "kind": "gauge",
     "labels": ["destination"],
