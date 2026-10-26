@@ -832,8 +832,9 @@ fn read_back(brokers: &str, topics: &[&str], marker: &str) -> Result<Vec<Read>, 
 }
 
 /// Checks that the topics hold each row `sent` took, once, with its key, on its topic, and nothing else. A `lossy`
-/// delivery may hold a row no times: a producer that waits for no acknowledgement never learns a broker refused it.
-fn check_held(sent: &[Vec<Sent>], read: &[Read], lossy: bool) -> Result<(), String> {
+/// delivery may hold a row no times: a producer that waits for no acknowledgement never learns a broker refused it. A
+/// `retried` one may hold a row more than once: without idempotence a retry can repeat what the broker already wrote.
+fn check_held(sent: &[Vec<Sent>], read: &[Read], lossy: bool, retried: bool) -> Result<(), String> {
     let mut want: BTreeMap<&[u8], (&str, Option<&[u8]>)> = BTreeMap::new();
     for s in sent.iter().flatten() {
         if let Some(topic) = &s.topic {
@@ -857,6 +858,7 @@ fn check_held(sent: &[Vec<Sent>], read: &[Read], lossy: bool) -> Result<(), Stri
         match counts.get(v) {
             Some(1) => {}
             None if lossy => {}
+            Some(_) if retried => {}
             n => {
                 return Err(format!(
                     "a row of {} bytes is on its topic {} times",
@@ -1031,7 +1033,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     drop(d);
     destination::check_refused(&sent, &refused, |s| s.topic.is_none()).map_err(fail)?;
     let read = read_back(&bootstrap, &[DEFAULT_TOPIC, OTHER_TOPIC], &marker).map_err(fail)?;
-    check_held(&sent, &read, retried && c.acks == Acks::None).map_err(fail)?;
+    check_held(&sent, &read, retried && c.acks == Acks::None, retried).map_err(fail)?;
     if retried {
         reached.reach("fault.produceRetried");
     }
@@ -1146,7 +1148,7 @@ fn live_seed(seed: u64, brokers: &str, reached: &mut Reached, pki: &Pki) -> Resu
         drop(d);
         destination::check_refused(&sent, &refused, |s| s.topic.is_none())?;
         let read = read_back(brokers, &[&default_topic, &other_topic], &marker)?;
-        check_held(&sent, &read, c.acks == Acks::None)
+        check_held(&sent, &read, c.acks == Acks::None, false)
     })();
     checked.map_err(|e| format!("{e}\n{json}"))
 }
