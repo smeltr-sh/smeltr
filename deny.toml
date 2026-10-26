@@ -19,6 +19,11 @@ ignore = [
     { id = "RUSTSEC-2026-0347", reason = "smeltr never enables ECH" },
     { id = "RUSTSEC-2026-0348", reason = "smeltr does not enable rustls's brotli feature" },
     { id = "RUSTSEC-2026-0349", reason = "a network attacker can make a later connection classical-only; no fix until rustls-ffi takes 0.23.46" },
+    # 2026-10-26: zstd 0.14.3 fixes these, and smeltr is on it. apache-avro 0.22, the newest, still takes zstd 0.13,
+    # which has no fixed release, and only the tests use it, to read Avro files. Each leaves once apache-avro moves.
+    { id = "RUSTSEC-2026-0391", reason = "zstd 0.13, through apache-avro in the tests only" },
+    { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7, through apache-avro in the tests only" },
+    { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7, through apache-avro in the tests only" },
 ]
 
 [licenses]
