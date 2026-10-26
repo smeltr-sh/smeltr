@@ -10023,9 +10023,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [zstd-safe 8.0.0](https://github.com/gyscos/zstd-rs)
-- [zstd-sys 2.1.0+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
-- [zstd 0.14.0](https://github.com/gyscos/zstd-rs)
+- [zstd-safe 8.2.0](https://github.com/gyscos/zstd-rs)
+- [zstd-sys 2.1.2+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
+- [zstd 0.14.3](https://github.com/gyscos/zstd-rs)
 
 ```
 BSD 3-Clause License
@@ -10063,7 +10063,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [zstd-sys 2.1.0+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
+- [zstd-sys 2.1.2+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
 
 ```
 BSD License
@@ -10313,7 +10313,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [zstd-sys 2.1.0+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
+- [zstd-sys 2.1.2+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
 
 ```
 The auto-generated bindings are under the 3-clause BSD license:
