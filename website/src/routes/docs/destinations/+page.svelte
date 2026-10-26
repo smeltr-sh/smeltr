@@ -152,7 +152,7 @@
     </dd>
     <dt><strong>TLS verification fails</strong></dt>
     <dd>
-      Check the server name and the authority in the connection identity. If the server uses a
+      Check the server name and the connector's <code>authorities</code>. If the server uses a
       private CA, the connector must trust it.
     </dd>
   </dl>

@@ -99,8 +99,8 @@ setup.ilm.enabled: false`;
   <h2 id="example">Example</h2>
   <p>
     Takes bulk requests on port 9200, over TLS with the
-    <a href="/docs/secrets#identities">identity</a> <code>receiver-tls</code>. Senders present the
-    token held in the worker-host variable <code>ES_TOKEN</code>.
+    <a href="/docs/certificates#connectors">certificate</a> <code>receiver-tls</code>. Senders
+    present the token held in the worker-host variable <code>ES_TOKEN</code>.
   </p>
   <pre><code>{@html highlight(json(examples.elasticReceiverSource))}</code></pre>
   <ProductScreenshot
@@ -108,7 +108,7 @@ setup.ilm.enabled: false`;
     height={2000}
     crop={{ x: 608, y: 638, width: 1664, height: 724 }}
     alt="The Elasticsearch receiver form on the Sources page: id beats, port 9200, no tokens yet."
-    caption="The same source in the Sources page's add dialog, before you add its token and identity."
+    caption="The same source in the Sources page's add dialog, before you add its token and certificate."
   />
   <p>
     Filebeat sends to it with an <code>output.elasticsearch</code> block like this, where
@@ -181,14 +181,14 @@ setup.ilm.enabled: false`;
   <h2 id="senders">Tokens and certificates</h2>
   <p>
     Anyone a receiver admits can put records into the group's pipelines, so a receiver needs
-    <code>tokens</code>, an <code>identity</code> with authorities, or both. The leader refuses a receiver
-    with neither.
+    <code>tokens</code>, an <code>certificate</code> and <code>authorities</code>, or both. The
+    leader refuses a receiver with neither.
   </p>
   <ul>
     <li>
       <strong>Tokens:</strong> a sender presents one in any of these three ways. The receiver
-      refuses any other request before reading its body. Without an identity, the token crosses the
-      network in the clear, so use a token alone only behind a balancer that terminates TLS.
+      refuses any other request before reading its body. Without a certificate, the token crosses
+      the network in the clear, so use a token alone only behind a balancer that terminates TLS.
       <ul>
         <li>
           <code>Authorization: Bearer &lt;token&gt;</code>.
@@ -204,10 +204,10 @@ setup.ilm.enabled: false`;
       </ul>
     </li>
     <li>
-      <strong>Client certificates:</strong> with an
-      <a href="/docs/secrets#identities">identity</a>, the receiver serves TLS with the identity's
-      certificate and key. If the identity has authorities, every connection, health checks
-      included, must present a certificate that chains to one of them.
+      <strong>Client certificates:</strong> with a
+      <a href="/docs/certificates#connectors">certificate</a>, the receiver serves TLS with it. With
+      <code>authorities</code>, every connection, health checks included, must present a certificate
+      that chains to one of them.
     </li>
   </ul>
   <p>With both, a sender presents a certificate and a token.</p>
@@ -258,9 +258,10 @@ setup.ilm.enabled: false`;
 
   <h2 id="health">Health check</h2>
   <p>
-    <code>GET /health</code> on the receiver's port answers 200 while the receiver takes requests and
-    429 while it is full, blocked or stopping. It needs no token. Point a balancer's health check or a
-    readiness probe at it, so a busy worker gets no requests until it can take them. Under an identity
+    <code>GET /health</code> on the receiver's port answers 200 while the receiver takes requests
+    and 429 while it is full, blocked or stopping. It needs no token. Point a balancer's health
+    check or a readiness probe at it, so a busy worker gets no requests until it can take them. With
+    <code>authorities</code>
     with authorities it needs a client certificate like any other request.
   </p>
 
@@ -306,9 +307,9 @@ setup.ilm.enabled: false`;
   <dl>
     <dt><strong>The sender cannot connect</strong></dt>
     <dd>
-      Check that the port is open on every worker and that the sender's address reaches them. An
-      identity with authorities refuses a connection without a certificate that chains to one of
-      them.
+      Check that the port is open on every worker and that the sender's address reaches them. A
+      receiver with <code>authorities</code> refuses a connection without a certificate that chains to
+      one of them.
     </dd>
     <dt><strong>Every request gets 401</strong></dt>
     <dd>

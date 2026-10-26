@@ -101,7 +101,7 @@ log { source(s_src); destination(d_smeltr); };`;
   <h2 id="example">Example</h2>
   <p>
     Takes syslog on port 6514 over TLS with the
-    <a href="/docs/secrets#identities">identity</a> <code>syslog-tls</code>, from senders in
+    <a href="/docs/certificates#connectors">certificate</a> <code>syslog-tls</code>, from senders in
     <code>10.20.0.0/16</code> and from the one host <code>192.168.1.20</code>.
   </p>
   <pre><code>{@html highlight(json(examples.syslogReceiverSource))}</code></pre>
@@ -110,7 +110,7 @@ log { source(s_src); destination(d_smeltr); };`;
     height={2000}
     crop={{ x: 608, y: 548, width: 1664, height: 904 }}
     alt="The syslog receiver form on the Sources page: id network-syslog, port 6514, transport tcp, allow from 10.20.0.0/16 and 192.168.1.20."
-    caption="The same source in the Sources page's add dialog, before you pick its identity."
+    caption="The same source in the Sources page's add dialog, before you pick its certificate."
   />
 
   <h2 id="before-you-start">Before you start</h2>
@@ -124,8 +124,8 @@ log { source(s_src); destination(d_smeltr); };`;
       both. See <a href="#senders">Who it admits</a>.
     </li>
     <li>
-      For TLS, add an <a href="/docs/secrets#identities">identity</a> with the receiver's certificate
-      and key, and give each sender the authority that signed that certificate.
+      For TLS, add the receiver's <a href="/docs/certificates#connectors">certificate</a> and key under
+      Admin → Certificates, and give each sender the authority that signed that certificate.
     </li>
     <li>
       Open the port on every worker, and give senders the address of each, or of a balancer in front
@@ -142,7 +142,7 @@ log { source(s_src); destination(d_smeltr); };`;
   <ul>
     <li>
       <strong>No TLS.</strong> Messages cross the network in the clear, and the leader refuses a UDP
-      receiver that names an <code>identity</code>.
+      receiver that names a <code>certificate</code>.
     </li>
     <li>
       <strong>No backpressure.</strong> Nothing slows a UDP sender. A datagram that arrives while
@@ -167,8 +167,8 @@ log { source(s_src); destination(d_smeltr); };`;
   <h2 id="senders">Who it admits</h2>
   <p>
     Anyone a receiver admits can put records into the group's pipelines. Syslog carries no token, so
-    a receiver needs <code>allowFrom</code>, an <code>identity</code> with authorities, or both. The leader
-    refuses a receiver with neither.
+    a receiver needs <code>allowFrom</code>, an <code>certificate</code> and
+    <code>authorities</code>, or both. The leader refuses a receiver with neither.
   </p>
   <ul>
     <li>
@@ -177,11 +177,11 @@ log { source(s_src); destination(d_smeltr); };`;
       a connection from any other address before reading any of it.
     </li>
     <li>
-      <strong>Client certificates:</strong> with an
-      <a href="/docs/secrets#identities">identity</a>, the receiver serves TLS (RFC 5425) with the
-      identity's certificate and key. If the identity has authorities, every sender must present a
-      certificate that chains to one of them. With <code>allowFrom</code> empty, every sender TLS admits
-      is admitted.
+      <strong>Client certificates:</strong> with a
+      <a href="/docs/certificates#connectors">certificate</a>, the receiver serves TLS (RFC 5425)
+      with it. With
+      <code>authorities</code>, every sender must present a certificate that chains to one of them.
+      With <code>allowFrom</code> empty, every sender TLS admits is admitted.
     </li>
   </ul>
   <p>With both, a sender must connect from a listed network and present a certificate.</p>
@@ -191,14 +191,14 @@ log { source(s_src); destination(d_smeltr); };`;
     must answer from its address to connect, but a datagram's source address is whatever its sender
     writes, so anyone who can reach the port can claim an address in <code>allowFrom</code>. Take
     UDP only where the network between senders and workers drops datagrams that forge their source,
-    and take TCP with an identity wherever a sender offers it.
+    and take TCP with a certificate wherever a sender offers it.
   </p>
   <p>
     <code>allowFrom</code> checks the address the connection or datagram comes from. A balancer or address
     translation in front of the workers makes that the balancer's address, unless it keeps the sender's.
   </p>
   <p>
-    Without an identity, messages cross the network in the clear. Serve TLS wherever the network
+    Without a certificate, messages cross the network in the clear. Serve TLS wherever the network
     between senders and workers is not trusted.
   </p>
 
@@ -244,7 +244,7 @@ log { source(s_src); destination(d_smeltr); };`;
       Messages are framed by their octet count, as <code>123 &lt;34&gt;1 ...</code>, or end at a
       newline (RFC 6587). Set <code>lineBreaker</code> to end them at its pattern instead.
     </li>
-    <li>Plain TCP, or TLS (RFC 5425) when the receiver names an identity.</li>
+    <li>Plain TCP, or TLS (RFC 5425) when the receiver names a certificate.</li>
     <li>
       Over UDP, one message to a datagram (RFC 5426). A newline, or carriage return and newline,
       that ends the datagram is dropped. An empty datagram gives no record.
@@ -352,9 +352,9 @@ log { source(s_src); destination(d_smeltr); };`;
   <dl>
     <dt><strong>The sender cannot connect</strong></dt>
     <dd>
-      Check that the port is open on every worker and that the sender's address reaches them. An
-      identity with authorities refuses a connection without a certificate that chains to one of
-      them.
+      Check that the port is open on every worker and that the sender's address reaches them. A
+      receiver with <code>authorities</code> refuses a connection without a certificate that chains to
+      one of them.
     </dd>
     <dt><strong>The sender connects and is closed at once</strong></dt>
     <dd>

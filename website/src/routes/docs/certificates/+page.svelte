@@ -4,6 +4,7 @@
     { id: 'model', title: 'Choose the trust model' },
     { id: 'download', title: 'Obtain and verify the public CA' },
     { id: 'list', title: 'Keep certificates in the list' },
+    { id: 'connectors', title: 'Give a connector a certificate' },
     { id: 'names', title: 'Names a certificate must cover' },
     { id: 'source', title: 'Choose where the certificate comes from' },
     { id: 'acme', title: 'Order a certificate over ACME' },
@@ -75,9 +76,9 @@
   </p>
   <p>
     To renew a certificate, choose <strong>Replace</strong> and paste the new version. If the leader serves
-    it, the leader switches to the new version; there's no need to choose it again. Connection identities
-    that present it are pointed at the new version in a change, which reaches workers when you deploy
-    it. The certificate the leader serves cannot be deleted.
+    it, the leader switches to the new version; there's no need to choose it again. A worker whose connector
+    names it presents the new version from its next heartbeat. The certificate the leader serves cannot
+    be deleted.
   </p>
   <p>
     To have the leader issue one instead, choose <strong>Issued by this leader</strong>, enter the
@@ -86,11 +87,37 @@
     own authority, so a client verifies it against the leader's
     <a href="#download">ca.pem</a>. When a third of its life remains (30 days of 90, about four
     months of a year), or after you <a href="#rotation">rotate the authority</a>, the leader issues
-    the next version on its own, valid for the same length of time. Workers keep the old version
-    until you update the identities: the Issues page lists each connection identity presenting an
-    older version. Choose
-    <strong>Update identities</strong> on the certificate's row, which opens a change that points them
-    at the newest version, and deploy that change before the old version expires.
+    the next version on its own, valid for the same length of time, and workers present it from
+    their next heartbeat.
+  </p>
+  <h2 id="connectors">Give a connector a certificate</h2>
+  <p>
+    A source, destination or receiver names a certificate from this list by name, under its TLS
+    settings. A source or destination presents it as a client, when the far end asks for one. A
+    receiver serves TLS with it, and without one takes plain traffic. Workers present the newest
+    version of the certificate, and switch to a new version on their own.
+  </p>
+  <ul>
+    <li>
+      <strong>Authorities</strong> are the certificates of your own authority, PEM, pasted into the connector.
+      A source or destination trusts them beside the public roots, Mozilla's and the worker host's own.
+      A receiver with authorities admits only senders whose certificate chains to one of them, and trusts
+      no public root.
+    </li>
+    <li>
+      To trust your own authorities alone, turn off <strong>trust public roots</strong> under Advanced
+      TLS. Then a certificate from any other authority cannot stand in for the far end.
+    </li>
+    <li>
+      With no TLS setting filled, a source or destination presents no certificate and trusts the
+      public roots.
+    </li>
+  </ul>
+  <p>
+    Check that the name a worker connects to is on the far end's certificate. The certificate the
+    leader serves to browsers and workers is chosen under <a href="#source"
+      >where the certificate comes from</a
+    >.
   </p>
   <h2 id="names">Names a certificate must cover</h2>
   <p>
@@ -157,10 +184,9 @@
   <p>
     Let's Encrypt and other certificate authorities issue certificates automatically over ACME. The
     authority checks that each name on the certificate reaches this leader, then issues it. The
-    leader renews it on its own. Each order is a new version of the <strong>acme</strong> entry in
-    Admin → Certificates, which connection identities can present too; move them to a new version
-    with
-    <strong>Update identities</strong>, as for an issued certificate.
+    leader renews it on its own. Each order is a new version of the <strong>acme</strong> entry in Admin
+    → Certificates, which a connector can name too; its workers present each new version from their next
+    heartbeat.
   </p>
   <h3>Before you start</h3>
   <ul>
@@ -222,8 +248,8 @@
     <li>A renewal under a new root is a switch, like the first order.</li>
   </ul>
   <p>
-    The leader keeps renewing after you choose another source, so connection identities that present
-    the certificate named <strong>acme</strong> in Admin → Certificates stay current.
+    The leader keeps renewing after you choose another source, so connectors that name the
+    certificate <strong>acme</strong> in Admin → Certificates stay current.
   </p>
   <h3>Advanced settings</h3>
   <p>Under <strong>Advanced</strong>:</p>

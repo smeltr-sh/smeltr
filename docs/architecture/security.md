@@ -36,7 +36,7 @@ every enrollment code naming it. A worker accepts the leader's certificate
 when it chains to a root the worker trusts and carries the leader's name. The
 roots are the system's, and any the worker was given out of band, which may be an
 authority the leader created for itself; a worker told not to trust the system's
-roots trusts only those it was given (`trust_public`, as an identity). Naming that root by fingerprint is
+roots trusts only those it was given (`trust_public`, as a connector's TLS). Naming that root by fingerprint is
 being given it out of band: the worker fetches the certificate, keeps the one
 that matches and refuses the rest. Such a leader signs the certificate it
 serves rather than being it, so replacing that certificate reaches no worker
@@ -200,16 +200,16 @@ A receiver is where a worker takes the data it did not fetch: every
 worker of the group listens on the receiver's port, and whoever is admitted
 there puts records into the group's pipelines. So a receiver admits a sender
 that presents one of its tokens, each a credential like any other, or, served
-under an identity with authorities, a sender whose certificate chains to one
+under a certificate with authorities, a sender whose certificate chains to one
 of them, and a receiver that would admit anyone is refused at load. A token
-crosses the network in every request; without an identity it crosses in the
+crosses the network in every request; without a certificate it crosses in the
 clear, which suits a receiver behind a balancer that ends TLS for it. A
 token is checked before any of the body is read, and the bodies being read
 count against what the receiver may hold, so a sender without one cannot
 make a worker hold anything. A gzip body counts as it inflates, and is held
 to the receiver's request limit. The health path needs no token, and says
-only whether the receiver takes requests; a receiver whose identity names
-authorities admits no connection without a certificate that chains to them,
+only whether the receiver takes requests; a receiver that names authorities
+admits no connection without a certificate that chains to them,
 the health path's included. Syslog carries no token, so a syslog receiver admits
 by the networks a sender connects from, or by its certificate. Over UDP it has
 no certificate to check, and a datagram's source address can be forged, so a
@@ -305,13 +305,14 @@ stateDiagram-v2
 
 ### A certificate travels with its key
 
-A certificate an identity presents is an entry of the leader's certificate
+A certificate a connector presents is an entry of the leader's certificate
 list: its chain beside the private key, which is sealed like any stored
-secret. The bundle names the entry by name and version, as it names a secret,
-so the chain is no longer read in review with the rest of the bundle, and a
-replaced certificate reaches a worker as a reviewed change moving the
-references. The two halves cannot drift apart: the list refuses a chain and a
-key that do not belong together, and one version holds both.
+secret. The bundle names the entry by name alone, so the chain is not read in
+review with the rest of the bundle, and a worker presents the entry's newest
+version: a replaced or renewed certificate reaches every worker that names it
+at its next heartbeat, and the worker restarts what presents it. The two
+halves cannot drift apart: the list refuses a chain and a key that do not
+belong together, and one version holds both.
 
 A worker is sent the entry's chain with its key. Before it tears down what it
 runs, it refuses a certificate it could not present the way its bundle
@@ -321,17 +322,13 @@ An entry is uploaded, issued by the leader under the authority it already
 holds, for the names and the lifetime an admin gives, so a sender verifies it
 against the leader's root, or ordered over ACME: each order the leader places
 for itself is a version of one entry, which it serves. The leader keeps the
-entries it issues and orders up to date and never moves a worker to a new
-version. It issues an entry again two thirds of the way through its life, as
+entries it issues and orders up to date. It issues an entry again two thirds of the way through its life, as
 soon as it signs under another root, which is what a rotation's cutover leaves
 it doing, and when a regenerated key cannot open its newest version, each time
 with the same names and lifetime; it orders again as the ACME paragraph above
-says. Where it serves the entry, it serves the new version. An identity on an
-older version than the newest is a warning, and an admin moves it: that drafts
-the admin's change moving the references, as replacing a value does, and what
-workers present moves when that change is deployed. The leader holds the key
-of an entry it issues or orders, so it is never replaced by an upload under its
-name.
+says. Where it serves the entry, it serves the new version, and so does every
+worker. The leader holds the key of an entry it issues or orders, so it is
+never replaced by an upload under its name.
 
 A worker is sent the credentials the configuration it is about to run names,
 and no others. That is minimization, not a wall: enrollment binds a worker to
@@ -357,18 +354,18 @@ There is one answer to which implementation performed a given operation.
 ### Kafka's is separate
 
 librdkafka carries its own TLS and SASL over its own OpenSSL, and the Kerberos
-and SASL libraries beside it rest on that same one. An identity is one object
-wherever it is used, so which module enforces it follows the destination
+and SASL libraries beside it rest on that same one. A connector's TLS is one
+shape wherever it is used, so which module enforces it follows the destination
 rather than anything an operator writes:
 
 ```text
                    +---------------- AWS-LC ---------------+
-  leader  --TLS----|                                       |
-  git     --TLS----|  an identity, the leader's authority, |
-  Elastic --TLS----|  enrollment secrets, sealed values    |
+  leader  --TLS----|  a connector's TLS, the leader's      |
+  git     --TLS----|  authority, enrollment secrets,       |
+  Elastic --TLS----|  sealed values                        |
                    +---------------------------------------+
                    +-------- librdkafka's OpenSSL ---------+
-  Kafka   --TLS----|  the same identity, and SASL          |
+  Kafka   --TLS----|  the same TLS, and SASL               |
                    +---------------------------------------+
 ```
 

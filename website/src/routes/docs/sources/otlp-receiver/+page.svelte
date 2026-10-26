@@ -77,8 +77,8 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$OTEL_TOKEN"`;
   <h2 id="example">Example</h2>
   <p>
     Takes OTLP logs on port 4318, over TLS with the
-    <a href="/docs/secrets#identities">identity</a> <code>receiver-tls</code>. Senders present the
-    token held in the worker-host variable <code>OTEL_TOKEN</code>.
+    <a href="/docs/certificates#connectors">certificate</a> <code>receiver-tls</code>. Senders
+    present the token held in the worker-host variable <code>OTEL_TOKEN</code>.
   </p>
   <pre><code>{@html highlight(json(examples.otlpReceiverSource))}</code></pre>
   <ProductScreenshot
@@ -86,7 +86,7 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$OTEL_TOKEN"`;
     height={2000}
     crop={{ x: 608, y: 552, width: 1664, height: 896 }}
     alt="The OTLP receiver form on the Sources page: id otel-logs, port 4318, signal logs, no tokens yet."
-    caption="The same source in the Sources page's add dialog, before you add its token and identity."
+    caption="The same source in the Sources page's add dialog, before you add its token and certificate."
   />
   <p>Takes traces on the same port, from the same senders:</p>
   <pre><code>{@html highlight(json(examples.otlpTracesSource))}</code></pre>
@@ -235,22 +235,22 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$OTEL_TOKEN"`;
   <h2 id="senders">Tokens and certificates</h2>
   <p>
     Anyone a receiver admits can put records into the group's pipelines, so a receiver needs
-    <code>tokens</code>, an <code>identity</code> with authorities, or both. The leader refuses a receiver
-    with neither.
+    <code>tokens</code>, an <code>certificate</code> and <code>authorities</code>, or both. The
+    leader refuses a receiver with neither.
   </p>
   <ul>
     <li>
       <strong>Tokens:</strong> a sender presents one as
       <code>Authorization: Bearer &lt;token&gt;</code>, set as a header on its exporter. The
-      receiver refuses any other request before reading its body. Without an identity, the token
+      receiver refuses any other request before reading its body. Without a certificate, the token
       crosses the network in the clear, so use a token alone only behind a balancer that terminates
       TLS.
     </li>
     <li>
-      <strong>Client certificates:</strong> with an
-      <a href="/docs/secrets#identities">identity</a>, the receiver serves TLS with the identity's
-      certificate and key. If the identity has authorities, every connection, health checks
-      included, must present a certificate that chains to one of them.
+      <strong>Client certificates:</strong> with a
+      <a href="/docs/certificates#connectors">certificate</a>, the receiver serves TLS with it. With
+      <code>authorities</code>, every connection, health checks included, must present a certificate
+      that chains to one of them.
     </li>
   </ul>
   <p>With both, a sender presents a certificate and a token.</p>
@@ -312,9 +312,10 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$OTEL_TOKEN"`;
 
   <h2 id="health">Health check</h2>
   <p>
-    <code>GET /health</code> on the receiver's port answers 200 while every receiver on it takes exports
-    and 503 while one is full, blocked or stopping. It needs no token. Point a balancer's health check
-    or a readiness probe at it, so a busy worker gets no exports until it can take them. Under an identity
+    <code>GET /health</code> on the receiver's port answers 200 while every receiver on it takes
+    exports and 503 while one is full, blocked or stopping. It needs no token. Point a balancer's
+    health check or a readiness probe at it, so a busy worker gets no exports until it can take
+    them. With <code>authorities</code>
     with authorities it needs a client certificate like any other request.
   </p>
 
@@ -369,7 +370,7 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$OTEL_TOKEN"`;
     <dt><strong>The sender cannot connect</strong></dt>
     <dd>
       Check that the port is open on every worker, that the sender's address reaches them, and that
-      its endpoint names the receiver's port. An identity with authorities refuses a connection
+      its endpoint names the receiver's port. A receiver with <code>authorities</code> refuses a connection
       without a certificate that chains to one of them.
     </dd>
     <dt><strong>Every export gets 401</strong></dt>

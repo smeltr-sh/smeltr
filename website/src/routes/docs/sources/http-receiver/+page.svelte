@@ -41,8 +41,8 @@
   <h2 id="example">Example</h2>
   <p>
     Takes what a CI system POSTs to <code>/hooks/ci</code> on port 8088, one record per line, over
-    TLS with the <a href="/docs/secrets#identities">identity</a> <code>receiver-tls</code>. Senders
-    present the token held in the worker-host variable <code>HOOK_TOKEN</code>.
+    TLS with the <a href="/docs/certificates#connectors">certificate</a> <code>receiver-tls</code>.
+    Senders present the token held in the worker-host variable <code>HOOK_TOKEN</code>.
   </p>
   <pre><code>{@html highlight(json(examples.httpReceiverSource))}</code></pre>
   <ProductScreenshot
@@ -50,7 +50,7 @@
     height={2000}
     crop={{ x: 608, y: 486, width: 1664, height: 1028 }}
     alt="The HTTP receiver form on the Sources page: id ci-hooks, port 8088, path /hooks/ci, records one per line, no tokens yet."
-    caption="The same source in the Sources page's add dialog, before you add its token and identity."
+    caption="The same source in the Sources page's add dialog, before you add its token and certificate."
   />
   <p>A sender posts a file of lines like this:</p>
   <pre><code
@@ -88,21 +88,21 @@
   <h2 id="senders">Tokens and certificates</h2>
   <p>
     Whoever a receiver admits puts records into the group's pipelines, so a receiver needs
-    <code>tokens</code>, an <code>identity</code> with authorities, or both. A receiver with neither is
-    refused at load.
+    <code>tokens</code>, an <code>certificate</code> and <code>authorities</code>, or both. A
+    receiver with neither is refused at load.
   </p>
   <ul>
     <li>
       <strong>Tokens:</strong> a sender presents one as
       <code>Authorization: Bearer &lt;token&gt;</code>. Any other request is refused 401 before any
-      of its body is read. Without an identity, the token crosses the network in the clear, which
+      of its body is read. Without a certificate, the token crosses the network in the clear, which
       suits a receiver behind a balancer that ends TLS for it.
     </li>
     <li>
-      <strong>Client certificates:</strong> under an
-      <a href="/docs/secrets#identities">identity</a>, the receiver serves TLS with the identity's
-      certificate and key. When the identity has authorities, every connection must present a
-      certificate that chains to one of them, health checks included.
+      <strong>Client certificates:</strong> under a
+      <a href="/docs/certificates#connectors">certificate</a>, the receiver serves TLS with it. With
+      <code>authorities</code>, every connection must present a certificate that chains to one of
+      them, health checks included.
     </li>
   </ul>
   <p>With both, a sender presents a certificate and a token.</p>
@@ -141,11 +141,11 @@
 
   <h2 id="health">Health check</h2>
   <p>
-    <code>GET /health</code> on the receiver's port answers 200 while the receiver takes requests and
-    503 while it is full, blocked or stopping. It needs no token, and says only whether the receiver takes
-    requests. Point a balancer's health check or a readiness probe at it, so a busy worker gets no requests
-    until it can take them. Under an identity with authorities it needs a client certificate like any
-    other request.
+    <code>GET /health</code> on the receiver's port answers 200 while the receiver takes requests
+    and 503 while it is full, blocked or stopping. It needs no token, and says only whether the
+    receiver takes requests. Point a balancer's health check or a readiness probe at it, so a busy
+    worker gets no requests until it can take them. With <code>authorities</code> it needs a client certificate
+    like any other request.
   </p>
 
   <h2 id="port">Open its port</h2>
@@ -176,8 +176,8 @@
   <dl>
     <dt><strong>The sender cannot connect</strong></dt>
     <dd>
-      Check that the port is open on every worker and that the sender's address reaches them. An
-      identity with authorities refuses a connection with no certificate that chains to them.
+      Check that the port is open on every worker and that the sender's address reaches them. A
+      receiver with <code>authorities</code> refuses a connection with no certificate that chains to them.
     </dd>
     <dt><strong>Every request is answered 401</strong></dt>
     <dd>
