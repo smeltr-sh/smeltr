@@ -2651,9 +2651,8 @@ fn deploy_does_not_load(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Ve
             severity: Severity::Failed,
             since_millis: starts.get(&does_not_load_key(&n.group)).copied(),
             message: format!(
-                "group {:?} does not load at the deployed commit {short}: {}. Its workers keep running what they \
-                 had, and a worker that starts or restarts runs nothing for it. Deploy a fix, or roll back on the \
-                 History page",
+                "group {:?} does not load at the deployed commit {short}: {}. Running workers keep their old config, \
+                 but a restarted worker stops processing. Deploy a fix, or roll back on the History page",
                 n.group, n.why
             ),
         })
