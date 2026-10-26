@@ -174,13 +174,15 @@
 {/snippet}
 
 <!-- A run's sign: its step, or +, ~ or − where no one step is named. A field's lists, held, every
-     step that touched it; a group's is inside the group's own button, so it only names its step. -->
+     step that touched it; a group's is inside the group's own button, so it only names its step.
+     A field inside a run keeps its sign too, drawn only while the line is pointed at or focused. -->
 {#snippet sign(mark: RunMark<Touched>, field: string | null)}
   <span class="sign state-{mark.state}">
-    {#if mark.sign && mark.step && field !== null}
+    {#if mark.step && field !== null}
       {@const by = touched?.(field) ?? []}
       <span
         class="by"
+        class:quiet={!mark.sign}
         role="group"
         onpointerenter={(e) => showBy(field, e.currentTarget)}
         onpointerleave={hideBy}
@@ -416,6 +418,15 @@
 
   .by-glyph:hover {
     color: var(--ink);
+  }
+
+  .by.quiet {
+    opacity: 0;
+  }
+
+  .line:hover .by.quiet,
+  .by.quiet:focus-within {
+    opacity: 0.6;
   }
 
   .by-list {
