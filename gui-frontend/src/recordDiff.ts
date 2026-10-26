@@ -47,6 +47,10 @@ export type RecordLine =
       open: boolean;
       size: number;
       marks: Marks;
+      /** How many fields are beneath it. */
+      leaves: number;
+      /** The paths of the fields beneath it, walked only when asked for. */
+      fields: () => string[];
     }
   | ({ kind: 'field'; depth: number; label: string; type: string | null } & FieldLeaf)
   | { kind: 'more'; path: string; depth: number; shown: number; total: number };
@@ -255,6 +259,8 @@ export interface DiffNode {
   marks: Marks;
   /** The lines it draws with everything beneath it open. */
   lines: number;
+  /** The fields beneath it, or 1 for a field. */
+  leaves: number;
 }
 
 type Shape = 'struct' | 'array' | 'leaf';
@@ -293,6 +299,7 @@ export function diffTree(
       children: [],
       marks: { added: 0, changed: 0, removed: 0 },
       lines: 0,
+      leaves: 0,
     }
   );
 }
@@ -347,7 +354,7 @@ function node(
     const leaf: FieldLeaf = { path, state };
     if (b.has) leaf.before = b.value;
     if (a.has) leaf.after = a.value;
-    return { key, path, kind, type, leaf, children: [], marks, lines: 1 };
+    return { key, path, kind, type, leaf, children: [], marks, lines: 1, leaves: 1 };
   }
   const children: DiffNode[] = [];
   if (kind === 'array') {
@@ -368,13 +375,15 @@ function node(
     if (children.length === 0) return null;
   }
   let lines = 1;
+  let leaves = 0;
   for (const c of children) {
     marks.added += c.marks.added;
     marks.changed += c.marks.changed;
     marks.removed += c.marks.removed;
     lines += c.lines;
+    leaves += c.leaves;
   }
-  return { key, path, kind, type, children, marks, lines };
+  return { key, path, kind, type, children, marks, lines, leaves };
 }
 
 /** Whether nothing of `n` is left after the step. */
@@ -397,13 +406,15 @@ export function withoutRemoved(root: DiffNode): { tree: DiffNode; removed: DiffN
     }
     const marks = { added: 0, changed: 0, removed: 0 };
     let lines = 1;
+    let leaves = 0;
     for (const c of children) {
       marks.added += c.marks.added;
       marks.changed += c.marks.changed;
       marks.removed += c.marks.removed;
       lines += c.lines;
+      leaves += c.leaves;
     }
-    return { ...n, children, marks, lines };
+    return { ...n, children, marks, lines, leaves };
   };
   return { tree: prune(root), removed };
 }
@@ -418,6 +429,10 @@ export function leafLines(nodes: DiffNode[]): RecordLine[] {
   };
   nodes.forEach(walk);
   return out;
+}
+
+function leavesOf(n: DiffNode): string[] {
+  return n.kind === 'leaf' ? [n.path] : n.children.flatMap(leavesOf);
 }
 
 /** About how many lines a page draws: a record opened, a struct or an array
@@ -444,25 +459,37 @@ function chain(n: DiffNode): { label: string; node: DiffNode } {
   return { label, node: n };
 }
 
+/** Whether a node holds anything a step added, changed or removed. */
+const changed = (n: DiffNode) =>
+  n.kind === 'leaf'
+    ? n.leaf!.state !== 'unchanged'
+    : n.marks.added + n.marks.changed + n.marks.removed > 0;
+
 /** The lines to draw. The record's top level and each opened struct or array
  * draw their children a page at a time, then a `more` line; a child starts
  * open only if all of it fits in what is left of the page, so a small value
- * reads whole and a large one folds to one line until asked for. */
-export function recordLines(root: DiffNode, choices: Choices = {}): RecordLine[] {
+ * reads whole and a large one folds to one line until asked for. With
+ * `changedOnly`, a child that holds no change is left out. */
+export function recordLines(
+  root: DiffNode,
+  choices: Choices = {},
+  changedOnly = false,
+): RecordLine[] {
   const out: RecordLine[] = [];
   const pagesOf = (path: string) => PAGE_LINES * (1 + (choices.pages?.(path) ?? 0));
 
   const children = (n: DiffNode, depth: number): number => {
     const budget = pagesOf(n.path);
+    const kids = changedOnly ? n.children.filter(changed) : n.children;
     let used = 0;
     let i = 0;
-    for (; i < n.children.length; i++) {
+    for (; i < kids.length; i++) {
       // At least one, however long: a page is never empty.
       if (i > 0 && used >= budget) break;
-      used += draw(n.children[i], depth, budget - used);
+      used += draw(kids[i], depth, budget - used);
     }
-    if (i < n.children.length) {
-      out.push({ kind: 'more', path: n.path, depth, shown: i, total: n.children.length });
+    if (i < kids.length) {
+      out.push({ kind: 'more', path: n.path, depth, shown: i, total: kids.length });
       used++;
     }
     return used;
@@ -489,6 +516,8 @@ export function recordLines(root: DiffNode, choices: Choices = {}): RecordLine[]
       open,
       size: n.children.length,
       marks: n.marks,
+      leaves: n.leaves,
+      fields: () => leavesOf(n),
     });
     if (!open) return 1;
     const drawn = children(n, depth + 1);
@@ -499,23 +528,26 @@ export function recordLines(root: DiffNode, choices: Choices = {}): RecordLine[]
   return out;
 }
 
-/** Every field a step changed, by its whole path, a page at a time. */
-export function changedLines(root: DiffNode, choices: Choices = {}): RecordLine[] {
-  const changed: DiffNode[] = [];
+/** Every field by its whole path, a page at a time; with `changedOnly`, only
+ * the fields a step changed. */
+export function pathLines(
+  root: DiffNode,
+  choices: Choices = {},
+  changedOnly = false,
+): RecordLine[] {
+  const fields: DiffNode[] = [];
   const walk = (n: DiffNode) => {
-    if (n.kind === 'leaf') {
-      if (n.leaf!.state !== 'unchanged') changed.push(n);
-      return;
-    }
-    if (n.marks.added + n.marks.changed + n.marks.removed > 0) n.children.forEach(walk);
+    if (changedOnly && !changed(n)) return;
+    if (n.kind === 'leaf') fields.push(n);
+    else n.children.forEach(walk);
   };
   walk(root);
-  const shown = Math.min(changed.length, PAGE_LINES * (1 + (choices.pages?.(root.path) ?? 0)));
-  const out: RecordLine[] = changed
+  const shown = Math.min(fields.length, PAGE_LINES * (1 + (choices.pages?.(root.path) ?? 0)));
+  const out: RecordLine[] = fields
     .slice(0, shown)
     .map((n) => ({ ...n.leaf!, kind: 'field', depth: 0, label: n.path, type: n.type }));
-  if (shown < changed.length)
-    out.push({ kind: 'more', path: root.path, depth: 0, shown, total: changed.length });
+  if (shown < fields.length)
+    out.push({ kind: 'more', path: root.path, depth: 0, shown, total: fields.length });
   return out;
 }
 
@@ -557,4 +589,59 @@ export function countStates(fields: FieldLeaf[]): {
     else if (f.state === 'removed') removed++;
   }
   return { added, changed, removed };
+}
+
+/** How a line is marked. Changed lines run together as one bar, from the depth where the run
+ * starts; the run's sign is shown where it starts and wherever the step that last touched the
+ * line changes within it. */
+export interface RunMark<S> {
+  state: FieldState;
+  /** The step that last touched every field of the line, or null where none or several did. */
+  step: S | null;
+  /** The first line of its run. */
+  start: boolean;
+  /** The depth its run starts at. */
+  depth: number;
+  /** The line shows its sign. */
+  sign: boolean;
+}
+
+/** Each of `lines`' marks, with `stepOf` naming the step that last touched a field, and `same`
+ * saying two of them are one. A group is in a run when every field beneath it has one state, or,
+ * folded, when anything beneath it changed: its fields are not drawn to say so themselves. */
+export function runMarks<S>(
+  lines: RecordLine[],
+  stepOf: (path: string) => S | null,
+  same: (a: S | null, b: S | null) => boolean,
+): RunMark<S>[] {
+  let prev: RunMark<S> | null = null;
+  return lines.map((line) => {
+    let state: FieldState = 'unchanged';
+    let step: S | null = null;
+    if (line.kind === 'field') {
+      state = line.state;
+      if (state !== 'unchanged') step = stepOf(line.path);
+    } else if (line.kind === 'group') {
+      const { added, changed, removed } = line.marks;
+      // Removed is never whole here: a struct with nothing left is in the removed fold
+      // (`withoutRemoved`), so a group with removals is an array that kept some elements.
+      if (added === line.leaves) state = 'added';
+      else if (changed === line.leaves) state = 'changed';
+      else if (!line.open && added + changed + removed > 0) state = 'changed';
+      if (state !== 'unchanged' && (added === line.leaves || changed === line.leaves)) {
+        const [first, ...rest] = line.fields().map(stepOf);
+        if (rest.every((s) => same(s, first))) step = first;
+      }
+    }
+    const start = state !== 'unchanged' && prev?.state !== state;
+    const mark: RunMark<S> = {
+      state,
+      step,
+      start,
+      depth: start || state === 'unchanged' ? line.depth : prev!.depth,
+      sign: start || (state !== 'unchanged' && !same(step, prev!.step)),
+    };
+    prev = mark;
+    return mark;
+  });
 }

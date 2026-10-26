@@ -31,6 +31,9 @@
   import FindBox, { type FindFilter } from './FindBox.svelte';
   import RemovableChip from './RemovableChip.svelte';
   import FieldsMenu from './FieldsMenu.svelte';
+  import ChipPicker from './ChipPicker.svelte';
+  import GearIcon from './GearIcon.svelte';
+  import Toggle from './Toggle.svelte';
   import SortButton from './SortButton.svelte';
   import FoldAllButton from './FoldAllButton.svelte';
   import { TableSort } from './sort.svelte';
@@ -108,11 +111,20 @@
     stage: Snippet;
   } = $props();
 
-  // Every field, or only the ones this step touched. A mapping step rewrites
-  // most of a record, so the filter is what makes a later step's handful of
-  // changes findable without reading the whole thing.
-  let changedOnly = $state(false);
-  let showTypes = $state(true);
+  // How a record is drawn, the reader's own, kept in this browser for every pipeline. Only what
+  // changed: a mapping step rewrites most of a record, so the filter is what makes a later step's
+  // handful of changes findable without reading the whole thing.
+  const VIEW_KEY = 'smeltr-records-view';
+  type View = { changedOnly: boolean; fullPaths: boolean; showTypes: boolean };
+  const VIEW: View = { changedOnly: false, fullPaths: false, showTypes: true };
+  const savedView = storedJson<Record<string, unknown>>(VIEW_KEY, {});
+  let view = $state<View>({ ...VIEW });
+  for (const k of Object.keys(VIEW) as (keyof View)[]) {
+    const saved = savedView?.[k];
+    if (typeof saved === 'boolean') view[k] = saved;
+  }
+  $effect(() => store(VIEW_KEY, JSON.stringify(view)));
+  let viewOpen = $state(false);
 
   // What the record's source set is shown on every row, read or not, so an
   // author sees what there is to read. It is never delivered, so the
@@ -432,7 +444,7 @@
   let columnWidths = $derived.by(() => {
     const sized = rowsMaps.slice(0, SIZED_ROWS);
     return columns.map((path) => {
-      const type = showTypes ? columnTypes.get(path) : null;
+      const type = view.showTypes ? columnTypes.get(path) : null;
       // The name, `: ` and its type, and the sort arrow.
       let w = Math.max(COLUMN_MIN_CH, path.length + (type ? type.length + 2 : 0) + 2);
       for (const m of sized) {
@@ -610,6 +622,21 @@
 
   {#if !selectedSample}{@render stage()}{/if}
 
+  {#snippet viewMenu()}
+    <ChipPicker kind="columns" bind:open={viewOpen} title="View" ariaLabel="View">
+      {#snippet face()}<GearIcon />{/snippet}
+      {#snippet children()}
+        <div class="view-menu">
+          <label class="inline-checkbox"
+            ><Toggle bind:checked={view.changedOnly} /> Only changed fields</label
+          >
+          <label class="inline-checkbox"><Toggle bind:checked={view.fullPaths} /> Full paths</label>
+          <label class="inline-checkbox"><Toggle bind:checked={view.showTypes} /> Types</label>
+        </div>
+      {/snippet}
+    </ChipPicker>
+  {/snippet}
+
   {#snippet fieldsMenu(records: number | null)}
     <FieldsMenu
       fields={menuFields}
@@ -626,9 +653,20 @@
   {/snippet}
 
   <div class="records">
-    <div class="output-search">
+    <div class="output-bar">
       {@render sampleMenu()}
       {#if gridRows && gridRows.length > 0}
+        <span class="grow"></span>
+        {@render fieldsMenu(gridRows.length)}
+        {@render viewMenu()}
+      {:else if !selectedSample && dictionary}
+        <!-- No records to count, but the steps compiled: what they declare. -->
+        <span class="grow"></span>
+        {@render fieldsMenu(null)}
+      {/if}
+    </div>
+    {#if gridRows && gridRows.length > 0}
+      <div class="output-bar">
         <FindBox
           bind:query={outputQuery}
           bind:filter={find}
@@ -653,7 +691,13 @@
             <span class="dim">{item.count}</span>
           {/snippet}
         </FindBox>
-        {#if outputQuery.trim() || chips.length > 0}
+      </div>
+    {/if}
+    <InlineError message={findError} />
+    {#if selectedSample}
+      {@render stage()}
+      <div class="output-actions">
+        {#if gridRows && (outputQuery.trim() || chips.length > 0)}
           <span class="dim count">{gridOrder.length} of {gridRows.length} rows</span>
         {/if}
         {#if failingCount > 0}
@@ -664,35 +708,6 @@
             onclick={() => toggleChip({ kind: 'failing' })}>⚠ {failingCount} failing</button
           >
         {/if}
-        {@render fieldsMenu(gridRows.length)}
-      {:else if !selectedSample && dictionary}
-        <!-- No records to count, but the steps compiled: what they declare. -->
-        <span class="grow"></span>
-        {@render fieldsMenu(null)}
-      {/if}
-    </div>
-    <InlineError message={findError} />
-    {#if selectedSample}
-      {@render stage()}
-      <div class="output-actions">
-        <button
-          type="button"
-          class="toggle"
-          class:on={changedOnly}
-          aria-pressed={changedOnly}
-          onclick={() => (changedOnly = !changedOnly)}
-        >
-          Show only changed fields
-        </button>
-        <button
-          type="button"
-          class="toggle"
-          class:on={showTypes}
-          aria-pressed={showTypes}
-          onclick={() => (showTypes = !showTypes)}
-        >
-          Show types
-        </button>
         <span class="grow"></span>
         <button
           type="button"
@@ -740,7 +755,7 @@
                       ><SortButton sort={gridSort} key={path}
                         ><span class="head-name"
                           ><span class="path-prefix">{name.prefix}</span>{name.leaf}</span
-                        >{#if showTypes && columnTypes.get(path)}<span class="head-type"
+                        >{#if view.showTypes && columnTypes.get(path)}<span class="head-type"
                             >{': '}{columnTypes.get(path)}</span
                           >{/if}</SortButton
                       ></th
@@ -839,8 +854,9 @@
                             after={sides.after}
                             keep={unfoldedPath}
                             declared={sides.declared}
-                            {changedOnly}
-                            {showTypes}
+                            changedOnly={view.changedOnly}
+                            fullPaths={view.fullPaths}
+                            showTypes={view.showTypes}
                             touched={touchedOn(row.row)}
                             {onjump}
                           />
@@ -864,10 +880,16 @@
 </section>
 
 <style>
-  .output-search {
+  /* The sample and what is shown of it on one row, and the search on the next: the search has a
+     row of its own to be read in. */
+  .output-bar {
     display: flex;
     align-items: center;
     gap: 0.7rem;
+  }
+
+  .output-bar + .output-bar {
+    margin-top: 0.5rem;
   }
   .count {
     font-size: var(--text-note);
@@ -937,7 +959,8 @@
   .output-actions {
     display: flex;
     align-items: center;
-    margin-top: 0.75rem;
+    gap: 0.7rem;
+    margin-top: 0.5rem;
   }
 
   .results {
@@ -1128,10 +1151,21 @@
     opacity: 0.6;
   }
 
-  .toggle.on {
-    border-color: var(--ink);
-    color: var(--ink);
-    font-weight: 600;
+  .view-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    white-space: nowrap;
+  }
+
+  .inline-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    font-size: var(--text-label);
+    font-weight: 400;
   }
 
   .state-added {
