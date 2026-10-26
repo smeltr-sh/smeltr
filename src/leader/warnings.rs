@@ -2314,7 +2314,7 @@ fn worker_not_deploying_its_target(
                         format!("worker {worker_id} has not deployed {desired}: {why}. It is still running what it had")
                     }
                     (Some(why), None) => {
-                        format!("worker {worker_id} has not deployed {desired}: {why}. It is running nothing")
+                        format!("worker {worker_id} has not deployed {desired}: {why}. It is not processing")
                     }
                     (None, _) => format!("worker {worker_id} has found {desired} and is not running it; read its logs"),
                 },
@@ -3230,7 +3230,7 @@ mod tests {
             raised.message
         );
         assert!(
-            raised.message.contains("running nothing"),
+            raised.message.contains("not processing"),
             "it does not say what is actually true of it: {}",
             raised.message
         );
