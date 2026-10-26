@@ -246,6 +246,48 @@ fn secrets_at(repo: &std::path::Path, rev: &str, group_id: &str) -> Result<Quote
     Ok(Quoted { secrets, certificates })
 }
 
+/// Why `chain` cannot be the next version of the certificate `name`: each connector presenting `name` that could
+/// not present it, in a bundle the fleet runs or would run once released -- the deployed commit, each of `running`'s
+/// `(group, commit)`, and `main`'s head. A worker refuses a restart onto such a version and keeps running the old
+/// one, so storing it would leave the fleet on a version the list no longer shows as newest.
+///
+/// Blocking; the caller is inside `spawn_blocking`.
+fn unpresentable(
+    data_dir: &std::path::Path,
+    running: &std::collections::HashSet<(String, String)>,
+    name: &str,
+    chain: &str,
+) -> Vec<String> {
+    let repo = git::repo_path(data_dir);
+    if !git::repo_ready(&repo) {
+        return Vec::new();
+    }
+    let mut at: Vec<(String, String)> = running.iter().cloned().collect();
+    for rev in [git::deployed(&repo), git::main_head(&repo)].into_iter().flatten() {
+        at.extend(
+            tree::groups_at(&repo, &rev)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|group| (group, rev.clone())),
+        );
+    }
+    let mut out: Vec<String> = Vec::new();
+    for (group, rev) in at {
+        let Ok(system) = tree::load_group_at(&repo, &rev, &group) else {
+            continue;
+        };
+        out.extend(
+            (system.topology.tls())
+                .filter(|tls| tls.certificate.as_deref() == Some(name))
+                .filter_map(|tls| crate::plan::topology::presented_error(tls, chain))
+                .map(|why| format!("in the group {group:?}, {why}")),
+        );
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// Every version [`deployed_versions`] names, and those `main`'s head names: what retention and deletion keep. A
 /// rollback holds the fleet on the deployed commit while releasing deploys `main`, so either may be what runs next.
 /// A group that does not load at `main`'s head names nothing there: its workers refuse that bundle, and `running`
@@ -2720,7 +2762,17 @@ pub async fn replace_certificate(
         )));
     }
     match is_certificate(&state, &name).await {
-        Ok(true) => store_value(state, name, req.private_key, Some(req.certificate)).await,
+        Ok(true) => {
+            let running = running_deployments(&state).await;
+            let (data_dir, wanted, chain) = (state.data_dir.clone(), name.clone(), req.certificate.clone());
+            let refused = tokio::task::spawn_blocking(move || unpresentable(&data_dir, &running, &wanted, &chain))
+                .await
+                .unwrap_or_default();
+            if !refused.is_empty() {
+                return Json(Envelope::failed(refused.into_iter().map(Into::into).collect()));
+            }
+            store_value(state, name, req.private_key, Some(req.certificate)).await
+        }
         Ok(false) => Json(Envelope::failed_one(format!("no certificate named {name:?}"))),
         Err(e) => Json(Envelope::failed_one(e)),
     }
@@ -5877,6 +5929,51 @@ mod certificate_list_tests {
                 .contains("renews it itself, so it cannot be replaced"),
             "{:?}",
             out.errors
+        );
+    }
+
+    /// A self-signed certificate and its key, its Extended Key Usage naming `purposes` where any are given.
+    fn for_purposes(purposes: Vec<rcgen::ExtendedKeyUsagePurpose>) -> CertificateRequest {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["receiver.example.com".to_string()]).unwrap();
+        params.extended_key_usages = purposes;
+        CertificateRequest {
+            name: "acme".to_string(),
+            description: String::new(),
+            certificate: params.self_signed(&key).unwrap().pem(),
+            private_key: key.serialize_pem(),
+        }
+    }
+
+    /// A worker refuses to restart onto a version its connector cannot present and keeps running the old one, so the
+    /// leader refuses to store it, naming the connector.
+    #[tokio::test]
+    async fn a_version_its_connectors_cannot_present_is_refused() {
+        use rcgen::ExtendedKeyUsagePurpose::{ClientAuth, ServerAuth};
+        let state = issuing("replace-purpose");
+        assert!(
+            create_certificate(State(state.clone()), Json(for_purposes(vec![ServerAuth])))
+                .await
+                .ok
+        );
+        let replace = |req| replace_certificate(State(state.clone()), Path("acme".to_string()), Json(req));
+
+        let refused = replace(for_purposes(vec![ClientAuth])).await.0;
+        assert!(!refused.ok);
+        let message = &refused.errors[0].message;
+        assert!(
+            message.contains(r#"in the group "g", source "receiver""#) && message.contains("server authentication"),
+            "{message}"
+        );
+        assert_eq!(
+            newest_chain(state.store.as_ref(), "acme").unwrap().unwrap().0,
+            1,
+            "nothing was stored"
+        );
+
+        assert!(
+            replace(for_purposes(Vec::new())).await.0.ok,
+            "no Extended Key Usage permits either side"
         );
     }
 

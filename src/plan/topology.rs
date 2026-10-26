@@ -3061,7 +3061,13 @@ impl HeldSecrets {
 /// never has a whole [`TopologyConfig`] to ask -- can run the same check on the one it has.
 pub fn certificate_error(tls: &Tls, held: &HeldSecrets) -> Option<String> {
     let (chain, _) = held.certificate(tls.certificate.as_ref()?)?;
-    crate::io::trust::refuse_unless_usable(&chain, tls.side)
+    presented_error(tls, &chain)
+}
+
+/// Why `chain` cannot be presented from the side `tls` presents its certificate from. The leader asks it of a new
+/// version before storing it, with the same answer a worker would give.
+pub fn presented_error(tls: &Tls, chain: &str) -> Option<String> {
+    crate::io::trust::refuse_unless_usable(chain, tls.side)
         .err()
         .map(|why| {
             let verb = if tls.side == crate::io::trust::Side::Server {
