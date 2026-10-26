@@ -77,6 +77,48 @@ test('every worker follows the certificate from Leader issued to Uploaded and ba
   await api.ctx.dispose();
 });
 
+test('a certificate this leader issued is served at once, and so is the way back to its own', async ({
+  fleet,
+  page,
+}) => {
+  // S6
+  test.setTimeout(300_000);
+  const { api, heard } = await fleetOfTwo(fleet, page, 'w-same-root');
+  const own = await api.get('/api/settings/certificates');
+  const names = [...own.names, ...(own.workerName ? [own.workerName] : [])];
+  await api.post('/api/certificates/issued', {
+    name: 'same-root',
+    description: '',
+    names,
+    validityDays: 365,
+  });
+
+  // Under the root the fleet holds already, so nothing is published first.
+  let served = await openCertificates(page);
+  await source(served, 'Uploaded').click();
+  await served.getByRole('combobox', { name: 'Certificate' }).selectOption('same-root');
+  await served.getByRole('button', { name: 'Serve this certificate' }).click();
+  await inForce(served, 'Uploaded');
+  await heard();
+  const issued = await api.get('/api/settings/certificates');
+  expect(issued.entry).toBe('same-root');
+  expect(issued.rotation).toBeNull();
+
+  served = await openCertificates(page);
+  await source(served, 'Leader issued').click();
+  await served.getByRole('button', { name: 'Switch to Leader issued' }).click();
+  await inForce(served, 'Leader issued');
+  await expect(served.getByRole('heading', { name: /in progress/ })).toHaveCount(0);
+  await heard();
+  const back = await api.get('/api/settings/certificates');
+  expect(back.entry).toBe('leader');
+  expect(back.supplied).toBe(false);
+  expect(back.rotation).toBeNull();
+  // No version of its own was issued for the way back: the one it served before is served again.
+  expect(back.served.fingerprint).toBe(own.served.fingerprint);
+  await api.ctx.dispose();
+});
+
 test('a renewal is served while the switch back to Leader issued waits for a worker', async ({
   fleet,
   page,

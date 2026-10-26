@@ -191,8 +191,18 @@ test('the leader certificate is the certificate leader in the list', async ({ ad
   // The page shortens a fingerprint to its two ends, which is what a person compares.
   await expect(served.getByText(/^[0-9a-f]{16}…[0-9a-f]{8}$/)).toBeVisible();
 
+  await served.getByRole('button', { name: 'About Leader certificate' }).click();
+  await expect(served).toContainText(
+    'This leader issued it under the current authority and renews it on its own.',
+  );
+  await expect(served.getByRole('button', { name: /^Issue/ })).toHaveCount(0);
+
   await openAdmin(admin, 'Certificates');
   await expect(admin.getByRole('cell', { name: /^leader served issued$/ })).toBeVisible();
+  const row = admin
+    .getByRole('row')
+    .filter({ has: admin.getByRole('cell', { name: /^leader served/ }) });
+  await expect(row.getByRole('button', { name: 'Delete' })).toHaveCount(0);
 });
 
 test('System and Cluster show the build each machine runs', async ({
