@@ -2208,6 +2208,7 @@ pub struct SqlSourceDto {
     pub password: Option<SecretRefDto>,
     /// `"require"` (default) encrypts and verifies the server's certificate and name; `"disable"` sends
     /// everything, the password too, in the clear.
+    // The file's `tls` is this mode; `tls` in Rust is the TLS settings below, as on every other connector.
     #[serde(default, rename = "tls", skip_serializing_if = "SqlTlsDto::is_default")]
     pub encrypted: SqlTlsDto,
     #[serde(flatten)]

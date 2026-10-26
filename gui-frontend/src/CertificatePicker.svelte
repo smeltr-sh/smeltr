@@ -22,7 +22,7 @@
     value: string | undefined;
     label?: string;
     /** What the chosen certificate must carry, for the page that knows. */
-    note?: string | Snippet;
+    note?: Snippet;
     help?: Snippet | string;
     /** The setting's name in the file, for its save errors (`Field`). */
     field?: string;
@@ -45,10 +45,8 @@
 {#snippet shownNote()}
   {#if chosen}
     {chosen.names.join(', ') || chosen.subject} · {expiry(chosen.notAfterMillis)}
-  {:else if typeof note === 'function'}
-    {@render note()}
   {:else if note}
-    {note}
+    {@render note()}
   {/if}
   {#if chosen || note}&mdash;{/if}
   <a href="#/admin/certificates/new">add a certificate</a>
