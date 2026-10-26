@@ -1639,6 +1639,15 @@ impl DestinationKind {
         }
     }
 
+    /// Whether the destination writes files, and so acknowledges a batch only once the file holding it is
+    /// committed: when it holds most of its buffer, or its interval passes.
+    pub fn writes_files(&self) -> bool {
+        matches!(
+            self,
+            DestinationKind::Objects(_) | DestinationKind::Iceberg(_) | DestinationKind::Delta(_)
+        )
+    }
+
     /// The destination's `bufferBytes`: all it holds of what it has not yet delivered, egress's queue and, for Kafka,
     /// librdkafka's own queue together.
     pub fn buffer_bytes(&self) -> usize {

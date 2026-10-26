@@ -1299,15 +1299,21 @@ fn deploy(
         let stage = Egress::start(d.id, &d.name, client, d.kind.stall_after(), queue_budget(d), handle)
             .with_pool(ready.clone())
             .with_captures(captures.clone());
-        // Every destination is paced: up to its share of the pool when sized to the worker's memory, else up to the
-        // buffer it states or its kind's default.
         let stage = match borrows(d) {
             Some(pool) => stage
                 .borrowing(pool.clone(), batch_bytes, memory::queue_charge(&d.kind))
                 .charging_senders(memory::SENDER_BYTES),
             None => stage,
-        }
-        .paced(batch_bytes);
+        };
+        // Every destination but one that writes files is paced: up to its share of the pool when sized to the
+        // worker's memory, else up to the buffer it states or its kind's default. A file destination acknowledges a
+        // batch only once its file commits, at most of its buffer, so what it holds is the file it is building, not
+        // what is on the wire.
+        let stage = if d.kind.writes_files() {
+            stage
+        } else {
+            stage.paced(batch_bytes)
+        };
         // A destination set to block keeps what it refuses and sends it again, since the fix is usually its own.
         egress.push(if d.on_reject == crate::plan::config::Answer::Block {
             stage.holding_refusals()
