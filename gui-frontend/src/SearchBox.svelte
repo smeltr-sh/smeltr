@@ -159,9 +159,10 @@
 </div>
 
 <style>
+  /* As narrow as the box and what sits in it can go, and no narrower: a caller's row wraps first. */
   .search-wrap {
     flex: 1;
-    min-width: 0;
+    min-width: min-content;
   }
 
   /* The box is the label, so what sits in it beside the text reads as part of it. */
@@ -181,9 +182,10 @@
     border-color: var(--accent);
   }
 
+  /* Never narrower than a few words, so there is always room to type. */
   input {
     flex: 1;
-    min-width: 0;
+    min-width: 8rem;
     border: 0;
     outline: 0;
     background: transparent;
