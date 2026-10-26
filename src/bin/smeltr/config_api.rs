@@ -3052,13 +3052,11 @@ mod tests {
                 "{path} is as it was"
             );
         }
-        for path in ["routes.json"] {
-            assert_eq!(
-                config_file::FileSet::read(&mut files, path).unwrap(),
-                None,
-                "{path} stays absent"
-            );
-        }
+        assert_eq!(
+            config_file::FileSet::read(&mut files, "routes.json").unwrap(),
+            None,
+            "routes.json stays absent"
+        );
         let raw = reading.raw().file;
         assert_eq!((raw.sources.len(), raw.pipelines.len()), (1, 2), "both saves landed");
         std::fs::remove_dir_all(&data).ok();

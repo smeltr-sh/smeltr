@@ -2575,10 +2575,11 @@ pub fn encryption_key_warnings(
                 Unopenable::Certificate(name) => (
                     SubjectKind::Certificate,
                     match kept.get(name) {
-                        Some(crate::leader::store::Kept::Issued(_)) => format!(
+                        Some(crate::leader::store::Kept::Issued(_)) => {
                             "encrypted with a key this leader no longer has. The leader issues a new version within \
                              the hour, and workers take it on their next heartbeat"
-                        ),
+                                .to_string()
+                        }
                         Some(crate::leader::store::Kept::Acme) => format!(
                             "encrypted with a key this leader no longer has. Order it again in {LEADER_CERTIFICATE_TAB}"
                         ),
