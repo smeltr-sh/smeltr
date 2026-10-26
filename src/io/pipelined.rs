@@ -219,6 +219,7 @@ impl<S: Sender> Pool<S> {
                 self.stashed.push(BatchCompletion {
                     batch,
                     rejections: d.rejections,
+                    throttled: d.throttled,
                 });
                 Ok(())
             }
@@ -260,6 +261,7 @@ impl<S: Sender> Pool<S> {
                     out.push(BatchCompletion {
                         batch,
                         rejections: d.rejections,
+                        throttled: d.throttled,
                     });
                 }
                 Ok((_, Err(e))) => {
@@ -295,6 +297,7 @@ impl<S: Sender> Pool<S> {
                     out.push(BatchCompletion {
                         batch,
                         rejections: d.rejections,
+                        throttled: d.throttled,
                     });
                 }
                 Ok((_, Err(e))) => {

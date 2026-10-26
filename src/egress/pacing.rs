@@ -16,6 +16,11 @@
 //! that an eight-step cycle probes at 1.25 and drains at 0.75, so a link that gets faster or slower is followed. A
 //! least round trip ten seconds old is measured again, as BBR's ProbeRTT does: the target drops to one batch until a
 //! batch sent alone comes back.
+//!
+//! A destination that asks to be sent less -- a 429, a 503, a bulk item refused for a full queue -- is answered as
+//! BBRv2 answers loss: once a round trip, the most it may hold is cut to seven tenths of what it held. Each probe it
+//! goes through without asking, held to that, grows it back by a batch, then two, then four, until it no longer
+//! binds, or is past the ceiling and forgotten. The rate alone would not see it: a throttled destination answers fast.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -40,6 +45,9 @@ const STARTUP_GAIN: f64 = 2.0;
 /// The steady-state cycle, one step per round trip: probe, drain, cruise.
 const PROBE_CYCLE: [f64; 8] = [1.25, 0.75, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
 
+/// What a destination that asked to be sent less is cut to: BBRv2's beta.
+const THROTTLE_CUT: f64 = 0.7;
+
 /// What the model knew when a batch was handed to the destination, kept with the batch until it comes back.
 #[derive(Clone, Copy, Debug)]
 pub struct Sent {
@@ -61,6 +69,8 @@ pub struct Completion {
     /// The source was not refused room in the queue before this batch went, so the budget, and with it the link,
     /// was not the bound on this sample: the source was.
     pub app_limited: bool,
+    /// The destination asked to be sent less while delivering it.
+    pub throttled: bool,
 }
 
 /// The pacing model for one destination.
@@ -93,6 +103,12 @@ pub struct Pacing {
     full_pipe: bool,
     rate_at_last_growth: f64,
     rounds_without_growth: u32,
+    /// The most the target may be since the destination asked to be sent less, in whole batches: BBRv2's
+    /// `inflight_hi`. Cut at most once a round trip, and grown at the end of a probe it did not ask in.
+    throttled_at: Option<usize>,
+    round_throttled: bool,
+    /// Batches `throttled_at` grows by after the next probe without a throttle. Doubles each time.
+    regrowth: usize,
 }
 
 impl Pacing {
@@ -117,6 +133,9 @@ impl Pacing {
             full_pipe: false,
             rate_at_last_growth: 0.0,
             rounds_without_growth: 0,
+            throttled_at: None,
+            round_throttled: false,
+            regrowth: 1,
         }
     }
 
@@ -175,6 +194,15 @@ impl Pacing {
 
     /// A batch came back acknowledged. Updates the estimates and the target.
     pub fn completed(&mut self, c: Completion, now: Instant) {
+        if c.throttled && !self.round_throttled {
+            let held = self.dispatched.saturating_sub(self.delivered) as f64;
+            let batches = (THROTTLE_CUT * held / self.batch as f64).floor().max(1.0);
+            self.throttled_at = Some((batches as usize).saturating_mul(self.batch));
+            self.round_throttled = true;
+            self.regrowth = 1;
+            // The destination said where its limit is: startup has found it.
+            self.full_pipe = true;
+        }
         self.delivered += c.bytes as u64;
         let rtt = now.saturating_duration_since(c.sent.at);
         let expired = self
@@ -240,6 +268,18 @@ impl Pacing {
     /// A round trip ended: judge whether the pipe is full yet.
     fn end_round(&mut self) {
         let link_bound = std::mem::take(&mut self.round_link_bound);
+        // A probe the destination took everything in, held at its last limit: try it with more. Once a cycle, so a
+        // destination that asks for less is asked again only as often as BBR probes.
+        let probed = self.full_pipe && PROBE_CYCLE[(self.rounds as usize).wrapping_sub(1) % PROBE_CYCLE.len()] > 1.0;
+        if !std::mem::take(&mut self.round_throttled)
+            && probed
+            && let Some(at) = self.throttled_at
+            && self.target >= at
+        {
+            let grown = at.saturating_add(self.regrowth.saturating_mul(self.batch));
+            self.throttled_at = (grown < self.ceiling).then_some(grown);
+            self.regrowth = self.regrowth.saturating_mul(2);
+        }
         // A round the source set the pace of says nothing of whether the link has more.
         if self.full_pipe || !link_bound {
             return;
@@ -280,6 +320,7 @@ impl Pacing {
         } else {
             0
         };
+        let wanted = self.throttled_at.map_or(wanted, |at| wanted.min(at));
         self.target = wanted.clamp(self.batch, self.ceiling);
     }
 }
@@ -296,11 +337,24 @@ mod tests {
     /// moment the target has room for it, and the link lands them one transmission time apart, the first a round
     /// trip after it was sent. Answers the target at each round trip's end.
     fn drive(p: &mut Pacing, rtt: Duration, capacity: f64, rounds: usize, app_limited: bool) -> Vec<usize> {
+        drive_throttling(p, rtt, capacity, rounds, app_limited, usize::MAX)
+    }
+
+    /// As [`drive`], to a destination that asks to be sent less for every batch sent while it held more than
+    /// `limit` bytes.
+    fn drive_throttling(
+        p: &mut Pacing,
+        rtt: Duration,
+        capacity: f64,
+        rounds: usize,
+        app_limited: bool,
+        limit: usize,
+    ) -> Vec<usize> {
         let per_batch = Duration::from_secs_f64(BATCH as f64 / capacity);
         let start = Instant::now();
         let mut now = start;
-        // (lands at, as sent), in landing order.
-        let mut in_flight: VecDeque<(Instant, Sent)> = VecDeque::new();
+        // (lands at, as sent, throttled), in landing order.
+        let mut in_flight: VecDeque<(Instant, Sent, bool)> = VecDeque::new();
         let mut link_free_at = start;
         let mut targets = Vec::new();
         let mut next_round = start + rtt;
@@ -310,16 +364,17 @@ mod tests {
                 let sent = p.dispatched(BATCH, now);
                 let lands = (now + rtt).max(link_free_at + per_batch);
                 link_free_at = lands;
-                in_flight.push_back((lands, sent));
+                in_flight.push_back((lands, sent, held + BATCH > limit));
                 continue;
             }
-            let (lands, sent) = in_flight.pop_front().expect("something in flight");
+            let (lands, sent, throttled) = in_flight.pop_front().expect("something in flight");
             now = lands;
             p.completed(
                 Completion {
                     bytes: BATCH,
                     sent,
                     app_limited,
+                    throttled,
                 },
                 now,
             );
@@ -393,6 +448,7 @@ mod tests {
                     bytes: BATCH,
                     sent,
                     app_limited: true,
+                    throttled: false,
                 },
                 now + rtt,
             );
@@ -420,6 +476,7 @@ mod tests {
                 bytes: BATCH,
                 sent,
                 app_limited: false,
+                throttled: false,
             },
             late,
         );
@@ -442,6 +499,7 @@ mod tests {
                     bytes: BATCH,
                     sent: s,
                     app_limited: false,
+                    throttled: false,
                 },
                 start + rtt,
             );
@@ -523,6 +581,7 @@ mod tests {
                 bytes: BATCH,
                 sent: queued,
                 app_limited: false,
+                throttled: false,
             },
             later,
         );
@@ -536,11 +595,39 @@ mod tests {
                 bytes: BATCH,
                 sent: alone,
                 app_limited: false,
+                throttled: false,
             },
             later + rtt,
         );
         assert_eq!(p.round_trip(), Some(rtt));
         assert!(p.rate() >= rate * 0.99, "the probe's samples never lowered the rate");
         assert!(p.target() >= target * 3 / 4, "{} vs {target}", p.target());
+    }
+
+    #[test]
+    fn a_destination_that_asks_for_less_is_held_under_its_limit_and_tried_with_more_after() {
+        let rtt = Duration::from_millis(200);
+        // 100 MiB/s, 200 ms: five batches on the wire, but the destination asks for less past three.
+        let mut p = Pacing::new(BATCH, 1024 * MIB);
+        let targets = drive_throttling(&mut p, rtt, 100.0 * MIB as f64, 200, false, 3 * BATCH);
+        assert!(p.full_pipe, "a throttle ends startup");
+        let settled = &targets[40..];
+        assert!(
+            settled.iter().all(|t| *t <= 5 * BATCH),
+            "never runs on to the link's product for long: {targets:?}"
+        );
+        assert!(
+            settled.iter().filter(|t| **t <= 3 * BATCH).count() > settled.len() / 2,
+            "held at the limit most of the time: {targets:?}"
+        );
+        assert!(
+            settled.iter().any(|t| *t > 3 * BATCH),
+            "and tried past it now and then: {targets:?}"
+        );
+
+        // It stops asking: the limit grows back until the link, not the limit, sets the target.
+        let targets = drive(&mut p, rtt, 100.0 * MIB as f64, 80, false);
+        assert!(p.throttled_at.is_none_or(|at| at > 5 * BATCH), "{:?}", p.throttled_at);
+        assert!(targets[60..].iter().any(|t| *t >= 5 * BATCH), "{targets:?}");
     }
 }

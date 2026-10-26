@@ -114,15 +114,18 @@ either side: it is polled, delivered and committed once, whatever its slices.
 Egress is one thread per destination, owning that destination's client and
 draining a queue every reader pushes to. Retry belongs to egress: it keeps
 each unit until acknowledged and re-sends it itself, so a reader carries
-offsets and nothing else. A destination that states what it may hold in
-bytes holds that, and its concurrency follows. One whose bundle leaves it out
-is paced: egress measures the rate its acknowledgments come back at and the
-least round trip they take, and holds their product, the bytes the link
+offsets and nothing else. Every destination is paced, up to its share of the
+pool when the worker sizes it, else up to the `bufferBytes` it states or its
+kind's default: egress measures the rate its acknowledgments come back at and
+the least round trip they take, and holds their product, the bytes the link
 carries, with a gain over it while the rate still grows and a short probe
 above and below it after. It holds at least two batches, so the link does not
 idle while an acknowledgment comes back. Once the least round trip is ten
 seconds old, it holds one batch until one sent alone comes back, which is the
-round trip measured again. That target is the queue's budget, and the
+round trip measured again. A destination that asks to be sent less, with a
+429, a 503 or a bulk item refused for a full queue, is held to seven tenths of
+what it held then, at most once a round trip, and tried with more at each
+probe it goes through without asking. That target is the queue's budget, and the
 destination's own in-flight bound reads the same figure, so the room reaches
 the wire. A sample taken while the source was not pressing on the queue may
 raise the estimate but never lower it, so a quiet source does not shrink a
@@ -190,6 +193,9 @@ leave, a slow one holds little, and memory follows the traffic rather than
 the count of destinations. A full pool refuses an offer as a full queue does,
 and the batch waits on its lane. A stalled destination's target falls to one
 batch, and an empty queue always takes one batch, so every destination moves.
+A destination that grew alone and then stalls keeps what it has in flight
+until that is acknowledged or given up, and the others share the rest
+meanwhile.
 
 Receivers share a pool of their own the same way. Each holds one request of
 the largest it reads as its reserve, so every receiver takes a request

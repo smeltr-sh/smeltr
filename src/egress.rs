@@ -103,9 +103,11 @@ struct QueueState {
 struct Queue {
     state: Mutex<QueueState>,
     /// Bytes this destination may hold -- queued, and sent but unacknowledged -- before an offer is refused. Shared
-    /// across readers. Fixed for a stated `bufferBytes`; the pacing model's target and one batch ready behind it for
-    /// a paced queue ([`Egress::paced`], `Pacing::queue_bytes`).
+    /// across readers. The pacing model's target and one batch ready behind it once the queue is paced
+    /// ([`Egress::paced`], `Pacing::queue_bytes`).
     budget: AtomicUsize,
+    /// The budget it was started with: the most a paced queue that borrows from no pool may hold.
+    most: usize,
     /// The least a paced queue's budget is, one batch, once the queue is paced.
     paced: OnceLock<usize>,
     /// A source asked for room this queue did not have, since the last pop. The pacing model's mark that the link,
@@ -282,6 +284,7 @@ impl Queue {
         Queue {
             state: Mutex::new(QueueState::default()),
             budget: AtomicUsize::new(budget),
+            most: budget,
             paced: OnceLock::new(),
             pressed: AtomicBool::new(false),
             work: Condvar::new(),
@@ -323,7 +326,7 @@ impl Queue {
     }
 
     /// The most a paced budget may be: the queue bytes whose borrowing fits this queue's share of the pool, less
-    /// what its senders borrow, plus the reserve, which is its own. Unbounded without a pool.
+    /// what its senders borrow, plus the reserve, which is its own. Without a pool, the budget it was started with.
     fn share(&self) -> usize {
         match self.lend.get() {
             Some(l) => {
@@ -331,7 +334,7 @@ impl Queue {
                 l.reserve
                     .saturating_add(l.pool.share(l.id).saturating_sub(senders) / l.charge)
             }
-            None => usize::MAX,
+            None => self.most,
         }
     }
 
@@ -558,8 +561,8 @@ impl Egress {
     }
 
     /// Let the pacing model ([`pacing`]) set this queue's budget, from `floor` bytes, one batch, up to the queue's
-    /// share of the pool it borrows from: for a destination whose `bufferBytes` the bundle leaves out. The
-    /// destination's own in-flight bound follows through `Destination::pace`.
+    /// share of the pool it borrows from, or without a pool up to the budget it was started with. The destination's
+    /// own in-flight bound follows through `Destination::pace`.
     pub fn paced(self, floor: usize) -> Egress {
         self.queue.set_budget(floor.max(1));
         let _ = self.queue.paced.set(floor.max(1));
@@ -736,6 +739,7 @@ fn run(
                         unit.bytes,
                         sent,
                         app_limited,
+                        false,
                         &mut headroom,
                     );
                     finish(queue, returns, metrics, id, unit, rejections, &mut waiting);
@@ -788,6 +792,7 @@ fn run(
                         owed.unit.bytes,
                         owed.sent,
                         owed.app_limited,
+                        c.throttled,
                         &mut headroom,
                     );
                     finish(queue, returns, metrics, id, owed.unit, owed.rejections, &mut waiting);
@@ -854,6 +859,7 @@ fn pace(
     bytes: usize,
     sent: Option<Sent>,
     app_limited: bool,
+    throttled: bool,
     headroom: &mut Headroom,
 ) {
     let (Some(p), Some(sent)) = (pacing, sent) else { return };
@@ -865,6 +871,7 @@ fn pace(
             bytes,
             sent,
             app_limited,
+            throttled,
         },
         Instant::now(),
     );
@@ -970,6 +977,7 @@ fn finish(
             Report::Done(BatchCompletion {
                 batch: unit.batch,
                 rejections: carried,
+                throttled: false,
             }),
         );
         queue.release(unit.bytes);
@@ -1493,6 +1501,14 @@ mod tests {
         assert!(!queue.has_room(1), "4 held is the budget");
         queue.release(4);
         assert!(queue.has_room(4));
+    }
+
+    #[test]
+    fn a_paced_queue_that_borrows_from_no_pool_grows_up_to_the_budget_it_started_with() {
+        let queue = Queue::new(100);
+        let _ = queue.paced.set(4);
+        queue.set_budget(4);
+        assert_eq!(queue.share(), 100, "its stated buffer, or its kind's default");
     }
 
     #[test]

@@ -1214,6 +1214,8 @@ pub type BatchId = u64;
 pub struct BatchCompletion {
     pub batch: BatchId,
     pub rejections: Vec<Rejection>,
+    /// The destination asked to be sent less while delivering it: the pacing model cuts what it may hold.
+    pub throttled: bool,
 }
 
 /// What [`Destination::deliver`] did with a batch.
@@ -1535,7 +1537,11 @@ pub mod fake {
                     }
                 }
             }
-            st.ready.push(BatchCompletion { batch, rejections });
+            st.ready.push(BatchCompletion {
+                batch,
+                rejections,
+                throttled: false,
+            });
         }
 
         /// Every batch `deliver` took, in order, with the rows it carried whole.
@@ -1582,6 +1588,7 @@ pub mod fake {
             st.ready.extend(pending.into_iter().map(|batch| BatchCompletion {
                 batch,
                 rejections: Vec::new(),
+                throttled: false,
             }));
             Ok(())
         }

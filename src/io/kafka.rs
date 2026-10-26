@@ -1573,6 +1573,7 @@ impl Destination for KafkaDestination {
             .map(|batch| BatchCompletion {
                 batch,
                 rejections: Vec::new(),
+                throttled: false,
             })
             .collect())
     }

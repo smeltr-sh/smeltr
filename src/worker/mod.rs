@@ -1260,8 +1260,8 @@ fn deploy(
     let queue_pool = fitted.map(|f| crate::egress::QueuePool::new(f.pool));
     // And the receivers from one of their own.
     let receiver_pool = fitted.map(|f| crate::egress::QueuePool::new(f.receivers));
-    // A destination sized to the worker's memory has its queue paced: it starts at one batch and borrows from the pool as far as its throughput asks and its share allows, so the
-    // pool is the most it may hold, and what a reader may have outstanding toward it.
+    // A destination sized to the worker's memory may borrow up to the whole pool, so the pool is the most it may hold
+    // and what a reader may have outstanding toward it; its pacing holds it to what its throughput asks.
     let fitted_destinations = fitted.map(|_| &system.topology.fitted.destinations);
     let queue_budget = |d: &crate::plan::topology::DestinationConfig| match (fitted, fitted_destinations) {
         (Some(f), Some(fitted)) if fitted.contains(&d.id) => f.pool.max(f.batch_bytes),
@@ -1278,6 +1278,7 @@ fn deploy(
         // A paced Kafka producer is sized at build for the most its target may become, since librdkafka fixes its
         // queue's bound and its requests in flight then; `Destination::pace` holds it to the target from the first
         // send.
+        //
         // A paced HTTP destination is built with as many senders as its target could use, spawned as it asks and
         // each lent from the pool.
         let kind = match &d.kind {
@@ -1298,13 +1299,15 @@ fn deploy(
         let stage = Egress::start(d.id, &d.name, client, d.kind.stall_after(), queue_budget(d), handle)
             .with_pool(ready.clone())
             .with_captures(captures.clone());
+        // Every destination is paced: up to its share of the pool when sized to the worker's memory, else up to the
+        // buffer it states or its kind's default.
         let stage = match borrows(d) {
             Some(pool) => stage
                 .borrowing(pool.clone(), batch_bytes, memory::queue_charge(&d.kind))
-                .paced(batch_bytes)
                 .charging_senders(memory::SENDER_BYTES),
             None => stage,
-        };
+        }
+        .paced(batch_bytes);
         // A destination set to block keeps what it refuses and sends it again, since the fix is usually its own.
         egress.push(if d.on_reject == crate::plan::config::Answer::Block {
             stage.holding_refusals()

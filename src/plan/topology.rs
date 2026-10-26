@@ -1723,13 +1723,13 @@ pub struct ElasticDestinationConfig {
     pub doc_id: DocIdPolicy,
     /// How many bulk requests this destination starts with outstanding, each on its own connection.
     ///
-    /// Where the loop begins, not where it stays: see `max_in_flight` for where it stops, and
-    /// `io::pipelined::Pool::note_outcome` for what moves it.
+    /// Where it begins, not where it stays: see `max_in_flight` for where it stops, and `egress::pacing` for what
+    /// moves it.
     ///
     /// Concurrency is what buys throughput here, because a bulk round trip costs about the same whatever the batch
     /// carries -- so a worker with one request outstanding cannot go faster than `1/round-trip` no matter what else is
     /// tuned. The ceiling is the cluster's own write capacity, past which it answers 429 and everything queues anyway,
-    /// which is the signal the loop reads rather than a figure anyone has to guess.
+    /// which is the signal pacing reads rather than a figure anyone has to guess.
     pub in_flight: usize,
     /// Bytes of documents one bulk request may carry before the destination sends early.
     pub max_bulk_bytes: usize,
