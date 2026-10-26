@@ -251,7 +251,7 @@
       <Field optional field="bufferBytes" label="buffer">
         {#snippet help()}
           The most one worker holds for this destination, accepted but not yet acknowledged by the
-          brokers. Over a slow link it caps throughput. Left blank, the worker sizes it to its
+          brokers. Over a slow link it caps throughput. Left empty, the worker sizes it from its
           memory.
         {/snippet}
         <BytesInput
@@ -334,7 +334,8 @@
       <Field optional field="bufferBytes" label="buffer">
         {#snippet help()}
           The most one worker holds for this destination, accepted but not yet acknowledged by Event
-          Hubs. Over a slow link it caps throughput. Left blank, the worker sizes it to its memory.
+          Hubs. Over a slow link it caps throughput. Left empty, the worker sizes it from its
+          memory.
         {/snippet}
         <BytesInput
           value={destination.bufferBytes}
@@ -960,7 +961,7 @@
         {#snippet help()}
           Memory this destination may use on each worker for records not yet in the bucket. Files
           are finished early when it fills, so files reach the largest size only when it holds that
-          many records before compression. Left blank, the worker sizes it to its memory.
+          many records before compression. Left empty, the worker sizes it from its memory.
         {/snippet}
         <BytesInput
           value={o.bufferBytes}

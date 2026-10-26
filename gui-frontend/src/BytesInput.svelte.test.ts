@@ -67,6 +67,29 @@ describe('a byte field', () => {
     expect(input.value).toBe('');
   });
 
+  it('takes auto, typed where the hint says it, as unset', () => {
+    held.value = 32 * MIB;
+    const input = show(true);
+    type(input, 'Auto');
+    expect(held.value).toBeUndefined();
+    expect(target.querySelector('.refused')).toBeNull();
+  });
+
+  it('refuses what is not a size, saying what empty means here', () => {
+    const fixed = show();
+    type(fixed, 'lots');
+    expect(target.querySelector('.refused')?.textContent).toContain('Empty is the default.');
+    type(fixed, 'auto');
+    expect(target.querySelector('.refused')).not.toBeNull();
+    unmount(field!);
+    field = undefined;
+    const auto = show(true);
+    type(auto, 'lots');
+    expect(target.querySelector('.refused')?.textContent).toContain(
+      'Leave it empty to let the worker size it.',
+    );
+  });
+
   it('shows a stated value, and follows the store when it moves', () => {
     held.value = 32 * MIB;
     const input = show(true);

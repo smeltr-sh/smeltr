@@ -1166,7 +1166,7 @@
       <Field optional field="fetchBytes" label="fetch buffer">
         {#snippet help()}
           The most fetched but not yet processed data this source holds on a worker, across all its
-          partitions. Left blank, the worker sizes it to its memory.
+          partitions. Left empty, the worker sizes it from its memory.
         {/snippet}
         <BytesInput
           value={source.fetchBytes}

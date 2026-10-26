@@ -32,8 +32,9 @@
   // Seeded once: the field is the reader's while it is being typed in, and a store that rewrote it to `64 MiB` under
   // a half-typed `6` would fight the keyboard.
   let text = $state(untrack(() => shown(value)));
-  /** An emptied field is the default, not a refusal. */
-  let cleared = $derived(text.trim() === '');
+  /** An emptied field is the default, not a refusal; so is `auto` typed where the hint says it. */
+  const unset = (t: string) => t.trim() === '' || (auto && t.trim().toLowerCase() === 'auto');
+  let cleared = $derived(unset(text));
   let bad = $derived(!cleared && parseBytes(text) === undefined);
 
   // The store moved under the field -- a list keyed by index slid another item in, or a reload put the saved value
@@ -42,7 +43,7 @@
   $effect(() => {
     const held = value === undefined ? undefined : byteCount(value, fallback);
     const typed = untrack(() => text);
-    if (typed.trim() === '' ? held !== undefined : parseBytes(typed) !== held) text = shown(value);
+    if (unset(typed) ? held !== undefined : parseBytes(typed) !== held) text = shown(value);
   });
 </script>
 
@@ -56,7 +57,7 @@
   placeholder={auto ? 'auto' : exactBytes(fallback)}
   oninput={(e) => {
     text = e.currentTarget.value;
-    if (text.trim() === '') {
+    if (unset(text)) {
       onchange(undefined);
       return;
     }
@@ -66,8 +67,9 @@
 />
 {#if bad}
   <small class="note refused"
-    >Not a size. Bytes, or a number with B, KB, MB, GB, TB, KiB, MiB, GiB or TiB. Empty is the
-    default.</small
+    >Not a size. Bytes, or a number with B, KB, MB, GB, TB, KiB, MiB, GiB or TiB. {auto
+      ? 'Leave it empty to let the worker size it.'
+      : 'Empty is the default.'}</small
   >
 {/if}
 
