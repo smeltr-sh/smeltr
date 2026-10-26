@@ -251,11 +251,13 @@
       <Field optional field="bufferBytes" label="buffer">
         {#snippet help()}
           The most one worker holds for this destination, accepted but not yet acknowledged by the
-          brokers. Over a slow link it caps throughput.
+          brokers. Over a slow link it caps throughput. Left blank, the worker sizes it to its
+          memory.
         {/snippet}
         <BytesInput
           value={destination.bufferBytes}
           fallback={LIMITS.bufferBytes.default}
+          auto
           onchange={(n) => {
             if (destination.type === 'kafka') destination.bufferBytes = n;
           }}
@@ -332,11 +334,12 @@
       <Field optional field="bufferBytes" label="buffer">
         {#snippet help()}
           The most one worker holds for this destination, accepted but not yet acknowledged by Event
-          Hubs. Over a slow link it caps throughput.
+          Hubs. Over a slow link it caps throughput. Left blank, the worker sizes it to its memory.
         {/snippet}
         <BytesInput
           value={destination.bufferBytes}
           fallback={LIMITS.bufferBytes.default}
+          auto
           onchange={(n) => {
             if (destination.type === 'eventHubs') destination.bufferBytes = n;
           }}
@@ -957,11 +960,12 @@
         {#snippet help()}
           Memory this destination may use on each worker for records not yet in the bucket. Files
           are finished early when it fills, so files reach the largest size only when it holds that
-          many records before compression.
+          many records before compression. Left blank, the worker sizes it to its memory.
         {/snippet}
         <BytesInput
           value={o.bufferBytes}
           fallback={LIMITS.objectBufferBytes.default}
+          auto
           onchange={(n) => (o.bufferBytes = n)}
         />
       </Field>

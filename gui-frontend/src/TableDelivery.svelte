@@ -98,11 +98,12 @@
   <Field optional field="bufferBytes" label="memory">
     {#snippet help()}
       Memory it may use on each worker for records not yet committed. Files are committed early when
-      it fills.
+      it fills. Left blank, the worker sizes it to its memory.
     {/snippet}
     <BytesInput
       value={d.bufferBytes}
       fallback={LIMITS.objectBufferBytes.default}
+      auto
       onchange={(n) => (d.bufferBytes = n)}
     />
   </Field>

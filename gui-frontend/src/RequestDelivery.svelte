@@ -92,11 +92,12 @@
   {#snippet help()}
     The most one worker holds for this destination, queued or sent and not yet acknowledged.
     {#if bufferHelp}{@render bufferHelp()}{:else}Divided by the {sizeLabel}, it is the most requests
-      in flight.{/if}
+      in flight.{/if} Left blank, the worker sizes it to its memory.
   {/snippet}
   <BytesInput
     value={d.bufferBytes}
     fallback={LIMITS.bufferBytes.default}
+    auto
     onchange={(n) => (d.bufferBytes = n)}
   />
 </Field>

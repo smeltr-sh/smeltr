@@ -1166,11 +1166,12 @@
       <Field optional field="fetchBytes" label="fetch buffer">
         {#snippet help()}
           The most fetched but not yet processed data this source holds on a worker, across all its
-          partitions.
+          partitions. Left blank, the worker sizes it to its memory.
         {/snippet}
         <BytesInput
           value={source.fetchBytes}
           fallback={LIMITS.fetchBytes.default}
+          auto
           onchange={(n) => {
             if (isStream(source)) source.fetchBytes = n;
           }}
