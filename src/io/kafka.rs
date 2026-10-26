@@ -1644,7 +1644,9 @@ mod tests {
 
     /// What a queued record costs is no more than `held_bytes` counts it at: librdkafka's own share of a record, and
     /// its delivery tag, measured as the resident memory a queue of one-byte records takes. Queued for a broker that is
-    /// never reached, so every record stays queued. A librdkafka that holds more per record fails it.
+    /// never reached, so every record stays queued. A librdkafka that holds more per record fails it. Linux only, and
+    /// read from `/proc/self/status`, which is this test's alone because nextest runs each test in a process of its
+    /// own, as `tests/adversarial-memory-tests.rs` does.
     #[cfg(target_os = "linux")]
     #[test]
     fn per_message_overhead() {
