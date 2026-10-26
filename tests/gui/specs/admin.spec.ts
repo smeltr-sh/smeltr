@@ -418,7 +418,7 @@ test('a new version a connector could not present is refused, naming the connect
 
   await openAdmin(admin, 'Certificates');
   const row = admin.getByRole('row').filter({ hasText: 'kafka-tls' });
-  await expect(row.getByRole('cell', { name: 'Servers', exact: true })).toBeVisible();
+  await expect(row.getByRole('cell', { name: 'Server', exact: true })).toBeVisible();
   await row.getByRole('button', { name: 'Replace' }).click();
   const replace = admin.getByRole('dialog', { name: /^replace / });
   await replace.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
@@ -456,7 +456,7 @@ test('the leader issues a certificate for the names given, and a receiver presen
   const row = admin.getByRole('row').filter({ hasText: 'receiver-tls' });
   await expect(row.getByText('issued', { exact: true })).toBeVisible();
   await expect(row.getByText('receiver.example.com, 10.0.0.7')).toBeVisible();
-  await expect(row.getByRole('cell', { name: 'Servers and clients', exact: true })).toBeVisible();
+  await expect(row.getByRole('cell', { name: 'Server and client', exact: true })).toBeVisible();
   await expect(row.getByRole('button', { name: 'Replace' })).toHaveCount(0);
   await admin.screenshot({ path: test.info().outputPath('certificate-issued.png') });
   const listed = (await api.get('/api/certificates')) as {

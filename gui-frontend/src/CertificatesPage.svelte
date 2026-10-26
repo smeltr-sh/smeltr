@@ -144,11 +144,11 @@
   /** What the newest version can be used for, as its Extended Key Usage and Key Usage permit. */
   const purpose = (c: CertificateDto) =>
     c.forServers && c.forClients
-      ? 'Servers and clients'
+      ? 'Server and client'
       : c.forServers
-        ? 'Servers'
+        ? 'Server'
         : c.forClients
-          ? 'Clients'
+          ? 'Client'
           : 'Neither';
   const sort = new TableSort<'name' | 'names' | 'purpose' | 'expires' | 'setAt'>();
   let sorted = $derived(
@@ -166,9 +166,9 @@
   <PageHeader title="Certificates">
     {#snippet help()}
       Certificates and their private keys, for the leader and for sources and destinations to
-      present. Usable by says what a certificate's Extended Key Usage permits: the leader and a
-      receiver serve a certificate, and a connector connecting out presents one as a client. Neither
-      means no TLS connection accepts it, and -- means this leader cannot open it.
+      present. Usable as says what a certificate's Extended Key Usage permits: the leader and a
+      receiver use a server certificate, and a connector connecting out uses a client certificate.
+      Neither means no TLS connection accepts it, and -- means this leader cannot open it.
     {/snippet}
   </PageHeader>
 
@@ -263,7 +263,7 @@
               ><SortButton {sort} key="names">Serves</SortButton></th
             >
             <th aria-sort={sort.aria('purpose')}
-              ><SortButton {sort} key="purpose">Usable by</SortButton></th
+              ><SortButton {sort} key="purpose">Usable as</SortButton></th
             >
             <th aria-sort={sort.aria('expires')}
               ><SortButton {sort} key="expires">Expires</SortButton></th
