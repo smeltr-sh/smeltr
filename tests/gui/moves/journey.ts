@@ -76,6 +76,8 @@ export type World = {
   branch: string | null;
   /** The branch exists on the leader: a save went onto it. */
   branchSaved: boolean;
+  /** A save on the branch is one a deploy puts on main: anything but a sample, which no test names. */
+  landing: boolean;
   /** What the branch holds, or main when there is none. */
   editing: Config;
   /** `main`'s commits that deployed something, oldest first, the install's own first. */
@@ -120,6 +122,8 @@ export type World = {
   supplied: boolean;
   /** The certificate in force was ordered from the journey's certificate authority. It is supplied too. */
   acme: boolean;
+  /** A certificate was ordered over ACME. The leader keeps it, sealed, after a switch away from it. */
+  ordered: boolean;
 };
 
 export function newWorld(): World {
@@ -127,6 +131,7 @@ export function newWorld(): World {
     password: null,
     branch: null,
     branchSaved: false,
+    landing: false,
     editing: copy(EMPTY),
     deploys: [{ subject: 'worker group default', config: copy(EMPTY) }],
     running: 0,
@@ -149,6 +154,7 @@ export function newWorld(): World {
     idle: null,
     supplied: false,
     acme: false,
+    ordered: false,
   };
 }
 
@@ -281,13 +287,15 @@ async function nameBranch(j: Journey) {
   world.branch = name;
 }
 
-/** Clicks `button`, which saves, naming a branch if the GUI asks for one, and waits until `done`. */
-async function saveBy(j: Journey, button: Locator, done: () => Promise<void>) {
+/** Clicks `button`, which saves, naming a branch if the GUI asks for one, and waits until `done`. A deploy leaves
+ * out a `sample` saved. */
+async function saveBy(j: Journey, button: Locator, done: () => Promise<void>, sample = false) {
   await button.click();
   await nameBranch(j);
   await done();
   await settled(j.page);
   j.world.branchSaved = true;
+  if (!sample) j.world.landing = true;
 }
 
 /** Captures two rows with the capture `form`, long enough for a fleet only now deployed to send them, and saves
@@ -306,7 +314,7 @@ async function captureTwo(
   await expect(saving).toBeVisible({ timeout: 60_000 });
   await seen(saving);
   await saving.getByLabel('Save as').fill(name);
-  await saveBy(j, saving.getByRole('button', { name: 'Save sample' }), () => done(saving));
+  await saveBy(j, saving.getByRole('button', { name: 'Save sample' }), () => done(saving), true);
   j.world.editing.samples.push(name);
 }
 
@@ -961,7 +969,7 @@ const deploy: Move = {
     // A source deployed without a route is a stream no route takes.
     'route-stream',
   ],
-  weight: (w) => (w.change && !w.closed ? 3 : 0),
+  weight: (w) => (w.change && !w.closed ? (w.landing ? 3 : 1) : 0),
   run: async (j) => {
     const { page, leader, world } = j;
     const title = world.change!;
@@ -973,10 +981,20 @@ const deploy: Move = {
       .getByRole('dialog', { name: verb.toLowerCase(), exact: true })
       .getByRole('button', { name: verb, exact: true })
       .click();
+    if (!world.landing) {
+      // Only samples, all left out: main would not change, so the change stays open.
+      const refused = page.getByRole('dialog').filter({ hasText: 'there is nothing to deploy' });
+      await refused.getByRole('button', { name: 'Close' }).click();
+      await expect(page).toHaveURL(/#\/changes\/review/);
+      return `"${title}" holds only samples a deploy leaves out, and deploys nothing`;
+    }
     await expect(page).not.toHaveURL(/#\/changes\/review/);
     const api = await j.truth();
     const history: History = await api.get('/api/history');
     expect(history.commits[0].subject).toBe(title);
+    // A deploy leaves out the samples no test names, and the journey writes no tests: main keeps its own.
+    const main = world.deploys[world.deploys.length - 1].config;
+    world.editing.samples = world.editing.samples.filter((s) => main.samples.includes(s));
     world.deploys.push({ subject: title, config: copy(world.editing) });
     // A rollback's hold outlives an approval: main moves, and the fleet stays where it was held.
     if (world.held) expect(history.deployed).not.toBe(history.commits[0].commit);
@@ -988,6 +1006,7 @@ const deploy: Move = {
     expect(branches.map((b) => b.name)).not.toContain(world.branch);
     world.branch = null;
     world.branchSaved = false;
+    world.landing = false;
     world.change = null;
     await expect(page.getByRole('button', { name: /^Branch: / })).toHaveAccessibleName(
       /^Branch: main\b/,
@@ -1206,10 +1225,22 @@ const regenerateKey: Move = {
         await j.truth()
       ).get('/api/encryption-key');
       expect(key.state).toBe('held');
-      return key.unopenable.map((u) => u.name).sort();
+      // One in force may be ordered again at once, so it may be sealed or not.
+      return key.unopenable
+        .map((u) => u.name)
+        .filter((name) => !(world.acme && name === 'acme'))
+        .sort();
     };
+    // An ordered certificate is not entered again: the leader orders it again while ordering is on, and keeps
+    // it sealed while ordering is off.
+    const ordered = world.ordered && !world.acme ? ['acme'] : [];
     expect(await unopenable()).toEqual(
-      [...world.secrets.keys(), ...world.certificates.keys(), ...settings.map((s) => s.key)].sort(),
+      [
+        ...world.secrets.keys(),
+        ...world.certificates.keys(),
+        ...ordered,
+        ...settings.map((s) => s.key),
+      ].sort(),
     );
     // Each certificate is entered again from its link, as it was uploaded.
     for (const [name, pki] of world.certificates) {
@@ -1230,7 +1261,7 @@ const regenerateKey: Move = {
     for (const setting of settings) {
       await page.getByRole('listitem').filter({ hasText: setting.label }).getByRole('link').click();
       // A value the key cannot open reads as none stored, so the page offers an empty input, not Replace.
-      await page.getByLabel(setting.field, { exact: true }).fill(setting.value);
+      await page.getByRole('textbox', { name: setting.field, exact: true }).fill(setting.value);
       await page.getByRole('button', { name: 'Save', exact: true }).click();
       await expect(
         page.getByRole('button', { name: `replace the ${setting.field}` }),
@@ -1242,7 +1273,7 @@ const regenerateKey: Move = {
         .click();
       await expect(page.getByText(setting.label, { exact: true })).toHaveCount(0);
     }
-    expect(await unopenable()).toEqual([...world.secrets.keys()].sort());
+    expect(await unopenable()).toEqual([...world.secrets.keys(), ...ordered].sort());
     const again = [...world.certificates.keys(), ...settings.map((s) => s.label)];
     const entered = again.length ? `, ${again.join(' and ')} entered again` : '';
     return `regenerate the key, ${world.secrets.size} to enter again${entered}`;
@@ -1514,8 +1545,11 @@ const pasteSample: Move = {
         ),
       );
     await expect(dialog.getByText(`${records} record${records === 1 ? '' : 's'}`)).toBeVisible();
-    await saveBy(j, dialog.getByRole('button', { name: 'Save sample' }), () =>
-      expect(dialog).toBeHidden(),
+    await saveBy(
+      j,
+      dialog.getByRole('button', { name: 'Save sample' }),
+      () => expect(dialog).toBeHidden(),
+      true,
     );
     world.editing.samples.push(name);
     await expect(page.getByRole('row', { name: new RegExp(name) })).toBeVisible();
@@ -1560,7 +1594,8 @@ const editSample: Move = {
         .records as Record<string, unknown>[];
     // Each record by the number the editor gives it, which it keeps while others go.
     let draft = (await read()).map((record, i) => ({ n: i + 1, record }));
-    const raw = draft.every((r) => ownFields(r.record).join() === '_raw');
+    // The editor reads pasted lines as text wherever a record has `_raw`, whatever other fields it shows.
+    const raw = draft.some((r) => '_raw' in r.record);
     await goto(page, leader, '#/build');
     if (scope !== 'shared') await switchScope(page, 'shared', scope);
     await page
@@ -1626,8 +1661,11 @@ const editSample: Move = {
       done.push('paste one');
     }
 
-    await saveBy(j, editor.getByRole('button', { name: 'Save sample' }), () =>
-      expect(editor).toBeHidden(),
+    await saveBy(
+      j,
+      editor.getByRole('button', { name: 'Save sample' }),
+      () => expect(editor).toBeHidden(),
+      true,
     );
     expect(await read(), `${name} holds the edited records`).toEqual(draft.map((r) => r.record));
     await editingIsSaved(j);
@@ -1649,6 +1687,7 @@ const deleteSample: Move = {
       j,
       page.getByRole('dialog', { name: 'delete sample' }).getByRole('button', { name: 'Delete' }),
       () => expect(row).toHaveCount(0),
+      true,
     );
     world.editing.samples = world.editing.samples.filter((s) => s !== name);
     await editingIsSaved(j);
@@ -1916,7 +1955,7 @@ const turnOnAgents: Move = {
     await expect(page.getByRole('combobox', { name: /^Provider\b/ })).toHaveValue('anthropic');
     await page.getByRole('textbox', { name: /^Endpoint URL\b/ }).fill(model.base);
     await expect(page.getByRole('textbox', { name: /^Model\b/ })).toHaveValue('claude-opus-5-5');
-    await page.getByLabel('API key', { exact: true }).fill(MODEL_KEY);
+    await page.getByRole('textbox', { name: 'API key', exact: true }).fill(MODEL_KEY);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByRole('button', { name: 'replace the API key' })).toBeVisible();
     world.agentsOn = true;
@@ -2289,6 +2328,7 @@ const orderAcme: Move = {
     await switchToAcme(j.page, j.authority, [LEADER_NAME]);
     j.world.supplied = true;
     j.world.acme = true;
+    j.world.ordered = true;
     const { source, rotation, served } = await (await j.truth()).get('/api/settings/certificates');
     expect({ source, rotation }).toEqual({ source: 'acme', rotation: null });
     expect(served.names).toContain(LEADER_NAME);
