@@ -202,7 +202,10 @@
             {@attach float(() => byAnchor?.getBoundingClientRect())}
           >
             {#each by as t (t.step.id)}
-              <button type="button" onclick={() => onjump?.(t.step)}
+              <button
+                type="button"
+                title={stepName(t.step, t.number)}
+                onclick={() => onjump?.(t.step)}
                 ><StepGlyph type={t.step.type} /> {stepName(t.step, t.number)}</button
               >
             {/each}
@@ -426,7 +429,7 @@
 
   .line:hover .by.quiet,
   .by.quiet:focus-within {
-    opacity: 0.6;
+    opacity: 0.35;
   }
 
   .by-list {
@@ -437,6 +440,7 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    max-width: 60ch;
     white-space: nowrap;
   }
 
@@ -448,6 +452,8 @@
     font: inherit;
     color: var(--ink);
     cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .by-list button:hover {
