@@ -770,6 +770,10 @@ pub fn check_supplied(
         );
     }
 
+    // A worker's rustls enforces Extended Key Usage, so a certificate not for servers is one every worker refuses.
+    crate::io::trust::refuse_unless_usable(&String::from_utf8_lossy(chain), crate::io::trust::Side::Server)
+        .map_err(|why| format!("this leader would serve a certificate {why}"))?;
+
     // Asked of the verifier rather than by comparing strings, and of every name this leader is reached at rather
     // than the first. A client matches a name against a certificate by rules a string comparison does not know:
     // `*.example.com` covers `leader.example.com`, and a name differing only in case is the same name. Doing it
@@ -3164,6 +3168,21 @@ pub(crate) mod tests {
 
         let refused = check_supplied(&chain_and_its_key, &key, &ca, &names(), &[]).expect_err("a key was accepted");
         assert!(refused.contains("private key"), "{refused}");
+    }
+
+    /// Every worker's rustls enforces Extended Key Usage, so a certificate issued for clients alone would cut the
+    /// whole fleet off from this leader.
+    #[test]
+    fn a_certificate_not_for_servers_is_refused() {
+        let dir = scratch("not-for-servers");
+        let ca = ensure(&dir, names(), A_YEAR, &[]).expect("an authority").ca_pem;
+        let ca_key = std::fs::read_to_string(dir.join(CA_KEY)).unwrap();
+        let params = leaf_params(names(), A_YEAR, vec![ExtendedKeyUsagePurpose::ClientAuth], "names").unwrap();
+        let (chain, key) = sign(params, &ca_key, "a client certificate").unwrap();
+
+        let refused =
+            check_supplied(chain.as_bytes(), key.as_bytes(), &ca, &names(), &[]).expect_err("a client's was accepted");
+        assert!(refused.contains("server authentication"), "{refused}");
     }
 
     #[test]
