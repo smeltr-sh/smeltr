@@ -23,11 +23,10 @@ const NOUN: Record<ConnectionKind, string> = {
   destination: 'destination',
   lookupTable: 'table',
   grokPattern: 'pattern',
-  identity: 'identity',
 };
 
 function plural(noun: string): string {
-  return noun === 'identity' ? 'identities' : `${noun}s`;
+  return `${noun}s`;
 }
 
 /** A row named for its kind, except where the editor's own kind sits on the other side of it:
@@ -100,10 +99,9 @@ const LIST: Record<ConnectionKind, string> = {
   destination: 'destinations',
   lookupTable: 'lookups',
   grokPattern: 'grok',
-  identity: 'identities',
 };
 
-/** `kind`'s list, narrowed to `ids`. Tables and identities never appear in a row, so their lists
+/** `kind`'s list, narrowed to `ids`. Tables never appear in a row, so their lists
  * take no `only`. */
 export function listHash(kind: ConnectionKind, ids: string[]): string {
   return `#/build/${LIST[kind]}?${new URLSearchParams(ids.map((id) => ['only', id]))}`;

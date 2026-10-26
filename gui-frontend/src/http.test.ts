@@ -6,7 +6,7 @@ import {
   onLoopback,
   setBatched,
   setSingle,
-  identityRefusal,
+  tlsRefusal,
   urlWarning,
   type HttpDestination,
 } from './http';
@@ -79,7 +79,7 @@ describe('the URL', () => {
   });
 
   it('warns about credentials over plain HTTP off this host, and saves them', () => {
-    expect(identityRefusal('http://collector.internal', undefined)).toBeUndefined();
+    expect(tlsRefusal('http://collector.internal', {})).toBeUndefined();
     expect(urlWarning('http://collector.internal', true)).toMatch(/unencrypted/);
     expect(urlWarning('http://collector.internal', false)).toBeUndefined();
     expect(urlWarning('http://localhost:8080', true)).toBeUndefined();
@@ -95,14 +95,15 @@ describe('the URL', () => {
     expect(urlWarning('https://collector.internal/a@b', false)).toBeUndefined();
   });
 
-  it('refuses an identity on plain HTTP, even on this host', () => {
-    expect(identityRefusal('http://localhost', 'acme')).toMatch(/identity/);
-    expect(identityRefusal('https://x', 'acme')).toBeUndefined();
+  it('refuses TLS settings on plain HTTP, even on this host', () => {
+    expect(tlsRefusal('http://localhost', { certificate: 'acme' })).toMatch(/certificate/);
+    expect(tlsRefusal('http://localhost', { trustPublic: false })).toMatch(/certificate/);
+    expect(tlsRefusal('https://x', { certificate: 'acme' })).toBeUndefined();
   });
 
   it('leaves whether the address is a URL to the save', () => {
-    expect(identityRefusal('collector.internal/ingest', 'acme')).toBeUndefined();
-    expect(identityRefusal('ftp://collector.internal', 'acme')).toBeUndefined();
+    expect(tlsRefusal('collector.internal/ingest', { certificate: 'acme' })).toBeUndefined();
+    expect(tlsRefusal('ftp://collector.internal', { certificate: 'acme' })).toBeUndefined();
   });
 });
 

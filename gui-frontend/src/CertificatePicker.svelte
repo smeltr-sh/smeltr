@@ -1,15 +1,13 @@
 <!--
   Picks a certificate from the list on Admin -> Certificates by name. Its add
-  link opens the upload there and comes back here once it is added.
-
-  An identity names a version too, as a reference to a stored secret does:
-  `version` is the one it names, which the note reads beside the name.
+  link opens the upload there and comes back here once it is added. The note
+  reads the newest version's leaf beside the name: the one a worker presents.
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import Field from './Field.svelte';
   import { reported } from './errors.svelte';
-  import { currentVersion, listCertificates, type CertificateDto } from './api';
+  import { listCertificates, type CertificateDto } from './api';
   import { expiry } from './time';
 
   let {
@@ -18,9 +16,8 @@
     note,
     help,
     field,
-    version,
+    warning = null,
     optional = false,
-    onpick,
   }: {
     value: string | undefined;
     label?: string;
@@ -29,12 +26,10 @@
     help?: Snippet | string;
     /** The setting's name in the file, for its save errors (`Field`). */
     field?: string;
-    /** The version a reference names, where it names one. */
-    version?: number;
+    /** What to say under the field while nothing is chosen, for a choice that should not stay empty. */
+    warning?: string | null;
     /** Offers "none", for a choice that may present nothing. */
     optional?: boolean;
-    /** A pick, with the version the certificate is at now, for a reference that names one. */
-    onpick?: (name: string | undefined, version: number | undefined) => void;
   } = $props();
 
   /** `undefined` until the list arrives, so a name it does not hold is not offered as missing before then. */
@@ -44,28 +39,22 @@
     .catch(reported);
 
   const entry = $derived(certificates?.find((c) => c.name === value));
-  /** The chain is the newest version's, so it describes the one named only when that is the newest. */
-  const newest = $derived(
-    entry && (version === undefined || version === currentVersion(entry)?.version),
-  );
-  const chosen = $derived(newest ? entry?.chain[0] : undefined);
+  const chosen = $derived(entry?.chain[0]);
 </script>
 
-<Field {label} {help} {field} {optional}>
-  {#snippet note()}
-    {#if version !== undefined && value}
-      version {version}{#if chosen}&nbsp;·{/if}
-    {/if}
-    {#if chosen}
-      {chosen.names.join(', ') || chosen.subject} · {expiry(chosen.notAfterMillis)}
-    {:else if typeof note === 'function'}
-      {@render note()}
-    {:else if note}
-      {note}
-    {/if}
-    &mdash; <a href="#/admin/certificates/new">add a certificate</a>
-  {/snippet}
-  <select bind:value onchange={() => onpick?.(value, entry && currentVersion(entry)?.version)}>
+{#snippet shownNote()}
+  {#if chosen}
+    {chosen.names.join(', ') || chosen.subject} · {expiry(chosen.notAfterMillis)}
+  {:else if typeof note === 'function'}
+    {@render note()}
+  {:else if note}
+    {note}
+  {/if}
+  &mdash; <a href="#/admin/certificates/new">add a certificate</a>
+{/snippet}
+
+<Field {label} {help} {field} {optional} {warning} note={shownNote}>
+  <select bind:value>
     {#if optional}
       <option value={undefined}>none</option>
     {:else}

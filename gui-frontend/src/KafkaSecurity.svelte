@@ -29,7 +29,7 @@
     value,
     secrets = [],
     mechanisms = [],
-    hasIdentity = false,
+    hasTls = false,
   }: {
     /** Mutated in place, as `KafkaPropsEditor` mutates it: this writes the
      * connector's own property maps, and the page's Save is what commits. */
@@ -40,8 +40,8 @@
      * the section then shows what the file says and offers no menu, rather
      * than reading as a build that carries nothing. */
     mechanisms?: string[];
-    /** Whether an identity answers for TLS. */
-    hasIdentity?: boolean;
+    /** Whether the TLS settings answer for TLS. */
+    hasTls?: boolean;
   } = $props();
 
   let security = $derived(readSecurity(value));
@@ -71,10 +71,11 @@
     {#snippet help()}
       <code>SSL</code> and <code>SASL_SSL</code> use TLS; the two <code>SASL_</code> protocols also
       log in.
-      {#if negotiatesTls && hasIdentity}
-        The certificate, the key and the authorities come from the identity above.
+      {#if negotiatesTls && hasTls}
+        The certificate, the key and the authorities come from the TLS settings above.
       {:else if negotiatesTls}
-        No identity is named, so this client presents no certificate and trusts the public roots.
+        No TLS setting is filled, so this client presents no certificate and trusts the public
+        roots.
       {/if}
     {/snippet}
     <!-- Unset is shown as PLAINTEXT, librdkafka's own default. -->

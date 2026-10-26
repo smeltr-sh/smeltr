@@ -47,7 +47,7 @@ function elide(text: string): string {
   return `${text.slice(0, keep)}…${text.slice(text.length - keep)}`;
 }
 
-/** A line break in a value -- a PEM certificate, an identity's authorities -- read as one line's worth: the
+/** A line break in a value -- a PEM certificate, a connector's authorities -- read as one line's worth: the
  * subject this feeds is one line by `parse_marker`'s own rule, and everything after the first would silently
  * become the body instead of the field it was describing. */
 function oneLine(text: string): string {
@@ -312,7 +312,7 @@ function editsForScope(change: ScopeChange): Edit[] {
 // -- rendering -------------------------------------------------------------
 
 function plural(noun: Noun): string {
-  return noun === 'identity' ? 'identities' : `${noun}s`;
+  return `${noun}s`;
 }
 
 /** `a`, `a and b`, `a, b and c`. */
@@ -356,7 +356,7 @@ function subjectFor(edits: Edit[], sayScope: boolean): string {
 /** What to call a change, from the two configurations it sits between.
  *
  * Deterministic: the same pair always yields the same words, in the same
- * order -- sources, destinations, routes, lookup tables, identities, pipelines,
+ * order -- sources, destinations, routes, lookup tables, pipelines,
  * each in its id's order -- so the text can be pinned by a test. */
 export function changeText(changes: ScopeChange[]): ChangeText {
   const edits = changes.flatMap(editsForScope);

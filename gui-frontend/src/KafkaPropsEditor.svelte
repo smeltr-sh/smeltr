@@ -13,8 +13,8 @@
   let {
     value,
     secrets = [],
-    hasIdentity = false,
-  }: { value: KafkaProps; secrets?: SecretDto[]; hasIdentity?: boolean } = $props();
+    hasTls = false,
+  }: { value: KafkaProps; secrets?: SecretDto[]; hasTls?: boolean } = $props();
 </script>
 
 <PropsEditor
@@ -30,7 +30,7 @@
   }}
   {secrets}
   hidden={(key) => SECTION_PROPS.includes(key.trim().toLowerCase())}
-  refusal={(key, credential) => propertyRefusal(key, credential, hasIdentity)}
+  refusal={(key, credential) => propertyRefusal(key, credential, hasTls)}
 >
   {#snippet literalHelp()}
     Any other librdkafka property, by name and value, committed to the config repo.

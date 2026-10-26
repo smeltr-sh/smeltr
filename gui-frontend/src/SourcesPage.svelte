@@ -22,7 +22,6 @@
     setScope,
     putSources,
     type SourceDto,
-    type IdentityDto,
     type SecretDto,
     type NodeReadingDto,
     fieldCatalogs,
@@ -46,9 +45,6 @@
   /** What `shared/` declares, which this group runs too. Never saved from here: the page writes its own scope,
    * and these belong to the bundle every group draws on (design C -- read here, edited in `shared/`). */
   let sharedSources: SourceDto[] = $state([]);
-  /** Every identity a source here may name: this scope's own and `shared/`'s, the same two subtrees
-   * the group runs merged. */
-  let identities: IdentityDto[] = $state([]);
   /** A source being added (`NewSource`). It joins the list on Add, and the file on the page's Save. */
   let adding = $state(false);
   /** The row to show and mark: the one the map landed on, then the one just added. */
@@ -61,8 +57,7 @@
     pick: (config) => config.sources,
     put: putSources,
     validation,
-    onLoaded: async (config) => {
-      identities = config.identities;
+    onLoaded: async () => {
       await loadShared();
     },
   });
@@ -82,7 +77,6 @@
   async function loadShared() {
     const shared = await sharedConfig();
     sharedSources = shared ? shared.sources : [];
-    if (shared) identities = [...shared.identities, ...identities];
   }
 
   void editor.load();
@@ -224,7 +218,6 @@
           </div>
           <SourceFields
             {source}
-            {identities}
             {secrets}
             {mechanisms}
             {startMoves}
@@ -247,7 +240,6 @@
       <NewSource
         open={adding}
         unavailable={unavailable()}
-        {identities}
         {secrets}
         {mechanisms}
         readAt={editor.readAtCommit}

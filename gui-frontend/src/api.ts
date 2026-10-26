@@ -16,7 +16,7 @@ export interface ApiError {
    * step with `PreviewError`'s own field (`pipeline.ts`) so the two share one
    * shape for `errorsByStep`. */
   assignmentIndex: number | null;
-  /** The source, destination or identity this is about: its section of the
+  /** The source or destination this is about: its section of the
    * bundle and its id there. */
   item: { section: string; id: string } | null;
   /** The setting this is about, by its name in the file: a key of `item`, or
@@ -78,26 +78,17 @@ export const isLeaderStored = (r: SecretRef | undefined): r is LeaderSecret =>
 /** How a leader-stored reference reads where there is no picker for one. */
 export const secretLabel = (r: LeaderSecret) => `${r.secret} @ v${r.version}`;
 
-/** One identity a worker connects out under: what it shows a source or a
- * destination, and which authorities it verifies that far end against.
- *
- * A far end that asks for no certificate needs only the authorities, and one
- * served from a public root needs only the certificate, so either half may be
- * absent -- but not both, which the save refuses. A certificate is public and
- * is committed; its private key is a credential and is only named, like every
- * other. A client under it trusts the public roots and `authorities` both,
- * unless `trustPublic` is false. A receiver admits by `authorities` alone. */
-export type IdentityDto = {
-  id: string;
-  description?: string;
-  /** The certificate it presents, from the list, by name and version. A string is a certificate pasted into a
-   * bundle written before identities named one from the list: the leader refuses it, and says to choose one. */
-  certificate?: SecretRef;
-  /** The private key such a bundle named beside its pasted certificate. Refused the same way. */
-  key?: SecretRef;
-  /** PEM. A trust store holds more than one root, so several may follow one another. */
+/** The TLS a connector speaks of its own: what it presents to the far end, and what it verifies the far end
+ * against. A client under none presents no certificate and trusts the public roots; a receiver under none serves
+ * plain TCP. Mirrors `config_file::dto::TlsDto`. */
+export type TlsDto = {
+  /** The certificate it presents, from the list on Admin -> Certificates, by name. A worker presents the newest
+   * version. A receiver serves TLS only with one. */
+  certificate?: string;
+  /** PEM. What the far end's certificate must chain to; several may follow one another. A receiver admits a sender
+   * by these alone. */
   authorities?: string;
-  /** Absent is true. False trusts `authorities` alone. */
+  /** Absent is true: a client trusts the public roots and `authorities` both. False trusts `authorities` alone. */
   trustPublic?: boolean;
 };
 
@@ -124,7 +115,7 @@ import type { Answer, AnswerName, ExceptionsDto } from './exceptions';
 export type { Answer, ExceptionsDto } from './exceptions';
 
 /** Where an SQL source connects, and what it reads: `postgres` and `mysql` alike. */
-export interface SqlConnection {
+export interface SqlConnection extends TlsDto {
   id: string;
   host: string;
   /** Absent is the kind's own: 5432 for `postgres`, 3306 for `mysql`. */
@@ -135,8 +126,6 @@ export interface SqlConnection {
   password?: SecretRef;
   /** Absent is `require`, which encrypts and verifies the server's certificate and name. */
   tls?: 'require' | 'disable';
-  /** The identity it connects under, by id. Only with `tls` `require`. */
-  identity?: string;
   /** A `SELECT` or a `WITH`, with no `ORDER BY` or `LIMIT` of its own. */
   query: string;
   mode: SqlMode;
@@ -150,15 +139,13 @@ export interface SqlConnection {
 
 /** A source. Switching `type` replaces the whole object. */
 export type SourceDto =
-  | ({
+  | (TlsDto & {
       id: string;
       type: 'kafka';
       brokers: string;
       topics: string[];
       /** The consumer group it reads as. Absent is its worker group's own, `smeltr.<worker group>`. */
       groupId?: string;
-      /** The identity this consumer connects under, by id. */
-      identity?: string;
       /** Where the read begins. Absent is `earliest`, which is what a
        * source that decided nothing gets. */
       start?: StartPosition;
@@ -185,67 +172,66 @@ export type SourceDto =
       fetchBytes?: ByteCount;
       encoding?: string;
     } & StreamReadFormat)
-  | (S3Access & {
-      id: string;
-      type: 's3Sqs';
-      /** The queue's own URL, which names its region and account. */
-      queueUrl: string;
-      /** The identity this client connects under, by id. */
-      identity?: string;
-      /** Absent is `lines`. */
-      framing?: Framing;
-      lineBreaker?: string;
-      /** As a Kafka source's. */
-      encoding?: string;
-      visibilitySecs?: number;
-    } & ReadFormat)
-  | (AzureAccess & {
-      id: string;
-      type: 'azureBlobQueue';
-      /** The Storage queue's own URL. */
-      queueUrl: string;
-      identity?: string;
-      framing?: Framing;
-      lineBreaker?: string;
-      encoding?: string;
-      visibilitySecs?: number;
-      /** Receives before a message is moved to `<queue>-poison`. */
-      maxDeliveries?: number;
-    } & ReadFormat)
-  | (GcsAccess & {
-      id: string;
-      type: 'gcsPubSub';
-      /** `projects/<project>/subscriptions/<subscription>`. */
-      subscription: string;
-      /** Another Pub/Sub address, such as an emulator's. Absent is Google's. */
-      pubsubEndpoint?: string;
-      identity?: string;
-      framing?: Framing;
-      lineBreaker?: string;
-      encoding?: string;
-      /** The ack deadline: at most `LIMITS.ackDeadlineSecs.max`. */
-      visibilitySecs?: number;
-    } & ReadFormat)
-  | (S3Access &
+  | (TlsDto &
+      S3Access & {
+        id: string;
+        type: 's3Sqs';
+        /** The queue's own URL, which names its region and account. */
+        queueUrl: string;
+        /** Absent is `lines`. */
+        framing?: Framing;
+        lineBreaker?: string;
+        /** As a Kafka source's. */
+        encoding?: string;
+        visibilitySecs?: number;
+      } & ReadFormat)
+  | (TlsDto &
+      AzureAccess & {
+        id: string;
+        type: 'azureBlobQueue';
+        /** The Storage queue's own URL. */
+        queueUrl: string;
+        framing?: Framing;
+        lineBreaker?: string;
+        encoding?: string;
+        visibilitySecs?: number;
+        /** Receives before a message is moved to `<queue>-poison`. */
+        maxDeliveries?: number;
+      } & ReadFormat)
+  | (TlsDto &
+      GcsAccess & {
+        id: string;
+        type: 'gcsPubSub';
+        /** `projects/<project>/subscriptions/<subscription>`. */
+        subscription: string;
+        /** Another Pub/Sub address, such as an emulator's. Absent is Google's. */
+        pubsubEndpoint?: string;
+        framing?: Framing;
+        lineBreaker?: string;
+        encoding?: string;
+        /** The ack deadline: at most `LIMITS.ackDeadlineSecs.max`. */
+        visibilitySecs?: number;
+      } & ReadFormat)
+  | (TlsDto &
+      S3Access &
       ListingSettings & {
         id: string;
         type: 's3List';
         bucket: string;
-        identity?: string;
       })
-  | (GcsAccess &
+  | (TlsDto &
+      GcsAccess &
       ListingSettings & {
         id: string;
         type: 'gcsList';
         bucket: string;
-        identity?: string;
       })
-  | (AzureAccess &
+  | (TlsDto &
+      AzureAccess &
       ListingSettings & {
         id: string;
         type: 'azureBlobList';
         container: string;
-        identity?: string;
       })
   | (SftpAccess &
       ListingSettings & {
@@ -357,12 +343,12 @@ export type SourceDto =
       id: string;
       type: 'syslogReceiver';
       /** The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token,
-       * so this admits a sender, unless the identity names authorities a sender's certificate must chain to. */
+       * so this admits a sender, unless the receiver names authorities a sender's certificate must chain to. */
       allowFrom?: string[];
       /** As a Kafka source's. */
       encoding?: string;
       /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a message, served without TLS, so it
-       * takes no identity and only `allowFrom` admits a sender. */
+       * takes no certificate or authorities and only `allowFrom` admits a sender. */
       transport?: 'tcp' | 'udp';
       /** Where a message over TCP ends, as an object source's `lineBreaker`. Absent, at a newline. Octet counting
        * still frames a message that starts with its length. */
@@ -482,11 +468,8 @@ export interface SqlStatementsResult {
 }
 
 /** The statements an SQL source runs, built by the leader as a poll builds them. Nothing connects. */
-export function sqlStatement(
-  source: SourceDto,
-  identity?: IdentityDto,
-): Promise<SqlStatementsResult> {
-  return post('/api/sql/statement', { source, identity }, 'quiet');
+export function sqlStatement(source: SourceDto): Promise<SqlStatementsResult> {
+  return post('/api/sql/statement', { source }, 'quiet');
 }
 
 /** Which of OpenTelemetry's signals an OTLP receiver takes, mirroring `plan::topology::Signal`. */
@@ -549,14 +532,12 @@ export const LIMITS = {
  * fields, so a Kafka field left on an Elasticsearch destination would stop
  * the bundle loading. */
 export type DestinationDto =
-  | ({
+  | (TlsDto & {
       id: string;
       type: 'kafka';
       exceptions?: ExceptionsDto;
       brokers: string;
       defaultTopic: string;
-      /** The identity this producer connects under, by id. */
-      identity?: string;
       /** How each record is written. Absent is `json`. `avro` frames each row with its record's schema's id in
        * `schemaRegistry`. */
       format?: StreamFormat | 'avro';
@@ -587,7 +568,7 @@ export type DestinationDto =
       bufferBytes?: ByteCount;
       schemaRegistry?: SchemaRegistry;
     })
-  | {
+  | (TlsDto & {
       id: string;
       type: 'elasticsearch';
       exceptions?: ExceptionsDto;
@@ -595,8 +576,6 @@ export type DestinationDto =
       /** Zone to the address a worker in that zone sends to instead of `url`. */
       zoneUrls?: Record<string, string>;
       defaultIndex: string;
-      /** The identity this client connects under, by id. */
-      identity?: string;
       auth?: SecretRef;
       /** Basic auth, in place of `auth`: `username` and `password` together. */
       username?: string;
@@ -611,8 +590,8 @@ export type DestinationDto =
       sniff?: boolean;
       /** The node attribute naming a node's zone. Only with `sniff`; absent is `zone`. */
       zoneAttribute?: string;
-    }
-  | {
+    })
+  | (TlsDto & {
       id: string;
       type: 'splunkHec';
       exceptions?: ExceptionsDto;
@@ -632,14 +611,12 @@ export type DestinationDto =
        * `bytes`. */
       field?: string;
       acknowledgement?: SplunkAcknowledgement;
-      /** The identity this client connects under, by id. */
-      identity?: string;
       inFlight?: number;
       maxRequestBytes?: ByteCount;
       bufferBytes?: ByteCount;
       stallAfterSecs?: number;
-    }
-  | {
+    })
+  | (TlsDto & {
       id: string;
       type: 'http';
       exceptions?: ExceptionsDto;
@@ -661,14 +638,12 @@ export type DestinationDto =
       headers?: Record<string, string>;
       /** Header name to where its value lives. */
       credentials?: Record<string, SecretRef>;
-      /** The identity this client connects under, by id. Only on an https:// URL. */
-      identity?: string;
       inFlight?: number;
       maxRequestBytes?: ByteCount;
       bufferBytes?: ByteCount;
       stallAfterSecs?: number;
-    }
-  | {
+    })
+  | (TlsDto & {
       id: string;
       type: 'prometheus';
       exceptions?: ExceptionsDto;
@@ -680,29 +655,26 @@ export type DestinationDto =
       headers?: Record<string, string>;
       /** Header name to where its value lives. */
       credentials?: Record<string, SecretRef>;
-      /** The identity this client connects under, by id. Only on an https:// URL. */
-      identity?: string;
-      maxRequestBytes?: ByteCount;
-      bufferBytes?: ByteCount;
-      stallAfterSecs?: number;
-    }
-  | (EntraSignIn & {
-      id: string;
-      type: 'logAnalytics';
-      exceptions?: ExceptionsDto;
-      /** The rule's logs ingestion endpoint, or the data collection endpoint linked to it. */
-      endpoint: string;
-      /** The rule's immutable id, `dcr-` and 32 hex digits. */
-      ruleId: string;
-      /** The rule's stream the rows go to, such as `Custom-Events_CL`. */
-      stream: string;
-      /** The identity this client connects under, by id. */
-      identity?: string;
-      inFlight?: number;
       maxRequestBytes?: ByteCount;
       bufferBytes?: ByteCount;
       stallAfterSecs?: number;
     })
+  | (TlsDto &
+      EntraSignIn & {
+        id: string;
+        type: 'logAnalytics';
+        exceptions?: ExceptionsDto;
+        /** The rule's logs ingestion endpoint, or the data collection endpoint linked to it. */
+        endpoint: string;
+        /** The rule's immutable id, `dcr-` and 32 hex digits. */
+        ruleId: string;
+        /** The rule's stream the rows go to, such as `Custom-Events_CL`. */
+        stream: string;
+        inFlight?: number;
+        maxRequestBytes?: ByteCount;
+        bufferBytes?: ByteCount;
+        stallAfterSecs?: number;
+      })
   | (ObjectSettings &
       CloudSettings &
       S3Access & {
@@ -736,66 +708,64 @@ export type DestinationDto =
         /** Absolute, or under the user's home directory. Absent is the home directory. It must exist. */
         directory?: string;
       })
-  | (S3Access & {
-      id: string;
-      type: 'iceberg';
-      exceptions?: ExceptionsDto;
-      /** The REST catalog's base address, before `/v1`. */
-      catalog: string;
-      /** Absent is the catalog's default warehouse. */
-      warehouse?: string;
-      /** The table's namespace, its levels joined by `.`. */
-      namespace: string;
-      table: string;
-      /** The partition spec a created table takes: `host`, `day(ts)`, `bucket(16, id)`, `truncate(4, name)`. */
-      partitionBy?: string[];
-      /** A bearer token for the catalog. Not with `clientId` or `signingName`. */
-      token?: SecretRef;
-      /** OAuth client credentials: `clientId` and `clientSecret` together. */
-      clientId?: string;
-      clientSecret?: SecretRef;
-      /** Where client credentials are exchanged for a token. Absent is the catalog's own `/v1/oauth/tokens`. */
-      tokenUrl?: string;
-      scope?: string;
-      /** Signs every catalog call with AWS Signature Version 4 for this service, `glue` or `s3tables`. Not with
-       * `token` or `clientId`. */
-      signingName?: string;
-      /** The identity this client connects under, to the catalog and to storage, by id. */
-      identity?: string;
-      /** How each Parquet file compresses its columns. Absent is `zstd`. */
-      compression?: Compression;
-      /** Parts of one file uploading at once. */
-      inFlight?: number;
-      maxObjectBytes?: ByteCount;
-      /** Memory for records not yet committed. Absent is `LIMITS.objectBufferBytes.default`. */
-      bufferBytes?: ByteCount;
-      stallAfterSecs?: number;
-      /** Seconds files stay open before they are committed. Within `LIMITS.tableFileIntervalSecs`. */
-      fileIntervalSecs?: number;
-    })
-  | (S3Access & {
-      id: string;
-      type: 'delta';
-      exceptions?: ExceptionsDto;
-      /** The table's root, `s3://bucket/path`. Exactly one of `location` and `unityCatalog`. */
-      location?: string;
-      /** A Unity Catalog external table, whose root and storage credentials the catalog gives. */
-      unityCatalog?: UnityCatalog;
-      /** The columns a created table is partitioned by, each a top-level column of the record. */
-      partitionBy?: string[];
-      /** The identity this client connects to storage under, by id. */
-      identity?: string;
-      /** How each Parquet file compresses its columns. Absent is `zstd`. */
-      compression?: Compression;
-      /** Parts of one file uploading at once. */
-      inFlight?: number;
-      maxObjectBytes?: ByteCount;
-      /** Memory for records not yet committed. Absent is `LIMITS.objectBufferBytes.default`. */
-      bufferBytes?: ByteCount;
-      stallAfterSecs?: number;
-      /** Seconds files stay open before they are committed. Within `LIMITS.tableFileIntervalSecs`. */
-      fileIntervalSecs?: number;
-    });
+  | (TlsDto &
+      S3Access & {
+        id: string;
+        type: 'iceberg';
+        exceptions?: ExceptionsDto;
+        /** The REST catalog's base address, before `/v1`. */
+        catalog: string;
+        /** Absent is the catalog's default warehouse. */
+        warehouse?: string;
+        /** The table's namespace, its levels joined by `.`. */
+        namespace: string;
+        table: string;
+        /** The partition spec a created table takes: `host`, `day(ts)`, `bucket(16, id)`, `truncate(4, name)`. */
+        partitionBy?: string[];
+        /** A bearer token for the catalog. Not with `clientId` or `signingName`. */
+        token?: SecretRef;
+        /** OAuth client credentials: `clientId` and `clientSecret` together. */
+        clientId?: string;
+        clientSecret?: SecretRef;
+        /** Where client credentials are exchanged for a token. Absent is the catalog's own `/v1/oauth/tokens`. */
+        tokenUrl?: string;
+        scope?: string;
+        /** Signs every catalog call with AWS Signature Version 4 for this service, `glue` or `s3tables`. Not with
+         * `token` or `clientId`. */
+        signingName?: string;
+        /** How each Parquet file compresses its columns. Absent is `zstd`. */
+        compression?: Compression;
+        /** Parts of one file uploading at once. */
+        inFlight?: number;
+        maxObjectBytes?: ByteCount;
+        /** Memory for records not yet committed. Absent is `LIMITS.objectBufferBytes.default`. */
+        bufferBytes?: ByteCount;
+        stallAfterSecs?: number;
+        /** Seconds files stay open before they are committed. Within `LIMITS.tableFileIntervalSecs`. */
+        fileIntervalSecs?: number;
+      })
+  | (TlsDto &
+      S3Access & {
+        id: string;
+        type: 'delta';
+        exceptions?: ExceptionsDto;
+        /** The table's root, `s3://bucket/path`. Exactly one of `location` and `unityCatalog`. */
+        location?: string;
+        /** A Unity Catalog external table, whose root and storage credentials the catalog gives. */
+        unityCatalog?: UnityCatalog;
+        /** The columns a created table is partitioned by, each a top-level column of the record. */
+        partitionBy?: string[];
+        /** How each Parquet file compresses its columns. Absent is `zstd`. */
+        compression?: Compression;
+        /** Parts of one file uploading at once. */
+        inFlight?: number;
+        maxObjectBytes?: ByteCount;
+        /** Memory for records not yet committed. Absent is `LIMITS.objectBufferBytes.default`. */
+        bufferBytes?: ByteCount;
+        stallAfterSecs?: number;
+        /** Seconds files stay open before they are committed. Within `LIMITS.tableFileIntervalSecs`. */
+        fileIntervalSecs?: number;
+      });
 
 /** A Databricks Unity Catalog table, signed in to as a service principal with OAuth client credentials. */
 export interface UnityCatalog {
@@ -908,10 +878,8 @@ export type ApiRecords = 'body' | 'lines' | 'array';
 /** What every receiver takes, mirroring `config_file::dto::ReceiverSettingsDto`: where it listens, the TLS it serves
  * and how large a request it reads. Every worker of the group listens on `port`, at the address its own startup
  * settings name. */
-export interface ReceiverSettings {
+export interface ReceiverSettings extends Pick<TlsDto, 'certificate' | 'authorities'> {
   port: number;
-  /** The identity it serves TLS under, by id. Its authorities are what a sender's certificate must chain to. */
-  identity?: string;
   /** Absent is `LIMITS.receiverRequestBytes.default`. */
   maxRequestBytes?: number;
 }
@@ -930,9 +898,7 @@ export type Sourcetype = {
 };
 
 /** What every API source takes besides where it asks and how it signs in. */
-export interface ApiSettings {
-  /** The identity this client connects under, by id. */
-  identity?: string;
+export interface ApiSettings extends TlsDto {
   /** Seconds from the start of one poll to the start of the next. Absent is `LIMITS.pollIntervalSecs.default`. */
   pollIntervalSecs?: number;
   /** What the first poll asks for. Absent is `everything`. */
@@ -996,11 +962,9 @@ export interface ObjectSettings {
 }
 
 /** What an object store destination reached over HTTPS takes besides its `ObjectSettings`. */
-export interface CloudSettings {
+export interface CloudSettings extends TlsDto {
   /** One of `STORAGE_CLASSES` for the kind. Absent is the bucket's default. */
   storageClass?: string;
-  /** The identity this client connects under, by id. */
-  identity?: string;
 }
 
 export type ObjectFormat = 'ndjson' | 'json' | 'parquet' | 'avro' | 'csv' | 'text' | 'bytes';
@@ -1102,7 +1066,6 @@ export interface FileConfigDto {
   routes: RouteDto[];
   lookupTables: LookupTableDto[];
   grokPatterns: GrokPatternDto[];
-  identities: IdentityDto[];
   /** A group's display name, from its manifest. Absent shows the id. */
   name?: string;
 }
@@ -1534,13 +1497,7 @@ export async function sharedConfig(): Promise<FileConfigDto | null> {
 
 /** A section of a bundle, by its key in `FileConfigDto`. */
 export type ConfigSection =
-  | 'sources'
-  | 'destinations'
-  | 'routes'
-  | 'lookupTables'
-  | 'grokPatterns'
-  | 'identities'
-  | 'pipelines';
+  'sources' | 'destinations' | 'routes' | 'lookupTables' | 'grokPatterns' | 'pipelines';
 
 /** What Undo changes puts back: one object, or one file no section owns by
  * its path in the scope's bundle. */
@@ -1591,16 +1548,7 @@ export function putDestinations(
 export function describeCertificates(
   pem: string,
 ): Promise<{ certificates: DescribedCertificate[] } | { error: string }> {
-  return post('/api/identities/describe', { pem }, 'quiet');
-}
-
-/** Refused when an identity's certificate and the key it names are not a pair --
- * the one check the leader makes that the bundle alone cannot. */
-export function putIdentities(
-  identities: IdentityDto[],
-  base?: string | null,
-): Promise<MutationResult> {
-  return configJson('/api/identities', putBody(identities), { base });
+  return post('/api/certificates/describe', { pem }, 'quiet');
 }
 
 export function putRoutes(routes: RouteDto[], base?: string | null): Promise<MutationResult> {
@@ -2482,7 +2430,7 @@ export type WarningCondition =
   | 'authorityExpiring'
   | 'authorityAging'
   | 'enrollmentCodeNamesOutgoingAuthority'
-  | 'identityExpiring'
+  | 'certificateExpiring'
   | 'workerLoggedWarnings'
   | 'deployHeld'
   | 'remoteNotFollowed'
@@ -2497,8 +2445,7 @@ export type WarningCondition =
   | 'secretNeedsValue'
   | 'acmeRenewalFailing'
   | 'leaderCertificateRunningOut'
-  | 'issuedCertificateNotRenewed'
-  | 'identityCertificateBehind';
+  | 'issuedCertificateNotRenewed';
 
 /** *Failed*: the thing is not doing its job. *Warning*: it works and something is off. *Info*: a fact worth
  * knowing that asks nothing; the leader sends it only to a caller that asks (`listWarnings({ info: true })`). */
@@ -2515,7 +2462,6 @@ export interface WarningDto {
     | 'group'
     | 'leader'
     | 'enrollmentCode'
-    | 'identity'
     | 'pipeline'
     | 'secret'
     | 'certificate';
@@ -2576,8 +2522,8 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Authority running out';
     case 'enrollmentCodeNamesOutgoingAuthority':
       return 'Enrollment code names the outgoing authority';
-    case 'identityExpiring':
-      return 'Identity certificate running out';
+    case 'certificateExpiring':
+      return 'Certificate running out';
     case 'workerLoggedWarnings':
       return 'Logged a warning';
     case 'deployHeld':
@@ -2608,8 +2554,6 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Leader certificate running out';
     case 'issuedCertificateNotRenewed':
       return 'Certificate not renewed';
-    case 'identityCertificateBehind':
-      return 'Identity on an older certificate';
   }
 }
 
@@ -2797,9 +2741,6 @@ export function startCapture(
            * configuration. */
           group: string;
           source: SourceDto;
-          /** The identity that source names. A worker may never have seen it either,
-           * so it travels with the source. */
-          identity?: IdentityDto;
           filter?: string;
           /** Where a Kafka or Event Hubs source's capture starts. Absent, it reads from the latest. */
           start?: StartPosition;
@@ -3938,8 +3879,7 @@ export type MeasurementsResponse = {
   /** How many milliseconds a rate is read over. */
   bucketMillis: number;
   nodes: NodeReadingDto[];
-  /** The catalog's warnings naming a group but no source or destination in it: a worker's, an
-   * identity's. */
+  /** The catalog's warnings naming a group but no source or destination in it: a worker's. */
   groupWarnings: WarningDto[];
 };
 
@@ -4227,7 +4167,7 @@ export function getPipelineCallers(): Promise<PipelineCallersResponse> {
 // What a change to one object reaches, on the branch being edited (`leader::connections`).
 
 export type ConnectionKind =
-  'source' | 'route' | 'pipeline' | 'destination' | 'lookupTable' | 'grokPattern' | 'identity';
+  'source' | 'route' | 'pipeline' | 'destination' | 'lookupTable' | 'grokPattern';
 
 export type Connected = {
   kind: ConnectionKind;

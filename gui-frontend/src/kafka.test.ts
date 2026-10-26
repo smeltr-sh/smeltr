@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   brokersWarning,
   fieldsFor,
-  identityReason,
+  tlsReason,
   isCredentialValued,
   MECHANISM_FIELDS,
   propertyRefusal,
@@ -136,10 +136,10 @@ describe('what a save refuses', () => {
     expect(reservedReason('socket.timeout.ms')).toBeUndefined();
   });
 
-  it('refuses a TLS property only while an identity answers for it', () => {
-    expect(identityReason('ssl.ca.location', true)).toContain('identity');
-    expect(identityReason('ssl.ca.location', false)).toBeUndefined();
-    expect(identityReason('socket.timeout.ms', true)).toBeUndefined();
+  it('refuses a TLS property only while the TLS settings answer for it', () => {
+    expect(tlsReason('ssl.ca.location', true)).toContain('TLS settings');
+    expect(tlsReason('ssl.ca.location', false)).toBeUndefined();
+    expect(tlsReason('socket.timeout.ms', true)).toBeUndefined();
   });
 
   it('classifies a credential by shape, so a property it has never seen is still refused', () => {
@@ -154,7 +154,7 @@ describe('what a save refuses', () => {
     expect(propertyRefusal('', false, false)).toBeUndefined();
     expect(propertyRefusal('sasl.password', true, false)).toContain('security section');
     expect(propertyRefusal('group.id', false, false)).toContain('smeltr owns this');
-    expect(propertyRefusal('ssl.ca.location', false, true)).toContain('identity');
+    expect(propertyRefusal('ssl.ca.location', false, true)).toContain('TLS settings');
     expect(propertyRefusal('ssl.keystore.password', false, false)).toContain('Name it below');
     expect(propertyRefusal('ssl.keystore.password', true, false)).toBeUndefined();
     expect(propertyRefusal('socket.timeout.ms', false, false)).toBeUndefined();

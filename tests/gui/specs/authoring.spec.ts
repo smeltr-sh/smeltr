@@ -2033,7 +2033,7 @@ test('A10: HTTP, HEC, OTLP, Prometheus and Elasticsearch receivers are added fro
 
 // A10, sources and destinations from a form. S2S and syslog receivers are not reached over HTTP: their rows say a
 // port alone. A syslog sender carries no token, so its form edits the networks it admits. Over UDP it serves no TLS,
-// so the form offers no identity.
+// so the form offers no certificate.
 test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edits the networks it admits and its transport', async ({
   admin,
   leader,
@@ -2085,8 +2085,8 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
   await draft.fill('192.168.0.0/16');
   await draft.press('Enter');
   await admin.getByRole('button', { name: /^Advanced/ }).click();
-  const identity = admin.getByRole('combobox', { name: /^server identity/ });
-  await expect(identity).toBeVisible();
+  const certificate = admin.getByRole('combobox', { name: /^certificate served/ });
+  await expect(certificate).toBeVisible();
   const lineBreaker = admin.getByRole('textbox', { name: 'line breaker' });
   await lineBreaker.fill('(\\x00)');
   await admin.getByRole('button', { name: 'About line breaker' }).click();
@@ -2096,9 +2096,9 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
     fullPage: true,
   });
   await admin.keyboard.press('Escape');
-  // UDP frames nothing, so choosing it drops the line breaker with the identity.
+  // UDP frames nothing, so choosing it drops the line breaker with the certificate.
   await admin.getByRole('combobox', { name: /^transport/ }).selectOption('udp');
-  await expect(identity).toBeHidden();
+  await expect(certificate).toBeHidden();
   await expect(lineBreaker).toBeHidden();
   await expect(admin.getByRole('textbox', { name: /^request size/ })).toBeVisible();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();

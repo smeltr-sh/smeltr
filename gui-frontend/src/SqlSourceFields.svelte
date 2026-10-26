@@ -11,7 +11,7 @@
   import Field from './Field.svelte';
   import Nested from './Nested.svelte';
   import Advanced from './Advanced.svelte';
-  import IdentityPicker from './IdentityPicker.svelte';
+  import TlsFields from './TlsFields.svelte';
   import SecretRefInput from './SecretRefInput.svelte';
   import ValidatedField from './ValidatedField.svelte';
   import { CaptureSession, groupToAsk } from './captureSession.svelte';
@@ -24,7 +24,6 @@
     FIELD_TYPES,
     saveCapture,
     sqlStatement,
-    type IdentityDto,
     type SecretDto,
     type SourceDto,
     type SqlColumn,
@@ -52,13 +51,11 @@
 
   let {
     source,
-    identities,
     secrets,
     readAt,
     onsaved,
   }: {
     source: SqlSource;
-    identities: IdentityDto[];
     secrets: SecretDto[];
     /** The commit the page read its sources at. A sample is saved against it, so its commit follows that one. */
     readAt?: string | null;
@@ -75,10 +72,6 @@
   /** How long Run waits for a worker before it gives up. */
   const RUN_SECS = 30;
 
-  let identity = $derived(
-    source.identity === undefined ? undefined : identities.find((i) => i.id === source.identity),
-  );
-
   // The statement follows every edit. Asked again once typing pauses, and an answer that arrives after a later
   // question is dropped.
   let statements: SqlStatementsResult | null = $state(null);
@@ -87,7 +80,7 @@
     const body = JSON.stringify(source);
     const at = ++asked;
     const timer = setTimeout(() => {
-      sqlStatement(JSON.parse(body) as SourceDto, identity)
+      sqlStatement(JSON.parse(body) as SourceDto)
         .then((res) => at === asked && (statements = res))
         .catch(() => at === asked && (statements = null));
     }, 300);
@@ -125,7 +118,9 @@
       source.database,
       source.user,
       source.tls,
-      source.identity,
+      source.certificate,
+      source.authorities,
+      source.trustPublic,
     ]);
 
   async function startRun() {
@@ -145,7 +140,6 @@
     await run.start({
       group,
       source: $state.snapshot(source) as SourceDto,
-      identity: identity ? ($state.snapshot(identity) as IdentityDto) : undefined,
       maxMatches: RUN_ROWS,
       deadlineSecs: RUN_SECS,
     });
@@ -348,7 +342,11 @@
     onchange={(e) => {
       const v = e.currentTarget.value as 'require' | 'disable';
       source.tls = v === 'require' ? undefined : v;
-      if (v === 'disable') source.identity = undefined;
+      if (v === 'disable') {
+        source.certificate = undefined;
+        source.authorities = undefined;
+        source.trustPublic = undefined;
+      }
     }}
   >
     <option value="require">require &mdash; encrypted, the server verified</option>
@@ -357,12 +355,7 @@
 </Field>
 {#if (source.tls ?? 'require') === 'require'}
   <Nested>
-    <IdentityPicker
-      value={source.identity}
-      {identities}
-      farEnd="source"
-      onchange={(v) => (source.identity = v)}
-    />
+    <TlsFields value={source} farEnd="source" />
   </Nested>
 {/if}
 

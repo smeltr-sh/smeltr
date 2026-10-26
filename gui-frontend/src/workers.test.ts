@@ -427,7 +427,7 @@ describe('workerHealth', () => {
   });
 
   it('an object in its group marks it, whatever the object is', () => {
-    for (const kind of ['source', 'destination', 'pipeline', 'group', 'identity'] as const) {
+    for (const kind of ['source', 'destination', 'pipeline', 'group'] as const) {
       expect(workerHealth(online, [warning(kind, 'x', 'g', 'warning')])).toBe('warning');
     }
   });

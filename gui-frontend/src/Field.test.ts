@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import Field from './Field.svelte';
-import IdentityPicker from './IdentityPicker.svelte';
+import TlsFields from './TlsFields.svelte';
 import { setScope } from './api';
 import { load, signedOut } from './session';
 
@@ -81,12 +81,10 @@ describe('a field where the scope is not yours to change', () => {
   it('is locked once, inside a component that holds it', async () => {
     await signInAs({ shared: 'viewer', payments: 'viewer' });
     history.replaceState(null, '', '/#/build/sources');
-    field = mount(IdentityPicker, {
-      target,
-      props: { value: undefined, identities: [], farEnd: 'source', onchange: () => {} },
-    });
-    expect(target.querySelectorAll('fieldset')).toHaveLength(1);
+    field = mount(TlsFields, { target, props: { value: {}, farEnd: 'sender' } });
+    expect(target.querySelectorAll('fieldset')).toHaveLength(2);
     expect(target.querySelector('select')!.closest('fieldset[disabled]')).not.toBeNull();
+    expect(target.querySelector('textarea')!.closest('fieldset[disabled]')).not.toBeNull();
   });
 
   it('is open to an editor', async () => {

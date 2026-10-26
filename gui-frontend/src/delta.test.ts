@@ -43,18 +43,18 @@ describe('a Delta destination', () => {
     expect(partitionRefusal(['host', 'day', 'host'])).toMatch(/"host" is named twice/);
   });
 
-  it('refuses an identity on a plain HTTP endpoint', () => {
-    const d = { ...delta(), identity: 'lake-ca' };
+  it('refuses TLS settings on a plain HTTP endpoint', () => {
+    const d = { ...delta(), certificate: 'lake-client' };
     expect(endpointRefusal(d)).toBeUndefined();
     expect(endpointRefusal({ ...d, endpoint: 'https://minio.example.com' })).toBeUndefined();
-    expect(endpointRefusal({ ...d, endpoint: 'http://localhost:9000' })).toMatch(/identity/);
+    expect(endpointRefusal({ ...d, endpoint: 'http://localhost:9000' })).toMatch(/certificate/);
     expect(endpointRefusal({ ...delta(), endpoint: 'http://localhost:9000' })).toBeUndefined();
     expect(endpointRefusal({ ...delta(), endpoint: 'http://minio:9000' })).toBeUndefined();
   });
 
   it("shows the location's refusal, and the credential its config names", () => {
     const shown = (d: DeltaDestination) =>
-      render(DeltaFields, { props: { value: d, secrets: [], identities: [] } }).body;
+      render(DeltaFields, { props: { value: d, secrets: [] } }).body;
     const host = shown(delta());
     expect(host).toContain('location');
     expect(host).not.toContain('access key id');
@@ -164,7 +164,7 @@ describe('a Unity Catalog Delta destination', () => {
 
   it("shows the catalog's fields and the region, and no storage credential", () => {
     const shown = (d: DeltaDestination) =>
-      render(DeltaFields, { props: { value: d, secrets: [], identities: [] } }).body;
+      render(DeltaFields, { props: { value: d, secrets: [] } }).body;
     const body = shown(catalogued());
     for (const label of ['workspace', 'client id', 'client secret', 'region'])
       expect(body).toContain(label);

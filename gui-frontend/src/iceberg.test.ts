@@ -51,12 +51,12 @@ describe('an Iceberg destination', () => {
     expect(d).toEqual(iceberg());
   });
 
-  it('refuses an identity over plain HTTP, and leaves whether the catalog is a URL to the save', () => {
+  it('refuses TLS settings over plain HTTP, and leaves whether the catalog is a URL to the save', () => {
     expect(catalogRefusal({ ...iceberg(), catalog: 'polaris:8181' })).toBeUndefined();
     expect(catalogRefusal({ ...iceberg(), catalog: '' })).toBeUndefined();
     const plain = { ...iceberg(), catalog: 'http://localhost:8181' };
     expect(catalogRefusal(plain)).toBeUndefined();
-    expect(catalogRefusal({ ...plain, identity: 'lake-ca' })).toMatch(/https/);
+    expect(catalogRefusal({ ...plain, authorities: 'lake-ca' })).toMatch(/https/);
   });
 
   it('refuses a namespace with an empty level', () => {
@@ -96,7 +96,7 @@ describe('an Iceberg destination', () => {
 
   it('shows the sign-in its config names, and that sign-in only', () => {
     const shown = (d: IcebergDestination) =>
-      render(IcebergFields, { props: { value: d, secrets: [], identities: [] } }).body;
+      render(IcebergFields, { props: { value: d, secrets: [] } }).body;
     const none = shown(iceberg());
     expect(none).toContain('catalog sign-in');
     expect(none).not.toMatch(/client id\b/);

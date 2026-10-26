@@ -5,6 +5,7 @@
 
 import type { DestinationDto } from './api';
 import { accessModified } from './ConnectorAccess.svelte';
+import { PLAIN_HTTP_TLS, tlsSet } from './http';
 
 export type DeltaDestination = Extract<DestinationDto, { type: 'delta' }>;
 
@@ -72,11 +73,10 @@ export function partitionRefusal(columns: string[]): string | undefined {
   return undefined;
 }
 
-/** Why the endpoint cannot be saved, or nothing. An identity is presented only over TLS. */
+/** Why the endpoint cannot be saved, or nothing. A certificate is presented only over TLS. */
 export function endpointRefusal(d: DeltaDestination): string | undefined {
   if (d.endpoint === undefined || /^https:\/\//i.test(d.endpoint.trim())) return undefined;
-  if (d.identity !== undefined)
-    return 'Plain HTTP negotiates no TLS, so the identity would go unused. Use an https:// endpoint.';
+  if (tlsSet(d)) return PLAIN_HTTP_TLS;
   return undefined;
 }
 

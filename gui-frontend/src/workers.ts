@@ -181,7 +181,6 @@ const GROUP_OBJECTS: ReadonlySet<WarningDto['subjectKind']> = new Set([
   'destination',
   'pipeline',
   'group',
-  'identity',
 ]);
 
 /** Counts a displayed roster by the same status labels the Status page uses. */
