@@ -218,6 +218,8 @@
   const newRoot = $derived(inForce === 'acme' && switching?.source === 'acme');
   // Read inside the card's title snippet, where the page's null check does not reach.
   const supplied = $derived(certificates?.supplied ?? false);
+  /** Another entry is chosen, served or not: a start that cannot serve it presents the leader's own meanwhile. */
+  const choseAnother = $derived(!!certificates?.entry && certificates.entry !== OWN_CERTIFICATE);
 
   $effect(() => {
     if (!rotationOpen) return;
@@ -613,10 +615,10 @@
       {/if}
 
       {#if source === 'own' && !switching}
-        {#if certificates.supplied || formError || message}
+        {#if choseAnother || formError || message}
           <div class="setting actions">
             {@render status(formError, message)}
-            {#if certificates.supplied}
+            {#if choseAnother}
               <div class="buttons">
                 <button
                   class="primary"
@@ -688,7 +690,7 @@
           </div>
 
           {@render status(rotationError, rotationMessage)}
-        {:else if !certificates.supplied}
+        {:else if !choseAnother}
           <div class="setting">
             <Collapsible open={!!rotationError || !!rotationMessage}>
               {#snippet summary()}Rotate authority{/snippet}
