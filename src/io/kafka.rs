@@ -1292,8 +1292,9 @@ impl KafkaDestination {
             // carries a fifth of what it can. Without it a retried produce may duplicate a record, as a batch
             // smeltr sends again already may (at-least-once), or reorder it against its neighbors.
             .set("acks", config.acks.as_property())
-            // `produce` bounds the queue at the producer's share of `bufferBytes`, counting what librdkafka holds for
-            // each record besides its payload; this only stops librdkafka's own 1 GB default from being the bound
+            // `produce` bounds the queue at the producer's share of `bufferBytes`, or at the pacing target, which
+            // never passes the share it is built with; it counts what librdkafka holds for each record besides its
+            // payload. This only stops librdkafka's own 1 GB default from being the bound
             // should that count ever fall short. The egress queue in front of this one holds the other half of
             // `bufferBytes` and counts rows a little differently, so a full producer queue is reachable from egress:
             // `deliver` polls it down, and a queue that stays full is the stall it already reports.

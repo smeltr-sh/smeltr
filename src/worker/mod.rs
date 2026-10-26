@@ -1276,7 +1276,18 @@ fn deploy(
     };
     for d in system.topology.destinations.iter().filter(|d| wanted.contains(&d.id)) {
         let handle = MetricsHandle::new(registry.clone(), format!("egress-{}", d.id));
-        let client = crate::io::build_destination(&d.kind, d.id, handle.clone(), secrets, topology.records.get(&d.id))
+        // A paced Kafka producer is sized at build for the most its target may become, since librdkafka fixes its
+        // queue's bound and its requests in flight then; `Destination::pace` holds it to the target from the first
+        // send.
+        let kind = match &d.kind {
+            crate::plan::topology::DestinationKind::Kafka(_) if borrows(d).is_some() => {
+                let mut kind = d.kind.clone();
+                kind.set_buffer_bytes(queue_budget(d).saturating_mul(2));
+                std::borrow::Cow::Owned(kind)
+            }
+            kind => std::borrow::Cow::Borrowed(kind),
+        };
+        let client = crate::io::build_destination(&kind, d.id, handle.clone(), secrets, topology.records.get(&d.id))
             .map_err(|e| format!("destination {:?} could not be built: {e}", d.name))?;
         let stage = Egress::start(d.id, &d.name, client, d.kind.stall_after(), queue_budget(d), handle)
             .with_pool(ready.clone())
