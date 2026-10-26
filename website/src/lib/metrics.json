@@ -319,7 +319,7 @@
     "name": "smeltr_destination_pace_headroom_ratio",
     "kind": "gauge",
     "labels": ["destination"],
-    "what": "How far, as a share of its buffer, the destination's measured connection stands below it, on average over the last ten seconds. Near 0 for long, memory, not the connection, is what holds it back."
+    "what": "How much room the buffer leaves above what the connection can carry, as a share of the buffer, averaged over the last ten seconds. Staying near 0 means the buffer, not the connection, is holding the destination back. Not reported for a destination that writes files."
   },
   {
     "group": "Destinations",

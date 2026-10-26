@@ -162,7 +162,7 @@
       "env": "SMELTR_WORKER_MEMORY",
       "default": "90% of the container's memory limit, or of the host's memory without one",
       "examples": ["4GiB", "16 GB"],
-      "what": "The memory the worker sizes its columnar budget and every unset `bufferBytes` to. The rest of the machine's memory is left to what runs beside it, such as a leader in the same process."
+      "what": "The memory the worker may use. It sizes its working memory and every buffer left on auto to fit. The rest is left to what runs beside it, such as a leader in the same process."
     },
     {
       "key": "worker.heartbeat.interval_ms",
