@@ -1260,11 +1260,12 @@ fn deploy(
     let queue_pool = fitted.map(|f| crate::egress::QueuePool::new(f.pool));
     // And the receivers from one of their own.
     let receiver_pool = fitted.map(|f| crate::egress::QueuePool::new(f.receivers));
-    // A destination sized to the worker's memory keeps its default buffer, and so its senders, and its queue borrows
-    // up to its ceiling.
+    // A destination sized to the worker's memory keeps its default buffer, and so its senders. Its queue is paced:
+    // it starts at one batch and borrows from the pool as far as its throughput asks and its share allows, so the
+    // pool is the most it may hold, and what a reader may have outstanding toward it.
     let fitted_destinations = fitted.map(|_| &system.topology.fitted.destinations);
-    let queue_budget = |d: &crate::plan::topology::DestinationConfig| match fitted_destinations {
-        Some(fitted) if fitted.contains(&d.id) => memory::queue_budget(&d.kind),
+    let queue_budget = |d: &crate::plan::topology::DestinationConfig| match (fitted, fitted_destinations) {
+        (Some(f), Some(fitted)) if fitted.contains(&d.id) => f.pool.max(f.batch_bytes),
         _ => d.kind.queue_bytes(),
     };
     let batch_bytes = fitted.map_or(TICK_MAX_BYTES, |f| f.batch_bytes);
@@ -1281,7 +1282,9 @@ fn deploy(
             .with_pool(ready.clone())
             .with_captures(captures.clone());
         let stage = match borrows(d) {
-            Some(pool) => stage.borrowing(pool.clone(), batch_bytes, memory::queue_charge(&d.kind)),
+            Some(pool) => stage
+                .borrowing(pool.clone(), batch_bytes, memory::queue_charge(&d.kind))
+                .paced(batch_bytes),
             None => stage,
         };
         // A destination set to block keeps what it refuses and sends it again, since the fix is usually its own.

@@ -1273,6 +1273,12 @@ pub trait Destination: Send {
         Vec::new()
     }
 
+    /// The pacing model's target for this destination (`egress::pacing`): the bytes worth having queued and in
+    /// flight, which the egress queue in front of it already holds to. A destination with a bound of its own -- a
+    /// producer's queue, a pool's requests -- sets that bound from it. Called when the target moves, from the thread
+    /// that owns the destination. One without such a bound ignores it.
+    fn pace(&mut self, _target_bytes: usize) {}
+
     /// How many requests this destination currently allows outstanding, for a transport that decides that for itself.
     /// `None` from one whose concurrency is not its own to report -- librdkafka's is inside librdkafka.
     fn concurrency(&mut self) -> Option<usize> {

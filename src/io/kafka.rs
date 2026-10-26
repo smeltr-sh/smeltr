@@ -1150,7 +1150,8 @@ pub struct KafkaDestination {
     avro: Option<crate::io::avro::AvroWriter>,
     /// Shared with the producer's own `DeliveryTracker`.
     held: Arc<std::sync::atomic::AtomicUsize>,
-    /// The producer's share of `bufferBytes`, which `held` stays under.
+    /// What `held` stays under: the producer's share of a stated `bufferBytes`, or the pacing target
+    /// (`Destination::pace`) when the worker sizes this destination.
     budget: usize,
 }
 
@@ -1553,6 +1554,10 @@ impl Destination for KafkaDestination {
     /// Set by the producer's own error callback, which `poll_completions` runs.
     fn connection_error(&self) -> Option<String> {
         self.reach.lock().unwrap().unreachable()
+    }
+
+    fn pace(&mut self, target_bytes: usize) {
+        self.budget = target_bytes.max(1);
     }
 }
 

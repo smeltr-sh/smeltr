@@ -252,10 +252,6 @@ pub(super) struct Fit {
 /// The least a batch may be cut to when memory is short: below it the work per batch outweighs the batch.
 const LEAST_BATCH_BYTES: usize = 512 * 1024;
 
-/// How many times its default a destination the bundle leaves unset may grow to, when other queues leave it room.
-/// Past that a busier destination gains little: its senders are all busy and its files are large.
-const CEILING_DEFAULTS: usize = 4;
-
 /// Sizes `topology` to `memory`, the bytes its worker may use, and gives what to run it under.
 ///
 /// The parts held whatever the traffic are set aside first:
@@ -276,9 +272,9 @@ const CEILING_DEFAULTS: usize = 4;
 /// another's; a receiver weighs as one default queue. A claim held at a bound gives the rest what its share would have
 /// exceeded.
 ///
-/// The queue of a destination left out may grow to its ceiling ([`queue_budget`]) while the pool has room, so a busy
-/// one takes what idle ones leave, and a stalled one holds no more than its ceiling. A receiver grows the same way, to
-/// `io::receiver::INBOX_BYTES`. Only `delivered` destinations are sized: the rest are never built.
+/// The queue of a destination left out holds what raises its throughput (`egress::pacing`), borrowing from the pool
+/// as far as its share of it, so a busy one takes what idle ones leave and a slow one holds little. A receiver grows
+/// to `io::receiver::INBOX_BYTES`. Only `delivered` destinations are sized: the rest are never built.
 ///
 /// Lookup tables are left out: they are mapped files, whose pages the kernel drops under pressure.
 pub(super) fn fit(
@@ -346,16 +342,15 @@ pub(super) fn fit(
     let left = (memory as u64).saturating_sub(fixed) as usize;
 
     let mut claims: Vec<Claim> = fetch_claims(sources.iter().map(|&i| &topology.sources[i].kind));
-    // The pool weighs what its queues would together: each its weight, as often as its buffer is held.
+    // The pool weighs what its queues would together: each its weight, as often as its buffer is held. Nothing
+    // bounds it above: a queue grows as far as its throughput asks and its share allows.
     let buffers: u64 = pooled().map(|k| buffer_weight(k) * buffer_halves(k)).sum();
     if buffers > 0 {
         claims.push(Claim {
             weight: buffers / 2,
             halves: 2,
             least: 0,
-            most: pooled()
-                .map(|k| queue_budget(k).saturating_sub(batch_bytes) * queue_charge(k))
-                .sum(),
+            most: usize::MAX,
         });
     }
     // The receivers weigh as many default queues: each receiver holds about as much as one.
@@ -404,27 +399,6 @@ pub(super) fn fit(
         batch_bytes,
         receivers,
     }
-}
-
-/// What the egress queue of a destination the bundle leaves unset may hold, borrowing: its queue at its ceiling. Its
-/// `bufferBytes` stays at its default, since that also sets its senders, and each sender holds memory of its own
-/// however little is queued.
-pub(super) fn queue_budget(kind: &DestinationKind) -> usize {
-    let mut ceiling = kind.clone();
-    ceiling.set_buffer_bytes(queue_ceiling(kind));
-    ceiling.queue_bytes()
-}
-
-/// The most a destination the bundle leaves unset may hold, as its `bufferBytes`: [`CEILING_DEFAULTS`] times its
-/// default, within what it may be set to and above the requests it starts with outstanding.
-fn queue_ceiling(kind: &DestinationKind) -> usize {
-    let (default, most) = match kind {
-        DestinationKind::Objects(_) | DestinationKind::Iceberg(_) | DestinationKind::Delta(_) => {
-            (BufferBytes::OBJECT_DEFAULT, BufferBytes::OBJECT_MAX)
-        }
-        _ => (BufferBytes::DEFAULT, BufferBytes::MAX),
-    };
-    (CEILING_DEFAULTS * default).min(most).max(kind.least_buffer_bytes())
 }
 
 /// The bytes of memory each byte in a destination's egress queue stands for: twice for Kafka, whose producer holds a
@@ -679,9 +653,6 @@ mod tests {
     /// Elasticsearch's senders: one per 5 MiB bulk request its default 64 MiB buffer holds.
     const SENDERS: usize = 12 * SENDER_BYTES;
 
-    /// What the pool may lend, at most: each buffer left out from its reserve to its ceiling, as often as it is held.
-    const POOL_MOST: usize = (4 * BufferBytes::DEFAULT - 4 * MIB) + 2 * (4 * BufferBytes::OBJECT_DEFAULT - 4 * MIB);
-
     #[test]
     fn the_columnar_budget_and_the_pool_share_what_the_bundle_leaves_half_each() {
         let mut topology = bundle();
@@ -695,22 +666,21 @@ mod tests {
             BufferBytes::DEFAULT,
             "a buffer left out keeps its default, and so its senders"
         );
-        let es = topology.destinations.iter().find(|d| d.name == "es").expect("named");
-        assert_eq!(
-            queue_budget(&es.kind),
-            4 * BufferBytes::DEFAULT,
-            "its queue grows to its ceiling"
-        );
         assert_eq!(buffer(&topology, "out"), 8 * MIB, "a stated buffer is kept");
     }
 
     #[test]
-    fn the_columnar_budget_stops_at_128_mib_a_thread_and_the_pool_at_what_its_queues_hold() {
+    fn the_columnar_budget_stops_at_128_mib_a_thread_and_the_pool_takes_the_rest() {
         let mut topology = bundle();
         let delivered = every(&topology);
+        let left = 4096 * MIB - FIXED - RESERVES;
         let fitted = fit(&mut topology, &delivered, 0, 4096 * MIB, 2, None);
         assert_eq!(fitted.columnar, 256 * MIB);
-        assert_eq!(fitted.pool, POOL_MOST);
+        assert_eq!(
+            fitted.pool,
+            left - 256 * MIB,
+            "a queue grows as far as its throughput asks"
+        );
     }
 
     #[test]
@@ -829,14 +799,6 @@ mod tests {
         let fitted = fit(&mut topology, &delivered, 0, 256 * MIB, 8, None);
         assert_eq!(fitted.columnar, LEAST_COLUMNAR_BYTES);
         assert_eq!(fitted.pool, 0, "each queue still holds its reserve");
-    }
-
-    #[test]
-    fn a_ceiling_is_above_the_requests_its_destination_starts_with() {
-        let topology = bundle();
-        for d in &topology.destinations {
-            assert!(queue_ceiling(&d.kind) >= d.kind.least_buffer_bytes());
-        }
     }
 
     #[test]

@@ -308,6 +308,7 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
                 })
                 .collect(),
             start,
+            self.max_request_bytes,
         ));
         self
     }
@@ -644,10 +645,16 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
         Ok(())
     }
 
-    /// What the pool's AIMD loop currently allows. A destination delivering one batch at a time has no loop and no
+    /// What the pool currently allows outstanding. A destination delivering one batch at a time has no pool and no
     /// figure to report.
     fn concurrency(&mut self) -> Option<usize> {
         self.pool.as_ref().map(|p| p.limit())
+    }
+
+    fn pace(&mut self, target_bytes: usize) {
+        if let Some(pool) = &mut self.pool {
+            pool.pace(target_bytes);
+        }
     }
 
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
