@@ -62,7 +62,7 @@
 
 <CertificatePicker
   bind:value={value.certificate}
-  label={serves ? 'certificate served' : 'client certificate'}
+  label={serves ? 'server certificate' : 'client certificate'}
   field="certificate"
   optional
   warning={serves && value.certificate === undefined
@@ -72,10 +72,10 @@
   {#snippet help()}
     {#if serves}
       The certificate this receiver serves TLS with, chosen from the list on
-      <a href="#/admin/certificates">Admin &rarr; Certificates</a>. Workers present its newest
+      <a href="#/admin/certificates">Admin &rarr; Certificates</a>. Workers serve its newest
       version.
     {:else}
-      The certificate this worker shows the {farEnd}, chosen from the list on
+      The certificate this worker presents to the {farEnd}, chosen from the list on
       <a href="#/admin/certificates">Admin &rarr; Certificates</a>. Needed only when the {farEnd} requires
       a client certificate. Workers present its newest version.
     {/if}
@@ -88,8 +88,8 @@
       Authorities a sender's certificate must chain to. With any, every sender must present a
       certificate. PEM, one or more certificates.
     {:else}
-      Authorities the {farEnd}'s certificate may chain to, beside the public roots. Needed only when
-      the
+      Authorities the {farEnd}'s certificate may chain to, beside the public roots unless trust
+      public roots is off. Needed only when the
       {farEnd}'s certificate comes from your organization's authority rather than a public one. PEM,
       one or more certificates.
     {/if}
@@ -117,8 +117,8 @@
   <Advanced label="Advanced TLS" modified={value.trustPublic === false}>
     <Field field="trustPublic" label="trust public roots">
       {#snippet help()}
-        Whether this worker also trusts Mozilla's roots and its host's own. Off trusts only the
-        authorities above, so a certificate from any other authority cannot stand in for the {farEnd}.
+        Whether this worker also trusts the public roots: Mozilla's and its host's own. Off, only
+        certificates from the authorities above are accepted.
       {/snippet}
       <Toggle
         bind:checked={

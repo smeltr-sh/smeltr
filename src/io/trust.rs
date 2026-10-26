@@ -200,15 +200,16 @@ pub fn refuse_unless_usable(pem: &str, side: Side) -> Result<(), String> {
         (Ok(Some(eku)), Side::Client) if !eku.value.client_auth => {
             return Err(
                 "whose Extended Key Usage does not permit client authentication, so a far end enforcing it \
-                 refuses this certificate at the handshake -- a connector connecting out presents it as a client \
-                 certificate"
+                 refuses this certificate at the handshake: a connector connecting out presents it as a client \
+                 certificate. Choose a certificate issued for clients"
                     .to_string(),
             );
         }
         (Ok(Some(eku)), Side::Server) if !eku.value.server_auth => {
             return Err(
                 "whose Extended Key Usage does not permit server authentication, so a sender refuses this \
-                 certificate at the handshake -- a receiver presents it as a server certificate"
+                 certificate at the handshake: a receiver serves it as a server certificate. Choose a certificate issued for \
+                 servers"
                     .to_string(),
             );
         }

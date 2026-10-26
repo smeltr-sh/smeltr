@@ -5472,7 +5472,7 @@ fn otlp_receivers_of_different_signals_share_a_port() {
     ]));
     assert!(
         e.contains(
-            r#"source "b" shares port 4318 with source "a", which serves it; give it the same certificate and authorities"#
+            r#"source "b" shares port 4318 with source "a", which serves it; give both the same certificate and authorities"#
         ),
         "{e}"
     );

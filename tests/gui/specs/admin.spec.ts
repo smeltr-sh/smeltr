@@ -353,25 +353,23 @@ test('a receiver names a certificate from the list, and replacing the certificat
   await goto(admin, leader, '#/build/sources');
   await admin.getByRole('button', { name: /^firewalls\b/ }).click();
   await admin.getByRole('button', { name: /^Advanced/ }).click();
-  const certificate = admin.getByRole('combobox', { name: /^certificate served/ });
+  const certificate = admin.getByRole('combobox', { name: /^server certificate/ });
   await expect(
     admin.getByText('With none, traffic is received unencrypted.', { exact: false }),
   ).toBeVisible();
   await certificate.selectOption('receiver-tls');
-  await expect(admin.getByText(/receiver\.example\.com/)).toBeVisible();
+  await expect(admin.getByText(/localhost, 127\.0\.0\.1 · expires/)).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('receiver-certificate.png') });
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect
-    .poll(sources)
-    .toEqual([
-      {
-        id: 'firewalls',
-        type: 'syslogReceiver',
-        port: 6514,
-        allowFrom: ['10.0.0.0/8'],
-        certificate: 'receiver-tls',
-      },
-    ]);
+  await expect.poll(sources).toEqual([
+    {
+      id: 'firewalls',
+      type: 'syslogReceiver',
+      port: 6514,
+      allowFrom: ['10.0.0.0/8'],
+      certificate: 'receiver-tls',
+    },
+  ]);
 
   // A worker presents the newest version, so the receiver names the certificate by name alone.
   await openAdmin(admin, 'Certificates');
@@ -381,7 +379,11 @@ test('a receiver names a certificate from the list, and replacing the certificat
   await replace.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
   await replace.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
   await replace.getByRole('button', { name: 'Replace', exact: true }).click();
-  await expect(row.getByRole('cell', { name: 'v2', exact: true })).toBeVisible();
+  await expect(replace).toBeHidden();
+  const versions = async () =>
+    (await api.get('/api/certificates')).find((c: { name: string }) => c.name === 'receiver-tls')
+      .versions.length;
+  await expect.poll(versions).toBe(2);
   await admin.screenshot({ path: test.info().outputPath('certificate-replaced.png') });
   expect((await sources())[0].certificate).toBe('receiver-tls');
 });
@@ -424,7 +426,7 @@ test('the leader issues a certificate for the names given, and a receiver presen
   await goto(admin, leader, '#/build/sources');
   await admin.getByRole('button', { name: /^hook\b/ }).click();
   await admin.getByRole('button', { name: /^Advanced/ }).click();
-  await admin.getByRole('combobox', { name: /^certificate served/ }).selectOption('receiver-tls');
+  await admin.getByRole('combobox', { name: /^server certificate/ }).selectOption('receiver-tls');
   await expect(admin.getByText(/receiver\.example\.com, 10\.0\.0\.7/)).toBeVisible();
 });
 

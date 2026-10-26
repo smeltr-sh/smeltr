@@ -2058,8 +2058,8 @@ fn check_tls(tls: &TlsDto, what: &str, errors: &mut ItemErrors<'_>) {
     }
     if tls.certificate.is_none() && tls.authorities.is_none() && tls.trust_public.is_some() {
         errors.at("trustPublic").push(format!(
-            "{what} names neither a certificate to present nor an authority to trust, so its trust setting changes \
-             nothing. Fill one of them, or take it out"
+            "{what} names neither a certificate nor authorities, so trust public roots changes nothing. Choose a \
+             certificate or paste authorities, or take trust public roots out"
         ));
     }
     if tls.trust_public == Some(false) && tls.authorities.is_none() {
@@ -2073,7 +2073,7 @@ fn check_tls(tls: &TlsDto, what: &str, errors: &mut ItemErrors<'_>) {
     {
         errors.at("authorities").push(format!(
             "{what} trusts what is not a certificate authority: {why}. Leave it out to verify a far end against \
-             the platform's own roots"
+             the public roots"
         ));
     }
 }
@@ -2088,7 +2088,7 @@ fn check_tls_reaches(tls: &TlsDto, urls: &[(&'static str, &str)], what: &str, er
         && !urls.iter().any(|(_, url)| https(url))
     {
         errors.at(field).push(format!(
-            "{what} sets TLS and is reached over {url:?}, which does not negotiate TLS -- nothing its certificate or \
+            "{what} sets TLS and is reached over {url:?}, which does not negotiate TLS, so nothing its certificate or \
              authorities say would be used. Give it an https:// URL, or take them off it"
         ));
     }
@@ -2114,12 +2114,12 @@ fn check_kafka_tls(tls: &TlsDto, props: &KafkaPropsDto, what: &str, errors: &mut
     match props.properties.get("security.protocol") {
         Some(protocol) if TLS_PROTOCOLS.contains(&protocol.to_ascii_uppercase().as_str()) => {}
         Some(protocol) => errors.at("properties.security.protocol").push(format!(
-            "{what} sets TLS and sets \"security.protocol\" to {protocol:?}, which does not negotiate TLS -- \
+            "{what} sets TLS and sets \"security.protocol\" to {protocol:?}, which does not negotiate TLS, so \
              nothing its certificate or authorities say would be used. Set {} or {}, or take them off it",
             TLS_PROTOCOLS[0], TLS_PROTOCOLS[1]
         )),
         None => errors.at("properties.security.protocol").push(format!(
-            "{what} sets TLS and does not set \"security.protocol\", which librdkafka defaults to plaintext -- \
+            "{what} sets TLS and does not set \"security.protocol\", which librdkafka defaults to plaintext, so \
              nothing its certificate or authorities say would be used. Set it to {} or {} in `properties`, or take \
              them off it",
             TLS_PROTOCOLS[0], TLS_PROTOCOLS[1]
@@ -4369,8 +4369,8 @@ fn check_syslog_receiver(
     let vouches = check_listener(what, listener, tls, errors);
     if transport == Transport::Udp && tls.is_set() {
         errors.at("certificate").push(format!(
-            "{what} takes UDP, which it serves without TLS; take its certificate and authorities off, or take TCP to \
-             serve TLS"
+            "{what} takes UDP, which it serves without TLS; take its certificate and authorities off, or switch it to \
+             TCP to serve TLS"
         ));
     }
     let vouches = vouches && transport == Transport::Tcp;
@@ -4392,12 +4392,7 @@ fn check_syslog_receiver(
 
 /// What every receiver's listener must be: a port, and a certificate to serve where it serves TLS. Whether its
 /// authorities vouch for a sender, which then needs nothing else to be admitted.
-fn check_listener(
-    what: &str,
-    listener: &ReceiverSettingsDto,
-    tls: &ServedTlsDto,
-    errors: &mut ItemErrors<'_>,
-) -> bool {
+fn check_listener(what: &str, listener: &ReceiverSettingsDto, tls: &ServedTlsDto, errors: &mut ItemErrors<'_>) -> bool {
     let ReceiverSettingsDto {
         port,
         max_request_bytes,
@@ -4457,8 +4452,8 @@ fn check_receiver_ports(file: &FileConfig, attributed: &mut Vec<ValidationError>
                     ))
                 } else if tls != theirs {
                     Some(format!(
-                        "source {:?} shares port {port} with source {:?}, which serves it; give it the same \
-                         certificate and authorities, or another port",
+                        "source {:?} shares port {port} with source {:?}, which serves it; give both the same \
+                         certificate and authorities, or this one another port",
                         s.id, first.id
                     ))
                 } else {

@@ -2523,7 +2523,7 @@ export function conditionLabel(condition: WarningCondition): string {
     case 'enrollmentCodeNamesOutgoingAuthority':
       return 'Enrollment code names the outgoing authority';
     case 'certificateExpiring':
-      return 'Certificate running out';
+      return 'Certificate expiring';
     case 'workerLoggedWarnings':
       return 'Logged a warning';
     case 'deployHeld':

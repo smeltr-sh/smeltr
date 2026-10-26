@@ -971,7 +971,10 @@ fn source_options(o: &mut Options<'_>) -> serde_json::Value {
             .any(|k| source.get(k).is_some())
     {
         source["tls"] = json!("require");
-        if source.get("trustPublic").is_some() && source.get("certificate").is_none() && source.get("authorities").is_none() {
+        if source.get("trustPublic").is_some()
+            && source.get("certificate").is_none()
+            && source.get("authorities").is_none()
+        {
             source["authorities"] = json!(pem);
         }
     }
