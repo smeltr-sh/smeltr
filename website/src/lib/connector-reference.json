@@ -116,7 +116,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "fetchBytes",
@@ -662,7 +662,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "region",
@@ -901,7 +901,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "afterCommit",
@@ -1176,7 +1176,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "afterCommit",
@@ -1456,7 +1456,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "afterCommit",
@@ -1990,7 +1990,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "endpoint",
@@ -2187,7 +2187,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "pubsubEndpoint",
@@ -2450,7 +2450,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "records",
@@ -2634,7 +2634,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "start",
@@ -2763,7 +2763,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "query",
@@ -2975,7 +2975,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "query",
@@ -3977,7 +3977,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "compression",
@@ -4310,7 +4310,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "auth",
@@ -4598,7 +4598,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "inFlight",
@@ -4781,7 +4781,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "compression",
@@ -4941,7 +4941,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "inFlight",
@@ -5075,7 +5075,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "maxRequestBytes",
@@ -5235,7 +5235,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           }
         ],
         "reads": ["__destination.prefix"],
@@ -5335,7 +5335,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           }
         ],
         "reads": ["__destination.prefix"],
@@ -5493,7 +5493,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           }
         ],
         "reads": ["__destination.prefix"],
@@ -5822,7 +5822,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "compression",
@@ -6064,7 +6064,7 @@
             "type": "bool",
             "absent": "trusted",
             "examples": [false],
-            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` trusts the trusted authorities alone."
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
           },
           {
             "name": "compression",
