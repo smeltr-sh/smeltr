@@ -622,7 +622,7 @@
 
   {#if !selectedSample}{@render stage()}{/if}
 
-  {#snippet fieldsMenu(records: number | null)}
+  {#snippet viewMenu()}
     <ChipPicker kind="columns" bind:open={viewOpen} title="View" ariaLabel="View">
       {#snippet face()}<GearIcon />{/snippet}
       {#snippet children()}
@@ -635,6 +635,9 @@
         </div>
       {/snippet}
     </ChipPicker>
+  {/snippet}
+
+  {#snippet fieldsMenu(records: number | null)}
     <FieldsMenu
       fields={menuFields}
       {records}
@@ -650,9 +653,15 @@
   {/snippet}
 
   <div class="records">
-    <div class="output-search">
+    <div class="output-bar">
       {@render sampleMenu()}
       {#if gridRows && gridRows.length > 0}
+        <span class="grow"></span>
+        {@render viewMenu()}
+      {/if}
+    </div>
+    {#if gridRows && gridRows.length > 0}
+      <div class="output-bar">
         <FindBox
           bind:query={outputQuery}
           bind:filter={find}
@@ -689,12 +698,14 @@
           >
         {/if}
         {@render fieldsMenu(gridRows.length)}
-      {:else if !selectedSample && dictionary}
-        <!-- No records to count, but the steps compiled: what they declare. -->
+      </div>
+    {:else if !selectedSample && dictionary}
+      <!-- No records to count, but the steps compiled: what they declare. -->
+      <div class="output-bar">
         <span class="grow"></span>
         {@render fieldsMenu(null)}
-      {/if}
-    </div>
+      </div>
+    {/if}
     <InlineError message={findError} />
     {#if selectedSample}
       {@render stage()}
@@ -871,16 +882,16 @@
 </section>
 
 <style>
-  .output-search {
+  /* The sample and how it is viewed on one row, and what is searched and shown of it on the next:
+     the search has a row of its own to be read in. */
+  .output-bar {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
     gap: 0.7rem;
   }
 
-  /* Room for a few words and the mode beside them: the row wraps before the box gets narrower. */
-  .output-search :global(.search-wrap) {
-    min-width: 18rem;
+  .output-bar + .output-bar {
+    margin-top: 0.5rem;
   }
   .count {
     font-size: var(--text-note);
