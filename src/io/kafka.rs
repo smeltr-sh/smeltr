@@ -62,31 +62,20 @@ const STALE_BURST_REPEAT: Duration = Duration::from_secs(10 * 60);
 const LAG_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 // `session.timeout.ms`, `heartbeat.interval.ms` and `queued.min.messages` stay at librdkafka's defaults. The fetch
-// sizes follow `fetchBytes`; the producer's batch and linger are derived from `bufferBytes` and the link at deployment
-// (`measure_link`). Compression and security are the operator's, through `apply_props`.
+// sizes follow `fetchBytes`. The producer's batch, linger and requests in flight stay at librdkafka's own, its batch
+// lowered to what the broker takes where that is less (`broker_ceiling`). Compression and security are the operator's,
+// through `apply_props`.
 
 /// What smeltr calls itself to a broker.
 const CLIENT_ID: &str = "smeltr";
 
-/// Budget for each question a destination asks its broker before its producer is built (`measure_link`). A broker
+/// Budget for the question a destination asks its broker before its producer is built (`broker_ceiling`). A broker
 /// that cannot answer in this time gets librdkafka's defaults and a deployment that goes ahead. Destinations are built
-/// one after another, so an unreachable broker costs a deployment this much, three times over, per destination.
+/// one after another, so an unreachable broker costs a deployment this much per destination.
 const LINK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Produce requests one connection keeps in flight at the least. A batch is sized for this many, and a batch the
-/// broker's ceiling caps gets more in flight.
-const IN_FLIGHT_PER_CONNECTION: usize = 5;
-
-/// librdkafka's own `batch.size` and `message.max.bytes`. The floor of a derived batch: a link that needs no more
-/// than this gets exactly what a producer had before anything was derived.
+/// librdkafka's own `batch.size` and `message.max.bytes`, which a producer keeps unless its broker takes less.
 const DEFAULT_BATCH_BYTES: usize = 1_000_000;
-
-/// librdkafka's own `batch.num.messages`, and the most it may be. A batch closes at whichever of the byte and the
-/// message count comes first, so a derived batch of small records needs the count raised with it: records are taken
-/// as no smaller than [`SMALLEST_RECORD_BYTES`], which is where a syslog line ends up after framing.
-const DEFAULT_BATCH_MESSAGES: usize = 10_000;
-const MAX_BATCH_MESSAGES: usize = 1_000_000;
-const SMALLEST_RECORD_BYTES: usize = 64;
 
 /// What librdkafka and the delivery tag hold for each queued record beyond its payload and key. librdkafka's own
 /// bounds count payloads alone, or records whatever their size, so the producer counts each record at this much more
@@ -110,11 +99,6 @@ struct Sent {
 /// outside the range never comes up at all.
 const MIN_MESSAGE_BYTES: usize = 1_000;
 const MAX_MESSAGE_BYTES: usize = 1_000_000_000;
-
-/// librdkafka's own `linger.ms`, and the least a derived linger is. The most is one second: a batch that waits longer
-/// holds every record in it that long, and past a second that is latency an operator notices.
-const MIN_LINGER: Duration = Duration::from_millis(5);
-const MAX_LINGER: Duration = Duration::from_secs(1);
 
 impl From<KafkaError> for IoError {
     fn from(e: KafkaError) -> IoError {
@@ -1176,52 +1160,12 @@ fn receive_message_bytes(fetch_bytes: usize) -> usize {
     (fetch_request_bytes(fetch_bytes) + RECEIVE_FRAMING_BYTES).max(DEFAULT_RECEIVE_MESSAGE_BYTES)
 }
 
-/// What a destination learns about its link before its producer is built.
-struct Link {
-    /// Partitions of the default topic: what the in-flight bytes are spread over.
-    partitions: usize,
-    /// One metadata round trip to the broker on a connection already up. Shorter than a produce acknowledged by every
-    /// replica, so a linger sized from it errs short.
-    round_trip: Duration,
-    /// The largest request the broker takes: the topic's `max.message.bytes`, else the broker's `message.max.bytes`,
-    /// else librdkafka's own default when neither could be read.
-    ceiling: usize,
-    ceiling_from: &'static str,
-}
-
-/// The producer's sizes for one link.
-struct Sizes {
-    /// `batch.size` and `message.max.bytes`.
-    batch: usize,
-    /// `batch.num.messages`: enough small records to fill the batch.
-    messages: usize,
-    /// `linger.ms`.
-    linger: Duration,
-    /// `max.in.flight.requests.per.connection`: as many batches as the buffer holds.
-    in_flight: usize,
-}
-
-/// Asks the broker what the link is: partitions and a timed round trip from one metadata call, the request ceiling
-/// from DescribeConfigs. `None` when the broker did not answer the metadata call; a ceiling it will not give falls
-/// back to the default, since a producer under it is only smaller than it could be.
-fn measure_link(base: &ClientConfig, topic: &str) -> Option<Link> {
+/// The largest request the broker takes, asked before the producer is built (`request_ceiling`), with where it came
+/// from. `None` when the broker could not be asked or did not answer; the producer then keeps librdkafka's own batch.
+fn broker_ceiling(base: &ClientConfig, topic: &str) -> Option<(usize, &'static str)> {
     let admin: AdminClient<DefaultClientContext> = base.create().ok()?;
     entra::sign_in_unpolled(admin.inner(), base.get("sasl.oauthbearer.config"));
-    // The first call pays the connection, the handshake and whatever SASL asks; a round trip is the second.
-    admin.inner().fetch_metadata(Some(topic), LINK_TIMEOUT).ok()?;
-    let started = Instant::now();
-    let md = admin.inner().fetch_metadata(Some(topic), LINK_TIMEOUT).ok()?;
-    let round_trip = started.elapsed();
-    let described = md.topics().iter().find(|t| t.name() == topic)?;
-    let partitions = described.partitions().len();
-
-    let (ceiling, ceiling_from) = request_ceiling(&admin, topic).unwrap_or((DEFAULT_BATCH_BYTES, "default"));
-    Some(Link {
-        partitions,
-        round_trip,
-        ceiling,
-        ceiling_from,
-    })
+    request_ceiling(&admin, topic)
 }
 
 /// The topic's effective `max.message.bytes`: what the topic set, else what the broker gives every topic. One
@@ -1251,23 +1195,11 @@ fn request_ceiling(admin: &AdminClient<DefaultClientContext>, topic: &str) -> Op
     })
 }
 
-/// What one buffer buys over one link: a batch of `bufferBytes` spread over the partitions and the requests in
-/// flight, never smaller than librdkafka's own and never larger than the broker takes; a linger of half the round
-/// trip, so a batch fills while the one before it is in flight; as many requests in flight as the buffer holds batches,
-/// so a far link whose batch the broker caps still has the buffer on the wire.
-fn derive_sizes(buffer_bytes: usize, link: &Link) -> Sizes {
-    let ceiling = link.ceiling.clamp(MIN_MESSAGE_BYTES, MAX_MESSAGE_BYTES);
-    let share = buffer_bytes / link.partitions.max(1) / IN_FLIGHT_PER_CONNECTION;
-    let batch = share.clamp(DEFAULT_BATCH_BYTES.min(ceiling), ceiling);
-    let messages = (batch / SMALLEST_RECORD_BYTES).clamp(DEFAULT_BATCH_MESSAGES, MAX_BATCH_MESSAGES);
-    let linger = (link.round_trip / 2).clamp(MIN_LINGER, MAX_LINGER);
-    let in_flight = (buffer_bytes / batch).max(IN_FLIGHT_PER_CONNECTION);
-    Sizes {
-        batch,
-        messages,
-        linger,
-        in_flight,
-    }
+/// The `batch.size` and `message.max.bytes` for a broker that takes less than librdkafka's own, brought inside the
+/// range librdkafka accepts, since a producer outside it never builds. `None` when librdkafka's own fit.
+fn lowered_batch(ceiling: usize) -> Option<usize> {
+    let ceiling = ceiling.clamp(MIN_MESSAGE_BYTES, MAX_MESSAGE_BYTES);
+    (ceiling < DEFAULT_BATCH_BYTES).then_some(ceiling)
 }
 
 impl KafkaDestination {
@@ -1316,38 +1248,30 @@ impl KafkaDestination {
         // Broker-enforced throttling and the producer queue's depth are reported nowhere else; see `publish_stats`.
         producer_config.set("statistics.interval.ms", STATS_INTERVAL.as_millis().to_string());
         apply_client_config(&mut producer_config, &config.props, config.identity.as_deref(), secrets)?;
-        // Asked before the producer exists, because librdkafka fixes its sizes when a client is built. Under the
-        // producer's own configuration, so a secured broker answers.
-        match measure_link(&producer_config, &config.default_topic) {
-            Some(link) => {
-                let sizes = derive_sizes(config.producer_bytes(), &link);
-                tracing::info!(
-                    target: "kafka.link",
-                    destination = %id,
-                    topic = %config.default_topic,
-                    partitions = link.partitions,
-                    round_trip_ms = link.round_trip.as_millis() as u64,
-                    ceiling_bytes = link.ceiling,
-                    ceiling_from = link.ceiling_from,
-                    batch_bytes = sizes.batch,
-                    batch_messages = sizes.messages,
-                    linger_ms = sizes.linger.as_millis() as u64,
-                    in_flight = sizes.in_flight,
-                    "sized the producer for its link"
-                );
-                producer_config
-                    .set("batch.size", sizes.batch.to_string())
-                    .set("message.max.bytes", sizes.batch.to_string())
-                    .set("batch.num.messages", sizes.messages.to_string())
-                    .set("linger.ms", sizes.linger.as_millis().to_string())
-                    .set("max.in.flight.requests.per.connection", sizes.in_flight.to_string());
+        // `batch.size`, `linger.ms` and `max.in.flight.requests.per.connection` stay at librdkafka's own unless the
+        // operator sets them. Pacing bounds what is in flight through `produce`, and measures its round trip from
+        // handover to delivery report, so a longer linger would wait inside the round trip it measures. Only a broker
+        // that takes less lowers the batch, since it refuses a request over its ceiling, and an operator's own
+        // `batch.size` or `message.max.bytes` stands. Asked before the producer exists, because librdkafka fixes its
+        // sizes when a client is built, and under the producer's own configuration, so a secured broker answers.
+        let (ceiling, ceiling_from) =
+            broker_ceiling(&producer_config, &config.default_topic).unwrap_or((DEFAULT_BATCH_BYTES, "default"));
+        let lowered = lowered_batch(ceiling);
+        tracing::info!(
+            target: "kafka.link",
+            destination = %id,
+            topic = %config.default_topic,
+            ceiling_bytes = ceiling,
+            ceiling_from,
+            batch_bytes = lowered.unwrap_or(DEFAULT_BATCH_BYTES),
+            "sized the producer's batch for its broker"
+        );
+        if let Some(batch) = lowered {
+            for key in ["batch.size", "message.max.bytes"] {
+                if producer_config.get(key).is_none() {
+                    producer_config.set(key, batch.to_string());
+                }
             }
-            None => tracing::warn!(
-                target: "kafka.link",
-                destination = %id,
-                topic = %config.default_topic,
-                "the broker did not answer for the link within {LINK_TIMEOUT:?}; the producer takes librdkafka's own sizes"
-            ),
         }
         let avro = (config.avro.as_ref())
             .map(|r| crate::io::avro::AvroWriter::new(r, config.identity.as_deref(), secrets))
@@ -1611,68 +1535,14 @@ mod tests {
         assert_eq!(dropped, 1, "a/0 moved away");
     }
 
-    fn link(partitions: usize, round_trip_ms: u64, ceiling: usize) -> Link {
-        Link {
-            partitions,
-            round_trip: Duration::from_millis(round_trip_ms),
-            ceiling,
-            ceiling_from: "test",
-        }
-    }
-
-    /// A near broker with a small buffer derives what librdkafka had anyway, so nothing changes where nothing needed
-    /// to; a far one spreads the buffer over the partitions and the requests in flight.
+    /// A broker that takes librdkafka's own batch leaves it alone. One that takes less lowers it, and one under what
+    /// librdkafka accepts at all is brought up to that.
     #[test]
-    fn a_batch_is_the_buffers_share_of_the_link_within_librdkafkas_floor_and_the_brokers_ceiling() {
-        let near = derive_sizes(64 << 20, &link(64, 2, 1_048_588));
-        assert_eq!(near.batch, DEFAULT_BATCH_BYTES);
-        assert_eq!(
-            near.messages,
-            DEFAULT_BATCH_BYTES / SMALLEST_RECORD_BYTES,
-            "a megabyte of small records"
-        );
-        assert_eq!(near.linger, MIN_LINGER);
-        assert_eq!(
-            near.in_flight,
-            (64 << 20) / DEFAULT_BATCH_BYTES,
-            "as many batches as the buffer holds"
-        );
-
-        // 64 MiB over 12 partitions, five in flight: 1.1 MB each, and the broker takes it.
-        let far = derive_sizes(64 << 20, &link(12, 120, 8 << 20));
-        assert_eq!(far.batch, (64 << 20) / 12 / 5);
-        assert_eq!(far.linger, Duration::from_millis(60));
-        assert_eq!(far.in_flight, 12 * 5);
-
-        // 1 GiB over one partition wants 214 MB a request; the broker's ceiling says 8 MiB.
-        let capped = derive_sizes(1 << 30, &link(1, 300, 8 << 20));
-        assert_eq!(capped.batch, 8 << 20);
-        assert_eq!(
-            capped.messages,
-            (8 << 20) / SMALLEST_RECORD_BYTES,
-            "enough small records to fill it"
-        );
-        assert_eq!(capped.linger, Duration::from_millis(150));
-        assert_eq!(
-            capped.in_flight,
-            (1 << 30) / (8 << 20),
-            "a capped batch gets more in flight"
-        );
-        let huge = derive_sizes(1 << 30, &link(1, 300, 1 << 30));
-        assert_eq!(huge.messages, MAX_BATCH_MESSAGES);
-
-        // A broker whose ceiling is under librdkafka's default is obeyed, not overrun; one under what librdkafka
-        // accepts at all is brought up to that, since a producer outside the range never builds.
-        let small = derive_sizes(1 << 30, &link(1, 300, 500_000));
-        assert_eq!(small.batch, 500_000);
-        let none = derive_sizes(1 << 30, &link(1, 300, 0));
-        assert_eq!(none.batch, MIN_MESSAGE_BYTES);
-
-        // A slow link lingers no longer than a second; no partitions counts as one.
-        let slow = derive_sizes(64 << 20, &link(0, 5_000, 1 << 30));
-        assert_eq!(slow.linger, MAX_LINGER);
-        assert_eq!(slow.batch, (64 << 20) / 5);
-        assert_eq!(slow.in_flight, IN_FLIGHT_PER_CONNECTION);
+    fn a_batch_stays_librdkafkas_own_unless_the_broker_takes_less() {
+        assert_eq!(lowered_batch(1_048_588), None);
+        assert_eq!(lowered_batch(DEFAULT_BATCH_BYTES), None);
+        assert_eq!(lowered_batch(500_000), Some(500_000));
+        assert_eq!(lowered_batch(0), Some(MIN_MESSAGE_BYTES));
     }
 
     /// What a queued record costs is no more than `held_bytes` counts it at: librdkafka's own share of a record, and

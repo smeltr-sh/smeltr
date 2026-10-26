@@ -417,12 +417,9 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
             let (k, v) = *rng.pick(&[
                 ("bootstrap.servers", "elsewhere:9092"),
                 ("compression.type", "gzip"),
-                ("linger.ms", "5"),
                 ("enable.idempotence", "false"),
                 ("acks", "1"),
                 ("request.required.acks", "0"),
-                ("max.in.flight.requests.per.connection", "20"),
-                ("message.max.bytes", "2000000"),
             ]);
             object(d, "properties").insert(k.into(), json!(v));
             "properties"
@@ -873,7 +870,7 @@ fn check_held(sent: &[Vec<Sent>], read: &[Read], lossy: bool, retried: bool) -> 
 
 // -- the offline fuzzer -------------------------------------------------------------------------------------------
 
-/// Seeds checked at once. A seed that delivers builds a producer, whose `measure_link` asks the mock for its request
+/// Seeds checked at once. A seed that delivers builds a producer, whose `broker_ceiling` asks the mock for its request
 /// ceiling and waits out `LINK_TIMEOUT` for an answer the mock never gives, so seeds one after another would take
 /// minutes.
 const WORKERS: usize = 32;

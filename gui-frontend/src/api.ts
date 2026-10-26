@@ -110,8 +110,8 @@ export type IdentityDto = {
  * credential-valued property in the first map.
  *
  * Properties smeltr sets itself (`brokers`, `groupId`, `compression`,
- * `fetchBytes`, `bufferBytes`, `start`) are refused in both maps, and so are the fetch and batch sizes the worker
- * derives from those two at deployment. */
+ * `fetchBytes`, `bufferBytes`, `start`) are refused in both maps, and so are the fetch sizes the worker
+ * derives from `fetchBytes` at deployment. */
 export type KafkaProps = {
   properties?: Record<string, string>;
   credentials?: Record<string, SecretRef>;

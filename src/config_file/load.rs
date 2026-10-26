@@ -1310,15 +1310,6 @@ const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
         "librdkafka's other spelling of `acks`, which is set from this destination's own `acks` field",
     ),
     (
-        "max.in.flight.requests.per.connection",
-        "set from this destination's own `bufferBytes` field and its link",
-    ),
-    (
-        "max.in.flight",
-        "librdkafka's other spelling of `max.in.flight.requests.per.connection`, which is set from this destination's \
-         own `bufferBytes` field and its link",
-    ),
-    (
         "queued.max.messages.kbytes",
         "set from this source's own `fetchBytes` field, which is what makes a reader's memory footprint a number this deployment chose",
     ),
@@ -1335,24 +1326,6 @@ const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
     (
         "queue.buffering.max.messages",
         "set to its maximum so the producer's half of this destination's own `bufferBytes` field bounds its queue",
-    ),
-    (
-        "batch.size",
-        "derived at deployment from this destination's own `bufferBytes`, the topic's partitions and the measured \
-         round trip to the broker, so one buffer says what the link carries",
-    ),
-    (
-        "message.max.bytes",
-        "set with the derived batch, capped at what the broker takes, which the worker asks it at deployment",
-    ),
-    (
-        "batch.num.messages",
-        "raised with the derived batch, so a batch of small records can fill to its bytes",
-    ),
-    (
-        "linger.ms",
-        "derived at deployment from the measured round trip to the broker, so a batch fills while the one before it \
-         is in flight",
     ),
     (
         "fetch.max.bytes",
@@ -6978,7 +6951,6 @@ mod tests {
             ("metadata.broker.list", "bootstrap.servers"),
             ("compression.codec", "compression.type"),
             ("request.required.acks", "acks"),
-            ("max.in.flight", "max.in.flight.requests.per.connection"),
         ] {
             let json = example_json().replacen(
                 r#""groupId": "smeltr""#,
@@ -7043,15 +7015,10 @@ mod tests {
             "max.poll.interval.ms",
             "enable.idempotence",
             "statistics.interval.ms",
-            "batch.size",
-            "message.max.bytes",
-            "linger.ms",
             "fetch.max.bytes",
             "fetch.message.max.bytes",
             "receive.message.max.bytes",
-            "batch.num.messages",
             "acks",
-            "max.in.flight.requests.per.connection",
             "queue.buffering.max.messages",
         ] {
             let json = example_json().replacen(

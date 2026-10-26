@@ -260,8 +260,6 @@ const RESERVED: Record<string, string> = {
   'compression.codec': 'librdkafka’s other spelling of compression.type',
   acks: 'set from this destination’s own acks field',
   'request.required.acks': 'librdkafka’s other spelling of acks',
-  'max.in.flight.requests.per.connection': 'set from this destination’s own buffer and its link',
-  'max.in.flight': 'librdkafka’s other spelling of max.in.flight.requests.per.connection',
   'queued.max.messages.kbytes': 'set from this source’s own fetch buffer',
   'queue.buffering.max.kbytes': 'set from this destination’s own buffer',
   'queue.buffering.max.messages':
