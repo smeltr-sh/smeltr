@@ -726,7 +726,7 @@ Used by:
 - [arrow-schema 60.0.0](https://github.com/apache/arrow-rs)
 - [arrow-select 60.0.0](https://github.com/apache/arrow-rs)
 - [cmov 0.5.4](https://github.com/RustCrypto/utils)
-- [ctutils 0.4.5](https://github.com/RustCrypto/utils)
+- [ctutils 0.4.6](https://github.com/RustCrypto/utils)
 - [encoding_rs 0.8.42](https://github.com/hsivonen/encoding_rs)
 - [flagset 0.4.7](https://github.com/enarx/flagset)
 - [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op)
@@ -7886,7 +7886,7 @@ Used by:
 - [cpubits 0.1.1](https://github.com/RustCrypto/utils)
 - [cpufeatures 0.2.17](https://github.com/RustCrypto/utils)
 - [cpufeatures 0.3.1](https://github.com/RustCrypto/utils)
-- [crypto-bigint 0.7.6](https://github.com/RustCrypto/crypto-bigint)
+- [crypto-bigint 0.7.10](https://github.com/RustCrypto/crypto-bigint)
 - [crypto-common 0.1.7](https://github.com/RustCrypto/traits)
 - [crypto-common 0.2.2](https://github.com/RustCrypto/traits)
 - [ctr 0.10.1](https://github.com/RustCrypto/block-modes)
@@ -10234,9 +10234,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [zstd-safe 8.0.0](https://github.com/gyscos/zstd-rs)
-- [zstd-sys 2.1.0+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
-- [zstd 0.14.0](https://github.com/gyscos/zstd-rs)
+- [zstd-safe 8.2.0](https://github.com/gyscos/zstd-rs)
+- [zstd-sys 2.1.2+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
+- [zstd 0.14.3](https://github.com/gyscos/zstd-rs)
 
 ```
 BSD 3-Clause License
@@ -10274,7 +10274,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [zstd-sys 2.1.0+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
+- [zstd-sys 2.1.2+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
 
 ```
 BSD License
@@ -10524,7 +10524,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [zstd-sys 2.1.0+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
+- [zstd-sys 2.1.2+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
 
 ```
 The auto-generated bindings are under the 3-clause BSD license:
