@@ -323,7 +323,10 @@ mod tests {
         assert_eq!(p.target(), 2 * BATCH);
         // 200ms away, a link that carries 100 MiB/s: a bandwidth-delay product of 20 MiB.
         let targets = drive(&mut p, Duration::from_millis(200), 100.0 * MIB as f64, 4, false);
-        assert!(targets[1] >= 4 * BATCH, "doubled once a round's samples are in: {targets:?}");
+        assert!(
+            targets[1] >= 4 * BATCH,
+            "doubled once a round's samples are in: {targets:?}"
+        );
         assert!(targets[2] > targets[1], "and on: {targets:?}");
         assert!(targets[3] > targets[2], "{targets:?}");
     }
