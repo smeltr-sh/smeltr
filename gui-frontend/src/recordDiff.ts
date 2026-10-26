@@ -47,6 +47,8 @@ export type RecordLine =
       open: boolean;
       size: number;
       marks: Marks;
+      /** Every field beneath it. */
+      fields: FieldLeaf[];
     }
   | ({ kind: 'field'; depth: number; label: string; type: string | null } & FieldLeaf)
   | { kind: 'more'; path: string; depth: number; shown: number; total: number };
@@ -420,6 +422,10 @@ export function leafLines(nodes: DiffNode[]): RecordLine[] {
   return out;
 }
 
+function leavesOf(n: DiffNode): FieldLeaf[] {
+  return n.kind === 'leaf' ? [n.leaf!] : n.children.flatMap(leavesOf);
+}
+
 /** About how many lines a page draws: a record opened, a struct or an array
  * opened, or one more page of either. */
 export const PAGE_LINES = 40;
@@ -501,6 +507,7 @@ export function recordLines(
       open,
       size: n.children.length,
       marks: n.marks,
+      fields: leavesOf(n),
     });
     if (!open) return 1;
     const drawn = children(n, depth + 1);
@@ -572,4 +579,53 @@ export function countStates(fields: FieldLeaf[]): {
     else if (f.state === 'removed') removed++;
   }
   return { added, changed, removed };
+}
+
+/** How a line is marked. Changed lines run together as one bar, from the depth where the run
+ * starts; the run's sign is shown where it starts and wherever the step that last touched the
+ * line changes within it. */
+export interface RunMark {
+  state: FieldState;
+  /** The step that last touched every field of the line, or null where none or several did. */
+  step: string | null;
+  /** The first line of its run. */
+  start: boolean;
+  /** The depth its run starts at. */
+  depth: number;
+  /** The line shows its sign. */
+  sign: boolean;
+}
+
+/** Each of `lines`' marks. A group is in a run when every field beneath it has one state, or,
+ * folded, when anything beneath it changed: its fields are not drawn to say so themselves. */
+export function runMarks(lines: RecordLine[], stepOf: (path: string) => string | null): RunMark[] {
+  let prev: RunMark | null = null;
+  return lines.map((line) => {
+    let state: FieldState = 'unchanged';
+    let step: string | null = null;
+    if (line.kind === 'field') {
+      state = line.state;
+      if (state !== 'unchanged') step = stepOf(line.path);
+    } else if (line.kind === 'group') {
+      const states = new Set(line.fields.map((f) => f.state));
+      const [only] = states;
+      const marked = line.marks.added + line.marks.changed + line.marks.removed > 0;
+      if (states.size === 1 && only !== 'unchanged' && !line.marks.removed) state = only;
+      else if (!line.open && marked) state = 'changed';
+      if (state !== 'unchanged') {
+        const steps = new Set(line.fields.map((f) => stepOf(f.path)));
+        if (steps.size === 1) [step] = steps;
+      }
+    }
+    const start = state !== 'unchanged' && prev?.state !== state;
+    const mark: RunMark = {
+      state,
+      step,
+      start,
+      depth: start || state === 'unchanged' ? line.depth : prev!.depth,
+      sign: start || (state !== 'unchanged' && step !== prev!.step),
+    };
+    prev = mark;
+    return mark;
+  });
 }

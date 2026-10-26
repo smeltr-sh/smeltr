@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { isInternal } from './api';
 import {
   pathLines,
+  runMarks,
   changeFitsInline,
   countStates,
   declaredRecord,
@@ -433,5 +434,50 @@ describe('countStates', () => {
         leaf('e', 'unchanged'),
       ]),
     ).toEqual({ added: 1, changed: 2, removed: 1 });
+  });
+});
+
+describe('runMarks', () => {
+  const marks = (before: unknown, after: unknown, steps: Record<string, string> = {}) => {
+    const lines = recordLines(diffTree(before, after));
+    return runMarks(lines, (p) => steps[p] ?? null).map((m, i) => {
+      const l = lines[i];
+      const name = l.kind === 'more' ? 'more' : l.label;
+      return `${name} ${m.state}${m.start ? ' start' : ''} @${m.depth}${m.sign ? ` sign:${m.step}` : ''}`;
+    });
+  };
+
+  it('runs a new struct as one bar, signed once, from its own depth', () => {
+    expect(
+      marks(
+        { a: 1 },
+        { a: 1, http: { method: 'GET', status: 200 } },
+        {
+          'http.method': 'p',
+          'http.status': 'p',
+        },
+      ),
+    ).toEqual([
+      'a unchanged @0',
+      'http added start @0 sign:p',
+      'method added @0',
+      'status added @0',
+    ]);
+  });
+
+  it('signs again where the step changes within a run', () => {
+    expect(marks({}, { a: 1, b: 2, c: 3 }, { a: 'p', b: 'e', c: 'e' })).toEqual([
+      'a added start @0 sign:p',
+      'b added @0 sign:e',
+      'c added @0',
+    ]);
+  });
+
+  it('starts a run inside an unchanged struct at the depth of the change', () => {
+    expect(marks({ s: { ip: 1, port: 1 } }, { s: { ip: 1, port: 2 } }, { 's.port': 'e' })).toEqual([
+      's unchanged @0',
+      'ip unchanged @1',
+      'port changed start @1 sign:e',
+    ]);
   });
 });
