@@ -718,9 +718,11 @@ pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
                     "this leader's certificate {entry:?} {when}. Replace it in {CERTIFICATE_LIST}, and the leader \
                      serves the new version"
                 ),
-                _ => {
-                    format!("this leader's certificate {when}. Issue a new one in {LEADER_CERTIFICATE_TAB}")
-                }
+                // The leader renews its own every hour, and a start issues one, so reaching here means renewing failed.
+                _ => format!(
+                    "this leader's certificate {when}, and renewing it failed. The leader's log says why. A restart \
+                     issues a new one"
+                ),
             };
             (
                 Condition::LeaderCertificateRunningOut,
@@ -3526,12 +3528,13 @@ mod tests {
     }
 
     #[test]
-    fn the_leaders_own_certificate_is_issued_again_where_it_was_issued() {
+    fn the_leaders_own_certificate_says_its_renewal_failed() {
         let said = leader_certificate(&serving(crate::leader::acme::Source::Own, 0), NOW + 1);
         assert_eq!(said[0].severity, Severity::Failed);
         assert_eq!(
             said[0].message,
-            "this leader's certificate has expired. Issue a new one in Admin → System → Leader certificate"
+            "this leader's certificate has expired, and renewing it failed. The leader's log says why. A restart \
+             issues a new one"
         );
     }
 
