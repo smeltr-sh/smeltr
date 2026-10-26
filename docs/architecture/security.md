@@ -310,13 +310,17 @@ list: its chain beside the private key, which is sealed like any stored
 secret. The bundle names the entry by name alone, so the chain is not read in
 review with the rest of the bundle, and a worker presents the entry's newest
 version: a replaced or renewed certificate reaches every worker that names it
-at its next heartbeat, and the worker restarts what presents it. The two
+at its next heartbeat, and the worker restarts its deployment. Every worker
+presenting it restarts within a beat of the others, and a restarted receiver
+drops the connections it held, so its senders reconnect. The two
 halves cannot drift apart: the list refuses a chain and a key that do not
 belong together, and one version holds both.
 
 A worker is sent the entry's chain with its key. Before it tears down what it
 runs, it refuses a certificate it could not present the way its bundle
-presents it: connecting out, or serving a receiver's senders.
+presents it: connecting out, or serving a receiver's senders. A new version it
+refuses leaves the running deployment running on the version it was started
+with, and the worker reports why.
 
 An entry is uploaded, issued by the leader under the authority it already
 holds, for the names and the lifetime an admin gives, so a sender verifies it

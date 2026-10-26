@@ -3621,24 +3621,39 @@ impl Supervisor {
                          restarts"
                     );
                 }
-                if !blocked && let Some(mut handle) = running.take() {
-                    tracing::info!(target: "worker.restarting", subject = %handle.commit, "restarting the deployment");
-                    self.phase("stopping");
-                    match self.end(&mut handle, &inbox) {
-                        Ok(()) => {
-                            self.absorb(&inbox);
-                            self.drain_captured(&inbox);
-                            content = None;
-                            self.forget_runtime();
-                        }
-                        Err(()) => {
-                            blocked = true;
-                            running = Some(handle);
+                // A restart starts the same commit with the certificates held now, so it is checked against them
+                // before anything stops: a new version it would refuse leaves running what runs.
+                let refused = match running.as_ref().filter(|_| !blocked) {
+                    Some(handle) => unpanicked(|| self.validate(&handle.commit)).err(),
+                    None => None,
+                };
+                if let Some(why) = refused {
+                    tracing::warn!(
+                        target: "worker.restart_refused",
+                        error = %why,
+                        "a restart was asked for, but the deployment would not start again, so it keeps running"
+                    );
+                    self.note_failure(Some(&why));
+                } else {
+                    if !blocked && let Some(mut handle) = running.take() {
+                        tracing::info!(target: "worker.restarting", subject = %handle.commit, "restarting the deployment");
+                        self.phase("stopping");
+                        match self.end(&mut handle, &inbox) {
+                            Ok(()) => {
+                                self.absorb(&inbox);
+                                self.drain_captured(&inbox);
+                                content = None;
+                                self.forget_runtime();
+                            }
+                            Err(()) => {
+                                blocked = true;
+                                running = Some(handle);
+                            }
                         }
                     }
+                    acted = None;
+                    retry_at = None;
                 }
-                acted = None;
-                retry_at = None;
             }
 
             // Stopped for an outage stays stopped for the outage. Nothing is started while this holds, however
