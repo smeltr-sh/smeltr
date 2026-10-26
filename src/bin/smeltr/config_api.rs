@@ -20,6 +20,7 @@ use axum::Json;
 use axum::extract::Extension;
 use axum::extract::Path as AxPath;
 use axum::extract::Query;
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 
 use smeltr::config_file::{
@@ -1007,11 +1008,18 @@ pub(crate) async fn blocking_save(f: impl FnOnce() -> Envelope<Save> + Send + 's
 // -- sources / destinations / routes ---------------------------------------
 
 pub async fn put_sources(
+    State(state): State<smeltr::leader::AppState>,
     Extension(actor): Extension<Actor>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(sources): Json<Vec<SourceDto>>,
 ) -> Json<Envelope<Save>> {
+    let named = (sources.iter())
+        .filter_map(|s| Some((format!("source {:?}", s.id), s.tls()?.certificate?)))
+        .collect();
+    if let Some(refused) = refuse_unlisted_certificates(&state, named).await {
+        return refused;
+    }
     let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
     blocking_save(move || {
         save_on_branch(
@@ -1028,11 +1036,18 @@ pub async fn put_sources(
 }
 
 pub async fn put_destinations(
+    State(state): State<smeltr::leader::AppState>,
     Extension(actor): Extension<Actor>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(destinations): Json<Vec<DestinationDto>>,
 ) -> Json<Envelope<Save>> {
+    let named = (destinations.iter())
+        .filter_map(|d| Some((format!("destination {:?}", d.id), d.tls()?.certificate?)))
+        .collect();
+    if let Some(refused) = refuse_unlisted_certificates(&state, named).await {
+        return refused;
+    }
     let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
     blocking_save(move || {
         save_on_branch(
@@ -1046,6 +1061,42 @@ pub async fn put_destinations(
         )
     })
     .await
+}
+
+/// The refusal of a save whose connectors name a certificate the leader's list does not hold, each a `(what, name)`
+/// pair. A worker would refuse the deploy anyway; refusing here says so to the person who typed the name.
+async fn refuse_unlisted_certificates(
+    state: &smeltr::leader::AppState,
+    named: Vec<(String, String)>,
+) -> Option<Json<Envelope<Save>>> {
+    if named.is_empty() {
+        return None;
+    }
+    let store = state.store.clone();
+    let listed = blocking(move || {
+        let records = store.list_secrets().map_err(|e| e.to_string())?;
+        Ok::<_, String>(
+            records
+                .into_iter()
+                .filter(|r| r.certificate)
+                .map(|r| r.name)
+                .collect::<Vec<_>>(),
+        )
+    })
+    .await;
+    let listed = match listed {
+        Ok(listed) => listed,
+        Err(e) => return Some(Json(Envelope::failed_one(e))),
+    };
+    let unlisted: Vec<ApiError> = (named.into_iter())
+        .filter(|(_, name)| !listed.contains(name))
+        .map(|(what, name)| {
+            ApiError::new(format!(
+                "{what} names the certificate {name:?}, which is not in Admin → Certificates. Choose one from the list"
+            ))
+        })
+        .collect();
+    (!unlisted.is_empty()).then(|| Json(Envelope::failed(unlisted)))
 }
 
 /// What a PEM says about itself, so the editor can show a subject and an expiry beside the field it was pasted

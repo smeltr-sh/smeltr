@@ -1017,6 +1017,10 @@ async fn setup_leader(
             get(worker_groups_api::list_worker_groups).post(worker_groups_api::create_worker_group),
         )
         .route("/api/worker-groups/:id/hue", put(worker_groups_api::set_group_hue))
+        // Not on `app` below with the rest of the config routes: saving a connector asks the certificate list whether
+        // it holds the certificate named.
+        .route("/api/sources", put(config_api::put_sources))
+        .route("/api/destinations", put(config_api::put_destinations))
         // Not on `app` below with the rest of the config routes: retention after an upload keeps what the fleet runs,
         // which the registry knows. A lookup file is streamed to disk, so the limit is what a disk takes rather than
         // what memory holds.
@@ -1999,8 +2003,6 @@ async fn run_leader() {
                 .put(config_api::put_file)
                 .delete(config_api::delete_file),
         )
-        .route("/api/sources", put(config_api::put_sources))
-        .route("/api/destinations", put(config_api::put_destinations))
         .route("/api/certificates/describe", post(config_api::describe_certificates))
         .route("/api/undo", post(config_api::undo))
         .route("/api/routes", put(config_api::put_routes))
