@@ -2544,6 +2544,35 @@ pub(crate) mod tests {
         );
     }
 
+    /// A start issues a new version where the lifetime it is configured with changed, or where the newest is due,
+    /// and serves it.
+    #[test]
+    fn a_start_issues_the_leaders_own_again_where_its_lifetime_changed_or_it_is_due() {
+        let dir = scratch("own-due");
+        let first = ensure(&dir, names(), A_YEAR, &[]).expect("an authority");
+
+        let half = Duration::from_secs(A_YEAR.as_secs() / 2);
+        let second = ensure(&dir, names(), half, &[]).expect("a start with another lifetime");
+        assert_ne!(second.served, first.served);
+        assert_eq!(served(&dir).unwrap().unwrap().version, 2);
+        assert_eq!(
+            list_in(&dir).kept_certificates().unwrap().get(OWN_ENTRY),
+            Some(&Kept::Issued(Issued {
+                names: names(),
+                validity_days: 183
+            })),
+        );
+
+        // A version that has run out its renewal window, as one left by a leader stopped for months would be.
+        let (chain, key) = issue(&dir, names(), Duration::from_secs(60)).unwrap();
+        list_in(&dir).add_certificate_version(OWN_ENTRY, &chain, &key).unwrap();
+        let third = ensure(&dir, names(), half, &[]).expect("a start with its newest due");
+        assert_eq!(served(&dir).unwrap().unwrap().version, 4, "the due version was served");
+        let lasts = describe(&third.served, "the certificate").unwrap().not_after_millis
+            - crate::leader::warnings::now_millis();
+        assert!(lasts > 180 * 24 * 60 * 60 * 1000, "the minute-long version was served");
+    }
+
     /// Half an authority is none: a certificate whose key is gone can sign nothing, and a key whose certificate is
     /// gone signs for an authority no worker was ever given.
     #[test]

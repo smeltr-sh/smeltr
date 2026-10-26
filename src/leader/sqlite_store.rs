@@ -2969,6 +2969,31 @@ mod tests {
         assert!(s.kept_certificates().unwrap().is_empty());
     }
 
+    /// How an issued certificate is issued changes in place; one the leader does not issue has nothing to change.
+    #[test]
+    fn only_an_issued_certificate_changes_how_it_is_issued() {
+        let s = store();
+        let issued = |names: &[&str]| Issued {
+            names: names.iter().map(|n| n.to_string()).collect(),
+            validity_days: 90,
+        };
+        s.create_kept_certificate("issued", "", &Kept::Issued(issued(&["a.example.com"])), "chain", "key")
+            .unwrap();
+        s.create_kept_certificate("acme", "", &Kept::Acme, "chain", "key")
+            .unwrap();
+        s.create_certificate("uploaded", "", "chain", "key").unwrap();
+
+        s.set_issued("issued", &issued(&["b.example.com"])).unwrap();
+        assert_eq!(
+            s.kept_certificates().unwrap().get("issued"),
+            Some(&Kept::Issued(issued(&["b.example.com"])))
+        );
+        for name in ["acme", "uploaded", "absent"] {
+            assert!(s.set_issued(name, &issued(&["b.example.com"])).is_err(), "{name}");
+        }
+        assert_eq!(s.kept_certificates().unwrap().get("acme"), Some(&Kept::Acme));
+    }
+
     /// A certificate is a stored secret the Secrets page leaves out, and its value is read only as a certificate.
     #[test]
     fn a_certificate_is_a_secret_with_a_chain_beside_each_version() {
