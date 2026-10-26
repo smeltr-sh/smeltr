@@ -248,7 +248,7 @@ fn a_sender_past_the_start_waits_to_be_lent_its_memory() {
     let mut pool = Pool::new((0..8).map(|_| Instant0).collect(), 2, MIB);
     let left = lent.clone();
     pool.lend_senders(Box::new(move || {
-        left.fetch_update(
+        left.try_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |n| n.checked_sub(1),
