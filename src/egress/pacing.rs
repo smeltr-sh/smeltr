@@ -115,6 +115,12 @@ impl Pacing {
         self.target
     }
 
+    /// What the egress queue may hold: the target, and one batch ready behind it, so the next is made while the
+    /// last is on the wire. Never past the ceiling.
+    pub fn queue_bytes(&self) -> usize {
+        (self.target + self.floor).min(self.ceiling).max(self.target)
+    }
+
     /// The most the target may be. Moves as the pool's share does; the target follows at the next completion.
     pub fn set_ceiling(&mut self, ceiling: usize) {
         self.ceiling = ceiling.max(self.floor);

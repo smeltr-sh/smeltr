@@ -103,8 +103,8 @@ struct QueueState {
 struct Queue {
     state: Mutex<QueueState>,
     /// Bytes this destination may hold -- queued, and sent but unacknowledged -- before an offer is refused. Shared
-    /// across readers. Fixed for a stated `bufferBytes`; the pacing model's target for a paced queue
-    /// ([`Egress::paced`]).
+    /// across readers. Fixed for a stated `bufferBytes`; the pacing model's target and one batch ready behind it for
+    /// a paced queue ([`Egress::paced`], `Pacing::queue_bytes`).
     budget: AtomicUsize,
     /// The least a paced queue's budget is, one batch, once the queue is paced.
     paced: OnceLock<usize>,
@@ -667,9 +667,10 @@ fn run(
                 let queue = queue.clone();
                 destination.lend_senders(Box::new(move || queue.take_sender()));
             }
-            let mut p = Pacing::new(floor, queue.share());
+            let p = Pacing::new(floor, queue.share());
+            queue.set_budget(p.queue_bytes());
             destination.pace(p.target());
-            p.set_ceiling(queue.share());
+            note_queue_budget(metrics, id, queue);
             pacing = Some(p);
         }
         // Here, not only where the queue is polled: a unit that keeps failing is re-sent forever without asking for new
@@ -704,9 +705,12 @@ fn run(
             next_local += 1;
             // A re-send is never the source's doing: it counts as the link's.
             let app_limited = !pressing;
-            let sent = pacing.as_mut().map(|p| p.dispatched(unit.bytes, Instant::now()));
             // Borrowed: the unit is kept until acknowledged, to send again or to hand a refused row back.
-            match destination.deliver(local, Cow::Borrowed(&unit.rows)) {
+            let delivered = destination.deliver(local, Cow::Borrowed(&unit.rows));
+            // Once the destination has taken it: a Kafka producer at its bound holds `deliver` until it has room,
+            // and that wait is this side's, not the link's round trip.
+            let sent = pacing.as_mut().map(|p| p.dispatched(unit.bytes, Instant::now()));
+            match delivered {
                 Err(e) => {
                     note_stall(metrics, id, name, &e, &mut stalled);
                     cut_off = false;
@@ -855,7 +859,7 @@ fn pace(
         Instant::now(),
     );
     if p.target() != before {
-        queue.set_budget(p.target());
+        queue.set_budget(p.queue_bytes());
         destination.pace(p.target());
         note_queue_budget(metrics, id, queue);
     }
