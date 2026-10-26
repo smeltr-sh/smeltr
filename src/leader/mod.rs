@@ -2772,7 +2772,7 @@ pub async fn replace_certificate(
 async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) -> Json<Envelope> {
     if name == tls::OWN_ENTRY {
         return Json(Envelope::failed_one(format!(
-            "the certificate {name:?} is this leader's own, and it renews it on its own, so it cannot be deleted"
+            "this leader renews the certificate {name:?} on its own, so it cannot be deleted"
         )));
     }
     match served_names(&tls::dir_of(&state.data_dir)) {
