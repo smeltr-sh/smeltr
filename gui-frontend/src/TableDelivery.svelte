@@ -5,7 +5,7 @@
 -->
 <script lang="ts" module>
   import { byteCount } from './bytes';
-  import { LIMITS, type Compression } from './api';
+  import { LIMITS, BUFFER_HELP, type Compression } from './api';
   import type { ByteCount } from './bytes';
 
   /** The settings the Delivery section holds, as every table destination names them. */
@@ -95,10 +95,9 @@
       onchange={(n) => (d.maxObjectBytes = n)}
     />
   </Field>
-  <Field optional field="bufferBytes" label="memory">
+  <Field optional field="bufferBytes" label="buffer">
     {#snippet help()}
-      Memory it may use on each worker for records not yet committed. Files are committed early when
-      it fills. Left empty, the worker sizes it from its memory.
+      {BUFFER_HELP}
     {/snippet}
     <BytesInput
       value={d.bufferBytes}
