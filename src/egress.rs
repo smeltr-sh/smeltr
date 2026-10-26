@@ -841,8 +841,8 @@ fn run(
 }
 
 /// Tell the pacing model a batch came back, and carry its target to the queue, the destination and the metrics
-/// when it moves. The ceiling is read each time: the pool's share moves as other queues come and go. What the
-/// target stands below the ceiling by is reported on change: none for long is a destination memory holds back.
+/// when it moves. The ceiling is read each time: the pool's share moves as other queues come and go. The model's
+/// headroom under the ceiling is reported on change: none for long is a destination memory holds back.
 #[allow(clippy::too_many_arguments)]
 fn pace(
     pacing: &mut Option<Pacing>,
@@ -872,7 +872,7 @@ fn pace(
         destination.pace(p.target());
         note_queue_budget(metrics, id, queue);
     }
-    let below = ceiling.saturating_sub(p.target());
+    let below = p.headroom();
     if *headroom != Some(below) {
         *headroom = Some(below);
         let label = id.to_string();
@@ -880,7 +880,7 @@ fn pace(
     }
 }
 
-/// What a paced destination's target stands below its share of the pool by, in bytes. Read by the leader's
+/// How far a paced destination's link stands below its share of the pool, in bytes (`Pacing::headroom`). Read by the leader's
 /// `destinationMemoryBound` notice.
 pub const PACE_HEADROOM_METRIC: &str = "smeltr_destination_pace_headroom_bytes";
 

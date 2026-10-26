@@ -142,6 +142,18 @@ impl Pacing {
         self.least_rtt.map(|(rtt, _)| rtt)
     }
 
+    /// How far a probe above the link's measured capacity would stand below the ceiling, in bytes: 0 once the link
+    /// carries at least the ceiling over the probe's gain. A model held at its ceiling measures no more than the
+    /// ceiling lets through, so this is as near as it can come to saying the ceiling, not the link, is the bound.
+    pub fn headroom(&self) -> usize {
+        let wanted = self.round_trip().map_or(0.0, |rtt| PROBE_CYCLE[0] * self.rate() * rtt.as_secs_f64());
+        if wanted >= self.ceiling as f64 {
+            0
+        } else {
+            self.ceiling - wanted.max(0.0) as usize
+        }
+    }
+
     /// The greatest delivery rate seen lately, in bytes a second.
     pub fn rate(&self) -> f64 {
         self.rates.iter().map(|(_, r)| *r).fold(0.0, f64::max)
@@ -456,6 +468,19 @@ mod tests {
         // 100 MiB/s, 200 ms: 20 MiB, five batches, on the wire.
         let targets = drive(&mut p, rtt, 100.0 * MIB as f64, 80, false);
         assert!(*targets.last().unwrap() >= 5 * BATCH, "{targets:?}");
+    }
+
+    #[test]
+    fn a_link_wider_than_the_ceiling_leaves_no_headroom_and_a_narrow_one_does() {
+        let rtt = Duration::from_millis(100);
+        // 64 batches a second over 100 ms: 6.4 batches on the wire, with a ceiling of 4.
+        let mut wide = Pacing::new(BATCH, 4 * BATCH);
+        drive(&mut wide, rtt, 64.0 * BATCH as f64, 200, false);
+        assert_eq!(wide.headroom(), 0);
+        // 16 a second: 1.6 on the wire, well under the ceiling of 8.
+        let mut narrow = Pacing::new(BATCH, 8 * BATCH);
+        drive(&mut narrow, rtt, 16.0 * BATCH as f64, 200, false);
+        assert!(narrow.headroom() > 4 * BATCH, "{}", narrow.headroom());
     }
 
     #[test]

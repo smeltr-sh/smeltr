@@ -1736,9 +1736,10 @@ fn trailing_climb(points: &[(i64, f64)]) -> (usize, i64) {
 /// [`destinations_memory_bound`] says so: long enough that a burst filling it is not the reason.
 const MEMORY_BOUND_FOR: Duration = Duration::from_secs(5 * 60);
 
-/// Every (group, destination) whose pacing target has stood at its share of the pool, on every worker that paces
-/// it, for each ten-second bucket of the last [`MEMORY_BOUND_FOR`]: its throughput is held back by the memory its
-/// workers have, not by its link. An Info: nothing is wrong, and more memory would move it faster. A bucket with
+/// Every (group, destination) whose link, on every worker that paces it, measured near enough its share of the pool
+/// to leave no headroom (`egress::pacing::Pacing::headroom`) in each ten-second bucket of the last
+/// [`MEMORY_BOUND_FOR`]: its workers' memory, more likely than its link, is what bounds it. A model cannot measure
+/// past the memory it has, so it cannot be sure, and the sentence says so. An Info: nothing is wrong. A bucket with
 /// no reading breaks the run, so a destination that stopped reporting is not called bound.
 fn destinations_memory_bound(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> {
     let Some(store) = store else { return Vec::new() };
@@ -1769,8 +1770,8 @@ fn destinations_memory_bound(store: Option<&RegistryStore>, now_ms: i64) -> Vec<
                 severity: Severity::Info,
                 since_millis: at_share.last().map(|(at, _)| *at),
                 message: format!(
-                    "destination {destination} in group {group:?} has used all the memory its workers can give it for \
-                     {} minutes; more memory for them would move it faster",
+                    "destination {destination} in group {group:?} has run for {} minutes with its buffer as large as \
+                     its workers' memory allows; if it should move faster, give its workers more memory",
                     MEMORY_BOUND_FOR.as_secs() / 60
                 ),
             })
