@@ -58,8 +58,9 @@ runs `just check-all` before a merge to main. Nothing runs on a PR.
 
 Every other thread tests only what it changed, once, before its push: the tests of the modules it touched
 (`SMELTR_NO_GUI=1 cargo nextest run <module>::`, as the checks build them, so neither rebuilds for the other), and
-after a change to the GUI or the API it calls, the specs it touched (`just check-gui specs/<name>.spec.ts`). It runs no `just check`, `just check-all` or whole `just check-gui`. After a
-change to `Cargo.toml`, `Cargo.lock` or the Kerberos tests, it also runs `just check-kerberos`.
+after a change to the GUI or the API it calls, the specs it touched (`just check-gui specs/<name>.spec.ts`). It runs no `just check`, `just check-all` or whole `just check-gui`. A thread
+that changes `Cargo.toml`, `Cargo.lock` or the Kerberos tests also runs `just check-kerberos`, which the nightly
+checks leave out.
 
 A dependency change also needs `just notices`: nothing else keeps
 `THIRD-PARTY-NOTICES.md` current.
