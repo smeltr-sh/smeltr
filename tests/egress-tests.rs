@@ -1011,3 +1011,49 @@ fn a_capture_at_a_blocking_destination_sees_its_held_rows_once() {
         ]
     );
 }
+
+/// A paced queue starts at one batch and, while its source presses and the destination keeps up, grows its budget
+/// toward its share of the pool; it never passes that share.
+#[test]
+fn a_paced_queue_grows_from_one_batch_while_its_source_presses() {
+    let registry = Arc::new(Metrics::new());
+    let row = vec![b'x'; 64 * 1024];
+    let pool = smeltr::egress::QueuePool::new(64 * 1024 * 1024);
+    let dest = AsyncDestination::new();
+    let mut egress = Egress::start(
+        0,
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        pool.limit(),
+        MetricsHandle::new(registry.clone(), "egress-0"),
+    )
+    .borrowing(pool.clone(), row.len(), 1)
+    .paced(row.len());
+    let budget = || {
+        registry.snapshot().into_iter().find_map(|s| match s.value {
+            smeltr::metrics::MetricValue::Gauge(v) if s.key.name == "smeltr_destination_queue_budget_bytes" => {
+                Some(v as usize)
+            }
+            _ => None,
+        })
+    };
+    let mut h = egress.handle();
+
+    // A source that always has more, over a destination that answers a few milliseconds after each send.
+    let started = std::time::Instant::now();
+    let mut batch = 0;
+    let mut most = 0;
+    while started.elapsed() < Duration::from_secs(2) {
+        while let Dispatched::InFlight = hand(&mut h, batch, &[OutgoingRecord::new(&row)]) {
+            batch += 1;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+        for b in dest.outstanding() {
+            dest.complete(b);
+        }
+        most = most.max(budget().unwrap_or(0));
+    }
+    assert!(most >= 8 * row.len(), "the budget grew from one batch: {most}");
+    assert!(most <= row.len() + pool.limit(), "never past the share: {most}");
+}
