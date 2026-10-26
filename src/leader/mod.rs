@@ -3134,6 +3134,20 @@ async fn forget_secret_version(
     State(state): State<AppState>,
     Path((name, version)): Path<(String, i64)>,
 ) -> Json<Envelope> {
+    if name == tls::OWN_ENTRY {
+        // Its newest is what a switch back serves, and what the socket presents when the chosen entry cannot be.
+        let store = state.store.clone();
+        match run_store(store, |s| certificate_versions(s).map_err(store::StoreError)).await {
+            Ok(newest) if newest.get(tls::OWN_ENTRY) == Some(&version) => {
+                return Json(Envelope::failed_one(format!(
+                    "this leader keeps the newest version of its own certificate {name:?}, so v{version} cannot be \
+                     forgotten"
+                )));
+            }
+            Ok(_) => {}
+            Err(e) => return Json(Envelope::failed_one(e.to_string())),
+        }
+    }
     match served_entries(&tls::dir_of(&state.data_dir)) {
         Ok(served)
             if served
@@ -5764,6 +5778,22 @@ mod certificate_list_tests {
 
         tls::tests::give_back(&dir).unwrap();
         assert_eq!(served_names(&dir).unwrap(), [tls::OWN_ENTRY]);
+    }
+
+    /// The leader's own entry keeps its newest version, served or not: switching back serves it.
+    #[tokio::test]
+    async fn the_leaders_own_newest_version_is_not_forgotten() {
+        let state = issuing("own-newest");
+        let mut more = names();
+        more.push("leader.example.com".to_string());
+        tls::ensure(&tls::dir_of(&state.data_dir), more, A_YEAR, &[]).expect("a version for the new names");
+        let newest = certificate_versions(state.store.as_ref()).unwrap()[tls::OWN_ENTRY];
+        assert_eq!(newest, 2);
+
+        let refused = forget_secret_version(State(state.clone()), Path((tls::OWN_ENTRY.to_string(), 2))).await;
+        assert!(!refused.0.ok, "the newest version of the leader's own was forgotten");
+        let forgotten = forget_secret_version(State(state.clone()), Path((tls::OWN_ENTRY.to_string(), 1))).await;
+        assert!(forgotten.0.ok, "{:?}", forgotten.0.errors);
     }
 
     /// The version the leader serves stays in the list until another is served: not deleted, not forgotten, and
