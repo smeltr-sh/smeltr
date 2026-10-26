@@ -105,8 +105,10 @@
       chains to one of them, and trusts no public root.
     </li>
     <li>
-      To trust only the trusted authorities, turn off <strong>trust public roots</strong> under Advanced
-      TLS. Then only certificates from those authorities are accepted.
+      To accept only certificates from your trusted authorities, turn off <strong
+        >trust public roots</strong
+      >
+      under Advanced TLS.
     </li>
     <li>
       With no TLS setting filled, a source or destination presents no certificate and trusts the

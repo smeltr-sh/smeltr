@@ -85,11 +85,11 @@
 <Field optional field="trustedAuthorities" label="trusted authorities">
   {#snippet help()}
     {#if serves}
-      Authorities a sender's certificate must chain to. With any, every sender must present a
-      certificate. PEM, one or more certificates.
+      Trusted authorities a sender's certificate must chain to. With any, every sender must present
+      a certificate. PEM, one or more certificates.
     {:else}
-      Authorities the {farEnd}'s certificate may chain to, beside the public roots unless trust
-      public roots is off. Needed only when the
+      Trusted authorities the {farEnd}'s certificate may chain to, beside the public roots unless
+      trust public roots is off. Needed only when the
       {farEnd}'s certificate comes from your organization's authority rather than a public one. PEM,
       one or more certificates.
     {/if}
