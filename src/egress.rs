@@ -42,7 +42,7 @@ struct Owed {
     unit: Unit,
     /// What the pacing model knew when it was handed to the destination, once the queue is paced.
     sent: Option<Sent>,
-    /// Nothing else was waiting when it went: the source, not the link, bounded it. See `pacing::Completion`.
+    /// The source was not refused room before it went: the source, not the link, bounded it. See `pacing::Completion`.
     app_limited: bool,
 }
 
@@ -314,10 +314,12 @@ impl Queue {
         room
     }
 
-    /// Whether the source is pressing on this queue: it was refused room since the last pop, or units wait behind
-    /// the one popped. Consumed: the mark is the next unit's.
-    fn pressing(&self, st: &QueueState) -> bool {
-        self.pressed.swap(false, Ordering::Relaxed) || !st.units.is_empty()
+    /// Whether the source is pressing on this queue: it was refused room since the last pop. Units waiting behind
+    /// the one popped are not enough: they wait on this thread, with the budget not yet full, and a sample taken
+    /// then says how fast this thread hands batches over, not how fast the link carries them. Consumed: the mark is
+    /// the next unit's.
+    fn pressing(&self) -> bool {
+        self.pressed.swap(false, Ordering::Relaxed)
     }
 
     /// The most a paced budget may be: the queue bytes whose borrowing fits this queue's share of the pool, less
@@ -399,14 +401,14 @@ impl Queue {
     fn pop(&self, timeout: Duration) -> Popped {
         let mut st = self.state.lock().unwrap();
         if let Some(u) = st.units.pop_front() {
-            return Popped::Work(u, self.pressing(&st));
+            return Popped::Work(u, self.pressing());
         }
         if st.closed {
             return Popped::Closed;
         }
         let (mut st, _) = self.work.wait_timeout(st, timeout).unwrap();
         if let Some(u) = st.units.pop_front() {
-            return Popped::Work(u, self.pressing(&st));
+            return Popped::Work(u, self.pressing());
         }
         if st.closed {
             return Popped::Closed;
@@ -460,7 +462,7 @@ impl Queue {
 }
 
 enum Popped {
-    /// A unit, and whether the source was pressing on the queue: refused room, or more waiting behind it.
+    /// A unit, and whether the source was pressing on the queue: refused room since the last.
     Work(Unit, bool),
     Idle,
     Closed,
@@ -1448,11 +1450,10 @@ mod tests {
         queue.release(4);
         assert!(queue.offer(unit(4)).is_ok());
         assert!(!pressed(queue.pop(Duration::ZERO)));
-        // A backlog marks it too.
+        // A backlog under the budget does not: the queue had room.
         queue.release(4);
         assert!(queue.offer(unit(2)).is_ok());
         assert!(queue.offer(unit(2)).is_ok());
-        assert!(pressed(queue.pop(Duration::ZERO)));
         assert!(!pressed(queue.pop(Duration::ZERO)));
     }
 

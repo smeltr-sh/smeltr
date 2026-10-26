@@ -54,8 +54,8 @@ pub struct Completion {
     pub bytes: usize,
     /// What [`Pacing::dispatched`] answered for the batch.
     pub sent: Sent,
-    /// Nothing else was waiting in the queue when it was dispatched, so the link was not the bound on this sample:
-    /// the source was.
+    /// The source was not refused room in the queue before this batch went, so the budget, and with it the link,
+    /// was not the bound on this sample: the source was.
     pub app_limited: bool,
 }
 
