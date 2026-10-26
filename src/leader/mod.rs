@@ -124,11 +124,11 @@ pub struct Quoted {
 }
 
 /// The newest version of every certificate in the list, by name.
-pub fn certificate_versions(store: &dyn Store) -> std::collections::HashMap<String, i64> {
-    (store.list_secrets().unwrap_or_default().into_iter())
+pub fn certificate_versions(store: &dyn Store) -> Result<std::collections::HashMap<String, i64>, String> {
+    Ok((store.list_secrets().map_err(|e| e.to_string())?.into_iter())
         .filter(|r| r.certificate)
         .filter_map(|r| r.current().map(|v| v.version).map(|v| (r.name, v)))
-        .collect()
+        .collect())
 }
 
 /// Every version `quoted` runs: its secrets as quoted, and its certificates at `newest`. A name the list does not
@@ -426,7 +426,8 @@ async fn heartbeat(
             deployed_groups(&data_dir),
             at_newest(
                 &entitled(&data_dir, &entitlements, &for_group),
-                &certificate_versions(&*store),
+                // Unreadable, a beat entitles no certificate and the next one tries again.
+                &certificate_versions(&*store).unwrap_or_default(),
             ),
             checks.findings(&data_dir),
         )
@@ -2197,7 +2198,7 @@ async fn list_secrets(State(state): State<AppState>) -> Result<Json<Vec<SecretOu
     // What the catalog shows; a bundle it cannot read leaves the Running column empty rather than the page.
     let store = state.store.clone();
     let mut deployed = tokio::task::spawn_blocking(move || {
-        deployed_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store))
+        deployed_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?)
     })
     .await
     .ok()
@@ -2377,7 +2378,7 @@ async fn store_value(state: AppState, name: String, value: String, chain: Option
     let pinned = tokio::task::spawn_blocking(move || {
         // What the leader serves is kept as what the fleet runs is.
         let served = served_entries(&tls::dir_of(&data_dir))?;
-        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)).map(|mut deployed| {
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?).map(|mut deployed| {
             (deployed.remove(&wanted).unwrap_or_default().into_iter())
                 .map(|(_, version)| version)
                 .chain(
@@ -2746,7 +2747,7 @@ async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) 
     let running = running_deployments(&state).await;
     let store = state.store.clone();
     let users = tokio::task::spawn_blocking(move || {
-        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)).map(|mut deployed| {
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?).map(|mut deployed| {
             let mut groups: Vec<String> = deployed
                 .remove(&wanted)
                 .unwrap_or_default()
@@ -3109,7 +3110,7 @@ async fn forget_secret_version(
     let running = running_deployments(&state).await;
     let store = state.store.clone();
     let users = tokio::task::spawn_blocking(move || {
-        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)).map(|mut deployed| {
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?).map(|mut deployed| {
             deployed
                 .remove(&wanted)
                 .unwrap_or_default()
