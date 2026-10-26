@@ -931,7 +931,7 @@ export type HecToken = {
 
 /** Every destination's `bufferBytes` help, in the reference too (`connector-reference.json`). */
 export const BUFFER_HELP =
-  'Recommended: Auto. Setting is the maximum queued bytes each worker holds for this destination, flushing when acknowledged. If auto, then the worker sizes it from its total available memory, holding up to what the connection can carry. If set too small, it limits throughput.';
+  'Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput.';
 
 /** How an S2S receiver breaks one sourcetype's stream into events, mirroring `config_file::dto::SourcetypeDto`. */
 export type Sourcetype = {
