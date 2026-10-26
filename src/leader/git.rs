@@ -931,13 +931,12 @@ const REPLY_TO_TRAILER: &str = "Smeltr-Reply-To:";
 
 /// The sections an object anchor may name, as the editor names them, and the file each lives in. A pipeline has a
 /// file of its own (`None`), named by its slugged id.
-const ANCHOR_SECTIONS: [(&str, Option<&str>); 7] = [
+const ANCHOR_SECTIONS: [(&str, Option<&str>); 6] = [
     ("sources", Some("sources.json")),
     ("destinations", Some("destinations.json")),
     ("routes", Some("routes.json")),
     ("lookupTables", Some(crate::config_file::LOOKUP_TABLES_FILE)),
     ("grokPatterns", Some(crate::config_file::GROK_PATTERNS_FILE)),
-    ("identities", Some("identities.json")),
     ("pipelines", None),
 ];
 

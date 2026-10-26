@@ -46,10 +46,9 @@ impl SecretRefDto {
     }
 }
 
-/// The TLS a connector speaks, as its own fields: the certificate it presents, an entry of the leader's certificate
-/// list by name, and the authorities it verifies the far end by. A worker presents the entry's newest version. A
-/// receiver serves TLS when it names a certificate, and admits only senders whose certificate chains to its
-/// authorities when it names any. `config_file::load` refuses one naming neither.
+/// The TLS a source or destination connects out under, as its own fields: the certificate it presents, an entry of the
+/// leader's certificate list by name, and the authorities it verifies the far end by. A worker presents the entry's
+/// newest version.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TlsDto {
@@ -70,8 +69,9 @@ impl TlsDto {
     }
 }
 
-/// The TLS a receiver serves: the certificate it presents to every sender, and the authorities a sender's certificate
-/// must chain to. A receiver trusts no public root, so it has no say over them.
+/// The TLS a receiver serves: the certificate it serves to every sender, and the authorities a sender's certificate
+/// must chain to. It serves TLS when it names a certificate, and admits only senders whose certificate chains to its
+/// authorities when it names any. A receiver trusts no public root, so it has no say over them.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ServedTlsDto {

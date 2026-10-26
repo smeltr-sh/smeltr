@@ -225,7 +225,7 @@ pub fn ensure_own(dir: &Path, sans: Vec<String>, validity: Duration) -> Result<M
 }
 
 /// A certificate this leader's authority issues for `names`, as a chain ending at that root and its private key,
-/// both PEM. For an entry of the certificate list, which a receiver serves and an identity presents, so it permits
+/// both PEM. For an entry of the certificate list, which a receiver serves and a client presents, so it permits
 /// both server and client authentication. Never outlives the authority, as the leader's own certificate never does.
 pub fn issue(dir: &Path, names: Vec<String>, validity: Duration) -> Result<(String, String), String> {
     let _reading = changing();
@@ -1749,9 +1749,8 @@ fn root_of_key(ca_pem: &[u8], key_pem: &str) -> Result<Described, String> {
 
 /// Whether `key` is the private key `chain`'s certificate was issued for.
 ///
-/// The check the leader already makes about its own certificate, offered to whatever else holds an operator's
-/// certificate beside a key kept somewhere else -- an outbound identity, whose certificate is committed and whose
-/// key is a secret, so the two can be moved apart and nothing else would notice until a handshake failed.
+/// The check the leader already makes about its own certificate, offered to the certificate list, which refuses a
+/// chain and a key that do not belong together: nothing else would notice until a handshake failed.
 pub fn is_pair(chain: &[u8], key: &[u8]) -> Result<(), String> {
     rustls_config(chain, key).map(|_| ())
 }
