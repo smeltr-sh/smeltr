@@ -8,9 +8,6 @@
   stage and the pause) over the grid, and `head` above everything.
 -->
 <script module lang="ts">
-  /** How long typing settles before a preview runs over it: the steps', and the find box's expression. */
-  export const RECOMPUTE_MS = 400;
-
   /** A chip in the find box: the rows it keeps. */
   export type FindChip =
     | { kind: 'failing' | 'dropped' | 'changed' }
@@ -31,13 +28,17 @@
   import { store, storedJson } from './stored';
   import { stepName, type Step } from './pipeline';
   import RecordFields from './RecordFields.svelte';
-  import SearchBox from './SearchBox.svelte';
+  import FindBox, { type FindFilter } from './FindBox.svelte';
   import RemovableChip from './RemovableChip.svelte';
   import FieldsMenu from './FieldsMenu.svelte';
+  import ChipPicker from './ChipPicker.svelte';
+  import GearIcon from './GearIcon.svelte';
+  import Toggle from './Toggle.svelte';
   import SortButton from './SortButton.svelte';
   import FoldAllButton from './FoldAllButton.svelte';
   import { TableSort } from './sort.svelte';
   import { formatDiffValue } from './diff';
+  import InlineError from './InlineError.svelte';
   import {
     countStates,
     fieldAt,
@@ -110,11 +111,20 @@
     stage: Snippet;
   } = $props();
 
-  // Every field, or only the ones this step touched. A mapping step rewrites
-  // most of a record, so the filter is what makes a later step's handful of
-  // changes findable without reading the whole thing.
-  let changedOnly = $state(false);
-  let showTypes = $state(true);
+  // How a record is drawn, the reader's own, kept in this browser for every pipeline. Only what
+  // changed: a mapping step rewrites most of a record, so the filter is what makes a later step's
+  // handful of changes findable without reading the whole thing.
+  const VIEW_KEY = 'smeltr-records-view';
+  type View = { changedOnly: boolean; fullPaths: boolean; showTypes: boolean };
+  const VIEW: View = { changedOnly: false, fullPaths: false, showTypes: true };
+  const savedView = storedJson<Record<string, unknown>>(VIEW_KEY, {});
+  let view = $state<View>({ ...VIEW });
+  for (const k of Object.keys(VIEW) as (keyof View)[]) {
+    const saved = savedView?.[k];
+    if (typeof saved === 'boolean') view[k] = saved;
+  }
+  $effect(() => store(VIEW_KEY, JSON.stringify(view)));
+  let viewOpen = $state(false);
 
   // What the record's source set is shown on every row, read or not, so an
   // author sees what there is to read. It is never delivered, so the
@@ -434,7 +444,7 @@
   let columnWidths = $derived.by(() => {
     const sized = rowsMaps.slice(0, SIZED_ROWS);
     return columns.map((path) => {
-      const type = showTypes ? columnTypes.get(path) : null;
+      const type = view.showTypes ? columnTypes.get(path) : null;
       // The name, `: ` and its type, and the sort arrow.
       let w = Math.max(COLUMN_MIN_CH, path.length + (type ? type.length + 2 : 0) + 2);
       for (const m of sized) {
@@ -457,11 +467,8 @@
   const gridSort = new TableSort<string>();
   // -- the find box ----------------------------------------------------------
   //
-  // A keyword by default: a row stays when one of its shown cells holds the
-  // text. Text with an operator or a call in it is tried as an expression over
-  // the pipeline's output (`PreviewRequest.filter`). One that compiles to a
-  // Bool filters the rows on the leader; anything else stays a keyword, so a
-  // bare word like `slow` is searched for rather than read as a field. Chips
+  // A keyword keeps a row when one of its shown cells holds the text; an
+  // expression runs over the pipeline's output (`FindBox.svelte`). Chips
   // beside the text keep the rows that are failing, dropped, changed by a step
   // or hold a field, each on top of the text and of each other.
 
@@ -539,11 +546,8 @@
     changed: '~ Changed by a step',
   } as const;
 
-  // What the find box offers: the kinds of row a chip keeps, with how many there are, and the
-  // expressions this pipeline was last filtered by, each narrowed to what is typed.
-  type FindItem =
-    | { kind: keyof typeof CHIP_LABELS; count: number; section?: undefined }
-    | { kind: 'recent'; expression: string; section: string };
+  // What the find box offers: the kinds of row a chip keeps, with how many there are, narrowed to what is typed.
+  type FindItem = { kind: keyof typeof CHIP_LABELS; count: number; section?: undefined };
   let findItems = $derived.by((): FindItem[] => {
     const rows = gridRows ?? [];
     const q = outputQuery.trim().toLowerCase();
@@ -552,83 +556,37 @@
       dropped: () => rows.filter((r) => r.json === null).length,
       changed: () => rows.filter((_, i) => rowChanged(i)).length,
     };
-    const kinds = (Object.keys(CHIP_LABELS) as (keyof typeof CHIP_LABELS)[])
+    return (Object.keys(CHIP_LABELS) as (keyof typeof CHIP_LABELS)[])
       .filter((kind) => !chips.some((c) => c.kind === kind))
       .filter((kind) => CHIP_LABELS[kind].toLowerCase().includes(q))
       .map((kind) => ({ kind, count: counts[kind]() }))
       .filter((k) => k.count > 0);
-    const recent = recentExpressions
-      .filter((e) => e !== outputQuery.trim() && e.toLowerCase().includes(q))
-      .map((expression) => ({ kind: 'recent' as const, expression, section: 'Recent' }));
-    return [...kinds, ...recent];
   });
 
   function pickFind(item: FindItem): boolean {
-    if (item.kind === 'recent') outputQuery = item.expression;
-    else addChip({ kind: item.kind });
+    addChip({ kind: item.kind });
     return true;
   }
 
-  const RECENT_EXPRESSIONS = 5;
-  const expressionsKey = (pipeline: string) => `smeltr-workspace-expressions:${pipeline}`;
-  let recentExpressions = $state<string[]>([]);
-  $effect(() => {
-    const key = expressionsKey(pipelineId);
-    untrack(() => {
-      const saved = storedJson<unknown>(key, []);
-      recentExpressions = Array.isArray(saved)
-        ? saved.filter((e): e is string => typeof e === 'string')
-        : [];
-    });
-  });
-
-  /** Keeps the expression the rows are filtered by, once the box is left with it. */
-  function rememberExpression() {
-    const q = outputQuery.trim();
-    if (!q || expressionRows === null) return;
-    recentExpressions = [q, ...recentExpressions.filter((e) => e !== q)].slice(
-      0,
-      RECENT_EXPRESSIONS,
-    );
-    store(expressionsKey(pipelineId), JSON.stringify(recentExpressions));
-  }
-
   let outputQuery = $state('');
-  /** The row numbers the expression kept, or null while the search is a keyword. */
-  let expressionRows = $state<Set<number> | null>(null);
-  const looksLikeExpression = (q: string) => /[=<>!&|()]/.test(q);
-
-  $effect(() => {
-    const [q, sample] = [outputQuery.trim(), lastSample];
+  let find = $state<FindFilter>({ kind: 'none' });
+  let findError = $state('');
+  // Paused, the expression reads the records where they stand.
+  let evaluate = $derived.by(() => {
+    const [sample, cut] = [lastSample, pause?.after];
     void signature;
-    // Paused, the expression reads the records where they stand.
-    const cut = pause?.after;
-    if (!q || !sample || !looksLikeExpression(q)) {
-      expressionRows = null;
-      return;
-    }
-    let current = true;
-    const timer = setTimeout(async () => {
-      try {
-        const res = await preview(cut ?? untrack(() => steps), sample, q);
-        if (current) expressionRows = res.ok ? new Set(res.rows.map((r) => r.row)) : null;
-      } catch {
-        if (current) expressionRows = null;
-      }
-    }, RECOMPUTE_MS);
-    return () => {
-      current = false;
-      clearTimeout(timer);
-    };
+    return sample
+      ? (expression: string) => preview(cut ?? untrack(() => steps), sample, expression)
+      : null;
   });
 
   function matches(i: number): boolean {
     const row = gridRows?.[i];
     if (!row) return false;
     if (!chips.every((c) => chipKeeps(c, i))) return false;
-    const q = outputQuery.trim().toLowerCase();
-    if (!q) return true;
-    if (expressionRows) return expressionRows.has(row.row);
+    if (find.kind === 'expression') return find.rows.has(row.row);
+    if (find.kind !== 'keyword') return true;
+    const q = find.text.toLowerCase();
     const m = rowsMaps[i];
     return columns.some(
       (path) =>
@@ -664,6 +622,21 @@
 
   {#if !selectedSample}{@render stage()}{/if}
 
+  {#snippet viewMenu()}
+    <ChipPicker kind="columns" bind:open={viewOpen} title="View" ariaLabel="View">
+      {#snippet face()}<GearIcon />{/snippet}
+      {#snippet children()}
+        <div class="view-menu">
+          <label class="inline-checkbox"
+            ><Toggle bind:checked={view.changedOnly} /> Only changed fields</label
+          >
+          <label class="inline-checkbox"><Toggle bind:checked={view.fullPaths} /> Full paths</label>
+          <label class="inline-checkbox"><Toggle bind:checked={view.showTypes} /> Types</label>
+        </div>
+      {/snippet}
+    </ChipPicker>
+  {/snippet}
+
   {#snippet fieldsMenu(records: number | null)}
     <FieldsMenu
       fields={menuFields}
@@ -680,18 +653,31 @@
   {/snippet}
 
   <div class="records">
-    <div class="output-search">
+    <div class="output-bar">
       {@render sampleMenu()}
       {#if gridRows && gridRows.length > 0}
-        <SearchBox
+        <span class="grow"></span>
+        {@render fieldsMenu(gridRows.length)}
+        {@render viewMenu()}
+      {:else if !selectedSample && dictionary}
+        <!-- No records to count, but the steps compiled: what they declare. -->
+        <span class="grow"></span>
+        {@render fieldsMenu(null)}
+      {/if}
+    </div>
+    {#if gridRows && gridRows.length > 0}
+      <div class="output-bar">
+        <FindBox
           bind:query={outputQuery}
+          bind:filter={find}
+          bind:error={findError}
+          {evaluate}
+          remember={`smeltr-workspace-expressions:${pipelineId}`}
           items={findItems}
           onpick={pickFind}
-          onleave={rememberExpression}
           id="find"
           label="Search the output"
           placeholder="Search the output, or filter with an expression such as status >= 500"
-          mono={expressionRows !== null}
         >
           {#snippet before()}<span aria-hidden="true">⌕</span
             >{#each chips as c (chipKey(c))}<RemovableChip
@@ -699,22 +685,19 @@
                 onremove={() => toggleChip(c)}
                 ><span class="find-chip">{chipLabel(c)}</span></RemovableChip
               >{/each}{/snippet}
-          {#snippet after()}{#if outputQuery.trim()}<span
-                class="mode"
-                class:expression={expressionRows !== null}
-                >{expressionRows !== null ? 'ƒ expression' : 'keyword'}</span
-              >{/if}{/snippet}
           {#snippet option(item)}
-            {#if item.kind === 'recent'}
-              <code>{item.expression}</code>
-            {:else}
-              <span>{CHIP_LABELS[item.kind]}</span>
-              <span></span>
-              <span class="dim">{item.count}</span>
-            {/if}
+            <span>{CHIP_LABELS[item.kind]}</span>
+            <span></span>
+            <span class="dim">{item.count}</span>
           {/snippet}
-        </SearchBox>
-        {#if outputQuery.trim() || chips.length > 0}
+        </FindBox>
+      </div>
+    {/if}
+    <InlineError message={findError} />
+    {#if selectedSample}
+      {@render stage()}
+      <div class="output-actions">
+        {#if gridRows && (outputQuery.trim() || chips.length > 0)}
           <span class="dim count">{gridOrder.length} of {gridRows.length} rows</span>
         {/if}
         {#if failingCount > 0}
@@ -725,34 +708,6 @@
             onclick={() => toggleChip({ kind: 'failing' })}>⚠ {failingCount} failing</button
           >
         {/if}
-        {@render fieldsMenu(gridRows.length)}
-      {:else if !selectedSample && dictionary}
-        <!-- No records to count, but the steps compiled: what they declare. -->
-        <span class="grow"></span>
-        {@render fieldsMenu(null)}
-      {/if}
-    </div>
-    {#if selectedSample}
-      {@render stage()}
-      <div class="output-actions">
-        <button
-          type="button"
-          class="toggle"
-          class:on={changedOnly}
-          aria-pressed={changedOnly}
-          onclick={() => (changedOnly = !changedOnly)}
-        >
-          Show only changed fields
-        </button>
-        <button
-          type="button"
-          class="toggle"
-          class:on={showTypes}
-          aria-pressed={showTypes}
-          onclick={() => (showTypes = !showTypes)}
-        >
-          Show types
-        </button>
         <span class="grow"></span>
         <button
           type="button"
@@ -800,7 +755,7 @@
                       ><SortButton sort={gridSort} key={path}
                         ><span class="head-name"
                           ><span class="path-prefix">{name.prefix}</span>{name.leaf}</span
-                        >{#if showTypes && columnTypes.get(path)}<span class="head-type"
+                        >{#if view.showTypes && columnTypes.get(path)}<span class="head-type"
                             >{': '}{columnTypes.get(path)}</span
                           >{/if}</SortButton
                       ></th
@@ -899,8 +854,9 @@
                             after={sides.after}
                             keep={unfoldedPath}
                             declared={sides.declared}
-                            {changedOnly}
-                            {showTypes}
+                            changedOnly={view.changedOnly}
+                            fullPaths={view.fullPaths}
+                            showTypes={view.showTypes}
                             touched={touchedOn(row.row)}
                             {onjump}
                           />
@@ -924,24 +880,16 @@
 </section>
 
 <style>
-  .output-search {
+  /* The sample and what is shown of it on one row, and the search on the next: the search has a
+     row of its own to be read in. */
+  .output-bar {
     display: flex;
     align-items: center;
     gap: 0.7rem;
   }
-  .mode {
-    flex: none;
-    font-size: var(--text-note);
-    color: var(--dim);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 0 0.5rem;
-    white-space: nowrap;
-  }
-  .mode.expression {
-    color: var(--accent);
-    border-color: var(--accent);
-    font-family: var(--mono);
+
+  .output-bar + .output-bar {
+    margin-top: 0.5rem;
   }
   .count {
     font-size: var(--text-note);
@@ -1011,7 +959,8 @@
   .output-actions {
     display: flex;
     align-items: center;
-    margin-top: 0.75rem;
+    gap: 0.7rem;
+    margin-top: 0.5rem;
   }
 
   .results {
@@ -1202,10 +1151,21 @@
     opacity: 0.6;
   }
 
-  .toggle.on {
-    border-color: var(--ink);
-    color: var(--ink);
-    font-weight: 600;
+  .view-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    white-space: nowrap;
+  }
+
+  .inline-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    font-size: var(--text-label);
+    font-weight: 400;
   }
 
   .state-added {

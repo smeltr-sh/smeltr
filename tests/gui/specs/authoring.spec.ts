@@ -662,6 +662,9 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
       { name: '__source.topic', type: 'str' },
       { name: '__source.partition', type: 'i64' },
       { name: '__source.offset', type: 'i64' },
+      { name: '__source.bytes', type: 'bytes' },
+      { name: '__source.name', type: 'str' },
+      { name: '__source.type', type: 'str' },
     ],
     records: ORDERS.map((raw, i) => ({ _raw: raw, __source: read(i, 100 + i, raw) })),
   });
@@ -686,6 +689,15 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
   await expect(records.getByRole('row', { name: /coupon.*SPRING.*orders 0 100/ })).toBeVisible();
   await expect(admin.getByText('Re-lock after saving: orders parse')).toBeVisible();
 
+  // An expression filters the records as saved.
+  const find = records.getByRole('combobox', { name: 'Search records' });
+  const ticks = records.getByRole('checkbox', { name: /^Select record \d/ });
+  await find.fill('__source.offset > 100');
+  await expect(records.getByRole('button', { name: 'ƒ expression' })).toBeVisible();
+  await expect(ticks).toHaveCount(2);
+  await find.fill('');
+  await expect(ticks).toHaveCount(3);
+
   // Keep the first and last, fix the last, and paste one more.
   await records.getByRole('checkbox', { name: 'Select record 1' }).check();
   await records.getByRole('checkbox', { name: 'Select record 3' }).check();
@@ -694,6 +706,15 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
   await expect(records.getByRole('textbox')).toHaveCount(0);
   await records.getByRole('button', { name: 'Keep only selected' }).click();
   await expect(records.getByRole('checkbox', { name: 'Select record 2' })).toHaveCount(0);
+  // Once the draft differs from what is saved, an expression waits on the save and keeps every record.
+  await find.fill('__source.offset > 100');
+  await expect(
+    records.getByText(
+      'Not applied: an expression filters the saved sample, and you have unsaved changes.',
+    ),
+  ).toBeVisible();
+  await expect(ticks).toHaveCount(2);
+  await find.fill('');
   await records.getByRole('cell', { name: /"id":3/ }).click();
   await records.getByRole('textbox', { name: '_raw, record 3' }).fill('{"id":3,"total":13}');
   // Enter settles the cell; it does not save the sample.
@@ -920,6 +941,18 @@ test('A2: a sample is picked from the Sample menu, its output searched by keywor
   // One that does not compile to a Bool is a keyword.
   await search.fill('total +');
   await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
+  // Read as an expression on asking, it keeps no rows and says why, until it is fixed.
+  await admin.getByRole('button', { name: 'keyword', exact: true }).click();
+  await expect(admin.getByRole('alert')).toBeVisible();
+  await expect(admin.getByText('0 of 3 rows')).toBeVisible();
+  await search.fill('total > 15');
+  await expect(admin.getByText('2 of 3 rows')).toBeVisible();
+  await expect(admin.getByRole('alert')).toBeHidden();
+  // And an expression is searched for as text on asking.
+  await admin.getByRole('button', { name: 'ƒ expression' }).click();
+  await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
+  await expect(admin.getByText('0 of 3 rows')).toBeVisible();
+  await search.fill('');
   // Left with an expression in it, the box offers it again, under the kinds of row a chip keeps.
   await search.fill('total > 15');
   await expect(admin.getByText('ƒ expression')).toBeVisible();
@@ -1248,7 +1281,8 @@ test('A3: a field names the steps that touched it, a step card counts what it dr
   // A column's head names its type, until types are hidden.
   const head = grid.getByRole('button', { name: /^status\b/ });
   await expect(head).toHaveText(/^status: i64/);
-  await admin.getByRole('button', { name: 'Show types' }).click();
+  await admin.getByRole('button', { name: 'View', exact: true }).click();
+  await admin.getByRole('switch', { name: 'Types' }).uncheck();
   await expect(head).not.toContainText('i64');
 });
 

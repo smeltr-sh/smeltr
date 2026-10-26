@@ -97,7 +97,8 @@
   import { hold, verdictFor, drop } from './edits';
   import type { ChangeRow } from './diff';
   import AddSampleDialog from './AddSampleDialog.svelte';
-  import RecordsPane, { RECOMPUTE_MS, type PauseRun } from './RecordsPane.svelte';
+  import RecordsPane, { type PauseRun } from './RecordsPane.svelte';
+  import { RECOMPUTE_MS } from './FindBox.svelte';
   import SampleMenu from './SampleMenu.svelte';
   import PencilIcon from './PencilIcon.svelte';
   import { mintPipelineId } from './ids';

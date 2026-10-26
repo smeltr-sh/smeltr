@@ -1,21 +1,23 @@
 <!--
   One record, as the preview draws it (`recordDiff.ts`). Nesting is indent and
-  a longer name rather than braces; what a step did to a field is a character
-  in the gutter and a color on the field's name, so the values themselves
-  stay plain text at one left edge. The name column is as wide as the
-  record's longest name, up to a cap past which a name wraps at its dots, and
+  a longer name rather than braces. What the steps did is a bar beside each run
+  of lines they changed, from the depth where the run starts and in the color
+  of what they did, so names and values stay plain text. The name column is as
+  wide as the record's longest name, up to a cap past which a name wraps at its dots, and
   the types sit in a column beside it.
 
   What the step removed waits on one folded line at the end, so a rename
   reads as its new name alone.
 
-  Beside the mark, the sign of the last step that touched the field; held,
-  it lists every step that did, and each jumps to its step.
+  A run's sign is the step that last touched its lines, or +, ~ or − where no
+  step is named, shown where the run starts and where that step changes
+  (`runMarks`). Held, a field's sign lists every step that touched it, and
+  each jumps to its step.
 
   Structs and arrays draw a page at a time, and one too big for what is left
-  of its page starts folded (`recordLines`). Filtered to what changed, the
-  tree is dropped and each field states its whole path: at four or five lines
-  an outline costs more than it explains.
+  of its page starts folded (`recordLines`). With full paths the tree is
+  dropped and each field states its whole path (`pathLines`). Either way it
+  can be filtered to what changed.
 -->
 <script lang="ts">
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
@@ -25,16 +27,18 @@
   import Clamped from './Clamped.svelte';
   import { float } from './float';
   import {
-    changedLines,
     changeFitsInline,
     diffTree,
     leafLines,
     PAGE_LINES,
+    pathLines,
     recordLines,
+    runMarks,
     splitPath,
     withoutRemoved,
     type Declared,
     type RecordLine,
+    type RunMark,
   } from './recordDiff';
 
   let {
@@ -43,6 +47,7 @@
     keep,
     declared,
     changedOnly = false,
+    fullPaths = false,
     showTypes = true,
     touched,
     onjump,
@@ -54,6 +59,8 @@
     /** Whether a field the grid draws as one cell is drawn here. */
     keep?: (path: string) => boolean;
     changedOnly?: boolean;
+    /** Each field by its whole path, rather than nested. */
+    fullPaths?: boolean;
     showTypes?: boolean;
     /** The steps that touched a field on this record, in the order they ran,
      * each with its number in the step list. Without it no step is shown. */
@@ -92,14 +99,24 @@
 
   let lines = $derived.by(() => {
     const choices = { open: (p: string) => folds.get(p), pages: (p: string) => pages.get(p) };
-    return changedOnly ? changedLines(tree, choices) : recordLines(tree, choices);
+    return fullPaths
+      ? pathLines(tree, choices, changedOnly)
+      : recordLines(tree, choices, changedOnly);
   });
 
   // In characters: the column is monospace, and a name's length is its width.
   const INDENT_CH = 2;
+  // Ahead of every name, its sign and then a group's chevron, so names at one depth line up.
+  const LEAD_CH = 4;
   const NAME_CH = 34;
   const nameWidth = (l: RecordLine) =>
-    l.kind === 'more' ? 0 : l.depth * INDENT_CH + l.label.length;
+    l.kind === 'more' ? 0 : l.depth * INDENT_CH + LEAD_CH + l.label.length;
+
+  type Touched = { step: Step; number: number };
+  const stepOf = (path: string) => touched?.(path).at(-1) ?? null;
+  const same = (a: Touched | null, b: Touched | null) => a?.step.id === b?.step.id;
+  let marks = $derived(runMarks(lines, stepOf, same));
+  let removedMarks = $derived(runMarks(removed, stepOf, same));
   let nameCh = $derived(
     Math.min(NAME_CH, Math.max(0, ...lines.map(nameWidth), ...removed.map(nameWidth))),
   );
@@ -143,56 +160,70 @@
 
 {#snippet more(depth: number, shown: number, total: number, onmore: () => void)}
   <div class="line">
-    <span class="gutter"></span>
-    {#if touched}<span class="by"></span>{/if}
-    <span class="dim" style:margin-left={`${depth * INDENT_CH}ch`}
+    <span class="dim" style:margin-left={`${depth * INDENT_CH + LEAD_CH}ch`}
       >{shown} of {total} shown ·&nbsp;</span
     ><button type="button" class="more" onclick={onmore}>show more</button>
   </div>
 {/snippet}
 
-{#snippet field(line: Extract<RecordLine, { kind: 'field' }>)}
-  {@const inline = line.state === 'changed' && changeFitsInline(line.before, line.after)}
-  {@const body = formatDiffValue(line.state === 'removed' ? line.before : line.after)}
-  <div class="line state-{line.state}">
-    <span class="gutter">{GLYPH[line.state]}</span>
-    {#if touched}
-      {@const by = touched(line.path)}
+{#snippet run(mark: RunMark<Touched>)}
+  {#if mark.state !== 'unchanged'}<span
+      class="bar state-{mark.state}"
+      style:left={`${mark.depth * INDENT_CH}ch`}
+    ></span>{/if}
+{/snippet}
+
+<!-- A run's sign: its step, or +, ~ or − where no one step is named. A field's lists, held, every
+     step that touched it; a group's is inside the group's own button, so it only names its step. -->
+{#snippet sign(mark: RunMark<Touched>, field: string | null)}
+  <span class="sign state-{mark.state}">
+    {#if mark.sign && mark.step && field !== null}
+      {@const by = touched?.(field) ?? []}
       <span
         class="by"
         role="group"
-        onpointerenter={(e) => showBy(line.path, e.currentTarget)}
+        onpointerenter={(e) => showBy(field, e.currentTarget)}
         onpointerleave={hideBy}
-        onfocusin={(e) => showBy(line.path, e.currentTarget)}
+        onfocusin={(e) => showBy(field, e.currentTarget)}
         onfocusout={hideBy}
       >
-        {#if by.length > 0}
-          {@const last = by[by.length - 1]}
-          <button
-            type="button"
-            class="by-glyph"
-            aria-label={stepName(last.step, last.number)}
-            onclick={() => onjump?.(last.step)}><StepGlyph type={last.step.type} /></button
+        <button
+          type="button"
+          class="by-glyph"
+          aria-label={stepName(mark.step.step, mark.step.number)}
+          onclick={() => onjump?.(mark.step!.step)}><StepGlyph type={mark.step.step.type} /></button
+        >
+        {#if byOpen === field}
+          <span
+            class="by-list"
+            popover="manual"
+            {@attach float(() => byAnchor?.getBoundingClientRect())}
           >
-          {#if byOpen === line.path}
-            <span
-              class="by-list"
-              popover="manual"
-              {@attach float(() => byAnchor?.getBoundingClientRect())}
-            >
-              {#each by as t (t.step.id)}
-                <button type="button" onclick={() => onjump?.(t.step)}
-                  ><StepGlyph type={t.step.type} /> {stepName(t.step, t.number)}</button
-                >
-              {/each}
-            </span>
-          {/if}
+            {#each by as t (t.step.id)}
+              <button type="button" onclick={() => onjump?.(t.step)}
+                ><StepGlyph type={t.step.type} /> {stepName(t.step, t.number)}</button
+              >
+            {/each}
+          </span>
         {/if}
       </span>
-    {/if}
+    {:else if mark.sign && mark.step}
+      <span title={stepName(mark.step.step, mark.step.number)}
+        ><StepGlyph type={mark.step.step.type} /></span
+      >
+    {:else if mark.sign}{GLYPH[mark.state]}{/if}
+  </span>
+{/snippet}
+
+{#snippet field(line: Extract<RecordLine, { kind: 'field' }>, mark: RunMark<Touched>)}
+  {@const inline = line.state === 'changed' && changeFitsInline(line.before, line.after)}
+  {@const body = formatDiffValue(line.state === 'removed' ? line.before : line.after)}
+  <div class="line state-{line.state}" class:run-start={mark.start}>
+    {@render run(mark)}
     <span class="key">
       <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}>
-        {#if changedOnly}
+        {@render sign(mark, line.path)}<span class="chevron"></span>
+        {#if fullPaths}
           {@const parts = splitPath(line.label)}
           <span class="path-prefix">{@render name(parts.prefix)}</span>{parts.leaf}
         {:else}
@@ -241,24 +272,21 @@
   <span class="dim">no change at this step</span>
 {:else}
   <!-- A character's slack, so a name that just fits does not wrap on a rounding. -->
-  <div
-    class="fields"
-    class:by-steps={!!touched}
-    style:--name-w={`${nameCh + 1}ch`}
-    style:--type-w={`${typeCh}ch`}
-  >
-    {#each lines as line (line.kind + line.path + line.depth)}
+  <div class="fields" style:--name-w={`${nameCh + 1}ch`} style:--type-w={`${typeCh}ch`}>
+    {#each lines as line, i (line.kind + line.path + line.depth)}
+      {@const mark = marks[i]}
       {#if line.kind === 'group'}
         <button
           type="button"
+          class:run-start={mark.start}
           class="line group"
           aria-expanded={line.open}
           onclick={() => folds.set(line.path, !line.open)}
         >
-          <span class="gutter chevron">{line.open ? '▾︎' : '▸︎'}</span>
-          {#if touched}<span class="by"></span>{/if}
+          {@render run(mark)}
           <span class="key">
             <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}
+              >{@render sign(mark, null)}<span class="chevron">{line.open ? '▾︎' : '▸︎'}</span
               >{@render name(line.label)}</span
             >
             {#if showTypes}<span class="type">{line.type ?? ''}</span>{/if}
@@ -285,7 +313,7 @@
           pages.set(path, (pages.get(path) ?? 0) + 1),
         )}
       {:else}
-        {@render field(line)}
+        {@render field(line, mark)}
       {/if}
     {/each}
     {#if split.removed.length > 0}
@@ -295,13 +323,13 @@
         aria-expanded={removedOpen}
         onclick={() => (removedOpen = !removedOpen)}
       >
-        <span class="gutter chevron">{removedOpen ? '▾︎' : '▸︎'}</span>
+        <span class="sign"></span><span class="chevron">{removedOpen ? '▾︎' : '▸︎'}</span>
         <span class="removed-names"
           >{split.removed.length} removed: {split.removed.map((n) => n.path).join(', ')}</span
         >
       </button>
-      {#each removed as line (line.kind + line.path)}
-        {#if line.kind === 'field'}{@render field(line)}{/if}
+      {#each removed as line, i (line.kind + line.path)}
+        {#if line.kind === 'field'}{@render field(line, removedMarks[i])}{/if}
       {/each}
       {#if removed.length < removedAll.length}
         {@render more(0, removed.length, removedAll.length, () => removedPages++)}
@@ -321,15 +349,30 @@
     font-family: var(--mono);
     font-size: var(--text-note);
     line-height: 1.75;
-    padding: 0.2rem 0 0.3rem;
+    padding: 0.2rem 0 0.3rem 0.5rem;
   }
 
-  /* A wrapped value makes the row as tall as it needs; the mark and the name
+  /* A wrapped value makes the row as tall as it needs; the sign and the name
      stay on its first line rather than centering against it. */
   .line {
+    position: relative;
     display: flex;
     align-items: baseline;
     gap: 0.5rem;
+  }
+
+  /* Runs apart by a gap, so two in a row read as two. */
+  .run-start {
+    margin-top: 0.3rem;
+  }
+
+  .bar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    margin-left: -0.45rem;
+    background: currentColor;
   }
 
   .group {
@@ -355,28 +398,19 @@
     font-weight: 400;
   }
 
-  /* The gutter is a fixed column at the far left: the mark never moves with
-     the depth of the field it belongs to. A group's chevron sits in it too,
-     so a group's name lines up with its siblings'. */
-  .gutter {
-    flex-shrink: 0;
-    width: 0.75rem;
-    text-align: center;
+  .sign,
+  .chevron {
+    display: inline-block;
+    width: 2ch;
     color: var(--dim);
   }
 
-  /* The step that last touched the field, and on hover every step that did. */
-  .by {
-    flex-shrink: 0;
-    width: 1rem;
-    margin-left: -0.3rem;
-  }
-
+  /* The step that last touched the field, in the color of what it did, and on hover every step that did. */
   .by-glyph {
     border: 0;
     background: none;
     padding: 0;
-    color: var(--dim);
+    color: inherit;
     cursor: pointer;
   }
 
@@ -473,20 +507,22 @@
     padding: 0 0.3rem;
   }
 
-  .state-added .gutter {
+  .sign.state-added,
+  .bar.state-added {
     color: var(--added);
   }
 
-  .state-changed .gutter {
+  .sign.state-changed,
+  .bar.state-changed {
     color: var(--changed);
   }
 
-  .state-removed .gutter,
-  .state-removed .key {
+  .sign.state-removed,
+  .bar.state-removed {
     color: var(--removed);
   }
 
-  .state-removed .key {
+  .state-removed .name {
     text-decoration: line-through;
   }
 
@@ -516,17 +552,12 @@
   .held {
     display: flex;
     width: 100%;
-    padding: 0 0 0 calc(1.75rem + var(--key-w));
+    padding: 0 0 0 calc(0.5rem + var(--key-w));
     border: none;
     background: none;
     font: inherit;
     text-align: left;
     cursor: pointer;
-  }
-
-  /* Past the step's sign too. */
-  .by-steps .held {
-    padding-left: calc(2.95rem + var(--key-w));
   }
 
   .held:hover .held-rule,

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { isInternal } from './api';
 import {
-  changedLines,
+  pathLines,
+  runMarks,
   changeFitsInline,
   countStates,
   declaredRecord,
@@ -205,6 +206,20 @@ describe('recordLines', () => {
     expect(shape(recordLines(diffTree(null, { a: { b: { c: 1 } } })))).toEqual(['a.b.c']);
   });
 
+  it('leaves out what holds no change, when asked, and keeps the tree', () => {
+    const tree = diffTree(
+      { source: { ip: 'a', port: 1 }, host: 'h' },
+      { source: { ip: 'a', port: 2, geo: { city: 'c', country: 'SE' } }, host: 'h' },
+    );
+    expect(shape(recordLines(tree, {}, true))).toEqual([
+      'source',
+      '  geo',
+      '    city',
+      '    country',
+      '  port',
+    ]);
+  });
+
   it('joins a key in brackets without a dot', () => {
     const lines = recordLines(diffTree(null, { labels: { 'a.b': 1 } }));
     expect(shape(lines)).toEqual(['labels["a.b"]']);
@@ -291,17 +306,26 @@ describe('recordLines', () => {
   });
 });
 
-describe('changedLines', () => {
+describe('pathLines', () => {
   it('lists every changed field by its whole path, folded or not', () => {
-    const lines = changedLines(diffTree({ a: { b: 1, c: [1, 2] } }, { a: { b: 1, c: [1, 3] } }));
+    const lines = pathLines(
+      diffTree({ a: { b: 1, c: [1, 2] } }, { a: { b: 1, c: [1, 3] } }),
+      {},
+      true,
+    );
     expect(lines.map((l) => l.kind === 'field' && [l.label, l.state])).toEqual([
       ['a.c[1]', 'changed'],
     ]);
   });
 
+  it('lists every field by its whole path, changed or not', () => {
+    const lines = pathLines(diffTree({ a: { b: 1, c: [1, 2] } }, { a: { b: 1, c: [1, 3] } }));
+    expect(lines.map((l) => l.kind === 'field' && l.label)).toEqual(['a.b', 'a.c[0]', 'a.c[1]']);
+  });
+
   it('draws a page at a time', () => {
     const tags = Array.from({ length: 100 }, (_, i) => i);
-    const lines = changedLines(diffTree(null, { tags }));
+    const lines = pathLines(diffTree(null, { tags }), {}, true);
     expect(lines.at(-1)).toEqual({ kind: 'more', path: '', depth: 0, shown: 40, total: 100 });
   });
 });
@@ -410,5 +434,68 @@ describe('countStates', () => {
         leaf('e', 'unchanged'),
       ]),
     ).toEqual({ added: 1, changed: 2, removed: 1 });
+  });
+});
+
+describe('runMarks', () => {
+  const marks = (before: unknown, after: unknown, steps: Record<string, string> = {}) => {
+    const lines = recordLines(diffTree(before, after));
+    return runMarks(
+      lines,
+      (p) => steps[p] ?? null,
+      (a, b) => a === b,
+    ).map((m, i) => {
+      const l = lines[i];
+      const name = l.kind === 'more' ? 'more' : l.label;
+      return `${name} ${m.state}${m.start ? ' start' : ''} @${m.depth}${m.sign ? ` sign:${m.step}` : ''}`;
+    });
+  };
+
+  it('runs a new struct as one bar, signed once, from its own depth', () => {
+    expect(
+      marks(
+        { a: 1 },
+        { a: 1, http: { method: 'GET', status: 200 } },
+        {
+          'http.method': 'p',
+          'http.status': 'p',
+        },
+      ),
+    ).toEqual([
+      'a unchanged @0',
+      'http added start @0 sign:p',
+      'method added @0',
+      'status added @0',
+    ]);
+  });
+
+  it('signs again where the step changes within a run', () => {
+    expect(marks({}, { a: 1, b: 2, c: 3 }, { a: 'p', b: 'e', c: 'e' })).toEqual([
+      'a added start @0 sign:p',
+      'b added @0 sign:e',
+      'c added @0',
+    ]);
+  });
+
+  it('runs a folded struct as changed when what is in it differs, with no one step', () => {
+    const lines = recordLines(diffTree({ s: { a: 1 } }, { s: { a: 2, b: 1 } }), {
+      open: () => false,
+    });
+    const steps: Record<string, string> = { 's.a': 'e', 's.b': 'p' };
+    expect(
+      runMarks(
+        lines,
+        (p) => steps[p] ?? null,
+        (a, b) => a === b,
+      ),
+    ).toEqual([{ state: 'changed', step: null, start: true, depth: 0, sign: true }]);
+  });
+
+  it('starts a run inside an unchanged struct at the depth of the change', () => {
+    expect(marks({ s: { ip: 1, port: 1 } }, { s: { ip: 1, port: 2 } }, { 's.port': 'e' })).toEqual([
+      's unchanged @0',
+      'ip unchanged @1',
+      'port changed start @1 sign:e',
+    ]);
   });
 });

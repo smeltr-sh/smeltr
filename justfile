@@ -258,7 +258,7 @@ check-rust: stable
 # seeds each and take a minute or more, so `check` leaves them here.
 [doc("Every offline fuzzer.")]
 [env("SMELTR_NO_GUI", "1")]
-check-fuzz: && fuzz-gui fuzz-journey
+check-fuzz: && fuzz-gui fuzz-journey fuzz-pipeline
     cargo nextest run --workspace -j {{test_threads}} -E "test(/fuzz/)"
 
 # The GUI fuzzer, `tests/gui/specs/gui-fuzz.spec.ts`, over more seeds than
@@ -278,6 +278,16 @@ fuzz-gui: build-dev
 fuzz-journey: build-dev
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project journey-coverage
+
+# The pipeline journey fuzzer, `tests/gui/specs/pipeline-fuzz.spec.ts`, over
+# more and longer journeys than `check-gui` gives it: 16 of 100 moves.
+# `SMELTR_FUZZ_SEED=n` replays one.
+[doc("The pipeline journey fuzzer, over many seeds.")]
+[env("SMELTR_FUZZ_SEEDS", "16")]
+[env("SMELTR_PIPELINE_MOVES", "100")]
+fuzz-pipeline: build-dev
+    npm --prefix tests/gui install
+    cd tests/gui && npx playwright test --project pipeline-coverage
 
 # The build goes to `target/gui-check`, not `dist`: `check-rust` runs alongside
 # and embeds `dist`, which vite empties before it writes.
