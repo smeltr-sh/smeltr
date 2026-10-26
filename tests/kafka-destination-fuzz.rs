@@ -11,7 +11,7 @@
 //! so the format and field are checked where the destination is loaded. Any other change to the JSON may be refused,
 //! and never panics.
 //!
-//! Live, draws without an identity, SASL, a fault or a break are pointed at the broker at `KAFKA_TEST_BROKERS`, and
+//! Live, draws without TLS, SASL, a fault or a break are pointed at the broker at `KAFKA_TEST_BROKERS`, and
 //! deliver to topics each seed makes and reads back.
 
 use std::borrow::Cow;
@@ -76,8 +76,8 @@ const OPTIONS: &[&str] = &[
     "stallAfterSecs",
     "bufferBytes",
     "bufferBytes.text",
-    "identity.authorities",
-    "identity.certificate",
+    "tls.authorities",
+    "tls.certificate",
     "properties",
     "properties.plaintext",
     "properties.sasl",
@@ -96,9 +96,9 @@ const OPTIONS: &[&str] = &[
     "broken.defaultTopic",
     "broken.field.json",
     "broken.field.blank",
-    "broken.identity",
-    "broken.identity.material",
-    "broken.identity.plaintext",
+    "broken.certificate",
+    "broken.tls.material",
+    "broken.tls.plaintext",
     "broken.properties.reserved",
     "broken.properties.credential",
     "broken.properties.pem",
@@ -129,19 +129,30 @@ enum Target<'a> {
     Live(&'a str),
 }
 
-/// What the identity a destination names holds.
+/// The TLS a destination sets on itself.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Identity {
+enum ClientTls {
     /// An authority to verify the brokers against.
     Trusts,
     /// That, and a certificate to present.
     Presents,
 }
 
+/// Stands for the authority's PEM until `bundle` has it.
+const AUTHORITIES: &str = "@authorities";
+
+/// Sets `tls` on `d`, the authority as [`AUTHORITIES`].
+fn set_tls(d: &mut Map<String, Value>, tls: ClientTls) {
+    d.insert("authorities".into(), json!(AUTHORITIES));
+    if tls == ClientTls::Presents {
+        d.insert("certificate".into(), json!("client"));
+    }
+}
+
 /// One drawn destination.
 struct Draw {
     destination: Map<String, Value>,
-    identity: Option<Identity>,
+    tls: Option<ClientTls>,
     /// Whether the producer reaches brokers that answer it, in plain text: the mock, or the live broker.
     reaches: bool,
     /// The leader-stored credentials it names, with their values.
@@ -243,18 +254,19 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target) -> Draw {
             properties.insert(k.into(), json!(v));
         }
     }
-    let mut identity = None;
+    let mut tls = None;
     if matches!(target, Target::Offline(_)) {
         if rng.chance(4) {
             // Over TLS, which the mock does not speak.
-            identity = Some(if rng.chance(2) {
-                cov.reach("identity.authorities");
-                Identity::Trusts
+            let own = if rng.chance(2) {
+                cov.reach("tls.authorities");
+                ClientTls::Trusts
             } else {
-                cov.reach("identity.certificate");
-                Identity::Presents
-            });
-            d.insert("identity".into(), json!("client"));
+                cov.reach("tls.certificate");
+                ClientTls::Presents
+            };
+            tls = Some(own);
+            set_tls(&mut d, own);
             let protocol = *rng.pick(&["SSL", "ssl", "SASL_SSL"]);
             properties.insert("security.protocol".into(), json!(protocol));
             // Always with a mechanism: without one librdkafka takes GSSAPI, which builds here only with a keytab.
@@ -304,7 +316,7 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target) -> Draw {
 
     let mut draw = Draw {
         destination: d,
-        identity,
+        tls,
         reaches,
         stored,
         unheld,
@@ -331,9 +343,9 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
         "defaultTopic",
         "field.json",
         "field.blank",
-        "identity",
-        "identity.material",
-        "identity.plaintext",
+        "certificate",
+        "tls.material",
+        "tls.plaintext",
         "properties.reserved",
         "properties.credential",
         "properties.pem",
@@ -372,14 +384,14 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
             d.insert("field".into(), json!(rng.pick(&["", "  "])));
             "field"
         }
-        "identity" => {
-            d.insert("identity".into(), json!("nobody"));
-            draw.identity = None;
-            "identity"
+        "certificate" => {
+            d.insert("certificate".into(), json!(" "));
+            draw.tls = None;
+            "certificate"
         }
-        "identity.material" => {
-            draw.identity = Some(Identity::Trusts);
-            d.insert("identity".into(), json!("client"));
+        "tls.material" => {
+            draw.tls = Some(ClientTls::Trusts);
+            set_tls(d, ClientTls::Trusts);
             let p = object(d, "properties");
             p.insert("security.protocol".into(), json!("SSL"));
             p.insert(
@@ -389,9 +401,9 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
             );
             "properties"
         }
-        "identity.plaintext" => {
-            draw.identity = Some(Identity::Presents);
-            d.insert("identity".into(), json!("client"));
+        "tls.plaintext" => {
+            draw.tls = Some(ClientTls::Presents);
+            set_tls(d, ClientTls::Presents);
             let p = object(d, "properties");
             if rng.chance(2) {
                 p.remove("security.protocol");
@@ -485,7 +497,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
     }
 }
 
-/// `draw` as a whole bundle: a Kafka source, one route to the destination, and the identity it names.
+/// `draw` as a whole bundle: a Kafka source, one route to the destination, and the authority it trusts.
 fn bundle(draw: &Draw, pki: &Pki) -> Value {
     let mut b = json!({
         "version": 1,
@@ -494,16 +506,8 @@ fn bundle(draw: &Draw, pki: &Pki) -> Value {
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["kafka"]}]}],
     });
-    match draw.identity {
-        None => {}
-        Some(Identity::Trusts) => b["identities"] = json!([{"id": "client", "authorities": pki.authority.pem}]),
-        Some(Identity::Presents) => {
-            b["identities"] = json!([{
-                "id": "client",
-                "authorities": pki.authority.pem,
-                "certificate": {"secret": "client", "version": 1},
-            }])
-        }
+    if let Some(authorities) = b["destinations"][0].get_mut("authorities") {
+        *authorities = json!(pki.authority.pem);
     }
     b
 }
@@ -594,11 +598,11 @@ fn check_loaded(draw: &Draw, c: &KafkaDestinationConfig) -> Result<(), String> {
         v => v.as_u64().unwrap() as usize,
     });
     expect("bufferBytes", buffer.to_string(), c.buffer_bytes.to_string());
-    let identity = c.identity.as_ref().map(|i| match i.certificate {
-        Some(_) => Identity::Presents,
-        None => Identity::Trusts,
+    let tls = c.tls.as_ref().map(|t| match t.certificate {
+        Some(_) => ClientTls::Presents,
+        None => ClientTls::Trusts,
     });
-    expect("identity", format!("{:?}", draw.identity), format!("{identity:?}"));
+    expect("tls", format!("{:?}", draw.tls), format!("{tls:?}"));
     let literal: Vec<(String, String)> = (d.get("properties").and_then(Value::as_object).into_iter().flatten())
         .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
         .collect();
@@ -954,8 +958,8 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
         if !reached.reached("properties.sasl") && !rng.chance(6) {
             reached.forget(&[
                 "brokers.elsewhere",
-                "identity.authorities",
-                "identity.certificate",
+                "tls.authorities",
+                "tls.certificate",
                 "properties.sasl",
             ]);
             return Ok(());
@@ -963,8 +967,8 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
         build().map_err(|e| format!("does not build: {e:?}\n{json}"))?;
         reached.keep_only(&[
             "brokers.elsewhere",
-            "identity.authorities",
-            "identity.certificate",
+            "tls.authorities",
+            "tls.certificate",
             "properties.sasl",
         ]);
         return Ok(());
@@ -1023,7 +1027,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
 
 // -- the live fuzzer ----------------------------------------------------------------------------------------------
 
-/// The options a live draw reaches: no identity, SASL or worker-local credential, since the broker takes plain text
+/// The options a live draw reaches: no TLS, SASL or worker-local credential, since the broker takes plain text
 /// and none of them; no fault; and no break.
 fn live_options() -> Vec<&'static str> {
     OPTIONS
@@ -1031,7 +1035,7 @@ fn live_options() -> Vec<&'static str> {
         .copied()
         .filter(|o| {
             !o.starts_with("brokers.")
-                && !o.starts_with("identity.")
+                && !o.starts_with("tls.")
                 && !o.starts_with("fault.")
                 && !o.starts_with("broken.")
                 && ![

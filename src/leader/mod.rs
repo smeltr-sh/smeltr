@@ -88,7 +88,7 @@ pub struct AppState {
     pub entitlements: Arc<Entitlements>,
     /// What bounds the rate a secret may be asked about.
     pub verify_limiter: Arc<VerifyLimiter>,
-    /// When each deployed identity's certificates run out, by the commit they were read at.
+    /// The TLS each deployed group's connectors speak, by the commit it was read at.
     pub expiries: Arc<Expiries>,
     /// Each source's last window against its normal, recomputed once per five-minute bucket (`throughput`).
     pub throughput: Arc<throughput::Readings>,
@@ -107,20 +107,53 @@ pub struct AppState {
     pub directives: Arc<directives::Directives>,
 }
 
-/// What each group is entitled to, remembered per commit. The answer changes only when the bundle does, so it is
+/// What each group's bundle quotes, remembered per commit. The answer changes only when the bundle does, so it is
 /// computed when a deploy moves the fleet rather than on every heartbeat.
 #[derive(Default)]
-pub struct Entitlements(std::sync::Mutex<std::collections::HashMap<String, (String, Vec<SecretAt>)>>);
+pub struct Entitlements(std::sync::Mutex<std::collections::HashMap<String, (String, Quoted)>>);
 
 /// One credential a bundle quotes: its name, and the version that bundle runs.
 pub type SecretAt = (String, i64);
 
-/// When the certificates each deployed group's identities carry run out, remembered per `(group, commit)`.
-/// Answering means loading a bundle and parsing PEM, and the answer changes only when the bundle does -- the same
-/// reckoning [`Entitlements`] makes, about the same commit. Keyed by commit rather than overwritten in place: a
-/// group mid-rollout has workers on two commits at once, and each needs its own answer.
+/// What a bundle quotes: each leader-stored secret at the version it runs, and each certificate by name. A
+/// certificate runs at the list's newest version, which [`at_newest`] resolves when it is asked for.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Quoted {
+    pub secrets: Vec<SecretAt>,
+    pub certificates: Vec<String>,
+}
+
+/// The newest version of every certificate in the list, by name.
+pub fn certificate_versions(store: &dyn Store) -> std::collections::HashMap<String, i64> {
+    (store.list_secrets().unwrap_or_default().into_iter())
+        .filter(|r| r.certificate)
+        .filter_map(|r| r.current().map(|v| v.version).map(|v| (r.name, v)))
+        .collect()
+}
+
+/// Every version `quoted` runs: its secrets as quoted, and its certificates at `newest`. A name the list does not
+/// hold is left out, and the worker says so when it refuses the deploy.
+fn at_newest(quoted: &Quoted, newest: &std::collections::HashMap<String, i64>) -> Vec<SecretAt> {
+    let certificates = (quoted.certificates.iter()).filter_map(|name| Some((name.clone(), *newest.get(name)?)));
+    quoted.secrets.iter().cloned().chain(certificates).collect()
+}
+
+/// The TLS each deployed group's connectors speak, remembered per `(group, commit)`. Answering means loading a
+/// bundle and parsing PEM, and the answer changes only when the bundle does -- the same reckoning
+/// [`Entitlements`] makes, about the same commit. Keyed by commit rather than overwritten in place: a group
+/// mid-rollout has workers on two commits at once, and each needs its own answer.
 #[derive(Default)]
-pub struct Expiries(std::sync::Mutex<std::collections::HashMap<(String, String), Vec<warnings::DeployedCertificate>>>);
+pub struct Expiries(std::sync::Mutex<std::collections::HashMap<(String, String), Vec<DeployedTls>>>);
+
+/// One deployed connector's TLS as its bundle says it: the list entry it presents, by name, and the authorities it
+/// trusts, described. The chain the entry holds is read when it is asked for, since it changes without the bundle.
+#[derive(Clone, Debug)]
+pub struct DeployedTls {
+    subject_kind: warnings::SubjectKind,
+    subject_id: String,
+    certificate: Option<String>,
+    trusted: Vec<tls::Described>,
+}
 
 /// Every `(group, version)` a deployed bundle quotes, by secret name: the deployed commit's, and the one each of `running`'s
 /// `(group, commit)` runs.
@@ -137,12 +170,13 @@ fn deployed_versions(
     data_dir: &std::path::Path,
     cache: &Entitlements,
     running: &std::collections::HashSet<(String, String)>,
+    newest: &std::collections::HashMap<String, i64>,
 ) -> Result<std::collections::HashMap<String, Vec<SecretAt>>, String> {
     let mut groups: Vec<String> = deployed_groups(data_dir).into_iter().collect();
     groups.sort();
     let mut out: std::collections::HashMap<String, Vec<SecretAt>> = std::collections::HashMap::new();
     for group in groups {
-        for (name, version) in entitled_secrets(data_dir, cache, &group) {
+        for (name, version) in at_newest(&entitled(data_dir, cache, &group), newest) {
             out.entry(name).or_default().push((group.clone(), version));
         }
     }
@@ -150,7 +184,7 @@ fn deployed_versions(
     for (group, commit) in running {
         let quoted = secrets_at(&repo, commit, group)
             .map_err(|e| format!("the bundle {group} is running at {commit} cannot be read: {e}"))?;
-        for (name, version) in quoted {
+        for (name, version) in at_newest(&quoted, newest) {
             out.entry(name).or_default().push((group.clone(), version));
         }
     }
@@ -161,20 +195,20 @@ fn deployed_versions(
     Ok(out)
 }
 
-/// The leader-stored secrets `group_id`'s bundle names in the commit the fleet runs.
+/// What `group_id`'s bundle quotes in the commit the fleet runs.
 ///
 /// Entitlement is what the bundle asks for: a worker is sent the credentials its own deployment needs and no
 /// others, and there is nothing for an admin to keep in step with the configuration. A group whose bundle does not
 /// load is entitled to nothing, which its worker meets as a refused deploy naming what it lacks.
 ///
 /// Blocking; the caller is inside `spawn_blocking`.
-fn entitled_secrets(data_dir: &std::path::Path, cache: &Entitlements, group_id: &str) -> Vec<SecretAt> {
+fn entitled(data_dir: &std::path::Path, cache: &Entitlements, group_id: &str) -> Quoted {
     let repo = git::repo_path(data_dir);
     if !git::repo_ready(&repo) {
-        return Vec::new();
+        return Quoted::default();
     }
     let Some(head) = git::deployed(&repo) else {
-        return Vec::new();
+        return Quoted::default();
     };
     if let Some((at, names)) = cache.0.lock().unwrap().get(group_id)
         && at == &head
@@ -190,31 +224,26 @@ fn entitled_secrets(data_dir: &std::path::Path, cache: &Entitlements, group_id: 
     names
 }
 
-/// The leader-stored secrets `group_id`'s bundle names at `rev`, once each.
-fn secrets_at(
-    repo: &std::path::Path,
-    rev: &str,
-    group_id: &str,
-) -> Result<Vec<SecretAt>, crate::config_file::BundleError> {
+/// What `group_id`'s bundle quotes at `rev`, each once.
+fn secrets_at(repo: &std::path::Path, rev: &str, group_id: &str) -> Result<Quoted, crate::config_file::BundleError> {
     use crate::plan::topology::SecretRef;
 
-    let mut names = tree::load_group_at(repo, rev, group_id).map(|system| {
-        system
-            .topology
-            .named_secrets
-            .into_iter()
-            .filter_map(|s| match s.reference {
-                SecretRef::LeaderStored { name, version } => Some((name, version)),
-                SecretRef::WorkerLocal(_) => None,
-            })
-            .collect::<Vec<_>>()
-    })?;
-    // `named_secrets` names one per connector, on purpose -- `missing_secrets` reads every one of those to say
-    // which connectors are stuck, not just the first. A credential several connectors share, an identity's
-    // certificate among them, would otherwise be sealed and sent once per connector naming it.
-    names.sort();
-    names.dedup();
-    Ok(names)
+    let topology = tree::load_group_at(repo, rev, group_id)?.topology;
+    // `named_secrets` and `named_certificates` name one per connector, on purpose -- `missing_secrets` reads every
+    // one of those to say which connectors are stuck, not just the first. A credential several connectors share
+    // would otherwise be sealed and sent once per connector naming it.
+    let mut secrets: Vec<SecretAt> = (topology.named_secrets.into_iter())
+        .filter_map(|s| match s.reference {
+            SecretRef::LeaderStored { name, version } => Some((name, version)),
+            SecretRef::WorkerLocal(_) => None,
+        })
+        .collect();
+    secrets.sort();
+    secrets.dedup();
+    let mut certificates: Vec<String> = topology.named_certificates.into_iter().map(|c| c.name).collect();
+    certificates.sort();
+    certificates.dedup();
+    Ok(Quoted { secrets, certificates })
 }
 
 /// Every version [`deployed_versions`] names, and those `main`'s head names: what retention and deletion keep. A
@@ -227,12 +256,13 @@ fn kept_versions(
     data_dir: &std::path::Path,
     cache: &Entitlements,
     running: &std::collections::HashSet<(String, String)>,
+    newest: &std::collections::HashMap<String, i64>,
 ) -> Result<std::collections::HashMap<String, Vec<SecretAt>>, String> {
-    let mut out = deployed_versions(data_dir, cache, running)?;
+    let mut out = deployed_versions(data_dir, cache, running, newest)?;
     let repo = git::repo_path(data_dir);
     if let Some(head) = git::repo_ready(&repo).then(|| git::main_head(&repo)).flatten() {
         for group in tree::groups_at(&repo, &head).unwrap_or_default() {
-            for (name, version) in secrets_at(&repo, &head, &group).unwrap_or_default() {
+            for (name, version) in at_newest(&secrets_at(&repo, &head, &group).unwrap_or_default(), newest) {
                 out.entry(name).or_default().push((group.clone(), version));
             }
         }
@@ -386,12 +416,18 @@ async fn heartbeat(
     let data_dir = state.data_dir.clone();
     let entitlements = state.entitlements.clone();
     let for_group = group_id.clone();
-    // One blocking hop for both: each reads the repository, and neither belongs on the async runtime's threads.
+    // One blocking hop for all: each reads the repository or the store, and none belongs on the async runtime's
+    // threads. A certificate is entitled at its newest version, resolved on every beat so that a new version
+    // reaches the fleet on the next one.
     let checks = state.deploy_checks.clone();
+    let store = state.store.clone();
     let (deployed, entitled, findings) = tokio::task::spawn_blocking(move || {
         (
             deployed_groups(&data_dir),
-            entitled_secrets(&data_dir, &entitlements, &for_group),
+            at_newest(
+                &entitled(&data_dir, &entitlements, &for_group),
+                &certificate_versions(&*store),
+            ),
             checks.findings(&data_dir),
         )
     })
@@ -1017,19 +1053,11 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let store = state.store.clone();
     let running = warnings::running_deployments(&snapshot, &credentials, heartbeat_interval);
     let certificates = tokio::task::spawn_blocking(move || {
-        let chain = |name: &str, version: i64| store.certificate_chain(name, version).ok().flatten();
+        let chain = |name: &str| newest_chain(&*store, name).ok().flatten().map(|(_, chain)| chain);
         deployed_certificates(&data_dir, &expiries, running, &chain)
     })
     .await
     .unwrap_or_default();
-    let newest = run_store(state.store.clone(), |s| {
-        Ok((s.list_secrets()?.into_iter())
-            .filter(|r| r.certificate)
-            .filter_map(|r| r.current().map(|v| (r.name.clone(), (v.version, v.set_at))))
-            .collect())
-    })
-    .await?;
-    let behind = warnings::identities_behind(&certificates, &newest);
     // Off the async runtime: `worker_logged_warnings` reads the logs table the same way `GET /api/logs` does, and
     // that handler already makes this same trip through `spawn_blocking` rather than block the runtime on it.
     let registry = state.registry.clone();
@@ -1061,7 +1089,6 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     out.extend(normal_warnings);
     out.extend(key_warnings);
     out.extend(issued_certificates_not_renewed(state, now_ms).await?);
-    out.extend(behind);
     out.extend(
         serving
             .map(|s| warnings::leader_certificate(&s, now_ms))
@@ -1127,21 +1154,16 @@ fn serving_certificate(data_dir: &std::path::Path) -> Option<warnings::Serving> 
     })
 }
 
-/// Every certificate the fleet is actually carrying, group by group.
-///
-/// Only identities a connector names, and only on the commit each worker itself reports running -- never `main`,
-/// which a worker still on an older commit, or one refusing the current one, is not. A group mid-rollout has
-/// workers split across two commits, and both are read: replacing an expired certificate on `main` must not clear
-/// the warning while a worker still runs the one it replaced, and a commit nothing has deployed yet must not raise
-/// one. A group whose bundle does not load contributes none -- something else already says so, and a warning about
-/// a certificate inside a bundle nothing can read would be the second answer to a question already asked.
-///
-/// `chain` gives the chain the certificate list holds at a name and version.
+/// Every certificate the fleet's connectors present or trust, with its validity window, from what each `running`
+/// `(group, commit)` says and the chain each presented entry holds now, through `chain`. A commit's answer is
+/// remembered and dropped once nothing runs it. A group whose bundle does not load contributes none -- something
+/// else already says so, and a warning about a certificate inside a bundle nothing can read would be the second
+/// answer to a question already asked.
 fn deployed_certificates(
     data_dir: &std::path::Path,
     cache: &Expiries,
     running: std::collections::HashSet<(String, String)>,
-    chain: &dyn Fn(&str, i64) -> Option<String>,
+    chain: &dyn Fn(&str) -> Option<String>,
 ) -> Vec<warnings::DeployedCertificate> {
     let repo = git::repo_path(data_dir);
     if !git::repo_ready(&repo) {
@@ -1157,59 +1179,50 @@ fn deployed_certificates(
         let key = (group.clone(), commit.clone());
         let found = cached.remove(&key).unwrap_or_else(|| {
             tree::load_group_at(&repo, &commit, &group)
-                .map(|system| certificates_of(&system.topology, &group, &commit, chain))
+                .map(|system| tls_of(&system.topology))
                 .unwrap_or_default()
         });
-        out.extend(found.iter().cloned());
+        for deployed in &found {
+            let carried = |half, described: &tls::Described| warnings::DeployedCertificate {
+                group: group.clone(),
+                commit: commit.clone(),
+                subject_kind: deployed.subject_kind,
+                subject_id: deployed.subject_id.clone(),
+                half,
+                not_before_millis: described.not_before_millis,
+                not_after_millis: described.not_after_millis,
+            };
+            out.extend(deployed.trusted.iter().map(|c| carried(warnings::Half::Trusted, c)));
+            let presented = (deployed.certificate.as_deref().and_then(chain))
+                .and_then(|pem| tls::describe_each(pem.as_bytes(), "it").ok())
+                .unwrap_or_default();
+            out.extend(presented.iter().map(|c| carried(warnings::Half::Presented, c)));
+        }
         fresh.insert(key, found);
     }
     *cached = fresh;
     out
 }
 
-/// What a group's identities say about how long they are good for: the chain each presents, from the certificate
-/// list through `chain`, and the authorities it trusts. PEM the connector would refuse is passed over: a bundle
-/// holding one never validated, and the save that refused it is where that is said.
-fn certificates_of(
-    topology: &crate::plan::topology::TopologyConfig,
-    group: &str,
-    commit: &str,
-    chain: &dyn Fn(&str, i64) -> Option<String>,
-) -> Vec<warnings::DeployedCertificate> {
-    use crate::plan::topology::SecretRef;
-
-    let mut out = Vec::new();
-    for identity in &topology.identities {
-        let presented = match &identity.certificate {
-            Some(SecretRef::LeaderStored { name, version }) => chain(name, *version),
-            _ => None,
-        };
-        for (half, pem) in [
-            (warnings::Half::Presented, presented.as_deref()),
-            (warnings::Half::Trusted, identity.authorities.as_deref()),
-        ] {
-            let Some(pem) = pem else { continue };
-            let Ok(described) = tls::describe_each(pem.as_bytes(), "it") else {
-                continue;
-            };
-            let entry = match (half, &identity.certificate) {
-                (warnings::Half::Presented, Some(SecretRef::LeaderStored { name, version })) => {
-                    Some((name.clone(), *version))
-                }
-                _ => None,
-            };
-            out.extend(described.into_iter().map(|c| warnings::DeployedCertificate {
-                group: group.to_string(),
-                commit: commit.to_string(),
-                identity: identity.id.clone(),
-                half,
-                not_before_millis: c.not_before_millis,
-                not_after_millis: c.not_after_millis,
-                entry: entry.clone(),
-            }));
-        }
-    }
-    out
+/// What a group's connectors say about their TLS: the list entry each presents and the authorities each trusts.
+/// PEM the connector would refuse is passed over: a bundle holding one never validated, and the save that refused
+/// it is where that is said.
+fn tls_of(topology: &crate::plan::topology::TopologyConfig) -> Vec<DeployedTls> {
+    let sources =
+        (topology.sources.iter()).filter_map(|s| Some((warnings::SubjectKind::Source, s.name.as_str(), s.kind.tls()?)));
+    let destinations = (topology.destinations.iter())
+        .filter_map(|d| Some((warnings::SubjectKind::Destination, d.name.as_str(), d.kind.tls()?)));
+    sources
+        .chain(destinations)
+        .map(|(subject_kind, id, tls)| DeployedTls {
+            subject_kind,
+            subject_id: id.to_string(),
+            certificate: tls.certificate.clone(),
+            trusted: (tls.authorities.as_deref())
+                .and_then(|pem| tls::describe_each(pem.as_bytes(), "it").ok())
+                .unwrap_or_default(),
+        })
+        .collect()
 }
 
 fn deployed_groups(data_dir: &std::path::Path) -> std::collections::HashSet<String> {
@@ -2182,11 +2195,14 @@ async fn list_secrets(State(state): State<AppState>) -> Result<Json<Vec<SecretOu
     let entitlements = state.entitlements.clone();
     let running = running_deployments(&state).await;
     // What the catalog shows; a bundle it cannot read leaves the Running column empty rather than the page.
-    let mut deployed = tokio::task::spawn_blocking(move || deployed_versions(&data_dir, &entitlements, &running))
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_default();
+    let store = state.store.clone();
+    let mut deployed = tokio::task::spawn_blocking(move || {
+        deployed_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store))
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .unwrap_or_default();
     let rows = run_store(state.store, |s| s.list_secrets())
         .await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -2357,10 +2373,11 @@ async fn store_value(state: AppState, name: String, value: String, chain: Option
     let entitlements = state.entitlements.clone();
     let wanted = name.clone();
     let running = running_deployments(&state).await;
+    let store = state.store.clone();
     let pinned = tokio::task::spawn_blocking(move || {
         // What the leader serves is kept as what the fleet runs is.
         let served = served_entries(&tls::dir_of(&data_dir))?;
-        kept_versions(&data_dir, &entitlements, &running).map(|mut deployed| {
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)).map(|mut deployed| {
             (deployed.remove(&wanted).unwrap_or_default().into_iter())
                 .map(|(_, version)| version)
                 .chain(
@@ -2727,8 +2744,9 @@ async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) 
     let entitlements = state.entitlements.clone();
     let wanted = name.clone();
     let running = running_deployments(&state).await;
+    let store = state.store.clone();
     let users = tokio::task::spawn_blocking(move || {
-        kept_versions(&data_dir, &entitlements, &running).map(|mut deployed| {
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)).map(|mut deployed| {
             let mut groups: Vec<String> = deployed
                 .remove(&wanted)
                 .unwrap_or_default()
@@ -2860,14 +2878,6 @@ fn point_secret_references(
                 name,
                 version,
             )?,
-            repoint_array::<crate::config_file::IdentityDto>(
-                &repo,
-                &parent,
-                &prefix,
-                "identities.json",
-                name,
-                version,
-            )?,
         ]
         .into_iter()
         .flatten()
@@ -2972,12 +2982,6 @@ impl PointsAtSecret for crate::config_file::SourceDto {
 impl PointsAtSecret for crate::config_file::DestinationDto {
     fn secrets_mut(&mut self) -> Vec<&mut crate::config_file::SecretRefDto> {
         crate::config_file::DestinationDto::secrets_mut(self)
-    }
-}
-
-impl PointsAtSecret for crate::config_file::IdentityDto {
-    fn secrets_mut(&mut self) -> Vec<&mut crate::config_file::SecretRefDto> {
-        crate::config_file::IdentityDto::secrets_mut(self)
     }
 }
 
@@ -3103,8 +3107,9 @@ async fn forget_secret_version(
     let entitlements = state.entitlements.clone();
     let wanted = name.clone();
     let running = running_deployments(&state).await;
+    let store = state.store.clone();
     let users = tokio::task::spawn_blocking(move || {
-        kept_versions(&data_dir, &entitlements, &running).map(|mut deployed| {
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)).map(|mut deployed| {
             deployed
                 .remove(&wanted)
                 .unwrap_or_default()
@@ -3543,7 +3548,7 @@ pub fn router(state: AppState) -> Router {
 /// Where a store would write its secrets encryption key. No fixture below stores a secret, so nothing is written --
 /// but two must not name one file between them if one ever does.
 #[cfg(test)]
-mod identity_expiry_tests {
+mod deployed_certificate_tests {
     use super::*;
     use crate::config_file::test_fixtures::example_json;
 
@@ -3556,76 +3561,45 @@ mod identity_expiry_tests {
         params.self_signed(&key).unwrap().pem()
     }
 
-    /// A bundle whose Kafka source names an identity trusting `authorities`.
+    /// A bundle whose Kafka source trusts `authorities`.
     fn deployed(authorities: &str) -> crate::plan::topology::TopologyConfig {
-        let identity = format!(
-            r#"{{"id": "acme", "authorities": {}}}"#,
-            serde_json::to_string(authorities).unwrap()
+        let json = example_json().replacen(
+            r#""groupId": "smeltr""#,
+            &format!(
+                r#""groupId": "smeltr", "properties": {{"security.protocol": "SSL"}}, "authorities": {}"#,
+                serde_json::to_string(authorities).unwrap()
+            ),
+            1,
         );
-        let json = example_json()
-            .replacen(
-                r#""groupId": "smeltr""#,
-                r#""groupId": "smeltr", "properties": {"security.protocol": "SSL"}, "identity": "acme""#,
-                1,
-            )
-            .replacen(
-                r#""version": 1,"#,
-                &format!(r#""version": 1, "identities": [{identity}],"#),
-                1,
-            );
         crate::config_file::load_str(&json)
-            .expect("a bundle naming an identity")
+            .expect("a bundle trusting an authority")
             .topology
     }
 
     /// The window comes off the certificate itself, so a warning about it is about a date rather than about when
     /// anybody looked.
     #[test]
-    fn a_deployed_identitys_certificates_are_read_off_the_bundle() {
-        let found = certificates_of(&deployed(&certificate(90)), "g", "c0", &|_, _| None);
+    fn a_deployed_connectors_authorities_are_read_off_the_bundle() {
+        let found = tls_of(&deployed(&certificate(90)));
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].group, "g");
-        assert_eq!(found[0].identity, "acme");
-        assert_eq!(found[0].half, warnings::Half::Trusted);
-        let life = found[0].not_after_millis - found[0].not_before_millis;
+        assert_eq!(found[0].subject_kind, warnings::SubjectKind::Source);
+        assert_eq!(found[0].subject_id, "kafka-main");
+        assert_eq!(found[0].certificate, None);
+        assert_eq!(found[0].trusted.len(), 1);
+        let life = found[0].trusted[0].not_after_millis - found[0].trusted[0].not_before_millis;
         assert!(
             (89..=91).contains(&(life / (24 * 60 * 60 * 1000))),
             "read a life of {life}ms off a 90-day certificate"
         );
     }
 
-    /// The certificate an identity presents is read from the list, at the version the bundle names.
-    #[test]
-    fn a_presented_certificate_is_read_from_the_list() {
-        let identity = r#"{"id": "acme", "certificate": {"secret": "acme", "version": 2}}"#;
-        let json = example_json()
-            .replacen(
-                r#""groupId": "smeltr""#,
-                r#""groupId": "smeltr", "properties": {"security.protocol": "SSL"}, "identity": "acme""#,
-                1,
-            )
-            .replacen(
-                r#""version": 1,"#,
-                &format!(r#""version": 1, "identities": [{identity}],"#),
-                1,
-            );
-        let topology = crate::config_file::load_str(&json)
-            .expect("a bundle naming an identity")
-            .topology;
-        let listed = certificate(30);
-        let chain = |name: &str, version: i64| (name == "acme" && version == 2).then(|| listed.clone());
-        let found = certificates_of(&topology, "g", "c0", &chain);
-        assert_eq!(found.len(), 1, "{found:?}");
-        assert_eq!(found[0].half, warnings::Half::Presented);
-    }
-
     /// A trust store holds more than one root, and each is its own answer about when trust runs out.
     #[test]
     fn every_authority_in_a_store_is_read_out_of_it() {
         let store = format!("{}{}", certificate(30), certificate(3650));
-        let found = certificates_of(&deployed(&store), "g", "c0", &|_, _| None);
-        assert_eq!(found.len(), 2);
-        assert!(found.iter().all(|c| c.half == warnings::Half::Trusted));
+        let found = tls_of(&deployed(&store));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].trusted.len(), 2);
     }
 
     fn temp_dir(label: &str) -> std::path::PathBuf {
@@ -3634,22 +3608,16 @@ mod identity_expiry_tests {
         dir
     }
 
-    /// A group's own commit on `main`, naming an identity that trusts `authorities`.
+    /// A group's own commit on `main`, with a Kafka source presenting the certificate `acme` and trusting
+    /// `authorities`.
     fn commit_group(repo: &std::path::Path, parent: &str, group: &str, authorities: &str, message: &str) -> String {
-        let identity = format!(
-            r#"[{{"id": "acme", "authorities": {}}}]"#,
+        let source = format!(
+            r#"[{{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g","properties":{{"security.protocol":"SSL"}},"certificate":"acme","authorities":{}}}]"#,
             serde_json::to_string(authorities).unwrap()
         );
         let edits = [
-            (
-                format!("groups/{group}/system.json"),
-                br#"{"version":1}"#.to_vec(),
-            ),
-            (
-                format!("groups/{group}/sources.json"),
-                br#"[{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g","properties":{"security.protocol":"SSL"},"identity":"acme"}]"#.to_vec(),
-            ),
-            (format!("groups/{group}/identities.json"), identity.into_bytes()),
+            (format!("groups/{group}/system.json"), br#"{"version":1}"#.to_vec()),
+            (format!("groups/{group}/sources.json"), source.into_bytes()),
         ]
         .map(|(path, content)| git::FileEdit {
             path,
@@ -3731,7 +3699,7 @@ mod identity_expiry_tests {
         );
 
         let running = std::collections::HashSet::from([("g".to_string(), old.clone())]);
-        let found = deployed_certificates(&data, &Expiries::default(), running, &|_, _| None);
+        let found = deployed_certificates(&data, &Expiries::default(), running, &|_| None);
 
         assert_eq!(found.len(), 1, "{found:?}");
         let life = found[0].not_after_millis - found[0].not_before_millis;
@@ -3761,12 +3729,45 @@ mod identity_expiry_tests {
         );
 
         let running = std::collections::HashSet::from([("g".to_string(), old), ("g".to_string(), new)]);
-        let found = deployed_certificates(&data, &Expiries::default(), running, &|_, _| None);
+        let found = deployed_certificates(&data, &Expiries::default(), running, &|_| None);
 
         assert_eq!(
             found.len(),
             2,
             "a worker on each commit contributes its own certificate: {found:?}"
+        );
+    }
+
+    /// The certificate a connector presents is read from the list at its newest version, on every poll: it changes
+    /// without the bundle.
+    #[test]
+    fn a_presented_certificate_is_read_from_the_list_as_it_is_now() {
+        let data = temp_dir("presented-from-list");
+        let repo = git::repo_path(&data);
+        git::init_bare_repo(&repo).unwrap();
+        git::ensure_main_commit(&repo).unwrap();
+        let root = git::main_head(&repo).unwrap();
+        let commit = commit_group(&repo, &root, "g", &certificate(3650), "name a certificate");
+        let running = std::collections::HashSet::from([("g".to_string(), commit)]);
+        let cache = Expiries::default();
+
+        let listed = certificate(30);
+        let chain = |name: &str| (name == "acme").then(|| listed.clone());
+        let found = deployed_certificates(&data, &cache, running.clone(), &chain);
+        let presented: Vec<_> = found.iter().filter(|c| c.half == warnings::Half::Presented).collect();
+        assert_eq!(presented.len(), 1, "{found:?}");
+        assert_eq!(presented[0].subject_id, "s");
+        let life = presented[0].not_after_millis - presented[0].not_before_millis;
+        assert!(life < 31 * 24 * 60 * 60 * 1000, "{life}ms");
+
+        let renewed = certificate(365);
+        let chain = |name: &str| (name == "acme").then(|| renewed.clone());
+        let found = deployed_certificates(&data, &cache, running, &chain);
+        let presented: Vec<_> = found.iter().filter(|c| c.half == warnings::Half::Presented).collect();
+        let life = presented[0].not_after_millis - presented[0].not_before_millis;
+        assert!(
+            life > 364 * 24 * 60 * 60 * 1000,
+            "the cached commit still reads the chain afresh: {life}ms"
         );
     }
 
@@ -3787,21 +3788,16 @@ mod identity_expiry_tests {
             "issue a certificate nobody has deployed",
         );
 
-        let found = deployed_certificates(
-            &data,
-            &Expiries::default(),
-            std::collections::HashSet::new(),
-            &|_, _| None,
-        );
+        let found = deployed_certificates(&data, &Expiries::default(), std::collections::HashSet::new(), &|_| None);
         assert!(found.is_empty(), "{found:?}");
     }
 
-    /// Two sources sharing one identity name its certificate twice -- once each, so `missing_secrets` can say which
-    /// connector is stuck if either is. Entitlement is a different question: how many times the leader seals and
-    /// sends the same certificate, which is once, however many connectors named it.
+    /// Two sources sharing one certificate name it twice -- once each, so `missing_secrets` can say which connector
+    /// is stuck if either is. Entitlement is a different question: how many times the leader seals and sends the
+    /// same certificate, which is once, however many connectors named it, and at the list's newest version.
     #[test]
-    fn a_certificate_two_sources_share_is_entitled_once() {
-        let data = temp_dir("shared-identity-key");
+    fn a_certificate_two_sources_share_is_entitled_once_at_the_newest_version() {
+        let data = temp_dir("shared-certificate");
         let repo = git::repo_path(&data);
         git::init_bare_repo(&repo).unwrap();
         git::ensure_main_commit(&repo).unwrap();
@@ -3815,14 +3811,10 @@ mod identity_expiry_tests {
             (
                 "groups/g/sources.json".to_string(),
                 br#"[
-                    {"id":"s1","type":"kafka","brokers":"b:9092","topics":["t1"],"groupId":"g1","properties":{"security.protocol":"SSL"},"identity":"acme"},
-                    {"id":"s2","type":"kafka","brokers":"b:9092","topics":["t2"],"groupId":"g2","properties":{"security.protocol":"SSL"},"identity":"acme"}
+                    {"id":"s1","type":"kafka","brokers":"b:9092","topics":["t1"],"groupId":"g1","properties":{"security.protocol":"SSL"},"certificate":"acme"},
+                    {"id":"s2","type":"kafka","brokers":"b:9092","topics":["t2"],"groupId":"g2","properties":{"security.protocol":"SSL"},"certificate":"acme"}
                 ]"#
                 .to_vec(),
-            ),
-            (
-                "groups/g/identities.json".to_string(),
-                br#"[{"id":"acme","certificate":{"secret":"acme","version":1}}]"#.to_vec(),
             ),
         ]
         .map(|(path, content)| git::FileEdit {
@@ -3835,7 +3827,7 @@ mod identity_expiry_tests {
             &root,
             Some(&root),
             &edits,
-            "two sources share one identity",
+            "two sources share one certificate",
             &store::Actor::system(),
         )
         .unwrap()
@@ -3846,11 +3838,20 @@ mod identity_expiry_tests {
             _ => panic!("the bundle did not land"),
         }
 
-        let entitled = entitled_secrets(&data, &Entitlements::default(), "g");
+        let quoted = entitled(&data, &Entitlements::default(), "g");
         assert_eq!(
-            entitled,
-            vec![("acme".to_string(), 1)],
-            "the same certificate named by two connectors is entitled once, not once per connector: {entitled:?}"
+            quoted,
+            Quoted {
+                secrets: Vec::new(),
+                certificates: vec!["acme".to_string()],
+            },
+            "the same certificate named by two connectors is quoted once, not once per connector"
+        );
+        let newest = std::collections::HashMap::from([("acme".to_string(), 3)]);
+        assert_eq!(at_newest(&quoted, &newest), vec![("acme".to_string(), 3)]);
+        assert!(
+            at_newest(&quoted, &std::collections::HashMap::new()).is_empty(),
+            "a certificate the list does not hold is entitled at no version"
         );
     }
 
@@ -3868,11 +3869,7 @@ mod identity_expiry_tests {
                 ("groups/g/system.json".to_string(), br#"{"version":1}"#.to_vec()),
                 (
                     "groups/g/sources.json".to_string(),
-                    br#"[{"id":"s1","type":"kafka","brokers":"b:9092","topics":["t1"],"groupId":"g1","properties":{"security.protocol":"SSL"},"identity":"acme"}]"#.to_vec(),
-                ),
-                (
-                    "groups/g/identities.json".to_string(),
-                    format!(r#"[{{"id":"acme","certificate":{{"secret":"acme","version":{version}}}}}]"#).into_bytes(),
+                    format!(r#"[{{"id":"s1","type":"kafka","brokers":"b:9092","topics":["t1"],"groupId":"g1","properties":{{"security.protocol":"SASL_SSL"}},"credentials":{{"sasl.password":{{"secret":"acme","version":{version}}}}}}}]"#).into_bytes(),
                 ),
             ]
             .map(|(path, content)| git::FileEdit {
@@ -3899,15 +3896,16 @@ mod identity_expiry_tests {
         git::deploy_commit(&data, &newer, &store::Actor::system()).unwrap();
 
         let cache = Entitlements::default();
-        let deployed = deployed_versions(&data, &cache, &Default::default()).unwrap();
+        let newest = std::collections::HashMap::new();
+        let deployed = deployed_versions(&data, &cache, &Default::default(), &newest).unwrap();
         assert_eq!(deployed["acme"], vec![("g".to_string(), 2)]);
         let running = [("g".to_string(), older)].into();
-        let with_older = deployed_versions(&data, &cache, &running).unwrap();
+        let with_older = deployed_versions(&data, &cache, &running, &newest).unwrap();
         assert_eq!(with_older["acme"], vec![("g".to_string(), 1), ("g".to_string(), 2)]);
 
         let unreadable = [("g".to_string(), "0".repeat(40))].into();
         assert!(
-            deployed_versions(&data, &cache, &unreadable).is_err(),
+            deployed_versions(&data, &cache, &unreadable, &newest).is_err(),
             "a running bundle that cannot be read pins nothing it might quote, so nothing may be forgotten"
         );
     }
@@ -4234,59 +4232,6 @@ mod secrets_delivery_tests {
                 version: 1,
             }),
             "main did not move"
-        );
-    }
-
-    /// A replaced certificate is a new version of it, and the identities naming it move to that version the same
-    /// way a secret's references do.
-    #[tokio::test]
-    async fn pointing_a_certificate_moves_the_identities_naming_it() {
-        let state = state("point-certificate");
-        let repo = git::repo_path(&state.data_dir);
-        let head = git::main_head(&repo).unwrap();
-        let edits = [git::FileEdit {
-            path: "groups/g/identities.json".to_string(),
-            content: Some(br#"[{"id":"acme","certificate":{"secret":"acme-client","version":1}}]"#.to_vec()),
-        }];
-        git::commit_edits(
-            &repo,
-            git::MAIN_BRANCH,
-            &head,
-            Some(&head),
-            &edits,
-            "an identity",
-            &store::Actor::system(),
-        )
-        .unwrap();
-        state
-            .store
-            .create_certificate("acme-client", "", "chain 1", "key 1")
-            .unwrap();
-        state
-            .store
-            .add_certificate_version("acme-client", "chain 2", "key 2")
-            .unwrap();
-
-        let out = point(&state, "acme-client", 2, "renew-acme").await;
-        assert!(out.ok, "{:?}", out.errors);
-        assert_eq!(out.references, 1);
-        assert_eq!(out.files, vec!["groups/g/identities.json".to_string()]);
-
-        let tip = git::branch_tip(&repo, "renew-acme").expect("the branch exists");
-        let bytes = git::read_blobs(&repo, &tip, &["groups/g/identities.json".to_string()])
-            .unwrap()
-            .pop()
-            .flatten()
-            .expect("the file is there");
-        let identities: Vec<crate::config_file::IdentityDto> = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            identities[0].certificate,
-            Some(crate::config_file::SecretRefDto::LeaderStored(
-                crate::config_file::LeaderSecretDto {
-                    secret: "acme-client".to_string(),
-                    version: 2,
-                }
-            ))
         );
     }
 
@@ -5814,23 +5759,31 @@ mod certificate_list_tests {
 
     // -- certificates this leader issues ----------------------------------
 
-    /// A leader with an authority and a bundle whose identity presents the certificate `acme`.
+    /// A leader with an authority and a bundle whose receiver presents the certificate `acme`.
     fn issuing(label: &str) -> AppState {
         let state = super::secrets_delivery_tests::state(label);
         tls::ensure(&tls::dir_of(&state.data_dir), names(), A_YEAR, &[]).expect("an authority");
         let repo = git::repo_path(&state.data_dir);
         let head = git::main_head(&repo).unwrap();
-        let edits = [git::FileEdit {
-            path: "groups/g/identities.json".to_string(),
-            content: Some(br#"[{"id":"receiver","certificate":{"secret":"acme","version":1}}]"#.to_vec()),
-        }];
+        let edits = [
+            git::FileEdit {
+                path: "groups/g/system.json".to_string(),
+                content: Some(br#"{"version":1}"#.to_vec()),
+            },
+            git::FileEdit {
+                path: "groups/g/sources.json".to_string(),
+                content: Some(
+                    br#"[{"id":"receiver","type":"hecReceiver","port":8088,"certificate":"acme","tokens":{"t":{"token":"HEC_TOKEN"}}}]"#.to_vec(),
+                ),
+            },
+        ];
         git::commit_edits(
             &repo,
             git::MAIN_BRANCH,
             &head,
             Some(&head),
             &edits,
-            "an identity",
+            "a receiver",
             &store::Actor::system(),
         )
         .unwrap();

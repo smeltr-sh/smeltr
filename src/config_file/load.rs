@@ -17,6 +17,7 @@ use crate::format::encoding::Encoding;
 use crate::io::entra::IMDS_API_VERSION;
 use crate::io::line_breaker::{LineBreaker, PER_LINE};
 use crate::io::logs::LogsSourceConfig;
+use crate::io::trust::Side;
 use crate::metrics::MetricsSourceConfig;
 use crate::ops::timeparse;
 use crate::plan::config::{
@@ -28,13 +29,12 @@ use crate::plan::parse_call::split_dots_default;
 use crate::plan::topology::{
     AccessKey, Acknowledgement, AfterCommit, ApiRecords, AssumedRole, AzureAccess, AzureCredential, AzureStore,
     CatalogSignIn, Cloud, DeliverRule, DeltaDestinationConfig, DestinationConfig, DestinationKind, DocIdPolicy,
-    Endpoint, EntraSignIn, Framing, GcsAccess, GcsStore, HttpDestinationConfig, IcebergDestinationConfig, Identity,
+    Endpoint, EntraSignIn, Framing, GcsAccess, GcsStore, HttpDestinationConfig, IcebergDestinationConfig,
     KafkaDestinationConfig, KafkaProps, KafkaService, KafkaSourceConfig, ListPlace, ListStart,
-    LogAnalyticsDestinationConfig, NamedSecret, Newlines, ObjectFormat, ObjectQueue, ObjectSourceConfig,
-    ObjectsDestinationConfig, OktaSignIn, PresentedAs, PrometheusDestinationConfig, RemoteWriteVersion, RequestBody,
-    RouteConfig, S3Access, S3Store, SftpAccess, SftpCredential, SftpStore, SourceConfig, SourceKind,
-    SplunkHecDestinationConfig, StartPosition, StopPosition, TopologyConfig, Transport, UnityCatalogTable,
-    identity_secret,
+    LogAnalyticsDestinationConfig, NamedCertificate, NamedSecret, Newlines, ObjectFormat, ObjectQueue,
+    ObjectSourceConfig, ObjectsDestinationConfig, OktaSignIn, PrometheusDestinationConfig, RemoteWriteVersion,
+    RequestBody, RouteConfig, S3Access, S3Store, SftpAccess, SftpCredential, SftpStore, SourceConfig, SourceKind,
+    SplunkHecDestinationConfig, StartPosition, StopPosition, Tls, TopologyConfig, Transport, UnityCatalogTable,
 };
 
 use super::CURRENT_VERSION;
@@ -109,7 +109,7 @@ impl std::fmt::Display for LoadError {
 impl std::error::Error for LoadError {}
 
 /// One problem `validate` found, attributed to where it came from when it is known. A compile error carries the
-/// pipeline and function step whose expression failed. A check on one source, destination or identity carries that
+/// pipeline and function step whose expression failed. A check on one source or destination carries that
 /// item and, where one setting is wrong, its field. A problem between items carries no attribution.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValidationError {
@@ -120,7 +120,7 @@ pub struct ValidationError {
     pub step: Option<String>,
     /// The eval assignment, by its position in the step's own list. See `CompileError::assignment_index`.
     pub assignment_index: Option<u32>,
-    /// The source, destination or identity this is about.
+    /// The source or destination this is about.
     pub item: Option<ItemRef>,
     /// The setting this is about, by its name in the file: a key of `item`, or of the assignment. A key inside a map
     /// follows the map's name after a dot, as in `properties.security.protocol`.
@@ -298,7 +298,6 @@ pub(crate) fn from_file_config_at(
     // A route has no numeric id, so it takes no place in `maps` -- but its id still has to be unique, because it is
     // what a diff tells an edit from a delete-and-insert by, and what a metric about the route is labeled with.
     check_unique_ids(file.routes.iter().map(|r| &r.id), "route", &mut id_errors);
-    check_unique_ids(file.identities.iter().map(|i| &i.id), "identity", &mut id_errors);
     required_fields(&file, &mut attributed_errors);
     // Checked here rather than where a grok names one: a pattern no step uses yet is still the bundle's, and the
     // first step to name it should not be the one to find it broken.
@@ -316,16 +315,7 @@ pub(crate) fn from_file_config_at(
         ));
     }
 
-    // Every name resolves and every id is unique: `required_fields` refused the bundle otherwise, so a connector's
-    // identity is a lookup that cannot miss.
-    let identities: Identities = (file.identities.iter())
-        .map(|i| (i.id.clone(), to_identity(i, presented_as(&file, &i.id))))
-        .collect();
-    let sources = file
-        .sources
-        .iter()
-        .map(|s| to_source(s, maps.sources[&s.id], &identities))
-        .collect();
+    let sources = file.sources.iter().map(|s| to_source(s, maps.sources[&s.id])).collect();
     let mut errors = Vec::new();
     let mut group = OnException::default();
     if let Some(layer) = &file.on_exception {
@@ -334,7 +324,7 @@ pub(crate) fn from_file_config_at(
     let mut destinations: Vec<DestinationConfig> = file
         .destinations
         .iter()
-        .map(|d| to_destination(d, maps.destinations[&d.id], &identities))
+        .map(|d| to_destination(d, maps.destinations[&d.id]))
         .collect();
     for (d, dto) in destinations.iter_mut().zip(&file.destinations) {
         let mut own = group.clone();
@@ -388,11 +378,11 @@ pub(crate) fn from_file_config_at(
         return Err(LoadError::Validation(errors.into_iter().map(Into::into).collect()));
     }
 
-    let (named_secrets, named_identities) = named_by(&file, &identities);
+    let (named_secrets, named_certificates) = named_by(&file);
     Ok(super::LoadedSystem {
         topology: TopologyConfig {
             named_secrets,
-            identities: named_identities,
+            named_certificates,
             fitted: crate::plan::topology::Fitted {
                 sources: file
                     .sources
@@ -417,37 +407,34 @@ pub(crate) fn from_file_config_at(
     })
 }
 
-/// Every credential the bundle names and every identity its connectors name, from the file's own walks: the ones
-/// the save-time checks read, so a kind added to the file cannot name a secret the deploy does not look for. An
-/// identity named by several connectors is listed once, in the place of the first; its key is a named credential
-/// like any other, once per connector naming it.
-fn named_by(file: &FileConfig, known: &Identities) -> (Vec<NamedSecret>, Vec<std::sync::Arc<Identity>>) {
+/// Every credential and every certificate the bundle's connectors name, from the file's own walks: the ones the
+/// save-time checks read, so a kind added to the file cannot name a secret the deploy does not look for.
+fn named_by(file: &FileConfig) -> (Vec<NamedSecret>, Vec<NamedCertificate>) {
     let sources = file
         .sources
         .iter()
-        .map(|s| (format!("source {:?}", s.id), s.secrets(), s.identity()));
+        .map(|s| (format!("source {:?}", s.id), s.secrets(), s.tls()));
     let destinations = file
         .destinations
         .iter()
-        .map(|d| (format!("destination {:?}", d.id), d.secrets(), d.identity()));
+        .map(|d| (format!("destination {:?}", d.id), d.secrets(), d.tls()));
     let mut named = Vec::new();
-    let mut identities: Vec<std::sync::Arc<Identity>> = Vec::new();
-    for (owner, secrets, identity) in sources.chain(destinations) {
+    let mut certificates = Vec::new();
+    for (owner, secrets, tls) in sources.chain(destinations) {
         for (field, reference) in secrets {
             named.push(NamedSecret {
                 reference: to_secret_ref(reference),
                 what: format!("{owner}: {field}"),
             });
         }
-        let identity = identity.and_then(|id| known.get(id));
-        named.extend(identity_secret(identity.map(|i| &**i), &owner));
-        if let Some(identity) = identity
-            && !identities.iter().any(|i| i.id == identity.id)
-        {
-            identities.push(identity.clone());
+        if let Some(name) = tls.as_ref().and_then(|t| t.certificate.as_deref()) {
+            certificates.push(NamedCertificate {
+                name: name.trim().to_string(),
+                what: owner.clone(),
+            });
         }
     }
-    (named, identities)
+    (named, certificates)
 }
 
 /// What a layer of `exceptions` lays its answers over.
@@ -697,17 +684,15 @@ fn to_csv_columns(columns: &[FieldDto]) -> Result<(Vec<Option<String>>, Vec<Decl
     Ok((headers, kept))
 }
 
-/// The identities a bundle declares, by the id a connector names one with. Shared rather than copied: several
-/// connectors usually name one, and each carries a certificate and a set of authorities.
-type Identities = HashMap<String, std::sync::Arc<Identity>>;
-
-fn to_identity(dto: &IdentityDto, presented: PresentedAs) -> std::sync::Arc<Identity> {
-    std::sync::Arc::new(Identity {
-        id: dto.id.clone(),
-        certificate: dto.certificate.as_ref().map(to_secret_ref),
+/// The TLS `of` speaks, or `None` for a connector that says nothing about it. A receiver trusts no public root:
+/// whom it admits is its authorities' say alone.
+fn to_tls(dto: &TlsDto, of: &str, side: Side) -> Option<Tls> {
+    dto.is_set().then(|| Tls {
+        of: of.to_string(),
+        certificate: dto.certificate.as_deref().map(|c| c.trim().to_string()),
         authorities: dto.authorities.clone(),
-        trust_public: dto.trust_public != Some(false),
-        presented,
+        trust_public: side == Side::Client && dto.trust_public != Some(false),
+        side,
     })
 }
 
@@ -743,7 +728,7 @@ pub fn fill_default_group_ids(sources: &mut [SourceDto], worker_group: &str) {
 }
 
 /// The database an SQL source connects to, from its connection settings alone. `None` for a kind that is not one.
-fn sql_database(kind: &SourceKindDto, identities: &Identities) -> Option<crate::plan::topology::SqlDatabase> {
+fn sql_database(kind: &SourceKindDto, of: &str) -> Option<crate::plan::topology::SqlDatabase> {
     let (kind, sql) = kind.sql()?;
     let (host, port, database, user) = (
         sql.host.trim().to_string(),
@@ -752,11 +737,11 @@ fn sql_database(kind: &SourceKindDto, identities: &Identities) -> Option<crate::
         sql.user.trim().to_string(),
     );
     let password = sql.password.as_ref().map(to_secret_ref);
-    let tls = match sql.tls {
-        SqlTlsDto::Require => crate::io::sql_source::Tls::Require,
-        SqlTlsDto::Disable => crate::io::sql_source::Tls::Disable,
+    let encrypted = match sql.encrypted {
+        SqlTlsDto::Require => crate::io::sql_source::Encrypted::Require,
+        SqlTlsDto::Disable => crate::io::sql_source::Encrypted::Disable,
     };
-    let identity = named_identity(&sql.identity, identities);
+    let tls = to_tls(&sql.tls, of, Side::Client);
     Some(match kind {
         SqlKind::Postgres => crate::plan::topology::SqlDatabase::Postgres(crate::io::postgres::PostgresConnection {
             host,
@@ -764,8 +749,8 @@ fn sql_database(kind: &SourceKindDto, identities: &Identities) -> Option<crate::
             database,
             user,
             password,
+            encrypted,
             tls,
-            identity,
         }),
         SqlKind::MySql => crate::plan::topology::SqlDatabase::MySql(crate::io::mysql::MySqlConnection {
             host,
@@ -773,33 +758,27 @@ fn sql_database(kind: &SourceKindDto, identities: &Identities) -> Option<crate::
             database,
             user,
             password,
+            encrypted,
             tls,
-            identity,
         }),
     })
 }
 
-/// The database `source` connects to, under `identity` where it names one: what Run reaches before the source
-/// declares the fields a load needs. `None` for a source that is not an SQL one.
-pub fn sql_connection(
-    source: &SourceDto,
-    identity: Option<&IdentityDto>,
-) -> Option<crate::plan::topology::SqlDatabase> {
-    // An SQL source connects out.
-    let identities: Identities = (identity.iter())
-        .map(|i| (i.id.clone(), to_identity(i, PresentedAs::CLIENT)))
-        .collect();
-    sql_database(&source.kind, &identities)
+/// The database `source` connects to: what Run reaches before the source declares the fields a load needs. `None`
+/// for a source that is not an SQL one.
+pub fn sql_connection(source: &SourceDto) -> Option<crate::plan::topology::SqlDatabase> {
+    sql_database(&source.kind, &format!("source {:?}", source.id))
 }
 
 /// `name` is the DTO's `id`: v1 has no separate display label.
-fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceConfig {
+fn to_source(dto: &SourceDto, id: SourceId) -> SourceConfig {
+    let of = format!("source {:?}", dto.id);
     let mut kind = match &dto.kind {
         SourceKindDto::Kafka {
             brokers,
             topics,
             group_id,
-            identity,
+            tls,
             start,
             stop,
             fetch_bytes,
@@ -808,7 +787,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
             read: _,
             props,
         } => SourceKind::Kafka(KafkaSourceConfig {
-            identity: named_identity(identity, identities),
+            tls: to_tls(tls, &of, Side::Client),
             fetch_bytes: fetch_bytes.map_or(FetchBytes::DEFAULT, |f| f.0),
             // Validation refused an unknown label before any of this ran, so the fallback is unreachable.
             encoding: Encoding::for_label(&encoding.0).unwrap_or_default(),
@@ -844,7 +823,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
         } => {
             let brokers = event_hubs_brokers(namespace);
             SourceKind::Kafka(KafkaSourceConfig {
-                identity: None,
+                tls: None,
                 fetch_bytes: fetch_bytes.map_or(FetchBytes::DEFAULT, |f| f.0),
                 // Validation refused an unknown label before any of this ran, so the fallback is unreachable.
                 encoding: Encoding::for_label(&encoding.0).unwrap_or_default(),
@@ -871,7 +850,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
         SourceKindDto::S3Sqs {
             queue_url,
             access,
-            identity,
+            tls,
             framing,
             encoding,
             read: _,
@@ -881,7 +860,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
                 queue_url: queue_url.trim().to_string(),
                 access: to_s3_access(access),
             },
-            identity: named_identity(identity, identities),
+            tls: to_tls(tls, &of, Side::Client),
             framing: to_framing(framing),
             // Validation refused an unknown label before any of this ran, so the fallback is unreachable.
             encoding: Encoding::for_label(&encoding.0).unwrap_or_default(),
@@ -892,7 +871,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
             bucket,
             prefix,
             access,
-            identity,
+            tls,
             framing,
             encoding,
             read: _,
@@ -912,7 +891,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
                 *after_commit,
                 move_prefix,
             ),
-            named_identity(identity, identities),
+            to_tls(tls, &of, Side::Client),
             framing,
             encoding,
         ),
@@ -920,7 +899,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
             bucket,
             prefix,
             access,
-            identity,
+            tls,
             framing,
             encoding,
             read: _,
@@ -940,7 +919,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
                 *after_commit,
                 move_prefix,
             ),
-            named_identity(identity, identities),
+            to_tls(tls, &of, Side::Client),
             framing,
             encoding,
         ),
@@ -948,7 +927,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
             container,
             prefix,
             access,
-            identity,
+            tls,
             framing,
             encoding,
             read: _,
@@ -968,7 +947,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
                 *after_commit,
                 move_prefix,
             ),
-            named_identity(identity, identities),
+            to_tls(tls, &of, Side::Client),
             framing,
             encoding,
         ),
@@ -1005,7 +984,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
             body,
             headers,
             credentials,
-            identity,
+            tls,
             records,
             records_at,
             follow_links,
@@ -1040,7 +1019,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
                 }),
                 sign_in: to_app_sign_in(sign_in),
             }),
-            identity: named_identity(identity, identities),
+            tls: to_tls(tls, &of, Side::Client),
             poll_interval: Duration::from_secs(poll_interval_secs.0),
         }),
         SourceKindDto::OktaLogs {
@@ -1049,7 +1028,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
             client_id,
             private_key,
             key_id,
-            identity,
+            tls,
             poll_interval_secs,
             start,
         } => SourceKind::Api(crate::plan::topology::ApiSourceConfig {
@@ -1073,12 +1052,12 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
                     ListStartDto::New => ListStart::New,
                 },
             }),
-            identity: named_identity(identity, identities),
+            tls: to_tls(tls, &of, Side::Client),
             poll_interval: Duration::from_secs(poll_interval_secs.0),
         }),
         SourceKindDto::Postgres(_) | SourceKindDto::MySql(_) => {
             let (kind, sql) = dto.kind.sql().expect("an SQL source");
-            let database = sql_database(&dto.kind, identities).expect("an SQL source has a database");
+            let database = sql_database(&dto.kind, &of).expect("an SQL source has a database");
             let topic = database.address();
             let read = SqlRead {
                 query: &sql.query,
@@ -1097,6 +1076,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
         }
         SourceKindDto::HttpReceiver {
             listener,
+            tls,
             path,
             tokens,
             records,
@@ -1111,33 +1091,39 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
                 },
             }),
             listener,
+            tls,
             tokens.iter(),
-            identities,
+            &of,
         ),
         SourceKindDto::OtlpReceiver {
             listener,
+            tls,
             signal,
             tokens,
         } => receiver_config(
             crate::plan::topology::Receiver::Otlp(*signal),
             listener,
+            tls,
             tokens.iter(),
-            identities,
+            &of,
         ),
-        SourceKindDto::PrometheusReceiver { listener, tokens } => receiver_config(
+        SourceKindDto::PrometheusReceiver { listener, tls, tokens } => receiver_config(
             crate::plan::topology::Receiver::Prometheus,
             listener,
+            tls,
             tokens.iter(),
-            identities,
+            &of,
         ),
-        SourceKindDto::ElasticReceiver { listener, tokens } => receiver_config(
+        SourceKindDto::ElasticReceiver { listener, tls, tokens } => receiver_config(
             crate::plan::topology::Receiver::Elastic,
             listener,
+            tls,
             tokens.iter(),
-            identities,
+            &of,
         ),
         SourceKindDto::HecReceiver {
             listener,
+            tls,
             tokens,
             sourcetypes,
         } => receiver_config(
@@ -1150,11 +1136,13 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
                 sourcetypes: to_line_breakers(sourcetypes),
             }),
             listener,
+            tls,
             tokens.iter().map(|(name, t)| (name, &t.token)),
-            identities,
+            &of,
         ),
         SourceKindDto::S2sReceiver {
             listener,
+            tls,
             tokens,
             sourcetypes,
         } => receiver_config(
@@ -1162,11 +1150,13 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
                 sourcetypes: to_line_breakers(sourcetypes),
             }),
             listener,
+            tls,
             tokens.iter(),
-            identities,
+            &of,
         ),
         SourceKindDto::SyslogReceiver {
             listener,
+            tls,
             allow_from,
             encoding,
             transport,
@@ -1181,13 +1171,14 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
                 line_breaker: line_breaker.as_deref().and_then(to_line_breaker),
             }),
             listener,
+            tls,
             std::iter::empty(),
-            identities,
+            &of,
         ),
         SourceKindDto::AzureBlobQueue {
             queue_url,
             access,
-            identity,
+            tls,
             framing,
             encoding,
             read: _,
@@ -1199,7 +1190,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
                 access: to_azure_access(access),
                 max_deliveries: max_deliveries.0,
             },
-            identity: named_identity(identity, identities),
+            tls: to_tls(tls, &of, Side::Client),
             framing: to_framing(framing),
             // As above.
             encoding: Encoding::for_label(&encoding.0).unwrap_or_default(),
@@ -1210,7 +1201,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
             subscription,
             pubsub_endpoint,
             access,
-            identity,
+            tls,
             framing,
             encoding,
             read: _,
@@ -1221,7 +1212,7 @@ fn to_source(dto: &SourceDto, id: SourceId, identities: &Identities) -> SourceCo
                 endpoint: pubsub_endpoint.clone(),
                 access: to_gcs_access(access),
             },
-            identity: named_identity(identity, identities),
+            tls: to_tls(tls, &of, Side::Client),
             framing: to_framing(framing),
             // As above.
             encoding: Encoding::for_label(&encoding.0).unwrap_or_default(),
@@ -1396,12 +1387,6 @@ fn to_kafka_props(dto: &crate::config_file::dto::KafkaPropsDto) -> crate::plan::
     }
 }
 
-/// The identity a connector names, which `required_fields` has already refused the bundle for not declaring.
-/// A miss is read as absent rather than panicked on: the guarantee belongs to a caller, not to this lookup.
-fn named_identity(named: &Option<String>, identities: &Identities) -> Option<std::sync::Arc<Identity>> {
-    identities.get(named.as_deref()?).cloned()
-}
-
 fn to_framing(dto: &ObjectFramingDto) -> Framing {
     match dto.framing {
         // Validation refused a pattern that does not compile before any of this ran, so the fallback is unreachable.
@@ -1433,15 +1418,10 @@ fn to_line_breaker(pattern: &str) -> Option<LineBreaker> {
 }
 
 /// A listing source of `queue`. Nothing hides a listed object, so its visibility is the queue kinds' default.
-fn listed(
-    queue: ObjectQueue,
-    identity: Option<std::sync::Arc<Identity>>,
-    framing: &ObjectFramingDto,
-    encoding: &EncodingLabel,
-) -> SourceKind {
+fn listed(queue: ObjectQueue, tls: Option<Tls>, framing: &ObjectFramingDto, encoding: &EncodingLabel) -> SourceKind {
     SourceKind::Objects(ObjectSourceConfig {
         queue,
-        identity,
+        tls,
         framing: to_framing(framing),
         // Validation refused an unknown label before any of this ran, so the fallback is unreachable.
         encoding: Encoding::for_label(&encoding.0).unwrap_or_default(),
@@ -1980,12 +1960,12 @@ fn check_sasl_login(dto: &KafkaPropsDto, what: &str, errors: &mut ItemErrors<'_>
     }
 }
 
-// -- identities -------------------------------------------------------------
+// -- TLS --------------------------------------------------------------------
 
-/// librdkafka property names that answer the same question an identity answers: what this client presents, and what
-/// it trusts. A connector naming an identity and one of these has two answers to one question, and librdkafka would
-/// silently take whichever was set last.
-const IDENTITY_KAFKA_PROPS: &[&str] = &[
+/// librdkafka property names that answer the same question a connector's TLS settings answer: what this client
+/// presents, and what it trusts. A connector setting TLS and one of these has two answers to one question, and
+/// librdkafka would silently take whichever was set last.
+const TLS_KAFKA_PROPS: &[&str] = &[
     "ssl.certificate.pem",
     "ssl.certificate.location",
     "ssl.key.pem",
@@ -1995,23 +1975,23 @@ const IDENTITY_KAFKA_PROPS: &[&str] = &[
     // PKCS#12: the same certificate and key, in one file, under other names.
     "ssl.keystore.location",
     "ssl.keystore.password",
-    // Not material, but the one thing that would make an identity's key mean different things to the two
+    // Not material, but the one thing that would make a certificate's key mean different things to two
     // connectors: librdkafka decrypts a passphrase-protected key and ureq cannot, so a connector holding this
-    // beside an identity is a deployment that works on Kafka and fails on Elasticsearch. The value is a credential
+    // beside a certificate is a deployment that works on Kafka and fails on Elasticsearch. The value is a credential
     // and may be worker-local, so save time cannot look at the key and answer this any other way.
     "ssl.key.password",
-    // Naming an identity is naming which authorities a far end is verified against; a connector that also turns
-    // verification off is not doing that at all. Elasticsearch has no equivalent knob, so the identity would
-    // verify on one connector and not the other -- the same asymmetry `ssl.key.password` is refused for.
+    // Naming authorities is naming what a far end is verified against; a connector that also turns verification
+    // off is not doing that at all. Elasticsearch has no equivalent knob, so the authorities would verify on one
+    // connector and not the other -- the same asymmetry `ssl.key.password` is refused for.
     "enable.ssl.certificate.verification",
-    // A different half of the same question: the chain can check out under the identity's own authorities while
+    // A different half of the same question: the chain can check out under the connector's own authorities while
     // this decides whether the certificate is also checked against the broker's own name. "none" is what turns
-    // that off -- any certificate the identity's authorities ever issued, for any host, then answers for this one.
+    // that off -- any certificate the authorities ever issued, for any host, then answers for this one.
     "ssl.endpoint.identification.algorithm",
 ];
 
-/// The librdkafka security protocols that negotiate TLS. Under any other, nothing an identity holds is used, and
-/// librdkafka's own default is `plaintext`.
+/// The librdkafka security protocols that negotiate TLS. Under any other, nothing a connector's TLS settings say is
+/// used, and librdkafka's own default is `plaintext`.
 const TLS_PROTOCOLS: &[&str] = &["SSL", "SASL_SSL"];
 
 /// Refuses `pem` unless it holds certificates and nothing else. Read with the same library that will present
@@ -2055,144 +2035,93 @@ fn refuse_unless_certificates(pem: &str) -> Result<(), String> {
 fn receiver_config<'a>(
     receiver: crate::plan::topology::Receiver,
     listener: &ReceiverSettingsDto,
+    tls: &ServedTlsDto,
     tokens: impl Iterator<Item = (&'a String, &'a SecretRefDto)>,
-    identities: &Identities,
+    of: &str,
 ) -> SourceKind {
     SourceKind::Receiver(crate::plan::topology::ReceiverConfig {
         receiver,
         listen: std::net::SocketAddr::new(std::net::Ipv6Addr::UNSPECIFIED.into(), listener.port),
         tokens: tokens.map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
-        identity: named_identity(&listener.identity, identities),
+        tls: to_tls(&tls.tls(), of, Side::Server),
         max_request_bytes: usize::try_from(listener.max_request_bytes.0).unwrap_or(usize::MAX),
     })
 }
 
-/// How this bundle's connectors present `identity`'s certificate: connecting out, or as a receiver to its senders.
-fn presented_as(file: &FileConfig, identity: &str) -> PresentedAs {
-    let named = |by: Option<&str>| by == Some(identity);
-    let served = |s: &SourceDto| s.kind.receiver_port().is_some();
-    PresentedAs {
-        client: file.sources.iter().any(|s| !served(s) && named(s.identity()))
-            || file.destinations.iter().any(|d| named(d.identity())),
-        server: file.sources.iter().any(|s| served(s) && named(s.identity())),
+/// Checks what a connector's TLS settings say, before anything reads them: a certificate named by name, authorities
+/// that are certificates, and a trust setting that leaves something to verify a far end against.
+fn check_tls(tls: &TlsDto, what: &str, errors: &mut ItemErrors<'_>) {
+    if tls.certificate.as_deref().is_some_and(|c| c.trim().is_empty()) {
+        errors.at("certificate").push(format!(
+            "{what} names a certificate by a blank name. Choose one from the list"
+        ));
     }
-}
-
-/// Checks what an identity says about itself, before anything names it.
-fn validate_identities(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
-    for i in &file.identities {
-        let errors = &mut ItemErrors::new(attributed, "identities", &i.id);
-        let what = format!("identity {:?}", i.id);
-        if i.id.trim().is_empty() {
-            errors.at("id").push("an identity has no id".to_string());
-        }
-
-        match &i.certificate {
-            Some(SecretRefDto::WorkerLocal(_)) => errors.at("certificate").push(format!(
-                "{what} has a pasted certificate. An identity presents a certificate from the leader's list: add \
-                 it under Admin → Certificates, then choose it here"
-            )),
-            Some(SecretRefDto::LeaderStored(l)) if l.secret.trim().is_empty() => errors.at("certificate").push(
-                format!("{what} names a certificate by a blank name. Choose one from the list"),
-            ),
-            _ => {}
-        }
-        // A pasted certificate's message covers the key beside it: choosing a certificate takes both out.
-        if i.key.is_some() && !matches!(i.certificate, Some(SecretRefDto::WorkerLocal(_))) {
-            errors.at("certificate").push(format!(
-                "{what} has its own private key. A certificate from the list already holds its key, so choose \
-                 one here and the key is removed"
-            ));
-        }
-
-        if i.certificate.is_none() && i.authorities.is_none() {
-            errors.at("certificate").push(format!(
-                "{what} declares neither a certificate to present nor an authority to trust, so naming \
-                 it changes nothing. Fill one of them, or take the identity out"
-            ));
-        }
-
-        if i.trust_public == Some(false) && i.authorities.is_none() {
-            errors.at("trustPublic").push(format!(
-                "{what} trusts no public root and names no authority, so nothing it connects to could be \
-                 verified. Paste the authorities it trusts, or trust public roots"
-            ));
-        }
-
-        if let Some(authorities) = &i.authorities
-            && let Err(why) = refuse_unless_certificates(authorities)
-        {
-            errors.at("authorities").push(format!(
-                "{what} trusts what is not a certificate authority: {why}. Leave it out to verify a \
-                 far end against the platform's own roots"
-            ));
-        }
+    if tls.certificate.is_none() && tls.authorities.is_none() && tls.trust_public.is_some() {
+        errors.at("trustPublic").push(format!(
+            "{what} names neither a certificate to present nor an authority to trust, so its trust setting changes \
+             nothing. Fill one of them, or take it out"
+        ));
     }
-}
-
-/// Refuses a connector naming an identity this bundle does not declare. `what` names the connector.
-fn check_identity_declared(named: &Option<String>, file: &FileConfig, what: &str, errors: &mut ItemErrors<'_>) {
-    let Some(name) = named else { return };
-    if !file.identities.iter().any(|i| &i.id == name) {
-        errors.at("identity").push(format!(
-            "{what} names the identity {name:?}, which this bundle does not declare. Declare it under \
-             Identities, or in `shared/`"
+    if tls.trust_public == Some(false) && tls.authorities.is_none() {
+        errors.at("trustPublic").push(format!(
+            "{what} trusts no public root and names no authority, so nothing it connects to could be verified. \
+             Paste the authorities it trusts, or trust public roots"
+        ));
+    }
+    if let Some(authorities) = &tls.authorities
+        && let Err(why) = refuse_unless_certificates(authorities)
+    {
+        errors.at("authorities").push(format!(
+            "{what} trusts what is not a certificate authority: {why}. Leave it out to verify a far end against \
+             the platform's own roots"
         ));
     }
 }
 
-/// Refuses an object source naming an identity this bundle does not declare, or one reached at `urls` of which none
-/// negotiates TLS: nothing the identity holds would be used. The source's one client reaches every one of them over
-/// the identity's TLS. A blank address is refused on its own.
-fn check_object_identity(
-    named: &Option<String>,
-    urls: &[(&'static str, &str)],
-    file: &FileConfig,
-    what: &str,
-    errors: &mut ItemErrors<'_>,
-) {
-    check_identity_declared(named, file, what, errors);
-    let Some(name) = named else { return };
-    let tls = |url: &str| url.trim().to_ascii_lowercase().starts_with("https://");
-    if let Some((field, url)) = urls.first()
+/// Refuses TLS settings on a connector reached at `urls` of which none negotiates TLS: nothing they say would be
+/// used. A blank address is refused on its own.
+fn check_tls_reaches(tls: &TlsDto, urls: &[(&'static str, &str)], what: &str, errors: &mut ItemErrors<'_>) {
+    let https = |url: &str| url.trim().to_ascii_lowercase().starts_with("https://");
+    if tls.is_set()
+        && let Some((field, url)) = urls.first()
         && !url.trim().is_empty()
-        && !urls.iter().any(|(_, url)| tls(url))
+        && !urls.iter().any(|(_, url)| https(url))
     {
         errors.at(field).push(format!(
-            "{what} names the identity {name:?} and is reached over {url:?}, which does not negotiate TLS -- \
-             nothing the identity holds would be used. Give it an https:// URL, or take the identity off it"
+            "{what} sets TLS and is reached over {url:?}, which does not negotiate TLS -- nothing its certificate or \
+             authorities say would be used. Give it an https:// URL, or take them off it"
         ));
     }
 }
 
-/// Refuses a Kafka client whose own properties disagree with the identity it names.
-fn check_kafka_identity(named: &Option<String>, props: &KafkaPropsDto, what: &str, errors: &mut ItemErrors<'_>) {
-    let Some(name) = named else { return };
+/// Refuses a Kafka client whose own properties disagree with its TLS settings.
+fn check_kafka_tls(tls: &TlsDto, props: &KafkaPropsDto, what: &str, errors: &mut ItemErrors<'_>) {
+    if !tls.is_set() {
+        return;
+    }
 
     for (map, key) in kafka_keys(props) {
-        if IDENTITY_KAFKA_PROPS.contains(&key.to_ascii_lowercase().as_str()) {
+        if TLS_KAFKA_PROPS.contains(&key.to_ascii_lowercase().as_str()) {
             errors.at(map).push(format!(
-                "{what} names the identity {name:?} and also sets {key:?}, which names the same \
-                 material the identity carries. Take one of them out, so there is one place it can \
-                 come from"
+                "{what} sets TLS and also sets {key:?}, which names the same material. Take one of them out, so \
+                 there is one place it can come from"
             ));
         }
     }
 
-    // librdkafka defaults this to plaintext, so absent is as wrong as a plaintext value: the identity would be
+    // librdkafka defaults this to plaintext, so absent is as wrong as a plaintext value: the TLS settings would be
     // configuration nothing reads.
     match props.properties.get("security.protocol") {
         Some(protocol) if TLS_PROTOCOLS.contains(&protocol.to_ascii_uppercase().as_str()) => {}
         Some(protocol) => errors.at("properties.security.protocol").push(format!(
-            "{what} names the identity {name:?} and sets \"security.protocol\" to {protocol:?}, which \
-             does not negotiate TLS -- nothing the identity holds would be used. Set {} or {}, or take \
-             the identity off it",
+            "{what} sets TLS and sets \"security.protocol\" to {protocol:?}, which does not negotiate TLS -- \
+             nothing its certificate or authorities say would be used. Set {} or {}, or take them off it",
             TLS_PROTOCOLS[0], TLS_PROTOCOLS[1]
         )),
         None => errors.at("properties.security.protocol").push(format!(
-            "{what} names the identity {name:?} and does not set \"security.protocol\", which \
-             librdkafka defaults to plaintext -- nothing the identity holds would be used. Set it to \
-             {} or {} in `properties`, or take the identity off it",
+            "{what} sets TLS and does not set \"security.protocol\", which librdkafka defaults to plaintext -- \
+             nothing its certificate or authorities say would be used. Set it to {} or {} in `properties`, or take \
+             them off it",
             TLS_PROTOCOLS[0], TLS_PROTOCOLS[1]
         )),
     }
@@ -2785,8 +2714,24 @@ pub fn plain_off_this_host(url: &str) -> bool {
 fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
     let blank = |v: &str| v.trim().is_empty();
 
-    validate_identities(file, attributed);
     check_receiver_ports(file, attributed);
+
+    let with_tls = (file
+        .sources
+        .iter()
+        .filter_map(|s| Some(("sources", "source", &s.id, s.tls()?))))
+    .chain(
+        file.destinations
+            .iter()
+            .filter_map(|d| Some(("destinations", "destination", &d.id, d.tls()?))),
+    );
+    for (section, what, id, tls) in with_tls {
+        check_tls(
+            &tls,
+            &format!("{what} {id:?}"),
+            &mut ItemErrors::new(attributed, section, id),
+        );
+    }
 
     // A credential that names nothing is refused here, or it surfaces only when a worker fails to look it up.
     let named = (file.sources.iter().map(|s| ("sources", "source", &s.id, s.secrets()))).chain(
@@ -2831,14 +2776,13 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             SourceKindDto::Kafka {
                 brokers,
                 topics,
-                identity,
+                tls,
                 fetch_bytes,
                 encoding,
                 props,
                 ..
             } => {
-                check_identity_declared(identity, file, &format!("source {:?}", s.id), errors);
-                check_kafka_identity(identity, props, &format!("source {:?}", s.id), errors);
+                check_kafka_tls(tls, props, &format!("source {:?}", s.id), errors);
                 check_encoding(encoding, &s.id, errors);
                 validate_kafka_props(props, &format!("source {:?}", s.id), errors);
                 check_fetch_bytes(*fetch_bytes, &s.id, errors);
@@ -2919,14 +2863,14 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             SourceKindDto::S3Sqs {
                 queue_url,
                 access,
-                identity,
+                tls,
                 encoding,
                 framing,
                 visibility_secs,
                 ..
             } => {
                 let what = format!("source {:?}", s.id);
-                check_object_identity(identity, &s.urls(), file, &what, errors);
+                check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_s3_access(access, &what, errors);
                 check_encoding(encoding, &s.id, errors);
                 check_framing(framing, &s.id, errors);
@@ -2936,7 +2880,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 bucket,
                 prefix,
                 access,
-                identity,
+                tls,
                 encoding,
                 framing,
                 poll_interval_secs,
@@ -2946,7 +2890,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 ..
             } => {
                 let what = format!("source {:?}", s.id);
-                check_object_identity(identity, &s.urls(), file, &what, errors);
+                check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_s3_access(access, &what, errors);
                 check_encoding(encoding, &s.id, errors);
                 check_framing(framing, &s.id, errors);
@@ -2965,7 +2909,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 bucket,
                 prefix,
                 access,
-                identity,
+                tls,
                 encoding,
                 framing,
                 poll_interval_secs,
@@ -2975,7 +2919,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 ..
             } => {
                 let what = format!("source {:?}", s.id);
-                check_object_identity(identity, &s.urls(), file, &what, errors);
+                check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_endpoint(access.endpoint.as_deref(), "endpoint", &what, errors);
                 check_encoding(encoding, &s.id, errors);
                 check_framing(framing, &s.id, errors);
@@ -2996,7 +2940,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 container,
                 prefix,
                 access,
-                identity,
+                tls,
                 encoding,
                 framing,
                 poll_interval_secs,
@@ -3006,7 +2950,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 ..
             } => {
                 let what = format!("source {:?}", s.id);
-                check_object_identity(identity, &s.urls(), file, &what, errors);
+                check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_azure_access(access, &what, errors);
                 check_encoding(encoding, &s.id, errors);
                 check_framing(framing, &s.id, errors);
@@ -3054,7 +2998,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 body,
                 headers,
                 credentials,
-                identity,
+                tls,
                 records,
                 records_at,
                 since_param,
@@ -3065,7 +3009,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 ..
             } => {
                 let what = format!("source {:?}", s.id);
-                check_api_source(&what, ("url", url), identity, *poll_interval_secs, file, errors);
+                check_api_source(&what, ("url", url), tls, *poll_interval_secs, errors);
                 check_http_headers(&what, headers, credentials, SOURCE_HEADERS, "for every request", errors);
                 check_app_sign_in(&what, sign_in, headers, credentials, errors);
                 check_records_at(&what, *records, records_at, errors);
@@ -3108,13 +3052,14 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             }
             SourceKindDto::HttpReceiver {
                 listener,
+                tls,
                 path,
                 tokens,
                 records,
                 records_at,
             } => {
                 let what = format!("source {:?}", s.id);
-                check_receiver(&what, listener, tokens, file, errors);
+                check_receiver(&what, listener, tls, tokens, errors);
                 check_records_at(&what, *records, records_at, errors);
                 if !path.starts_with('/')
                     || path.contains(['?', '#', ':', '*'])
@@ -3132,36 +3077,41 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             }
             SourceKindDto::HecReceiver {
                 listener,
+                tls,
                 tokens,
                 sourcetypes,
             } => {
                 let what = format!("source {:?}", s.id);
-                check_receiver(&what, listener, tokens, file, errors);
+                check_receiver(&what, listener, tls, tokens, errors);
                 check_sourcetypes(&what, sourcetypes, errors);
             }
             SourceKindDto::S2sReceiver {
                 listener,
+                tls,
                 tokens,
                 sourcetypes,
             } => {
                 let what = format!("source {:?}", s.id);
-                check_receiver(&what, listener, tokens, file, errors);
+                check_receiver(&what, listener, tls, tokens, errors);
                 check_sourcetypes(&what, sourcetypes, errors);
             }
-            SourceKindDto::OtlpReceiver { listener, tokens, .. }
-            | SourceKindDto::PrometheusReceiver { listener, tokens }
-            | SourceKindDto::ElasticReceiver { listener, tokens } => {
-                check_receiver(&format!("source {:?}", s.id), listener, tokens, file, errors)
+            SourceKindDto::OtlpReceiver {
+                listener, tls, tokens, ..
+            }
+            | SourceKindDto::PrometheusReceiver { listener, tls, tokens }
+            | SourceKindDto::ElasticReceiver { listener, tls, tokens } => {
+                check_receiver(&format!("source {:?}", s.id), listener, tls, tokens, errors)
             }
             SourceKindDto::SyslogReceiver {
                 listener,
+                tls,
                 allow_from,
                 encoding,
                 transport,
                 line_breaker,
             } => {
                 let what = format!("source {:?}", s.id);
-                check_syslog_receiver(&what, listener, allow_from, *transport, file, errors);
+                check_syslog_receiver(&what, listener, tls, allow_from, *transport, errors);
                 check_encoding(encoding, &s.id, errors);
                 if let Some(line_breaker) = line_breaker {
                     match transport {
@@ -3179,8 +3129,8 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                     port,
                     database,
                     user,
+                    encrypted,
                     tls,
-                    identity,
                     query,
                     mode,
                     fields,
@@ -3189,11 +3139,10 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                     ..
                 } = sql;
                 let what = format!("source {:?}", s.id);
-                check_identity_declared(identity, file, &what, errors);
-                if let (Some(name), SqlTlsDto::Disable) = (identity, tls) {
-                    errors.at("identity").push(format!(
-                        "{what} names the identity {name:?} and turns TLS off, so nothing the identity holds would be \
-                         used. Set tls to \"require\", or take the identity off it"
+                if tls.is_set() && *encrypted == SqlTlsDto::Disable {
+                    errors.at("certificate").push(format!(
+                        "{what} sets TLS and turns it off, so nothing its certificate or authorities say would be \
+                         used. Set tls to \"require\", or take them off it"
                     ));
                 }
                 for (field, value, names) in [
@@ -3225,12 +3174,12 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 client_id,
                 private_key,
                 key_id,
-                identity,
+                tls,
                 poll_interval_secs,
                 ..
             } => {
                 let what = format!("source {:?}", s.id);
-                let parsed = check_api_source(&what, ("org", org), identity, *poll_interval_secs, file, errors);
+                let parsed = check_api_source(&what, ("org", org), tls, *poll_interval_secs, errors);
                 if parsed.is_some_and(|u| u.path() != "/" || u.query().is_some() || u.fragment().is_some()) {
                     errors.at("org").push(format!(
                         "{what} names the org {org:?}; give its address alone, as https://acme.okta.com"
@@ -3269,7 +3218,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             SourceKindDto::AzureBlobQueue {
                 queue_url,
                 access,
-                identity,
+                tls,
                 encoding,
                 framing,
                 visibility_secs,
@@ -3277,7 +3226,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 ..
             } => {
                 let what = format!("source {:?}", s.id);
-                check_object_identity(identity, &s.urls(), file, &what, errors);
+                check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_azure_access(access, &what, errors);
                 check_encoding(encoding, &s.id, errors);
                 check_framing(framing, &s.id, errors);
@@ -3311,14 +3260,14 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 subscription,
                 pubsub_endpoint,
                 access,
-                identity,
+                tls,
                 encoding,
                 framing,
                 visibility_secs,
                 ..
             } => {
                 let what = format!("source {:?}", s.id);
-                check_object_identity(identity, &s.urls(), file, &what, errors);
+                check_tls_reaches(tls, &s.urls(), &what, errors);
                 check_encoding(encoding, &s.id, errors);
                 check_framing(framing, &s.id, errors);
                 check_subscription(subscription, &what, errors);
@@ -3335,7 +3284,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             DestinationKindDto::Kafka {
                 brokers,
                 default_topic,
-                identity,
+                tls,
                 props,
                 stall_after_secs,
                 buffer_bytes,
@@ -3353,8 +3302,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 check_stream_avro(*format, schema_registry, &d.id, errors);
                 check_stall_after(*stall_after_secs, &d.id, errors);
                 validate_kafka_props(props, &format!("destination {:?}", d.id), errors);
-                check_identity_declared(identity, file, &format!("destination {:?}", d.id), errors);
-                check_kafka_identity(identity, props, &format!("destination {:?}", d.id), errors);
+                check_kafka_tls(tls, props, &format!("destination {:?}", d.id), errors);
                 check_kafka_buffer(*buffer_bytes, &d.id, errors);
                 if blank(brokers) {
                     errors
@@ -3413,7 +3361,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 url,
                 zone_urls,
                 default_index,
-                identity,
+                tls,
                 in_flight,
                 max_bulk_bytes,
                 buffer_bytes,
@@ -3444,7 +3392,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                         url_field: "url",
                         zone_urls: Some(zone_urls),
                         request_field: "maxBulkBytes",
-                        identity,
+                        tls,
                         in_flight: Some(*in_flight),
                         request_bytes: max_bulk_bytes.0,
                         request_limits: (BulkBytes::MIN, BulkBytes::MAX),
@@ -3454,7 +3402,6 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                         buffer_bytes: *buffer_bytes,
                         stall_after: *stall_after_secs,
                     },
-                    file,
                     errors,
                 );
                 if blank(default_index) {
@@ -3473,7 +3420,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 endpoint,
                 format,
                 field,
-                identity,
+                tls,
                 in_flight,
                 max_request_bytes,
                 buffer_bytes,
@@ -3501,7 +3448,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                         url_field: "url",
                         zone_urls: Some(zone_urls),
                         request_field: "maxRequestBytes",
-                        identity,
+                        tls,
                         in_flight: Some(*in_flight),
                         request_bytes: max_request_bytes.0,
                         request_limits: (RequestBytes::MIN, RequestBytes::MAX),
@@ -3511,7 +3458,6 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                         buffer_bytes: *buffer_bytes,
                         stall_after: *stall_after_secs,
                     },
-                    file,
                     errors,
                 );
                 // The event and ack paths are joined to the base address, so a pasted endpoint would get its path
@@ -3545,9 +3491,10 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 access,
                 objects,
                 cloud,
+                tls,
             } => {
                 let url = access.endpoint.as_deref().unwrap_or(S3_ENDPOINT);
-                check_objects(&d.id, objects, url, &cloud.identity, file, errors);
+                check_objects(&d.id, objects, url, tls, errors);
                 check_storage_class(&d.id, cloud, crate::io::objects::S3_STORAGE_CLASSES, errors);
                 if blank(bucket) {
                     errors
@@ -3567,9 +3514,10 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 access,
                 objects,
                 cloud,
+                tls,
             } => {
                 let url = access.endpoint.as_deref().unwrap_or(GCS_ENDPOINT);
-                check_objects(&d.id, objects, url, &cloud.identity, file, errors);
+                check_objects(&d.id, objects, url, tls, errors);
                 check_storage_class(&d.id, cloud, crate::io::objects::GCS_STORAGE_CLASSES, errors);
                 if blank(bucket) {
                     errors
@@ -3588,9 +3536,10 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 access,
                 objects,
                 cloud,
+                tls,
             } => {
                 let url = access.endpoint.as_deref().unwrap_or(AZURE_ENDPOINT);
-                check_objects(&d.id, objects, url, &cloud.identity, file, errors);
+                check_objects(&d.id, objects, url, tls, errors);
                 check_storage_class(&d.id, cloud, crate::io::objects::AZURE_ACCESS_TIERS, errors);
                 if blank(container) {
                     errors
@@ -3608,7 +3557,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 compression,
                 headers,
                 credentials,
-                identity,
+                tls,
                 in_flight,
                 max_request_bytes,
                 buffer_bytes,
@@ -3621,7 +3570,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                         url_field: "url",
                         zone_urls: Some(zone_urls),
                         request_field: "maxRequestBytes",
-                        identity,
+                        tls,
                         in_flight: Some(*in_flight),
                         request_bytes: max_request_bytes.0,
                         request_limits: (RequestBytes::MIN, RequestBytes::MAX),
@@ -3630,7 +3579,6 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                         buffer_bytes: *buffer_bytes,
                         stall_after: *stall_after_secs,
                     },
-                    file,
                     errors,
                 );
                 check_field(
@@ -3660,7 +3608,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 version: _,
                 headers,
                 credentials,
-                identity,
+                tls,
                 max_request_bytes,
                 buffer_bytes,
                 stall_after_secs,
@@ -3672,7 +3620,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                         url_field: "url",
                         zone_urls: None,
                         request_field: "maxRequestBytes",
-                        identity,
+                        tls,
                         in_flight: None,
                         request_bytes: max_request_bytes.0,
                         request_limits: (RequestBytes::MIN, RequestBytes::MAX),
@@ -3681,7 +3629,6 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                         buffer_bytes: *buffer_bytes,
                         stall_after: *stall_after_secs,
                     },
-                    file,
                     errors,
                 );
                 check_http_headers(
@@ -3698,7 +3645,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 rule_id,
                 stream,
                 sign_in,
-                identity,
+                tls,
                 in_flight,
                 max_request_bytes,
                 buffer_bytes,
@@ -3711,7 +3658,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                         url_field: "endpoint",
                         zone_urls: None,
                         request_field: "maxRequestBytes",
-                        identity,
+                        tls,
                         in_flight: Some(*in_flight),
                         request_bytes: max_request_bytes.0,
                         request_limits: (RequestBytes::MIN, LOG_ANALYTICS_MAX_REQUEST_BYTES),
@@ -3720,14 +3667,13 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                         buffer_bytes: *buffer_bytes,
                         stall_after: *stall_after_secs,
                     },
-                    file,
                     errors,
                 );
                 check_log_analytics_rule(&d.id, endpoint, rule_id, stream, errors);
                 check_entra_sign_in(sign_in, &[], &[], &format!("destination {:?}", d.id), errors);
             }
             DestinationKindDto::Sftp { access, objects, .. } => {
-                check_objects(&d.id, objects, "sftp", &None, file, errors);
+                check_objects(&d.id, objects, "sftp", &TlsDto::default(), errors);
                 if objects.stall_after_secs.0 < SFTP_MIN_STALL_AFTER {
                     errors.at("stallAfterSecs").push(format!(
                         "destination {:?} sets a stall threshold of {}s; an SFTP destination needs at least \
@@ -3737,8 +3683,8 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                 }
                 check_sftp_access(access, &format!("destination {:?}", d.id), errors);
             }
-            DestinationKindDto::Iceberg { .. } => check_iceberg(d, file, errors),
-            DestinationKindDto::Delta { .. } => check_delta(d, file, errors),
+            DestinationKindDto::Iceberg { .. } => check_iceberg(d, errors),
+            DestinationKindDto::Delta { .. } => check_delta(d, errors),
         }
     }
     for p in &file.pipelines {
@@ -3805,14 +3751,7 @@ fn eval_assignments(
 }
 
 /// The checks every object store destination shares: its delivery limits, prefix and format.
-fn check_objects(
-    id: &str,
-    o: &ObjectSettingsDto,
-    url: &str,
-    identity: &Option<String>,
-    file: &FileConfig,
-    errors: &mut ItemErrors<'_>,
-) {
+fn check_objects(id: &str, o: &ObjectSettingsDto, url: &str, tls: &TlsDto, errors: &mut ItemErrors<'_>) {
     check_http_delivery(
         &HttpDelivery {
             id,
@@ -3820,7 +3759,7 @@ fn check_objects(
             url_field: "endpoint",
             zone_urls: None,
             request_field: "maxObjectBytes",
-            identity,
+            tls,
             // A file's parts, not requests: checked below.
             in_flight: None,
             request_bytes: o.max_object_bytes.0,
@@ -3831,7 +3770,6 @@ fn check_objects(
             buffer_bytes: None,
             stall_after: o.stall_after_secs,
         },
-        file,
         errors,
     );
     check_file_limits(id, o.in_flight, o.buffer_bytes, errors);
@@ -3888,7 +3826,7 @@ const TABLE_FILE_INTERVAL_MAX: u64 = 240;
 
 /// Everything an Iceberg destination is checked for: its delivery limits, where its catalog is, how it signs in,
 /// which table it writes and how a created one is partitioned.
-fn check_iceberg(d: &DestinationDto, file: &FileConfig, errors: &mut ItemErrors<'_>) {
+fn check_iceberg(d: &DestinationDto, errors: &mut ItemErrors<'_>) {
     let DestinationKindDto::Iceberg {
         catalog,
         warehouse,
@@ -3902,7 +3840,7 @@ fn check_iceberg(d: &DestinationDto, file: &FileConfig, errors: &mut ItemErrors<
         scope,
         signing_name,
         access,
-        identity,
+        tls,
         compression: _,
         in_flight,
         max_object_bytes,
@@ -3921,7 +3859,7 @@ fn check_iceberg(d: &DestinationDto, file: &FileConfig, errors: &mut ItemErrors<
             url_field: "catalog",
             zone_urls: None,
             request_field: "maxObjectBytes",
-            identity,
+            tls,
             // A file's parts, not requests: checked below.
             in_flight: None,
             request_bytes: max_object_bytes.0,
@@ -3932,7 +3870,6 @@ fn check_iceberg(d: &DestinationDto, file: &FileConfig, errors: &mut ItemErrors<
             buffer_bytes: None,
             stall_after: *stall_after_secs,
         },
-        file,
         errors,
     );
     check_file_limits(id, *in_flight, *buffer_bytes, errors);
@@ -4048,13 +3985,13 @@ fn check_table_file_interval(file_interval: FileInterval, what: &str, errors: &m
 
 /// Everything a Delta destination is checked for: its delivery limits, how it reaches its bucket, where its table is
 /// and how a created one is partitioned.
-fn check_delta(d: &DestinationDto, file: &FileConfig, errors: &mut ItemErrors<'_>) {
+fn check_delta(d: &DestinationDto, errors: &mut ItemErrors<'_>) {
     let DestinationKindDto::Delta {
         location,
         unity_catalog,
         partition_by,
         access,
-        identity,
+        tls,
         compression: _,
         in_flight,
         max_object_bytes,
@@ -4073,7 +4010,7 @@ fn check_delta(d: &DestinationDto, file: &FileConfig, errors: &mut ItemErrors<'_
             url_field: "endpoint",
             zone_urls: None,
             request_field: "maxObjectBytes",
-            identity,
+            tls,
             // A file's parts, not requests: checked below.
             in_flight: None,
             request_bytes: max_object_bytes.0,
@@ -4084,7 +4021,6 @@ fn check_delta(d: &DestinationDto, file: &FileConfig, errors: &mut ItemErrors<'_
             buffer_bytes: None,
             stall_after: *stall_after_secs,
         },
-        file,
         errors,
     );
     check_file_limits(id, *in_flight, *buffer_bytes, errors);
@@ -4290,7 +4226,7 @@ struct HttpDelivery<'a> {
     zone_urls: Option<&'a BTreeMap<String, String>>,
     /// The name the file gives `request_bytes`.
     request_field: &'static str,
-    identity: &'a Option<String>,
+    tls: &'a TlsDto,
     /// Requests the destination starts with outstanding; `None` checks none.
     in_flight: Option<InFlight>,
     request_bytes: usize,
@@ -4301,12 +4237,11 @@ struct HttpDelivery<'a> {
     stall_after: StallAfter,
 }
 
-fn check_http_delivery(d: &HttpDelivery<'_>, file: &FileConfig, errors: &mut ItemErrors<'_>) {
+fn check_http_delivery(d: &HttpDelivery<'_>, errors: &mut ItemErrors<'_>) {
     let id = d.id;
     if d.url.trim().is_empty() {
         errors.at(d.url_field).push(format!("destination {id:?} has no URL"));
     }
-    check_identity_declared(d.identity, file, &format!("destination {id:?}"), errors);
     let zone_urls = d.zone_urls.into_iter().flatten();
     for (zone, url) in zone_urls.clone() {
         if zone.trim().is_empty() {
@@ -4319,18 +4254,10 @@ fn check_http_delivery(d: &HttpDelivery<'_>, file: &FileConfig, errors: &mut Ite
                 .push(format!("destination {id:?} has no URL for the zone {zone:?}"));
         }
     }
-    // http:// never negotiates TLS, so an identity on one is configuration nothing reads.
+    // http:// never negotiates TLS, so TLS settings on one are configuration nothing reads.
     let addresses = std::iter::once((d.url_field, d.url)).chain(zone_urls.map(|(_, url)| ("zoneUrls", url.as_str())));
     for (field, url) in addresses {
-        if let Some(name) = d.identity
-            && !url.trim().to_ascii_lowercase().starts_with("https://")
-        {
-            errors.at(field).push(format!(
-                "destination {id:?} names the identity {name:?} and is reached over {url:?}, \
-                 which does not negotiate TLS -- nothing the identity holds would be used. \
-                 Give it an https:// URL, or take the identity off it"
-            ));
-        }
+        check_tls_reaches(d.tls, &[(field, url)], &format!("destination {id:?}"), errors);
     }
     check_stall_after(d.stall_after, id, errors);
     let (min, max) = d.request_limits;
@@ -4403,21 +4330,21 @@ fn check_records_at(what: &str, records: ApiRecordsDto, records_at: &Option<Stri
     }
 }
 
-/// What a receiver must be before it can listen: a port, an address that is one, an identity that holds a
-/// certificate to serve, and someone it admits. With neither a token nor an identity whose authorities vouch for a
-/// sender, anyone who can reach the port could send.
+/// What a receiver must be before it can listen: a port, an address that is one, a certificate to serve, and someone
+/// it admits. With neither a token nor authorities that vouch for a sender, anyone who can reach the port could
+/// send.
 fn check_receiver<T>(
     what: &str,
     listener: &ReceiverSettingsDto,
+    tls: &ServedTlsDto,
     tokens: &BTreeMap<String, T>,
-    file: &FileConfig,
     errors: &mut ItemErrors<'_>,
 ) {
-    let vouches = check_listener(what, listener, file, errors);
+    let vouches = check_listener(what, listener, tls, errors);
     if tokens.is_empty() && !vouches {
         errors.at("tokens").push(format!(
-            "{what} admits anyone who can reach its port; give it a token, or an identity whose authorities a \
-             sender's certificate must chain to"
+            "{what} admits anyone who can reach its port; give it a token, or authorities a sender's certificate \
+             must chain to"
         ));
     }
     for name in tokens.keys() {
@@ -4434,22 +4361,23 @@ fn check_receiver<T>(
 fn check_syslog_receiver(
     what: &str,
     listener: &ReceiverSettingsDto,
+    tls: &ServedTlsDto,
     allow_from: &[String],
     transport: Transport,
-    file: &FileConfig,
     errors: &mut ItemErrors<'_>,
 ) {
-    let vouches = check_listener(what, listener, file, errors);
-    if transport == Transport::Udp && listener.identity.is_some() {
-        errors.at("identity").push(format!(
-            "{what} takes UDP, which it serves without TLS; leave out its identity, or take TCP to serve TLS"
+    let vouches = check_listener(what, listener, tls, errors);
+    if transport == Transport::Udp && tls.is_set() {
+        errors.at("certificate").push(format!(
+            "{what} takes UDP, which it serves without TLS; take its certificate and authorities off, or take TCP to \
+             serve TLS"
         ));
     }
     let vouches = vouches && transport == Transport::Tcp;
     if allow_from.is_empty() && !vouches {
         errors.at("allowFrom").push(format!(
-            "{what} admits anyone who can reach its port; give it the networks its senders connect from, or an \
-             identity whose authorities a sender's certificate must chain to"
+            "{what} admits anyone who can reach its port; give it the networks its senders connect from, or \
+             authorities a sender's certificate must chain to"
         ));
     }
     for block in allow_from {
@@ -4462,12 +4390,16 @@ fn check_syslog_receiver(
     }
 }
 
-/// What every receiver's listener must be: a port, and an identity that holds a certificate to serve. Whether that
-/// identity's authorities vouch for a sender, which then needs nothing else to be admitted.
-fn check_listener(what: &str, listener: &ReceiverSettingsDto, file: &FileConfig, errors: &mut ItemErrors<'_>) -> bool {
+/// What every receiver's listener must be: a port, and a certificate to serve where it serves TLS. Whether its
+/// authorities vouch for a sender, which then needs nothing else to be admitted.
+fn check_listener(
+    what: &str,
+    listener: &ReceiverSettingsDto,
+    tls: &ServedTlsDto,
+    errors: &mut ItemErrors<'_>,
+) -> bool {
     let ReceiverSettingsDto {
         port,
-        identity,
         max_request_bytes,
     } = listener;
     let blank = |v: &str| v.trim().is_empty();
@@ -4476,14 +4408,10 @@ fn check_listener(what: &str, listener: &ReceiverSettingsDto, file: &FileConfig,
             .at("port")
             .push(format!("{what} listens on port 0; give the port senders connect to"));
     }
-    check_identity_declared(identity, file, what, errors);
-    let declared = identity
-        .as_ref()
-        .and_then(|name| file.identities.iter().find(|i| &i.id == name));
-    if declared.is_some_and(|i| i.certificate.is_none()) {
-        errors.at("identity").push(format!(
-            "{what} serves TLS under the identity {identity:?}, which holds no certificate; a receiver presents one \
-             to every sender"
+    if tls.is_set() && tls.certificate.is_none() {
+        errors.at("certificate").push(format!(
+            "{what} serves TLS and names no certificate; a receiver presents one to every sender. Choose one from \
+             the list"
         ));
     }
     if !(MaxRequestBytes::MIN..=MaxRequestBytes::MAX).contains(&max_request_bytes.0) {
@@ -4494,12 +4422,12 @@ fn check_listener(what: &str, listener: &ReceiverSettingsDto, file: &FileConfig,
             MaxRequestBytes::MAX
         ));
     }
-    declared.is_some_and(|i| i.authorities.as_deref().is_some_and(|a| !blank(a)))
+    tls.authorities.as_deref().is_some_and(|a| !blank(a))
 }
 
 /// Refuses two receivers on one port: every worker of the group binds each, and the second bind would fail on every
 /// one of them. OTLP receivers of different signals share one, as an exporter sends every signal to one port, so they
-/// serve it alike: on one address, under one identity. A TCP port and a UDP port are two ports, whatever their number.
+/// serve it alike: on one address, under one certificate. A TCP port and a UDP port are two ports, whatever their number.
 fn check_receiver_ports(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
     let mut by_port: std::collections::BTreeMap<(Transport, u16), Vec<&SourceDto>> = std::collections::BTreeMap::new();
     for s in &file.sources {
@@ -4512,11 +4440,11 @@ fn check_receiver_ports(file: &FileConfig, attributed: &mut Vec<ValidationError>
             (
                 Some(
                     first @ SourceDto {
-                        kind: SourceKindDto::OtlpReceiver { listener: theirs, .. },
+                        kind: SourceKindDto::OtlpReceiver { tls: theirs, .. },
                         ..
                     },
                 ),
-                SourceKindDto::OtlpReceiver { listener, signal, .. },
+                SourceKindDto::OtlpReceiver { tls, signal, .. },
             ) => {
                 let same = |o: &SourceDto| matches!(&o.kind, SourceKindDto::OtlpReceiver { signal: other, .. } if other == signal);
                 if let Some(taken) = on_port.iter().find(|o| same(o)) {
@@ -4527,10 +4455,10 @@ fn check_receiver_ports(file: &FileConfig, attributed: &mut Vec<ValidationError>
                         signal.name(),
                         taken.id
                     ))
-                } else if listener.identity != theirs.identity {
+                } else if tls != theirs {
                     Some(format!(
                         "source {:?} shares port {port} with source {:?}, which serves it; give it the same \
-                         identity certificate, or another port",
+                         certificate and authorities, or another port",
                         s.id, first.id
                     ))
                 } else {
@@ -4835,26 +4763,16 @@ impl SqlRead<'_> {
     }
 }
 
-/// What every API source's address and schedule must be: a URL at `field`, an identity only where TLS would use it,
-/// and a poll interval of at least a second. The URL, when it is a whole http:// or https:// one.
+/// What every API source's address and schedule must be: a URL at `field`, TLS settings only where TLS would use
+/// them, and a poll interval of at least a second. The URL, when it is a whole http:// or https:// one.
 fn check_api_source(
     what: &str,
     (field, url): (&'static str, &str),
-    identity: &Option<String>,
+    tls: &TlsDto,
     poll_interval: PollIntervalSecs,
-    file: &FileConfig,
     errors: &mut ItemErrors<'_>,
 ) -> Option<reqwest::Url> {
-    check_identity_declared(identity, file, what, errors);
-    // http:// never negotiates TLS, so an identity on one is configuration nothing reads.
-    if let Some(name) = identity
-        && !url.trim().to_ascii_lowercase().starts_with("https://")
-    {
-        errors.at(field).push(format!(
-            "{what} names the identity {name:?} and asks {url:?}, which does not negotiate TLS -- nothing the \
-             identity holds would be used. Give it an https:// URL, or take the identity off it"
-        ));
-    }
+    check_tls_reaches(tls, &[(field, url)], what, errors);
     if poll_interval.0 == 0 {
         errors
             .at("pollIntervalSecs")
@@ -5055,7 +4973,8 @@ fn to_objects(
     cloud: Cloud,
     o: &ObjectSettingsDto,
     settings: &CloudSettingsDto,
-    identities: &Identities,
+    tls: &TlsDto,
+    of: &str,
 ) -> DestinationKind {
     DestinationKind::Objects(ObjectsDestinationConfig {
         cloud,
@@ -5079,7 +4998,7 @@ fn to_objects(
         },
         compression: o.compression.to_plan(),
         storage_class: settings.storage_class.clone(),
-        identity: named_identity(&settings.identity, identities),
+        tls: to_tls(tls, of, Side::Client),
         in_flight: o.in_flight.0,
         max_object_bytes: o.max_object_bytes.0,
         buffer_bytes: o.buffer_bytes.map_or(BufferBytes::OBJECT_DEFAULT, |b| b.0),
@@ -5089,12 +5008,13 @@ fn to_objects(
 }
 
 /// `dto` with the built-in answer to `Refused`, which the caller lays the group's and its own over.
-fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> DestinationConfig {
+fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
+    let of = format!("destination {:?}", dto.id);
     let kind = match &dto.kind {
         DestinationKindDto::Kafka {
             brokers,
             default_topic,
-            identity,
+            tls,
             props,
             compression,
             stall_after_secs,
@@ -5104,7 +5024,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             schema_registry,
         } => DestinationKind::Kafka(KafkaDestinationConfig {
             payload: to_payload(*format, field),
-            identity: named_identity(identity, identities),
+            tls: to_tls(tls, &of, Side::Client),
             brokers: brokers.clone(),
             props: to_kafka_props(props),
             default_topic: default_topic.clone(),
@@ -5129,7 +5049,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             let brokers = event_hubs_brokers(namespace);
             DestinationKind::Kafka(KafkaDestinationConfig {
                 payload: to_payload(*format, field),
-                identity: None,
+                tls: None,
                 props: event_hubs_props(&brokers, connection_string.as_ref(), sign_in),
                 brokers,
                 default_topic: default_event_hub.clone(),
@@ -5144,7 +5064,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             url,
             zone_urls,
             default_index,
-            identity,
+            tls,
             auth,
             username,
             password,
@@ -5165,7 +5085,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
                     .to_string(),
                 zone: None,
             }),
-            identity: named_identity(identity, identities),
+            tls: to_tls(tls, &of, Side::Client),
             url: url.clone(),
             zone_urls: zone_urls.clone(),
             default_index: default_index.clone(),
@@ -5195,7 +5115,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             format,
             field,
             acknowledgement,
-            identity,
+            tls,
             in_flight,
             max_request_bytes,
             buffer_bytes,
@@ -5217,7 +5137,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
                 AcknowledgementDto::Indexer => Acknowledgement::Indexer,
                 AcknowledgementDto::Receipt => Acknowledgement::Receipt,
             },
-            identity: named_identity(identity, identities),
+            tls: to_tls(tls, &of, Side::Client),
             in_flight: in_flight.start(affords(*buffer_bytes, max_request_bytes.0)),
             max_request_bytes: max_request_bytes.0,
             buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
@@ -5229,6 +5149,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             access,
             objects,
             cloud,
+            tls,
         } => to_objects(
             Cloud::S3(S3Store {
                 bucket: bucket.clone(),
@@ -5237,13 +5158,15 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             }),
             objects,
             cloud,
-            identities,
+            tls,
+            &of,
         ),
         DestinationKindDto::Gcs {
             bucket,
             access,
             objects,
             cloud,
+            tls,
         } => to_objects(
             Cloud::Gcs(GcsStore {
                 bucket: bucket.clone(),
@@ -5251,13 +5174,15 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             }),
             objects,
             cloud,
-            identities,
+            tls,
+            &of,
         ),
         DestinationKindDto::AzureBlob {
             container,
             access,
             objects,
             cloud,
+            tls,
         } => to_objects(
             Cloud::Azure(AzureStore {
                 container: container.clone(),
@@ -5265,7 +5190,8 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             }),
             objects,
             cloud,
-            identities,
+            tls,
+            &of,
         ),
         DestinationKindDto::Http {
             url,
@@ -5276,7 +5202,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             compression,
             headers,
             credentials,
-            identity,
+            tls,
             in_flight,
             max_request_bytes,
             buffer_bytes,
@@ -5296,7 +5222,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             compression: compression.to_plan(),
             headers: headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             credentials: credentials.iter().map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
-            identity: named_identity(identity, identities),
+            tls: to_tls(tls, &of, Side::Client),
             in_flight: in_flight.start(affords(*buffer_bytes, max_request_bytes.0)),
             max_request_bytes: max_request_bytes.0,
             buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
@@ -5307,7 +5233,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             version,
             headers,
             credentials,
-            identity,
+            tls,
             max_request_bytes,
             buffer_bytes,
             stall_after_secs,
@@ -5319,7 +5245,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             },
             headers: headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             credentials: credentials.iter().map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
-            identity: named_identity(identity, identities),
+            tls: to_tls(tls, &of, Side::Client),
             max_request_bytes: max_request_bytes.0,
             buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),
@@ -5329,7 +5255,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             rule_id,
             stream,
             sign_in,
-            identity,
+            tls,
             in_flight,
             max_request_bytes,
             buffer_bytes,
@@ -5343,7 +5269,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
                 compression: crate::plan::topology::Compression::Gzip,
                 headers: Vec::new(),
                 credentials: Vec::new(),
-                identity: named_identity(identity, identities),
+                tls: to_tls(tls, &of, Side::Client),
                 in_flight: in_flight.start(affords(*buffer_bytes, max_request_bytes.0)),
                 max_request_bytes: max_request_bytes.0,
                 buffer_bytes: effective_buffer_bytes(*buffer_bytes, max_request_bytes.0),
@@ -5363,7 +5289,8 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             objects,
             // An SFTP server has no storage classes, and is trusted by its host key.
             &CloudSettingsDto::default(),
-            identities,
+            &TlsDto::default(),
+            &of,
         ),
         DestinationKindDto::Iceberg {
             catalog,
@@ -5378,7 +5305,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             scope,
             signing_name,
             access,
-            identity,
+            tls,
             compression,
             in_flight,
             max_object_bytes,
@@ -5412,7 +5339,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             partition_by: partition_by.clone(),
             storage: (!access.is_empty()).then(|| to_s3_access(access)),
             compression: compression.to_plan(),
-            identity: named_identity(identity, identities),
+            tls: to_tls(tls, &of, Side::Client),
             in_flight: in_flight.0,
             max_object_bytes: max_object_bytes.0,
             buffer_bytes: buffer_bytes.map_or(BufferBytes::OBJECT_DEFAULT, |b| b.0),
@@ -5424,7 +5351,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             unity_catalog,
             partition_by,
             access,
-            identity,
+            tls,
             compression,
             in_flight,
             max_object_bytes,
@@ -5443,7 +5370,7 @@ fn to_destination(dto: &DestinationDto, id: DestId, identities: &Identities) -> 
             partition_by: partition_by.clone(),
             storage: to_s3_access(access),
             compression: compression.to_plan(),
-            identity: named_identity(identity, identities),
+            tls: to_tls(tls, &of, Side::Client),
             in_flight: in_flight.0,
             max_object_bytes: max_object_bytes.0,
             buffer_bytes: buffer_bytes.map_or(BufferBytes::OBJECT_DEFAULT, |b| b.0),
@@ -6131,7 +6058,10 @@ mod tests {
         };
         assert_eq!(connection.host, "db.internal");
         assert_eq!(connection.port, 3306);
-        assert!(matches!(connection.tls, crate::io::sql_source::Tls::Require));
+        assert!(matches!(
+            connection.encrypted,
+            crate::io::sql_source::Encrypted::Require
+        ));
         assert_eq!(
             sql.source.query,
             crate::io::sql::Query::parse("SELECT event_id FROM events", crate::io::sql::Dialect::MySql).unwrap()
@@ -6177,7 +6107,11 @@ mod tests {
     fn a_mysql_source_with_bad_settings_is_refused() {
         for (extra, field, why) in [
             (r#","port":0"#, "port", "port 0"),
-            (r#","tls":"disable","identity":"ghost""#, "identity", "turns TLS off"),
+            (
+                r#","tls":"disable","certificate":"ghost""#,
+                "certificate",
+                "turns it off",
+            ),
             (r#","host":" ""#, "host", "names no host"),
         ] {
             for kind in ["postgres", "mysql"] {
@@ -7124,7 +7058,7 @@ mod tests {
         );
     }
 
-    // -- identities ---------------------------------------------------------
+    // -- TLS ----------------------------------------------------------------
 
     /// A self-signed certificate, in PEM. Minted rather than pasted: a fixture certificate expires, and a test that
     /// starts failing on a date is worse than no test.
@@ -7137,67 +7071,48 @@ mod tests {
             .pem()
     }
 
-    /// `example_json` with `identities` declared and the first Kafka source naming one.
-    fn with_identity(identities: &str, on_source: &str) -> FileConfig {
-        let json = example_json()
-            .replacen(
-                r#""groupId": "smeltr""#,
-                &format!(r#""groupId": "smeltr"{on_source}"#),
-                1,
-            )
-            .replacen(
-                r#""version": 1,"#,
-                &format!(r#""version": 1, "identities": [{identities}],"#),
-                1,
-            );
+    /// `example_json` with `on_source` added to the first Kafka source.
+    fn with_tls(on_source: &str) -> FileConfig {
+        let json = example_json().replacen(
+            r#""groupId": "smeltr""#,
+            &format!(r#""groupId": "smeltr"{on_source}"#),
+            1,
+        );
         serde_json::from_str(&json).unwrap()
     }
 
-    const TLS: &str = r#", "properties": {"security.protocol": "SSL"}, "identity": "acme""#;
-
-    /// A bundle written before identities named a certificate from the list pasted the certificate and named its
-    /// key. It still parses, so it loads to say what to choose, once, where the choice is made.
-    #[test]
-    fn a_pasted_certificate_and_its_key_parse_and_are_refused_once() {
-        let identity = format!(
-            r#"{{"id": "acme", "certificate": {}, "key": {{"secret": "acme-key", "version": 1}}}}"#,
-            serde_json::to_string(&a_certificate()).unwrap()
-        );
-        let errors = validation_errors(with_identity(&identity, TLS));
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert_eq!(errors[0].field, Some("certificate"));
-        assert!(errors[0].message.contains("pasted"), "{errors:?}");
+    /// The Kafka source speaking TLS, with `fields` of its own TLS settings.
+    fn tls_source(fields: &str) -> String {
+        format!(r#", "properties": {{"security.protocol": "SSL"}}{fields}"#)
     }
 
-    /// A key beside a certificate from the list is one the list already holds.
+    /// The source's authorities, as a JSON field.
+    fn trusting(pem: &str) -> String {
+        format!(r#", "authorities": {}"#, serde_json::to_string(pem).unwrap())
+    }
+
     #[test]
-    fn a_key_beside_a_listed_certificate_is_refused() {
-        let errors = validation_errors(with_identity(
-            r#"{"id": "acme", "certificate": {"secret": "acme", "version": 1}, "key": "ACME_KEY"}"#,
-            TLS,
-        ));
+    fn a_connector_naming_a_listed_certificate_is_accepted() {
+        let errors = validation_errors(with_tls(&tls_source(r#", "certificate": "acme""#)));
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn a_certificate_named_by_a_blank_name_is_refused() {
+        let errors = validation_errors(with_tls(&tls_source(r#", "certificate": " ""#)));
         assert!(
             errors
                 .iter()
-                .any(|e| e.field == Some("certificate") && e.contains("its own private key")),
+                .any(|e| e.field == Some("certificate") && e.contains("blank name")),
             "{errors:?}"
         );
     }
 
-    #[test]
-    fn an_identity_naming_a_listed_certificate_is_accepted() {
-        let errors = validation_errors(with_identity(
-            r#"{"id": "acme", "certificate": {"secret": "acme", "version": 1}}"#,
-            TLS,
-        ));
-        assert!(errors.is_empty(), "{errors:?}");
-    }
-
-    /// An identity with neither half is the one combination refused: every other says something about a
+    /// A trust setting with neither half is the one combination refused: every other says something about a
     /// connection.
     #[test]
-    fn an_identity_that_declares_neither_half_is_refused() {
-        let errors = validation_errors(with_identity(r#"{"id": "acme"}"#, TLS));
+    fn a_trust_setting_beside_neither_half_is_refused() {
+        let errors = validation_errors(with_tls(&tls_source(r#", "trustPublic": true"#)));
         assert!(errors.iter().any(|e| e.contains("changes nothing")), "{errors:?}");
     }
 
@@ -7206,25 +7121,21 @@ mod tests {
     #[test]
     fn a_certificate_beside_a_csr_is_refused() {
         let csr = "-----BEGIN CERTIFICATE REQUEST-----\nMIIBCjCBtAIBADAA\n-----END CERTIFICATE REQUEST-----\n";
-        let identity = format!(
-            r#"{{"id": "acme", "authorities": {}}}"#,
-            serde_json::to_string(&format!("{}{csr}", a_certificate())).unwrap()
-        );
-        let errors = validation_errors(with_identity(&identity, TLS));
+        let errors = validation_errors(with_tls(&tls_source(&trusting(&format!("{}{csr}", a_certificate())))));
         assert!(errors.iter().any(|e| e.contains("Csr")), "{errors:?}");
     }
 
     #[test]
-    fn an_identity_trusting_no_public_root_and_no_authority_is_refused() {
-        let identity = r#"{"id": "acme", "trustPublic": false, "certificate": {"secret": "acme", "version": 1}}"#;
-        let errors = validation_errors(with_identity(identity, TLS));
+    fn trusting_no_public_root_and_no_authority_is_refused() {
+        let errors = validation_errors(with_tls(&tls_source(
+            r#", "trustPublic": false, "certificate": "acme""#,
+        )));
         assert!(errors.iter().any(|e| e.contains("trusts no public root")), "{errors:?}");
     }
 
     #[test]
     fn trusting_what_is_not_a_certificate_is_refused() {
-        let identity = r#"{"id": "acme", "authorities": "not a certificate"}"#;
-        let errors = validation_errors(with_identity(identity, TLS));
+        let errors = validation_errors(with_tls(&tls_source(&trusting("not a certificate"))));
         assert!(
             errors.iter().any(|e| e.contains("not a certificate authority")),
             "{errors:?}"
@@ -7237,11 +7148,7 @@ mod tests {
     fn trusting_a_certificate_labeled_section_of_unparseable_der_is_refused() {
         // base64 of "not actually DER" -- valid PEM framing around bytes that are not a certificate.
         let bogus = "-----BEGIN CERTIFICATE-----\nbm90IGFjdHVhbGx5IERFUg==\n-----END CERTIFICATE-----\n";
-        let identity = format!(
-            r#"{{"id": "acme", "authorities": {}}}"#,
-            serde_json::to_string(bogus).unwrap()
-        );
-        let errors = validation_errors(with_identity(&identity, TLS));
+        let errors = validation_errors(with_tls(&tls_source(&trusting(bogus))));
         assert!(
             errors.iter().any(|e| e.contains("not a certificate authority")),
             "{errors:?}"
@@ -7263,33 +7170,17 @@ mod tests {
             "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
             crate::format::bytes_text::BytesForm::Base64.text(&der)
         );
-        let identity = format!(
-            r#"{{"id": "acme", "authorities": {}}}"#,
-            serde_json::to_string(&bogus).unwrap()
-        );
-        let errors = validation_errors(with_identity(&identity, TLS));
+        let errors = validation_errors(with_tls(&tls_source(&trusting(&bogus))));
         assert!(
             errors.iter().any(|e| e.contains("not a certificate authority")),
             "{errors:?}"
         );
     }
 
+    /// One place each answer can come from: the connector's own TLS settings carry the material, and a path names
+    /// the same material another way.
     #[test]
-    fn a_connector_naming_an_identity_nothing_declares_is_refused() {
-        let file: FileConfig = serde_json::from_str(&example_json().replacen(
-            r#""groupId": "smeltr""#,
-            r#""groupId": "smeltr", "properties": {"security.protocol": "SSL"}, "identity": "acme""#,
-            1,
-        ))
-        .unwrap();
-        let errors = validation_errors(file);
-        assert!(errors.iter().any(|e| e.contains("does not declare")), "{errors:?}");
-    }
-
-    /// One place each answer can come from: an identity carries the material inline, and a path names the same
-    /// material another way.
-    #[test]
-    fn an_identity_beside_a_path_to_the_same_material_is_refused() {
+    fn tls_settings_beside_a_path_to_the_same_material_are_refused() {
         for key in [
             "ssl.ca.location",
             "ssl.certificate.location",
@@ -7297,12 +7188,9 @@ mod tests {
             "ssl.keystore.location",
         ] {
             let on_source = format!(
-                r#", "properties": {{"security.protocol": "SSL", "{key}": "/etc/pki/acme.pem"}}, "identity": "acme""#
+                r#", "properties": {{"security.protocol": "SSL", "{key}": "/etc/pki/acme.pem"}}, "certificate": "acme""#
             );
-            let errors = validation_errors(with_identity(
-                r#"{"id": "acme", "authorities": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"}"#,
-                &on_source,
-            ));
+            let errors = validation_errors(with_tls(&on_source));
             assert!(
                 errors.iter().any(|e| e.contains("one place it can come from")),
                 "{key}: {errors:?}"
@@ -7310,73 +7198,62 @@ mod tests {
         }
     }
 
-    /// A passphrase on the key is what would make an identity's key mean different things on the two connectors.
+    /// A passphrase on the key is what would make a certificate's key mean different things on two connectors.
     /// It is credential-valued, so it is written where a credential goes.
     #[test]
-    fn an_identity_beside_a_passphrase_for_its_key_is_refused() {
+    fn tls_settings_beside_a_passphrase_for_the_key_are_refused() {
         let on_source = concat!(
             r#", "properties": {"security.protocol": "SSL"}"#,
             r#", "credentials": {"ssl.key.password": "KAFKA_KEY_PASSWORD"}"#,
-            r#", "identity": "acme""#
+            r#", "certificate": "acme""#
         );
-        let errors = validation_errors(with_identity(
-            r#"{"id": "acme", "authorities": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"}"#,
-            on_source,
-        ));
+        let errors = validation_errors(with_tls(on_source));
         assert!(
             errors.iter().any(|e| e.contains("one place it can come from")),
             "{errors:?}"
         );
     }
 
-    /// Naming an identity names which authorities a far end is verified against; a connector that also turns
-    /// verification off is not doing that, on Kafka alone -- Elasticsearch has no such knob, so the identity
-    /// would verify on one connector and not the other.
+    /// Naming authorities names what a far end is verified against; a connector that also turns verification off
+    /// is not doing that, on Kafka alone -- Elasticsearch has no such knob, so the authorities would verify on one
+    /// connector and not the other.
     #[test]
-    fn an_identity_beside_disabled_certificate_verification_is_refused() {
-        let on_source = concat!(
-            r#", "properties": {"security.protocol": "SSL", "enable.ssl.certificate.verification": "false"}"#,
-            r#", "identity": "acme""#
+    fn tls_settings_beside_disabled_certificate_verification_are_refused() {
+        let on_source = format!(
+            r#", "properties": {{"security.protocol": "SSL", "enable.ssl.certificate.verification": "false"}}{}"#,
+            trusting(&a_certificate())
         );
-        let errors = validation_errors(with_identity(
-            r#"{"id": "acme", "authorities": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"}"#,
-            on_source,
-        ));
+        let errors = validation_errors(with_tls(&on_source));
         assert!(
             errors.iter().any(|e| e.contains("one place it can come from")),
             "{errors:?}"
         );
     }
 
-    /// The chain can still check out under the identity's own authorities while this turns off whether the
+    /// The chain can still check out under the connector's own authorities while this turns off whether the
     /// certificate is also checked against the broker's own name -- a different half of the same question
     /// `enable.ssl.certificate.verification` answers the other half of.
     #[test]
-    fn an_identity_beside_disabled_hostname_verification_is_refused() {
-        let on_source = concat!(
-            r#", "properties": {"security.protocol": "SSL", "ssl.endpoint.identification.algorithm": "none"}"#,
-            r#", "identity": "acme""#
+    fn tls_settings_beside_disabled_hostname_verification_are_refused() {
+        let on_source = format!(
+            r#", "properties": {{"security.protocol": "SSL", "ssl.endpoint.identification.algorithm": "none"}}{}"#,
+            trusting(&a_certificate())
         );
-        let errors = validation_errors(with_identity(
-            r#"{"id": "acme", "authorities": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"}"#,
-            on_source,
-        ));
+        let errors = validation_errors(with_tls(&on_source));
         assert!(
             errors.iter().any(|e| e.contains("one place it can come from")),
             "{errors:?}"
         );
     }
 
-    /// librdkafka defaults `security.protocol` to plaintext, so an unset one leaves the identity unused.
+    /// librdkafka defaults `security.protocol` to plaintext, so an unset one leaves the TLS settings unused.
     #[test]
-    fn an_identity_under_a_protocol_that_negotiates_no_tls_is_refused() {
-        let identity =
-            r#"{"id": "acme", "authorities": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"}"#;
+    fn tls_settings_under_a_protocol_that_negotiates_no_tls_are_refused() {
         for on_source in [
-            r#", "identity": "acme""#,
-            r#", "properties": {"security.protocol": "SASL_PLAINTEXT"}, "identity": "acme""#,
+            r#", "certificate": "acme""#,
+            r#", "properties": {"security.protocol": "SASL_PLAINTEXT"}, "certificate": "acme""#,
         ] {
-            let errors = validation_errors(with_identity(identity, on_source));
+            let errors = validation_errors(with_tls(on_source));
             assert!(
                 errors
                     .iter()
@@ -7387,12 +7264,10 @@ mod tests {
     }
 
     #[test]
-    fn an_identity_on_a_destination_reached_over_plain_http_is_refused() {
-        let json = example_json()
-            .replacen(r#""version": 1,"#, r#""version": 1, "identities": [{"id": "acme", "authorities": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"}],"#, 1);
-        let mut file: FileConfig = serde_json::from_str(&json).unwrap();
+    fn tls_settings_on_a_destination_reached_over_plain_http_are_refused() {
+        let mut file: FileConfig = serde_json::from_str(example_json()).unwrap();
         file.destinations.push(serde_json::from_str(
-            r#"{"id": "es", "type": "elasticsearch", "url": "http://es.internal:9200", "defaultIndex": "rows", "identity": "acme"}"#,
+            r#"{"id": "es", "type": "elasticsearch", "url": "http://es.internal:9200", "defaultIndex": "rows", "certificate": "acme"}"#,
         ).unwrap());
         let errors = validation_errors(file);
         assert!(
@@ -7498,23 +7373,12 @@ mod tests {
         }
     }
 
-    /// A connector carries the identity it names, resolved, rather than the name -- which is what lets a client
-    /// be built from the topology alone.
+    /// A connector carries its TLS settings, which is what lets a client be built from the topology alone.
     #[test]
-    fn a_connector_carries_the_identity_it_names() {
+    fn a_connector_carries_its_tls_settings() {
         let certificate = a_certificate();
-        let identity = format!(
-            r#"{{"id": "acme", "certificate": {{"secret": "acme", "version": 3}}, "authorities": {}}}"#,
-            serde_json::to_string(&certificate).unwrap()
-        );
-        let json = example_json()
-            .replacen(r#""groupId": "smeltr""#, &format!(r#""groupId": "smeltr"{TLS}"#), 1)
-            .replacen(
-                r#""version": 1,"#,
-                &format!(r#""version": 1, "identities": [{identity}],"#),
-                1,
-            );
-        let loaded = load_str(&json).expect("an identity a source names");
+        let on_source = tls_source(&format!(r#", "certificate": "acme"{}"#, trusting(&certificate)));
+        let loaded = load_str(&serde_json::to_string(&with_tls(&on_source)).unwrap()).expect("a source speaking TLS");
         let kafka = loaded
             .topology
             .sources
@@ -7524,18 +7388,14 @@ mod tests {
                 _ => None,
             })
             .expect("a kafka source");
-        let carried = kafka.identity.as_ref().expect("the identity it names");
-        assert_eq!(carried.id, "acme");
-        assert_eq!(
-            carried.certificate,
-            Some(crate::plan::topology::SecretRef::LeaderStored {
-                name: "acme".into(),
-                version: 3
-            })
-        );
+        let carried = kafka.tls.as_ref().expect("the TLS it speaks");
+        assert_eq!(carried.of, "source \"kafka-main\"");
+        assert_eq!(carried.certificate.as_deref(), Some("acme"));
         assert_eq!(carried.authorities.as_deref(), Some(certificate.as_str()));
-        assert!(
-            carried.presented.client && !carried.presented.server,
+        assert!(carried.trust_public, "absent is trusting the public roots");
+        assert_eq!(
+            carried.side,
+            crate::io::trust::Side::Client,
             "a Kafka source connects out"
         );
     }
@@ -7558,49 +7418,18 @@ mod tests {
         assert_eq!(kafka.start, StartPosition::Earliest);
     }
 
-    /// An identity nothing names configures no connection, so nothing about it -- a key it wants, a certificate
-    /// running out -- can stop anything working. Both questions asked of a bundle are asked of the same list.
-    #[test]
-    fn only_the_identities_a_connector_names_are_in_use() {
-        let certificate = a_certificate();
-        let identities = format!(
-            r#"{{"id": "acme", "authorities": {0}}}, {{"id": "unused", "authorities": {0}}}"#,
-            serde_json::to_string(&certificate).unwrap()
-        );
-        let json = example_json()
-            .replacen(r#""groupId": "smeltr""#, &format!(r#""groupId": "smeltr"{TLS}"#), 1)
-            .replacen(
-                r#""version": 1,"#,
-                &format!(r#""version": 1, "identities": [{identities}],"#),
-                1,
-            );
-        let loaded = load_str(&json).expect("two identities, one of them named");
-        let in_use: Vec<String> = loaded.topology.identities.iter().map(|i| i.id.clone()).collect();
-        assert_eq!(in_use, vec!["acme".to_string()]);
-    }
-
     /// A certificate a worker cannot obtain has to refuse the deploy before the running one is stopped, which is
-    /// what `named_secrets` is asked. An identity's certificate is as much a named credential as a SASL password.
+    /// what `named_certificates` is asked, as `named_secrets` is for a SASL password.
     #[test]
-    fn an_identitys_certificate_is_a_credential_the_bundle_names() {
-        let identity = r#"{"id": "acme", "certificate": {"secret": "acme", "version": 3}}"#;
-        let json = example_json()
-            .replacen(r#""groupId": "smeltr""#, &format!(r#""groupId": "smeltr"{TLS}"#), 1)
-            .replacen(
-                r#""version": 1,"#,
-                &format!(r#""version": 1, "identities": [{identity}],"#),
-                1,
-            );
-        let loaded = load_str(&json).expect("an identity a source names");
-        let named = &loaded.topology.named_secrets;
-        assert!(
-            named.iter().any(|n| matches!(
-                &n.reference,
-                crate::plan::topology::SecretRef::LeaderStored { name, version }
-                    if name == "acme" && *version == 3
-            )),
-            "{:?}",
-            named.iter().map(|n| n.what.as_str()).collect::<Vec<_>>()
+    fn a_certificate_is_one_the_bundle_names() {
+        let on_source = tls_source(r#", "certificate": "acme""#);
+        let loaded = load_str(&serde_json::to_string(&with_tls(&on_source)).unwrap()).expect("a source naming one");
+        assert_eq!(
+            loaded.topology.named_certificates,
+            vec![crate::plan::topology::NamedCertificate {
+                name: "acme".to_string(),
+                what: "source \"kafka-main\"".to_string(),
+            }]
         );
     }
 
@@ -7935,7 +7764,7 @@ mod tests {
             panic!("expected a Delta destination, got {:?}", dest.kind);
         };
         assert_eq!(c.location, "s3://lake/tables/web");
-        assert!(c.partition_by.is_empty() && c.identity.is_none());
+        assert!(c.partition_by.is_empty() && c.tls.is_none());
         assert!(c.storage.region.is_none() && c.storage.endpoint.is_none());
         assert!(c.storage.access_key.is_none() && c.storage.role.is_none());
         assert_eq!(c.compression, crate::plan::topology::Compression::Zstd);

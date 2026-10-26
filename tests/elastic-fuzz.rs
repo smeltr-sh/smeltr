@@ -3,7 +3,7 @@
 //!
 //! Offline, a destination the save refuses is refused on the setting that was broken. One it accepts loads as drawn,
 //! loads the same once saved, builds when this worker holds every credential it names and refuses to when it does
-//! not, and delivers drawn batches to a cluster in this process, over TLS when it names an identity. That cluster
+//! not, and delivers drawn batches to a cluster in this process, over TLS when it sets its own TLS. That cluster
 //! answers as Elasticsearch does: it files each document under its action's index and id, refuses some, asks for some
 //! again, takes some into a failure store, refuses a request past its size limit whole, and is now and then busy or
 //! too slow. What it holds at the end is exactly what was sent and not refused, each document once and byte for byte;
@@ -76,8 +76,8 @@ const OPTIONS: &[&str] = &[
     "auth.basic",
     "auth.userPassword",
     "auth.lineBreak",
-    "identity.authorities",
-    "identity.certificate",
+    "tls.authorities",
+    "tls.certificate",
     "docId.auto",
     "docId.dedupe",
     "docId.overwrite",
@@ -108,11 +108,11 @@ const OPTIONS: &[&str] = &[
     "answer.split",
     "answer.stall",
     "broken.url.blank",
-    "broken.url.identity",
+    "broken.url.tls",
     "broken.zoneUrls",
     "broken.zoneAttribute",
     "broken.defaultIndex",
-    "broken.identity",
+    "broken.certificate",
     "broken.inFlight",
     "broken.inFlight.affords",
     "broken.maxBulkBytes",
@@ -142,13 +142,24 @@ enum Target<'a> {
     Live(&'a str),
 }
 
-/// What the identity a destination names holds.
+/// The TLS a destination sets on itself.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Identity {
+enum ClientTls {
     /// An authority to verify the cluster against.
     Trusts,
     /// That, and a certificate to present.
     Presents,
+}
+
+/// Stands for the authority's PEM until `bundle` has it.
+const AUTHORITIES: &str = "@authorities";
+
+/// Sets `tls` on `d`, the authority as [`AUTHORITIES`].
+fn set_tls(d: &mut Map<String, Value>, tls: ClientTls) {
+    d.insert("authorities".into(), json!(AUTHORITIES));
+    if tls == ClientTls::Presents {
+        d.insert("certificate".into(), json!("client"));
+    }
 }
 
 /// Where the drawn URL leads.
@@ -167,7 +178,7 @@ enum Endpoint {
 /// One drawn destination.
 struct Draw {
     destination: Map<String, Value>,
-    identity: Option<Identity>,
+    tls: Option<ClientTls>,
     endpoint: Endpoint,
     /// The zone of the worker that runs the destination.
     zone: Option<&'static str>,
@@ -187,13 +198,13 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, index: &str) -> Draw {
     let mut d = Map::new();
     d.insert("id".into(), json!("es"));
     d.insert("type".into(), json!("elasticsearch"));
-    let (url, endpoint, identity) = match target {
+    let (url, endpoint, tls) = match target {
         Target::Live(url) => (url.to_string(), Endpoint::Live, None),
         Target::Offline(port) => draw_url(rng, cov, port),
     };
     d.insert("url".into(), json!(url));
-    if identity.is_some() {
-        d.insert("identity".into(), json!("client"));
+    if let Some(tls) = tls {
+        set_tls(&mut d, tls);
     }
     let mut zone = match target {
         Target::Live(_) => None,
@@ -290,7 +301,7 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, index: &str) -> Draw {
 
     let mut draw = Draw {
         destination: d,
-        identity,
+        tls,
         endpoint,
         zone,
         sniff,
@@ -305,8 +316,8 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, index: &str) -> Draw {
     draw
 }
 
-/// A URL for the cluster in this process on `port`, or one nothing listens at, and the identity it is reached under.
-fn draw_url(rng: &mut Rng, cov: &mut Reached, port: u16) -> (String, Endpoint, Option<Identity>) {
+/// A URL for the cluster in this process on `port`, or one nothing listens at, and the TLS it is reached under.
+fn draw_url(rng: &mut Rng, cov: &mut Reached, port: u16) -> (String, Endpoint, Option<ClientTls>) {
     let tail = match rng.below(6) {
         0 => {
             cov.reach("url.trailingSlash");
@@ -323,13 +334,13 @@ fn draw_url(rng: &mut Rng, cov: &mut Reached, port: u16) -> (String, Endpoint, O
         }
         _ => "",
     };
-    let identity = |rng: &mut Rng, cov: &mut Reached| {
+    let tls = |rng: &mut Rng, cov: &mut Reached| {
         if rng.chance(2) {
-            cov.reach("identity.authorities");
-            Identity::Trusts
+            cov.reach("tls.authorities");
+            ClientTls::Trusts
         } else {
-            cov.reach("identity.certificate");
-            Identity::Presents
+            cov.reach("tls.certificate");
+            ClientTls::Presents
         }
     };
     match rng.below(10) {
@@ -345,8 +356,8 @@ fn draw_url(rng: &mut Rng, cov: &mut Reached, port: u16) -> (String, Endpoint, O
         }
         7 | 8 => {
             cov.reach("url.https");
-            let named = identity(rng, cov);
-            (format!("https://localhost:{port}{tail}"), Endpoint::Tls, Some(named))
+            let own = tls(rng, cov);
+            (format!("https://localhost:{port}{tail}"), Endpoint::Tls, Some(own))
         }
         _ => {
             cov.reach("url.elsewhere");
@@ -359,8 +370,8 @@ fn draw_url(rng: &mut Rng, cov: &mut Reached, port: u16) -> (String, Endpoint, O
             if url.contains("[::1]") {
                 cov.reach("url.ipv6");
             }
-            let named = (url.starts_with("https://") && rng.chance(2)).then(|| identity(rng, cov));
-            (format!("{url}{tail}"), Endpoint::Elsewhere, named)
+            let own = (url.starts_with("https://") && rng.chance(2)).then(|| tls(rng, cov));
+            (format!("{url}{tail}"), Endpoint::Elsewhere, own)
         }
     }
 }
@@ -415,11 +426,11 @@ fn draw_sizes(rng: &mut Rng, cov: &mut Reached, d: &mut Map<String, Value>) {
 fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'static str> {
     let what = *rng.pick(&[
         "url.blank",
-        "url.identity",
+        "url.tls",
         "zoneUrls",
         "zoneAttribute",
         "defaultIndex",
-        "identity",
+        "certificate",
         "inFlight",
         "inFlight.affords",
         "maxBulkBytes",
@@ -438,10 +449,10 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
             d.insert("url".into(), json!(rng.pick(&["", "  "])));
             Some("url")
         }
-        "url.identity" => {
-            // An identity on a URL that never negotiates TLS.
-            draw.identity = Some(Identity::Trusts);
-            d.insert("identity".into(), json!("client"));
+        "url.tls" => {
+            // TLS settings on a URL that never negotiates TLS.
+            draw.tls = Some(ClientTls::Trusts);
+            set_tls(d, ClientTls::Trusts);
             d.insert(
                 "url".into(),
                 json!(rng.pick(&["http://127.0.0.1:9200", "http://es.internal:9200"])),
@@ -464,9 +475,9 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
             d.insert("defaultIndex".into(), json!(rng.pick(&["", " ", "\t"])));
             Some("defaultIndex")
         }
-        "identity" => {
-            d.insert("identity".into(), json!("nobody"));
-            Some("identity")
+        "certificate" => {
+            d.insert("certificate".into(), json!(" "));
+            Some("certificate")
         }
         "inFlight" => {
             d.insert("inFlight".into(), json!(rng.pick(&[0, 65, 1000])));
@@ -544,7 +555,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
     }
 }
 
-/// `draw` as a whole bundle: a Kafka source, one route to the destination, and the identity it names.
+/// `draw` as a whole bundle: a Kafka source, one route to the destination, and the authority it trusts.
 fn bundle(draw: &Draw, pki: &Pki) -> Value {
     let steps = if draw.sets_id {
         json!([{"id": "id", "type": "code", "body": "__destination.id = _raw;"}])
@@ -558,16 +569,8 @@ fn bundle(draw: &Draw, pki: &Pki) -> Value {
         "pipelines": [{"id": "p", "name": "p", "steps": steps}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["es"]}]}],
     });
-    match draw.identity {
-        None => {}
-        Some(Identity::Trusts) => b["identities"] = json!([{"id": "client", "authorities": pki.authority.pem}]),
-        Some(Identity::Presents) => {
-            b["identities"] = json!([{
-                "id": "client",
-                "authorities": pki.authority.pem,
-                "certificate": {"secret": "client", "version": 1},
-            }])
-        }
+    if let Some(authorities) = b["destinations"][0].get_mut("authorities") {
+        *authorities = json!(pki.authority.pem);
     }
     b
 }
@@ -668,11 +671,11 @@ fn check_loaded(draw: &Draw, c: &ElasticDestinationConfig, named: &[SecretRef]) 
     let password = d.get("password").map(reference);
     let basic = s("username").zip(password.clone());
     expect("basic", format!("{basic:?}"), format!("{:?}", c.basic));
-    let identity = c.identity.as_ref().map(|i| match i.certificate {
-        Some(_) => Identity::Presents,
-        None => Identity::Trusts,
+    let tls = c.tls.as_ref().map(|t| match t.certificate {
+        Some(_) => ClientTls::Presents,
+        None => ClientTls::Trusts,
     });
-    expect("identity", format!("{:?}", draw.identity), format!("{identity:?}"));
+    expect("tls", format!("{:?}", draw.tls), format!("{tls:?}"));
     let policy = match s("docId").as_deref() {
         None | Some("auto") => DocIdPolicy::Auto,
         Some("dedupe") => DocIdPolicy::Dedupe,
@@ -1422,9 +1425,9 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     if slow {
         answers.slow_on = Some((rng.pick(&carried).to_vec(), Duration::from_millis(1300)));
     }
-    let tls = match draw.identity {
+    let tls = match draw.tls {
         _ if draw.endpoint == Endpoint::Plain => None,
-        Some(Identity::Presents) => Some(pki.mutual()),
+        Some(ClientTls::Presents) => Some(pki.mutual()),
         _ => Some(pki.server_only()),
     };
     let fates = (sent.iter().flatten())
@@ -1849,7 +1852,7 @@ fn live_options() -> Vec<&'static str> {
         .filter(|o| {
             !o.starts_with("broken.")
                 && !o.starts_with("url.")
-                && !o.starts_with("identity.")
+                && !o.starts_with("tls.")
                 // One cluster, at one address.
                 && !o.starts_with("zoneUrls.")
                 && ![

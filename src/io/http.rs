@@ -17,7 +17,7 @@ use super::pipelined::{self, Pool};
 use super::{BatchCompletion, BatchId, Destination, Dispatched, IoError, OwnedRecord, Rejection};
 use crate::core::id::DestId;
 use crate::metrics::MetricsHandle;
-use crate::plan::topology::{HeldSecrets, Identity};
+use crate::plan::topology::{HeldSecrets, Tls};
 
 /// Total time one `flush` may spend, retries included.
 const DEFAULT_STALL_AFTER: Duration = Duration::from_secs(30);
@@ -921,25 +921,21 @@ pub fn basic_authorization(user: &str, password: &str) -> String {
 }
 
 /// How a client's transports connect: the certificate they present, and the roots they verify the service against
-/// (`io::trust`). Without an identity, no certificate.
+/// (`io::trust`). Speaking no TLS of its own, no certificate.
 ///
 /// A credential this worker cannot obtain is an error here, never a connection that silently falls back to
 /// presenting nothing.
-pub fn agent_config(identity: Option<&Identity>, secrets: &HeldSecrets) -> Result<ureq::config::Config, IoError> {
+pub fn agent_config(tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<ureq::config::Config, IoError> {
     Ok(ureq::Agent::config_builder()
-        .tls_config(tls_config(identity, secrets)?)
+        .tls_config(tls_config(tls, secrets)?)
         .build())
 }
 
 /// `agent_config`'s TLS alone, for a caller that sets the rest of the agent itself.
-pub fn tls_config(identity: Option<&Identity>, secrets: &HeldSecrets) -> Result<ureq::tls::TlsConfig, IoError> {
-    let tls = ureq::tls::TlsConfig::builder().root_certs(super::trust::ureq_roots(identity)?);
-    let Some(presented) = identity
-        .map(|i| super::trust::presented(i, secrets))
-        .transpose()?
-        .flatten()
-    else {
-        return Ok(tls.build());
+pub fn tls_config(tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<ureq::tls::TlsConfig, IoError> {
+    let config = ureq::tls::TlsConfig::builder().root_certs(super::trust::ureq_roots(tls)?);
+    let Some(presented) = tls.map(|t| super::trust::presented(t, secrets)).transpose()?.flatten() else {
+        return Ok(config.build());
     };
     let chain: Vec<_> = (presented.chain.iter())
         .map(|der| ureq::tls::Certificate::from_der(der.as_ref()).to_owned())
@@ -947,7 +943,7 @@ pub fn tls_config(identity: Option<&Identity>, secrets: &HeldSecrets) -> Result<
     let key = ureq::tls::PrivateKey::from_pem(presented.key_pem.as_bytes())
         .map_err(|e| IoError::transient(format!("a private key ureq cannot read: {e}")))?
         .to_owned();
-    Ok(tls
+    Ok(config
         .client_cert(Some(ureq::tls::ClientCert::new_with_certs(&chain, key)))
         .build())
 }

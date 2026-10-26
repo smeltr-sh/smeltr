@@ -44,8 +44,6 @@ pub enum SubjectKind {
     Destination,
     Worker,
     Group,
-    /// An identity a deployed connector names, by its id in the bundle.
-    Identity,
     /// This leader itself. The one subject nothing reports on, because it is what the reports arrive at.
     Leader,
     /// An outstanding enrollment code, by its id.
@@ -82,7 +80,7 @@ pub enum Condition {
     AuthorityExpiring,
     AuthorityAging,
     EnrollmentCodeNamesOutgoingAuthority,
-    IdentityExpiring,
+    CertificateExpiring,
     WorkerLoggedWarnings,
     DeployHeld,
     RemoteNotFollowed,
@@ -97,7 +95,6 @@ pub enum Condition {
     AcmeRenewalFailing,
     LeaderCertificateRunningOut,
     IssuedCertificateNotRenewed,
-    IdentityCertificateBehind,
 }
 
 impl Condition {
@@ -122,7 +119,7 @@ impl Condition {
         Condition::WorkerMemoryHigh,
         Condition::AuthorityExpiring,
         Condition::AuthorityAging,
-        Condition::IdentityExpiring,
+        Condition::CertificateExpiring,
         Condition::EnrollmentCodeNamesOutgoingAuthority,
         Condition::WorkerLoggedWarnings,
         Condition::DeployHeld,
@@ -138,7 +135,6 @@ impl Condition {
         Condition::AcmeRenewalFailing,
         Condition::LeaderCertificateRunningOut,
         Condition::IssuedCertificateNotRenewed,
-        Condition::IdentityCertificateBehind,
     ];
 
     /// What this is called on the wire. The match is what makes a new entry a compile error here.
@@ -162,7 +158,7 @@ impl Condition {
             Condition::WorkerMemoryHigh => "workerMemoryHigh",
             Condition::AuthorityExpiring => "authorityExpiring",
             Condition::AuthorityAging => "authorityAging",
-            Condition::IdentityExpiring => "identityExpiring",
+            Condition::CertificateExpiring => "certificateExpiring",
             Condition::EnrollmentCodeNamesOutgoingAuthority => "enrollmentCodeNamesOutgoingAuthority",
             Condition::WorkerLoggedWarnings => "workerLoggedWarnings",
             Condition::DeployHeld => "deployHeld",
@@ -178,7 +174,6 @@ impl Condition {
             Condition::AcmeRenewalFailing => "acmeRenewalFailing",
             Condition::LeaderCertificateRunningOut => "leaderCertificateRunningOut",
             Condition::IssuedCertificateNotRenewed => "issuedCertificateNotRenewed",
-            Condition::IdentityCertificateBehind => "identityCertificateBehind",
         }
     }
 }
@@ -414,56 +409,54 @@ fn authority_expiring(snapshot: &[ThreadHealth], credentials: &[WorkerCredential
     out
 }
 
-/// Which side of an identity a certificate sits on. The two run out differently, so they are said differently.
+/// Which side of a connector's TLS a certificate sits on. The two run out differently, so they are said differently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Half {
-    /// The chain this worker presents. Out of date, every connector naming the identity fails at the handshake.
+    /// The chain this worker presents. Out of date, the connector fails at the handshake.
     Presented,
     /// An authority a far end is verified against. Out of date, a far end chaining only to it cannot be checked;
-    /// one chaining to another root the identity still trusts is unaffected.
+    /// one chaining to another root the connector still trusts is unaffected.
     Trusted,
 }
 
-/// One certificate a deployed identity carries, and the window it is good for.
+/// One certificate a deployed connector's TLS carries, and the window it is good for.
 ///
-/// The leader reads these off the commit the fleet runs: a bundle nobody deploys cannot stop anything working, and
-/// an identity nothing names configures no connection. A group mid-rollout runs more than one commit at once, and
-/// each carries its own answer -- a worker on one never has another commit's roots in its trust store, however
-/// their two bundles happen to name the same identity id.
+/// The leader reads these off the commit the fleet runs, with the chain a presented certificate's list entry holds
+/// now: a bundle nobody deploys cannot stop anything working. A group mid-rollout runs more than one commit at
+/// once, and each carries its own answer -- a worker on one never has another commit's roots in its trust store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployedCertificate {
     pub group: String,
-    /// The commit this certificate was read off. Two commits naming the same identity are never one trust store:
-    /// a worker still on the older one has only its own roots to verify against.
+    /// The commit this certificate was read off. Two commits are never one trust store: a worker still on the
+    /// older one has only its own roots to verify against.
     pub commit: String,
-    /// The identity that carries it, by its id in the bundle.
-    pub identity: String,
+    /// The connector whose TLS carries it.
+    pub subject_kind: SubjectKind,
+    pub subject_id: String,
     pub half: Half,
     pub not_before_millis: i64,
     pub not_after_millis: i64,
-    /// The certificate list entry it was read from, by name and version, where the identity presents one.
-    pub entry: Option<(String, i64)>,
 }
 
-/// A deployed identity's certificates running out, in time to replace them.
+/// A deployed connector's certificates running out, in time to replace them.
 ///
 /// A date rather than something observed, like the two authority entries: the leader reads it off the bundle, so
 /// the warning knows exactly when it began and needs nothing remembered. Notice is a tenth of that certificate's
 /// own life.
 ///
-/// One warning per identity per half, because an identity holds more than one certificate and they do not fail
+/// One warning per connector per half, because a connector holds more than one certificate and they do not fail
 /// together. A presented chain is only as good as its soonest part. A trust store holds several roots on purpose --
 /// during a far end's own rollover the outgoing one expires sooner and matters to nobody -- so trust runs out when
 /// the last of them does, not the first.
-fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warning> {
-    // Commit is part of the key: two commits naming the same identity are two separate trust stores, one per
-    // worker generation, and merging them would let a fresh root on one hide an exhausted one on the other.
+fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warning> {
+    // Commit is part of the key: two commits are two separate trust stores, one per worker generation, and merging
+    // them would let a fresh root on one hide an exhausted one on the other.
     let mut decisive: HashMap<(&str, &str, &str, Half), &DeployedCertificate> = HashMap::new();
     for certificate in deployed {
         let key = (
             certificate.group.as_str(),
             certificate.commit.as_str(),
-            certificate.identity.as_str(),
+            certificate.subject_id.as_str(),
             certificate.half,
         );
         let held = decisive.entry(key).or_insert(certificate);
@@ -471,7 +464,7 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
             Half::Presented => certificate.not_after_millis < held.not_after_millis,
             // A trust store's roots are alternatives, not a chain -- any one of them currently valid is enough to
             // verify a far end. A pre-staged rollover root, not valid yet, must never outrank one already good:
-            // outranking it here is what reported an identity failed while its current root still worked.
+            // outranking it here is what reported a connector failed while its current root still worked.
             Half::Trusted => {
                 let held_valid = now_ms >= held.not_before_millis;
                 let candidate_valid = now_ms >= certificate.not_before_millis;
@@ -496,7 +489,7 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
         let key = (
             certificate.group.as_str(),
             certificate.commit.as_str(),
-            certificate.identity.as_str(),
+            certificate.subject_id.as_str(),
         );
         let start = presented_starts.entry(key).or_insert(certificate.not_before_millis);
         *start = (*start).max(certificate.not_before_millis);
@@ -517,7 +510,7 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
                     let key = (
                         certificate.group.as_str(),
                         certificate.commit.as_str(),
-                        certificate.identity.as_str(),
+                        certificate.subject_id.as_str(),
                     );
                     presented_starts.get(&key).is_some_and(|&start| now_ms < start)
                 }
@@ -528,11 +521,15 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
             }
             let expired = remaining <= 0;
             let days = remaining / (24 * 60 * 60 * 1000);
-            let id = &certificate.identity;
+            let what = match certificate.subject_kind {
+                SubjectKind::Source => "source",
+                _ => "destination",
+            };
+            let id = &certificate.subject_id;
             Some(Warning {
                 scope: None,
-                condition: Condition::IdentityExpiring,
-                subject_kind: SubjectKind::Identity,
+                condition: Condition::CertificateExpiring,
+                subject_kind: certificate.subject_kind,
                 site: None,
                 subject_id: id.clone(),
                 group: Some(certificate.group.clone()),
@@ -546,32 +543,28 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
                 since_millis: Some(certificate.not_after_millis - notice),
                 message: match (certificate.half, not_yet_valid, expired) {
                     (Half::Presented, true, _) => format!(
-                        "the certificate identity {id:?} presents is not valid yet, so every source and \
-                         destination naming it fails at the handshake until it is. Check its start date on the \
-                         Connection identities page"
+                        "the certificate {what} {id:?} presents is not valid yet, so it fails at the handshake \
+                         until it is. Check its start date in {CERTIFICATE_LIST}"
                     ),
                     (Half::Presented, _, true) => format!(
-                        "the certificate identity {id:?} presents has expired, so every source and destination \
-                         naming it fails at the handshake. Replace it on the Connection identities page"
+                        "the certificate {what} {id:?} presents has expired, so it fails at the handshake. Replace \
+                         it in {CERTIFICATE_LIST}"
                     ),
                     (Half::Presented, false, false) => format!(
-                        "the certificate identity {id:?} presents expires in {days} days; replace it on the \
-                         Connection identities page before then"
+                        "the certificate {what} {id:?} presents expires in {days} days; replace it in \
+                         {CERTIFICATE_LIST} before then"
                     ),
                     (Half::Trusted, true, _) => format!(
-                        "the authority identity {id:?} trusts is not valid yet, so a source or destination it \
-                         names cannot be verified against it until it is. Check its start date on the Connection \
-                         identities page"
+                        "the authority {what} {id:?} trusts is not valid yet, so nothing can be verified against it \
+                         until it is. Check its start date in the {what}'s authorities"
                     ),
                     (Half::Trusted, _, true) => format!(
-                        "every authority identity {id:?} trusts has expired, so a source or destination it names \
-                         can no longer be verified against any of them. Add their replacements on the Connection \
-                         identities page"
+                        "every authority {what} {id:?} trusts has expired, so nothing can be verified against any \
+                         of them. Add their replacements to the {what}'s authorities"
                     ),
                     (Half::Trusted, false, false) => format!(
-                        "the last authority identity {id:?} trusts expires in {days} days, and a source or \
-                         destination it names stops verifying then. Add its replacement on the Connection \
-                         identities page"
+                        "the last authority {what} {id:?} trusts expires in {days} days, and the {what} stops \
+                         verifying then. Add its replacement to the {what}'s authorities"
                     ),
                 },
             })
@@ -579,8 +572,8 @@ fn identity_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warni
         .collect();
     // Deterministic: a map's order is not, and a poll that reordered its own answer reads as the fleet changing.
     out.sort_by(|a, b| (&a.group, &a.subject_id, &a.message).cmp(&(&b.group, &b.subject_id, &b.message)));
-    // An ordinary rollout has both commits still carrying the same certificate for an identity neither is
-    // rotating, and each commit's own decisive entry says the same thing about it -- keeping the two apart above
+    // An ordinary rollout has both commits still carrying the same certificate for a connector neither is
+    // changing, and each commit's own decisive entry says the same thing about it -- keeping the two apart above
     // is what a differing pair needs, but an identical pair is one fact, not two.
     out.dedup();
     out
@@ -2384,7 +2377,7 @@ pub fn derive(
     out.extend(authority_expiring(snapshot, credentials, now_ms));
     out.extend(authority_aging(signing, rotating, now_ms));
     out.extend(enrollment_code_names_outgoing_authority(codes, presenting));
-    out.extend(identity_expiring(deployed_certificates, now_ms));
+    out.extend(certificate_expiring(deployed_certificates, now_ms));
     out.extend(held.map(deploy_held));
     out.extend(remote.map(remote_not_followed));
     out.extend(newer.zip(crate::version::RELEASE).map(|(n, own)| newer_release(n, own)));
@@ -2448,43 +2441,6 @@ fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
         since_millis: Some(newer.since),
         message: format!("smeltr {} is out, and this leader runs {own}", newer.release),
     }
-}
-
-/// What workers present that the list holds a newer version of, from what they run (`deployed`) and each
-/// certificate's newest version with when it was stored (`newest`). Nothing moves them on its own: an admin points
-/// the identities at the newest and deploys that change.
-pub fn identities_behind(deployed: &[DeployedCertificate], newest: &HashMap<String, (i64, i64)>) -> Vec<Warning> {
-    let mut behind: Vec<(&str, &str, &str, i64)> = deployed
-        .iter()
-        .filter_map(|c| {
-            let (name, version) = c.entry.as_ref()?;
-            Some((c.group.as_str(), c.identity.as_str(), name.as_str(), *version))
-        })
-        .filter(|(_, _, name, version)| newest.get(*name).is_some_and(|(n, _)| version < n))
-        .collect();
-    // A chain is several certificates and a rollout several commits; one warning per identity and version.
-    behind.sort();
-    behind.dedup();
-    behind
-        .into_iter()
-        .map(|(group, identity, name, version)| {
-            let (newest, since) = newest[name];
-            Warning {
-                scope: None,
-                condition: Condition::IdentityCertificateBehind,
-                subject_kind: SubjectKind::Identity,
-                site: None,
-                subject_id: identity.to_string(),
-                group: Some(group.to_string()),
-                severity: Severity::Warning,
-                since_millis: Some(since),
-                message: format!(
-                    "presents version {version} of the certificate {name:?}, and the newest is version {newest}. \
-                     Update it in {CERTIFICATE_LIST} and deploy the change it opens"
-                ),
-            }
-        })
-        .collect()
 }
 
 /// A certificate this leader issued: its name, how it is issued, and its newest chain described.
@@ -2617,7 +2573,7 @@ pub fn encryption_key_warnings(
                     match kept.get(name) {
                         Some(crate::leader::store::Kept::Issued(_)) => format!(
                             "encrypted with a key this leader no longer has. The leader issues a new version within \
-                             the hour; then update its identities in {CERTIFICATE_LIST}"
+                             the hour, and workers take it on their next heartbeat"
                         ),
                         Some(crate::leader::store::Kept::Acme) => format!(
                             "encrypted with a key this leader no longer has. Order it again in {LEADER_CERTIFICATE_TAB}"
@@ -2905,7 +2861,7 @@ mod tests {
     #[test]
     fn every_condition_keeps_the_name_its_clients_know() {
         let wire = |c: Condition| serde_json::to_string(&c).unwrap();
-        assert_eq!(wire(Condition::IdentityExpiring), "\"identityExpiring\"");
+        assert_eq!(wire(Condition::CertificateExpiring), "\"certificateExpiring\"");
         assert_eq!(wire(Condition::WorkerSilent), "\"workerSilent\"");
         assert_eq!(wire(Condition::WorkerNeverHeartbeated), "\"workerNeverHeartbeated\"");
         assert_eq!(wire(Condition::SourceBlocked), "\"sourceBlocked\"");
@@ -3525,66 +3481,39 @@ mod tests {
         assert!(clipped.ends_with("word…"), "{clipped}");
     }
 
-    // -- a deployed identity's certificates -----------------------------------
+    // -- a deployed connector's certificates -----------------------------------
 
-    /// One certificate an identity carries: how long it is good for, and how much of that is left. Every caller
+    /// One certificate a source carries: how long it is good for, and how much of that is left. Every caller
     /// not testing a split rollout wants the same commit, so two certificates it built are one trust store unless
     /// `on_commit` says otherwise.
-    fn carried(identity: &str, half: Half, life_days: i64, remaining_days: i64) -> DeployedCertificate {
-        on_commit(identity, half, life_days, remaining_days, "c0")
+    fn carried(source: &str, half: Half, life_days: i64, remaining_days: i64) -> DeployedCertificate {
+        on_commit(source, half, life_days, remaining_days, "c0")
     }
 
-    fn on_commit(identity: &str, half: Half, life_days: i64, remaining_days: i64, commit: &str) -> DeployedCertificate {
+    fn on_commit(source: &str, half: Half, life_days: i64, remaining_days: i64, commit: &str) -> DeployedCertificate {
         DeployedCertificate {
             group: "g".to_string(),
             commit: commit.to_string(),
-            identity: identity.to_string(),
+            subject_kind: SubjectKind::Source,
+            subject_id: source.to_string(),
             half,
             not_before_millis: NOW + remaining_days * DAY - life_days * DAY,
             not_after_millis: NOW + remaining_days * DAY,
-            entry: None,
         }
-    }
-
-    /// An identity on an older version than the list's newest warns once, whatever its chain holds, until what
-    /// workers run presents the newest.
-    #[test]
-    fn an_identity_on_an_older_version_warns_until_it_presents_the_newest() {
-        let on = |version: i64| {
-            let mut c = carried("receiver", Half::Presented, 90, 60);
-            c.entry = Some(("receiver-tls".to_string(), version));
-            [c.clone(), c]
-        };
-        let newest = HashMap::from([("receiver-tls".to_string(), (2, NOW - DAY))]);
-        let said = identities_behind(&on(1), &newest);
-        assert_eq!(said.len(), 1, "{said:?}");
-        assert_eq!(said[0].condition, Condition::IdentityCertificateBehind);
-        assert_eq!(
-            (said[0].subject_id.as_str(), said[0].group.as_deref()),
-            ("receiver", Some("g"))
-        );
-        assert_eq!(said[0].since_millis, Some(NOW - DAY));
-        assert!(
-            said[0]
-                .message
-                .starts_with("presents version 1 of the certificate \"receiver-tls\", and the newest is version 2")
-        );
-        assert!(identities_behind(&on(2), &newest).is_empty());
-        assert!(identities_behind(&on(1), &HashMap::new()).is_empty());
     }
 
     #[test]
     fn a_certificate_with_most_of_its_life_left_is_not_work_yet() {
         let year = carried("acme", Half::Presented, 365, 200);
-        assert!(identity_expiring(&[year], NOW).is_empty());
+        assert!(certificate_expiring(&[year], NOW).is_empty());
     }
 
     #[test]
-    fn the_certificate_an_identity_presents_is_worth_saying_before_it_goes() {
-        let said = identity_expiring(&[carried("acme", Half::Presented, 365, 20)], NOW);
+    fn the_certificate_a_source_presents_is_worth_saying_before_it_goes() {
+        let said = certificate_expiring(&[carried("acme", Half::Presented, 365, 20)], NOW);
         assert_eq!(said.len(), 1);
-        assert_eq!(said[0].condition, Condition::IdentityExpiring);
-        assert_eq!(said[0].subject_kind, SubjectKind::Identity);
+        assert_eq!(said[0].condition, Condition::CertificateExpiring);
+        assert_eq!(said[0].subject_kind, SubjectKind::Source);
         assert_eq!(said[0].subject_id, "acme");
         assert_eq!(said[0].group.as_deref(), Some("g"));
         assert_eq!(said[0].severity, Severity::Warning);
@@ -3594,7 +3523,7 @@ mod tests {
     /// Working and something is off, until the day it is not working at all.
     #[test]
     fn a_certificate_that_has_run_out_is_a_failure_rather_than_a_warning() {
-        let said = identity_expiring(&[carried("acme", Half::Presented, 365, -1)], NOW);
+        let said = certificate_expiring(&[carried("acme", Half::Presented, 365, -1)], NOW);
         assert_eq!(said.len(), 1);
         assert_eq!(said[0].severity, Severity::Failed);
         assert!(
@@ -3609,7 +3538,7 @@ mod tests {
     /// ordinary "expires soon" check at all.
     #[test]
     fn a_certificate_not_valid_yet_is_a_failure_however_far_off_it_expires() {
-        let said = identity_expiring(&[carried("acme", Half::Presented, 365, 400)], NOW);
+        let said = certificate_expiring(&[carried("acme", Half::Presented, 365, 400)], NOW);
         assert_eq!(said.len(), 1, "{said:?}");
         assert_eq!(said[0].severity, Severity::Failed);
         assert!(said[0].message.contains("not valid yet"), "{}", said[0].message);
@@ -3635,7 +3564,7 @@ mod tests {
             "the intermediate must not be the decisive member on its own expiry"
         );
 
-        let said = identity_expiring(&[leaf, intermediate], NOW);
+        let said = certificate_expiring(&[leaf, intermediate], NOW);
         assert_eq!(said.len(), 1, "{said:?}");
         assert_eq!(said[0].severity, Severity::Failed);
         assert!(said[0].message.contains("not valid yet"), "{}", said[0].message);
@@ -3643,18 +3572,18 @@ mod tests {
 
     #[test]
     fn an_authority_not_valid_yet_is_a_failure_however_far_off_it_expires() {
-        let said = identity_expiring(&[carried("acme", Half::Trusted, 365, 400)], NOW);
+        let said = certificate_expiring(&[carried("acme", Half::Trusted, 365, 400)], NOW);
         assert_eq!(said.len(), 1, "{said:?}");
         assert_eq!(said[0].severity, Severity::Failed);
         assert!(said[0].message.contains("not valid yet"), "{}", said[0].message);
     }
 
     /// A trust store's roots are alternatives, not a chain: staging tomorrow's rollover root today, ahead of the
-    /// swap, must not report the identity failed while the root actually in use still verifies fine. Picking the
+    /// swap, must not report the source failed while the root actually in use still verifies fine. Picking the
     /// largest `not_after` among candidates -- without asking whether one is even valid yet -- is exactly the bug
     /// that would have outranked the good root with the pre-staged one.
     #[test]
-    fn a_pre_staged_rollover_root_does_not_fail_an_identity_a_current_root_still_verifies() {
+    fn a_pre_staged_rollover_root_does_not_fail_a_source_a_current_root_still_verifies() {
         let current = carried("acme", Half::Trusted, 3650, 3600);
         let pre_staged = carried("acme", Half::Trusted, 3650, 4000);
         assert!(
@@ -3666,7 +3595,7 @@ mod tests {
             "the fixture must actually not be valid yet"
         );
 
-        let said = identity_expiring(&[current, pre_staged], NOW);
+        let said = certificate_expiring(&[current, pre_staged], NOW);
         assert!(
             said.is_empty(),
             "a root the fleet can still verify against was outranked by one not valid yet: {said:?}"
@@ -3683,7 +3612,7 @@ mod tests {
     fn a_certificate_warning_begins_when_its_notice_did() {
         let year = carried("acme", Half::Presented, 365, 20);
         let notice = (365 * DAY) / 10;
-        let said = identity_expiring(std::slice::from_ref(&year), NOW);
+        let said = certificate_expiring(std::slice::from_ref(&year), NOW);
         assert_eq!(said[0].since_millis, Some(year.not_after_millis - notice));
     }
 
@@ -3691,14 +3620,14 @@ mod tests {
     /// says about itself.
     #[test]
     fn a_presented_chain_runs_out_with_its_soonest_part() {
-        let said = identity_expiring(
+        let said = certificate_expiring(
             &[
                 carried("acme", Half::Presented, 3650, 2000),
                 carried("acme", Half::Presented, 365, 10),
             ],
             NOW,
         );
-        assert_eq!(said.len(), 1, "one identity, one thing to say about what it presents");
+        assert_eq!(said.len(), 1, "one source, one thing to say about what it presents");
         assert!(said[0].message.contains("expires in 10 days"), "{}", said[0].message);
     }
 
@@ -3711,11 +3640,11 @@ mod tests {
             carried("acme", Half::Trusted, 3650, 2000),
         ];
         assert!(
-            identity_expiring(&rolling_over, NOW).is_empty(),
+            certificate_expiring(&rolling_over, NOW).is_empty(),
             "an outgoing root beside an incoming one is not trust running out"
         );
 
-        let said = identity_expiring(
+        let said = certificate_expiring(
             &[
                 carried("acme", Half::Trusted, 3650, 5),
                 carried("acme", Half::Trusted, 3650, 20),
@@ -3726,12 +3655,12 @@ mod tests {
         assert!(said[0].message.contains("last authority"), "{}", said[0].message);
     }
 
-    /// A group mid-rollout runs two commits, and the same identity id in each is never one trust store: a worker
+    /// A group mid-rollout runs two commits, and the same source in each is never one trust store: a worker
     /// on the old commit has only its own roots, so a fresh root the new commit added must not hide the old
     /// commit's own running out.
     #[test]
     fn a_commits_own_authorities_are_never_hidden_by_anothers() {
-        let said = identity_expiring(
+        let said = certificate_expiring(
             &[
                 on_commit("acme", Half::Trusted, 3650, 5, "old"),
                 on_commit("acme", Half::Trusted, 3650, 2000, "new"),
@@ -3746,12 +3675,12 @@ mod tests {
         assert!(said[0].message.contains("expires in 5 days"), "{}", said[0].message);
     }
 
-    /// An ordinary rollout has both commits still carrying the same certificate for an identity neither is
+    /// An ordinary rollout has both commits still carrying the same certificate for a source neither is
     /// rotating: two decisive entries, one per commit, saying the exact same thing. That is one warning, not a
     /// duplicate in the ribbon.
     #[test]
     fn two_commits_carrying_the_same_untouched_certificate_are_one_warning() {
-        let said = identity_expiring(
+        let said = certificate_expiring(
             &[
                 on_commit("acme", Half::Trusted, 30, 2, "old"),
                 on_commit("acme", Half::Trusted, 30, 2, "new"),
@@ -3763,8 +3692,8 @@ mod tests {
 
     /// Each half fails on its own and is said on its own.
     #[test]
-    fn the_two_halves_of_one_identity_are_counted_apart() {
-        let said = identity_expiring(
+    fn the_two_halves_of_one_source_are_counted_apart() {
+        let said = certificate_expiring(
             &[
                 carried("acme", Half::Presented, 365, 10),
                 carried("acme", Half::Trusted, 365, 10),
@@ -3775,15 +3704,15 @@ mod tests {
         assert!(said.iter().all(|w| w.subject_id == "acme"));
     }
 
-    /// `shared/` declares one identity and every group that names it runs its own deployment, so each group is
+    /// `shared/` declares one source and every group runs its own deployment of it, so each group is
     /// told separately -- which is what the fleet view rolls up by.
     #[test]
-    fn an_identity_two_groups_deploy_is_said_once_for_each() {
+    fn a_source_two_groups_deploy_is_said_once_for_each() {
         let mut west = carried("corp-root", Half::Presented, 365, 10);
         west.group = "west".to_string();
         let mut east = carried("corp-root", Half::Presented, 365, 10);
         east.group = "east".to_string();
-        let said = identity_expiring(&[west, east], NOW);
+        let said = certificate_expiring(&[west, east], NOW);
         assert_eq!(said.len(), 2);
         assert_eq!(
             said.iter().map(|w| w.group.clone().unwrap()).collect::<Vec<_>>(),

@@ -750,7 +750,7 @@ fn spawn_embedded_worker(
         std::process::exit(1);
     }
 
-    // Under the leader's own data directory: this worker's identity and credential are the leader's to keep.
+    // Under the leader's own data directory: this worker's id and credential are the leader's to keep.
     let state_dir = data_dir.join("worker");
 
     // Only when there is nothing to enroll with. Minting on every start would leave a live enrollment code behind at
@@ -1017,11 +1017,6 @@ async fn setup_leader(
             get(worker_groups_api::list_worker_groups).post(worker_groups_api::create_worker_group),
         )
         .route("/api/worker-groups/:id/hue", put(worker_groups_api::set_group_hue))
-        // Not on `app` below with the rest of the config routes: saving an identity asks the certificate list
-        // whether it holds the certificate named, which needs `State<AppState>`.
-        .route("/api/identities", put(config_api::put_identities))
-        // Here for the same reason: undoing an identity runs the same check.
-        .route("/api/undo", post(config_api::undo))
         // Not on `app` below with the rest of the config routes: retention after an upload keeps what the fleet runs,
         // which the registry knows. A lookup file is streamed to disk, so the limit is what a disk takes rather than
         // what memory holds.
@@ -2006,10 +2001,8 @@ async fn run_leader() {
         )
         .route("/api/sources", put(config_api::put_sources))
         .route("/api/destinations", put(config_api::put_destinations))
-        // `/api/identities` and `/api/undo` are on `admin_and_cluster` instead: an identity's certificate is
-        // committed and its key is not, so saving one asks the secret store whether the two are a pair, and
-        // `State<AppState>` is what carries it.
-        .route("/api/identities/describe", post(config_api::describe_certificates))
+        .route("/api/certificates/describe", post(config_api::describe_certificates))
+        .route("/api/undo", post(config_api::undo))
         .route("/api/routes", put(config_api::put_routes))
         .route("/api/grok-patterns", put(config_api::put_grok_patterns))
         // An edited CSV travels whole in this body, so it is as large as the file.
@@ -2895,7 +2888,6 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
             on_exception: None,
             name: None,
         }
@@ -3537,7 +3529,6 @@ mod tests {
                 routes: vec![],
                 lookup_tables: vec![],
                 grok_patterns: vec![],
-                identities: vec![],
                 on_exception: None,
                 name: None,
             },

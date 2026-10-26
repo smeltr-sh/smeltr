@@ -2,8 +2,6 @@
 //! library's own tests cover load and save; this covers the last mile,
 //! that `load_str`'s output compiles and runs against real `_raw` bytes.
 
-use crate::certs;
-
 use smeltr::config_file::{load_bundle_dir, load_str};
 use smeltr::core::batch::{Batch, RAW_SLOTS, SLOT_LIVE, SLOT_RAW, raw_layout};
 
@@ -1620,7 +1618,7 @@ fn a_missing_credential_environment_variable_is_refused_at_construction() {
             zone_urls: Default::default(),
             sniff: None,
             default_index: "logs".into(),
-            identity: None,
+            tls: None,
             auth: Some(smeltr::plan::topology::SecretRef::WorkerLocal(
                 "SMELTR_ES_AUTH_DEFINITELY_NOT_SET".into(),
             )),
@@ -2809,7 +2807,7 @@ fn a_minimal_iceberg_destination_loads_with_the_defaults() {
     assert!(matches!(c.sign_in, CatalogSignIn::None));
     assert_eq!(c.namespace, vec!["logs".to_string(), "web".to_string()]);
     assert_eq!(c.table, "access");
-    assert!(c.partition_by.is_empty() && c.storage.is_none() && c.identity.is_none());
+    assert!(c.partition_by.is_empty() && c.storage.is_none() && c.tls.is_none());
     assert_eq!(c.compression, Compression::Zstd);
     assert_eq!(c.in_flight, 4);
     assert_eq!(c.max_object_bytes, 64 * 1024 * 1024);
@@ -3380,7 +3378,7 @@ fn a_minimal_s3_sqs_source_loads_with_the_defaults() {
     assert_eq!(queue_url, "https://sqs.us-east-1.amazonaws.com/123456789012/logs");
     assert_eq!(o.framing, Framing::Lines);
     assert_eq!(o.visibility, std::time::Duration::from_secs(60));
-    assert!(access.access_key.is_none() && access.role.is_none() && o.identity.is_none());
+    assert!(access.access_key.is_none() && access.role.is_none() && o.tls.is_none());
     assert!(system.topology.named_secrets.is_empty());
 }
 
@@ -3392,12 +3390,8 @@ fn an_s3_sqs_source_loads_with_every_field() {
         r#","region":"eu-west-1","endpoint":"https://s3.internal","authEndpoint":"https://sts.internal",
            "accessKeyId":"AWS_KEY_ID","secretAccessKey":{"secret":"aws-secret","version":2},
            "roleArn":"arn:aws:iam::123456789012:role/reader","externalId":"x-1",
-           "identity":"acme","framing":"object","encoding":"windows-1252","visibilitySecs":300"#,
+           "certificate":"acme","framing":"object","encoding":"windows-1252","visibilitySecs":300"#,
     );
-    let authority = certs::Authority::new("s3-sqs-test");
-    let mut file: serde_json::Value = serde_json::from_str(&json).unwrap();
-    file["identities"] = serde_json::json!([{"id": "acme", "authorities": authority.pem}]);
-    let json = file.to_string();
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     let system = load_str(&json).expect("must load");
     let o = object_source(&system);
@@ -3406,7 +3400,7 @@ fn an_s3_sqs_source_loads_with_every_field() {
     assert_eq!(access.endpoint.as_deref(), Some("https://s3.internal"));
     assert_eq!(access.auth_endpoint.as_deref(), Some("https://sts.internal"));
     assert_eq!(access.role.as_ref().unwrap().external_id.as_deref(), Some("x-1"));
-    assert_eq!(o.identity.as_ref().unwrap().id, "acme");
+    assert_eq!(o.tls.as_ref().unwrap().certificate.as_deref(), Some("acme"));
     assert_eq!(o.framing, Framing::Object);
     assert_eq!(o.visibility, std::time::Duration::from_secs(300));
     let named: Vec<String> = system.topology.named_secrets.iter().map(|n| n.what.clone()).collect();
@@ -3424,26 +3418,15 @@ fn an_s3_sqs_queue_url_loads_trimmed() {
     assert_eq!(queue_url, "https://sqs.us-east-1.amazonaws.com/123456789012/logs");
 }
 
-/// An identity is refused on an object source whose every address is plain HTTP, where nothing it holds is used,
+/// A certificate is refused on an object source whose every address is plain HTTP, where nothing it holds is used,
 /// and kept while any one of them negotiates TLS.
 #[test]
-fn an_identity_on_an_object_source_reached_over_plain_http_only_is_refused() {
-    let authority = certs::Authority::new("object-source-identity-test");
-    let with_identity = |json: String| {
-        let mut file: serde_json::Value = serde_json::from_str(&json).unwrap();
-        file["identities"] = serde_json::json!([{"id": "acme", "authorities": authority.pem}]);
-        file.to_string()
-    };
-    let plain = with_identity(
-        r#"{"version":1,"sources":[{"id":"q","type":"s3Sqs","queueUrl":"http://localhost:4566/000000000000/logs",
-            "endpoint":"http://localhost:4566","identity":"acme"}]}"#
-            .to_string(),
-    );
-    let why = r#"source "q" names the identity "acme" and is reached over "http://localhost:4566/000000000000/logs""#;
-    assert!(refused_at(&plain, "queueUrl", why), "{}", refusal(&plain));
-    let one_tls = with_identity(s3_sqs_config(
-        r#","endpoint":"http://localhost:4566","identity":"acme""#,
-    ));
+fn a_certificate_on_an_object_source_reached_over_plain_http_only_is_refused() {
+    let plain = r#"{"version":1,"sources":[{"id":"q","type":"s3Sqs","queueUrl":"http://localhost:4566/000000000000/logs",
+            "endpoint":"http://localhost:4566","certificate":"acme"}]}"#;
+    let why = r#"source "q" sets TLS and is reached over "http://localhost:4566/000000000000/logs""#;
+    assert!(refused_at(plain, "queueUrl", why), "{}", refusal(plain));
+    let one_tls = s3_sqs_config(r#","endpoint":"http://localhost:4566","certificate":"acme""#);
     assert!(refusal(&one_tls).is_empty(), "{}", refusal(&one_tls));
 }
 
@@ -3504,8 +3487,8 @@ fn an_s3_sqs_source_with_bad_settings_is_refused() {
     assert!(e.contains("externalId or authEndpoint and no roleArn"), "{e}");
     let e = refusal(&s3_sqs_config(r#","authEndpoint":"https://sts.internal""#));
     assert!(e.contains("externalId or authEndpoint and no roleArn"), "{e}");
-    let e = refusal(&s3_sqs_config(r#","identity":"nobody""#));
-    assert!(e.contains("does not declare"), "{e}");
+    let e = refusal(&s3_sqs_config(r#","certificate":" ""#));
+    assert!(e.contains("blank name"), "{e}");
     let e = refusal(&s3_sqs_config(r#","encoding":"klingon""#));
     assert!(e.contains("not a name smeltr knows"), "{e}");
     for secs in ["0", "43201"] {
@@ -3597,7 +3580,7 @@ fn a_minimal_s3_list_source_loads_with_the_defaults() {
     assert_eq!(*start, ListStart::Everything);
     assert_eq!(*after_commit, AfterCommit::Keep);
     assert_eq!(o.framing, Framing::Lines);
-    assert!(access.access_key.is_none() && access.role.is_none() && o.identity.is_none());
+    assert!(access.access_key.is_none() && access.role.is_none() && o.tls.is_none());
     assert!(system.topology.named_secrets.is_empty());
     assert_eq!(
         system.topology.sources[0].kind.meta(),
@@ -3617,13 +3600,9 @@ fn an_s3_list_source_loads_with_every_field() {
         r#","prefix":"app/","region":"eu-west-1","endpoint":"https://s3.internal","authEndpoint":"https://sts.internal",
            "accessKeyId":"AWS_KEY_ID","secretAccessKey":{"secret":"aws-secret","version":2},
            "roleArn":"arn:aws:iam::123456789012:role/reader","externalId":"x-1",
-           "identity":"acme","framing":"object","encoding":"windows-1252","pollIntervalSecs":300,
+           "certificate":"acme","framing":"object","encoding":"windows-1252","pollIntervalSecs":300,
            "afterCommit":"move","movePrefix":"done/""#,
     );
-    let authority = certs::Authority::new("s3-list-test");
-    let mut file: serde_json::Value = serde_json::from_str(&json).unwrap();
-    file["identities"] = serde_json::json!([{"id": "acme", "authorities": authority.pem}]);
-    let json = file.to_string();
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     let system = load_str(&json).expect("must load");
     let o = object_source(&system);
@@ -3650,7 +3629,7 @@ fn an_s3_list_source_loads_with_every_field() {
             prefix: "done/".to_string()
         }
     );
-    assert_eq!(o.identity.as_ref().unwrap().id, "acme");
+    assert_eq!(o.tls.as_ref().unwrap().certificate.as_deref(), Some("acme"));
     assert_eq!(o.framing, Framing::Object);
     let named: Vec<String> = system.topology.named_secrets.iter().map(|n| n.what.clone()).collect();
     assert_eq!(named.len(), 2, "{named:?}");
@@ -3811,8 +3790,8 @@ fn an_s3_list_source_with_bad_access_identity_or_encoding_is_refused() {
     assert!(e.contains("externalId or authEndpoint and no roleArn"), "{e}");
     let e = refusal(&s3_list_config(r#","region":" ""#));
     assert!(e.contains("has an empty region"), "{e}");
-    let e = refusal(&s3_list_config(r#","identity":"nobody""#));
-    assert!(e.contains("does not declare"), "{e}");
+    let e = refusal(&s3_list_config(r#","certificate":" ""#));
+    assert!(e.contains("blank name"), "{e}");
     let e = refusal(&s3_list_config(r#","encoding":"klingon""#));
     assert!(e.contains("not a name smeltr knows"), "{e}");
     let e = refusal(&s3_list_config(r#","endpoint":"http://minio.internal:9000""#));
@@ -3878,7 +3857,7 @@ fn a_minimal_gcs_list_source_loads_with_the_defaults() {
     assert_eq!(*start, ListStart::Everything);
     assert_eq!(*after_commit, AfterCommit::Keep);
     assert_eq!(o.framing, Framing::Lines);
-    assert!(access.endpoint.is_none() && access.service_account_key.is_none() && o.identity.is_none());
+    assert!(access.endpoint.is_none() && access.service_account_key.is_none() && o.tls.is_none());
     assert!(system.topology.named_secrets.is_empty());
     assert_eq!(system.topology.sources[0].kind.meta(), SourceMeta::GCS_LIST);
     assert_eq!(
@@ -3894,13 +3873,9 @@ fn a_gcs_list_source_loads_with_every_field() {
     let json = gcs_list_config(
         r#","prefix":"app/","endpoint":"https://storage.example.com",
            "serviceAccountKey":{"secret":"gcs-key","version":2},
-           "identity":"acme","framing":"object","encoding":"windows-1252","pollIntervalSecs":300,
+           "certificate":"acme","framing":"object","encoding":"windows-1252","pollIntervalSecs":300,
            "afterCommit":"move","movePrefix":"done/""#,
     );
-    let authority = certs::Authority::new("gcs-list-test");
-    let mut file: serde_json::Value = serde_json::from_str(&json).unwrap();
-    file["identities"] = serde_json::json!([{"id": "acme", "authorities": authority.pem}]);
-    let json = file.to_string();
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     let system = load_str(&json).expect("must load");
     let o = object_source(&system);
@@ -3925,7 +3900,7 @@ fn a_gcs_list_source_loads_with_every_field() {
             prefix: "done/".to_string()
         }
     );
-    assert_eq!(o.identity.as_ref().unwrap().id, "acme");
+    assert_eq!(o.tls.as_ref().unwrap().certificate.as_deref(), Some("acme"));
     assert_eq!(o.framing, Framing::Object);
     assert_eq!(
         system.topology.sources[0].kind.single_worker().as_deref(),
@@ -3977,7 +3952,7 @@ fn a_minimal_azure_blob_list_source_loads_with_the_defaults() {
     assert_eq!(*start, ListStart::Everything);
     assert_eq!(*after_commit, AfterCommit::Keep);
     assert_eq!(o.framing, Framing::Lines);
-    assert!(access.credential.is_none() && access.endpoint.is_none() && o.identity.is_none());
+    assert!(access.credential.is_none() && access.endpoint.is_none() && o.tls.is_none());
     assert!(system.topology.named_secrets.is_empty());
     assert_eq!(system.topology.sources[0].kind.meta(), SourceMeta::AZURE_BLOB_LIST);
     assert_eq!(
@@ -3996,13 +3971,9 @@ fn an_azure_blob_list_source_loads_with_every_field() {
         r#","prefix":"app/","endpoint":"https://acme.blob.core.usgovcloudapi.net",
            "authEndpoint":"https://login.microsoftonline.us",
            "tenantId":"t","clientId":"c","clientSecret":{"secret":"azure-secret","version":2},
-           "identity":"acme","framing":"escapedLines","encoding":"windows-1252","pollIntervalSecs":300,
+           "certificate":"acme","framing":"escapedLines","encoding":"windows-1252","pollIntervalSecs":300,
            "start":"new""#,
     );
-    let authority = certs::Authority::new("azure-list-test");
-    let mut file: serde_json::Value = serde_json::from_str(&json).unwrap();
-    file["identities"] = serde_json::json!([{"id": "acme", "authorities": authority.pem}]);
-    let json = file.to_string();
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     let system = load_str(&json).expect("must load");
     let o = object_source(&system);
@@ -4029,7 +4000,7 @@ fn an_azure_blob_list_source_loads_with_every_field() {
     assert_eq!(*poll_interval, std::time::Duration::from_secs(300));
     assert_eq!(*start, ListStart::New);
     assert_eq!(*after_commit, AfterCommit::Keep);
-    assert_eq!(o.identity.as_ref().unwrap().id, "acme");
+    assert_eq!(o.tls.as_ref().unwrap().certificate.as_deref(), Some("acme"));
     assert_eq!(o.framing, Framing::EscapedLines);
     assert_eq!(
         system.topology.sources[0].kind.single_worker().as_deref(),
@@ -4113,7 +4084,7 @@ fn a_minimal_sftp_source_loads_with_the_defaults() {
     assert_eq!(*start, ListStart::Everything);
     assert_eq!(*after_commit, AfterCommit::Keep);
     assert_eq!(o.framing, Framing::Lines);
-    assert!(o.identity.is_none());
+    assert!(o.tls.is_none());
     let named: Vec<String> = system.topology.named_secrets.iter().map(|n| n.what.clone()).collect();
     assert_eq!(named, [r#"source "l": password"#]);
     assert_eq!(system.topology.sources[0].kind.meta(), SourceMeta::SFTP);
@@ -4288,10 +4259,10 @@ fn an_sftp_destination_loads_as_an_object_store() {
     assert_eq!(named, [r#"destination "lake": privateKey"#]);
 }
 
-/// An SFTP server has no storage classes, is trusted by its host key, not a TLS identity, and needs time to sign in.
+/// An SFTP server has no storage classes, is trusted by its host key, not a TLS certificate, and needs time to sign in.
 #[test]
-fn an_sftp_destination_takes_no_storage_class_or_identity_or_short_stall() {
-    for extra in [r#","storageClass":"STANDARD""#, r#","identity":"client""#] {
+fn an_sftp_destination_takes_no_storage_class_or_certificate_or_short_stall() {
+    for extra in [r#","storageClass":"STANDARD""#, r#","certificate":"client""#] {
         let e = serde_json::from_str::<smeltr::config_file::FileConfig>(&sftp_destination_config(extra)).unwrap_err();
         assert!(e.to_string().contains("unknown field"), "{extra}: {e}");
     }
@@ -4346,7 +4317,7 @@ fn a_minimal_azure_blob_queue_source_loads_with_the_defaults() {
     let (queue_url, access, max_deliveries) = storage_queue_of(o);
     assert_eq!(queue_url, "https://acme.queue.core.windows.net/blob-events");
     assert_eq!(access.account, "acme");
-    assert!(access.credential.is_none() && access.endpoint.is_none() && o.identity.is_none());
+    assert!(access.credential.is_none() && access.endpoint.is_none() && o.tls.is_none());
     assert_eq!(max_deliveries, 5);
     assert_eq!(o.framing, Framing::Lines);
     assert_eq!(o.visibility, std::time::Duration::from_secs(60));
@@ -4361,12 +4332,8 @@ fn an_azure_blob_queue_source_loads_with_every_field() {
     let json = azure_queue_config(
         r#","endpoint":"https://acme.blob.core.usgovcloudapi.net","authEndpoint":"https://login.microsoftonline.us",
            "tenantId":"t","clientId":"c","clientSecret":{"secret":"azure-secret","version":2},
-           "identity":"acme","framing":"escapedLines","encoding":"windows-1252","visibilitySecs":300,"maxDeliveries":2"#,
+           "certificate":"acme","framing":"escapedLines","encoding":"windows-1252","visibilitySecs":300,"maxDeliveries":2"#,
     );
-    let authority = certs::Authority::new("azure-queue-test");
-    let mut file: serde_json::Value = serde_json::from_str(&json).unwrap();
-    file["identities"] = serde_json::json!([{"id": "acme", "authorities": authority.pem}]);
-    let json = file.to_string();
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     let system = load_str(&json).expect("must load");
     let o = object_source(&system);
@@ -4381,7 +4348,7 @@ fn an_azure_blob_queue_source_loads_with_every_field() {
     );
     assert!(matches!(&access.credential, Some(AzureCredential::ClientSecret { client_id, .. }) if client_id == "c"));
     assert_eq!(max_deliveries, 2);
-    assert_eq!(o.identity.as_ref().unwrap().id, "acme");
+    assert_eq!(o.tls.as_ref().unwrap().certificate.as_deref(), Some("acme"));
     assert_eq!(o.framing, Framing::EscapedLines);
     assert_eq!(o.visibility, std::time::Duration::from_secs(300));
     let named: Vec<String> = system.topology.named_secrets.iter().map(|n| n.what.clone()).collect();
@@ -4400,8 +4367,8 @@ fn an_azure_blob_queue_source_with_bad_settings_is_refused() {
         r#","authEndpoint":"https://login.microsoftonline.us""#,
     ));
     assert!(e.contains("authEndpoint and no clientSecret"), "{e}");
-    let e = refusal(&azure_queue_config(r#","identity":"nobody""#));
-    assert!(e.contains("does not declare"), "{e}");
+    let e = refusal(&azure_queue_config(r#","certificate":" ""#));
+    assert!(e.contains("blank name"), "{e}");
     for n in ["0", "1001"] {
         let e = refusal(&azure_queue_config(&format!(r#","maxDeliveries":{n}"#)));
         assert!(e.contains("maxDeliveries must be between 1 and 1000"), "{e}");
@@ -4476,7 +4443,7 @@ fn a_minimal_gcs_pubsub_source_loads_with_the_defaults() {
     let (subscription, endpoint, access) = pubsub_of(o);
     assert_eq!(subscription, "projects/acme/subscriptions/gcs-events");
     assert!(endpoint.is_none() && access.endpoint.is_none() && access.service_account_key.is_none());
-    assert!(o.identity.is_none());
+    assert!(o.tls.is_none());
     assert_eq!(o.framing, Framing::Lines);
     assert_eq!(o.visibility, std::time::Duration::from_secs(60));
     assert_eq!(system.topology.sources[0].kind.meta(), SourceMeta::GCS_PUB_SUB);
@@ -4490,12 +4457,8 @@ fn a_gcs_pubsub_source_loads_with_every_field() {
     let json = gcs_pubsub_config(
         r#","pubsubEndpoint":"https://pubsub.example.com","endpoint":"https://storage.example.com",
            "serviceAccountKey":{"secret":"gcs-key","version":2},
-           "identity":"acme","framing":"object","encoding":"windows-1252","visibilitySecs":600"#,
+           "certificate":"acme","framing":"object","encoding":"windows-1252","visibilitySecs":600"#,
     );
-    let authority = certs::Authority::new("gcs-pubsub-test");
-    let mut file: serde_json::Value = serde_json::from_str(&json).unwrap();
-    file["identities"] = serde_json::json!([{"id": "acme", "authorities": authority.pem}]);
-    let json = file.to_string();
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     let system = load_str(&json).expect("must load");
     let o = object_source(&system);
@@ -4503,7 +4466,7 @@ fn a_gcs_pubsub_source_loads_with_every_field() {
     assert_eq!(endpoint, Some("https://pubsub.example.com"));
     assert_eq!(access.endpoint.as_deref(), Some("https://storage.example.com"));
     assert!(access.service_account_key.is_some());
-    assert_eq!(o.identity.as_ref().unwrap().id, "acme");
+    assert_eq!(o.tls.as_ref().unwrap().certificate.as_deref(), Some("acme"));
     assert_eq!(o.framing, Framing::Object);
     assert_eq!(o.visibility, std::time::Duration::from_secs(600));
     let named: Vec<String> = system.topology.named_secrets.iter().map(|n| n.what.clone()).collect();
@@ -4529,8 +4492,8 @@ fn a_gcs_pubsub_source_with_bad_settings_is_refused() {
     assert!(e.contains("empty pubsubEndpoint"), "{e}");
     let e = refusal(&gcs_pubsub_config(r#","endpoint":"""#));
     assert!(e.contains("empty endpoint"), "{e}");
-    let e = refusal(&gcs_pubsub_config(r#","identity":"nobody""#));
-    assert!(e.contains("does not declare"), "{e}");
+    let e = refusal(&gcs_pubsub_config(r#","certificate":" ""#));
+    assert!(e.contains("blank name"), "{e}");
     for unknown in [r#","bucket":"logs""#, r#","maxDeliveries":3"#] {
         let e = serde_json::from_str::<smeltr::config_file::FileConfig>(&gcs_pubsub_config(unknown)).unwrap_err();
         assert!(e.to_string().contains("unknown field"), "{e}");
@@ -4699,7 +4662,7 @@ fn an_event_hubs_source_loads_as_a_kafka_source_signed_in_with_its_connection_st
     assert_eq!(k.topics, ["insights-logs"]);
     assert_eq!(k.group_id, "smeltr");
     assert_eq!(k.start, StartPosition::Earliest);
-    assert!(k.stop.is_none() && k.identity.is_none());
+    assert!(k.stop.is_none() && k.tls.is_none());
     assert_eq!(k.service, KafkaService::EventHubs);
     let mut literal = k.props.literal.clone();
     literal.sort();
@@ -4787,7 +4750,7 @@ fn an_event_hubs_destination_loads_as_a_kafka_destination_signed_in_with_its_con
         assert_eq!(k.default_topic, "alerts");
         assert_eq!(k.compression, Compression::Gzip);
         assert_eq!(k.service, KafkaService::EventHubs);
-        assert!(k.identity.is_none());
+        assert!(k.tls.is_none());
         let source = event_hubs_kafka(&event_hubs_config(namespace, ""));
         assert_eq!(k.props.literal, source.props.literal, "{namespace}");
         let used = k.props.literal.iter().find(|(key, _)| key == "security.protocol");
@@ -5021,7 +4984,7 @@ fn a_minimal_http_api_source_loads_with_the_defaults() {
     let kind = &system.topology.sources[0].kind;
     let SourceKind::Api(a) = kind else { unreachable!() };
     assert_eq!(a.poll_interval, std::time::Duration::from_secs(60));
-    assert!(a.identity.is_none());
+    assert!(a.tls.is_none());
     assert_eq!(kind.meta(), SourceMeta::HTTP_API);
     assert_eq!(
         kind.single_worker().as_deref(),
@@ -5129,10 +5092,10 @@ fn an_http_api_source_with_bad_settings_is_refused() {
         ),
         (at, r#","sinceOverlapSecs":10"#, "sinceOverlapSecs", "no sinceParam"),
         (at, r#","start":"new""#, "start", "no sinceParam"),
-        (at, r#","identity":"nobody""#, "identity", "nobody"),
+        (at, r#","certificate":" ""#, "certificate", "blank name"),
         (
             "http://127.0.0.1/events",
-            r#","identity":"nobody""#,
+            r#","certificate":"acme""#,
             "url",
             "does not negotiate TLS",
         ),
@@ -5229,10 +5192,10 @@ fn an_okta_source_with_bad_settings_is_refused() {
         ("https://acme.okta.com/api/v1/logs", "", "org", "give its address alone"),
         ("https://acme.okta.com?x=1", "", "org", "give its address alone"),
         (at, r#","pollIntervalSecs":0"#, "pollIntervalSecs", "at least 1"),
-        (at, r#","identity":"nobody""#, "identity", "nobody"),
+        (at, r#","certificate":" ""#, "certificate", "blank name"),
         (
             "http://127.0.0.1:8080",
-            r#","identity":"nobody""#,
+            r#","certificate":"acme""#,
             "org",
             "does not negotiate TLS",
         ),
@@ -5431,18 +5394,21 @@ fn an_http_receiver_with_a_bad_address_path_or_size_is_refused() {
     assert!(e.contains("a path starts with /"), "a route pattern is not a path: {e}");
 }
 
-/// A receiver presents its identity's certificate as a server's, which is what a worker holds that certificate to.
+/// A receiver presents its certificate as a server's, which is what a worker holds that certificate to.
 #[test]
 fn an_http_receiver_presents_its_certificate_as_a_server() {
     let json = format!(
         r#"{{"version":1,
-            "identities":[{{"id":"served","certificate":{{"secret":"served","version":1}}}}],
-            "sources":[{{"id":"hook","type":"httpReceiver","port":8088,"identity":"served"{RECEIVER_TOKEN}}}]}}"#
+            "sources":[{{"id":"hook","type":"httpReceiver","port":8088,"certificate":"served"{RECEIVER_TOKEN}}}]}}"#
     );
     assert_eq!(refusal(&json), "");
     let system = load_str(&json).expect("must load");
-    let identity = &system.topology.identities[0];
-    assert!(identity.presented.server && !identity.presented.client, "{identity:?}");
+    let tls = system.topology.sources[0].kind.tls().expect("a certificate");
+    assert_eq!(tls.side, smeltr::io::trust::Side::Server, "{tls:?}");
+    assert!(
+        !tls.trust_public,
+        "a receiver verifies senders against its authorities alone"
+    );
 }
 
 /// Every worker binds every receiver, so two on one port would fail on all of them.
@@ -5502,11 +5468,11 @@ fn otlp_receivers_of_different_signals_share_a_port() {
     );
     let e = refusal(&sources(&[
         otlp("a", "", ""),
-        otlp("b", r#","signal":"traces""#, r#","identity":"elsewhere""#),
+        otlp("b", r#","signal":"traces""#, r#","certificate":"elsewhere""#),
     ]));
     assert!(
         e.contains(
-            r#"source "b" shares port 4318 with source "a", which serves it; give it the same identity certificate"#
+            r#"source "b" shares port 4318 with source "a", which serves it; give it the same certificate and authorities"#
         ),
         "{e}"
     );
@@ -5670,26 +5636,33 @@ fn a_hec_receiver_that_admits_anyone_is_refused() {
     assert!(e.contains("listens on port 0"), "{e}");
 }
 
-/// A receiver presents its identity's certificate, so one without a certificate has nothing to serve.
+/// A receiver presents its certificate, so one with authorities and no certificate has nothing to serve.
 #[test]
-fn an_http_receiver_whose_identity_holds_no_certificate_is_refused() {
+fn an_http_receiver_with_authorities_and_no_certificate_is_refused() {
     let json = r#"{"version":1,
-        "identities":[{"id":"senders","authorities":"-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n"}],
-        "sources":[{"id":"hook","type":"httpReceiver","port":8088,"identity":"senders"}]}"#;
-    let e = refusal(json);
-    assert!(e.contains("holds no certificate"), "{e}");
+        "sources":[{"id":"hook","type":"httpReceiver","port":8088,
+            "authorities":"-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n"}]}"#;
+    assert!(
+        refused_at(json, "certificate", "names no certificate"),
+        "{}",
+        refusal(json)
+    );
 }
 
-/// An S2S receiver of `extra` on port 9997, beside the identity `s2s-tls` holding authorities and a certificate.
+/// The TLS settings of an S2S receiver that presents the certificate `s2s-tls` and admits a forwarder whose
+/// certificate chains to its authorities, which `s2s_receiver_config` fills in.
+const S2S_TLS: &str = r#","certificate":"s2s-tls","authorities":"@authorities""#;
+
+/// An S2S receiver of `extra` on port 9997, with [`S2S_TLS`]'s authorities filled in.
 fn s2s_receiver_config(extra: &str) -> String {
     let key = rcgen::KeyPair::generate().unwrap();
     let params = rcgen::CertificateParams::new(vec!["indexer".to_string()]).unwrap();
     let pem = serde_json::to_string(&params.self_signed(&key).unwrap().pem()).unwrap();
     format!(
         r#"{{"version":1,
-            "identities":[{{"id":"s2s-tls","certificate":{{"secret":"s2s-tls","version":1}},"authorities":{pem}}}],
             "sources":[{{"id":"forwarders","type":"s2sReceiver","port":9997{extra}}}]}}"#
     )
+    .replace(r#""@authorities""#, &pem)
 }
 
 const S2S_TOKEN: &str = r#","tokens":{"uf-fleet":"S2S_TOKEN"}"#;
@@ -5717,7 +5690,7 @@ fn a_minimal_s2s_receiver_loads() {
         r.tokens,
         [("uf-fleet".to_string(), SecretRef::WorkerLocal("S2S_TOKEN".into()))]
     );
-    assert!(r.identity.is_none());
+    assert!(r.tls.is_none());
     assert_eq!(kind.meta(), SourceMeta::S2S_RECEIVER.with_encoding(kind.encoding()));
     assert_eq!(
         kind.listens().map(|l| (l.transport, l.address)),
@@ -5730,11 +5703,11 @@ fn a_minimal_s2s_receiver_loads() {
 fn a_full_s2s_receiver_loads_and_writes_back_as_it_was_given() {
     use smeltr::plan::topology::{Receiver, SourceKind};
 
-    let json = s2s_receiver_config(
-        r#","identity":"s2s-tls","maxRequestBytes":2048,
-           "tokens":{"uf-fleet":"S2S_TOKEN","hf":{"secret":"heavy","version":2}},
-           "sourcetypes":{"java:app":{"lineBreaker":"([\\r\\n]+)\\d{4}-"},"xml":{"lineBreaker":"</event>(\\s*)"}}"#,
-    );
+    let json = s2s_receiver_config(&format!(
+        r#"{S2S_TLS},"maxRequestBytes":2048,
+           "tokens":{{"uf-fleet":"S2S_TOKEN","hf":{{"secret":"heavy","version":2}}}},
+           "sourcetypes":{{"java:app":{{"lineBreaker":"([\\r\\n]+)\\d{{4}}-"}},"xml":{{"lineBreaker":"</event>(\\s*)"}}}}"#
+    ));
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     let system = load_str(&json).expect("must load");
     let SourceKind::Receiver(r) = &system.topology.sources[0].kind else {
@@ -5750,7 +5723,7 @@ fn a_full_s2s_receiver_loads_and_writes_back_as_it_was_given() {
     assert_eq!(r.listen, "[::]:9997".parse().unwrap());
     assert_eq!(r.max_request_bytes, 2048);
     assert_eq!(r.tokens.len(), 2);
-    assert_eq!(r.identity.as_ref().unwrap().id, "s2s-tls");
+    assert_eq!(r.tls.as_ref().unwrap().certificate.as_deref(), Some("s2s-tls"));
 
     let file: smeltr::config_file::FileConfig = serde_json::from_str(&json).unwrap();
     let written = &serde_json::to_value(&file).unwrap()["sources"][0];
@@ -5784,8 +5757,8 @@ fn an_s2s_sourcetype_without_a_line_breaker_or_with_the_default_is_an_event_per_
     assert_eq!(written, &given);
 }
 
-/// An S2S receiver is held to what every receiver is, and admits a forwarder whose certificate its identity's
-/// authorities vouch for without a token.
+/// An S2S receiver is held to what every receiver is, and admits a forwarder whose certificate its authorities
+/// vouch for without a token.
 #[test]
 fn an_s2s_receiver_is_held_to_what_every_receiver_is() {
     let e = refusal(r#"{"version":1,"sources":[{"id":"forwarders","type":"s2sReceiver","port":0}]}"#);
@@ -5802,11 +5775,11 @@ fn an_s2s_receiver_is_held_to_what_every_receiver_is() {
         "blank name"
     ));
     assert!(refused_at(
-        &s2s_receiver_config(&format!(r#"{S2S_TOKEN},"identity":"elsewhere""#)),
-        "identity",
-        "elsewhere"
+        &s2s_receiver_config(&format!(r#"{S2S_TOKEN},"certificate":" ""#)),
+        "certificate",
+        "blank name"
     ));
-    assert_eq!(refusal(&s2s_receiver_config(r#","identity":"s2s-tls""#)), "");
+    assert_eq!(refusal(&s2s_receiver_config(S2S_TLS)), "");
     let json = format!(
         r#"{{"version":1,"sources":[
             {{"id":"hec","type":"hecReceiver","port":9997{HEC_TOKEN}}},
@@ -5903,7 +5876,7 @@ fn a_minimal_syslog_receiver_loads() {
     let networks: Vec<String> = syslog.allow_from.iter().map(|n| n.to_string()).collect();
     assert_eq!(networks, ["10.0.0.0/8", "192.0.2.7/32"]);
     assert_eq!(r.listen, "[::]:1514".parse().unwrap());
-    assert!(r.tokens.is_empty() && r.identity.is_none());
+    assert!(r.tokens.is_empty() && r.tls.is_none());
     assert_eq!(kind.meta(), SourceMeta::SYSLOG_RECEIVER.with_encoding(kind.encoding()));
     assert_eq!(
         kind.listens().map(|l| (l.transport, l.address)),
@@ -5916,8 +5889,8 @@ fn a_minimal_syslog_receiver_loads() {
     assert_eq!(written, &given, "a syslog receiver writes back as it was given");
 }
 
-/// A syslog receiver carries no token, so it admits senders by their network or by a certificate its identity's
-/// authorities vouch for, and is held to what every receiver's listener is.
+/// A syslog receiver carries no token, so it admits senders by their network or by a certificate its authorities
+/// vouch for, and is held to what every receiver's listener is.
 #[test]
 fn a_syslog_receiver_admits_by_network_or_certificate() {
     let syslog = |extra: &str| {
@@ -5943,7 +5916,7 @@ fn a_syslog_receiver_admits_by_network_or_certificate() {
         e.to_string().contains("unknown field `tokens`"),
         "a syslog receiver takes no token: {e}"
     );
-    let vouched = s2s_receiver_config(r#","identity":"s2s-tls""#).replace(
+    let vouched = s2s_receiver_config(S2S_TLS).replace(
         r#""type":"s2sReceiver","port":9997"#,
         r#""type":"syslogReceiver","port":6514"#,
     );
@@ -6062,23 +6035,23 @@ fn a_syslog_receiver_takes_udp() {
     assert!(tcp.get("transport").is_none(), "TCP is written as absent: {tcp}");
 }
 
-/// Over UDP a syslog receiver serves no TLS, so it takes no identity, and only its networks can admit a sender.
+/// Over UDP a syslog receiver serves no TLS, so it takes no certificate, and only its networks can admit a sender.
 #[test]
 fn a_udp_syslog_receiver_admits_only_by_network() {
     let vouched = |extra: &str| {
-        s2s_receiver_config(&format!(r#","identity":"s2s-tls","transport":"udp"{extra}"#)).replace(
+        s2s_receiver_config(&format!(r#"{S2S_TLS},"transport":"udp"{extra}"#)).replace(
             r#""type":"s2sReceiver","port":9997"#,
             r#""type":"syslogReceiver","port":6514"#,
         )
     };
-    assert!(refused_at(&vouched(""), "identity", "takes UDP"));
+    assert!(refused_at(&vouched(""), "certificate", "takes UDP"));
     assert!(
         refused_at(&vouched(""), "allowFrom", "admits anyone who can reach its port"),
-        "an identity's authorities admit no one over UDP: {}",
+        "a receiver's authorities admit no one over UDP: {}",
         refusal(&vouched(""))
     );
     let with_networks = vouched(r#","allowFrom":["10.0.0.0/8"]"#);
-    assert!(refused_at(&with_networks, "identity", "takes UDP"));
+    assert!(refused_at(&with_networks, "certificate", "takes UDP"));
     assert!(
         !refused_at(&with_networks, "allowFrom", ""),
         "{}",
@@ -6149,7 +6122,10 @@ fn a_postgres_source_loads_with_the_defaults() {
     };
     assert_eq!(connection.host, "db.internal");
     assert_eq!(connection.port, 5432);
-    assert!(matches!(connection.tls, smeltr::io::sql_source::Tls::Require));
+    assert!(matches!(
+        connection.encrypted,
+        smeltr::io::sql_source::Encrypted::Require
+    ));
     assert_eq!(
         sql.source.mode,
         Mode::Incrementing(Position {
@@ -6394,14 +6370,14 @@ fn a_postgres_source_with_bad_settings_is_refused() {
             "at least 1",
         ),
         (
-            postgres_config(EVENTS, BY_TIME, r#","identity":"nobody""#),
-            "identity",
-            "nobody",
+            postgres_config(EVENTS, BY_TIME, r#","certificate":" ""#),
+            "certificate",
+            "blank name",
         ),
         (
-            postgres_config(EVENTS, BY_TIME, r#","identity":"nobody","tls":"disable""#),
-            "identity",
-            "turns TLS off",
+            postgres_config(EVENTS, BY_TIME, r#","certificate":"acme","tls":"disable""#),
+            "certificate",
+            "turns it off",
         ),
     ];
     for (json, field, says) in refused {

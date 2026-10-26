@@ -87,9 +87,6 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
         routes: Vec::new(),
         lookup_tables: Vec::new(),
         grok_patterns: Vec::new(),
-        // Without it the source names an identity nothing declares, and the key that identity names is never
-        // resolved for the workers to receive.
-        identities: request.identity.clone().into_iter().collect(),
         on_exception: None,
         name: None,
     };
@@ -129,13 +126,20 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
     // deployment is entitled to what its bundle names (design doc, Secrets boundary). Read once here rather than on
     // every heartbeat that hands the invitation on, and recorded, because this is the one way a value reaches a
     // worker without a commit on `main` naming it -- the trail the deploy path leaves for free.
-    let wanted = leader_stored_refs(&one_source);
-    let granted = if wanted.is_empty() {
+    let (wanted, certificates) = leader_stored_refs(&one_source);
+    let granted = if wanted.is_empty() && certificates.is_empty() {
         Vec::new()
     } else {
         let store = state.store.clone();
-        let asked = wanted.clone();
-        match blocking(move || store.secrets_for_delivery(&asked, &[])).await {
+        match blocking(move || {
+            // A certificate at the list's newest version, as a deployment runs it.
+            let newest = smeltr::leader::certificate_versions(&*store);
+            let mut asked = wanted;
+            asked.extend(certificates.iter().filter_map(|c| Some((c.clone(), *newest.get(c)?))));
+            store.secrets_for_delivery(&asked, &[])
+        })
+        .await
+        {
             Ok(v) => v,
             Err(e) => return Json(Envelope::failed_one(e)),
         }
@@ -173,9 +177,6 @@ fn start_destination_capture(
     if destination.is_empty() {
         return Envelope::failed_one("a capture at a destination names it");
     }
-    if request.identity.is_some() {
-        return Envelope::failed_one("a capture at a destination reads what is sent there, under no identity");
-    }
     // Only its syntax can be checked here: what it reads is each route's output, which the workers' deployment
     // compiles. A filter a route's output does not resolve ends the capture there, saying which route.
     if let Some(filter) = request.filter.as_deref()
@@ -198,27 +199,24 @@ fn start_destination_capture(
 
 /// Every leader-stored credential one source names, as the store addresses them. A worker-local one is a variable
 /// on the worker's own host and is nobody's to deliver.
-fn leader_stored_refs(one_source: &config_file::FileConfig) -> Vec<(String, i64)> {
+fn leader_stored_refs(one_source: &config_file::FileConfig) -> (Vec<(String, i64)>, Vec<String>) {
     use smeltr::plan::topology::SecretRef;
     let Ok(json) = serde_json::to_string(one_source) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
-    let references: Vec<SecretRef> = match config_file::load_str(&json) {
-        Ok(system) => system.topology.named_secrets.into_iter().map(|s| s.reference).collect(),
+    let (references, certificates): (Vec<SecretRef>, Vec<String>) = match config_file::load_str(&json) {
+        Ok(system) => (
+            system.topology.named_secrets.into_iter().map(|s| s.reference).collect(),
+            system.topology.named_certificates.into_iter().map(|c| c.name).collect(),
+        ),
         // An SQL source that declares no fields yet does not load, though Run reads it, so its credentials are read
         // from its connection.
-        Err(_) => match one_source
-            .sources
-            .first()
-            .and_then(|s| config_file::sql_connection(s, one_source.identities.first()))
-        {
-            Some(database) => database
-                .password()
-                .cloned()
-                .into_iter()
-                .chain(database.identity().and_then(|i| i.certificate.clone()))
-                .collect(),
-            None => Vec::new(),
+        Err(_) => match one_source.sources.first().and_then(config_file::sql_connection) {
+            Some(database) => (
+                database.password().cloned().into_iter().collect(),
+                database.tls().and_then(|t| t.certificate.clone()).into_iter().collect(),
+            ),
+            None => (Vec::new(), Vec::new()),
         },
     };
     let mut out: Vec<(String, i64)> = references
@@ -230,7 +228,7 @@ fn leader_stored_refs(one_source: &config_file::FileConfig) -> Vec<(String, i64)
         .collect();
     out.sort();
     out.dedup();
-    out
+    (out, certificates)
 }
 
 /// Enough entropy that two captures never collide, without a dependency: a hasher keyed by `RandomState`, which the
@@ -643,7 +641,6 @@ mod tests {
                 routes: Vec::new(),
                 lookup_tables: Vec::new(),
                 grok_patterns: Vec::new(),
-                identities: Vec::new(),
                 on_exception: None,
                 name: None,
             }
@@ -655,7 +652,7 @@ mod tests {
         );
         assert_eq!(
             leader_stored_refs(&stored),
-            vec![("kafka-cred".to_string(), 4)],
+            (vec![("kafka-cred".to_string(), 4)], Vec::new()),
             "the one it quotes, at the version it quotes"
         );
 
@@ -664,18 +661,18 @@ mod tests {
                 "properties":{"security.protocol":"SASL_SSL"},"credentials":{"sasl.password":"KAFKA_PASSWORD"}}"#,
         );
         assert!(
-            leader_stored_refs(&local).is_empty(),
+            leader_stored_refs(&local).0.is_empty(),
             "a worker-local variable is the host's, and the leader has no value to send"
         );
 
         let none = one(r#"{"id":"s","type":"metrics","bucketSeconds":5}"#);
-        assert!(leader_stored_refs(&none).is_empty());
+        assert_eq!(leader_stored_refs(&none), (Vec::new(), Vec::new()));
 
         let fieldless = one(r#"{"id":"s","type":"postgres","host":"db","database":"d","user":"u",
                 "password":{"secret":"pg-cred","version":2},"query":"SELECT 1","mode":{"type":"everyPoll"},"fields":[]}"#);
         assert_eq!(
             leader_stored_refs(&fieldless),
-            vec![("pg-cred".to_string(), 2)],
+            (vec![("pg-cred".to_string(), 2)], Vec::new()),
             "Run reads an SQL source before it declares fields, with its own password"
         );
     }

@@ -744,7 +744,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
         partition_by: partition_by.clone(),
         storage: None,
         compression,
-        identity: None,
+        tls: None,
         in_flight,
         max_object_bytes,
         buffer_bytes: (4 << 20) + rng.below(4 << 20),

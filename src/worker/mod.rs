@@ -2139,6 +2139,7 @@ pub fn run_worker(mut config: WorkerConfig) {
         enrolled_again_at: Mutex::new(None),
         took: Mutex::new(None),
         restart_due: AtomicBool::new(false),
+        presenting: Mutex::new(Vec::new()),
         holds: Arc::new(Mutex::new(Holds::default())),
         receiver_sockets: Mutex::new(crate::io::receiver::Sockets::default()),
         config,
@@ -2388,9 +2389,11 @@ struct Supervisor {
     enrolled_again_at: Mutex<Option<Instant>>,
     /// The last directive this worker took, by id. Every beat names it, so the leader stops repeating it.
     took: Mutex<Option<String>>,
-    /// Set by the heartbeat when the leader asks for a restart, and acted on by the deployer, for the reason
-    /// `offline_stop` is.
+    /// Set by the heartbeat when the leader asks for a restart, or when a certificate the running deployment
+    /// presents arrives at a new version, and acted on by the deployer, for the reason `offline_stop` is.
     restart_due: AtomicBool,
+    /// The certificates the running deployment presents, by name: a new version of one restarts it.
+    presenting: Mutex<Vec<String>>,
     /// The single-worker sources the leader holds for this worker, and what the running runtime was told of them.
     /// Shared with the thread fetching their ledgers.
     holds: Arc<Mutex<Holds>>,
@@ -2571,6 +2574,8 @@ impl Invitations {
 /// What the supervisor learned by loading a target it is about to run.
 struct Validated {
     named: Vec<crate::plan::topology::NamedSecret>,
+    /// Every certificate the target names, which it runs at the version this worker holds.
+    presented: Vec<crate::plan::topology::NamedCertificate>,
     /// Every source the target reads. A cold capture this process opened against one of them ends when the
     /// runtime starts, or it would go on consuming beside the runtime's own reader.
     sources: Vec<String>,
@@ -2634,6 +2639,7 @@ impl Supervisor {
             .collect();
         Ok(Validated {
             named: system.topology.named_secrets.clone(),
+            presented: system.topology.named_certificates.clone(),
             sources: system.topology.sources.iter().map(|s| s.name.clone()).collect(),
             lookup_files,
             listens: listening
@@ -2931,9 +2937,24 @@ impl Supervisor {
                     }
 
                     // Whatever this worker's group needs and did not hold. An empty answer is the steady state and
-                    // leaves what it has; a rotation is a handful of beats where it is not empty. Nothing redeploys
-                    // on arrival -- the bundle's version is what says a deployment wants the new value.
-                    self.secrets.lock().unwrap().take(resp.secrets);
+                    // leaves what it has; a rotation is a handful of beats where it is not empty. A secret's
+                    // arrival redeploys nothing -- the bundle's version is what says a deployment wants the new
+                    // value. A certificate runs at its newest version, so a new version of one the deployment
+                    // presents restarts it, which is how a replacement reaches the fleet
+                    // (`docs/architecture/security.md`, A certificate travels with its key).
+                    let replaced = self.secrets.lock().unwrap().take(resp.secrets);
+                    let presenting = self.presenting.lock().unwrap();
+                    let renewed: Vec<&String> = replaced.iter().filter(|c| presenting.contains(c)).collect();
+                    if !renewed.is_empty() {
+                        tracing::info!(
+                            target: "worker.certificate_renewed",
+                            certificates = %renewed.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", "),
+                            "a certificate this deployment presents has a new version, so the deployment restarts"
+                        );
+                        self.restart_due.store(true, Ordering::Relaxed);
+                        self.arrived.notify_all();
+                    }
+                    drop(presenting);
 
                     // The leader is rotating its authority and this worker does not hold what it is rotating to.
                     // Sent only in that window, and only to a worker whose trust the leader is the source of: one
@@ -3590,7 +3611,8 @@ impl Supervisor {
                 }
             }
 
-            // Asked by an operator. The same target starts again below, in a fresh runtime.
+            // Asked by an operator, or by a certificate the deployment presents arriving at a new version. The same
+            // target starts again below, in a fresh runtime.
             if self.restart_due.swap(false, Ordering::Relaxed) {
                 if blocked {
                     tracing::warn!(
@@ -3810,7 +3832,11 @@ impl Supervisor {
                     // What the runtime that started names and nothing else: a version it does not quote is of no
                     // further use here, and a worker that kept everything it had ever been sent would hold a
                     // growing pile of dead credentials.
-                    self.secrets.lock().unwrap().keep_only(&validated.named);
+                    self.secrets
+                        .lock()
+                        .unwrap()
+                        .keep_only(&validated.named, &validated.presented);
+                    *self.presenting.lock().unwrap() = validated.presented.iter().map(|c| c.name.clone()).collect();
                     // The runtime it replaced is gone, so nothing maps a file this one does not name.
                     crate::lookup::store::keep_only(&self.repo_dir, &validated.lookup_files);
                     // Nor listens on an address this one does not.
@@ -3869,7 +3895,11 @@ impl Supervisor {
             worker_id: self.worker_id.clone(),
             // Only what this commit quotes. A runtime is not handed credentials its own bundle does not name,
             // and never the pile of every version this worker has been sent since it started.
-            secrets: self.secrets.lock().unwrap().deliveries_for(&validated.named),
+            secrets: self
+                .secrets
+                .lock()
+                .unwrap()
+                .deliveries_for(&validated.named, &validated.presented),
             incarnation,
         };
         let mut sockets = self.receiver_sockets.lock().unwrap();
@@ -4555,7 +4585,7 @@ fn load_target(
             missing.join("; ")
         ));
     }
-    let unusable = system.topology.identity_certificate_errors(secrets);
+    let unusable = system.topology.certificate_errors(secrets);
     if !unusable.is_empty() {
         return Err(unusable.join("; "));
     }
@@ -5220,7 +5250,7 @@ mod tests {
                 zone_urls: Default::default(),
                 sniff: None,
                 default_index: "i".into(),
-                identity: None,
+                tls: None,
                 auth: None,
                 basic: None,
                 doc_id: DocIdPolicy::default(),
@@ -5242,7 +5272,7 @@ mod tests {
                 brokers: "k:9092".into(),
                 default_topic: "dlq".into(),
                 service: crate::plan::topology::KafkaService::Kafka,
-                identity: None,
+                tls: None,
                 buffer_bytes: 16_000_000,
                 props: KafkaProps {
                     literal: Vec::new(),
@@ -5819,6 +5849,7 @@ mod tests {
             enrolled_again_at: Mutex::new(None),
             took: Mutex::new(None),
             restart_due: AtomicBool::new(false),
+            presenting: Mutex::new(Vec::new()),
             holds: Arc::new(Mutex::new(Holds::default())),
             receiver_sockets: Mutex::new(crate::io::receiver::Sockets::default()),
             config: WorkerConfig {
@@ -6010,7 +6041,7 @@ mod tests {
                     brokers: "b1:9092".to_string(),
                     topics: vec!["orders".to_string()],
                     group_id: "production-group".to_string(),
-                    identity: None,
+                    tls: Default::default(),
                     start: Default::default(),
                     stop: None,
                     fetch_bytes: Default::default(),
@@ -6018,7 +6049,6 @@ mod tests {
                     props: Default::default(),
                 },
             }),
-            identity: None,
             filter: None,
             start: None,
             max_matches: 1,
@@ -6230,7 +6260,7 @@ mod tests {
                     brokers: "b1:9092".to_string(),
                     topics: vec!["orders".to_string()],
                     group_id: "production-group".to_string(),
-                    identity: None,
+                    tls: Default::default(),
                     start: Default::default(),
                     stop: None,
                     fetch_bytes: Default::default(),
@@ -6238,7 +6268,6 @@ mod tests {
                     props: Default::default(),
                 },
             }),
-            identity: None,
             filter: None,
             start: None,
             max_matches: 1,

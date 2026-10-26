@@ -111,8 +111,8 @@ const OPTIONS: &[&str] = &[
     "secret.workerLocal",
     "secret.workerLocalUnset",
     "secret.lineBreak",
-    "identity.authorities",
-    "identity.certificate",
+    "tls.authorities",
+    "tls.certificate",
     "inFlight",
     "maxRequestBytes",
     "maxRequestBytes.text",
@@ -133,8 +133,8 @@ const OPTIONS: &[&str] = &[
     "broken.url.blank",
     "broken.url.notHttp",
     "broken.zoneUrls",
-    "broken.identity.undeclared",
-    "broken.identity.plainHttp",
+    "broken.certificate",
+    "broken.tls.plainHttp",
     "broken.field.json",
     "broken.field.blank",
     "broken.compression",
@@ -185,8 +185,8 @@ enum Target<'a> {
 /// One drawn destination.
 struct Draw {
     destination: Map<String, Value>,
-    /// The identity the bundle declares, and whether it presents a certificate.
-    identity: Option<bool>,
+    /// Whether the destination trusts the service's authority, and if so whether it presents a certificate.
+    tls: Option<bool>,
     /// The zone of the worker that runs the destination.
     zone: Option<&'static str>,
     /// The setting broken, if one was: the field the save must refuse it on.
@@ -216,19 +216,14 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, stored: &mut Stored) -
     d.insert("type".into(), json!("http"));
     let live = matches!(target, Target::Live { .. });
 
-    // An identity is the client's TLS, so only an https URL carries one, and the service's certificate is only
-    // trusted through one.
+    // Only an https URL carries TLS settings, and the service's certificate is only trusted through them.
     let https = !live && rng.chance(4);
-    let mut identity = None;
+    let mut tls = None;
     if https {
         let presents = rng.chance(2);
-        cov.reach(if presents {
-            "identity.certificate"
-        } else {
-            "identity.authorities"
-        });
-        identity = Some(presents);
-        d.insert("identity".into(), json!("client"));
+        cov.reach(if presents { "tls.certificate" } else { "tls.authorities" });
+        tls = Some(presents);
+        set_tls(&mut d, presents);
     }
     d.insert("url".into(), json!(url(rng, cov, target, https)));
     let zone = if live {
@@ -316,7 +311,7 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, stored: &mut Stored) -
     }
     let mut draw = Draw {
         destination: d,
-        identity,
+        tls,
         zone,
         broken: None,
     };
@@ -437,8 +432,8 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
     let mut breaks = vec![
         "url.blank",
         "url.notHttp",
-        "identity.undeclared",
-        "identity.plainHttp",
+        "certificate",
+        "tls.plainHttp",
         "compression",
         "headers.name",
         "headers.owned",
@@ -475,18 +470,18 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
                 "file:///tmp/x",
             ]);
             d.insert("url".into(), json!(bad));
-            // An identity on a URL that is not https is refused on the URL too.
+            // TLS settings on a URL that is not https are refused on the URL too.
             "url"
         }
         "zoneUrls" => destination::break_zones(rng, d),
-        "identity.undeclared" => {
-            d.insert("identity".into(), json!("nobody"));
-            draw.identity = None;
-            "identity"
+        "certificate" => {
+            d.insert("certificate".into(), json!(" "));
+            draw.tls = None;
+            "certificate"
         }
-        "identity.plainHttp" => {
-            d.insert("identity".into(), json!("client"));
-            draw.identity = Some(false);
+        "tls.plainHttp" => {
+            set_tls(d, false);
+            draw.tls = Some(false);
             let url = d["url"].as_str().unwrap().trim().to_string();
             let rest = &url[url.find("://").unwrap()..];
             d.insert("url".into(), json!(format!("http{rest}")));
@@ -616,7 +611,18 @@ fn size_of(v: &Value) -> usize {
     }
 }
 
-/// `draw` as a whole bundle: a Kafka source, one route to the destination, and the identity it names.
+/// Stands for the authority's PEM until `bundle` has it.
+const AUTHORITIES: &str = "@authorities";
+
+/// Sets TLS on `d`: the authority as [`AUTHORITIES`], and a certificate to present when `presents`.
+fn set_tls(d: &mut Map<String, Value>, presents: bool) {
+    d.insert("authorities".into(), json!(AUTHORITIES));
+    if presents {
+        d.insert("certificate".into(), json!("client"));
+    }
+}
+
+/// `draw` as a whole bundle: a Kafka source, one route to the destination, and the authority it trusts.
 fn bundle(draw: &Draw) -> Value {
     let mut b = json!({
         "version": 1,
@@ -625,19 +631,14 @@ fn bundle(draw: &Draw) -> Value {
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["hook"]}]}],
     });
-    if let Some(presents) = draw.identity {
-        let pki = pki();
-        let mut identity = json!({"id": "client", "authorities": pki.authority.pem});
-        if presents {
-            identity["certificate"] = json!({"secret": "client", "version": 1});
-        }
-        b["identities"] = json!([identity]);
+    if let Some(authorities) = b["destinations"][0].get_mut("authorities") {
+        *authorities = json!(pki().authority.pem);
     }
     b
 }
 
 /// What the worker holds: every leader-stored credential the destination names, at the version it names, and the
-/// identity's certificate. `true` beside it when the destination names a credential this worker does not hold: a variable no
+/// certificate it presents. `true` beside it when the destination names a credential this worker does not hold: a variable no
 /// worker sets.
 fn held(draw: &Draw, stored: &Stored) -> (HeldSecrets, bool) {
     let mut values = Vec::new();
@@ -775,12 +776,9 @@ fn check_loaded(draw: &Draw, c: &HttpDestinationConfig, named: &[SecretRef]) -> 
         format!("{:?}", named.iter().collect::<Vec<_>>()),
     );
     expect(
-        "identity",
-        format!("{:?}", draw.identity.map(|presents| ("client", presents))),
-        format!(
-            "{:?}",
-            c.identity.as_ref().map(|i| (i.id.as_str(), i.certificate.is_some()))
-        ),
+        "tls",
+        format!("{:?}", draw.tls),
+        format!("{:?}", c.tls.as_ref().map(|t| t.certificate.is_some())),
     );
     let request = d.get("maxRequestBytes").map_or(MIB, size_of);
     expect("maxRequestBytes", request.to_string(), c.max_request_bytes.to_string());
@@ -1329,7 +1327,7 @@ fn offline_seed(seed: u64, reached: &mut Reached) -> Result<(), String> {
         answered: BTreeSet::new(),
     };
     let script = Arc::new(Mutex::new(script));
-    let tls = draw.identity.map(server_tls);
+    let tls = draw.tls.map(server_tls);
     let service = Service::start(listener, tls, script.clone());
 
     let batches: Vec<Vec<OwnedRecord>> = sent.iter().map(|b| b.iter().map(|s| s.row.clone()).collect()).collect();
@@ -1367,7 +1365,7 @@ fn offline_seed(seed: u64, reached: &mut Reached) -> Result<(), String> {
 
 // -- the live fuzzer --------------------------------------------------------------------------------------------
 
-/// What a live draw reaches: every option Splunk's raw endpoint serves, signed with its token. Not an identity, as it
+/// What a live draw reaches: every option Splunk's raw endpoint serves, signed with its token. Not TLS, as it
 /// serves plain HTTP; not the answers, which are Splunk's to give.
 fn live_options() -> Vec<&'static str> {
     OPTIONS
@@ -1376,7 +1374,7 @@ fn live_options() -> Vec<&'static str> {
         .filter(|o| {
             !(o.starts_with("broken.")
                 || o.starts_with("answer.")
-                || o.starts_with("identity.")
+                || o.starts_with("tls.")
                 // One Splunk, at one address.
                 || o.starts_with("zoneUrls.")
                 || (o.starts_with("url.") && *o != "url.query")

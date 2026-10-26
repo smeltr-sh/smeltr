@@ -74,7 +74,7 @@ const OPTIONS: &[&str] = &[
     "secret.leaderStored",
     "secret.workerLocal",
     "secret.workerLocalUnset",
-    "identity.authorities",
+    "tls.authorities",
     "inFlight",
     "maxRequestBytes",
     "bufferBytes",
@@ -97,7 +97,7 @@ const OPTIONS: &[&str] = &[
     "broken.signIn.twoCredentials",
     "broken.signIn.authEndpoint",
     "broken.signIn.managedIdentityClientId",
-    "broken.identity.undeclared",
+    "broken.certificate",
     "broken.inFlight",
     "broken.maxRequestBytes",
     "broken.bufferBytes",
@@ -127,8 +127,8 @@ enum Target<'a> {
 /// One drawn destination.
 struct Draw {
     destination: Map<String, Value>,
-    /// Whether the bundle declares an identity trusting the service's authority.
-    identity: bool,
+    /// Whether the destination trusts the service's authority.
+    tls: bool,
     /// The setting broken, if one was: the field the save must refuse it on.
     broken: Option<&'static str>,
 }
@@ -155,8 +155,8 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, stored: &mut String) -
 
     let https = !live && rng.chance(4);
     if https {
-        cov.reach("identity.authorities");
-        d.insert("identity".into(), json!("client"));
+        cov.reach("tls.authorities");
+        d.insert("authorities".into(), json!(AUTHORITIES));
     }
     let (endpoint, rule, stream) = match target {
         Target::Live(s) => (s.endpoint.clone(), s.rule_id.clone(), s.stream.clone()),
@@ -238,7 +238,7 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, stored: &mut String) -
     }
     let mut draw = Draw {
         destination: d,
-        identity: https,
+        tls: https,
         broken: None,
     };
     if !live && rng.chance(3) {
@@ -285,7 +285,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
         "signIn.partial",
         "signIn.twoCredentials",
         "signIn.managedIdentityClientId",
-        "identity.undeclared",
+        "certificate",
         "inFlight",
         "maxRequestBytes",
         "bufferBytes",
@@ -372,10 +372,9 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
             d.insert("managedIdentityClientId".into(), json!(rng.pick(&["my-identity", " "])));
             "managedIdentityClientId"
         }
-        "identity.undeclared" => {
-            d.insert("identity".into(), json!("nobody"));
-            draw.identity = false;
-            "identity"
+        "certificate" => {
+            d.insert("certificate".into(), json!(" "));
+            "certificate"
         }
         "inFlight" => {
             d.insert("inFlight".into(), json!(rng.pick(&[0, 65])));
@@ -400,7 +399,10 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
     }
 }
 
-/// `draw` as a whole bundle: a Kafka source, one route to the destination, and the identity it names.
+/// Stands for the authority's PEM until `bundle` has it.
+const AUTHORITIES: &str = "@authorities";
+
+/// `draw` as a whole bundle: a Kafka source, one route to the destination, and the authority it trusts.
 fn bundle(draw: &Draw) -> Value {
     let mut b = json!({
         "version": 1,
@@ -409,8 +411,8 @@ fn bundle(draw: &Draw) -> Value {
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["logAnalytics"]}]}],
     });
-    if draw.identity {
-        b["identities"] = json!([{"id": "client", "authorities": pki().authority.pem}]);
+    if let Some(authorities) = b["destinations"][0].get_mut("authorities") {
+        *authorities = json!(pki().authority.pem);
     }
     b
 }
@@ -531,11 +533,7 @@ fn check_loaded(draw: &Draw, c: &LogAnalyticsDestinationConfig, named: &[SecretR
         format!("{:?}", reference.iter().collect::<Vec<_>>()),
         format!("{:?}", named.iter().collect::<Vec<_>>()),
     );
-    expect(
-        "identity",
-        format!("{:?}", draw.identity.then_some("client")),
-        format!("{:?}", h.identity.as_ref().map(|i| i.id.as_str())),
-    );
+    expect("tls", format!("{:?}", draw.tls), format!("{:?}", h.tls.is_some()));
     let size = |key: &str, default: usize| d.get(key).map_or(default, |v| v.as_u64().unwrap() as usize);
     let request = size("maxRequestBytes", MIB);
     expect("maxRequestBytes", request.to_string(), h.max_request_bytes.to_string());
@@ -944,7 +942,7 @@ fn offline_seed(seed: u64, reached: &mut Reached) -> Result<(), String> {
         answered: BTreeSet::new(),
     };
     let script = Arc::new(Mutex::new(script));
-    let tls = draw.identity.then(|| pki().server_only());
+    let tls = draw.tls.then(|| pki().server_only());
     let service = Service::start(listener, tls, script.clone());
     let token_service = Service::start(tokens, None, script.clone());
 
@@ -986,7 +984,7 @@ fn offline_seed(seed: u64, reached: &mut Reached) -> Result<(), String> {
 
 // -- the live fuzzer --------------------------------------------------------------------------------------------
 
-/// What a live draw reaches: every option a real rule serves, signed in as a real principal. Not an identity, the
+/// What a live draw reaches: every option a real rule serves, signed in as a real principal. Not TLS, the
 /// endpoint's forms or the answers, which are Azure's to give; not the secret a worker holds, which the leader sends.
 fn live_options() -> Vec<&'static str> {
     OPTIONS
@@ -995,7 +993,7 @@ fn live_options() -> Vec<&'static str> {
         .filter(|o| {
             !(o.starts_with("broken.")
                 || o.starts_with("answer.")
-                || o.starts_with("identity.")
+                || o.starts_with("tls.")
                 || o.starts_with("endpoint.")
                 || o.starts_with("ruleId.")
                 || o.starts_with("stream.")

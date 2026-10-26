@@ -924,7 +924,15 @@ fn source_options(o: &mut Options<'_>) -> serde_json::Value {
         "user": o.pick(&[json!("reader")], &[json!("")]),
         "query": query, "mode": mode, "fields": fields,
     });
-    let optional: [(&str, &[serde_json::Value], &[serde_json::Value]); 6] = [
+    let pem = {
+        let key = rcgen::KeyPair::generate().unwrap();
+        rcgen::CertificateParams::new(vec!["fuzz-ca".to_string()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap()
+            .pem()
+    };
+    let optional: [(&str, &[serde_json::Value], &[serde_json::Value]); 8] = [
         (
             "port",
             &[json!(5432), json!(1), json!(65535)],
@@ -936,7 +944,9 @@ fn source_options(o: &mut Options<'_>) -> serde_json::Value {
             &[json!({"secret": ""})],
         ),
         ("tls", &[json!("require"), json!("disable")], &[json!("prefer")]),
-        ("identity", &[], &[json!("nope")]),
+        ("certificate", &[json!("pg-client")], &[json!(""), json!(" ")]),
+        ("authorities", &[json!(pem)], &[json!("nope"), json!("")]),
+        ("trustPublic", &[json!(true)], &[json!("yes")]),
         ("pollIntervalSecs", &[json!(1), json!(60)], &[json!(0), json!(u64::MAX)]),
         (
             "batch",
@@ -951,6 +961,18 @@ fn source_options(o: &mut Options<'_>) -> serde_json::Value {
                 true => o.rng.pick(unsound).clone(),
                 false => o.pick(sound, unsound),
             };
+        }
+    }
+    // TLS settings are for an encrypted connection; a sound draw turns encryption on for them. Whether public roots
+    // are trusted says nothing on its own, so a sound draw gives it an authority to stand beside.
+    if !o.breaking
+        && ["certificate", "authorities", "trustPublic"]
+            .iter()
+            .any(|k| source.get(k).is_some())
+    {
+        source["tls"] = json!("require");
+        if source.get("trustPublic").is_some() && source.get("certificate").is_none() && source.get("authorities").is_none() {
+            source["authorities"] = json!(pem);
         }
     }
     source
@@ -971,7 +993,9 @@ fn any_sql_source_a_file_declares_loads_or_is_refused() {
         "config port",
         "config password",
         "config tls",
-        "config identity",
+        "config certificate",
+        "config authorities",
+        "config trustPublic",
         "config pollIntervalSecs",
         "config batch",
         "loads",

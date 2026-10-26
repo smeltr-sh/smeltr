@@ -40,7 +40,7 @@ use crate::core::column::DataType;
 use crate::core::variant;
 use crate::io::values::{self, Value};
 use crate::io::{IoError, RecordChunk, SourceRecord};
-use crate::plan::topology::{AvroRead, HeldSecrets, Identity, SchemaRegistry};
+use crate::plan::topology::{AvroRead, HeldSecrets, SchemaRegistry, Tls};
 
 /// The byte a framed payload starts with.
 const MAGIC: u8 = 0;
@@ -150,10 +150,10 @@ pub struct AvroReader {
 }
 
 impl AvroReader {
-    pub fn new(config: &AvroRead, identity: Option<&Identity>, secrets: &HeldSecrets) -> Result<AvroReader, IoError> {
+    pub fn new(config: &AvroRead, tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<AvroReader, IoError> {
         Ok(AvroReader {
             registry: (config.registry.as_ref())
-                .map(|r| Registry::new(r, identity, secrets))
+                .map(|r| Registry::new(r, tls, secrets))
                 .transpose()?,
             fields: (config.meta.record_fields().into_iter())
                 .filter(|(n, _)| *n != crate::plan::tree::UNCLAIMED)
@@ -814,13 +814,9 @@ pub struct AvroWriter {
 }
 
 impl AvroWriter {
-    pub fn new(
-        config: &SchemaRegistry,
-        identity: Option<&Identity>,
-        secrets: &HeldSecrets,
-    ) -> Result<AvroWriter, IoError> {
+    pub fn new(config: &SchemaRegistry, tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<AvroWriter, IoError> {
         Ok(AvroWriter {
-            registry: Registry::new(config, identity, secrets)?,
+            registry: Registry::new(config, tls, secrets)?,
             written: Vec::new(),
         })
     }
