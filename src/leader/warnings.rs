@@ -719,10 +719,7 @@ pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
                      serves the new version"
                 ),
                 // The leader renews its own every hour, and a start issues one, so reaching here means renewing failed.
-                _ => format!(
-                    "this leader's certificate {when}, and renewing it failed. The leader's log says why. A restart \
-                     issues a new one"
-                ),
+                _ => format!("this leader's certificate {when}, and renewing it failed. Status → Logs says why"),
             };
             (
                 Condition::LeaderCertificateRunningOut,
@@ -3533,8 +3530,7 @@ mod tests {
         assert_eq!(said[0].severity, Severity::Failed);
         assert_eq!(
             said[0].message,
-            "this leader's certificate has expired, and renewing it failed. The leader's log says why. A restart \
-             issues a new one"
+            "this leader's certificate has expired, and renewing it failed. Status → Logs says why"
         );
     }
 

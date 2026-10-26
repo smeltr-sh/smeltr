@@ -175,8 +175,8 @@ fn serve_temporary(dir: &Path, sans: &[String], validity: Duration, failed: Stri
         ca,
     };
     let why = format!(
-        "This leader is serving a temporary certificate, because {problem}. It keeps its own certificate in the \
-         certificate list once the key opens again."
+        "This leader is serving a temporary certificate, because {problem}. Once the key is restored or regenerated, \
+         it serves the certificate \"{OWN_ENTRY}\" again."
     );
     tracing::warn!(target: "leader.certificate_unserved", "{why}");
     with_generations(dir, |held| {

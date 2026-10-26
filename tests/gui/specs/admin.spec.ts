@@ -198,10 +198,12 @@ test('the leader certificate is the certificate leader in the list', async ({ ad
   await expect(served.getByRole('button', { name: /^Issue/ })).toHaveCount(0);
 
   await openAdmin(admin, 'Certificates');
-  await expect(admin.getByRole('cell', { name: /^leader served issued$/ })).toBeVisible();
+  await expect(
+    admin.getByRole('cell', { name: /^leader in use by the leader issued$/ }),
+  ).toBeVisible();
   const row = admin
     .getByRole('row')
-    .filter({ has: admin.getByRole('cell', { name: /^leader served/ }) });
+    .filter({ has: admin.getByRole('cell', { name: /^leader in use by the leader/ }) });
   await expect(row.getByRole('button', { name: 'Delete' })).toHaveCount(0);
 });
 
