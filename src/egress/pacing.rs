@@ -8,16 +8,19 @@
 //! the same number, so one figure governs the queue, a Kafka producer's copy and an HTTP pool's senders alike.
 //!
 //! The model is BBR's, cut to what a batch pipeline needs. The target is counted in whole batches, rounded up, since
-//! the queue holds whole batches and a target short of one more holds none of it. A rate sample taken while the source had nothing more to
-//! send says how fast the source produces, not how fast the link carries, and may raise the estimate but never lower
-//! it: a slow source never makes its destination look slow. Startup doubles the target each round trip until the rate
-//! stops growing; after that an eight-step cycle probes at 1.25 and drains at 0.75, so the round-trip filter sees an
-//! unqueued sample each cycle and a link that gets faster or slower is followed.
+//! the queue holds whole batches and a target short of one more holds none of it. It is never less than two batches,
+//! as BBR's window is never less than four packets: with one batch on the wire the link idles for each acknowledgement,
+//! however short the round trip. A rate sample taken while the source had nothing more to send says how fast the
+//! source produces, not how fast the link carries, and may raise the estimate but never lower it: a slow source never
+//! makes its destination look slow. Startup doubles the target each round trip until the rate stops growing; after
+//! that an eight-step cycle probes at 1.25 and drains at 0.75, so a link that gets faster or slower is followed. A
+//! least round trip ten seconds old is measured again, as BBR's ProbeRTT does: the target drops to one batch until a
+//! batch sent alone comes back.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-/// How long the least round trip is kept: a link whose round trip grew is believed after this long.
+/// How long the least round trip is kept before it is measured again.
 const RTT_WINDOW: Duration = Duration::from_secs(10);
 
 /// How many round trips the greatest rate is kept for, and the least and most time that is. Samples lapse only as
@@ -40,8 +43,9 @@ const PROBE_CYCLE: [f64; 8] = [1.25, 0.75, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
 /// What the model knew when a batch was handed to the destination, kept with the batch until it comes back.
 #[derive(Clone, Copy, Debug)]
 pub struct Sent {
-    /// When the batch was handed over.
+    /// When the batch was handed over, and the bytes handed over before it.
     at: Instant,
+    dispatched: u64,
     /// Bytes acknowledged by then, and when the last of them was.
     delivered: u64,
     delivered_at: Instant,
@@ -62,8 +66,8 @@ pub struct Completion {
 /// The pacing model for one destination.
 #[derive(Debug)]
 pub struct Pacing {
-    /// The least the target is: one batch, so the destination always moves.
-    floor: usize,
+    /// One batch: the target is counted in these.
+    batch: usize,
     /// The most the target may be right now: the destination's fair share of the pool, or a stated buffer.
     ceiling: usize,
     target: usize,
@@ -71,8 +75,11 @@ pub struct Pacing {
     dispatched: u64,
     delivered: u64,
     delivered_at: Option<Instant>,
-    /// Round-trip samples within [`RTT_WINDOW`], oldest first. The least is the estimate.
-    rtts: VecDeque<(Instant, Duration)>,
+    /// The least round trip, and when it was taken: it stands for [`RTT_WINDOW`].
+    least_rtt: Option<(Duration, Instant)>,
+    /// While the round trip is being measured again: `dispatched` when that began. It ends once a batch handed over
+    /// after that, and so sent alone, comes back.
+    probing_rtt_from: Option<u64>,
     /// Rate samples, in bytes a second, within the rate window, oldest first. The greatest is the estimate.
     rates: VecDeque<(Instant, f64)>,
     /// `delivered` when this round trip began: it ends once a batch sent after that comes back.
@@ -89,17 +96,20 @@ pub struct Pacing {
 }
 
 impl Pacing {
-    /// A model whose target starts at `floor`, one batch, and never passes `ceiling`.
-    pub fn new(floor: usize, ceiling: usize) -> Pacing {
-        let floor = floor.max(1);
+    /// A model whose target is counted in batches of `batch` bytes, starts at two of them, and never passes
+    /// `ceiling`.
+    pub fn new(batch: usize, ceiling: usize) -> Pacing {
+        let batch = batch.max(1);
+        let ceiling = ceiling.max(batch);
         Pacing {
-            floor,
-            ceiling: ceiling.max(floor),
-            target: floor,
+            batch,
+            ceiling,
+            target: (2 * batch).min(ceiling),
             dispatched: 0,
             delivered: 0,
             delivered_at: None,
-            rtts: VecDeque::new(),
+            least_rtt: None,
+            probing_rtt_from: None,
             rates: VecDeque::new(),
             round_starts_at: 0,
             rounds: 0,
@@ -118,18 +128,18 @@ impl Pacing {
     /// What the egress queue may hold: the target, and one batch ready behind it, so the next is made while the
     /// last is on the wire. Never past the ceiling.
     pub fn queue_bytes(&self) -> usize {
-        (self.target + self.floor).min(self.ceiling).max(self.target)
+        (self.target + self.batch).min(self.ceiling).max(self.target)
     }
 
     /// The most the target may be. Moves as the pool's share does; the target follows at the next completion.
     pub fn set_ceiling(&mut self, ceiling: usize) {
-        self.ceiling = ceiling.max(self.floor);
-        self.target = self.target.clamp(self.floor, self.ceiling);
+        self.ceiling = ceiling.max(self.batch);
+        self.target = self.target.clamp(self.batch, self.ceiling);
     }
 
     /// The least round trip seen lately, once there is one.
     pub fn round_trip(&self) -> Option<Duration> {
-        self.rtts.iter().map(|(_, d)| *d).min()
+        self.least_rtt.map(|(rtt, _)| rtt)
     }
 
     /// The greatest delivery rate seen lately, in bytes a second.
@@ -139,27 +149,40 @@ impl Pacing {
 
     /// A batch of `bytes` was handed to the destination at `now`. The answer goes back with its [`Completion`].
     pub fn dispatched(&mut self, bytes: usize, now: Instant) -> Sent {
-        self.dispatched += bytes as u64;
-        Sent {
+        let sent = Sent {
             at: now,
+            dispatched: self.dispatched,
             delivered: self.delivered,
             delivered_at: *self.delivered_at.get_or_insert(now),
-        }
+        };
+        self.dispatched += bytes as u64;
+        sent
     }
 
     /// A batch came back acknowledged. Updates the estimates and the target.
     pub fn completed(&mut self, c: Completion, now: Instant) {
         self.delivered += c.bytes as u64;
         let rtt = now.saturating_duration_since(c.sent.at);
-        self.rtts.push_back((now, rtt));
-        while self
-            .rtts
-            .front()
-            .is_some_and(|(at, _)| now.saturating_duration_since(*at) > RTT_WINDOW)
-        {
-            self.rtts.pop_front();
+        let expired = self
+            .least_rtt
+            .is_some_and(|(_, at)| now.saturating_duration_since(at) > RTT_WINDOW);
+        if expired || self.least_rtt.is_none_or(|(least, _)| rtt <= least) {
+            self.least_rtt = Some((rtt, now));
+        }
+        // BBR's ProbeRTT. Every batch on the wire has waited behind another, so the least round trip lately is
+        // queueing as much as distance; one sent alone says what the link's own round trip is now.
+        let probe_ended = self.probing_rtt_from.is_some_and(|from| c.sent.dispatched >= from);
+        if probe_ended {
+            self.probing_rtt_from = None;
+            if let Some((_, at)) = &mut self.least_rtt {
+                *at = now;
+            }
+        } else if expired && self.probing_rtt_from.is_none() {
+            self.probing_rtt_from = Some(self.dispatched);
         }
         let least_rtt = self.round_trip().unwrap_or(rtt).max(Duration::from_micros(1));
+        // While the target is held to one batch, the link is not what bounds the rate.
+        let app_limited = c.app_limited || self.probing_rtt_from.is_some() || probe_ended;
 
         // BBR's sample: what was acknowledged while this batch was out, over at least its own round trip. Acks come
         // in bursts -- a Kafka producer reports a batch only once its last record lands -- and a rate taken between
@@ -173,7 +196,7 @@ impl Pacing {
         };
 
         let window = (least_rtt * RATE_WINDOW_ROUND_TRIPS).clamp(RATE_WINDOW_LEAST, RATE_WINDOW_MOST);
-        if c.app_limited {
+        if app_limited {
             // The source was the bound, so this says only that the link carries at least this much.
             if rate > self.rate() {
                 self.rates.push_back((now, rate));
@@ -228,20 +251,22 @@ impl Pacing {
     }
 
     fn retarget(&mut self, least_rtt: Duration) {
+        if self.probing_rtt_from.is_some() {
+            self.target = self.batch.min(self.ceiling);
+            return;
+        }
         let bdp = self.rate() * least_rtt.as_secs_f64();
         // In whole batches, rounded up: the queue holds whole batches, so a target a little under three would hold
-        // two and the estimate, measured from what is held, would fall to two; and a probe a quarter over one batch
-        // must still admit a second, or a link held to one batch is never measured carrying two. A product a
-        // little over one batch is held at two while cruising, and at one while draining, so the round-trip
-        // filter still sees a batch go alone.
-        let batch = self.floor as f64;
-        let wanted = (self.gain() * bdp / batch - 0.01).ceil().max(1.0) * batch;
+        // two and the estimate, measured from what is held, would fall to two; and a probe a quarter over two
+        // batches must still admit a third, or a link held to two is never measured carrying three.
+        let batch = self.batch as f64;
+        let wanted = (self.gain() * bdp / batch - 0.01).ceil().max(2.0) * batch;
         let wanted = if wanted.is_finite() && wanted > 0.0 {
             wanted.min(usize::MAX as f64) as usize
         } else {
             0
         };
-        self.target = wanted.clamp(self.floor, self.ceiling);
+        self.target = wanted.clamp(self.batch, self.ceiling);
     }
 }
 
@@ -293,13 +318,13 @@ mod tests {
     }
 
     #[test]
-    fn the_target_starts_at_one_batch_and_doubles_while_the_pipe_fills() {
+    fn the_target_starts_at_two_batches_and_doubles_while_the_pipe_fills() {
         let mut p = Pacing::new(BATCH, 1024 * MIB);
-        assert_eq!(p.target(), BATCH);
+        assert_eq!(p.target(), 2 * BATCH);
         // 200ms away, a link that carries 100 MiB/s: a bandwidth-delay product of 20 MiB.
         let targets = drive(&mut p, Duration::from_millis(200), 100.0 * MIB as f64, 4, false);
-        assert!(targets[0] >= 2 * BATCH, "doubled after the first round: {targets:?}");
-        assert!(targets[2] > targets[0], "and on: {targets:?}");
+        assert!(targets[1] >= 4 * BATCH, "doubled once a round's samples are in: {targets:?}");
+        assert!(targets[2] > targets[1], "and on: {targets:?}");
         assert!(targets[3] > targets[2], "{targets:?}");
     }
 
@@ -330,7 +355,7 @@ mod tests {
         // 10ms away, carrying 1 MiB/s: a product of 10 KiB, far below one batch.
         let mut p = Pacing::new(BATCH, 1024 * MIB);
         let targets = drive(&mut p, Duration::from_millis(10), MIB as f64, 20, false);
-        // Two batches cruising, one draining, a third on a probe: one batch takes four seconds to send.
+        // Two batches, and a third on a probe: one batch takes four seconds to send.
         assert!(targets[5..].iter().all(|t| *t <= 3 * BATCH), "{targets:?}");
     }
 
@@ -365,11 +390,11 @@ mod tests {
     }
 
     #[test]
-    fn a_stall_lets_the_rate_lapse_and_the_target_fall_to_the_floor() {
+    fn a_stall_lets_the_rate_lapse_and_the_target_fall() {
         let rtt = Duration::from_millis(200);
         let mut p = Pacing::new(BATCH, 1024 * MIB);
         drive(&mut p, rtt, 100.0 * MIB as f64, 30, false);
-        assert!(p.target() > 2 * BATCH);
+        assert!(p.target() > 3 * BATCH);
         // Then one batch comes back after a very long time, with others still waiting.
         let late = Instant::now() + Duration::from_secs(120);
         let sent = p.dispatched(BATCH, late - Duration::from_secs(30));
@@ -438,6 +463,54 @@ mod tests {
         p.set_ceiling(2 * BATCH);
         assert_eq!(p.target(), 2 * BATCH);
         p.set_ceiling(0);
-        assert_eq!(p.target(), BATCH, "never below the floor");
+        assert_eq!(p.target(), BATCH, "never below one batch");
+    }
+
+    #[test]
+    fn a_product_under_one_batch_keeps_two_on_the_wire() {
+        // 1ms away, carrying 100 MiB/s: a product of 100 KiB, but one batch takes 40ms to send.
+        let mut p = Pacing::new(BATCH, 1024 * MIB);
+        let targets = drive(&mut p, Duration::from_millis(1), 100.0 * MIB as f64, 60, false);
+        assert!(p.full_pipe, "startup ended");
+        assert!(targets.iter().all(|t| *t >= 2 * BATCH), "{targets:?}");
+        assert!(targets[20..].iter().all(|t| *t <= 3 * BATCH), "{targets:?}");
+    }
+
+    #[test]
+    fn a_least_round_trip_ten_seconds_old_is_measured_again_with_one_batch_alone() {
+        let rtt = Duration::from_millis(200);
+        let mut p = Pacing::new(BATCH, 1024 * MIB);
+        drive(&mut p, rtt, 100.0 * MIB as f64, 30, false);
+        let rate = p.rate();
+        let target = p.target();
+        assert!(target > 3 * BATCH);
+
+        // Well past ten seconds on, a batch that waited behind others comes back.
+        let later = Instant::now() + Duration::from_secs(30);
+        let queued = p.dispatched(BATCH, later - Duration::from_millis(600));
+        p.completed(
+            Completion {
+                bytes: BATCH,
+                sent: queued,
+                app_limited: false,
+            },
+            later,
+        );
+        assert_eq!(p.target(), BATCH, "held to one batch while it is measured");
+        assert_eq!(p.queue_bytes(), 2 * BATCH, "with one ready behind it");
+
+        // One sent alone comes back a round trip later: that is the round trip, and the target is back.
+        let alone = p.dispatched(BATCH, later);
+        p.completed(
+            Completion {
+                bytes: BATCH,
+                sent: alone,
+                app_limited: false,
+            },
+            later + rtt,
+        );
+        assert_eq!(p.round_trip(), Some(rtt));
+        assert!(p.rate() >= rate * 0.99, "the probe's samples never lowered the rate");
+        assert!(p.target() >= target * 3 / 4, "{} vs {target}", p.target());
     }
 }

@@ -119,7 +119,10 @@ bytes holds that, and its concurrency follows. One whose bundle leaves it out
 is paced: egress measures the rate its acknowledgments come back at and the
 least round trip they take, and holds their product, the bytes the link
 carries, with a gain over it while the rate still grows and a short probe
-above and below it after. That target is the queue's budget, and the
+above and below it after. It holds at least two batches, so the link does not
+idle while an acknowledgment comes back. Once the least round trip is ten
+seconds old, it holds one batch until one sent alone comes back, which is the
+round trip measured again. That target is the queue's budget, and the
 destination's own in-flight bound reads the same figure, so the room reaches
 the wire. A sample taken while the source was not pressing on the queue may
 raise the estimate but never lower it, so a quiet source does not shrink a
@@ -132,7 +135,7 @@ flowchart LR
   A --> T[round trip, windowed min]
   R --> X[rate x round trip x gain]
   T --> X
-  X -->|clamped: one batch to its share| B[queue budget]
+  X -->|clamped: two batches to its share| B[queue budget]
   B --> D[destination in-flight bound]
 ```
 
