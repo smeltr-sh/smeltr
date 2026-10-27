@@ -140,7 +140,12 @@ fn checked(repo: &Path, commit: &str) -> Result<(Vec<NotLoading>, Vec<(String, S
             // Loading compiled it, so this compile does not fail.
             Ok(system) => {
                 if let Ok(compiled) = system.compile_topology() {
-                    schemas.extend(system.schema_findings(&compiled).into_iter().map(|f| (group.clone(), f)));
+                    schemas.extend(
+                        system
+                            .schema_findings(&compiled)
+                            .into_iter()
+                            .map(|f| (group.clone(), f)),
+                    );
                 }
             }
         }
@@ -240,7 +245,10 @@ mod tests {
                 "sources.json",
                 r#"[{"id":"k","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}]"#,
             ),
-            ("routes.json", r#"[{"id":"r","source":"k","pipeline":"p","deliver":[]}]"#),
+            (
+                "routes.json",
+                r#"[{"id":"r","source":"k","pipeline":"p","deliver":[]}]"#,
+            ),
             (
                 "pipelines/p.json",
                 r#"{"id":"p","name":"p","schemas":["ocsf/authentication"],"steps":[]}"#,

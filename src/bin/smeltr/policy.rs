@@ -75,7 +75,7 @@ pub fn need(method: &Method, path: &str, query: Option<&str>) -> Need {
         (Method::GET | Method::HEAD | Method::PUT | Method::DELETE, ["pipelines", _]) => scoped(read),
         (
             Method::PUT,
-            ["sources" | "destinations" | "routes" | "lookup-tables" | "grok-patterns" | "manifest"],
+            ["sources" | "destinations" | "routes" | "lookup-tables" | "grok-patterns" | "schemas" | "manifest"],
         )
         | (Method::POST, ["undo"])
         | (Method::POST, ["lookup", "upload"]) => scoped(Level::Editor),
@@ -112,6 +112,7 @@ pub fn need(method: &Method, path: &str, query: Option<&str>) -> Need {
         | (Method::GET | Method::HEAD, ["history"])
         | (Method::GET | Method::HEAD, ["diff"])
         | (Method::GET | Method::HEAD, ["branches", _, "diff"])
+        | (Method::GET | Method::HEAD, ["branches", _, "schema-findings"])
         | (Method::GET | Method::HEAD, ["changes", _, "timeline"])
         | (Method::POST, ["changes", _, "comments"])
         | (Method::POST, ["changes", _, "threads", _]) => Need::Somewhere(Level::Viewer),
@@ -134,6 +135,10 @@ pub fn need(method: &Method, path: &str, query: Option<&str>) -> Need {
         | (Method::GET | Method::HEAD, ["stats"])
         | (Method::GET | Method::HEAD, ["worker-groups"])
         | (Method::GET | Method::HEAD, ["system", "info"]) => Need::Somewhere(Level::Viewer),
+
+        // The schema catalog: what is built in, and what any schema holds, never config.
+        (Method::GET | Method::HEAD, ["schemas", "builtin" | "export"])
+        | (Method::POST, ["schemas", "object" | "search"]) => Need::Somewhere(Level::Viewer),
 
         // What a person lets their own agent use.
         (Method::GET | Method::HEAD | Method::PUT, ["me", "agent-permissions"]) => Need::Anyone,
@@ -336,6 +341,7 @@ mod tests {
             (Method::PUT, "/api/manifest"),
             (Method::PUT, "/api/lookup-tables"),
             (Method::PUT, "/api/grok-patterns"),
+            (Method::PUT, "/api/schemas"),
             (Method::PUT, "/api/pipelines/p1"),
             (Method::DELETE, "/api/pipelines/p1"),
             (Method::PUT, "/api/tests"),
@@ -467,6 +473,11 @@ mod tests {
             (Method::GET, "/api/history"),
             (Method::GET, "/api/diff"),
             (Method::GET, "/api/branches/b/diff"),
+            (Method::GET, "/api/branches/b/schema-findings"),
+            (Method::GET, "/api/schemas/builtin"),
+            (Method::GET, "/api/schemas/export"),
+            (Method::POST, "/api/schemas/object"),
+            (Method::POST, "/api/schemas/search"),
             (Method::GET, "/api/changes/b/timeline"),
             (Method::POST, "/api/changes/b/comments"),
             (Method::POST, "/api/changes/b/threads/t1"),

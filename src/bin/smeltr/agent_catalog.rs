@@ -68,6 +68,36 @@ pub const CATALOG: &[Route] = &[
         body: "{ id: string, pattern: string }[]",
     },
     Route {
+        method: "GET",
+        path: "/api/schemas/builtin",
+        what: "The built-in schemas: ECS, and each OCSF class with its category. No query.",
+        body: "",
+    },
+    Route {
+        method: "POST",
+        path: "/api/schemas/object",
+        what: "One object of a schema with its fields, the root when at is absent. No query.",
+        body: "{ id?: string, schema?: object, at?: number }",
+    },
+    Route {
+        method: "POST",
+        path: "/api/schemas/search",
+        what: "The schemas whose id, title or a field's path holds q, the bundle's own given beside. No query.",
+        body: "{ q: string, schemas?: { id, schema }[] }",
+    },
+    Route {
+        method: "GET",
+        path: "/api/schemas/export",
+        what: "A built-in schema as JSON Schema. Query: id.",
+        body: "",
+    },
+    Route {
+        method: "PUT",
+        path: "/api/schemas",
+        what: "Replace the area's schemas on a branch: each an id and a JSON Schema. Query: scope, branch.",
+        body: "{ id: string, schema: object }[]",
+    },
+    Route {
         method: "PUT",
         path: "/api/lookup-tables",
         what: "Replace the area's lookup tables on a branch; a CSV table may carry its file's new text. Query: scope, branch.",
@@ -119,7 +149,7 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/undo",
         what: "Put one object back as it was where the branch left main, as one save. Query: scope, branch.",
-        body: "{ section: 'sources'|'destinations'|'routes'|'lookupTables'|'grokPatterns'|'pipelines', id: string }",
+        body: "{ section: 'sources'|'destinations'|'routes'|'lookupTables'|'grokPatterns'|'schemas'|'pipelines', id: string }",
     },
     Route {
         method: "POST",
@@ -186,6 +216,12 @@ pub const CATALOG: &[Route] = &[
         method: "GET",
         path: "/api/branches/:name/diff",
         what: "A branch's changed files and unified diff against main. Query: path (one file).",
+        body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/branches/:name/schema-findings",
+        what: "What breaks a schema at a branch's tip, in each group its change reaches. No query.",
         body: "",
     },
     Route {

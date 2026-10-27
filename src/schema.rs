@@ -36,8 +36,14 @@ pub struct Schema {
 /// Where a schema comes from.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Origin {
-    Ecs { version: &'static str },
-    Ocsf { version: &'static str, class_uid: u32, category: u32 },
+    Ecs {
+        version: &'static str,
+    },
+    Ocsf {
+        version: &'static str,
+        class_uid: u32,
+        category: u32,
+    },
     /// Declared in a bundle, as JSON Schema.
     Bundle,
 }
@@ -74,7 +80,10 @@ pub enum Type {
     Leaf(Leaf),
     /// The object at this index of the schema's objects. An implied object is no field of its own but the path to
     /// fields under it, as `source` is in ECS: a value of another type there is no misfit.
-    Object { at: usize, implied: bool },
+    Object {
+        at: usize,
+        implied: bool,
+    },
 }
 
 /// The value a field must have.
@@ -159,6 +168,11 @@ impl Finding {
 impl Schema {
     pub fn root(&self) -> &Object {
         &self.objects[self.root]
+    }
+
+    /// The root's index among the schema's objects, which a field holding an object names its own by.
+    pub fn root_at(&self) -> usize {
+        self.root
     }
 
     pub fn object(&self, at: usize) -> &Object {
@@ -260,14 +274,7 @@ impl Schema {
     }
 
     fn misfit(&self, f: &Field, ty: &DataType, keys: &[String], out: &mut Vec<Finding>) {
-        let element = match f.ty {
-            Type::Leaf(leaf) => leaf.written_as(),
-            Type::Object { .. } => "struct",
-        };
-        let written_as = match (self.reading, f.array) {
-            (Reading::Json, true) => format!("array({element})"),
-            _ => element.to_string(),
-        };
+        let written_as = self.written_as(f);
         out.push(Finding {
             keys: keys.to_vec(),
             schema: self.id.clone(),
@@ -277,6 +284,23 @@ impl Schema {
                 written_as,
             },
         });
+    }
+
+    /// The type a pipeline writes to keep `f`, one of this schema's fields, as the pipeline editor spells it.
+    pub fn written_as(&self, f: &Field) -> String {
+        let element = match f.ty {
+            Type::Leaf(leaf) => leaf.written_as(),
+            Type::Object { .. } => "struct",
+        };
+        match (self.reading, f.array) {
+            (Reading::Json, true) => format!("array({element})"),
+            _ => element.to_string(),
+        }
+    }
+
+    /// The object at `at`, where the schema has one.
+    pub fn object_at(&self, at: usize) -> Option<&Object> {
+        self.objects.get(at)
     }
 
     /// Every field of the schema by path from its root, each with the path's keys, to `depth` objects deep. An
@@ -309,7 +333,9 @@ pub fn check(schemas: &[Arc<Schema>], record: &DataType) -> Vec<Finding> {
     for (i, findings) in each.iter().enumerate() {
         for f in findings {
             let stands = each.iter().enumerate().filter(|(j, _)| *j != i).all(|(j, other)| {
-                let alike = other.iter().any(|o| o.keys == f.keys && same_kind(&o.misfit, &f.misfit));
+                let alike = other
+                    .iter()
+                    .any(|o| o.keys == f.keys && same_kind(&o.misfit, &f.misfit));
                 match f.misfit {
                     Misfit::Type { .. } => alike || schemas[j].field(&f.keys).is_none(),
                     Misfit::Missing => alike,
@@ -425,7 +451,11 @@ mod tests {
         findings
             .iter()
             .map(|f| match &f.misfit {
-                Misfit::Type { ty, type_name, written_as } => {
+                Misfit::Type {
+                    ty,
+                    type_name,
+                    written_as,
+                } => {
                     format!("{} {}: {ty} not {type_name}, write {written_as}", f.schema, f.path())
                 }
                 Misfit::Missing => format!("{} {}: missing", f.schema, f.path()),
@@ -490,7 +520,8 @@ mod tests {
         assert!(!without.iter().any(|f| f.keys.len() > 1));
         let with = auth.check(&st(&[("metadata", st(&[("version", DataType::Str)]))]));
         assert!(
-            with.iter().any(|f| f.path() == "metadata.product" && f.misfit == Misfit::Missing),
+            with.iter()
+                .any(|f| f.path() == "metadata.product" && f.misfit == Misfit::Missing),
             "{with:?}"
         );
     }
@@ -512,7 +543,9 @@ mod tests {
         assert!(shown.contains(&"ocsf/authentication class_uid: missing".to_string()));
         assert!(!shown.iter().any(|s| s.ends_with("src_endpoint: missing")), "{shown:?}");
         assert!(
-            shown.contains(&"ocsf/network_activity connection_info: i64 not network_connection_info, write struct".to_string()),
+            shown.contains(
+                &"ocsf/network_activity connection_info: i64 not network_connection_info, write struct".to_string()
+            ),
             "a field one schema names alone breaks where that one says: {shown:?}"
         );
     }

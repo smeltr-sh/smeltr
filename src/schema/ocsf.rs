@@ -118,10 +118,9 @@ fn fields(attributes: &[u16], objects: &Objects) -> Vec<Field> {
                 Ty::EpochMillis => Type::Leaf(Leaf::EpochMillis),
                 Ty::Json => Type::Leaf(Leaf::Json),
                 // Every object an attribute names is one OCSF defines (`tests`).
-                Ty::Object(name) => objects.named(name).map_or(Type::Leaf(Leaf::Json), |at| Type::Object {
-                    at,
-                    implied: false,
-                }),
+                Ty::Object(name) => objects
+                    .named(name)
+                    .map_or(Type::Leaf(Leaf::Json), |at| Type::Object { at, implied: false }),
             };
             Field {
                 name: a.name.to_string(),
@@ -165,7 +164,10 @@ mod tests {
 
     #[test]
     fn a_class_and_an_objects_attributes_are_sorted_and_unique() {
-        let lists = OBJECTS.iter().map(|o| o.attributes).chain(CLASSES.iter().map(|c| c.attributes));
+        let lists = OBJECTS
+            .iter()
+            .map(|o| o.attributes)
+            .chain(CLASSES.iter().map(|c| c.attributes));
         for list in lists {
             let names: Vec<&str> = list.iter().map(|&i| ATTRS[i as usize].name).collect();
             assert!(names.windows(2).all(|w| w[0] < w[1]), "{names:?}");

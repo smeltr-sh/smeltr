@@ -909,7 +909,11 @@ pub fn run_preview(
         }
     };
     if records.is_empty() {
-        warnings.extend(schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first).iter().map(warn));
+        warnings.extend(
+            schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first)
+                .iter()
+                .map(warn),
+        );
         return Envelope::ok(Preview {
             stage: None,
             pipeline_names,
@@ -1030,7 +1034,11 @@ pub fn run_preview(
 
     // The dictionary is of every row: a filter chooses what is shown, not what the pipeline writes.
     let sampled = plan::dictionary::with_sample(&record, rows.iter().filter_map(|(r, _)| r.json.as_ref()));
-    warnings.extend(schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first).iter().map(warn));
+    warnings.extend(
+        schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first)
+            .iter()
+            .map(warn),
+    );
     let unfiltered = filter.as_ref().map(|_| rows.len() as u32);
     let rows = rows
         .into_iter()
@@ -1518,7 +1526,10 @@ mod tests {
 
     /// `compiling`, its pipeline producing `schemas`.
     fn producing(schemas: &str) -> String {
-        compiling().replace(r#""id":"p","name":"P","#, &format!(r#""id":"p","name":"P","schemas":{schemas},"#))
+        compiling().replace(
+            r#""id":"p","name":"P","#,
+            &format!(r#""id":"p","name":"P","schemas":{schemas},"#),
+        )
     }
 
     fn warnings_of(config: String, columns: &[crate::heartbeat::CaptureColumn]) -> Vec<(Option<String>, String)> {

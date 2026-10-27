@@ -88,9 +88,20 @@ impl Reader<'_> {
         let name = r
             .strip_prefix("#/$defs/")
             .or_else(|| r.strip_prefix("#/definitions/"))
-            .ok_or_else(|| format!("{}: `$ref` names a definition in the same document, as `#/$defs/<name>`", shown(at)))?;
+            .ok_or_else(|| {
+                format!(
+                    "{}: `$ref` names a definition in the same document, as `#/$defs/<name>`",
+                    shown(at)
+                )
+            })?;
         if let Some(&object) = self.refs.get(r) {
-            return Ok((Type::Object { at: object, implied: false }, name.to_string()));
+            return Ok((
+                Type::Object {
+                    at: object,
+                    implied: false,
+                },
+                name.to_string(),
+            ));
         }
         let doc = self.doc;
         let def = ["$defs", "definitions"]
@@ -110,7 +121,13 @@ impl Reader<'_> {
         self.refs.insert(r.to_string(), object);
         let fields = self.fields(def, at)?;
         self.objects.get_mut(object).fields = fields;
-        Ok((Type::Object { at: object, implied: false }, name.to_string()))
+        Ok((
+            Type::Object {
+                at: object,
+                implied: false,
+            },
+            name.to_string(),
+        ))
     }
 
     fn object(&mut self, node: &Map<String, Value>, at: &str) -> Result<usize, String> {
@@ -136,7 +153,11 @@ impl Reader<'_> {
             .ok_or_else(|| format!("{}: `properties` is an object", shown(at)))?;
         let mut fields = Vec::new();
         for (name, property) in properties {
-            let path = if at.is_empty() { name.clone() } else { format!("{at}.{name}") };
+            let path = if at.is_empty() {
+                name.clone()
+            } else {
+                format!("{at}.{name}")
+            };
             let items = match property.get("type") {
                 Some(Value::String(t)) if t == "array" => Some(property.get("items").unwrap_or(&Value::Bool(true))),
                 _ => None,
@@ -202,7 +223,12 @@ fn object(schema: &Schema, at: usize, defs: &mut Map<String, Value>) -> Value {
     if !o.description.is_empty() {
         out["description"] = json!(o.description);
     }
-    let required: Vec<&str> = o.fields.iter().filter(|f| f.required).map(|f| f.name.as_str()).collect();
+    let required: Vec<&str> = o
+        .fields
+        .iter()
+        .filter(|f| f.required)
+        .map(|f| f.name.as_str())
+        .collect();
     if !required.is_empty() {
         out["required"] = json!(required);
     }
@@ -303,7 +329,11 @@ mod tests {
             .check(&record)
             .iter()
             .map(|f| match &f.misfit {
-                Misfit::Type { ty, type_name, written_as } => format!("{}: {ty} not {type_name}, write {written_as}", f.path()),
+                Misfit::Type {
+                    ty,
+                    type_name,
+                    written_as,
+                } => format!("{}: {ty} not {type_name}, write {written_as}", f.path()),
                 Misfit::Missing => format!("{}: missing", f.path()),
             })
             .collect();

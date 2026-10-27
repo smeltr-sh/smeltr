@@ -31,7 +31,10 @@ pub(super) fn schema() -> Schema {
                         true => ecs_field(segment, *ecs, description, inner),
                         false => Field {
                             name: segment.to_string(),
-                            ty: Type::Object { at: inner, implied: true },
+                            ty: Type::Object {
+                                at: inner,
+                                implied: true,
+                            },
                             type_name: "object".to_string(),
                             array: false,
                             required: false,
@@ -69,7 +72,10 @@ fn ecs_field(name: &str, ecs: Ecs, description: &str, inner: usize) -> Field {
     Field {
         name: name.to_string(),
         ty: match ecs {
-            Ecs::Object | Ecs::Nested => Type::Object { at: inner, implied: false },
+            Ecs::Object | Ecs::Nested => Type::Object {
+                at: inner,
+                implied: false,
+            },
             e => Type::Leaf(Leaf::Ecs(e)),
         },
         type_name: ecs.name().to_string(),
@@ -118,7 +124,10 @@ mod tests {
             ("user", st(&[("name", st(&[("first", DataType::Str)]))])),
             ("event", st(&[("duration", DataType::Variant)])),
             ("host", DataType::Str),
-            ("email", st(&[("attachments", DataType::Array(Box::new(st(&[("file", st(&[]))]))))])),
+            (
+                "email",
+                st(&[("attachments", DataType::Array(Box::new(st(&[("file", st(&[]))]))))]),
+            ),
             ("url.path", DataType::I64),
             ("labels", st(&[("env", DataType::Str)])),
         ]);
@@ -136,8 +145,16 @@ mod tests {
             [
                 ("@timestamp".to_string(), DataType::Str, "date".to_string()),
                 ("source.port".to_string(), DataType::Str, "long".to_string()),
-                ("source.geo.location".to_string(), DataType::F64, "geo_point".to_string()),
-                ("user.name".to_string(), st(&[("first", DataType::Str)]), "keyword".to_string()),
+                (
+                    "source.geo.location".to_string(),
+                    DataType::F64,
+                    "geo_point".to_string()
+                ),
+                (
+                    "user.name".to_string(),
+                    st(&[("first", DataType::Str)]),
+                    "keyword".to_string()
+                ),
                 ("url.path".to_string(), DataType::I64, "wildcard".to_string()),
             ]
         );

@@ -1157,7 +1157,12 @@ pub fn currently_active_facts(
 pub fn deploy_facts(checks: &Findings, registry: &crate::leader::registry::Registry) -> Vec<FactKey> {
     let mut out: Vec<FactKey> = checks.not_loading.iter().map(|n| does_not_load_key(&n.group)).collect();
     out.extend(checks.failing.iter().map(|t| fails_tests_key(&t.scope, &t.id)));
-    out.extend(checks.schemas.iter().map(|(group, f)| breaks_schemas_key(group, &f.pipeline)));
+    out.extend(
+        checks
+            .schemas
+            .iter()
+            .map(|(group, f)| breaks_schemas_key(group, &f.pipeline)),
+    );
     if checks.tests_pending() {
         out.extend(registry.facts_of(DEPLOY_FAILS_TESTS));
     }

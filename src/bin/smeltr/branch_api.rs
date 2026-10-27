@@ -405,6 +405,60 @@ pub async fn branch_diff(
     Json(answered.into())
 }
 
+// -- GET /api/branches/:name/schema-findings ------------------------------
+
+/// One schema finding (`LoadedSystem::schema_findings`) in a group the branch's change reaches.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaFindingOut {
+    group: String,
+    pipeline: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step: Option<String>,
+    message: String,
+}
+
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaFindings {
+    findings: Vec<SchemaFindingOut>,
+}
+
+/// What breaks a schema at the branch's tip, in every group its change reaches (`scopes_touched`). A group that does
+/// not load there has no findings: review says it does not load.
+pub async fn schema_findings(
+    Extension(access): Extension<Access>,
+    AxPath(name): AxPath<String>,
+) -> Json<Envelope<SchemaFindings>> {
+    let answered = blocking(move || {
+        let data_dir = leader_data_dir();
+        seen(&access, &data_dir, &name)?;
+        let repo = repo()?;
+        let mut findings = Vec::new();
+        for group in scopes_touched(&data_dir, &name)? {
+            if group == config_file::SHARED_DIR {
+                continue;
+            }
+            let Ok(system) = tree::load_group_at(&repo, &name, &group) else {
+                continue;
+            };
+            // Loading compiled it, so this compile does not fail.
+            let Ok(compiled) = system.compile_topology() else {
+                continue;
+            };
+            findings.extend(system.schema_findings(&compiled).into_iter().map(|f| SchemaFindingOut {
+                group: group.clone(),
+                pipeline: f.pipeline,
+                step: f.step,
+                message: f.message,
+            }));
+        }
+        Ok::<_, String>(SchemaFindings { findings })
+    })
+    .await;
+    Json(answered.into())
+}
+
 // -- POST /api/branches, DELETE /api/branches/:name -----------------------
 
 #[derive(serde::Deserialize)]

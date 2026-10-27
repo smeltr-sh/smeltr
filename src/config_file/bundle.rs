@@ -27,7 +27,9 @@ use std::path::Path;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::dto::{DestinationDto, FileConfig, GrokPatternDto, LookupTableDto, PipelineDto, RouteDto, SchemaDto, SourceDto};
+use super::dto::{
+    DestinationDto, FileConfig, GrokPatternDto, LookupTableDto, PipelineDto, RouteDto, SchemaDto, SourceDto,
+};
 use super::load::{BundleAt, LoadError};
 use super::{CURRENT_VERSION, LoadedSystem};
 

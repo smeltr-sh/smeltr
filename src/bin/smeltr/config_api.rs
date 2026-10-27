@@ -564,6 +564,7 @@ enum Touches {
     Routes,
     LookupTables,
     GrokPatterns,
+    Schemas,
     OnlyPipelines,
     OnlyManifest,
 }
@@ -595,6 +596,7 @@ fn edits_for(file: &FileConfig, old: &RawBundle, touches: Touches) -> Result<Vec
         Touches::GrokPatterns => {
             return section(config_file::GROK_PATTERNS_FILE, json_bytes(&file.grok_patterns));
         }
+        Touches::Schemas => return section(config_file::SCHEMAS_FILE, json_bytes(&file.schemas)),
         Touches::LookupTables => {
             let mut edits = section("lookup-tables.json", json_bytes(&file.lookup_tables))?;
             // Only a table names a lookup file, so one the old tables named and the new ones do not is named by
@@ -1173,6 +1175,27 @@ pub async fn put_grok_patterns(
     .await
 }
 
+pub async fn put_schemas(
+    Extension(actor): Extension<Actor>,
+    Query(q): Query<BranchQuery>,
+    headers: HeaderMap,
+    Json(schemas): Json<Vec<config_file::SchemaDto>>,
+) -> Json<Envelope<Save>> {
+    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
+    blocking_save(move || {
+        save_on_branch(
+            &branch,
+            base,
+            &scope,
+            Touches::Schemas,
+            "edit schemas".into(),
+            &actor,
+            |file| file.schemas = schemas,
+        )
+    })
+    .await
+}
+
 /// The group's answer to every exception kind. It replaces what the manifest said; `null` or absent says nothing,
 /// which is the default. An unknown key is refused: a misspelt answer would otherwise clear one.
 #[derive(serde::Deserialize)]
@@ -1630,6 +1653,7 @@ pub enum Section {
     Routes,
     LookupTables,
     GrokPatterns,
+    Schemas,
     Pipelines,
 }
 
@@ -1641,6 +1665,7 @@ impl Section {
             Section::Routes => Touches::Routes,
             Section::LookupTables => Touches::LookupTables,
             Section::GrokPatterns => Touches::GrokPatterns,
+            Section::Schemas => Touches::Schemas,
             Section::Pipelines => Touches::OnlyPipelines,
         }
     }
@@ -1652,6 +1677,7 @@ impl Section {
             Section::Routes => "route",
             Section::LookupTables => "lookup table",
             Section::GrokPatterns => "grok pattern",
+            Section::Schemas => "schema",
             Section::Pipelines => "pipeline",
         }
     }
@@ -1800,6 +1826,7 @@ fn undo_in(
         Section::Destinations => put_back_into(&was.destinations, &mut file.destinations, id, |o| &o.id),
         Section::Routes => put_back_into(&was.routes, &mut file.routes, id, |o| &o.id),
         Section::GrokPatterns => put_back_into(&was.grok_patterns, &mut file.grok_patterns, id, |o| &o.id),
+        Section::Schemas => put_back_into(&was.schemas, &mut file.schemas, id, |o| &o.id),
         Section::Pipelines => put_back_into(&was.pipelines, &mut file.pipelines, id, |o| &o.id),
         Section::LookupTables => match put_back(&was.lookup_tables, &file.lookup_tables, id, |o| &o.id) {
             Some(p) => {

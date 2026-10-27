@@ -27,7 +27,6 @@ use crate::plan::config::{
     TimeSource,
 };
 use crate::plan::parse_call::split_dots_default;
-use crate::schema::Schema;
 use crate::plan::topology::{
     AccessKey, Acknowledgement, AfterCommit, ApiRecords, AssumedRole, AzureAccess, AzureCredential, AzureStore,
     CatalogSignIn, Cloud, DeliverRule, DeltaDestinationConfig, DestinationConfig, DestinationKind, DocIdPolicy,
@@ -38,6 +37,7 @@ use crate::plan::topology::{
     RequestBody, RouteConfig, S3Access, S3Store, SftpAccess, SftpCredential, SftpStore, SourceConfig, SourceKind,
     SplunkHecDestinationConfig, StartPosition, StopPosition, Tls, TopologyConfig, Transport, UnityCatalogTable,
 };
+use crate::schema::Schema;
 
 use super::CURRENT_VERSION;
 use super::bytes;
@@ -430,7 +430,10 @@ fn resolve_schemas(
     for dto in &file.schemas {
         let errors = &mut ItemErrors::new(attributed, "schemas", &dto.id);
         if crate::schema::reserved(&dto.id) {
-            errors.push(format!("{:?} is a built-in schema's id; give this schema another", dto.id));
+            errors.push(format!(
+                "{:?} is a built-in schema's id; give this schema another",
+                dto.id
+            ));
             continue;
         }
         if !seen.insert(dto.id.as_str()) {
@@ -6459,9 +6462,7 @@ mod tests {
     /// The one error `file` has, on the item and setting it names.
     fn the_error(file: FileConfig) -> (String, String, Option<&'static str>, String) {
         let errors = validation_errors(file);
-        let [e] = errors.as_slice() else {
-            panic!("{errors:?}")
-        };
+        let [e] = errors.as_slice() else { panic!("{errors:?}") };
         let item = e.item.as_ref().unwrap_or_else(|| panic!("{e:?}"));
         (item.section.to_string(), item.id.clone(), e.field, e.message.clone())
     }
@@ -6469,7 +6470,10 @@ mod tests {
     #[test]
     fn a_schema_id_that_names_no_schema_is_refused_on_what_names_it() {
         let (section, id, field, message) = the_error(with_schemas("[]", r#"["acme-login"]"#, "[]"));
-        assert_eq!((section.as_str(), id.as_str(), field), ("pipelines", "p", Some("schemas")));
+        assert_eq!(
+            (section.as_str(), id.as_str(), field),
+            ("pipelines", "p", Some("schemas"))
+        );
         assert!(message.contains("\"acme-login\""), "{message}");
         let (section, _, field, _) = the_error(with_schemas("[]", "[]", r#"["ocsf/nothing"]"#));
         assert_eq!((section.as_str(), field), ("destinations", Some("accepts")));
@@ -6481,7 +6485,10 @@ mod tests {
         assert_eq!((section.as_str(), id.as_str(), field), ("schemas", "ocsf/mine", None));
         let broken = r#"[{ "id": "mine", "schema": { "type": "string" } }]"#;
         let (section, id, field, _) = the_error(with_schemas(broken, "[]", "[]"));
-        assert_eq!((section.as_str(), id.as_str(), field), ("schemas", "mine", Some("schema")));
+        assert_eq!(
+            (section.as_str(), id.as_str(), field),
+            ("schemas", "mine", Some("schema"))
+        );
         let twice = r#"[{ "id": "mine", "schema": { "type": "object" } }, { "id": "mine", "schema": {} }]"#;
         let (_, _, _, message) = the_error(with_schemas(twice, "[]", "[]"));
         assert!(message.contains("duplicate schema id"), "{message}");
