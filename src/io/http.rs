@@ -298,6 +298,10 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
         if senders.is_empty() {
             return self;
         }
+        debug_assert!(
+            self.protocol.order().is_none(),
+            "a pool sends a batch's requests out of order"
+        );
         self.pool = Some(Pool::new(
             senders
                 .into_iter()

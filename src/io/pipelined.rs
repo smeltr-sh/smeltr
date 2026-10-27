@@ -7,10 +7,10 @@
 //! The pool sets no limit of its own. What is in flight is bounded by the egress queue in front of it, which holds
 //! the pacing target (`egress::pacing`) until each batch is acknowledged; the pool sends every request it is handed,
 //! a batch's side by side, and reports the batch once its last request is answered. It spawns a sender when every one
-//! it has is busy, up to the sender count. The configured figure is how many it
-//! starts with. A destination that asks to be sent less (429) is obeyed by the sender that was asked, which waits out
-//! the backoff, and its completion says it was throttled, so the model caps what it holds below what was in flight
-//! then. Not for Kafka: librdkafka pipelines on its own threads.
+//! it has is busy, up to the sender count; the configured figure is how many it starts with. A destination that asks
+//! to be sent less (429) is obeyed by the sender that was asked, which waits out the backoff, and its completion says
+//! it was throttled, so the model caps what it holds below what was in flight then. Not for Kafka: librdkafka
+//! pipelines on its own threads.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
@@ -212,7 +212,6 @@ impl<S: Sender> Pool<S> {
             });
             return Ok(());
         }
-        self.batches.entry(batch).or_default().open += jobs.len();
         for job in jobs {
             if self.outstanding >= self.handles.len() {
                 // A sender whose answer has arrived is free: spawn only when none is.
@@ -224,6 +223,8 @@ impl<S: Sender> Pool<S> {
             while self.outstanding >= self.handles.len() {
                 self.recv_one()?;
             }
+            // Counted as pushed: a failure above drops the rest, and the batch completes on those already sent.
+            self.batches.entry(batch).or_default().open += 1;
             // Senders that have all stopped are found out when their completions channel closes.
             self.jobs.push((batch, job));
             self.outstanding += 1;
