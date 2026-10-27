@@ -77,6 +77,27 @@ impl Ecs {
         }
     }
 
+    /// The type a pipeline writes for this mapping to hold it, as the pipeline editor spells it.
+    pub fn written_as(self) -> &'static str {
+        match self {
+            Ecs::Date => "datetime",
+            Ecs::Long | Ecs::UnindexedLong => "i64",
+            Ecs::Float | Ecs::Double | Ecs::ScaledFloat => "f64",
+            Ecs::Boolean => "bool",
+            Ecs::Flattened | Ecs::Object => "struct",
+            Ecs::Nested => "array(struct)",
+            Ecs::Keyword
+            | Ecs::KeywordText
+            | Ecs::MatchOnlyText
+            | Ecs::Wildcard
+            | Ecs::WildcardText
+            | Ecs::ConstantKeyword
+            | Ecs::Unindexed
+            | Ecs::Ip
+            | Ecs::GeoPoint => "str",
+        }
+    }
+
     /// Whether a value of type `ty` is one this mapping holds as ECS means it. `ty` is no array, but under `Nested`,
     /// which holds an array of objects as it holds one.
     fn holds(self, ty: &DataType) -> bool {
@@ -383,6 +404,29 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// What a disagreement tells the author to write is a type ECS's mapping holds.
+    #[test]
+    fn each_ecs_type_holds_what_it_says_to_write() {
+        let object = st(&[("a", DataType::Str)], true);
+        for (name, ecs) in crate::io::ecs_fields::FIELDS {
+            let ty = match ecs.written_as() {
+                "struct" => object.clone(),
+                "array(struct)" => DataType::Array(Box::new(object.clone())),
+                written => [
+                    DataType::DateTime,
+                    DataType::I64,
+                    DataType::F64,
+                    DataType::Bool,
+                    DataType::Str,
+                ]
+                .into_iter()
+                .find(|t| t.to_string() == written)
+                .unwrap_or_else(|| panic!("{name}: {written} is no type")),
+            };
+            assert!(ecs.holds(&ty), "{name}: {ecs:?} does not hold {ty:?}");
+        }
     }
 
     #[test]

@@ -1053,7 +1053,8 @@ fn ecs_warnings(plan: &Plan, record: &DataType) -> Vec<CompileError> {
         .into_iter()
         .map(|d| {
             let path = d.keys.join(".");
-            let message = format!("`{path}` is {}, but ECS maps it as {}", d.ty, d.ecs.name());
+            let (ecs, written) = (d.ecs.name(), d.ecs.written_as());
+            let message = format!("`{path}` is {}, but ECS maps it as {ecs}. Write it as {written}.", d.ty);
             CompileError::new(writer(plan, &d.keys), message)
         })
         .collect()
@@ -1559,7 +1560,13 @@ mod tests {
         let warned: Vec<_> = (previewed.body.warnings.iter())
             .map(|w| (w.step.as_deref(), w.message.as_str()))
             .collect();
-        assert_eq!(warned, [(Some("s"), "`@timestamp` is str, but ECS maps it as date")]);
+        assert_eq!(
+            warned,
+            [(
+                Some("s"),
+                "`@timestamp` is str, but ECS maps it as date. Write it as datetime."
+            )]
+        );
     }
 
     #[test]
