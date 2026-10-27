@@ -1245,30 +1245,25 @@ pub fn run_cold_capture(
         captures,
         admitted,
         source.as_mut(),
-        &meta,
-        encoding,
+        &crate::runtime::Reading { meta, encoding },
         &metrics,
         &source_id,
-        false,
-        |_| false,
+        None,
     );
 }
 
 /// Poll `source` into `admitted` until the session closes or a deployment starts reading the source. A session that
 /// reads its source itself (`CaptureInvitation::reads_source_itself`) reads on whatever is deployed. An SQL Run
-/// (`sql_run`) ends once `read` says it has read all it reads, and a connection error ends it with that as the
+/// passes `run`, and ends once `run` says it has read all it reads; a connection error ends it with that as the
 /// reason.
-#[allow(clippy::too_many_arguments)]
 fn drive<S: crate::io::Source + ?Sized>(
     captures: &Captures,
     admitted: &Admitted,
     source: &mut S,
-    meta: &SourceMeta,
-    encoding: crate::format::encoding::Encoding,
+    reading: &crate::runtime::Reading,
     metrics: &crate::metrics::MetricsHandle,
     source_id: &str,
-    sql_run: bool,
-    read: impl Fn(&S) -> bool,
+    run: Option<fn(&S) -> bool>,
 ) {
     let session = &admitted.invitation.session;
     let itself = admitted.invitation.reads_source_itself();
@@ -1297,12 +1292,12 @@ fn drive<S: crate::io::Source + ?Sized>(
         };
         // An SQL source reports a refused poll here rather than as an error, so it can try again next interval. A
         // capture shows the refusal instead of waiting out its deadline on it.
-        if let Some(why) = sql_run.then(|| source.connection_error()).flatten() {
+        if let Some(why) = run.and_then(|_| source.connection_error()) {
             captures.fail(admitted, why);
             return;
         }
         if records.is_empty() {
-            if read(source) {
+            if run.is_some_and(|read| read(source)) {
                 captures.end(admitted);
                 return;
             }
@@ -1313,8 +1308,10 @@ fn drive<S: crate::io::Source + ?Sized>(
         let decoded: Vec<String> = records
             .iter()
             .map(|r| {
-                meta.read_bytes(r)
-                    .map(|b| encoding.decode(b).text.into_owned())
+                reading
+                    .meta
+                    .read_bytes(r)
+                    .map(|b| reading.encoding.decode(b).text.into_owned())
                     .unwrap_or_default()
             })
             .collect();
@@ -1497,12 +1494,10 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
         captures,
         admitted,
         &mut source,
-        &meta,
-        encoding,
+        &crate::runtime::Reading { meta, encoding },
         &metrics,
         &source_id,
-        true,
-        SqlSource::read_once,
+        Some(SqlSource::read_once),
     );
 }
 
