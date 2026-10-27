@@ -62,8 +62,8 @@ const STALE_BURST_REPEAT: Duration = Duration::from_secs(10 * 60);
 const LAG_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 // `session.timeout.ms`, `heartbeat.interval.ms` and `queued.min.messages` stay at librdkafka's defaults. The fetch
-// sizes follow `fetchBytes`. The producer's batch, linger and requests in flight stay at librdkafka's own, its batch
-// lowered to what the broker takes where that is less (`broker_ceiling`). Compression and security are the operator's,
+// sizes follow `fetchBytes`. The producer's batch, linger and requests in flight stay at librdkafka's own; its record
+// may be as large as the broker takes, and its batch is lowered to that where it is less (`broker_ceiling`). Compression and security are the operator's,
 // through `apply_props`.
 
 /// What smeltr calls itself to a broker.
@@ -74,7 +74,7 @@ const CLIENT_ID: &str = "smeltr";
 /// one after another, so an unreachable broker costs a deployment this much per destination.
 const LINK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// librdkafka's own `batch.size` and `message.max.bytes`, which a producer keeps unless its broker takes less.
+/// librdkafka's own `batch.size` and `message.max.bytes`. A producer keeps this batch unless its broker takes less.
 const DEFAULT_BATCH_BYTES: usize = 1_000_000;
 
 /// What librdkafka and the delivery tag hold for each queued record beyond its payload and key. librdkafka's own
@@ -1195,11 +1195,12 @@ fn request_ceiling(admin: &AdminClient<DefaultClientContext>, topic: &str) -> Op
     })
 }
 
-/// The `batch.size` and `message.max.bytes` for a broker that takes less than librdkafka's own, brought inside the
-/// range librdkafka accepts, since a producer outside it never builds. `None` when librdkafka's own fit.
-fn lowered_batch(ceiling: usize) -> Option<usize> {
-    let ceiling = ceiling.clamp(MIN_MESSAGE_BYTES, MAX_MESSAGE_BYTES);
-    (ceiling < DEFAULT_BATCH_BYTES).then_some(ceiling)
+/// The `message.max.bytes` and `batch.size` for a broker that takes requests up to `ceiling`: a record as large as it
+/// takes, and a batch no larger than librdkafka's own. Both are brought inside the range librdkafka accepts, since a
+/// producer outside it never builds.
+fn request_sizes(ceiling: usize) -> (usize, usize) {
+    let message = ceiling.clamp(MIN_MESSAGE_BYTES, MAX_MESSAGE_BYTES);
+    (message, message.min(DEFAULT_BATCH_BYTES))
 }
 
 impl KafkaDestination {
@@ -1250,27 +1251,27 @@ impl KafkaDestination {
         apply_client_config(&mut producer_config, &config.props, config.identity.as_deref(), secrets)?;
         // `batch.size`, `linger.ms` and `max.in.flight.requests.per.connection` stay at librdkafka's own unless the
         // operator sets them. Pacing bounds what is in flight through `produce`, and measures its round trip from
-        // handover to delivery report, so a longer linger would wait inside the round trip it measures. Only a broker
-        // that takes less lowers the batch, since it refuses a request over its ceiling, and an operator's own
-        // `batch.size` or `message.max.bytes` stands. Asked before the producer exists, because librdkafka fixes its
-        // sizes when a client is built, and under the producer's own configuration, so a secured broker answers.
+        // handover to delivery report, so a longer linger would wait inside the round trip it measures. A record may
+        // be as large as the broker takes, and a broker that takes less than librdkafka's batch lowers it, since it
+        // refuses a request over its ceiling. An operator's own `batch.size` or `message.max.bytes` stands. Asked
+        // before the producer exists, because librdkafka fixes its sizes when a client is built, and under the
+        // producer's own configuration, so a secured broker answers.
         let (ceiling, ceiling_from) =
             broker_ceiling(&producer_config, &config.default_topic).unwrap_or((DEFAULT_BATCH_BYTES, "default"));
-        let lowered = lowered_batch(ceiling);
+        let (message_bytes, batch_bytes) = request_sizes(ceiling);
         tracing::info!(
             target: "kafka.link",
             destination = %id,
             topic = %config.default_topic,
             ceiling_bytes = ceiling,
             ceiling_from,
-            batch_bytes = lowered.unwrap_or(DEFAULT_BATCH_BYTES),
-            "sized the producer's batch for its broker"
+            message_bytes,
+            batch_bytes,
+            "sized the producer's requests for its broker"
         );
-        if let Some(batch) = lowered {
-            for key in ["batch.size", "message.max.bytes"] {
-                if producer_config.get(key).is_none() {
-                    producer_config.set(key, batch.to_string());
-                }
+        for (key, bytes) in [("message.max.bytes", message_bytes), ("batch.size", batch_bytes)] {
+            if producer_config.get(key).is_none() {
+                producer_config.set(key, bytes.to_string());
             }
         }
         let avro = (config.avro.as_ref())
@@ -1536,14 +1537,18 @@ mod tests {
         assert_eq!(dropped, 1, "a/0 moved away");
     }
 
-    /// A broker that takes librdkafka's own batch leaves it alone. One that takes less lowers it, and one under what
-    /// librdkafka accepts at all is brought up to that.
+    /// A record may be as large as the broker takes, and a batch is librdkafka's own unless the broker takes less. A
+    /// ceiling outside what librdkafka accepts at all is brought inside it.
     #[test]
-    fn a_batch_stays_librdkafkas_own_unless_the_broker_takes_less() {
-        assert_eq!(lowered_batch(1_048_588), None);
-        assert_eq!(lowered_batch(DEFAULT_BATCH_BYTES), None);
-        assert_eq!(lowered_batch(500_000), Some(500_000));
-        assert_eq!(lowered_batch(0), Some(MIN_MESSAGE_BYTES));
+    fn a_record_is_as_large_as_the_broker_takes_and_a_batch_no_larger_than_librdkafkas() {
+        assert_eq!(request_sizes(8 << 20), (8 << 20, DEFAULT_BATCH_BYTES));
+        assert_eq!(
+            request_sizes(DEFAULT_BATCH_BYTES),
+            (DEFAULT_BATCH_BYTES, DEFAULT_BATCH_BYTES)
+        );
+        assert_eq!(request_sizes(500_000), (500_000, 500_000));
+        assert_eq!(request_sizes(0), (MIN_MESSAGE_BYTES, MIN_MESSAGE_BYTES));
+        assert_eq!(request_sizes(usize::MAX), (MAX_MESSAGE_BYTES, DEFAULT_BATCH_BYTES));
     }
 
     /// What a queued record costs is no more than `held_bytes` counts it at: librdkafka's own share of a record, and
