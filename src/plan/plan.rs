@@ -4343,14 +4343,17 @@ impl Compiler<'_> {
                     if f.disabled {
                         continue;
                     }
+                    let mut every_row = f.filter.is_none();
                     let effective = match &f.filter {
                         None => guard,
                         Some(src) => match self.expr(src, f.id).and_then(|ir| self.condition(ir, "a filter", f.id)) {
+                            // A filter of `true` is the field's own placeholder: every row, as no filter is.
+                            Some(ir) if matches!(ir.kind, IrKind::Literal(Value::Bool(true))) => {
+                                every_row = true;
+                                guard
+                            }
                             Some(ir) => {
-                                // A filter of `true` is the field's own placeholder: every row.
-                                if !matches!(ir.kind, IrKind::Literal(Value::Bool(true))) {
-                                    self.note_constant(&ir, src, f.id);
-                                }
+                                self.note_constant(&ir, src, f.id);
                                 Some(self.and_guard(guard, ir, f.id))
                             }
                             None => guard,
@@ -4358,9 +4361,10 @@ impl Compiler<'_> {
                     };
                     // A filter is an `if` around the step, so a name the step first writes is declared ahead of it
                     // from the record's key, and the rows the filter skips keep the key.
-                    match f.filter {
-                        Some(_) => self.construct(guard, f.id, |c| c.function(&f.kind, f.id, effective, guard)),
-                        None => self.function(&f.kind, f.id, effective, guard),
+                    if every_row {
+                        self.function(&f.kind, f.id, effective, guard);
+                    } else {
+                        self.construct(guard, f.id, |c| c.function(&f.kind, f.id, effective, guard));
                     }
                 }
             }
@@ -4714,6 +4718,28 @@ mod tests {
             FunctionKind::Code { body: body.into() },
         ))];
         p
+    }
+
+    /// A filter of `true` runs the step on every row, as no filter does: what it deletes leaves the record, and it
+    /// computes no guard.
+    #[test]
+    fn a_filter_of_true_is_no_filter() {
+        let compiled = |filter: Option<&str>| {
+            let mut p = code_pipeline("Object.assign($, json(_raw)); x = when; delete(when)");
+            let Step::Function(f) = &mut p.body[0] else {
+                unreachable!("one step")
+            };
+            f.filter = filter.map(Into::into);
+            let plan = compile(&p, &SourceMeta::NONE).unwrap();
+            let record = crate::plan::dictionary::record_type(&plan, "t");
+            (crate::plan::dictionary::fields(&record), plan.slot_layout.len())
+        };
+        let (fields, slots) = compiled(None);
+        assert!(!fields.iter().any(|(n, _)| n == "when"), "{fields:?}");
+        assert_eq!(compiled(Some("true")), (fields, slots));
+        // Any other filter leaves the rows it skips as they were.
+        let (filtered, _) = compiled(Some("_raw != \"\""));
+        assert!(filtered.iter().any(|(n, _)| n == "when"), "{filtered:?}");
     }
 
     fn warnings(body: &str) -> Vec<String> {
