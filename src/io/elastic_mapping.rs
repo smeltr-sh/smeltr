@@ -166,8 +166,8 @@ fn ecs_mapping(ecs: Ecs, properties: Option<Value>) -> Value {
             nested["type"] = json!("nested");
             nested
         }
-        // A value the field cannot read -- `-` for an address, a hostname -- is left out of the index, not the
-        // document refused, as a string ECS names took any value before.
+        // A value the field cannot read -- `-` for an address, a hostname -- is left out of the index rather than
+        // the whole document refused.
         Ecs::Ip | Ecs::GeoPoint => json!({ "type": ecs.name(), "ignore_malformed": true }),
         _ => plain(ecs.name()),
     }
