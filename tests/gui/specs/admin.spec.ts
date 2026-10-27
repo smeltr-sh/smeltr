@@ -14,6 +14,7 @@ import {
 } from '../moves/admin';
 import { conversationLink, openAgent } from '../moves/agent';
 import { fullChain } from '../moves/certificates';
+import { issuedFor } from '../acme';
 
 test('an enrollment code minted under Enrollment codes brings a worker in', async ({
   admin,
@@ -388,50 +389,32 @@ test('a receiver names a certificate from the list, and replacing the certificat
   expect((await sources())[0].certificate).toBe('receiver-tls');
 });
 
-test('a new version a connector could not present is refused, naming the connector', async ({
-  admin,
-  api,
-  fleet,
-}) => {
-  // A leader's certificate is issued for servers alone, and a Kafka source presents its certificate as a client.
-  const pki = await fleet.externalPki();
+test('a new version without a purpose the newest has is refused', async ({ admin, api }) => {
+  const server = issuedFor(['events.example.com'], 'server');
   await api.post('/api/certificates', {
-    name: 'kafka-tls',
+    name: 'events-tls',
     description: '',
-    certificate: fullChain(pki),
-    privateKey: pki.privateKey,
+    certificate: fullChain(server),
+    privateKey: server.privateKey,
   });
-  const branch = 'present-to-kafka';
-  await api.put(`/api/sources?branch=${branch}&scope=default`, [
-    {
-      id: 'events',
-      type: 'kafka',
-      brokers: '127.0.0.1:9',
-      topics: ['t'],
-      groupId: 'g',
-      properties: { 'security.protocol': 'SSL' },
-      certificate: 'kafka-tls',
-    },
-  ]);
-  await api.openChange(branch, 'Read events over TLS');
-  await api.deploy(branch);
 
   await openAdmin(admin, 'Certificates');
-  const row = admin.getByRole('row').filter({ hasText: 'kafka-tls' });
+  const row = admin.getByRole('row').filter({ hasText: 'events-tls' });
   await expect(row.getByRole('cell', { name: 'Server', exact: true })).toBeVisible();
   await row.getByRole('button', { name: 'Replace' }).click();
   const replace = admin.getByRole('dialog', { name: /^replace / });
-  await replace.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
-  await replace.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
+  const client = issuedFor(['events.example.com'], 'client');
+  await replace.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(client));
+  await replace.getByRole('textbox', { name: 'Private key' }).fill(client.privateKey);
   await replace.getByRole('button', { name: 'Replace', exact: true }).click();
   await expect(
-    replace.getByText(
-      /in the group "default", source "events" presents a certificate whose Extended Key Usage does not permit client authentication/,
-    ),
+    replace.getByText('"events-tls" is usable as a server certificate, and this version is not.', {
+      exact: false,
+    }),
   ).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('certificate-refused.png') });
   const versions = (await api.get('/api/certificates')).find(
-    (c: { name: string }) => c.name === 'kafka-tls',
+    (c: { name: string }) => c.name === 'events-tls',
   ).versions.length;
   expect(versions).toBe(1);
 });

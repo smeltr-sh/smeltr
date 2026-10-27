@@ -314,10 +314,11 @@ at its next heartbeat, and the worker restarts its deployment. Every worker
 presenting it restarts within a beat of the others, and a restarted receiver
 drops the connections it held, so its senders reconnect. The two
 halves cannot drift apart: the list refuses a chain and a key that do not
-belong together, and one version holds both. It refuses a new version that a
-connector naming the entry could not present -- its Extended Key Usage leaving
-out the side that connector presents from -- since a worker would refuse to
-restart onto it and keep presenting the old one. A new version the leader
+belong together, and one version holds both. A new version keeps every
+purpose the newest version has, server or client, as its Extended Key Usage
+says. A connector naming the entry may present it from either side it is
+usable from, and a worker that could not present a new version refuses to
+restart onto it and keeps presenting the old one. A new version the leader
 stores itself, renewing an entry it keeps, is not checked this way; a worker
 refusing one is raised as WorkerNotDeployingItsTarget, naming why.
 

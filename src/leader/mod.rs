@@ -246,46 +246,19 @@ fn secrets_at(repo: &std::path::Path, rev: &str, group_id: &str) -> Result<Quote
     Ok(Quoted { secrets, certificates })
 }
 
-/// Why `chain` cannot be the next version of the certificate `name`: each connector presenting `name` that could
-/// not present it, in a bundle the fleet runs or would run once released -- the deployed commit, each of `running`'s
-/// `(group, commit)`, and `main`'s head. A worker refuses a restart onto such a version and keeps running the old
-/// one, so storing it would leave the fleet on a version the list no longer shows as newest.
-///
-/// Blocking; the caller is inside `spawn_blocking`.
-fn unpresentable(
-    data_dir: &std::path::Path,
-    running: &std::collections::HashSet<(String, String)>,
-    name: &str,
-    chain: &str,
-) -> Vec<String> {
-    let repo = git::repo_path(data_dir);
-    if !git::repo_ready(&repo) {
-        return Vec::new();
-    }
-    let mut at: Vec<(String, String)> = running.iter().cloned().collect();
-    for rev in [git::deployed(&repo), git::main_head(&repo)].into_iter().flatten() {
-        at.extend(
-            tree::groups_at(&repo, &rev)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|group| (group, rev.clone())),
-        );
-    }
-    let mut out: Vec<String> = Vec::new();
-    for (group, rev) in at {
-        let Ok(system) = tree::load_group_at(&repo, &rev, &group) else {
-            continue;
-        };
-        out.extend(
-            (system.topology.tls())
-                .filter(|tls| tls.certificate.as_deref() == Some(name))
-                .filter_map(|tls| crate::plan::topology::presented_error(tls, chain))
-                .map(|why| format!("in the group {group:?}, {why}")),
-        );
-    }
-    out.sort();
-    out.dedup();
-    out
+/// The purposes the newest version of the certificate `name` has that `chain` lacks. A connector naming `name` may
+/// present it from any side it is usable from, and a worker refuses a restart onto a version it cannot present and
+/// keeps running the old one, so a new version keeps every purpose the newest has.
+fn purposes_lost(store: &dyn Store, name: &str, chain: &str) -> Result<Vec<&'static str>, StoreError> {
+    use crate::io::trust::{Side, refuse_unless_usable};
+    let Some((_, newest)) = newest_chain(store, name)? else {
+        return Ok(Vec::new());
+    };
+    Ok([(Side::Server, "server"), (Side::Client, "client")]
+        .into_iter()
+        .filter(|(side, _)| refuse_unless_usable(&newest, *side).is_ok() && refuse_unless_usable(chain, *side).is_err())
+        .map(|(_, purpose)| purpose)
+        .collect())
 }
 
 /// Every version [`deployed_versions`] names, and those `main`'s head names: what retention and deletion keep. A
@@ -2773,13 +2746,17 @@ pub async fn replace_certificate(
     }
     match is_certificate(&state, &name).await {
         Ok(true) => {
-            let running = running_deployments(&state).await;
-            let (data_dir, wanted, chain) = (state.data_dir.clone(), name.clone(), req.certificate.clone());
-            let refused = tokio::task::spawn_blocking(move || unpresentable(&data_dir, &running, &wanted, &chain))
-                .await
-                .unwrap_or_default();
-            if !refused.is_empty() {
-                return Json(Envelope::failed(refused.into_iter().map(Into::into).collect()));
+            let (wanted, chain) = (name.clone(), req.certificate.clone());
+            let lost = match run_store(state.store.clone(), move |s| purposes_lost(s, &wanted, &chain)).await {
+                Ok(lost) => lost,
+                Err(e) => return Json(Envelope::failed_one(e)),
+            };
+            if !lost.is_empty() {
+                return Json(Envelope::failed_one(format!(
+                    "{name:?} is usable as a {} certificate, and this version is not. To use this certificate, \
+                     add it under another name",
+                    lost.join(" and ")
+                )));
             }
             store_value(state, name, req.private_key, Some(req.certificate)).await
         }
@@ -5955,10 +5932,10 @@ mod certificate_list_tests {
         }
     }
 
-    /// A worker refuses to restart onto a version its connector cannot present and keeps running the old one, so the
-    /// leader refuses to store it, naming the connector.
+    /// A connector naming a certificate may present it from any side it is usable from, so a new version keeps every
+    /// purpose the newest has, and may add one.
     #[tokio::test]
-    async fn a_version_its_connectors_cannot_present_is_refused() {
+    async fn a_version_without_a_purpose_the_newest_has_is_refused() {
         use rcgen::ExtendedKeyUsagePurpose::{ClientAuth, ServerAuth};
         let state = issuing("replace-purpose");
         assert!(
@@ -5967,24 +5944,27 @@ mod certificate_list_tests {
                 .ok
         );
         let replace = |req| replace_certificate(State(state.clone()), Path("acme".to_string()), Json(req));
+        let newest = || newest_chain(state.store.as_ref(), "acme").unwrap().unwrap().0;
 
         let refused = replace(for_purposes(vec![ClientAuth])).await.0;
         assert!(!refused.ok);
-        let message = &refused.errors[0].message;
         assert!(
-            message.contains(r#"in the group "g", source "receiver""#) && message.contains("server authentication"),
-            "{message}"
+            refused.errors[0].message.contains("usable as a server certificate"),
+            "{refused:?}"
         );
-        assert_eq!(
-            newest_chain(state.store.as_ref(), "acme").unwrap().unwrap().0,
-            1,
-            "nothing was stored"
-        );
+        assert_eq!(newest(), 1, "nothing was stored");
 
         assert!(
             replace(for_purposes(Vec::new())).await.0.ok,
-            "no Extended Key Usage permits either side"
+            "no Extended Key Usage permits both"
         );
+        assert_eq!(newest(), 2);
+        let refused = replace(for_purposes(vec![ServerAuth])).await.0;
+        assert!(
+            refused.errors[0].message.contains("usable as a client certificate"),
+            "{refused:?}"
+        );
+        assert!(replace(for_purposes(vec![ServerAuth, ClientAuth])).await.0.ok);
     }
 
     async fn renewed(state: &AppState, now_ms: i64) -> Vec<String> {

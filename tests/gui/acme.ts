@@ -49,6 +49,9 @@ const ECDSA_SHA256 = seq(oid('1.2.840.10045.4.3.2'));
 const COMMON_NAME = oid('2.5.4.3');
 const BASIC_CONSTRAINTS = oid('2.5.29.19');
 const SUBJECT_ALT_NAME = oid('2.5.29.17');
+const EXTENDED_KEY_USAGE = oid('2.5.29.37');
+/** The Extended Key Usage purposes a leaf can name. */
+const PURPOSES = { server: oid('1.3.6.1.5.5.7.3.1'), client: oid('1.3.6.1.5.5.7.3.2') };
 
 function name(cn: string): Buffer {
   return seq(set(seq(COMMON_NAME, utf8(cn))));
@@ -92,19 +95,23 @@ function extension(kind: Buffer, critical: boolean, value: Buffer): Buffer {
 type Key = crypto.KeyObject;
 
 /** A certificate for `subjectKey`, signed by `issuerKey` as `issuer`: a root when `names` is empty, else a leaf
- * carrying them. */
+ * carrying them, its Extended Key Usage naming `purposes` where any are given. */
 function certificate(
   cn: string,
   subjectKey: Key,
   issuer: string,
   issuerKey: Key,
   names: string[],
+  purposes: (keyof typeof PURPOSES)[] = [],
 ): Buffer {
   const now = Date.now();
   const extensions = [
     names.length === 0
       ? extension(BASIC_CONSTRAINTS, true, seq(bool(true)))
       : extension(SUBJECT_ALT_NAME, false, seq(...names.map(altName))),
+    ...(purposes.length > 0
+      ? [extension(EXTENDED_KEY_USAGE, false, seq(...purposes.map((p) => PURPOSES[p])))]
+      : []),
   ];
   const tbs = seq(
     explicit(0, int(2)),
@@ -161,6 +168,18 @@ function requestedKey(csr: Buffer): Key {
   read(); // subject
   const spki = read().whole;
   return crypto.createPublicKey({ key: spki, format: 'der', type: 'spki' });
+}
+
+/** A leaf for `names` whose Extended Key Usage names `purpose` alone, under a root of its own: the certificate,
+ * its private key and that root, PEM. The leader issues its own for servers and clients both. */
+export function issuedFor(names: string[], purpose: keyof typeof PURPOSES) {
+  const root = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey;
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  return {
+    certificate: pem(certificate(names[0], publicKey, 'Stand-in Root', root, names, [purpose])),
+    privateKey: privateKey.export({ type: 'pkcs8', format: 'pem' }) as string,
+    authority: pem(certificate('Stand-in Root', root, 'Stand-in Root', root, [])),
+  };
 }
 
 // --- The authority -----------------------------------------------------------------------------------------------
