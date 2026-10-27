@@ -184,8 +184,6 @@ fn start_destination_capture(
     })
 }
 
-/// Every leader-stored credential one source names, as the store addresses them. A worker-local one is a variable
-/// on the worker's own host and is nobody's to deliver.
 /// What a capture of `one_source` lends its workers: the secrets it names, and the certificates it names at the
 /// list's newest version, as a deployment runs them. Nothing about it need be deployed.
 fn lent(
@@ -206,6 +204,8 @@ fn lent(
         .map_err(|e| e.to_string())
 }
 
+/// Every leader-stored credential one source names, as the store addresses them. A worker-local one is a variable
+/// on the worker's own host and is nobody's to deliver.
 fn leader_stored_refs(one_source: &config_file::FileConfig) -> (Vec<(String, i64)>, Vec<String>) {
     use smeltr::plan::topology::SecretRef;
     let Ok(json) = serde_json::to_string(one_source) else {
@@ -684,9 +684,8 @@ mod tests {
         );
     }
 
-    /// A source never deployed is captured with what it names lent for the session: its secret at the version it
-    /// quotes, and its certificate at the list's newest version, chain beside key. A name the list does not hold is
-    /// left out, for the worker to refuse.
+    /// A source never deployed is captured with its certificate lent for the session, at the list's newest version,
+    /// chain beside key. A name the list does not hold is left out, for the worker to refuse.
     #[test]
     fn a_capture_lends_its_certificate_at_the_newest_version() {
         use smeltr::leader::sqlite_store::SqliteStore;
