@@ -2349,7 +2349,7 @@ const NOT_DEPLOYING_AFTER_MS: i64 = 5 * 60 * 1000;
 
 /// What the leader knows when it derives the warnings: the fleet's reports and what the leader holds itself.
 #[derive(Clone, Copy)]
-pub struct Facts<'a> {
+pub struct Known<'a> {
     pub snapshot: &'a [ThreadHealth],
     pub credentials: &'a [WorkerCredentialRecord],
     pub starts: &'a HashMap<FactKey, i64>,
@@ -2372,8 +2372,8 @@ pub struct Facts<'a> {
 /// (`crate::leader::registry::Registry::series`), which only [`lag_climbing`] and
 /// [`recent_logs`] need; `deployed_groups` is every group the deployed commit holds a subtree for, which
 /// only [`group_not_deployed`] needs -- the rest read `snapshot` alone.
-pub fn derive(facts: &Facts, now_ms: i64) -> Vec<Warning> {
-    let Facts {
+pub fn derive(facts: &Known, now_ms: i64) -> Vec<Warning> {
+    let Known {
         snapshot,
         credentials,
         starts,
@@ -3101,7 +3101,7 @@ mod tests {
 
         let just_now = HashMap::from([(not_deploying_key("w1", "newer"), NOW)]);
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &snapshot,
                 credentials: &[],
                 starts: &just_now,
@@ -3139,7 +3139,7 @@ mod tests {
         );
         let stuck = HashMap::from([(not_deploying_key("w1", "newer"), NOW - 600_000)]);
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &snapshot,
                 credentials: &[],
                 starts: &stuck,
@@ -3185,7 +3185,7 @@ mod tests {
         )];
         let stuck = HashMap::from([(not_deploying_key("w1", "newer"), NOW - 600_000)]);
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &snapshot,
                 credentials: &[],
                 starts: &stuck,
@@ -3229,7 +3229,7 @@ mod tests {
         let long_ago = HashMap::from([(not_deploying_key("w1", "first"), NOW - 600_000)]);
         assert!(
             derive(
-                &Facts {
+                &Known {
                     snapshot: &stuck_on_first,
                     credentials: &[],
                     starts: &long_ago,
@@ -3256,7 +3256,7 @@ mod tests {
         let now_on_second = vec![behind("w1", None, "second", None)];
         assert!(
             derive(
-                &Facts {
+                &Known {
                     snapshot: &now_on_second,
                     credentials: &[],
                     starts: &long_ago,
@@ -3292,7 +3292,7 @@ mod tests {
         )];
         let stuck = HashMap::from([(not_deploying_key("w1", "first"), NOW - 600_000)]);
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &snapshot,
                 credentials: &[],
                 starts: &stuck,
@@ -3332,7 +3332,7 @@ mod tests {
         let snapshot = vec![behind("w1", Some("same"), "same", None)];
         let long_ago = HashMap::from([(not_deploying_key("w1", "same"), NOW - 600_000)]);
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &snapshot,
                 credentials: &[],
                 starts: &long_ago,
@@ -4484,7 +4484,7 @@ mod tests {
 
     fn log_warnings_with(store: &RegistryStore, credentials: &[WorkerCredentialRecord]) -> Vec<Warning> {
         derive(
-            &Facts {
+            &Known {
                 snapshot: &[],
                 credentials,
                 starts: &HashMap::new(),
@@ -4729,7 +4729,7 @@ mod tests {
         )]
         .into();
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &snapshot,
                 credentials: &[credential("w1", false)],
                 starts: &starts,
@@ -5017,7 +5017,7 @@ mod tests {
     fn nothing_wrong_is_an_empty_catalog() {
         let healthy = vec![thread_health("w1", "reader-1", 0, vec![])];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &healthy,
                 credentials: &[credential("w1", false)],
                 starts: &HashMap::new(),
@@ -5042,7 +5042,7 @@ mod tests {
     fn worker_silent_raises_past_the_threshold_and_is_absent_within_it() {
         let quiet = vec![thread_health("w1", "t0", 10_000, vec![])];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &quiet,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -5070,7 +5070,7 @@ mod tests {
         let fresh = vec![thread_health("w1", "t0", 500, vec![])];
         assert!(
             derive(
-                &Facts {
+                &Known {
                     snapshot: &fresh,
                     credentials: &[],
                     starts: &HashMap::new(),
@@ -5097,7 +5097,7 @@ mod tests {
     fn worker_silent_excludes_a_revoked_worker() {
         let quiet = vec![thread_health("w1", "t0", 10_000, vec![])];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &quiet,
                 credentials: &[credential("w1", true)],
                 starts: &HashMap::new(),
@@ -5289,7 +5289,7 @@ mod tests {
         let long_ago = HashMap::from([(not_deploying_key("w1", "newer"), NOW - 60 * 60 * 1000)]);
         let derived = |snapshot: &[ThreadHealth]| {
             derive(
-                &Facts {
+                &Known {
                     snapshot,
                     credentials: &[credential("w1", false)],
                     starts: &long_ago,
@@ -5332,7 +5332,7 @@ mod tests {
     fn enrolled_never_heartbeating_raises_and_clears_once_a_thread_appears() {
         let creds = vec![credential("w2", false)];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &[],
                 credentials: &creds,
                 starts: &HashMap::new(),
@@ -5362,7 +5362,7 @@ mod tests {
         let now_reporting = vec![thread_health("w2", "t0", 0, vec![])];
         assert!(
             derive(
-                &Facts {
+                &Known {
                     snapshot: &now_reporting,
                     credentials: &creds,
                     starts: &HashMap::new(),
@@ -5388,7 +5388,7 @@ mod tests {
     #[test]
     fn enrolled_never_heartbeating_excludes_a_revoked_worker() {
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &[],
                 credentials: &[credential("w3", true)],
                 starts: &HashMap::new(),
@@ -5421,7 +5421,7 @@ mod tests {
             )],
         )];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &held,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -5450,7 +5450,7 @@ mod tests {
         let resumed = vec![thread_health("w1", "reader-3", 0, vec![])];
         assert!(
             derive(
-                &Facts {
+                &Known {
                     snapshot: &resumed,
                     credentials: &[],
                     starts: &HashMap::new(),
@@ -5487,7 +5487,7 @@ mod tests {
             thread_health("w2", "reader-3", 0, vec![caused("held")]),
         ];
         let w = derive(
-            &Facts {
+            &Known {
                 snapshot: &health,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -5530,7 +5530,7 @@ mod tests {
             }
             let health = vec![thread_health("w1", "reader-3", 0, vec![m])];
             let w = derive(
-                &Facts {
+                &Known {
                     snapshot: &health,
                     credentials: &[],
                     starts: &HashMap::new(),
@@ -5567,7 +5567,7 @@ mod tests {
         let mut starts = HashMap::new();
         starts.insert(FactKey::new(SOURCE_BLOCKED, scoped_subject("g", "7")), NOW - 240_000);
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &held,
                 credentials: &[],
                 starts: &starts,
@@ -5589,7 +5589,7 @@ mod tests {
 
         // No entry in the clock (as if this were the fact's first heartbeat) leaves it unknown rather than "now".
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &held,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -5625,7 +5625,7 @@ mod tests {
             )],
         )];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &unreachable,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -5657,7 +5657,7 @@ mod tests {
         let recovered = vec![thread_health("w1", "reader-3", 0, vec![])];
         assert!(
             derive(
-                &Facts {
+                &Known {
                     snapshot: &recovered,
                     credentials: &[],
                     starts: &HashMap::new(),
@@ -5753,7 +5753,7 @@ mod tests {
         )];
         assert!(
             derive(
-                &Facts {
+                &Known {
                     snapshot: &idle,
                     credentials: &[],
                     starts: &HashMap::new(),
@@ -5786,7 +5786,7 @@ mod tests {
         let mut starts = HashMap::new();
         starts.insert(FactKey::new(SOURCE_UNREACHABLE, scoped_subject("g", "7")), NOW - 60_000);
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &unreachable,
                 credentials: &[],
                 starts: &starts,
@@ -5807,7 +5807,7 @@ mod tests {
         assert_eq!(warnings[0].since_millis, Some(NOW - 60_000));
 
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &unreachable,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -5839,7 +5839,7 @@ mod tests {
             vec![blocked_metric("7", "blocked"), unreachable_metric("7", "down")],
         )];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &both,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -5873,7 +5873,7 @@ mod tests {
             vec![destination_healthy_metric("2", 0.0)],
         )];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &down,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -5909,7 +5909,7 @@ mod tests {
         )];
         assert!(
             derive(
-                &Facts {
+                &Known {
                     snapshot: &recovered,
                     credentials: &[],
                     starts: &HashMap::new(),
@@ -5949,7 +5949,7 @@ mod tests {
         // is a `DestinationUnreachable` extrapolated from a row nothing has refreshed in just as long.
         assert!(
             !derive(
-                &Facts {
+                &Known {
                     snapshot: &frozen,
                     credentials: &[],
                     starts: &HashMap::new(),
@@ -5983,7 +5983,7 @@ mod tests {
         orphan.report.kind = None;
         assert!(
             !derive(
-                &Facts {
+                &Known {
                     snapshot: &[orphan],
                     credentials: &[],
                     starts: &HashMap::new(),
@@ -6021,7 +6021,7 @@ mod tests {
             NOW - 90_000,
         );
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &down,
                 credentials: &[],
                 starts: &starts,
@@ -6042,7 +6042,7 @@ mod tests {
         assert_eq!(warnings[0].since_millis, Some(NOW - 90_000));
 
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &down,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -6072,7 +6072,7 @@ mod tests {
             egress_thread_health("w2", "egress-2", 0, vec![destination_healthy_metric("2", 1.0)]),
         ];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &snapshot,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -6108,7 +6108,7 @@ mod tests {
             egress_thread_health("w2", "egress-2", stale_ago, vec![destination_healthy_metric("2", 1.0)]),
         ];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &snapshot,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -6147,7 +6147,7 @@ mod tests {
             ],
         )];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &both,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -6183,7 +6183,7 @@ mod tests {
             vec![refusal_metric("2", NOW - 500, "429 es_rejected_execution_exception")],
         )];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &fresh,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -6216,7 +6216,7 @@ mod tests {
         )];
         assert!(
             derive(
-                &Facts {
+                &Known {
                     snapshot: &old,
                     credentials: &[],
                     starts: &HashMap::new(),
@@ -6251,7 +6251,7 @@ mod tests {
             thread_health("w2", "egress-2", 0, vec![refusal_metric("2", NOW - 100, "new wording")]),
         ];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &snapshot,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -6467,7 +6467,7 @@ mod tests {
     fn derive_folds_lag_climbing_into_the_catalog() {
         let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0]);
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &[],
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -6493,7 +6493,7 @@ mod tests {
     fn group_not_deployed_raises_for_a_worker_whose_group_main_holds_no_subtree_for() {
         let heartbeating = vec![thread_health("w1", "t0", 0, vec![])];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &heartbeating,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -6530,7 +6530,7 @@ mod tests {
         let heartbeating = vec![thread_health("w1", "t0", 0, vec![])];
         assert!(
             derive(
-                &Facts {
+                &Known {
                     snapshot: &heartbeating,
                     credentials: &[],
                     starts: &HashMap::new(),
@@ -6559,7 +6559,7 @@ mod tests {
         let mut starts = HashMap::new();
         starts.insert(FactKey::new(GROUP_NOT_DEPLOYED, "w1"), NOW - 60_000);
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &heartbeating,
                 credentials: &[],
                 starts: &starts,
@@ -6634,7 +6634,7 @@ mod tests {
         ];
         let deployed = HashSet::from(["g1".to_string(), "g2".to_string()]);
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &snapshot,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -6678,7 +6678,7 @@ mod tests {
         ];
         let deployed = HashSet::from(["g1".to_string(), "g2".to_string()]);
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &snapshot,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -6722,7 +6722,7 @@ mod tests {
             thread_health("w3", "reader-3", 0, vec![idle_poll("7")]),
         ];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &snapshot,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -6756,7 +6756,7 @@ mod tests {
             thread_health("w2", "egress-2", 0, vec![refusal_metric("2", NOW - 100, "429")]),
         ];
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &snapshot,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -6797,7 +6797,7 @@ mod tests {
         let snapshot = vec![thread_health("w1", "capture", 0, vec![from_capture])];
 
         let warnings = derive(
-            &Facts {
+            &Known {
                 snapshot: &snapshot,
                 credentials: &[],
                 starts: &HashMap::new(),
@@ -6831,7 +6831,7 @@ mod tests {
         )];
         assert!(
             !derive(
-                &Facts {
+                &Known {
                     snapshot: &as_a_fact,
                     credentials: &[],
                     starts: &HashMap::new(),

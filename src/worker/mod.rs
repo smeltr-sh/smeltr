@@ -980,10 +980,11 @@ fn run_reader_loop(
             .into_iter()
             .map(|(topic, partition)| PartitionRef { topic, partition })
             .collect();
+        let (held, connection_error) = (reader.blocked_fact(), reader.connection_error_fact());
         let mut published = report.lock().unwrap();
         published.partitions = current;
-        published.held = reader.blocked_fact();
-        published.connection_error = reader.connection_error_fact();
+        published.held = held;
+        published.connection_error = connection_error;
     }
 
     // Batches already handed over are still being delivered, and their offsets are this thread's to commit.

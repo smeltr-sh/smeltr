@@ -1065,7 +1065,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let deploy_warnings = warnings::deploy_checked(&findings, &starts);
     let mut out = tokio::task::spawn_blocking(move || {
         warnings::derive(
-            &warnings::Facts {
+            &warnings::Known {
                 snapshot: &snapshot,
                 credentials: &credentials,
                 starts: &starts,
