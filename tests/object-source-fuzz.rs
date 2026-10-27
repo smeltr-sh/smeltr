@@ -1510,21 +1510,33 @@ impl Announcer for FakeAnnouncer {
     }
 }
 
+/// One read of a drawn source: what it draws from and what it reaches, its config, and the runtime and pace it reads
+/// at.
+struct Run<'a> {
+    rng: &'a mut Rng,
+    cov: &'a mut Reached,
+    c: &'a ObjectSourceConfig,
+    runtime: &'a tokio::runtime::Runtime,
+    pace: Pace,
+}
+
 /// Reads drawn objects in `stores`, by bucket, through the queue kind's notifications, each parsed as the kind parses
 /// it and sent with `announcer`, from the source `open` makes, and checks every message is deleted once its records
 /// are committed.
-#[allow(clippy::too_many_arguments)]
 fn read_queue(
-    rng: &mut Rng,
-    cov: &mut Reached,
+    run: Run,
     kind: Kind,
-    c: &ObjectSourceConfig,
     stores: &BTreeMap<String, Arc<dyn ObjectStore>>,
     announcer: &mut dyn Announcer,
     open: impl FnOnce() -> Result<Box<dyn Source>, String>,
-    runtime: &tokio::runtime::Runtime,
-    pace: Pace,
 ) -> Result<(), String> {
+    let Run {
+        rng,
+        cov,
+        c,
+        runtime,
+        pace,
+    } = run;
     let buckets: Vec<&str> = stores.keys().map(String::as_str).collect();
     let blobs = match &c.queue {
         ObjectQueue::StorageQueue { access, .. } => smeltr::io::storage_queue::blob_services(access),
@@ -1603,16 +1615,18 @@ fn read_queue(
 
 /// Reads drawn objects put in `store`, the bucket the source `open` makes lists, and checks each is kept, deleted or
 /// moved once committed, and nothing outside the prefix is read or touched.
-#[allow(clippy::too_many_arguments)]
 fn read_listing(
-    rng: &mut Rng,
-    cov: &mut Reached,
-    c: &ObjectSourceConfig,
+    run: Run,
     store: Arc<dyn ObjectStore>,
     open: impl FnOnce() -> Result<Box<dyn Source>, String>,
-    runtime: &tokio::runtime::Runtime,
-    pace: Pace,
 ) -> Result<(), String> {
+    let Run {
+        rng,
+        cov,
+        c,
+        runtime,
+        pace,
+    } = run;
     let ObjectQueue::List {
         place,
         prefix,
@@ -1805,7 +1819,17 @@ fn offline_seed(seed: u64, reached: &mut Reached, runtime: &Arc<tokio::runtime::
             }
             in_memory(Arc::new(listing), store.clone(), &c, runtime)
         };
-        read_listing(&mut rng, reached, &c, store.clone(), open, runtime, OFFLINE)
+        read_listing(
+            Run {
+                rng: &mut rng,
+                cov: reached,
+                c: &c,
+                runtime,
+                pace: OFFLINE,
+            },
+            store.clone(),
+            open,
+        )
     } else {
         let stores: BTreeMap<String, Arc<dyn ObjectStore>> = ["logs", "other"]
             .iter()
@@ -1830,15 +1854,17 @@ fn offline_seed(seed: u64, reached: &mut Reached, runtime: &Arc<tokio::runtime::
             Ok(Box::new(reading(source, avro.as_ref())?) as Box<dyn Source>)
         };
         read_queue(
-            &mut rng,
-            reached,
+            Run {
+                rng: &mut rng,
+                cov: reached,
+                c: &c,
+                runtime,
+                pace: OFFLINE,
+            },
             draw.kind,
-            &c,
             &stores,
             &mut announcer,
             open,
-            runtime,
-            OFFLINE,
         )
     };
     read.map_err(|e| format!("{e}\n{json}"))
@@ -1917,22 +1943,19 @@ fn live_fuzz(
         let (secrets, _) = held(&draw.source);
         let stores = live_stores(&c, &secrets, &runtime, &made.buckets).map_err(|e| format!("{e:?}\n{json}"))?;
         let open = || smeltr::io::object_source::open(&c, &secrets).map_err(|e| format!("does not build: {e:?}"));
+        let run = Run {
+            rng: &mut rng,
+            cov: &mut reached,
+            c: &c,
+            runtime: &runtime,
+            pace: LIVE,
+        };
         let read = match made.announcer.as_mut() {
             None => {
                 let store = stores.into_values().next().expect("a listing's store");
-                read_listing(&mut rng, &mut reached, &c, store, open, &runtime, LIVE)
+                read_listing(run, store, open)
             }
-            Some(announcer) => read_queue(
-                &mut rng,
-                &mut reached,
-                kind,
-                &c,
-                &stores,
-                announcer.as_mut(),
-                open,
-                &runtime,
-                LIVE,
-            ),
+            Some(announcer) => read_queue(run, kind, &stores, announcer.as_mut(), open),
         };
         read.map_err(|e| format!("{e}\n{json}"))?;
         reached.credit(&mut cov);
