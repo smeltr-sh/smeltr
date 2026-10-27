@@ -2282,6 +2282,9 @@ const EXIT_BUDGET: Duration = Duration::from_secs(
 /// the worker as silent.
 const NOTICE_BUDGET: Duration = Duration::from_secs(4 * heartbeat::REQUEST_BUDGET.as_secs());
 
+/// The longest [`stop_before_exit`] takes: its runtime's end, then its leader's notice, each given all it gets.
+pub const STOP_BUDGET: Duration = EXIT_BUDGET.saturating_add(NOTICE_BUDGET);
+
 /// How often a worker its leader no longer knows tries its enrollment code again.
 const ENROLL_AGAIN_EVERY: Duration = Duration::from_secs(60);
 
