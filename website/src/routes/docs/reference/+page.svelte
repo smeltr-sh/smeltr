@@ -3,6 +3,20 @@
   import SettingsTable from '#lib/components/SettingsTable.svelte';
   import data from '#lib/startup-settings.json';
   import example from '#lib/startup-example.toml?raw';
+
+  type StartupSetting = (typeof data.settings)[number];
+  const rows = (settings: StartupSetting[]) =>
+    settings.map((s) => ({
+      name: s.key,
+      env: s.env,
+      absent: s.default,
+      examples: s.examples,
+      what: s.what,
+      values: s.values,
+    }));
+  // A setting under neither role's table applies to every process, so it leads, under no heading.
+  const role = (r: string) => data.settings.filter((s) => s.key.startsWith(`${r}.`));
+  const shared = data.settings.filter((s) => !/^(leader|worker)\./.test(s.key));
   const sections = [
     { id: 'network', title: 'Before you start' },
     { id: 'settings', title: 'Settings' },
@@ -37,17 +51,11 @@
     another version may not match your artifact.
   </p>
   <h2 id="settings">Settings</h2>
-  <SettingsTable
-    anchored
-    settings={data.settings.map((s) => ({
-      name: s.key,
-      env: s.env,
-      absent: s.default,
-      examples: s.examples,
-      what: s.what,
-      values: s.values,
-    }))}
-  />
+  <SettingsTable anchored settings={rows(shared)} />
+  <h3 id="leader">Leader</h3>
+  <SettingsTable anchored settings={rows(role('leader'))} />
+  <h3 id="worker">Worker</h3>
+  <SettingsTable anchored settings={rows(role('worker'))} />
 
   <h2 id="precedence">How it works</h2>
   <p>
