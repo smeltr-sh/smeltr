@@ -1893,7 +1893,7 @@ fn check_ecs(
         Ecs::Wildcard => ("ecs.wildcard", only(json!({ "type": "wildcard" }))),
         Ecs::WildcardText => ("ecs.wildcardText", only(json!({ "type": "wildcard", "fields": text }))),
         Ecs::ConstantKeyword => ("ecs.constantKeyword", only(json!({ "type": "constant_keyword" }))),
-        Ecs::Ip => ("ecs.ip", only(json!({ "type": "ip" }))),
+        Ecs::Ip => ("ecs.ip", only(json!({ "type": "ip", "ignore_malformed": true }))),
         Ecs::Date => ("ecs.date", only(json!({ "type": "date" }))),
         Ecs::Long => ("ecs.long", only(json!({ "type": "long" }))),
         Ecs::Float => ("ecs.float", only(json!({ "type": "float" }))),
@@ -1903,7 +1903,10 @@ fn check_ecs(
             only(json!({ "type": "scaled_float", "scaling_factor": 1000 })),
         ),
         Ecs::Boolean => ("ecs.boolean", only(json!({ "type": "boolean" }))),
-        Ecs::GeoPoint => ("ecs.geoPoint", only(json!({ "type": "geo_point" }))),
+        Ecs::GeoPoint => (
+            "ecs.geoPoint",
+            only(json!({ "type": "geo_point", "ignore_malformed": true })),
+        ),
         Ecs::Flattened => ("ecs.flattened", only(json!({ "type": "flattened" }))),
         Ecs::Object => ("ecs.object", check_properties(ty, Some(m), path, cov, disagree)),
         Ecs::Nested => {
@@ -2006,8 +2009,9 @@ fn document(rng: &mut Rng, ty: &DataType, path: &str) -> Value {
     // A field mapped as ECS maps it takes only what that mapping reads.
     let ecs = if path.is_empty() { None } else { ecs_at(path) }.filter(|e| ecs_holds(*e, ty));
     match (ecs, ty) {
-        (Some(Ecs::Ip), _) => return json!(rng.pick(&["10.0.0.1", "::1", "2001:db8::7"])),
-        (Some(Ecs::GeoPoint), DataType::Str) => return json!(rng.pick(&["41.12,-71.34", "0,0"])),
+        // A value an address or a point cannot read is kept in the document, left out of the index.
+        (Some(Ecs::Ip), _) => return json!(rng.pick(&["10.0.0.1", "::1", "2001:db8::7", "-", "host.example"])),
+        (Some(Ecs::GeoPoint), DataType::Str) => return json!(rng.pick(&["41.12,-71.34", "0,0", "unknown"])),
         (Some(Ecs::GeoPoint), _) => return json!({ "lat": 41.5, "lon": -71.25 }),
         // Every document of an index holds the one value its first gave.
         (Some(Ecs::ConstantKeyword), _) => return json!("logs"),

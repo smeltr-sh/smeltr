@@ -166,6 +166,9 @@ fn ecs_mapping(ecs: Ecs, properties: Option<Value>) -> Value {
             nested["type"] = json!("nested");
             nested
         }
+        // A value the field cannot read -- `-` for an address, a hostname -- is left out of the index, not the
+        // document refused, as a string ECS names took any value before.
+        Ecs::Ip | Ecs::GeoPoint => json!({ "type": ecs.name(), "ignore_malformed": true }),
         _ => plain(ecs.name()),
     }
 }
@@ -335,9 +338,9 @@ mod tests {
         );
         let want = json!({ "mappings": { "properties": {
             "source": { "properties": {
-                "ip": { "type": "ip" },
+                "ip": { "type": "ip", "ignore_malformed": true },
                 "port": { "type": "long" },
-                "geo": { "properties": { "location": { "type": "geo_point" } } },
+                "geo": { "properties": { "location": { "type": "geo_point", "ignore_malformed": true } } },
             } },
             "host": { "properties": { "cpu": { "properties": {
                 "usage": { "type": "scaled_float", "scaling_factor": 1000 },

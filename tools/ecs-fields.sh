@@ -26,6 +26,8 @@ rows="$(curl -sSfL "$url" | awk -F, -v version="$version" '
       else if (t == "keyword") shape = text ? "KeywordText" : "Keyword"
       else if (t == "wildcard") shape = text ? "WildcardText" : "Wildcard"
       else if (t == "match_only_text") shape = "MatchOnlyText"
+      # `elastic_mapping` gives each scaled float the factor ECS gives these: one more must be checked by hand.
+      else if (t == "scaled_float" && f !~ /^(container|host|host\.target)\.(cpu|memory)\.usage$/) { print "ecs-fields.sh: check the scaling factor of " f > "/dev/stderr"; exit 1 }
       else shape = plain[t]
       if (shape == "") { print "ecs-fields.sh: no shape for " f ", a " t (indexed[f] == "false" ? " not indexed" : "") > "/dev/stderr"; exit 1 }
       print "    (\"" f "\", Ecs::" shape "),"
