@@ -48,7 +48,7 @@
               <a href={latestFile('smeltr-extras.zip')}>Extras</a>: image archive, SBOM, STIG and
               CVE report
             </td>
-            <td></td>
+            <td><a href="/docs/release-extras">Release extras</a></td>
           </tr>
           <tr>
             <td><a href={source}>Source code</a></td>
