@@ -3046,12 +3046,12 @@ impl HeldSecrets {
         }
     }
 
-    /// The chain and private key of the certificate `name`, PEM both, at the newest version this worker holds.
     /// The version of the certificate `name` this holder has, which is its newest.
     pub fn certificate_version(&self, name: &str) -> Option<i64> {
         self.certificates.get(name).map(|held| held.version)
     }
 
+    /// The chain and private key of the certificate `name`, PEM both, at the newest version this worker holds.
     pub fn certificate(&self, name: &str) -> Option<(String, String)> {
         let held = self.certificates.get(name)?;
         Some((held.chain.clone(), held.key.clone()))
