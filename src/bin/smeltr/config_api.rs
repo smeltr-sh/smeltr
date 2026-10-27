@@ -1001,6 +1001,32 @@ fn config_in(data_dir: &Path, q: &ConfigQuery) -> Envelope<Config> {
     )
 }
 
+/// A handler's save of one section, on the branch and scope its query names, checked against the commit its headers
+/// say the editor read.
+async fn save_section(
+    q: &BranchQuery,
+    headers: &HeaderMap,
+    author: Actor,
+    touches: Touches,
+    message: String,
+    mutate: impl FnOnce(&mut FileConfig) + Send + 'static,
+) -> Json<Envelope<Save>> {
+    let (branch, base, scope) = (q.name().to_string(), base_commit(headers), q.scope().to_string());
+    blocking_save(move || {
+        let saving = Saving {
+            branch: &branch,
+            base,
+            scope: &scope,
+            touches,
+            message,
+            author: &author,
+            files: vec![],
+        };
+        save_on_branch(saving, mutate)
+    })
+    .await
+}
+
 /// Every save runs off the async executor: it spawns git, and it holds a lock while it does.
 pub(crate) async fn blocking_save(f: impl FnOnce() -> Envelope<Save> + Send + 'static) -> Json<Envelope<Save>> {
     let saved = blocking(move || Ok::<_, String>(f())).await;
@@ -1022,20 +1048,8 @@ pub async fn put_sources(
     if let Some(refused) = refuse_unlisted_certificates(&state, named).await {
         return refused;
     }
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    blocking_save(move || {
-        save_on_branch(
-            Saving {
-                branch: &branch,
-                base,
-                scope: &scope,
-                touches: Touches::Sources,
-                message: "edit sources".into(),
-                author: &actor,
-                files: vec![],
-            },
-            |file| file.sources = sources,
-        )
+    save_section(&q, &headers, actor, Touches::Sources, "edit sources".into(), |file| {
+        file.sources = sources
     })
     .await
 }
@@ -1053,21 +1067,14 @@ pub async fn put_destinations(
     if let Some(refused) = refuse_unlisted_certificates(&state, named).await {
         return refused;
     }
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    blocking_save(move || {
-        save_on_branch(
-            Saving {
-                branch: &branch,
-                base,
-                scope: &scope,
-                touches: Touches::Destinations,
-                message: "edit destinations".into(),
-                author: &actor,
-                files: vec![],
-            },
-            |file| file.destinations = destinations,
-        )
-    })
+    save_section(
+        &q,
+        &headers,
+        actor,
+        Touches::Destinations,
+        "edit destinations".into(),
+        |file| file.destinations = destinations,
+    )
     .await
 }
 
@@ -1144,20 +1151,8 @@ pub async fn put_routes(
     headers: HeaderMap,
     Json(routes): Json<Vec<RouteDto>>,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    blocking_save(move || {
-        save_on_branch(
-            Saving {
-                branch: &branch,
-                base,
-                scope: &scope,
-                touches: Touches::Routes,
-                message: "edit routes".into(),
-                author: &actor,
-                files: vec![],
-            },
-            |file| file.routes = routes,
-        )
+    save_section(&q, &headers, actor, Touches::Routes, "edit routes".into(), |file| {
+        file.routes = routes
     })
     .await
 }
@@ -1168,21 +1163,14 @@ pub async fn put_grok_patterns(
     headers: HeaderMap,
     Json(patterns): Json<Vec<config_file::GrokPatternDto>>,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    blocking_save(move || {
-        save_on_branch(
-            Saving {
-                branch: &branch,
-                base,
-                scope: &scope,
-                touches: Touches::GrokPatterns,
-                message: "edit grokPatterns".into(),
-                author: &actor,
-                files: vec![],
-            },
-            |file| file.grok_patterns = patterns,
-        )
-    })
+    save_section(
+        &q,
+        &headers,
+        actor,
+        Touches::GrokPatterns,
+        "edit grokPatterns".into(),
+        |file| file.grok_patterns = patterns,
+    )
     .await
 }
 
@@ -1208,26 +1196,19 @@ pub async fn put_manifest(
     headers: HeaderMap,
     Json(body): Json<ManifestBody>,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    if scope == config_file::SHARED_DIR {
+    if q.scope() == config_file::SHARED_DIR {
         return Json(Envelope::failed_one(
             "shared/ has no manifest: each group answers for its own rows",
         ));
     }
-    blocking_save(move || {
-        save_on_branch(
-            Saving {
-                branch: &branch,
-                base,
-                scope: &scope,
-                touches: Touches::OnlyManifest,
-                message: "edit manifest".into(),
-                author: &actor,
-                files: vec![],
-            },
-            |file| body.apply(file),
-        )
-    })
+    save_section(
+        &q,
+        &headers,
+        actor,
+        Touches::OnlyManifest,
+        "edit manifest".into(),
+        |file| body.apply(file),
+    )
     .await
 }
 
@@ -1589,22 +1570,10 @@ pub async fn put_pipeline(
     headers: HeaderMap,
     Json(pipeline): Json<PipelineDto>,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    blocking_save(move || {
-        // The History page shows this; a person knows a pipeline by its name, not its id.
-        let message = format!("edit pipeline {}", pipeline.name);
-        save_on_branch(
-            Saving {
-                branch: &branch,
-                base,
-                scope: &scope,
-                touches: Touches::OnlyPipelines,
-                message,
-                author: &actor,
-                files: vec![],
-            },
-            |file| replace_pipeline(file, &id, pipeline),
-        )
+    // The History page shows this; a person knows a pipeline by its name, not its id.
+    let message = format!("edit pipeline {}", pipeline.name);
+    save_section(&q, &headers, actor, Touches::OnlyPipelines, message, move |file| {
+        replace_pipeline(file, &id, pipeline)
     })
     .await
 }
