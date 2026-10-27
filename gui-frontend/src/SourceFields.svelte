@@ -291,11 +291,7 @@
     </Field>
     {#if (source.framing ?? 'lines') === 'lines'}
       <Nested>
-        <LineBreakerField
-          value={source.lineBreaker}
-          placeholder={'([\\r\\n]+)\\d{4}-'}
-          onchange={(v) => (source.lineBreaker = v)}
-        />
+        <LineBreakerField value={source.lineBreaker} onchange={(v) => (source.lineBreaker = v)} />
       </Nested>
     {/if}
   {/if}
@@ -1126,7 +1122,6 @@
       {#if source.transport !== 'udp'}
         <LineBreakerField
           value={source.lineBreaker}
-          placeholder={'(\\x00)'}
           onchange={(v) => {
             if (source.type === 'syslogReceiver') source.lineBreaker = v;
           }}
