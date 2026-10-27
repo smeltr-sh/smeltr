@@ -354,10 +354,10 @@ fn a_refused_record_comes_back_as_a_rejection_not_a_failed_batch() {
     assert_eq!(dest.sent().len(), 1, "the rest of the batch still went out");
 }
 
-/// The level a destination's own loop settled on is visible, and a destination that has no loop publishes no series:
-/// a zero there would read as a stalled destination rather than an absent question.
+/// The requests a destination has open are visible, and a destination that opens none of its own publishes no
+/// series: a zero there would read as a stalled destination rather than an absent question.
 #[test]
-fn the_concurrency_a_destination_allows_is_reported_and_only_when_it_has_one() {
+fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_own() {
     /// Reports whatever it is told to, so this test is about egress reading the figure, not about what sets it.
     #[derive(Clone)]
     struct Reporting(Arc<std::sync::Mutex<Option<usize>>>);

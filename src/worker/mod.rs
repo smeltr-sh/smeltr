@@ -1274,12 +1274,11 @@ fn deploy(
     };
     for d in system.topology.destinations.iter().filter(|d| wanted.contains(&d.id)) {
         let handle = MetricsHandle::new(registry.clone(), format!("egress-{}", d.id));
-        // A paced Kafka producer is sized at build for the most its target may become, since librdkafka fixes its
-        // queue's bound and its requests in flight then; `Destination::pace` holds it to the target from the first
-        // send.
+        // A paced Kafka producer is sized at build for the most its queue may hold, since librdkafka fixes its
+        // queue's bound then; the egress queue holds it to the target from the first send.
         //
-        // A paced HTTP destination is built with as many senders as its target could use, spawned as it asks and
-        // each lent from the pool.
+        // A paced HTTP destination is built with as many senders as its target could use, each spawned when every
+        // one it has is busy and lent from the pool.
         let kind = match &d.kind {
             crate::plan::topology::DestinationKind::Kafka(_) if borrows(d).is_some() => {
                 let mut kind = d.kind.clone();

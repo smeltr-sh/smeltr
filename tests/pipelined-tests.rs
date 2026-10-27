@@ -38,7 +38,7 @@ fn slow_pool(n: usize, delay: Duration) -> (Pool<Slow>, Arc<AtomicUsize>) {
             peak: peak.clone(),
         })
         .collect();
-    (Pool::new(senders, n, MIB), peak)
+    (Pool::new(senders, n), peak)
 }
 
 /// A sender that holds each delivery until `n` are in flight at once, or
@@ -83,7 +83,7 @@ fn round_trips_actually_overlap() {
             peak: peak.clone(),
         })
         .collect();
-    let mut pool = Pool::new(senders, 4, MIB);
+    let mut pool = Pool::new(senders, 4);
     for b in 0..4u64 {
         pool.submit(b, b as u32).unwrap();
     }
@@ -131,9 +131,9 @@ fn submit_blocks_once_every_sender_is_busy() {
     // batches until it runs out of memory -- the same stall, wearing a
     // different hat.
     let gate = Arc::new(AtomicBool::new(false));
-    let mut pool = Pool::new(vec![Blocked(gate.clone()), Blocked(gate.clone())], 2, MIB);
-    // The bound is the concurrency limit, which starts at the sender
-    // count -- so two fill it and the third has to wait for one to finish.
+    let mut pool = Pool::new(vec![Blocked(gate.clone()), Blocked(gate.clone())], 2);
+    // Both senders spawned at the start -- so two fill them and the third
+    // has to wait for one to finish.
     for b in 0..2u64 {
         pool.submit(b, ()).unwrap();
     }
@@ -177,12 +177,12 @@ impl Sender for Failing {
 
 #[test]
 fn a_failure_surfaces_and_rejections_come_back_with_their_batch() {
-    let mut pool = Pool::new(vec![Failing(true)], 1, MIB);
+    let mut pool = Pool::new(vec![Failing(true)], 1);
     pool.submit(7, ()).unwrap();
     let err = pool.drain().expect_err("the failure must surface");
     assert!(err.to_string().contains("cluster said no"));
 
-    let mut pool = Pool::new(vec![Failing(false)], 1, MIB);
+    let mut pool = Pool::new(vec![Failing(false)], 1);
     pool.submit(9, ()).unwrap();
     let done = pool.drain().unwrap();
     assert_eq!(done.len(), 1);
@@ -211,68 +211,73 @@ impl Sender for Instant0 {
     }
 }
 
-/// The configured figure is where the limit starts; the pacing target is what moves it.
+/// A sender gets its thread when every one spawned is busy, and keeps it once they are idle again.
 #[test]
-fn the_limit_starts_where_it_was_told_and_follows_the_pacing_target() {
-    let mut pool = Pool::new((0..8).map(|_| Instant0).collect(), 2, MIB);
-    assert_eq!(pool.limit(), 2, "starts where it was told to, not at the sender count");
-    assert_eq!(pool.max_limit(), 8, "and may climb to the senders it owns");
-    pool.pace(5 * MIB);
-    assert_eq!(pool.limit(), 5, "the target over the request size");
-    pool.pace(5 * MIB + MIB / 2);
-    assert_eq!(pool.limit(), 5, "whole requests only");
-    pool.pace(0);
-    assert_eq!(pool.limit(), 1, "never below one: a destination always moves");
-    pool.pace(1024 * MIB);
-    assert_eq!(pool.limit(), 8, "never past the senders it owns");
+fn a_sender_is_spawned_when_every_one_is_busy_and_kept() {
+    let gate = Arc::new(AtomicBool::new(false));
+    let mut pool = Pool::new((0..8).map(|_| Blocked(gate.clone())).collect(), 2);
+    assert_eq!(pool.spawned(), 2, "only the senders it starts with");
+    for b in 0..5u64 {
+        pool.submit(b, ()).unwrap();
+    }
+    assert_eq!(pool.spawned(), 5, "one more each time every sender was busy");
+    gate.store(true, Ordering::SeqCst);
+    pool.drain().unwrap();
+    pool.submit(5, ()).unwrap();
+    assert_eq!(pool.spawned(), 5, "an idle sender takes the next batch");
 }
 
-/// A sender gets its thread when the limit reaches it, and keeps it when the limit falls again.
+/// A sender whose answer has arrived is free, collected or not: no sender is spawned past it.
 #[test]
-fn a_sender_is_spawned_when_the_limit_reaches_it_and_not_before() {
-    let mut pool = Pool::new((0..8).map(|_| Instant0).collect(), 2, MIB);
-    assert_eq!(pool.spawned(), 2, "only the senders the limit starts at");
-    pool.pace(5 * MIB);
-    assert_eq!(pool.spawned(), 5);
-    pool.pace(MIB);
-    assert_eq!(pool.spawned(), 5, "a spawned sender is kept");
-    pool.pace(1024 * MIB);
-    assert_eq!(pool.spawned(), 8, "never past the senders it owns");
+fn a_sender_that_has_answered_is_not_counted_busy() {
+    let mut pool = Pool::new((0..8).map(|_| Instant0).collect(), 1);
+    for b in 0..4u64 {
+        pool.submit(b, ()).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(pool.spawned(), 1);
+    assert_eq!(pool.poll().unwrap().len(), 4, "every answer is still reported");
 }
 
-/// A sender past the start is spawned only when it is lent its memory; refused, the limit stays at the senders
-/// spawned.
+/// A sender past the start is spawned only when it is lent its memory; refused, a batch waits for a spawned sender
+/// to come free.
 #[test]
 fn a_sender_past_the_start_waits_to_be_lent_its_memory() {
-    let lent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1));
-    let mut pool = Pool::new((0..8).map(|_| Instant0).collect(), 2, MIB);
+    let gate = Arc::new(AtomicBool::new(false));
+    let lent = Arc::new(AtomicUsize::new(1));
+    let mut pool = Pool::new((0..8).map(|_| Blocked(gate.clone())).collect(), 2);
     let left = lent.clone();
     pool.lend_senders(Box::new(move || {
-        left.try_update(
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-            |n| n.checked_sub(1),
-        )
-        .is_ok()
+        left.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_ok()
     }));
-    pool.pace(8 * MIB);
+    for b in 0..3u64 {
+        pool.submit(b, ()).unwrap();
+    }
     assert_eq!(pool.spawned(), 3, "the two it started with, and the one lent");
-    assert_eq!(pool.limit(), 3, "no more outstanding than have a sender");
-    lent.store(5, std::sync::atomic::Ordering::Relaxed);
-    pool.pace(8 * MIB);
-    assert_eq!(pool.spawned(), 8);
+    let submitted = Arc::new(AtomicBool::new(false));
+    let done = submitted.clone();
+    let handle = std::thread::spawn(move || {
+        pool.submit(3, ()).unwrap();
+        done.store(true, Ordering::SeqCst);
+        pool
+    });
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(
+        !submitted.load(Ordering::SeqCst),
+        "no sender was lent and none was free"
+    );
+    gate.store(true, Ordering::SeqCst);
+    let mut pool = handle.join().unwrap();
+    pool.drain().unwrap();
+    assert_eq!(pool.spawned(), 3);
 }
 
-/// A start above the senders is the pool's to refuse, not to honor: `limit` is what `submit` gates on, and a limit
-/// past the sender count would admit work no sender can take.
 #[test]
 fn a_start_above_the_sender_count_is_clamped_to_it() {
-    let pool = Pool::new((0..2).map(|_| Instant0).collect(), 99, MIB);
-    assert_eq!(pool.limit(), 2);
-    assert_eq!(pool.max_limit(), 2);
+    let pool = Pool::new((0..2).map(|_| Instant0).collect(), 99);
+    assert_eq!(pool.spawned(), 2);
 }
-
-const MIB: usize = 1024 * 1024;
 
 /// Answers after the job's wait in milliseconds, failing an odd one.
 struct FailsLate;
@@ -293,7 +298,7 @@ impl Sender for FailsLate {
 #[test]
 fn a_batch_that_landed_is_reported_before_a_failure_beside_it() {
     // Landed, failed, landed, in that order on the channel.
-    let mut pool = Pool::new(vec![FailsLate, FailsLate, FailsLate], 3, MIB);
+    let mut pool = Pool::new(vec![FailsLate, FailsLate, FailsLate], 3);
     pool.submit(1, 0).unwrap();
     pool.submit(2, 51).unwrap();
     pool.submit(3, 100).unwrap();
@@ -302,7 +307,7 @@ fn a_batch_that_landed_is_reported_before_a_failure_beside_it() {
     assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![1, 3]);
     pool.poll().expect_err("then the failure");
 
-    let mut pool = Pool::new(vec![FailsLate, FailsLate], 2, MIB);
+    let mut pool = Pool::new(vec![FailsLate, FailsLate], 2);
     pool.submit(1, 0).unwrap();
     pool.submit(2, 51).unwrap();
     pool.drain().expect_err("the barrier reports the failure");

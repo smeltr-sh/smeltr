@@ -1134,14 +1134,9 @@ pub struct KafkaDestination {
     avro: Option<crate::io::avro::AvroWriter>,
     /// Shared with the producer's own `DeliveryTracker`.
     held: Arc<std::sync::atomic::AtomicUsize>,
-    /// What `held` stays under: the producer's share of a stated `bufferBytes`, or the pacing target
-    /// (`Destination::pace`) when the worker sizes this destination.
+    /// What `held` stays under: the producer's share of `bufferBytes`, or of the most its queue may hold when the
+    /// worker sizes this destination. The egress queue in front of it is what paces it; this is the backstop.
     budget: usize,
-    /// The pacing target, in the payload bytes the pacing model counts, once this destination is paced.
-    paced: Option<usize>,
-    /// Payload and held bytes of every record queued so far: how much more than its payload a record holds here.
-    payload_queued: u64,
-    held_queued: u64,
 }
 
 /// Bytes one consumer fetch may carry: half of `fetchBytes`, so a fetch always lands with room behind it.
@@ -1284,9 +1279,6 @@ impl KafkaDestination {
             avro,
             held,
             budget: config.producer_bytes(),
-            paced: None,
-            payload_queued: 0,
-            held_queued: 0,
         })
     }
 }
@@ -1302,26 +1294,13 @@ impl KafkaDestination {
         state.settle(seq);
     }
 
-    /// What records of `payload` bytes hold here, at the ratio the records queued so far held. The pacing model
-    /// measures payload, so a target counted in held bytes would let less onto the wire than it asked for, and
-    /// the next estimate would shrink by the same ratio.
-    fn held_for(&self, payload: usize) -> usize {
-        if self.payload_queued == 0 {
-            return payload.max(1);
-        }
-        let held = payload as u128 * self.held_queued as u128 / self.payload_queued as u128;
-        usize::try_from(held).unwrap_or(usize::MAX).max(1)
-    }
-
     /// Queue one record with librdkafka under the batch being handed over. `record.doc_id` is ignored. `key` is the
     /// partition key, and routing a document id into it would change partitioning and ordering on every Kafka
     /// destination in a deployment that only meant to turn on Elasticsearch dedupe.
     fn produce(&mut self, out: OutgoingRecord<'_>) -> Result<(), IoError> {
         use std::sync::atomic::Ordering::Relaxed;
         let topic = out.placement.unwrap_or(&self.default_topic);
-        let key_len = out.key.map_or(0, <[u8]>::len);
-        let payload = out.value.len() + key_len;
-        let held = held_bytes(out.value.len(), key_len);
+        let held = held_bytes(out.value.len(), out.key.map_or(0, <[u8]>::len));
         let sent = Box::new(Sent { seq: self.seq, held });
         let mut record = BaseRecord::with_opaque_to(topic, sent).payload(out.value);
         if let Some(k) = out.key {
@@ -1339,11 +1318,6 @@ impl KafkaDestination {
                     // Added here, not before: only this thread's polls run delivery reports.
                     Ok(()) => {
                         self.held.fetch_add(held, Relaxed);
-                        self.payload_queued += payload as u64;
-                        self.held_queued += held as u64;
-                        if let Some(target) = self.paced {
-                            self.budget = self.held_for(target);
-                        }
                         return Ok(());
                     }
                     Err((KafkaError::MessageProduction(RDKafkaErrorCode::QueueFull), rejected)) => record = rejected,
@@ -1501,11 +1475,6 @@ impl Destination for KafkaDestination {
     /// Set by the producer's own error callback, which `poll_completions` runs.
     fn connection_error(&self) -> Option<String> {
         self.reach.lock().unwrap().unreachable()
-    }
-
-    fn pace(&mut self, target_bytes: usize) {
-        self.paced = Some(target_bytes);
-        self.budget = self.held_for(target_bytes);
     }
 }
 
@@ -2235,39 +2204,6 @@ mod tests {
             None,
             "the error must clear once the broker is reachable again"
         );
-    }
-
-    /// A paced producer lets onto the wire the payload its target names, whatever each record holds beyond it.
-    #[test]
-    fn a_paced_producer_holds_the_payload_its_target_names() {
-        let mock = mock_cluster_with_topic("paced-topic");
-        let value = [b'x'; 1000];
-        let fits = 100;
-        let mut dest = KafkaDestination::new(
-            &KafkaDestinationConfig {
-                payload: crate::plan::config::Payload::Record,
-                compression: crate::plan::topology::Compression::None,
-                acks: crate::plan::topology::Acks::All,
-                stall_after: Duration::from_secs(1),
-                brokers: mock.bootstrap_servers(),
-                default_topic: "paced-topic".to_string(),
-                service: crate::plan::topology::KafkaService::Kafka,
-                identity: None,
-                buffer_bytes: 1 << 30,
-                props: Default::default(),
-                avro: None,
-            },
-            7,
-            MetricsHandle::new(Arc::new(crate::metrics::Metrics::new()), "egress-7"),
-            &Default::default(),
-        )
-        .unwrap();
-        dest.pace(fits * value.len());
-        mock.broker_down(1).unwrap();
-        let queued = (0..10 * fits)
-            .take_while(|_| dest.produce(OutgoingRecord::new(&value)).is_ok())
-            .count();
-        assert_eq!(queued, fits);
     }
 
     /// A producer whose broker is gone queues records only while what they hold fits its share of `bufferBytes`,

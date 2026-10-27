@@ -308,7 +308,6 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
                 })
                 .collect(),
             start,
-            self.max_request_bytes,
         ));
         self
     }
@@ -645,16 +644,9 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
         Ok(())
     }
 
-    /// What the pool currently allows outstanding. A destination delivering one batch at a time has no pool and no
-    /// figure to report.
+    /// Requests the pool has open. A destination delivering one batch at a time has no pool and no figure to report.
     fn concurrency(&mut self) -> Option<usize> {
-        self.pool.as_ref().map(|p| p.limit())
-    }
-
-    fn pace(&mut self, target_bytes: usize) {
-        if let Some(pool) = &mut self.pool {
-            pool.pace(target_bytes);
-        }
+        self.pool.as_ref().map(|p| p.outstanding())
     }
 
     fn lend_senders(&mut self, lend: crate::io::Lend) {

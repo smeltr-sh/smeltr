@@ -1278,19 +1278,13 @@ pub trait Destination: Send {
         Vec::new()
     }
 
-    /// The pacing model's target for this destination (`egress::pacing`): the bytes worth having queued and in
-    /// flight, which the egress queue in front of it already holds to. A destination with a bound of its own -- a
-    /// producer's queue, a pool's requests -- sets that bound from it. Called when the target moves, from the thread
-    /// that owns the destination. One without such a bound ignores it.
-    fn pace(&mut self, _target_bytes: usize) {}
-
-    /// Where a destination that spawns senders as its pace asks gets leave to spawn one past those it started with:
-    /// `lend` answers whether the memory it holds is lent. Given once, before the first [`Destination::pace`]. One
+    /// Where a destination that spawns a sender when every one it has is busy gets leave to spawn one past those it
+    /// started with: `lend` answers whether the memory it holds is lent. Given once, before the first delivery. One
     /// that spawns none ignores it.
     fn lend_senders(&mut self, _lend: Lend) {}
 
-    /// How many requests this destination currently allows outstanding, for a transport that decides that for itself.
-    /// `None` from one whose concurrency is not its own to report -- librdkafka's is inside librdkafka.
+    /// How many requests this destination has open, for a transport that opens them itself. `None` from one whose
+    /// requests are not its own to report -- librdkafka's are inside librdkafka.
     fn concurrency(&mut self) -> Option<usize> {
         None
     }

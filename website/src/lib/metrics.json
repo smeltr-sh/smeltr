@@ -291,7 +291,7 @@
     "name": "smeltr_destination_in_flight",
     "kind": "gauge",
     "labels": ["destination"],
-    "what": "Requests the destination may have open at once."
+    "what": "Requests currently open to the destination."
   },
   {
     "group": "Destinations",

@@ -561,8 +561,8 @@ impl Egress {
     }
 
     /// Let the pacing model ([`pacing`]) set this queue's budget, from `floor` bytes, one batch, up to the queue's
-    /// share of the pool it borrows from, or without a pool up to the budget it was started with. The destination's
-    /// own in-flight bound follows through `Destination::pace`.
+    /// share of the pool it borrows from, or without a pool up to the budget it was started with. The budget is
+    /// released only as batches are acknowledged, so it bounds what the destination has in flight too.
     pub fn paced(self, floor: usize) -> Egress {
         self.queue.set_budget(floor.max(1));
         let _ = self.queue.paced.set(floor.max(1));
@@ -661,7 +661,7 @@ fn run(
     let mut open_reported: Option<usize> = None;
     // Held while any are kept, so a capture at this destination waits to be shown them.
     let mut holding: Option<crate::worker::capture::Holding> = None;
-    // The pacing model, once the queue is paced. Its target is the queue's budget and the destination's bound.
+    // The pacing model, once the queue is paced. Its target is the queue's budget, and so what is in flight.
     let mut pacing: Option<Pacing> = None;
     // How far the link stood below the share, averaged over each stretch and written at its end.
     let mut headroom = Headroom::default();
@@ -676,7 +676,6 @@ fn run(
             }
             let p = Pacing::new(floor, queue.share());
             queue.set_budget(p.queue_bytes());
-            destination.pace(p.target());
             note_queue_budget(metrics, id, queue);
             pacing = Some(p);
         }
@@ -733,7 +732,6 @@ fn run(
                     pace(
                         &mut pacing,
                         queue,
-                        &mut *destination,
                         metrics,
                         id,
                         unit.bytes,
@@ -786,7 +784,6 @@ fn run(
                     pace(
                         &mut pacing,
                         queue,
-                        &mut *destination,
                         metrics,
                         id,
                         owed.unit.bytes,
@@ -845,15 +842,13 @@ fn run(
     abandon(returns, &mut owner, &mut redo);
 }
 
-/// Tell the pacing model a batch came back, and carry its target to the queue, the destination and the metrics
-/// when it moves. The ceiling is read each time: the pool's share moves as other queues come and go. The model's
+/// Tell the pacing model a batch came back, and carry its target to the queue and the metrics when it moves. The ceiling is read each time: the pool's share moves as other queues come and go. The model's
 /// headroom under the ceiling is averaged over time and reported every [`HEADROOM_EVERY`]: none for long is a
 /// destination memory holds back.
 #[allow(clippy::too_many_arguments)]
 fn pace(
     pacing: &mut Option<Pacing>,
     queue: &Queue,
-    destination: &mut dyn Destination,
     metrics: &MetricsHandle,
     id: DestId,
     bytes: usize,
@@ -877,7 +872,6 @@ fn pace(
     );
     if p.target() != before {
         queue.set_budget(p.queue_bytes());
-        destination.pace(p.target());
         note_queue_budget(metrics, id, queue);
     }
     let share = p.headroom() as f64 / ceiling.max(1) as f64;
@@ -1107,7 +1101,7 @@ fn note_cut_off(
     }
 }
 
-/// Report what the destination's own loop currently allows outstanding. This thread owns the client, so it is the only
+/// Report the requests the destination has open. This thread owns the client, so it is the only
 /// writer of `smeltr_destination_in_flight`. A destination that reports no figure leaves the series absent rather than
 /// publishing a zero, which would read as a stalled destination.
 fn note_concurrency(metrics: &MetricsHandle, id: DestId, now: Option<usize>, reported: &mut Option<usize>) {

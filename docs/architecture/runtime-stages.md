@@ -128,10 +128,11 @@ measured again. When a destination asks to be sent less (a 429, a 503, or a
 bulk item refused because its queue is full), the target is capped at a fixed
 fraction of what it had in flight then, at most once a round trip, and the
 cap is raised at each probe the destination takes without asking again. The
-target is the queue's budget, and the destination's own in-flight bound reads
-the same figure, so the room reaches the wire. A sample taken while the
-source was not pressing on the queue may raise the estimate but never lower
-it, so a quiet source does not shrink a fast link's budget, and a slow link
+target is the queue's budget, and a batch's bytes stay in it until the
+destination acknowledges the batch, so the target bounds what is in flight
+too. A sample taken while the source was not pressing on the queue may
+raise the estimate but never lower it, so a quiet source does not shrink a
+fast link's target, and a slow link
 stops the queue growing where more bytes would buy no more throughput. A link
 measured to carry the limit or more, on average over five minutes of
 delivering, when the worker sized the limit from memory, is a notice: memory,
@@ -210,10 +211,10 @@ Each lane and each reserve holds whole batches whatever the traffic, so they
 grow with the count of sources and destinations. When they would take more
 than half the memory, the worker cuts its batches smaller, down to a floor
 below which the work per batch outweighs the batch. The senders a destination
-starts with are held whatever the traffic too. A paced destination spawns
-more as its target asks, each borrowing what it holds from the pool before it
-starts and keeping it while the destination lives, so its target is held to
-what the pool lends besides. A sender gone idle hands back what its allocator
+starts with are held whatever the traffic too. A paced destination starts
+another sender when all its senders are busy. Each sender borrows what it
+holds from the pool before it starts and keeps it while the destination
+lives, and the target is held to what the pool lends beyond the senders. A sender gone idle hands back what its allocator
 holds free.
 
 ```mermaid
