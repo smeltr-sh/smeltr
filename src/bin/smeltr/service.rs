@@ -4,8 +4,8 @@
 //!
 //! The service works in `%ProgramData%\Smeltr`, or in the directory `SMELTR_CONFIG_FILE` names, so `smeltr.toml`
 //! and every relative default resolve there. It has no console, so what the process prints -- its logs, and why it
-//! refused to start -- goes to `smeltr.log` in that directory: what systemd's journal keeps on Linux. Each start
-//! sets the last one's log aside as `smeltr.log.1`.
+//! refused to start -- goes to `smeltr.log` in that directory: what systemd's journal keeps on Linux. It grows until
+//! the next start, which sets it aside as `smeltr.log.1`.
 //!
 //! Started any other way -- a console, a container, systemd -- the process runs as it always does, and so does a
 //! runtime a worker spawned, which no Service Control Manager started.
@@ -43,7 +43,7 @@ mod imp {
     use windows_sys::Win32::Foundation::{
         ERROR_CALL_NOT_IMPLEMENTED, ERROR_FAILED_SERVICE_CONTROLLER_CONNECT, NO_ERROR,
     };
-    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
     use windows_sys::Win32::System::Console::{STD_ERROR_HANDLE, SetStdHandle};
     use windows_sys::Win32::System::Services::{
         RegisterServiceCtrlHandlerExW, SERVICE_ACCEPT_PRESHUTDOWN, SERVICE_ACCEPT_SHUTDOWN, SERVICE_ACCEPT_STOP,
@@ -150,8 +150,8 @@ mod imp {
         let opened = OpenOptions::new()
             .append(true)
             .create(true)
-            // Readable while written.
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            // Readable while written, and an operator may move it aside without stopping the service.
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
             .open(&path);
         if let Ok(file) = opened {
             // Never closed: stderr writes to it until the process ends.
