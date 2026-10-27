@@ -11,8 +11,8 @@
     env?: string;
     examples?: unknown[];
   };
-  /** `anchored` gives each block its setting's name as its id, so a guide can link to one. Only for a page that
-   * shows one table, where every name is unique. */
+  /** `anchored` gives each block its setting's name as its id, so a guide can link to one. Only for a page
+   * where every name is unique. */
   let { settings, anchored = false }: { settings: Row[]; anchored?: boolean } = $props();
   /** A name in pieces that each end after a dot or an underscore, so it wraps only there. */
   const pieces = (name: string) => name.split(/(?<=[._])/);
