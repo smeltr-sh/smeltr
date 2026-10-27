@@ -25,6 +25,10 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use super::{Queue, note_queue_budget};
+use crate::core::id::DestId;
+use crate::metrics::MetricsHandle;
+
 /// How long the least round trip is kept before it is measured again.
 const RTT_WINDOW: Duration = Duration::from_secs(10);
 
@@ -325,12 +329,117 @@ impl Pacing {
     }
 }
 
+/// The pacing model for one destination's queue, and what it reports.
+pub(super) struct Pacer {
+    model: Pacing,
+    /// How far the link stood below the share, averaged over each stretch and written at its end.
+    headroom: Headroom,
+    metrics: MetricsHandle,
+    id: DestId,
+}
+
+impl Pacer {
+    /// Starts the model at `floor` bytes, one batch, and sets the queue's budget to it.
+    pub(super) fn new(floor: usize, queue: &Queue, metrics: &MetricsHandle, id: DestId) -> Pacer {
+        let model = Pacing::new(floor, queue.share());
+        queue.set_budget(model.queue_bytes());
+        note_queue_budget(metrics, id, queue);
+        Pacer {
+            model,
+            headroom: Headroom::default(),
+            metrics: metrics.clone(),
+            id,
+        }
+    }
+
+    /// A batch of `bytes` handed to the destination: what the model is told when it is acknowledged.
+    pub(super) fn dispatched(&mut self, bytes: usize, app_limited: bool) -> Completion {
+        Completion {
+            bytes,
+            sent: self.model.dispatched(bytes, Instant::now()),
+            app_limited,
+            throttled: false,
+        }
+    }
+
+    /// Tell the model a batch came back, and carry its target to the queue and the metrics when it moves. The ceiling
+    /// is read each time: the pool's share moves as other queues come and go. The model's headroom under the ceiling
+    /// is averaged over time and reported every [`HEADROOM_EVERY`]: none for long is a destination memory holds back.
+    pub(super) fn completed(&mut self, queue: &Queue, c: Completion) {
+        let before = self.model.target();
+        let ceiling = queue.share();
+        self.model.set_ceiling(ceiling);
+        self.model.completed(c, Instant::now());
+        if self.model.target() != before {
+            queue.set_budget(self.model.queue_bytes());
+            note_queue_budget(&self.metrics, self.id, queue);
+        }
+        let share = self.model.headroom() as f64 / ceiling.max(1) as f64;
+        if let Some(mean) = self.headroom.add(share, Instant::now()) {
+            let label = self.id.to_string();
+            self.metrics.gauge(
+                "smeltr_destination_pace_headroom_ratio",
+                &[("destination", label.as_str())],
+                mean,
+            );
+        }
+    }
+}
+
+/// How often the averaged headroom is reported: the leader's finest bucket, so each bucket reads one stretch. The
+/// estimate dips for a moment as old rate samples lapse and the round trip is measured again; a mean over a stretch
+/// is not moved by that, where the bucket's greatest reading, which a gauge keeps, would be.
+const HEADROOM_EVERY: Duration = Duration::from_secs(10);
+
+/// The headroom, weighted by how long each reading stood, since the last report.
+#[derive(Default)]
+struct Headroom {
+    /// When this stretch began, and the last reading with when it was taken.
+    since: Option<Instant>,
+    last: Option<(Instant, f64)>,
+    /// The sum of each reading times the seconds it stood.
+    weighted: f64,
+}
+
+impl Headroom {
+    /// Takes the reading `share` at `now`, and answers the mean over the stretch once it is [`HEADROOM_EVERY`] long.
+    fn add(&mut self, share: f64, now: Instant) -> Option<f64> {
+        let since = *self.since.get_or_insert(now);
+        if let Some((at, last)) = self.last {
+            self.weighted += last * now.saturating_duration_since(at).as_secs_f64();
+        }
+        self.last = Some((now, share));
+        let span = now.saturating_duration_since(since);
+        if span < HEADROOM_EVERY {
+            return None;
+        }
+        let mean = self.weighted / span.as_secs_f64();
+        self.since = Some(now);
+        self.weighted = 0.0;
+        Some(mean)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const MIB: usize = 1024 * 1024;
     const BATCH: usize = 4 * MIB;
+
+    #[test]
+    fn headroom_is_reported_as_its_mean_over_time_so_a_moment_s_dip_barely_moves_it() {
+        let mut h = Headroom::default();
+        let start = Instant::now();
+        let at = |s: f64| start + Duration::from_secs_f64(s);
+        assert_eq!(h.add(0.0, at(0.0)), None);
+        assert_eq!(h.add(0.8, at(4.0)), None, "the estimate dips");
+        assert_eq!(h.add(0.0, at(4.5)), None);
+        let mean = h.add(0.0, at(10.0)).expect("a stretch is ten seconds");
+        assert!((mean - 0.04).abs() < 1e-9, "half a second at 0.8 over ten: {mean}");
+        assert_eq!(h.add(0.0, at(15.0)), None, "the next stretch starts afresh");
+        assert_eq!(h.add(0.0, at(20.0)), Some(0.0));
+    }
 
     /// A link `rtt` away that carries `capacity` bytes a second, fed by a source with plenty to send, for `rounds`
     /// round trips. The destination holds batches up to the target, as the queue does: a new batch goes out the
