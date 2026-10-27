@@ -4,7 +4,7 @@
       "key": "log_level",
       "env": "SMELTR_LOG_LEVEL",
       "default": "`info`",
-      "what": "The lowest severity logged. A top-level key.",
+      "what": "The lowest severity this install logs. A top-level key.",
       "values": [
         {
           "value": "error",
@@ -33,7 +33,7 @@
       "env": "SMELTR_LEADER_ENABLED",
       "default": "`false`",
       "examples": ["true"],
-      "what": "Whether this process runs the leader."
+      "what": "Whether this install runs the leader."
     },
     {
       "key": "leader.http.port",

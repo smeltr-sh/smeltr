@@ -14,7 +14,7 @@
       what: s.what,
       values: s.values,
     }));
-  // A setting under neither role's table applies to every process, so it leads, under no heading.
+  // A setting under neither role's table applies to every install.
   const role = (r: string) => data.settings.filter((s) => s.key.startsWith(`${r}.`));
   const shared = data.settings.filter((s) => !/^(leader|worker)\./.test(s.key));
   const sections = [
@@ -51,6 +51,7 @@
     another version may not match your artifact.
   </p>
   <h2 id="settings">Settings</h2>
+  <h3 id="every-install">Every install</h3>
   <SettingsTable anchored settings={rows(shared)} />
   <h3 id="leader">Leader</h3>
   <SettingsTable anchored settings={rows(role('leader'))} />
