@@ -2063,7 +2063,7 @@ fn live_seed(seed: u64, url: &str, reached: &mut Reached, pki: &Pki) -> Result<(
     let want = canonical_held(want);
     let named: BTreeSet<(String, String)> = want.by_id.keys().cloned().collect();
     let got = read_back(url, made, &named)?;
-    let want = versions.settle(want, &got, |d| canonical(d));
+    let want = versions.settle(want, &got, canonical);
     if got != want {
         return Err(fail(format!("the cluster holds\n  {got:?}\nnot\n  {want:?}")));
     }
