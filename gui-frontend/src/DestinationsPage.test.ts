@@ -46,7 +46,7 @@ describe('the object Advanced marker', () => {
 });
 
 describe('an SFTP destination', () => {
-  it('is an object destination, and no cloud: it takes no storage class or identity', () => {
+  it('is an object destination, and no cloud: it takes no storage class or TLS settings', () => {
     expect(isObjectStore(sftp())).toBe(true);
     expect(isCloud(sftp())).toBe(false);
     expect(isCloud(s3())).toBe(true);
@@ -69,8 +69,9 @@ describe('the HTTP Advanced marker', () => {
     ).toBe(false);
   });
 
-  it('is on for the identity, compression or a delivery setting', () => {
-    expect(httpModified({ ...http(), identity: 'acme' })).toBe(true);
+  it('is on for a TLS setting, compression or a delivery setting', () => {
+    expect(httpModified({ ...http(), certificate: 'acme' })).toBe(true);
+    expect(httpModified({ ...http(), trustPublic: false })).toBe(true);
     expect(httpModified({ ...http(), compression: 'gzip' })).toBe(true);
     expect(httpModified({ ...http(), maxRequestBytes: '4 MiB' })).toBe(true);
     expect(httpModified({ ...http(), stallAfterSecs: 5 })).toBe(true);

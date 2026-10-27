@@ -75,7 +75,7 @@ pub fn need(method: &Method, path: &str, query: Option<&str>) -> Need {
         (Method::GET | Method::HEAD | Method::PUT | Method::DELETE, ["pipelines", _]) => scoped(read),
         (
             Method::PUT,
-            ["sources" | "destinations" | "identities" | "routes" | "lookup-tables" | "grok-patterns" | "manifest"],
+            ["sources" | "destinations" | "routes" | "lookup-tables" | "grok-patterns" | "manifest"],
         )
         | (Method::POST, ["undo"])
         | (Method::POST, ["lookup", "upload"]) => scoped(Level::Editor),
@@ -100,7 +100,7 @@ pub fn need(method: &Method, path: &str, query: Option<&str>) -> Need {
         | (Method::POST, ["onboard", "propose"])
         | (Method::POST, ["line-breaker"])
         | (Method::POST, ["format"])
-        | (Method::POST, ["identities", "describe"])
+        | (Method::POST, ["certificates", "describe"])
         | (Method::POST, ["sql", "statement"])
         // Names, versions and where each is used, never a value: what a secret picker offers whoever saves a form.
         | (Method::GET | Method::HEAD, ["secrets"])
@@ -332,7 +332,6 @@ mod tests {
         for (method, path) in [
             (Method::PUT, "/api/sources"),
             (Method::PUT, "/api/destinations"),
-            (Method::PUT, "/api/identities"),
             (Method::PUT, "/api/routes"),
             (Method::PUT, "/api/manifest"),
             (Method::PUT, "/api/lookup-tables"),
@@ -379,7 +378,7 @@ mod tests {
             (Method::POST, "/api/onboard/propose"),
             (Method::POST, "/api/line-breaker"),
             (Method::POST, "/api/format"),
-            (Method::POST, "/api/identities/describe"),
+            (Method::POST, "/api/certificates/describe"),
             (Method::POST, "/api/sql/statement"),
             (Method::GET, "/api/secrets"),
             (Method::GET, "/api/certificates"),

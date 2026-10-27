@@ -5,6 +5,7 @@
 
 import type { DestinationDto } from './api';
 import { accessModified, credentialOf } from './ConnectorAccess.svelte';
+import { tlsRefusal } from './http';
 
 export type IcebergDestination = Extract<DestinationDto, { type: 'iceberg' }>;
 
@@ -67,11 +68,9 @@ export function signingRegion(url: string): string | undefined {
 }
 
 /** Why the catalog's address cannot carry what the destination sends over it, or nothing. Plain HTTP negotiates no
- * TLS for an identity to answer. Whether it is a URL at all is the save's to say. */
+ * TLS for the settings to answer. Whether it is a URL at all is the save's to say. */
 export function catalogRefusal(d: IcebergDestination): string | undefined {
-  if (d.identity !== undefined && /^http:\/\//i.test(d.catalog.trim()))
-    return 'Plain HTTP negotiates no TLS, so the identity would go unused. Use an https:// URL.';
-  return undefined;
+  return tlsRefusal(d.catalog, d);
 }
 
 /** Why the namespace cannot be saved, or nothing. An empty one is the save's to name. */

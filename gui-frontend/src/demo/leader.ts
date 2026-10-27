@@ -166,7 +166,6 @@ const SECTIONS: Record<string, string> = {
   '/api/sources': 'sources',
   '/api/destinations': 'destinations',
   '/api/routes': 'routes',
-  '/api/identities': 'identities',
   '/api/lookup-tables': 'lookupTables',
   '/api/grok-patterns': 'grokPatterns',
 };
@@ -198,7 +197,6 @@ const UNDONE: Record<string, string> = {
   routes: 'route',
   lookupTables: 'lookup table',
   grokPatterns: 'grok pattern',
-  identities: 'identity',
   pipelines: 'pipeline',
 };
 

@@ -4,7 +4,6 @@
   const sections = [
     { id: 'secrets', title: 'Create and rotate a secret' },
     { id: 'encryption-key', title: 'Encryption key' },
-    { id: 'identities', title: 'Connection identities' },
     { id: 'kafka', title: 'Kafka security' },
   ];
 </script>
@@ -72,44 +71,6 @@
     <strong>Regenerate key</strong>: Issues then lists each secret and setting to enter again, and
     each clears once you store a new value for it.
   </p>
-  <h2 id="identities">Connection identities</h2>
-  <p>
-    A connection identity contains the certificate a worker presents and the authorities it trusts.
-    Create it under Build → Resources → Connection identities. A source or destination selects it as
-    its <strong>client identity</strong>: the worker connects out, uses it to check the far end's
-    certificate, and presents its certificate when the far end asks for one. A receiver selects it
-    as its
-    <strong>server identity</strong>: the receiver serves TLS with its certificate and, if the
-    identity has authorities, admits only senders whose certificates chain to one of them.
-  </p>
-  <ul>
-    <li>
-      For a private certificate authority (CA), supply its public certificates in PEM format (text
-      files containing certificate blocks). A source or destination trusts them in addition to the
-      public roots: Mozilla's and the worker host's own.
-    </li>
-    <li>
-      To trust only your own authorities, turn off <strong>trust public roots</strong> under Advanced.
-      A receiver always admits by its identity's authorities alone.
-    </li>
-    <li>
-      For the certificate it presents, add the certificate and its private key under Admin →
-      <a href="/docs/certificates#list">Certificates</a>, then choose it in
-      <strong>presents</strong>. The identity names the version you chose. Replacing the certificate
-      points every identity that presents it at the new version, in a change you review and deploy.
-    </li>
-    <li>
-      An identity can contain trust authorities, a certificate, or both. A server identity needs a
-      certificate. With no client identity selected, the connector trusts the public roots and
-      presents no client certificate.
-    </li>
-  </ul>
-  <p>
-    Review and deploy the identity with the connector that uses it. Check that the name each worker
-    connects to is on the far end's certificate. You configure leader/browser certificates
-    separately in <a href="/docs/certificates">Certificates &amp; TLS</a>.
-  </p>
-
   <h2 id="kafka">Kafka security</h2>
   <p>
     The same security controls apply to <a href="/docs/sources/kafka">Kafka sources</a> and
@@ -129,9 +90,9 @@
       available in every worker process that uses the connection.
     </li>
     <li>
-      Select a connection identity for private trust authorities or a client certificate. An
-      identity requires a TLS protocol, and you must not duplicate its TLS settings in the extra
-      properties.
+      For a private CA or a client certificate, fill in the
+      <a href="/docs/certificates#connectors">TLS settings</a>. They need a TLS protocol, and the
+      extra properties must not repeat them.
     </li>
   </ol>
   <p>

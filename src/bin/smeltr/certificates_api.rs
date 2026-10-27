@@ -398,7 +398,7 @@ async fn serve_newest(
 
 /// Keeps what this leader issues and orders up to date, for as long as it runs. Each hour it renews each certificate
 /// it issued that is due, serving the new version where it serves that one, then orders over ACME where that is due.
-/// Nothing it does reaches a worker: an identity moves to a new version when an admin points it there.
+/// A new version reaches the workers presenting it on their next heartbeat (`leader::heartbeat`).
 pub async fn keep_renewed(auth: Auth, serving: Arc<Tls>, leader: smeltr::leader::AppState) {
     let state = Certificates {
         auth: auth.clone(),

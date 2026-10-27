@@ -395,8 +395,8 @@ fn built(case: &Case, system: &super::LoadedSystem) -> Result<(), String> {
     let DestinationKind::Kafka(k) = &dest.kind else {
         return Err(format!("built {:?}, not a Kafka destination", dest.kind));
     };
-    if k.service != KafkaService::EventHubs || k.identity.is_some() {
-        return Err(format!("built service {:?}, identity {:?}", k.service, k.identity));
+    if k.service != KafkaService::EventHubs || k.tls.is_some() {
+        return Err(format!("built service {:?}, TLS {:?}", k.service, k.tls));
     }
     let namespace = text(case, "namespace").unwrap_or_default();
     let expected_brokers = super::load::event_hubs_brokers(&namespace);

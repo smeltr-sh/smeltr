@@ -4,7 +4,7 @@
 -->
 <script lang="ts">
   import Advanced from './Advanced.svelte';
-  import IdentityPicker from './IdentityPicker.svelte';
+  import TlsFields from './TlsFields.svelte';
   import Field from './Field.svelte';
   import Nested from './Nested.svelte';
   import StartAt from './StartAt.svelte';
@@ -23,13 +23,12 @@
   import SqlSourceFields from './SqlSourceFields.svelte';
   import AvroRead from './AvroRead.svelte';
   import BytesInput from './BytesInput.svelte';
-  import { headerValueRefusal } from './http';
+  import { headerValueRefusal, tlsSet } from './http';
   import {
     currentScope,
     SHARED_SCOPE,
     LIMITS,
     type SourceDto,
-    type IdentityDto,
     type SecretDto,
     type ApiRecords,
     type OtlpSignal,
@@ -61,7 +60,6 @@
 
   let {
     source,
-    identities,
     secrets,
     mechanisms,
     startMoves = () => false,
@@ -69,8 +67,6 @@
     onsaved,
   }: {
     source: SourceDto;
-    /** Every identity the source may name. */
-    identities: IdentityDto[];
     /** The secret catalog, so a credential can be pointed at one the leader holds. */
     secrets: SecretDto[];
     /** The SASL mechanisms this leader's build can select. */
@@ -117,7 +113,7 @@
   /** As `streamModified`, for an API source. */
   function apiModified(s: ApiSource): boolean {
     return (
-      s.identity !== undefined ||
+      tlsSet(s) ||
       s.start !== undefined ||
       (s.pollIntervalSecs ?? LIMITS.pollIntervalSecs.default) !== LIMITS.pollIntervalSecs.default ||
       (s.type === 'httpApi' && (s.sinceOverlapSecs ?? 0) !== 0) ||
@@ -129,7 +125,7 @@
   /** As `streamModified`, for a receiver. */
   function receiverModified(s: ReceiverSource): boolean {
     return (
-      s.identity !== undefined ||
+      tlsSet(s) ||
       (s.maxRequestBytes ?? LIMITS.receiverRequestBytes.default) !==
         LIMITS.receiverRequestBytes.default ||
       (s.type === 'syslogReceiver' && (s.encoding ?? 'auto') !== 'auto') ||
@@ -270,7 +266,7 @@
 
 <!-- How an object or listing source reads what it reads, and cuts text into records: each names it the same way. -->
 {#snippet framingField(source: ObjectSource | ListingSource)}
-  <AvroRead value={source} stream={false} {secrets} {identities} />
+  <AvroRead value={source} stream={false} {secrets} />
   <!-- An Avro file is its own records: the load refuses a framing beside it. -->
   {#if source.format !== 'avro'}
     <Field field="framing" label="framing">
@@ -291,11 +287,7 @@
     </Field>
     {#if (source.framing ?? 'lines') === 'lines'}
       <Nested>
-        <LineBreakerField
-          value={source.lineBreaker}
-          placeholder={'([\\r\\n]+)\\d{4}-'}
-          onchange={(v) => (source.lineBreaker = v)}
-        />
+        <LineBreakerField value={source.lineBreaker} onchange={(v) => (source.lineBreaker = v)} />
       </Nested>
     {/if}
   {/if}
@@ -348,12 +340,7 @@
   <ListingFields value={source} noun={listed.noun} within={listed.within} show="main" />
   {@render framingField(source)}
   {#if source.type !== 'sftp'}
-    <IdentityPicker
-      value={source.identity}
-      {identities}
-      farEnd="source"
-      onchange={(v) => (source.identity = v)}
-    />
+    <TlsFields value={source} farEnd="source" />
   {/if}
   <Advanced label="Advanced" modified={listingSourceModified(source)}>
     <ConnectorAccess {store} value={source} show="advanced" />
@@ -364,12 +351,7 @@
 
 <!-- What every API source takes under Advanced: who it connects as, what its first poll asks for, and how often. -->
 {#snippet apiAdvanced(source: ApiSource)}
-  <IdentityPicker
-    value={source.identity}
-    {identities}
-    farEnd="source"
-    onchange={(v) => (source.identity = v)}
-  />
+  <TlsFields value={source} farEnd="source" />
   <!-- Without a since parameter every poll reads everything, so there is no first poll to start from. -->
   {#if source.type === 'oktaLogs' || source.sinceParam !== undefined}
     <Field field="start" label="start at">
@@ -892,25 +874,13 @@
   </div>
 {/snippet}
 
-<!-- A Kafka source's identity and security. -->
+<!-- A Kafka source's TLS and security. -->
 {#snippet kafkaSecurity(source: Extract<SourceDto, { type: 'kafka' }>)}
-  <IdentityPicker
-    value={source.identity}
-    {identities}
-    farEnd="source"
-    onchange={(v) => {
-      if (source.type === 'kafka') source.identity = v;
-    }}
-  />
+  <TlsFields value={source} farEnd="source" />
 
   <div class="section">
     <div class="section-head">security</div>
-    <KafkaSecurity
-      value={source}
-      {secrets}
-      {mechanisms}
-      hasIdentity={source.identity !== undefined}
-    />
+    <KafkaSecurity value={source} {secrets} {mechanisms} hasTls={tlsSet(source)} />
   </div>
 {/snippet}
 
@@ -964,9 +934,10 @@
           if (source.type !== 'syslogReceiver') return;
           const v = e.currentTarget.value as 'tcp' | 'udp';
           source.transport = v === 'tcp' ? undefined : v;
-          // The load refuses an identity and a line breaker under UDP, which serves no TLS and frames nothing.
+          // The load refuses TLS settings and a line breaker under UDP, which serves no TLS and frames nothing.
           if (v === 'udp') {
-            source.identity = undefined;
+            source.certificate = undefined;
+            source.trustedAuthorities = undefined;
             delete source.lineBreaker;
           }
         }}
@@ -1001,8 +972,8 @@
           a sender, and a UDP sender's address can be spoofed.
         {:else}
           The networks a sender may connect from, each a CIDR block. Syslog carries no token, so the
-          receiver needs these networks, a server identity that trusts authorities, or both. With
-          both, a sender must connect from a listed network and present a certificate.
+          receiver needs these networks, trusted authorities a sender's certificate must chain to,
+          or both. With both, a sender must connect from a listed network and present a certificate.
         {/if}
       {/snippet}
       <TokenListInput
@@ -1032,7 +1003,7 @@
           Each token a sender may present as <code>Authorization: Bearer &lt;token&gt;</code>, by
           name.
         {/if}
-        With no token, the receiver needs a server identity that trusts authorities.
+        With no token, the receiver needs trusted authorities a sender's certificate must chain to.
       {/snippet}
     </ReceiverTokens>
   {/if}
@@ -1086,12 +1057,7 @@
   {/if}
   <Advanced label="Advanced" modified={receiverModified(source)}>
     {#if !(source.type === 'syslogReceiver' && source.transport === 'udp')}
-      <IdentityPicker
-        value={source.identity}
-        {identities}
-        farEnd="sender"
-        onchange={(v) => (source.identity = v)}
-      />
+      <TlsFields value={source} farEnd="sender" />
     {/if}
     {#if source.type === 'hecReceiver'}
       <ReceiverSourcetypes value={source}>
@@ -1126,7 +1092,6 @@
       {#if source.transport !== 'udp'}
         <LineBreakerField
           value={source.lineBreaker}
-          placeholder={'(\\x00)'}
           onchange={(v) => {
             if (source.type === 'syslogReceiver') source.lineBreaker = v;
           }}
@@ -1145,7 +1110,7 @@
       {@render eventHubsFields(source)}
     {/if}
     {@render positions(source)}
-    <AvroRead value={source} stream {secrets} {identities} />
+    <AvroRead value={source} stream {secrets} />
     {#if source.type === 'kafka'}
       {@render kafkaSecurity(source)}
     {/if}
@@ -1178,7 +1143,7 @@
       </Field>
       {@render encodingField(source)}
       {#if source.type === 'kafka'}
-        <KafkaPropsEditor value={source} {secrets} hasIdentity={source.identity !== undefined} />
+        <KafkaPropsEditor value={source} {secrets} hasTls={tlsSet(source)} />
       {/if}
     </Advanced>
   {:else if isObjectSource(source)}
@@ -1226,12 +1191,7 @@
     {/if}
     <ConnectorAccess {store} value={source} show="credential" {secrets} />
     {@render framingField(source)}
-    <IdentityPicker
-      value={source.identity}
-      {identities}
-      farEnd="source"
-      onchange={(v) => (source.identity = v)}
-    />
+    <TlsFields value={source} farEnd="source" />
     <Advanced label="Advanced" modified={objectsModified(source)}>
       {#if source.type === 'gcsPubSub'}
         <UrlField
@@ -1293,7 +1253,7 @@
   {:else if source.type === 'oktaLogs'}
     {@render oktaFields(source)}
   {:else if isSql(source)}
-    <SqlSourceFields {source} {identities} {secrets} {readAt} {onsaved} />
+    <SqlSourceFields {source} {secrets} {readAt} {onsaved} />
   {:else if isReceiver(source)}
     {@render receiverFields(source)}
   {:else if source.type === 'metrics'}

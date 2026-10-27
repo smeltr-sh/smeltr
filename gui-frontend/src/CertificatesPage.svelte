@@ -23,7 +23,6 @@
     issueCertificate,
     ISSUED_VALIDITY_DAYS,
     replaceCertificate,
-    pointSecretNow,
     deleteSecret,
     currentVersion,
     type CertificateDto,
@@ -73,7 +72,6 @@
 
   function open(name: string | null) {
     editing = { name };
-    replacedNote = '';
     newName = '';
     newDescription = '';
     pem = '';
@@ -111,7 +109,6 @@
           ? await createCertificate(newName.trim(), newDescription.trim(), pem, privateKey)
           : await replaceCertificate(editing.name, pem, privateKey);
       if (!res.ok) return;
-      const replaced = editing.name;
       editing = null;
       privateKey = '';
       if (startAdding) {
@@ -119,45 +116,6 @@
         return;
       }
       await load();
-      if (replaced !== null) await pointAt(replaced, 'Replaced');
-    } catch (e) {
-      reported(e);
-    } finally {
-      saving = false;
-    }
-  }
-
-  /** What the last replace or update did to the identities naming it. */
-  let replacedNote = $state('');
-
-  /** Points every identity naming `name` at its new version, as storing a secret's value does: the change deploys
-   * it, on the branch already being edited. */
-  async function pointAt(name: string, done: 'Replaced' | 'Updated') {
-    const version = currentVersion(certificates.find((c) => c.name === name)!)?.version;
-    if (version === undefined) return;
-    const pointed = await pointSecretNow(name, version);
-    if (!pointed.ok) {
-      // The banner already says why; the note says what did not happen.
-      replacedNote =
-        done === 'Updated'
-          ? 'No identity could be updated.'
-          : `${done}, but no identity could be updated to use it.`;
-    } else if (pointed.references === 0) {
-      replacedNote = done === 'Updated' ? 'No identity needed updating.' : `${done}.`;
-    } else {
-      const identities =
-        pointed.references === 1 ? '1 identity' : `${pointed.references} identities`;
-      const groups = `group${pointed.groups.length === 1 ? '' : 's'} ${pointed.groups.join(', ')}`;
-      replacedNote = `${done}. ${identities} in ${groups} will present the new version once you deploy the open change.`;
-    }
-  }
-
-  /** Points what names a certificate the leader renews at its newest version, as a replace does. */
-  async function updateIdentities(name: string) {
-    if (saving) return;
-    saving = true;
-    try {
-      await pointAt(name, 'Updated');
     } catch (e) {
       reported(e);
     } finally {
@@ -183,11 +141,21 @@
 
   const leaf = (c: CertificateDto) => c.chain[0];
 
-  const sort = new TableSort<'name' | 'names' | 'expires' | 'setAt'>();
+  /** What the newest version can be used for, as its Extended Key Usage and Key Usage permit. */
+  const purpose = (c: CertificateDto) =>
+    c.forServers && c.forClients
+      ? 'Server and client'
+      : c.forServers
+        ? 'Server'
+        : c.forClients
+          ? 'Client'
+          : 'Neither';
+  const sort = new TableSort<'name' | 'names' | 'purpose' | 'expires' | 'setAt'>();
   let sorted = $derived(
     sort.apply(certificates, {
       name: (c) => c.name,
       names: (c) => leaf(c)?.names.join(', '),
+      purpose: (c) => (leaf(c) ? purpose(c) : undefined),
       expires: (c) => leaf(c)?.notAfterMillis,
       setAt: (c) => currentVersion(c)?.setAt,
     }),
@@ -197,8 +165,9 @@
 <SectionShell>
   <PageHeader title="Certificates">
     {#snippet help()}
-      Certificates and their private keys, for the leader and for sources and destinations to
-      present.
+      Certificates for the leader and workers. Used by sources and destinations. Server certificates
+      can be used by the leader and receiver sources. Client certificates can be used by pull
+      sources and destinations. A certificate must have either or both to be usable.
     {/snippet}
   </PageHeader>
 
@@ -206,7 +175,6 @@
     <button type="button" class="primary" onclick={() => open(null)} disabled={editing !== null}>
       + Add certificate
     </button>
-    {#if replacedNote}<span class="dim">{replacedNote}</span>{/if}
   </div>
 
   <Dialog
@@ -226,7 +194,7 @@
         <Field
           required
           label="Issued for"
-          help="DNS names and IP addresses, one per line. This leader signs it with its own authority, which whatever connects to it must trust. The leader renews it on its own before it expires; the Issues page then asks you to update the identities that present it."
+          help="DNS names and IP addresses, one per line. This leader signs it with its own authority, which whatever connects to it must trust. The leader renews it on its own before it expires, and workers use the new version from their next heartbeat."
         >
           <textarea
             bind:value={issuedNames}
@@ -293,6 +261,9 @@
             <th aria-sort={sort.aria('names')}
               ><SortButton {sort} key="names">Serves</SortButton></th
             >
+            <th aria-sort={sort.aria('purpose')}
+              ><SortButton {sort} key="purpose">Usable as</SortButton></th
+            >
             <th aria-sort={sort.aria('expires')}
               ><SortButton {sort} key="expires">Expires</SortButton></th
             >
@@ -324,16 +295,13 @@
                 {#if c.description}<small class="note">{c.description}</small>{/if}
               </td>
               <td class="mono">{leaf(c)?.names.join(', ') || '--'}</td>
+              <td class="one-line">{leaf(c) ? purpose(c) : '--'}</td>
               <td class="one-line" class:soon={leaf(c) && expiringSoon(leaf(c))}>
                 {leaf(c) ? expiry(leaf(c).notAfterMillis) : '--'}
               </td>
               <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
               <td class="row-actions">
-                {#if c.kept}
-                  <button type="button" disabled={saving} onclick={() => updateIdentities(c.name)}
-                    >Update identities</button
-                  >
-                {:else}
+                {#if !c.kept}
                   <button type="button" onclick={() => open(c.name)}>Replace</button>
                 {/if}
                 <button type="button" onclick={() => remove(c)}>Delete</button>

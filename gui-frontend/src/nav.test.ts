@@ -43,16 +43,6 @@ describe('parseRoute', () => {
       sampling: true,
     });
     expect(parseRoute('#/build/routes/preview')).toEqual({ tab: 'build', page: 'route-preview' });
-    expect(parseRoute('#/build/identities')).toEqual({
-      tab: 'build',
-      page: 'identities',
-      json: false,
-    });
-    expect(parseRoute('#/build/identities/json')).toEqual({
-      tab: 'build',
-      page: 'identities',
-      json: true,
-    });
     expect(parseRoute('#/build/lookups/json')).toEqual({
       tab: 'build',
       page: 'lookups',
@@ -505,11 +495,6 @@ describe('trail', () => {
       'Resources',
       'Grok patterns',
     ]);
-    expect(trail({ tab: 'build', page: 'identities', json: true }).map((c) => c.label)).toEqual([
-      'Build',
-      'Resources',
-      'Connection identities',
-    ]);
     // The page itself never links, same as every other trail's last crumb.
     expect(trail({ tab: 'build', page: 'lookups', json: false }).map((c) => c.hash)).toEqual([
       '#/build/routes',
@@ -574,7 +559,6 @@ describe('section', () => {
   it('gives Resources one rail entry for its three pages, Samples included', () => {
     expect(section({ tab: 'build', page: 'samples' })?.here).toBe('Resources');
     expect(section({ tab: 'build', page: 'lookups', json: false })?.here).toBe('Resources');
-    expect(section({ tab: 'build', page: 'identities', json: false })?.here).toBe('Resources');
   });
 });
 
@@ -595,14 +579,6 @@ describe('editorFor', () => {
 
   it('knows the lookup page is not named after its file', () => {
     expect(editorFor('groups/west/lookup-tables.json')?.hash).toBe('#/build/lookups');
-  });
-
-  it('sends an identities file to the identities page', () => {
-    expect(editorFor('shared/identities.json')).toEqual({
-      scope: 'shared',
-      hash: '#/build/identities',
-    });
-    expect(editorFor('groups/west/identities.json')?.hash).toBe('#/build/identities');
   });
 
   it('opens a pipeline on its own page', () => {

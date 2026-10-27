@@ -67,9 +67,8 @@ LIMIT 5000`;
       <li>
         With <code>tls</code> <code>require</code>, the default, the server needs
         <a href="https://www.postgresql.org/docs/current/ssl-tcp.html">SSL</a> on, with a
-        certificate that names <code>host</code>. For a certificate from a private authority, give
-        the source a
-        <a href="/docs/secrets#identities">connection identity</a> that trusts it.
+        certificate that names <code>host</code>. For a certificate from a private authority, paste
+        it into the source's <a href="/docs/certificates#connectors">authorities</a>.
       </li>
       <li>Put the password in a <a href="/docs/secrets">credential</a>.</li>
       <li>

@@ -26,7 +26,7 @@ export const RAIL_GLYPHS: Record<string, Glyph> = {
   Routes: {
     d: 'M6 29 H26 L40 15 H48 V7 L60 18 L48 29 V21 H43 L32 32 L43 43 H48 V35 L60 46 L48 57 V49 H40 L26 35 H6 Z',
   },
-  // A stack of records: samples, lookup tables, identities.
+  // A stack of records: samples, lookup tables, grok patterns.
   Resources: {
     d: 'M10 14 A22 7 0 0 1 54 14 A22 7 0 0 1 10 14 Z M10 22 A22 7 0 0 0 54 22 V30 A22 7 0 0 1 10 30 Z M10 38 A22 7 0 0 0 54 38 V46 A22 7 0 0 1 10 46 Z',
   },

@@ -456,7 +456,7 @@ fn standalone_leader_runs_its_own_embedded_worker() {
             brokers: brokers.clone(),
             default_topic: input_topic,
             service: smeltr::plan::topology::KafkaService::Kafka,
-            identity: None,
+            tls: None,
             buffer_bytes: 64 * 1024 * 1024,
             props: Default::default(),
             avro: None,
@@ -477,7 +477,7 @@ fn standalone_leader_runs_its_own_embedded_worker() {
             brokers,
             topics: vec![output_topic],
             group_id: unique("standalone-verify"),
-            identity: None,
+            tls: None,
             start: StartPosition::Earliest,
             stop: None,
             deployed_at: 0,
@@ -587,7 +587,7 @@ fn a_restarted_worker_runs_nothing_until_the_leader_answers() {
             brokers: brokers.clone(),
             default_topic: input_topic.clone(),
             service: smeltr::plan::topology::KafkaService::Kafka,
-            identity: None,
+            tls: None,
             buffer_bytes: 64 * 1024 * 1024,
             props: Default::default(),
             avro: None,
@@ -608,7 +608,7 @@ fn a_restarted_worker_runs_nothing_until_the_leader_answers() {
             brokers: brokers.clone(),
             topics: vec![output_topic.clone()],
             group_id: unique("offline-verify"),
-            identity: None,
+            tls: None,
             start: StartPosition::Earliest,
             stop: None,
             deployed_at: 0,
@@ -771,7 +771,7 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
             brokers: brokers.clone(),
             default_topic: input_topic,
             service: smeltr::plan::topology::KafkaService::Kafka,
-            identity: None,
+            tls: None,
             buffer_bytes: 64 * 1024 * 1024,
             props: Default::default(),
             avro: None,
@@ -792,7 +792,7 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
             brokers,
             topics: vec![output_topic],
             group_id: unique("revoke-verify"),
-            identity: None,
+            tls: None,
             start: StartPosition::Earliest,
             stop: None,
             deployed_at: 0,
@@ -1552,6 +1552,121 @@ fn a_receiver_answers_a_request_sent_while_its_runtime_was_being_replaced() {
         let delivered = bodies.lock().unwrap().join("\n");
         if !delivered.contains("before") || !delivered.contains("during") {
             return Err(format!("the destination took {delivered:?}"));
+        }
+        Ok(())
+    })();
+    standalone.finish(outcome);
+}
+
+/// A new version of a certificate the deployment serves restarts it, but only once the commit is checked against
+/// that version: one the receiver could not serve leaves the running deployment running, and says why.
+#[cfg(unix)]
+#[test]
+fn a_certificate_version_the_deployment_would_refuse_leaves_it_running() {
+    let reach = Reach {
+        receivers: Some("127.0.0.1"),
+        ..Reach::LOOPBACK
+    };
+    let standalone = Standalone::start_reaching("renewal-refused", &reach);
+    let outcome = (|| {
+        let (empty, _) = standalone
+            .running_runtime(Duration::from_secs(40))
+            .ok_or("the worker never reported a running runtime")?;
+        let issued = |purpose: rcgen::ExtendedKeyUsagePurpose| {
+            let key = rcgen::KeyPair::generate().unwrap();
+            let mut params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()]).unwrap();
+            params.extended_key_usages = vec![purpose];
+            let cert = params.self_signed(&key).unwrap();
+            serde_json::json!({"certificate": cert.pem(), "privateKey": key.serialize_pem()})
+        };
+        // A write carries its session's CSRF token, which only signing in answers.
+        let mut signed_in = standalone
+            .agent
+            .post(format!("{}/api/auth/login", standalone.base))
+            .header("origin", &standalone.base)
+            .send_json(serde_json::json!({"username": "admin", "password": "a perfectly ordinary passphrase"}))
+            .map_err(|e| e.to_string())?;
+        let cookie = signed_in
+            .headers()
+            .get("set-cookie")
+            .and_then(|c| c.to_str().ok())
+            .and_then(|c| c.split(';').next())
+            .ok_or("no session cookie")?
+            .to_string();
+        let answer: serde_json::Value = signed_in.body_mut().read_json().map_err(|e| e.to_string())?;
+        let csrf = answer["csrf"].as_str().ok_or("no csrf token")?.to_string();
+        let send = |method: &str, path: &str, body: serde_json::Value| -> Result<(), String> {
+            let url = format!("{}{path}", standalone.base);
+            let request = match method {
+                "POST" => standalone.agent.post(&url),
+                _ => standalone.agent.put(&url),
+            };
+            request
+                .header("origin", &standalone.base)
+                .header("cookie", &cookie)
+                .header("x-smeltr-csrf", &csrf)
+                .send_json(body)
+                .map(drop)
+                .map_err(|e| format!("{method} {path}: {e}"))
+        };
+        let mut first = issued(rcgen::ExtendedKeyUsagePurpose::ServerAuth);
+        first["name"] = "rx".into();
+        send("POST", "/api/certificates", first)?;
+
+        let (intake, _) = collector("127.0.0.1");
+        let at = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        standalone.deploy(
+            &[format!(
+                r#"{{"id":"hook","type":"httpReceiver","port":{},"certificate":"rx",
+                     "tokens":{{"t":"SMELTR_WORKER_GROUP"}}}}"#,
+                at.port()
+            )],
+            &intake,
+        )?;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let serving = loop {
+            if let Some(w) = standalone.worker()
+                && w["supervising"]["phase"].as_str() == Some("running")
+                && w["supervising"]["incarnation"].as_u64().is_some_and(|n| n > empty)
+            {
+                break w["supervising"]["incarnation"].as_u64().ok_or("no incarnation")?;
+            }
+            if Instant::now() > deadline {
+                return Err(format!("the receiver never started: {:#?}", standalone.worker()));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        };
+
+        send(
+            "PUT",
+            "/api/certificates/rx",
+            issued(rcgen::ExtendedKeyUsagePurpose::ClientAuth),
+        )?;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let refused = loop {
+            let worker = standalone.worker();
+            if let Some(w) = &worker
+                && w["supervising"]["failure"]
+                    .as_str()
+                    .is_some_and(|f| f.contains("Extended Key Usage"))
+            {
+                break w.clone();
+            }
+            if Instant::now() > deadline {
+                return Err(format!("the worker never said why it kept running: {worker:#?}"));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        };
+        if refused["supervising"]["incarnation"].as_u64() != Some(serving)
+            || refused["supervising"]["phase"].as_str() != Some("running")
+        {
+            return Err(format!("the deployment should still be the one that ran: {refused:#}"));
+        }
+        if std::net::TcpStream::connect(at).is_err() {
+            return Err("the receiver stopped listening".to_string());
         }
         Ok(())
     })();

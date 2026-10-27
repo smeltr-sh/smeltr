@@ -14,6 +14,7 @@ import {
 } from '../moves/admin';
 import { conversationLink, openAgent } from '../moves/agent';
 import { fullChain } from '../moves/certificates';
+import { issuedFor } from '../acme';
 
 test('an enrollment code minted under Enrollment codes brings a worker in', async ({
   admin,
@@ -331,7 +332,7 @@ test('a new value for a secret nothing names asks for no branch and drafts no ch
   expect((await api.get('/api/branches')).branches).toEqual([]);
 });
 
-test('an identity presents a certificate from the list, and replacing it points the identity at the new version', async ({
+test('a receiver names a certificate from the list, and replacing the certificate changes no receiver', async ({
   admin,
   api,
   fleet,
@@ -339,47 +340,86 @@ test('an identity presents a certificate from the list, and replacing it points 
 }) => {
   const pki = await fleet.externalPki();
   await api.post('/api/certificates', {
-    name: 'client-tls',
+    name: 'receiver-tls',
     description: '',
     certificate: fullChain(pki),
     privateKey: pki.privateKey,
   });
-  const identities = async () =>
-    (await api.get('/api/config?branch=work&scope=shared')).config.identities;
+  await api.put('/api/sources?branch=work&scope=shared', [
+    { id: 'firewalls', type: 'syslogReceiver', port: 6514, allowFrom: ['10.0.0.0/8'] },
+  ]);
+  const sources = async () =>
+    (await api.get('/api/config?branch=work&scope=shared')).config.sources;
 
-  await goto(admin, leader, '#/build/identities');
-  await admin.getByRole('button', { name: '+ Add identity' }).click();
-  const dialog = admin.getByRole('dialog', { name: 'new identity' });
-  await dialog.getByRole('textbox', { name: 'id' }).fill('acme');
-  const presents = dialog.getByRole('combobox', { name: /^presents/ });
-  await presents.selectOption('client-tls');
-  await expect(dialog.getByText(/^version 1/)).toBeVisible();
-  await admin.screenshot({ path: test.info().outputPath('identity-presents.png') });
-  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await goto(admin, leader, '#/build/sources');
+  await admin.getByRole('button', { name: /^firewalls\b/ }).click();
+  await admin.getByRole('button', { name: /^Advanced/ }).click();
+  const certificate = admin.getByRole('combobox', { name: /^server certificate/ });
+  await expect(
+    admin.getByText('With none, traffic is received unencrypted.', { exact: false }),
+  ).toBeVisible();
+  await certificate.selectOption('receiver-tls');
+  await expect(admin.getByText(/localhost, 127\.0\.0\.1 · expires/)).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('receiver-certificate.png') });
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect
-    .poll(identities)
-    .toEqual([{ id: 'acme', certificate: { secret: 'client-tls', version: 1 } }]);
+  await expect.poll(sources).toEqual([
+    {
+      id: 'firewalls',
+      type: 'syslogReceiver',
+      port: 6514,
+      allowFrom: ['10.0.0.0/8'],
+      certificate: 'receiver-tls',
+    },
+  ]);
 
+  // A worker presents the newest version, so the receiver names the certificate by name alone.
   await openAdmin(admin, 'Certificates');
-  const row = admin.getByRole('row').filter({ hasText: 'client-tls' });
+  const row = admin.getByRole('row').filter({ hasText: 'receiver-tls' });
   await row.getByRole('button', { name: 'Replace' }).click();
   const replace = admin.getByRole('dialog', { name: /^replace / });
   await replace.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(pki));
   await replace.getByRole('textbox', { name: 'Private key' }).fill(pki.privateKey);
   await replace.getByRole('button', { name: 'Replace', exact: true }).click();
-  await expect(
-    admin.getByText(
-      'Replaced. 1 identity in group shared will present the new version once you deploy the open change.',
-    ),
-  ).toBeVisible();
+  await expect(replace).toBeHidden();
+  const versions = async () =>
+    (await api.get('/api/certificates')).find((c: { name: string }) => c.name === 'receiver-tls')
+      .versions.length;
+  await expect.poll(versions).toBe(2);
   await admin.screenshot({ path: test.info().outputPath('certificate-replaced.png') });
-  expect(await identities()).toEqual([
-    { id: 'acme', certificate: { secret: 'client-tls', version: 2 } },
-  ]);
+  expect((await sources())[0].certificate).toBe('receiver-tls');
 });
 
-test('the leader issues a certificate for the names given, and an identity presents it', async ({
+test('a new version without a purpose the newest has is refused', async ({ admin, api }) => {
+  const server = issuedFor(['events.example.com'], 'server');
+  await api.post('/api/certificates', {
+    name: 'events-tls',
+    description: '',
+    certificate: fullChain(server),
+    privateKey: server.privateKey,
+  });
+
+  await openAdmin(admin, 'Certificates');
+  const row = admin.getByRole('row').filter({ hasText: 'events-tls' });
+  await expect(row.getByRole('cell', { name: 'Server', exact: true })).toBeVisible();
+  await row.getByRole('button', { name: 'Replace' }).click();
+  const replace = admin.getByRole('dialog', { name: /^replace / });
+  const client = issuedFor(['events.example.com'], 'client');
+  await replace.getByRole('textbox', { name: 'Certificate', exact: true }).fill(fullChain(client));
+  await replace.getByRole('textbox', { name: 'Private key' }).fill(client.privateKey);
+  await replace.getByRole('button', { name: 'Replace', exact: true }).click();
+  await expect(
+    replace.getByText('"events-tls" is usable as a server certificate, and this version is not.', {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('certificate-refused.png') });
+  const versions = (await api.get('/api/certificates')).find(
+    (c: { name: string }) => c.name === 'events-tls',
+  ).versions.length;
+  expect(versions).toBe(1);
+});
+
+test('the leader issues a certificate for the names given, and a receiver presents it', async ({
   admin,
   api,
   leader,
@@ -399,9 +439,8 @@ test('the leader issues a certificate for the names given, and an identity prese
   const row = admin.getByRole('row').filter({ hasText: 'receiver-tls' });
   await expect(row.getByText('issued', { exact: true })).toBeVisible();
   await expect(row.getByText('receiver.example.com, 10.0.0.7')).toBeVisible();
+  await expect(row.getByRole('cell', { name: 'Server and client', exact: true })).toBeVisible();
   await expect(row.getByRole('button', { name: 'Replace' })).toHaveCount(0);
-  await row.getByRole('button', { name: 'Update identities' }).click();
-  await expect(admin.getByText('No identity needed updating.', { exact: true })).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('certificate-issued.png') });
   const listed = (await api.get('/api/certificates')) as {
     name: string;
@@ -413,12 +452,14 @@ test('the leader issues a certificate for the names given, and an identity prese
   const leaf = issued!.chain[0];
   expect(Math.floor((leaf.notAfterMillis - leaf.notBeforeMillis) / 86_400_000)).toBe(730);
 
-  await goto(admin, leader, '#/build/identities');
-  await admin.getByRole('button', { name: '+ Add identity' }).click();
-  const identity = admin.getByRole('dialog', { name: 'new identity' });
-  await identity.getByRole('combobox', { name: /^presents/ }).selectOption('receiver-tls');
-  await expect(identity.getByText(/^version 1/)).toBeVisible();
-  await expect(identity.getByText(/receiver\.example\.com, 10\.0\.0\.7/)).toBeVisible();
+  await api.put('/api/sources?branch=work&scope=shared', [
+    { id: 'hook', type: 'httpReceiver', port: 8088, tokens: { ci: 'HOOK_TOKEN' } },
+  ]);
+  await goto(admin, leader, '#/build/sources');
+  await admin.getByRole('button', { name: /^hook\b/ }).click();
+  await admin.getByRole('button', { name: /^Advanced/ }).click();
+  await admin.getByRole('combobox', { name: /^server certificate/ }).selectOption('receiver-tls');
+  await expect(admin.getByText(/receiver\.example\.com, 10\.0\.0\.7/)).toBeVisible();
 });
 
 test('the git remote form takes an http or https URL, and warns about a credential in plain text', async ({

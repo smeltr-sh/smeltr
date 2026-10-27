@@ -4,7 +4,7 @@
 
 use axum::Json;
 
-use smeltr::config_file::{IdentityDto, SourceDto};
+use smeltr::config_file::SourceDto;
 use smeltr::io::sql::{Bind, Query, Statement};
 use smeltr::io::sql_source::{Mode, SqlSourceConfig, Start};
 use smeltr::leader::envelope::Envelope;
@@ -13,8 +13,6 @@ use smeltr::plan::topology::SourceKind;
 #[derive(serde::Deserialize)]
 pub struct StatementRequest {
     source: SourceDto,
-    #[serde(default)]
-    identity: Option<IdentityDto>,
 }
 
 #[derive(Debug, Default, serde::Serialize)]
@@ -53,7 +51,7 @@ pub enum BindDto {
 /// every poll, as Run reads it.
 pub async fn sql_statement(Json(request): Json<StatementRequest>) -> Json<Envelope<Statements>> {
     Json(
-        statements(request.source, request.identity)
+        statements(request.source)
             .map(|Shown { first, later, run }| Statements {
                 first: Some(first),
                 later,
@@ -69,7 +67,7 @@ struct Shown {
     run: StatementDto,
 }
 
-fn statements(source: SourceDto, identity: Option<IdentityDto>) -> Result<Shown, String> {
+fn statements(source: SourceDto) -> Result<Shown, String> {
     let config = match source.kind.sql() {
         Some((kind, sql)) if sql.fields.is_empty() => SqlSourceConfig {
             query: Query::parse(&sql.query, kind.dialect()).map_err(|why| format!("the query: {why}"))?,
@@ -79,7 +77,7 @@ fn statements(source: SourceDto, identity: Option<IdentityDto>) -> Result<Shown,
             batch: sql.batch.0,
             place: "".into(),
         },
-        Some(_) => match smeltr::worker::capture::source_kind_of(source, identity)? {
+        Some(_) => match smeltr::worker::capture::source_kind_of(source)? {
             SourceKind::Sql(sql) => sql.source,
             _ => unreachable!("an SQL source loads as an SQL one"),
         },
@@ -145,11 +143,8 @@ mod tests {
     /// Before its fields are declared a source reads every poll, the whole query, nothing bound. Run reads its first rows.
     #[test]
     fn a_source_with_no_fields_shows_the_whole_query() {
-        let Shown { first, later, run } = statements(
-            source(serde_json::json!({"mode": {"type": "everyPoll"}, "fields": []})),
-            None,
-        )
-        .expect("a statement");
+        let Shown { first, later, run } =
+            statements(source(serde_json::json!({"mode": {"type": "everyPoll"}, "fields": []}))).expect("a statement");
         assert!(first.sql.contains("SELECT id, at FROM t"), "{}", first.sql);
         assert!(!first.sql.contains("ORDER BY"), "{}", first.sql);
         assert!(first.binds.is_empty());
@@ -161,13 +156,10 @@ mod tests {
     /// each bind named by its column.
     #[test]
     fn a_position_mode_shows_its_first_and_later_polls() {
-        let Shown { first, later, run } = statements(
-            source(serde_json::json!({
-                "mode": {"type": "incrementing", "position": ["id"], "start": "from", "startFrom": 10},
-                "fields": [{"name": "id", "type": "i64"}, {"name": "at", "type": "str"}]
-            })),
-            None,
-        )
+        let Shown { first, later, run } = statements(source(serde_json::json!({
+            "mode": {"type": "incrementing", "position": ["id"], "start": "from", "startFrom": 10},
+            "fields": [{"name": "id", "type": "i64"}, {"name": "at", "type": "str"}]
+        })))
         .expect("a statement");
         assert_eq!(first.binds, [BindDto::Start], "{}", first.sql);
         let later = later.expect("a later poll");
@@ -179,10 +171,9 @@ mod tests {
 
     #[test]
     fn a_source_that_will_not_load_says_why() {
-        let refused = statements(
-            source(serde_json::json!({"query": "UPDATE t SET a = 1", "mode": {"type": "everyPoll"}, "fields": []})),
-            None,
-        );
+        let refused = statements(source(
+            serde_json::json!({"query": "UPDATE t SET a = 1", "mode": {"type": "everyPoll"}, "fields": []}),
+        ));
         assert!(refused.is_err());
     }
 }

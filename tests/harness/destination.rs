@@ -429,3 +429,23 @@ pub fn mangle(
     }
     false
 }
+
+/// The TLS a drawn destination sets on itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ClientTls {
+    /// An authority to verify the far end against.
+    Trusts,
+    /// That, and a certificate to present.
+    Presents,
+}
+
+/// Stands for the authority's PEM until a fuzzer's bundle puts its PKI's in.
+pub const AUTHORITIES: &str = "@authorities";
+
+/// Sets TLS on `d`: the authority as [`AUTHORITIES`], and the certificate `client` to present when `tls` says so.
+pub fn set_tls(d: &mut serde_json::Map<String, serde_json::Value>, tls: ClientTls) {
+    d.insert("trustedAuthorities".into(), serde_json::json!(AUTHORITIES));
+    if tls == ClientTls::Presents {
+        d.insert("certificate".into(), serde_json::json!("client"));
+    }
+}

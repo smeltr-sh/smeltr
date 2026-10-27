@@ -24,7 +24,7 @@ fn config(url: &str, body: RequestBody) -> HttpDestinationConfig {
         compression: Compression::None,
         headers: Vec::new(),
         credentials: Vec::new(),
-        identity: None,
+        tls: None,
         in_flight: 1,
         max_request_bytes: 1024 * 1024,
         buffer_bytes: 1024 * 1024,

@@ -64,8 +64,8 @@ service:
   <h2 id="example">Example</h2>
   <p>
     Takes HEC events on port 8088, over TLS with the
-    <a href="/docs/secrets#identities">identity</a> <code>receiver-tls</code>. Senders present the
-    token held in the worker-host variable <code>HEC_TOKEN</code>.
+    <a href="/docs/certificates#connectors">certificate</a> <code>receiver-tls</code>. Senders
+    present the token held in the worker-host variable <code>HEC_TOKEN</code>.
   </p>
   <pre><code>{@html highlight(json(examples.hecReceiverSource))}</code></pre>
   <ProductScreenshot
@@ -73,7 +73,7 @@ service:
     height={2000}
     crop={{ x: 608, y: 638, width: 1664, height: 724 }}
     alt="The HEC receiver form on the Sources page: id otel-logs, port 8088, no tokens yet."
-    caption="The same source in the Sources page's add dialog, before you add its token and identity."
+    caption="The same source in the Sources page's add dialog, before you add its token and certificate."
   />
   <p>A sender posts an event like this:</p>
   <pre><code>{curl}</code></pre>
@@ -163,21 +163,21 @@ service:
   <h2 id="senders">Tokens and certificates</h2>
   <p>
     Anyone a receiver admits can put records into the group's pipelines, so a receiver needs
-    <code>tokens</code>, an <code>identity</code> with authorities, or both. The leader refuses a receiver
-    with neither.
+    <code>tokens</code>, an <code>certificate</code> and <code>trustedAuthorities</code>, or both.
+    The leader refuses a receiver with neither.
   </p>
   <ul>
     <li>
       <strong>Tokens:</strong> a sender presents one as
       <code>Authorization: Splunk &lt;token&gt;</code>, as HEC clients do. The receiver refuses any
-      other request before reading its body. Without an identity, the token crosses the network in
+      other request before reading its body. Without a certificate, the token crosses the network in
       the clear, so use a token alone only behind a balancer that terminates TLS.
     </li>
     <li>
-      <strong>Client certificates:</strong> with an
-      <a href="/docs/secrets#identities">identity</a>, the receiver serves TLS with the identity's
-      certificate and key. If the identity has authorities, every connection, health checks
-      included, must present a certificate that chains to one of them.
+      <strong>Client certificates:</strong> with a
+      <a href="/docs/certificates#connectors">certificate</a>, the receiver serves TLS with it. With
+      <code>trustedAuthorities</code>, every connection, health checks included, must present a
+      certificate that chains to one of them.
     </li>
   </ul>
   <p>With both, a sender presents a certificate and a token.</p>
@@ -276,9 +276,10 @@ service:
   <p>
     <code>GET /services/collector/health</code> answers 200 with code <code>17</code>,
     <code>HEC is healthy</code>, while the receiver takes requests, and 503 with code
-    <code>18</code> while it is full, blocked or stopping. It needs no token. Point a balancer's health
-    check or a readiness probe at it, so a busy worker gets no requests until it can take them. With an
-    identity that has authorities, it needs a client certificate like any other request.
+    <code>18</code> while it is full, blocked or stopping. It needs no token. Point a balancer's
+    health check or a readiness probe at it, so a busy worker gets no requests until it can take
+    them. With
+    <code>trustedAuthorities</code>, it needs a client certificate like any other request.
   </p>
 
   <h2 id="clients">Senders it takes</h2>
@@ -335,9 +336,9 @@ service:
   <dl>
     <dt><strong>The sender cannot connect</strong></dt>
     <dd>
-      Check that the port is open on every worker and that the sender's address reaches them. An
-      identity with authorities refuses a connection without a certificate that chains to one of
-      them.
+      Check that the port is open on every worker and that the sender's address reaches them. A
+      receiver with <code>trustedAuthorities</code> refuses a connection without a certificate that chains
+      to one of them.
     </dd>
     <dt><strong>Every request gets code 2, 3 or 4</strong></dt>
     <dd>

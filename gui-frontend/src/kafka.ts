@@ -3,7 +3,7 @@
 //
 // The Rust side is the authority. `config_file::load` refuses a property
 // smeltr owns, a credential-valued property in the committed map, and a
-// property that answers what an identity already answers; `io::kafka`
+// property that answers what the TLS settings already answer; `io::kafka`
 // refuses a mechanism the build cannot select. Everything here says the same thing earlier, in the
 // field that caused it.
 
@@ -27,8 +27,8 @@ export type StopPosition = { type: 'timestamp'; millis: number };
 export const PROTOCOLS = ['PLAINTEXT', 'SSL', 'SASL_PLAINTEXT', 'SASL_SSL'] as const;
 export type Protocol = (typeof PROTOCOLS)[number];
 
-/** The protocols that negotiate TLS. Under the other two nothing an identity
- * holds is used. Mirrors `config_file::load::TLS_PROTOCOLS`. */
+/** The protocols that negotiate TLS. Under the other two nothing the TLS settings
+ * say is used. Mirrors `config_file::load::TLS_PROTOCOLS`. */
 export const TLS_PROTOCOLS: readonly Protocol[] = ['SSL', 'SASL_SSL'];
 
 /** What to say when the client's credentials would reach brokers off this host without TLS, or nothing. */
@@ -277,9 +277,9 @@ export function reservedReason(key: string): string | undefined {
   return RESERVED[key.trim().toLowerCase()];
 }
 
-/** Properties that answer what an identity answers: what this client
- * presents, and what it trusts. Mirrors `config_file::load::IDENTITY_KAFKA_PROPS`. */
-const IDENTITY_PROPS = new Set([
+/** Properties that answer what the TLS settings answer: what this client
+ * presents, and what it trusts. Mirrors `config_file::load::TLS_KAFKA_PROPS`. */
+const TLS_PROPS = new Set([
   'ssl.certificate.pem',
   'ssl.certificate.location',
   'ssl.key.pem',
@@ -293,10 +293,10 @@ const IDENTITY_PROPS = new Set([
   'ssl.endpoint.identification.algorithm',
 ]);
 
-/** Why this property cannot be set while an identity is named, or nothing. */
-export function identityReason(key: string, hasIdentity: boolean): string | undefined {
-  if (!hasIdentity || !IDENTITY_PROPS.has(key.trim().toLowerCase())) return undefined;
-  return 'the identity above already answers this, and librdkafka would take whichever was set last';
+/** Why this property cannot be set while the TLS settings are, or nothing. */
+export function tlsReason(key: string, hasTls: boolean): string | undefined {
+  if (!hasTls || !TLS_PROPS.has(key.trim().toLowerCase())) return undefined;
+  return 'the TLS settings above already answer this, and librdkafka would take whichever was set last';
 }
 
 /** Why a row of the properties editor cannot be saved, or nothing: the refusals `config_file::load` makes of a
@@ -304,15 +304,15 @@ export function identityReason(key: string, hasIdentity: boolean): string | unde
 export function propertyRefusal(
   key: string,
   credential: boolean,
-  hasIdentity: boolean,
+  hasTls: boolean,
 ): string | undefined {
   const trimmed = key.trim();
   if (trimmed === '') return undefined;
   if (SECTION_PROPS.includes(trimmed.toLowerCase())) return 'the security section above sets this';
   const reserved = reservedReason(trimmed);
   if (reserved !== undefined) return `smeltr owns this: ${reserved}`;
-  const identity = identityReason(trimmed, hasIdentity);
-  if (identity !== undefined) return identity;
+  const tls = tlsReason(trimmed, hasTls);
+  if (tls !== undefined) return tls;
   if (!credential && isCredentialValued(trimmed))
     return 'its value is a credential, and these are committed to the config repository. Name it below instead';
   return undefined;

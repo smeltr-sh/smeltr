@@ -744,6 +744,42 @@ fn certificate_and_key(name: &str) -> (String, String) {
     (params.self_signed(&key).unwrap().pem(), key.serialize_pem())
 }
 
+/// A connector names a certificate from the list, so a save naming one the list does not hold is refused, before a
+/// worker refuses the deploy.
+#[test]
+fn a_connector_names_only_a_certificate_the_list_holds() {
+    let leader = start("certificate-named");
+    let op = operator(&leader);
+    let (status, created) = leader.post_as(
+        &op,
+        "/api/worker-groups?branch=work",
+        serde_json::json!({ "id": "west", "name": "West" }),
+    );
+    assert_eq!(
+        (status, &created["ok"]),
+        (200, &serde_json::Value::Bool(true)),
+        "{created}"
+    );
+    let receiver = serde_json::json!([{"id": "hook", "type": "httpReceiver", "port": 9443, "certificate": "receiver",
+                                              "tokens": {"t": "HOOK_TOKEN"}}]);
+
+    let (_, refused) = leader.put_as(&op, "/api/sources?scope=west&branch=work", receiver.clone());
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(
+        refused["errors"][0]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(r#"source "hook" names the certificate "receiver", which is not in"#)),
+        "{refused}"
+    );
+
+    let (certificate, private_key) = certificate_and_key("receiver.example.com");
+    let upload = serde_json::json!({"name": "receiver", "certificate": certificate, "privateKey": private_key});
+    let (_, listed) = leader.post_as(&op, "/api/certificates", upload);
+    assert_eq!(listed["ok"], true, "{listed}");
+    let (_, saved) = leader.put_as(&op, "/api/sources?scope=west&branch=work", receiver);
+    assert_eq!(saved["ok"], true, "{saved}");
+}
+
 /// A certificate is uploaded to the list, kept out of the secrets, replaced by a new version and deleted. A key that
 /// is not the certificate's is refused before anything is stored.
 #[test]

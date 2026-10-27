@@ -91,7 +91,7 @@ pub fn destination(
             credentials,
             access_point: None,
         }),
-        config.identity.as_deref(),
+        config.tls.as_ref(),
         config.stall_after,
         secrets,
         &runtime,
@@ -164,14 +164,13 @@ fn catalog(
                 access.region = Some(region);
             }
             Auth::Signed(Arc::new(AwsSigner {
-                service: objects::Aws::new(&access, config.identity.as_deref(), secrets, runtime)?
-                    .service(signing_name),
+                service: objects::Aws::new(&access, config.tls.as_ref(), secrets, runtime)?.service(signing_name),
                 runtime: runtime.clone(),
                 within: config.stall_after / 2,
             }))
         }
     };
-    let agent = crate::io::http::agent_config(config.identity.as_deref(), secrets)?.new_agent();
+    let agent = crate::io::http::agent_config(config.tls.as_ref(), secrets)?.new_agent();
     Ok(Catalog::new(
         config.catalog.clone(),
         config.warehouse.clone(),
@@ -1245,7 +1244,7 @@ mod tests {
             partition_by: partition_by.iter().map(|t| t.to_string()).collect(),
             storage: None,
             compression: Compression::Zstd,
-            identity: None,
+            tls: None,
             in_flight: 2,
             max_object_bytes: 1 << 20,
             buffer_bytes: 1 << 24,

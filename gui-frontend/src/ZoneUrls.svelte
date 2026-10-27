@@ -3,7 +3,8 @@
   worker whose zone has no row, or that has no zone, sends to `url`.
 -->
 <script module lang="ts">
-  import { identityRefusal, urlWarning } from './http';
+  import { tlsRefusal, urlWarning } from './http';
+  import type { TlsDto } from './api';
   import { shadowed } from './KeyedRows.svelte';
 
   /** One zone as it is edited: its name and its URL. */
@@ -11,17 +12,13 @@
 
   /** Why `rows[i]` cannot be saved, or nothing. The save refuses a zone with no URL and a URL with no zone; a row
    * with neither is not written. */
-  export function zoneRefusal(
-    rows: ZoneRow[],
-    i: number,
-    identity: string | undefined,
-  ): string | undefined {
+  export function zoneRefusal(rows: ZoneRow[], i: number, tls: TlsDto): string | undefined {
     const { key, url } = rows[i];
     if (key.trim() === '' && url.trim() === '') return undefined;
     if (key.trim() === '') return 'Name the zone this URL is for.';
     if (url.trim() === '') return 'Give this zone a URL.';
     if (shadowed(rows, i)) return 'This zone is listed twice; only the first row is saved.';
-    return identityRefusal(url, identity);
+    return tlsRefusal(url, tls);
   }
 
   /** The `zoneUrls` map `rows` write, or `undefined` when none is named: an empty map is omitted, as the DTO
@@ -46,7 +43,7 @@
     placeholder,
     help,
   }: {
-    value: { zoneUrls?: Record<string, string>; identity?: string };
+    value: { zoneUrls?: Record<string, string> } & TlsDto;
     /** Whether a credential goes with a request besides one in the URL, as `UrlField` takes it. */
     sends: boolean;
     /** An address in a zone, as the form's `url` placeholder is one. */
@@ -74,7 +71,7 @@
   add="+ zone"
   blank={() => ({ key: '', url: '' })}
   {help}
-  refusal={(i) => zoneRefusal(rows, i, value.identity)}
+  refusal={(i) => zoneRefusal(rows, i, value)}
   onchange={sync}
 >
   {#snippet cells(row)}

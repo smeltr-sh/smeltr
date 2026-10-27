@@ -8,7 +8,6 @@ const SECTIONS: Record<string, string> = {
   'sources.json': 'Source',
   'destinations.json': 'Destination',
   'routes.json': 'Route',
-  'identities.json': 'Identity',
   'lookup-tables.json': 'Lookup table',
   'grok-patterns.json': 'Grok pattern',
 };

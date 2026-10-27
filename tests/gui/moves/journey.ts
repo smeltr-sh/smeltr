@@ -691,7 +691,7 @@ const fillAvro: Move = {
         .last()
         .selectOption('str');
     }
-    await form.getByRole('button', { name: /Advanced/ }).click();
+    await form.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
     await form.getByRole('textbox', { name: /^endpoint/ }).fill(bucket.url);
     await form.getByRole('textbox', { name: /^region/ }).fill('us-east-1');
 

@@ -9,7 +9,6 @@
 //! routes.json            [RouteDto, ...]         (optional, default [])
 //! lookup-tables.json     [LookupTableDto, ...]   (optional, default [])
 //! grok-patterns.json     [GrokPatternDto, ...]   (optional, default [])
-//! identities.json        [IdentityDto, ...]      (optional, default [])
 //! pipelines/<slug>.json  one PipelineDto per file; the filename is `slugify` of the pipeline's own `id`
 //! lookups/<name>         a file a lookup table names, CSV or MMDB
 //! ```
@@ -27,9 +26,7 @@ use std::path::Path;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::dto::{
-    DestinationDto, FileConfig, GrokPatternDto, IdentityDto, LookupTableDto, PipelineDto, RouteDto, SourceDto,
-};
+use super::dto::{DestinationDto, FileConfig, GrokPatternDto, LookupTableDto, PipelineDto, RouteDto, SourceDto};
 use super::load::{BundleAt, LoadError};
 use super::{CURRENT_VERSION, LoadedSystem};
 
@@ -231,7 +228,6 @@ struct Parts {
     routes: Vec<RouteDto>,
     lookup_tables: Vec<LookupTableDto>,
     grok_patterns: Vec<GrokPatternDto>,
-    identities: Vec<IdentityDto>,
     pipelines: Vec<PipelineDto>,
 }
 
@@ -287,7 +283,6 @@ fn read_parts(files: &mut dyn FileSet, at: &str) -> Result<Parts, BundleError> {
         routes: read_optional_array(files, "routes.json").map_err(|e| at_path(e, at))?,
         lookup_tables: read_optional_array(files, "lookup-tables.json").map_err(|e| at_path(e, at))?,
         grok_patterns: read_optional_array(files, GROK_PATTERNS_FILE).map_err(|e| at_path(e, at))?,
-        identities: read_optional_array(files, "identities.json").map_err(|e| at_path(e, at))?,
         pipelines,
     })
 }
@@ -328,7 +323,6 @@ fn assemble_at(
         routes: parts.routes,
         lookup_tables: parts.lookup_tables,
         grok_patterns: parts.grok_patterns,
-        identities: parts.identities,
     };
     super::validate_at(file, declared_at).map_err(BundleError::Load)
 }
@@ -354,13 +348,12 @@ pub const GROUPS_DIR: &str = "groups";
 pub const SHARED_DIR: &str = "shared";
 
 /// A bundle's section files: each a JSON array of objects keyed by a unique `id`.
-pub const SECTION_FILES: [&str; 6] = [
+pub const SECTION_FILES: [&str; 5] = [
     "sources.json",
     "destinations.json",
     "routes.json",
     LOOKUP_TABLES_FILE,
     GROK_PATTERNS_FILE,
-    "identities.json",
 ];
 pub const LOOKUP_TABLES_FILE: &str = "lookup-tables.json";
 pub const GROK_PATTERNS_FILE: &str = "grok-patterns.json";
@@ -539,7 +532,6 @@ fn merge(shared: Parts, group: Parts, group_at: &str) -> Result<Parts, BundleErr
             |p| &p.id,
             group_at,
         ),
-        check("identity", &shared.identities, &group.identities, |i| &i.id, group_at),
         check("pipeline", &shared.pipelines, &group.pipelines, |p| &p.id, group_at),
     ];
     if let Some(e) = checks.into_iter().flatten().next() {
@@ -557,7 +549,6 @@ fn merge(shared: Parts, group: Parts, group_at: &str) -> Result<Parts, BundleErr
         routes: cat(shared.routes, group.routes),
         lookup_tables: cat(shared.lookup_tables, group.lookup_tables),
         grok_patterns: cat(shared.grok_patterns, group.grok_patterns),
-        identities: cat(shared.identities, group.identities),
         pipelines: cat(shared.pipelines, group.pipelines),
     })
 }
@@ -570,7 +561,6 @@ fn kind_file(kind: &str) -> &'static str {
         "route" => "routes.json",
         "lookup table" => "lookup-tables.json",
         "grok pattern" => GROK_PATTERNS_FILE,
-        "identity" => "identities.json",
         _ => "pipelines/",
     }
 }
@@ -643,7 +633,6 @@ pub fn read_raw_from(files: &mut dyn FileSet) -> RawBundle {
     let routes = read_array_lenient(files, "routes.json", &mut unreadable);
     let lookup_tables = read_array_lenient(files, "lookup-tables.json", &mut unreadable);
     let grok_patterns = read_array_lenient(files, GROK_PATTERNS_FILE, &mut unreadable);
-    let identities = read_array_lenient(files, "identities.json", &mut unreadable);
 
     let mut pipelines = Vec::new();
     match files.pipeline_paths() {
@@ -674,7 +663,6 @@ pub fn read_raw_from(files: &mut dyn FileSet) -> RawBundle {
             routes,
             lookup_tables,
             grok_patterns,
-            identities,
         },
         unreadable,
     }
@@ -750,7 +738,6 @@ pub fn bundle_files(file: &FileConfig) -> Result<Vec<(String, Vec<u8>)>, BundleE
         ("routes.json".to_string(), to_json_bytes(&file.routes)),
         ("lookup-tables.json".to_string(), to_json_bytes(&file.lookup_tables)),
         (GROK_PATTERNS_FILE.to_string(), to_json_bytes(&file.grok_patterns)),
-        ("identities.json".to_string(), to_json_bytes(&file.identities)),
     ];
     for (slug, p) in slugged_pipelines(file)? {
         files.push((format!("pipelines/{slug}.json"), to_json_bytes(p)));
@@ -1254,7 +1241,6 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
         };
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("system.json"), manifest_bytes(&file)).unwrap();
@@ -1278,7 +1264,6 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
         };
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("system.json"), manifest_bytes(&file)).unwrap();

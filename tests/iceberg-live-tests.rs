@@ -132,7 +132,7 @@ fn live_rows_are_committed_as_snapshots_of_a_table_it_creates() {
             role: None,
         }),
         compression: Compression::Zstd,
-        identity: None,
+        tls: None,
         in_flight: 2,
         max_object_bytes: 1024 * 1024,
         buffer_bytes: 4 * 1024 * 1024,

@@ -41,8 +41,8 @@ token = 0d2a5f6c-4b1e-4c3a-9f7d-2e8b6a1c5d40`;
   <h2 id="example">Example</h2>
   <p>
     Takes forwarders on port 9997, over TLS with the
-    <a href="/docs/secrets#identities">identity</a> <code>s2s-tls</code>. Forwarders present the
-    token held in the worker-host variable <code>S2S_TOKEN</code>. An event of the sourcetype
+    <a href="/docs/certificates#connectors">certificate</a> <code>s2s-tls</code>. Forwarders present
+    the token held in the worker-host variable <code>S2S_TOKEN</code>. An event of the sourcetype
     <code>java:app</code> starts at a line that starts with a date and holds the lines after it. The
     sourcetype <code>access_combined</code> breaks at every line end, as every sourcetype not named does,
     so its row is there only to show the default.
@@ -52,7 +52,7 @@ token = 0d2a5f6c-4b1e-4c3a-9f7d-2e8b6a1c5d40`;
     height={2000}
     crop={{ x: 608, y: 508, width: 1664, height: 988 }}
     alt="The S2S receiver form on the Sources page: id forwarders, port 9997, no tokens yet, the sourcetype java:app with its date line breaker, and access_combined with ([\r\n]+)."
-    caption="The same source in the Sources page's add dialog, with its sourcetypes, before you add its token and identity."
+    caption="The same source in the Sources page's add dialog, with its sourcetypes, before you add its token and certificate."
   />
   <p>A forwarder sends to it with this outputs.conf:</p>
   <pre><code>{outputs}</code></pre>
@@ -151,20 +151,20 @@ token = 0d2a5f6c-4b1e-4c3a-9f7d-2e8b6a1c5d40`;
   <h2 id="senders">Tokens and certificates</h2>
   <p>
     Anyone a receiver admits can put records into the group's pipelines, so a receiver needs
-    <code>tokens</code>, an <code>identity</code> with authorities, or both. The leader refuses a receiver
-    with neither.
+    <code>tokens</code>, an <code>certificate</code> and <code>trustedAuthorities</code>, or both.
+    The leader refuses a receiver with neither.
   </p>
   <ul>
     <li>
       <strong>Tokens:</strong> a forwarder presents one as its outputs.conf <code>token</code>. The
       receiver closes the connection of a forwarder with no token or a wrong one before admitting
-      any of its data. Without an identity, the token crosses the network in the clear.
+      any of its data. Without a certificate, the token crosses the network in the clear.
     </li>
     <li>
-      <strong>Client certificates:</strong> with an
-      <a href="/docs/secrets#identities">identity</a>, the receiver serves TLS with the identity's
-      certificate and key. If the identity has authorities, every forwarder must present a
-      certificate that chains to one of them.
+      <strong>Client certificates:</strong> with a
+      <a href="/docs/certificates#connectors">certificate</a>, the receiver serves TLS with it. With
+      <code>trustedAuthorities</code>, every forwarder must present a certificate that chains to one
+      of them.
     </li>
   </ul>
   <p>With both, a forwarder presents a certificate and a token.</p>
@@ -229,9 +229,9 @@ token = 0d2a5f6c-4b1e-4c3a-9f7d-2e8b6a1c5d40`;
   <dl>
     <dt><strong>The forwarder cannot connect</strong></dt>
     <dd>
-      Check that the port is open on every worker and that the forwarder's addresses reach them. An
-      identity with authorities refuses a connection without a certificate that chains to one of
-      them.
+      Check that the port is open on every worker and that the forwarder's addresses reach them. A
+      receiver with <code>trustedAuthorities</code> refuses a connection without a certificate that chains
+      to one of them.
     </dd>
     <dt><strong>The receiver closes the forwarder's connections at once</strong></dt>
     <dd>

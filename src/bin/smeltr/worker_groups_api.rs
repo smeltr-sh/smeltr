@@ -271,7 +271,6 @@ fn new_manifest(name: Option<String>) -> FileConfig {
         routes: vec![],
         lookup_tables: vec![],
         grok_patterns: vec![],
-        identities: vec![],
         on_exception: None,
         name,
     }
@@ -790,7 +789,6 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
             on_exception: Some(config_file::OnExceptionDto {
                 categories: [("math".to_string(), config_file::AnswerDto::Drop)].into(),
                 ..Default::default()
@@ -848,7 +846,6 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
             on_exception: None,
             name: Some(name.to_string()),
         };
@@ -988,7 +985,6 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
             on_exception: None,
             name: Some("East, Renamed".to_string()),
         };

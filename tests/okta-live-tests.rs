@@ -48,7 +48,7 @@ fn okta(org: &str, sign_in: OktaSignIn, secrets: &HeldSecrets) -> Box<dyn Source
             sign_in,
             start: ListStart::Everything,
         }),
-        identity: None,
+        tls: None,
         poll_interval: Duration::from_secs(3600),
     });
     let registry = std::sync::Arc::new(smeltr::metrics::Metrics::new());

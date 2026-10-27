@@ -35,7 +35,6 @@
   import { mintSampleId } from './ids';
   import { canEdit } from './access';
   import {
-    sharedConfig,
     getConfig,
     configAt,
     currentBranch,
@@ -47,7 +46,6 @@
     MAX_SAMPLE_RECORDS,
     type CaptureStatus,
     type DestinationDto,
-    type IdentityDto,
     type SourceDto,
     type WorkerGroupDto,
     type FileConfigDto,
@@ -71,7 +69,7 @@
     target?: { kind: CaptureAt; id: string; scope: string; group: string; filter?: string };
     /** A source as a form edits it, saved or not, in place of a target picked from the configuration: the
      * only one the form offers. */
-    editing?: { source: SourceDto; identity?: IdentityDto; maxMatches: number };
+    editing?: { source: SourceDto; maxMatches: number };
     /** What a finished capture is for, in place of saving it as a sample: `take` is handed it and answers why it
      * could not use it, or nothing once it has, which closes the flow. */
     use?: { title: string; label: string; take: (status: CaptureStatus) => string | undefined };
@@ -96,9 +94,6 @@
 
   let sources: SourceDto[] = $state(edited ? [edited.source] : []);
   let destinations: DestinationDto[] = $state([]);
-  let identities: IdentityDto[] = $state(edited?.identity ? [edited.identity] : []);
-  /** What `shared/` declares: a source in a group scope may legally name one of these. Never saved from here. */
-  let sharedIdentities: IdentityDto[] = $state([]);
   /** The picked target, as `targetKey` writes it. */
   let selected = $state(
     edited ? targetKey('source', edited.source.id) : given ? targetKey(given.kind, given.id) : '',
@@ -141,8 +136,6 @@
         // A source's sample is saved in its own scope, so only one its editor may save to is offered.
         sources = scope !== SHARED_SCOPE || canEdit(SHARED_SCOPE) ? config.config.sources : [];
         destinations = config.config.destinations;
-        identities = config.config.identities;
-        sharedIdentities = (await sharedConfig())?.identities ?? [];
         const keys = [
           ...sources.map((s) => targetKey('source', s.id)),
           ...destinations.map((d) => targetKey('destination', d.id)),
@@ -186,7 +179,6 @@
           destinations: [],
           routes: [],
           pipelines: [],
-          identities: [...identities, ...sharedIdentities],
         },
       ),
       at,
@@ -239,16 +231,6 @@
   );
   /** What the filter reads: a source's record, or a destination's row. */
   let at: CaptureAt = $derived(captureDestination ? 'destination' : 'source');
-  // Sent with the source rather than named: a worker follows main, and this
-  // branch is where the identity was written.
-  let identity = $derived(
-    captureSource && 'identity' in captureSource && captureSource.identity !== undefined
-      ? (identities.find((i) => i.id === captureSource.identity) ??
-          sharedIdentities.find((i) => i.id === captureSource.identity) ??
-          null)
-      : null,
-  );
-
   /** Only a stream has a position to start from. */
   let streams = $derived(captureSource?.type === 'kafka' || captureSource?.type === 'eventHubs');
 
@@ -256,7 +238,7 @@
     captureDestination
       ? { destination: captureDestination.id }
       : captureSource
-        ? { source: captureSource, identity: identity ?? undefined }
+        ? { source: captureSource }
         : null,
   );
   let canStart = $derived(!!captureTarget && !!group);

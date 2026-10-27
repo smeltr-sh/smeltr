@@ -342,7 +342,7 @@ export function attention(
     else if (p === 'stale') out.push({ ...own, text: 'Stale', rank: 3 });
   }
   const drawn = new Set(groups);
-  // One subject can hold one condition twice, as an identity does for its certificate and its CA.
+  // One subject can hold one condition twice, as a connector does for its certificate and its authorities.
   // A worker holds its logged warnings once per site, and each site is its own row.
   const listed = new Set<string>();
   for (const w of groupWarnings) {

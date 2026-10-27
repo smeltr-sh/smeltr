@@ -391,7 +391,6 @@ pub fn merged_file(
     file.routes = cat(&shared.file.routes, &group.file.routes);
     file.lookup_tables = cat(&shared.file.lookup_tables, &group.file.lookup_tables);
     file.grok_patterns = cat(&shared.file.grok_patterns, &group.file.grok_patterns);
-    file.identities = cat(&shared.file.identities, &group.file.identities);
     file.pipelines = cat(&shared.file.pipelines, &group.file.pipelines);
     file
 }
@@ -673,7 +672,7 @@ mod tests {
                 brokers: "kafka:9092".to_string(),
                 topics: vec![topic.to_string()],
                 group_id: format!("g-{id}"),
-                identity: None,
+                tls: Default::default(),
                 start: Default::default(),
                 stop: None,
                 fetch_bytes: Default::default(),
@@ -691,7 +690,7 @@ mod tests {
                 schema_registry: None,
                 brokers: "kafka:9092".to_string(),
                 default_topic: "out".to_string(),
-                identity: None,
+                tls: Default::default(),
                 format: Default::default(),
                 field: None,
                 compression: Default::default(),
@@ -755,7 +754,6 @@ mod tests {
             routes,
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
             on_exception: None,
             name: None,
         }
