@@ -177,7 +177,8 @@ pub trait Protocol: Clone + Send + 'static {
 
     /// The order a batch's items must reach the service in, when it has one. `Some` holds a batch's items until all
     /// are admitted and sorts each group by it before cutting requests, so no request carries an item that sorts
-    /// before one already sent. `None` posts a request as soon as it fills.
+    /// before one already sent. A pool sends a batch's requests side by side, so a destination whose protocol has an
+    /// order has none. `None` cuts a request as soon as it fills.
     fn order(&self) -> Option<Order<Self::Item>> {
         None
     }
@@ -312,31 +313,24 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
         self
     }
 
-    /// Sorts `group` by `order`, then posts it on this thread in requests within `max_request_bytes`, all but the
-    /// last, which stays in `group`.
-    fn post_ordered(
-        &mut self,
-        rows: &[OwnedRecord],
-        group: &mut Group<P::Item>,
-        order: Order<P::Item>,
-    ) -> Result<Vec<Rejection>, IoError> {
+    /// Sorts `group` by `order`, then cuts it into requests within `max_request_bytes`: all but the last go to
+    /// `full`, the last stays in `group`.
+    fn cut_ordered(&self, group: &mut Group<P::Item>, order: Order<P::Item>, full: &mut Vec<Group<P::Item>>) {
         let mut sorted: Vec<(P::Item, usize)> = std::mem::take(&mut group.pending)
             .into_iter()
             .zip(std::mem::take(&mut group.sent_index))
             .collect();
         sorted.sort_by(|a, b| order(&a.0, &b.0));
-        let mut refused = Vec::new();
         group.bytes = 0;
         for (item, index) in sorted {
             let size = self.protocol.size(&item);
             if self.overflows(group, size) {
-                refused.extend(self.post(rows, group)?);
+                full.push(group.cut());
             }
             group.bytes += size;
             group.pending.push(item);
             group.sent_index.push(index);
         }
-        Ok(refused)
     }
 
     /// Whether `group` must go before an item of `size` joins it: a request stays within `max_request_bytes`, and an
@@ -524,9 +518,17 @@ struct Group<I> {
     bytes: usize,
 }
 
-/// One batch's worth of items, owned, on its way to a pool thread.
-struct HttpJob<I> {
-    groups: Vec<Group<I>>,
+impl<I> Group<I> {
+    /// What this group holds, as a request of its own; the group is left empty, to fill again.
+    fn cut(&mut self) -> Group<I> {
+        Group {
+            route: self.route.clone(),
+            part: self.part,
+            pending: std::mem::take(&mut self.pending),
+            sent_index: std::mem::take(&mut self.sent_index),
+            bytes: std::mem::take(&mut self.bytes),
+        }
+    }
 }
 
 /// A [`pipelined::Sender`] doing what the synchronous path does, on its own thread with its own transport.
@@ -538,34 +540,29 @@ struct HttpSender<P: Protocol, T: Transport> {
 }
 
 impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
-    type Job = HttpJob<P::Item>;
+    /// One request.
+    type Job = Group<P::Item>;
 
-    fn send_one(&mut self, job: HttpJob<P::Item>) -> Result<pipelined::Delivered, IoError> {
+    fn send_one(&mut self, mut group: Group<P::Item>) -> Result<pipelined::Delivered, IoError> {
         let mut throttled = false;
         let mut waited = Duration::ZERO;
-        let mut rejections = Vec::new();
-        // Each route bounded on its own, as `post` bounds it: a route that lands is progress, so many healthy ones in
-        // a row never add up to a stall.
-        let delivered = job.groups.into_iter().try_for_each(|mut group| {
-            rejections.extend(deliver(
-                &self.protocol,
-                &mut self.transport,
-                &mut group,
-                self.stall_after,
-                Instant::now() + self.stall_after,
-                &mut throttled,
-                &mut waited,
-            )?);
-            Ok(())
-        });
+        let delivered = deliver(
+            &self.protocol,
+            &mut self.transport,
+            &mut group,
+            self.stall_after,
+            Instant::now() + self.stall_after,
+            &mut throttled,
+            &mut waited,
+        );
         Throttle::note(&self.throttle, waited);
-        delivered.map(|()| pipelined::Delivered { rejections, throttled })
+        delivered.map(|rejections| pipelined::Delivered { rejections, throttled })
     }
 }
 
 impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
-    /// Rows are grouped by route. A group that would pass `max_request_bytes` is posted in rounds on this thread, all
-    /// but the last; the last of every group goes to the pool together, or is posted here too when there is none.
+    /// Rows are grouped by route and cut into requests within `max_request_bytes`. Every request goes to the pool, each
+    /// to a sender of its own, and the batch completes when the last is answered; without a pool, each is posted here.
     fn deliver(
         &mut self,
         batch: BatchId,
@@ -574,6 +571,7 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
         let mut refused = Vec::new();
         let order = self.protocol.order();
         let mut groups: Vec<Group<P::Item>> = Vec::new();
+        let mut full: Vec<Group<P::Item>> = Vec::new();
         // Each route's groups, by part, so neither a batch spanning many routes nor a part per row is searched once
         // per row.
         let mut by_route: HashMap<String, HashMap<usize, usize>> = HashMap::new();
@@ -611,7 +609,7 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
             };
             let size = self.protocol.size(&item);
             if order.is_none() && self.overflows(&groups[at], size) {
-                refused.extend(self.post(&rows, &mut groups[at])?);
+                full.push(groups[at].cut());
             }
             let group = &mut groups[at];
             group.bytes += size;
@@ -620,17 +618,17 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
         }
         if let Some(order) = order {
             for group in &mut groups {
-                refused.extend(self.post_ordered(&rows, group, order)?);
+                self.cut_ordered(group, order, &mut full);
             }
         }
-        groups.retain(|g| !g.pending.is_empty());
+        full.extend(groups.into_iter().filter(|g| !g.pending.is_empty()));
         let Some(pool) = &mut self.pool else {
-            for group in &mut groups {
+            for group in &mut full {
                 refused.extend(self.post(&rows, group)?);
             }
             return Ok((Dispatched::Complete, refused));
         };
-        pool.submit(batch, HttpJob { groups })?;
+        pool.submit(batch, full)?;
         Ok((Dispatched::InFlight, refused))
     }
 

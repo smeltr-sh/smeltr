@@ -5,13 +5,14 @@
 //! so throughput stays at `1/round-trip`. Overlapping round trips is what moves it.
 //!
 //! The pool sets no limit of its own. What is in flight is bounded by the egress queue in front of it, which holds
-//! the pacing target (`egress::pacing`) until each batch is acknowledged; the pool sends every batch it is handed,
-//! spawning a sender when every one it has is busy, up to the sender count. The configured figure is how many it
+//! the pacing target (`egress::pacing`) until each batch is acknowledged; the pool sends every request it is handed,
+//! a batch's side by side, and reports the batch once its last request is answered. It spawns a sender when every one
+//! it has is busy, up to the sender count. The configured figure is how many it
 //! starts with. A destination that asks to be sent less (429) is obeyed by the sender that was asked, which waits out
 //! the backoff, and its completion says it was throttled, so the model caps what it holds below what was in flight
 //! then. Not for Kafka: librdkafka pipelines on its own threads.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -104,6 +105,8 @@ pub struct Pool<S: Sender> {
     started: usize,
     /// Requests handed to a sender and not yet answered: never more than the senders spawned.
     outstanding: usize,
+    /// Each batch with a request not yet answered: what its answered requests said so far.
+    batches: HashMap<BatchId, Answers>,
     /// Completions collected while `submit` was waiting for room, held for the next `poll`.
     stashed: Vec<BatchCompletion>,
     /// A failure `poll` took off the channel beside completions it returned first, held for the next call.
@@ -134,6 +137,7 @@ impl<S: Sender> Pool<S> {
             lend: None,
             started: 0,
             outstanding: 0,
+            batches: HashMap::new(),
             stashed: Vec::new(),
             failed: None,
         };
@@ -185,42 +189,77 @@ impl<S: Sender> Pool<S> {
     /// Take one completion off the channel, blocking.
     fn recv_one(&mut self) -> Result<(), IoError> {
         match self.done.recv() {
-            Ok((batch, Ok(d))) => {
-                self.outstanding -= 1;
-                self.stashed.push(BatchCompletion {
-                    batch,
-                    rejections: d.rejections,
-                    throttled: d.throttled,
-                });
-                Ok(())
-            }
-            Ok((_, Err(e))) => {
-                self.outstanding -= 1;
-                Err(e)
+            Ok((batch, outcome)) => {
+                self.answered(batch, outcome);
+                self.failed.take().map_or(Ok(()), Err)
             }
             Err(_) => Err(IoError::transient("every destination sender thread has stopped")),
         }
     }
 
-    /// Hand `job` over as `batch`. Blocks while every sender is busy and no more may be spawned.
-    pub fn submit(&mut self, batch: BatchId, job: S::Job) -> Result<(), IoError> {
+    /// Hand `jobs` over as `batch`, each to a sender of its own. The batch completes once, when the last of them is
+    /// answered: with every refusal they report, or with the first failure. Blocks while every sender is busy and no
+    /// more may be spawned.
+    pub fn submit(&mut self, batch: BatchId, jobs: Vec<S::Job>) -> Result<(), IoError> {
         if let Some(e) = self.failed.take() {
             return Err(e);
         }
-        if self.outstanding >= self.handles.len() {
-            // A sender whose answer has arrived is free: spawn only when none is.
-            self.take_arrived();
+        if jobs.is_empty() {
+            self.stashed.push(BatchCompletion {
+                batch,
+                rejections: Vec::new(),
+                throttled: false,
+            });
+            return Ok(());
         }
-        if self.outstanding >= self.handles.len() {
-            self.spawn_one();
+        self.batches.entry(batch).or_default().open += jobs.len();
+        for job in jobs {
+            if self.outstanding >= self.handles.len() {
+                // A sender whose answer has arrived is free: spawn only when none is.
+                self.take_arrived();
+            }
+            if self.outstanding >= self.handles.len() {
+                self.spawn_one();
+            }
+            while self.outstanding >= self.handles.len() {
+                self.recv_one()?;
+            }
+            // Senders that have all stopped are found out when their completions channel closes.
+            self.jobs.push((batch, job));
+            self.outstanding += 1;
         }
-        while self.outstanding >= self.handles.len() {
-            self.recv_one()?;
-        }
-        // Senders that have all stopped are found out when their completions channel closes.
-        self.jobs.push((batch, job));
-        self.outstanding += 1;
         Ok(())
+    }
+
+    /// One request of `batch` answered. Its batch completes, into `stashed` or `failed`, once none is left open.
+    fn answered(&mut self, batch: BatchId, outcome: Result<Delivered, IoError>) {
+        self.outstanding -= 1;
+        let answers = self.batches.entry(batch).or_default();
+        answers.open = answers.open.saturating_sub(1);
+        match outcome {
+            Ok(d) => {
+                answers.rejections.extend(d.rejections);
+                answers.throttled |= d.throttled;
+            }
+            Err(e) => {
+                answers.failed.get_or_insert(e);
+            }
+        }
+        if answers.open > 0 {
+            return;
+        }
+        let answers = self.batches.remove(&batch).unwrap_or_default();
+        match answers.failed {
+            // Keep reading: a batch that landed behind the failure is reported now too.
+            Some(e) => {
+                self.failed.get_or_insert(e);
+            }
+            None => self.stashed.push(BatchCompletion {
+                batch,
+                rejections: answers.rejections,
+                throttled: answers.throttled,
+            }),
+        }
     }
 
     /// Completions that have arrived, without waiting. A failure is returned as `Err` once the completions that arrived
@@ -251,19 +290,7 @@ impl<S: Sender> Pool<S> {
     fn take_arrived(&mut self) -> bool {
         loop {
             match self.done.try_recv() {
-                Ok((batch, Ok(d))) => {
-                    self.outstanding -= 1;
-                    self.stashed.push(BatchCompletion {
-                        batch,
-                        rejections: d.rejections,
-                        throttled: d.throttled,
-                    });
-                }
-                Ok((_, Err(e))) => {
-                    self.outstanding -= 1;
-                    // Keep reading: a batch that landed behind the failure is reported now too.
-                    self.failed.get_or_insert(e);
-                }
+                Ok((batch, outcome)) => self.answered(batch, outcome),
                 Err(TryRecvError::Empty) => return true,
                 Err(TryRecvError::Disconnected) => return false,
             }
@@ -272,30 +299,15 @@ impl<S: Sender> Pool<S> {
 
     /// Wait for everything outstanding: the barrier, for `Destination::flush`.
     pub fn drain(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
-        let mut out = std::mem::take(&mut self.stashed);
-        let mut failure = self.failed.take();
         while self.outstanding > 0 {
             match self.done.recv() {
-                Ok((batch, Ok(d))) => {
-                    self.outstanding -= 1;
-                    out.push(BatchCompletion {
-                        batch,
-                        rejections: d.rejections,
-                        throttled: d.throttled,
-                    });
-                }
-                Ok((_, Err(e))) => {
-                    self.outstanding -= 1;
-                    // Keep draining: results left in the channel would be reported against the next batch.
-                    failure.get_or_insert(e);
-                }
-                Err(_) => {
-                    self.stashed = out;
-                    return Err(IoError::transient("every destination sender thread has stopped"));
-                }
+                // Keep draining past a failure: results left in the channel would be reported against the next batch.
+                Ok((batch, outcome)) => self.answered(batch, outcome),
+                Err(_) => return Err(IoError::transient("every destination sender thread has stopped")),
             }
         }
-        match failure {
+        let out = std::mem::take(&mut self.stashed);
+        match self.failed.take() {
             // Kept for the next `poll`.
             Some(e) => {
                 self.stashed = out;
@@ -308,6 +320,15 @@ impl<S: Sender> Pool<S> {
     pub fn outstanding(&self) -> usize {
         self.outstanding
     }
+}
+
+/// What the answered requests of one batch said, while any of its requests is open.
+#[derive(Default)]
+struct Answers {
+    open: usize,
+    rejections: Vec<Rejection>,
+    throttled: bool,
+    failed: Option<IoError>,
 }
 
 impl<S: Sender> Drop for Pool<S> {

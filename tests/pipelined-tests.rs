@@ -85,7 +85,7 @@ fn round_trips_actually_overlap() {
         .collect();
     let mut pool = Pool::new(senders, 4);
     for b in 0..4u64 {
-        pool.submit(b, b as u32).unwrap();
+        pool.submit(b, vec![b as u32]).unwrap();
     }
     let done = pool.drain().unwrap();
 
@@ -100,7 +100,7 @@ fn one_sender_serializes() {
     let (mut pool, peak) = slow_pool(1, Duration::from_millis(60));
     let t = Instant::now();
     for b in 0..3u64 {
-        pool.submit(b, b as u32).unwrap();
+        pool.submit(b, vec![b as u32]).unwrap();
     }
     pool.drain().unwrap();
     assert_eq!(peak.load(Ordering::SeqCst), 1);
@@ -135,13 +135,13 @@ fn submit_blocks_once_every_sender_is_busy() {
     // Both senders spawned at the start -- so two fill them and the third
     // has to wait for one to finish.
     for b in 0..2u64 {
-        pool.submit(b, ()).unwrap();
+        pool.submit(b, vec![()]).unwrap();
     }
 
     let submitted = Arc::new(AtomicUsize::new(0));
     let s2 = submitted.clone();
     let handle = std::thread::spawn(move || {
-        pool.submit(2, ()).unwrap();
+        pool.submit(2, vec![()]).unwrap();
         s2.store(1, Ordering::SeqCst);
         pool
     });
@@ -178,12 +178,12 @@ impl Sender for Failing {
 #[test]
 fn a_failure_surfaces_and_rejections_come_back_with_their_batch() {
     let mut pool = Pool::new(vec![Failing(true)], 1);
-    pool.submit(7, ()).unwrap();
+    pool.submit(7, vec![()]).unwrap();
     let err = pool.drain().expect_err("the failure must surface");
     assert!(err.to_string().contains("cluster said no"));
 
     let mut pool = Pool::new(vec![Failing(false)], 1);
-    pool.submit(9, ()).unwrap();
+    pool.submit(9, vec![()]).unwrap();
     let done = pool.drain().unwrap();
     assert_eq!(done.len(), 1);
     assert_eq!(done[0].batch, 9, "attributed to the batch that produced it");
@@ -218,12 +218,12 @@ fn a_sender_is_spawned_when_every_one_is_busy_and_kept() {
     let mut pool = Pool::new((0..8).map(|_| Blocked(gate.clone())).collect(), 2);
     assert_eq!(pool.spawned(), 2, "only the senders it starts with");
     for b in 0..5u64 {
-        pool.submit(b, ()).unwrap();
+        pool.submit(b, vec![()]).unwrap();
     }
     assert_eq!(pool.spawned(), 5, "one more each time every sender was busy");
     gate.store(true, Ordering::SeqCst);
     pool.drain().unwrap();
-    pool.submit(5, ()).unwrap();
+    pool.submit(5, vec![()]).unwrap();
     assert_eq!(pool.spawned(), 5, "an idle sender takes the next batch");
 }
 
@@ -232,7 +232,7 @@ fn a_sender_is_spawned_when_every_one_is_busy_and_kept() {
 fn a_sender_that_has_answered_is_not_counted_busy() {
     let mut pool = Pool::new((0..8).map(|_| Instant0).collect(), 1);
     for b in 0..4u64 {
-        pool.submit(b, ()).unwrap();
+        pool.submit(b, vec![()]).unwrap();
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(pool.spawned(), 1);
@@ -252,13 +252,13 @@ fn a_sender_past_the_start_waits_to_be_lent_its_memory() {
             .is_ok()
     }));
     for b in 0..3u64 {
-        pool.submit(b, ()).unwrap();
+        pool.submit(b, vec![()]).unwrap();
     }
     assert_eq!(pool.spawned(), 3, "the two it started with, and the one lent");
     let submitted = Arc::new(AtomicBool::new(false));
     let done = submitted.clone();
     let handle = std::thread::spawn(move || {
-        pool.submit(3, ()).unwrap();
+        pool.submit(3, vec![()]).unwrap();
         done.store(true, Ordering::SeqCst);
         pool
     });
@@ -299,18 +299,86 @@ impl Sender for FailsLate {
 fn a_batch_that_landed_is_reported_before_a_failure_beside_it() {
     // Landed, failed, landed, in that order on the channel.
     let mut pool = Pool::new(vec![FailsLate, FailsLate, FailsLate], 3);
-    pool.submit(1, 0).unwrap();
-    pool.submit(2, 51).unwrap();
-    pool.submit(3, 100).unwrap();
+    pool.submit(1, vec![0]).unwrap();
+    pool.submit(2, vec![51]).unwrap();
+    pool.submit(3, vec![100]).unwrap();
     std::thread::sleep(Duration::from_millis(300));
     let done = pool.poll().expect("the landed batches come first");
     assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![1, 3]);
     pool.poll().expect_err("then the failure");
 
     let mut pool = Pool::new(vec![FailsLate, FailsLate], 2);
-    pool.submit(1, 0).unwrap();
-    pool.submit(2, 51).unwrap();
+    pool.submit(1, vec![0]).unwrap();
+    pool.submit(2, vec![51]).unwrap();
     pool.drain().expect_err("the barrier reports the failure");
     let done = pool.poll().expect("and keeps the landed batch for the next poll");
     assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![1]);
+}
+
+/// Refuses the document its job names after waiting its milliseconds, or fails where it names none.
+struct Part;
+impl Sender for Part {
+    type Job = (u64, Option<usize>);
+    fn send_one(&mut self, (wait, doc): (u64, Option<usize>)) -> Result<Delivered, IoError> {
+        std::thread::sleep(Duration::from_millis(wait));
+        let Some(doc) = doc else {
+            return Err(IoError::transient("cluster said no"));
+        };
+        Ok(Delivered {
+            rejections: vec![Rejection {
+                doc,
+                reason: "mapping conflict".into(),
+                record: None,
+            }],
+            throttled: doc == 1,
+        })
+    }
+}
+
+/// A batch handed over as several requests is sent side by side and completes once, after its last request, with
+/// what every request refused.
+#[test]
+fn a_batch_of_several_requests_completes_once_with_all_their_refusals() {
+    let mut pool = Pool::new((0..3).map(|_| Part).collect(), 3);
+    pool.submit(7, vec![(50, Some(0)), (100, Some(1)), (150, Some(2))])
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(120));
+    assert!(
+        pool.poll().unwrap().is_empty(),
+        "not before its last request is answered"
+    );
+    let done = pool.drain().unwrap();
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0].batch, 7);
+    let mut docs: Vec<usize> = done[0].rejections.iter().map(|r| r.doc).collect();
+    docs.sort();
+    assert_eq!(docs, vec![0, 1, 2]);
+    assert!(done[0].throttled, "throttled when any of its requests was");
+}
+
+/// A failure in any request of a batch fails the batch, once every request of it is answered, and a batch beside it
+/// still lands.
+#[test]
+fn a_failed_request_fails_its_batch_and_no_other() {
+    let mut pool = Pool::new((0..3).map(|_| Part).collect(), 3);
+    pool.submit(1, vec![(0, None), (100, Some(0))]).unwrap();
+    pool.submit(2, vec![(0, Some(5))]).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    let done = pool.poll().expect("the batch beside it lands");
+    assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![2]);
+    assert!(pool.poll().unwrap().is_empty(), "not while a request of it is open");
+    std::thread::sleep(Duration::from_millis(100));
+    pool.poll().expect_err("then the failure");
+    assert_eq!(pool.outstanding(), 0);
+}
+
+/// A batch with no request to send completes at once.
+#[test]
+fn a_batch_of_no_requests_completes_at_once() {
+    let mut pool = Pool::new(vec![Part], 1);
+    pool.submit(3, Vec::new()).unwrap();
+    assert_eq!(
+        pool.poll().unwrap().iter().map(|c| c.batch).collect::<Vec<_>>(),
+        vec![3]
+    );
 }
