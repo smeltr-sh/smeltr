@@ -12,6 +12,7 @@ pub mod fuzz;
 pub mod destination;
 pub mod docker;
 pub mod http;
+pub mod leader_tls;
 pub mod receiver;
 pub mod registry;
 

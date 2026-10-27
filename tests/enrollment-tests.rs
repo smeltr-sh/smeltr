@@ -64,26 +64,19 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
 
     let data_dir = temp_dir("leader-data");
     let returned_data_dir = data_dir.clone();
+    let tls_dir = smeltr::leader::tls::dir_of(&data_dir);
+    // The list a served certificate is an entry of, as `main` opens it before anything is served.
+    let store = crate::harness::leader_tls::listing(&tls_dir);
+    LISTS.lock().unwrap().push((tls_dir.clone(), store.clone()));
     let materials = smeltr::leader::tls::ensure(
-        &smeltr::leader::tls::dir_of(&data_dir),
+        &tls_dir,
         vec!["localhost".to_string(), "127.0.0.1".to_string()],
         Duration::from_secs(60 * 60),
         &[],
     )
     .expect("an authority and a certificate it signed");
     let ca_pem = materials.ca_pem.clone();
-    let tls_dir = smeltr::leader::tls::dir_of(&data_dir);
     let (_, cert_pem, key_pem) = smeltr::leader::tls::to_serve(&tls_dir).unwrap();
-    // The list a served certificate is an entry of, as `main` opens it.
-    let store = Arc::new(
-        SqliteStore::open(
-            std::path::Path::new(":memory:"),
-            &temp_dir("leader-key").join("sealing.key"),
-        )
-        .unwrap(),
-    );
-    smeltr::leader::tls::read_list(&tls_dir, store.clone());
-    LISTS.lock().unwrap().push((tls_dir, store.clone()));
     // What `main` says once it has built the socket from these files. `ensure` above replaced what is served, and
     // until this the two have parted -- which before a socket exists is exactly right, and afterward is not.
     socket_caught_up(&smeltr::leader::tls::dir_of(&returned_data_dir));
@@ -127,6 +120,12 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
         ca_pem,
         returned_data_dir,
     )
+}
+
+/// Serves again what `dir` serves: a replacement of what is on disk that changes nothing a client sees.
+fn serve_again(dir: &std::path::Path, names: &[String]) {
+    let entry = smeltr::leader::tls::served(dir).unwrap().expect("an entry served");
+    smeltr::leader::tls::serve(dir, &entry, names, &[]).expect("served again");
 }
 
 /// The certificate lists of these leaders, by their TLS directory.
@@ -197,6 +196,7 @@ fn follow_disk(dir: &std::path::Path, config: axum_server::tls_rustls::RustlsCon
 /// A certificate, key and authority from somebody else's PKI, carrying the names these leaders answer to.
 fn external_pki(tag: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let dir = smeltr::leader::tls::dir_of(&temp_dir(tag));
+    crate::harness::leader_tls::listing(&dir);
     let materials = smeltr::leader::tls::ensure(
         &dir,
         vec!["localhost".to_string(), "127.0.0.1".to_string()],
@@ -639,8 +639,10 @@ fn an_enrollment_code_naming_another_authority_is_refused_rather_than_trusted() 
     let real = code["value"].as_str().unwrap();
 
     // Someone else's authority, in an enrollment code that is otherwise well formed.
+    let elsewhere_dir = smeltr::leader::tls::dir_of(&temp_dir("elsewhere"));
+    crate::harness::leader_tls::listing(&elsewhere_dir);
     let elsewhere = smeltr::leader::tls::ensure(
-        &smeltr::leader::tls::dir_of(&temp_dir("elsewhere")),
+        &elsewhere_dir,
         vec!["localhost".to_string()],
         Duration::from_secs(60 * 60),
         &[],
@@ -788,7 +790,7 @@ fn a_worker_takes_a_rotated_authority_without_being_restarted() {
         "the fleet held the incoming root and the leader never signed under it"
     );
 
-    let served = std::fs::read(dir.join("cert.pem")).unwrap();
+    let (_, served, _) = smeltr::leader::tls::to_serve(&dir).unwrap();
     let bundle = std::fs::read(dir.join(smeltr::leader::tls::CA_CERT)).unwrap();
     assert_eq!(
         smeltr::leader::tls::signing_root(&bundle, &served).unwrap().fingerprint,
@@ -893,13 +895,11 @@ fn the_authority_is_withheld_while_the_socket_has_not_taken_what_is_on_disk() {
     let (base, ca_pem, data_dir) = start_leader_tls_in();
     let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
 
-    // A real reissue: the disk moves and this leader's socket, which nothing here reloads, keeps what it had.
-    smeltr::leader::tls::ensure_own(
+    // A real replacement: the disk moves and this leader's socket, which nothing here reloads, keeps what it had.
+    serve_again(
         &smeltr::leader::tls::dir_of(&data_dir),
-        vec!["localhost".to_string(), "127.0.0.1".to_string()],
-        Duration::from_secs(60 * 60),
-    )
-    .expect("a reissue");
+        &["localhost".to_string(), "127.0.0.1".to_string()],
+    );
     let refused = agent
         .get(format!("{base}/api/authority"))
         .call()
@@ -1078,6 +1078,7 @@ fn an_enrollment_code_naming_the_platforms_roots_puts_aside_a_kept_private_autho
 fn a_rotation_neither_starts_nor_finishes_while_the_socket_and_the_disk_disagree() {
     let _alone = alone();
     let dir = temp_dir("rotation-disagrees").join("tls");
+    crate::harness::leader_tls::listing(&dir);
     let names = vec!["localhost".to_string()];
     let a_year = Duration::from_secs(365 * 24 * 60 * 60);
     smeltr::leader::tls::ensure(&dir, names.clone(), a_year, &[]).expect("an authority");
@@ -1087,8 +1088,8 @@ fn a_rotation_neither_starts_nor_finishes_while_the_socket_and_the_disk_disagree
     let deadline = now_ms + 60 * 1000;
     let rotation = smeltr::leader::tls::begin_rotation(&dir, a_year, deadline, now_ms).expect("a rotation");
 
-    // A real reissue moves the disk past what the socket has, with nothing here to reload it.
-    smeltr::leader::tls::ensure_own(&dir, names.clone(), a_year).expect("a reissue");
+    // A real replacement moves the disk past what the socket has, with nothing here to reload it.
+    serve_again(&dir, &names);
     let held = smeltr::leader::tls::cut_over_if_due(&dir, names.clone(), a_year, None, deadline + 1);
     let refused = smeltr::leader::tls::begin_rotation(&dir, a_year, deadline, now_ms);
     // The lock is what makes the answer binding: a caller can check, a reload can fail underneath it, and the
@@ -1137,6 +1138,7 @@ fn a_rotation_neither_starts_nor_finishes_while_the_socket_and_the_disk_disagree
 fn what_is_in_force_is_refused_whole_while_the_socket_has_not_taken_it() {
     let _alone = alone();
     let dir = temp_dir("agreed-read").join("tls");
+    crate::harness::leader_tls::listing(&dir);
     let names = vec!["localhost".to_string()];
     let a_year = Duration::from_secs(365 * 24 * 60 * 60);
     smeltr::leader::tls::ensure(&dir, names.clone(), a_year, &[]).expect("an authority");
@@ -1144,7 +1146,7 @@ fn what_is_in_force_is_refused_whole_while_the_socket_has_not_taken_it() {
 
     assert!(smeltr::leader::tls::current_if_agreed(&dir).is_ok(), "the two agree");
 
-    smeltr::leader::tls::ensure_own(&dir, names, a_year).expect("a reissue");
+    serve_again(&dir, &names);
     let whole = smeltr::leader::tls::current_if_agreed(&dir);
     // Put back before asserting: two numbers for the whole process, shared with every test in this file.
     socket_caught_up(&dir);
@@ -1236,6 +1238,7 @@ fn a_worker_follows_the_certificate_to_an_uploaded_one_and_back() {
     let child = spawn_worker(&base, code["value"].as_str().unwrap(), &state_dir);
     assert!(heartbeating(&base, &ca_pem, Duration::from_secs(20)), "never enrolled");
 
+    let own = smeltr::leader::tls::served(&dir).unwrap().expect("the leader's own");
     let (chain, key, theirs) = external_pki("follows-theirs");
     let now_ms = smeltr::leader::warnings::now_millis();
     let entry = listed(&dir, &chain, &key, &theirs);
@@ -1260,10 +1263,9 @@ fn a_worker_follows_the_certificate_to_an_uploaded_one_and_back() {
         "the worker stopped reaching the leader once it served the uploaded certificate"
     );
 
-    // And back. The leader's own is minted first, as a withdrawal always does.
-    smeltr::leader::tls::ensure_own(&dir, names.clone(), Duration::from_secs(60 * 60)).expect("the leader's own");
-    let back =
-        smeltr::leader::tls::begin_own_rotation(&dir, smeltr::leader::warnings::now_millis()).expect("a switch back");
+    // And back to the leader's own.
+    let now_ms = smeltr::leader::warnings::now_millis();
+    let back = smeltr::leader::tls::begin_supplied_rotation(&dir, &own, &names, &[], now_ms).expect("a switch back");
     assert!(
         holds(&state_dir, &back.incoming, Duration::from_secs(20)),
         "the worker never took the leader's own root back"
@@ -1272,7 +1274,7 @@ fn a_worker_follows_the_certificate_to_an_uploaded_one_and_back() {
         finished(&dir, Duration::from_secs(20)),
         "the leader never withdrew the uploaded certificate"
     );
-    assert_eq!(smeltr::leader::tls::served(&dir).unwrap(), None);
+    assert_eq!(smeltr::leader::tls::served(&dir).unwrap(), Some(own));
     assert!(
         holds_only(&state_dir, &back.incoming, Duration::from_secs(20)),
         "the worker was not handed the bundle without the uploaded certificate's root"

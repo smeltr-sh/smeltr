@@ -706,7 +706,7 @@ async fn leader_tls_config(
             path = %tls_dir.join(smeltr::leader::tls::CA_CERT).display(),
             "created this leader's certificate authority: copy this file into every worker's bootstrap config, \
              and trust it in any browser that opens this leader. It is what says a leader really is this one; \
-             the certificate served under it is reissued at every start"
+             the certificate issued under it is the entry \"leader\" in the certificate list"
         );
     }
 
