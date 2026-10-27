@@ -32,15 +32,18 @@ use crate::metrics::MetricsHandle;
 /// How long the least round trip is kept before it is measured again.
 const RTT_WINDOW: Duration = Duration::from_secs(10);
 
-/// How many round trips the greatest rate is kept for, and the least and most time that is. Samples lapse only as
-/// batches come back with others still waiting: a destination the source left idle keeps its estimate, one that
-/// crawls loses it within [`RTT_WINDOW`], whatever its round trip now reads.
+/// How many round trips the greatest rate is kept for. Samples lapse only as batches come back with others still
+/// waiting: a destination the source left idle keeps its estimate, one that crawls loses it within [`RTT_WINDOW`],
+/// whatever its round trip now reads.
 const RATE_WINDOW_ROUND_TRIPS: u32 = 10;
+/// The least time the greatest rate is kept, however short the round trip.
 const RATE_WINDOW_LEAST: Duration = Duration::from_secs(1);
+/// The most time the greatest rate is kept, however long the round trip.
 const RATE_WINDOW_MOST: Duration = RTT_WINDOW;
 
 /// Startup ends once the rate has grown less than this over [`FULL_PIPE_ROUNDS`] round trips in a row.
 const FULL_PIPE_GROWTH: f64 = 1.25;
+/// The round trips in a row the rate must stop growing for before startup ends.
 const FULL_PIPE_ROUNDS: u32 = 3;
 
 /// The gain while the pipe is still filling.
@@ -55,11 +58,13 @@ const THROTTLE_CUT: f64 = 0.7;
 /// What the model knew when a batch was handed to the destination, kept with the batch until it comes back.
 #[derive(Clone, Copy, Debug)]
 pub struct Sent {
-    /// When the batch was handed over, and the bytes handed over before it.
+    /// When the batch was handed over.
     at: Instant,
+    /// The bytes handed over before it.
     dispatched: u64,
-    /// Bytes acknowledged by then, and when the last of them was.
+    /// The bytes acknowledged by then.
     delivered: u64,
+    /// When the last of those was acknowledged.
     delivered_at: Instant,
 }
 
@@ -84,10 +89,14 @@ pub struct Pacing {
     batch: usize,
     /// The most the target may be right now: the destination's fair share of the pool, or a stated buffer.
     ceiling: usize,
+    /// The bytes worth having queued and in flight: the rate times the least round trip, times this round's gain, in whole
+    /// batches.
     target: usize,
-    /// Bytes handed to the destination so far, and bytes it acknowledged, with when the last of them was.
+    /// Bytes handed to the destination so far.
     dispatched: u64,
+    /// Bytes it acknowledged so far.
     delivered: u64,
+    /// When the last of those was acknowledged.
     delivered_at: Option<Instant>,
     /// The least round trip, and when it was taken: it stands for [`RTT_WINDOW`].
     least_rtt: Option<(Duration, Instant)>,
@@ -98,18 +107,21 @@ pub struct Pacing {
     rates: VecDeque<(Instant, f64)>,
     /// `delivered` when this round trip began: it ends once a batch sent after that comes back.
     round_starts_at: u64,
+    /// Round trips ended so far: past startup, which step of [`PROBE_CYCLE`] this one is.
     rounds: u32,
     /// Whether a sample this round was the link's, not the source's: only such a round can say the rate stopped
     /// growing.
     round_link_bound: bool,
-    /// Whether startup is over, and what the rate was at the last round where it grew enough, with how many rounds
-    /// have passed since.
+    /// Whether startup is over.
     full_pipe: bool,
+    /// The rate at the last round where it grew by [`FULL_PIPE_GROWTH`].
     rate_at_last_growth: f64,
+    /// Rounds since then, toward [`FULL_PIPE_ROUNDS`].
     rounds_without_growth: u32,
     /// The most the target may be since the destination asked to be sent less, in whole batches: BBRv2's
     /// `inflight_hi`. Cut at most once a round trip, and grown at the end of a probe it did not ask in.
     throttled_at: Option<usize>,
+    /// Whether the destination asked to be sent less this round: `throttled_at` is cut once a round.
     round_throttled: bool,
     /// Batches `throttled_at` grows by after the next probe without a throttle. Doubles each time.
     regrowth: usize,
@@ -331,9 +343,11 @@ impl Pacing {
 
 /// The pacing model for one destination's queue, and what it reports.
 pub(super) struct Pacer {
+    /// The model whose target is the queue's budget.
     model: Pacing,
     /// How far the link stood below the share, averaged over each stretch and written at its end.
     headroom: Headroom,
+    /// Where the budget and headroom are reported, under this destination's id.
     metrics: MetricsHandle,
     id: DestId,
 }
