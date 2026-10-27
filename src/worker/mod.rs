@@ -2576,6 +2576,8 @@ struct Validated {
     named: Vec<crate::plan::topology::NamedSecret>,
     /// Every certificate the target names, which it runs at the version this worker holds.
     presented: Vec<crate::plan::topology::NamedCertificate>,
+    /// The version of each certificate in `presented` that was checked, by name.
+    checked: std::collections::HashMap<String, i64>,
     /// Every source the target reads. A cold capture this process opened against one of them ends when the
     /// runtime starts, or it would go on consuming beside the runtime's own reader.
     sources: Vec<String>,
@@ -2585,6 +2587,15 @@ struct Validated {
     listens: Vec<crate::plan::topology::Listen>,
     /// The same, by the source each is, as the heartbeat reports it once the target runs.
     listening: Vec<heartbeat::Listening>,
+}
+
+/// Whether `delivered` holds a certificate at another version than the one `checked` names: one that arrived after
+/// the check, which nothing has checked.
+fn arrived_unchecked(
+    checked: &std::collections::HashMap<String, i64>,
+    delivered: &[heartbeat::SecretDelivery],
+) -> bool {
+    (delivered.iter()).any(|d| d.chain.is_some() && checked.get(&d.name) != Some(&d.version))
 }
 
 /// `read`'s answer, with a panic in it answered as an error that says so. The deployer is the only thread that
@@ -2640,6 +2651,9 @@ impl Supervisor {
         Ok(Validated {
             named: system.topology.named_secrets.clone(),
             presented: system.topology.named_certificates.clone(),
+            checked: (system.topology.named_certificates.iter())
+                .filter_map(|c| Some((c.name.clone(), held.certificate_version(&c.name)?)))
+                .collect(),
             sources: system.topology.sources.iter().map(|s| s.name.clone()).collect(),
             lookup_files,
             listens: listening
@@ -3920,6 +3934,11 @@ impl Supervisor {
                 .deliveries_for(&validated.named, &validated.presented),
             incarnation,
         };
+        // A version that arrived between the check and `presenting` above restarted nothing, and was not checked:
+        // the restart checks it, and keeps this one running if it would fail.
+        if arrived_unchecked(&validated.checked, &spec.secrets) {
+            self.restart_due.store(true, Ordering::Relaxed);
+        }
         let mut sockets = self.receiver_sockets.lock().unwrap();
         sockets.hold(&validated.listens);
         // Only what this target serves: a socket a runtime adopts stays open for its life.
@@ -5802,6 +5821,25 @@ mod tests {
         assert!(
             !supervisor.out_of_contact(),
             "a worker with no limit runs indefinitely without a leader"
+        );
+    }
+
+    /// A certificate version that reached the worker after the check and before the runtime was handed it is one
+    /// nothing checked, so starting with it asks for the restart that checks it.
+    #[test]
+    fn a_certificate_version_newer_than_the_one_checked_arrived_unchecked() {
+        let delivered = |version| heartbeat::SecretDelivery {
+            name: "tls".to_string(),
+            version,
+            value: "key".to_string(),
+            chain: Some("chain".to_string()),
+        };
+        let checked = std::collections::HashMap::from([("tls".to_string(), 1)]);
+        assert!(!arrived_unchecked(&checked, &[delivered(1)]));
+        assert!(arrived_unchecked(&checked, &[delivered(2)]));
+        assert!(
+            arrived_unchecked(&std::collections::HashMap::new(), &[delivered(1)]),
+            "none was held when checked"
         );
     }
 
