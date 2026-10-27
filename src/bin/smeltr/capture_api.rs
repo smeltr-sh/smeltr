@@ -126,25 +126,10 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
     // deployment is entitled to what its bundle names (design doc, Secrets boundary). Read once here rather than on
     // every heartbeat that hands the invitation on, and recorded, because this is the one way a value reaches a
     // worker without a commit on `main` naming it -- the trail the deploy path leaves for free.
-    let (wanted, certificates) = leader_stored_refs(&one_source);
-    let granted = if wanted.is_empty() && certificates.is_empty() {
-        Vec::new()
-    } else {
-        let store = state.store.clone();
-        match blocking(move || {
-            // A certificate at the list's newest version, as a deployment runs it.
-            let newest = smeltr::leader::certificate_versions(&*store)?;
-            let quoted = smeltr::leader::Quoted {
-                secrets: wanted,
-                certificates,
-            };
-            store.secrets_for_delivery(&smeltr::leader::at_newest(&quoted, &newest), &[])
-        })
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => return Json(Envelope::failed_one(e)),
-        }
+    let store = state.store.clone();
+    let granted = match blocking(move || lent(&*store, &one_source)).await {
+        Ok(v) => v,
+        Err(e) => return Json(Envelope::failed_one(e)),
     };
     if !granted.is_empty() {
         let named: Vec<String> = granted.iter().map(|d| format!("{} v{}", d.name, d.version)).collect();
@@ -201,6 +186,26 @@ fn start_destination_capture(
 
 /// Every leader-stored credential one source names, as the store addresses them. A worker-local one is a variable
 /// on the worker's own host and is nobody's to deliver.
+/// What a capture of `one_source` lends its workers: the secrets it names, and the certificates it names at the
+/// list's newest version, as a deployment runs them. Nothing about it need be deployed.
+fn lent(
+    store: &dyn smeltr::leader::store::Store,
+    one_source: &config_file::FileConfig,
+) -> Result<Vec<smeltr::heartbeat::SecretDelivery>, String> {
+    let (wanted, certificates) = leader_stored_refs(one_source);
+    if wanted.is_empty() && certificates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let newest = smeltr::leader::certificate_versions(store)?;
+    let quoted = smeltr::leader::Quoted {
+        secrets: wanted,
+        certificates,
+    };
+    store
+        .secrets_for_delivery(&smeltr::leader::at_newest(&quoted, &newest), &[])
+        .map_err(|e| e.to_string())
+}
+
 fn leader_stored_refs(one_source: &config_file::FileConfig) -> (Vec<(String, i64)>, Vec<String>) {
     use smeltr::plan::topology::SecretRef;
     let Ok(json) = serde_json::to_string(one_source) else {
@@ -677,6 +682,47 @@ mod tests {
             (vec![("pg-cred".to_string(), 2)], Vec::new()),
             "Run reads an SQL source before it declares fields, with its own password"
         );
+    }
+
+    /// A source never deployed is captured with what it names lent for the session: its secret at the version it
+    /// quotes, and its certificate at the list's newest version, chain beside key. A name the list does not hold is
+    /// left out, for the worker to refuse.
+    #[test]
+    fn a_capture_lends_its_certificate_at_the_newest_version() {
+        use smeltr::leader::sqlite_store::SqliteStore;
+        use smeltr::leader::store::Store;
+        let key = std::env::temp_dir().join(format!("smeltr-capture-lent-{}.key", std::process::id()));
+        let _ = std::fs::remove_file(&key);
+        let store = SqliteStore::open(std::path::Path::new(":memory:"), &key).unwrap();
+        store.create_certificate("cli", "", "chain-1", "key-1").unwrap();
+        store.add_certificate_version("cli", "chain-2", "key-2").unwrap();
+        let source = |certificate: &str| config_file::FileConfig {
+            version: config_file::CURRENT_VERSION,
+            sources: vec![
+                serde_json::from_str(&format!(
+                    r#"{{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g",
+                        "properties":{{"security.protocol":"SSL"}},"certificate":"{certificate}"}}"#
+                ))
+                .unwrap(),
+            ],
+            destinations: Vec::new(),
+            pipelines: Vec::new(),
+            routes: Vec::new(),
+            lookup_tables: Vec::new(),
+            grok_patterns: Vec::new(),
+            on_exception: None,
+            name: None,
+        };
+
+        let lent_now = lent(&store, &source("cli")).unwrap();
+        let named: Vec<_> = lent_now
+            .iter()
+            .map(|d| (d.name.as_str(), d.version, d.value.as_str(), d.chain.as_deref()))
+            .collect();
+        assert_eq!(named, vec![("cli", 2, "key-2", Some("chain-2"))]);
+
+        assert!(lent(&store, &source("unlisted")).unwrap().is_empty());
+        let _ = std::fs::remove_file(&key);
     }
 
     /// A source batch saves as the sample records a paste would make: its fields by path in the record, its
