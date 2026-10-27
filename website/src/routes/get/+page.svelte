@@ -45,8 +45,8 @@
           </tr>
           <tr>
             <td>
-              <a href={latestFile('smeltr-extras.zip')}>Extras</a>: image archive, SBOM, STIG and
-              CVE report
+              <a href={latestFile('smeltr-extras.zip')}>Extras</a>: image archive, SBOM, CVE report
+              and STIG report
             </td>
             <td><a href="/docs/release-extras">Release extras</a></td>
           </tr>
