@@ -193,7 +193,7 @@ Expand-Archive -Force smeltr-windows.zip 'C:\Program Files\Smeltr'
 Copy-Item smeltr.toml 'C:\ProgramData\Smeltr\smeltr.toml'
 New-Service -Name Smeltr -BinaryPathName '"C:\Program Files\Smeltr\smeltr.exe"' -StartupType Automatic
 sc.exe config Smeltr obj= 'NT SERVICE\Smeltr'
-sc.exe failure Smeltr reset= 86400 actions= restart/5000
+sc.exe failure Smeltr reset= 86400 actions= restart/5000/restart/30000//0
 icacls 'C:\ProgramData\Smeltr' /grant 'NT SERVICE\Smeltr:(OI)(CI)M'
 Start-Service Smeltr</code
     ></pre>
