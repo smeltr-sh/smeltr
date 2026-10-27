@@ -226,8 +226,8 @@ libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 # `Win32_System_Diagnostics_ToolHelp`, `Win32_System_ProcessStatus`, `Win32_System_SystemInformation`
 # and `Win32_Storage_FileSystem` are this worker's process tree, its memory footprint, the host's
 # total, and the free space under its state directory (`resources.rs`) -- none is a process-tree-ending mechanism like the rest of this list,
-# but they cost no new crate either. `Win32_System_Services` and `Win32_System_Console` run `smeltr` as a Windows service that logs to a file
-# (`service.rs`).
+# but they cost no new crate either. `Win32_System_Services` and `Win32_System_Console` run `smeltr` as a Windows
+# service that logs to a file (`service.rs`).
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
