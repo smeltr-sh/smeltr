@@ -2188,7 +2188,13 @@ impl Compiler<'_> {
             input = Some(slot);
             self.syms.unbind(target);
         }
-        self.parse_call(target, call, input, ty, guard, id, target.is_empty());
+        let at = ParseTarget {
+            name: target,
+            merge: target.is_empty(),
+            guard,
+            id,
+        };
+        self.parse_call(call, input, ty, at);
     }
 
     /// `e` as a spread of a variant, where it names one outside a loop: its keys on each row lay into an object's
@@ -2217,7 +2223,7 @@ impl Compiler<'_> {
         for source in sources {
             let call = ParseCall::of(source).or_else(|| self.spread_of(source));
             match (call, self.syms.node(target)) {
-                (Some(call), _) if root => self.parse_call("", &call, None, None, guard, id, true),
+                (Some(call), _) if root => self.parse_call(&call, None, None, ParseTarget::merging("", guard, id)),
                 (None, _) if root && (guard.is_some() || self.in_loop()) => self.assign_keys(source, guard, id),
                 (_, None) if !root => return self.err(Some(id), format!("`{target}` is not a field")),
                 (_, Some(Node::Leaf(s))) if !root && *self.syms.type_of(*s) != DataType::Variant => {
@@ -2228,7 +2234,7 @@ impl Compiler<'_> {
                     // Typed by what `p` holds, open: it may hold keys after it.
                     let ty = self.syms.node(target).map(|n| shape(&self.syms, n, true));
                     let ty = ty.filter(|t| matches!(t, DataType::Struct(..)));
-                    self.parse_call(target, &call, None, ty.as_ref(), guard, id, true);
+                    self.parse_call(&call, None, ty.as_ref(), ParseTarget::merging(target, guard, id));
                 }
                 (None, _) => {
                     let at = Expr::new(source.span, ExprKind::Field(target.to_string()));
@@ -2300,7 +2306,7 @@ impl Compiler<'_> {
                 return;
             };
             self.replace(held(self), None, id);
-            return self.parse_call("", &call, Some(input), None, None, id, true);
+            return self.parse_call(&call, Some(input), None, ParseTarget::merging("", None, id));
         }
         let Some(writes) = self.resolve_writes("", value, id) else {
             return;
@@ -2709,24 +2715,26 @@ impl Compiler<'_> {
         }
     }
 
-    /// Parse `in_slot` with `kind` into `target`, `""` for the record: each of `declared`, a name under `target`, is a
-    /// write of its name under `guard`, and a dynamic parse lays every other key into the unclaimed fields of the
+    /// Parse `in_slot` with `kind` into `at.name`, `""` for the record: each of `declared`, a name under it, is a
+    /// write of its name under `at.guard`, and a dynamic parse lays every other key into the unclaimed fields of the
     /// deepest object at its name. A parse that merges, into the record or by `Object.assign` into a name, leaves a
     /// key the row lacks alone: what was bound there, or else the record's key, converted to the declared type. Any
     /// other parse into a name replaces it, and the name is unbound before.
-    #[allow(clippy::too_many_arguments)]
     fn parse_into(
         &mut self,
         kind: &ParserKind,
         in_slot: SlotId,
         matcher: Option<std::sync::Arc<crate::format::grok_scan::Matcher>>,
-        target: &str,
-        merge: bool,
         declared: &[DeclaredField],
         formats: Vec<(String, String)>,
-        guard: Option<SlotId>,
-        id: FunctionId,
+        at: ParseTarget,
     ) {
+        let ParseTarget {
+            name: target,
+            merge,
+            guard,
+            id,
+        } = at;
         // A name is a value or an object, so a parser declares one or the other.
         for d in declared {
             if let Some(e) = declared.iter().find(|e| binding::is_under(&e.name, &d.name)) {
@@ -3141,25 +3149,20 @@ impl Compiler<'_> {
         self.syms.remove_key(parent, &key);
     }
 
-    /// Write what the parse function `call` gives to the object `target`, `""` for the record, as `parse_into` does.
-    /// `ty`, an object type, is the target's declared type; without it a field `target` holds keeps its type, and a
-    /// new one is open.
-    #[allow(clippy::too_many_arguments)]
-    fn parse_call(
-        &mut self,
-        target: &str,
-        call: &ParseCall,
-        input: Option<SlotId>,
-        ty: Option<&DataType>,
-        guard: Option<SlotId>,
-        id: FunctionId,
-        merge: bool,
-    ) {
+    /// Write what the parse function `call` gives to `at`, as `parse_into` does. `ty`, an object type, is the
+    /// target's declared type; without it a field the target holds keeps its type, and a new one is open.
+    fn parse_call(&mut self, call: &ParseCall, input: Option<SlotId>, ty: Option<&DataType>, at: ParseTarget) {
+        let ParseTarget {
+            name: target,
+            guard,
+            id,
+            ..
+        } = at;
         let Some(in_slot) = input.or_else(|| self.input_slot(call.input, guard, id)) else {
             return;
         };
         if call.name == "lookup" {
-            return self.lookup_call(target, call, in_slot, ty, guard, id, merge);
+            return self.lookup_call(call, in_slot, ty, at);
         }
         let (kind, matcher) = match call.kind(self.grok_patterns) {
             Ok(k) => k,
@@ -3203,7 +3206,7 @@ impl Compiler<'_> {
             Err(message) => return self.err(Some(id), message),
         };
         let declared = self.parse_fields(target, &kind, keys, ty);
-        self.parse_into(&kind, in_slot, matcher, target, merge, &declared, formats, guard, id);
+        self.parse_into(&kind, in_slot, matcher, &declared, formats, at);
     }
 
     /// The slot holding `e`'s value: a field's own, or one `e` is computed into under `guard`.
@@ -3220,19 +3223,15 @@ impl Compiler<'_> {
         })
     }
 
-    /// `lookup(table, key, {…})` into `target`, as `parse_call` writes a parse: each output a field of `target`, at the
+    /// `lookup(table, key, {…})` into `at`, as `parse_call` writes a parse: each output a field of the target, at the
     /// type `ty` or the field holds, else `str`.
-    #[allow(clippy::too_many_arguments)]
-    fn lookup_call(
-        &mut self,
-        target: &str,
-        call: &ParseCall,
-        in_slot: SlotId,
-        ty: Option<&DataType>,
-        guard: Option<SlotId>,
-        id: FunctionId,
-        merge: bool,
-    ) {
+    fn lookup_call(&mut self, call: &ParseCall, in_slot: SlotId, ty: Option<&DataType>, at: ParseTarget) {
+        let ParseTarget {
+            name: target,
+            merge,
+            guard,
+            id,
+        } = at;
         let args = match call.lookup() {
             Ok(args) => args,
             Err(message) => return self.err(Some(id), message),
@@ -4626,6 +4625,26 @@ pub(crate) fn walk_slots(ir: &Ir, f: &mut impl FnMut(SlotId)) {
     }
 }
 
+/// Where a parse writes: the object `name`, `""` for the record, under `guard`, for the function `id`. A parse
+/// that merges leaves a key the row lacks as it was; any other replaces the object.
+#[derive(Clone, Copy)]
+struct ParseTarget<'a> {
+    name: &'a str,
+    merge: bool,
+    guard: Option<SlotId>,
+    id: FunctionId,
+}
+
+impl<'a> ParseTarget<'a> {
+    fn merging(name: &'a str, guard: Option<SlotId>, id: FunctionId) -> ParseTarget<'a> {
+        ParseTarget {
+            name,
+            merge: true,
+            guard,
+            id,
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
