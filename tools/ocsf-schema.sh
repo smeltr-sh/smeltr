@@ -98,3 +98,5 @@ pub const CLASSES: &[Class] = &[
 $(section CLASSES END)
 ];
 RS
+# Formatted as `cargo fmt` keeps it.
+rustfmt --edition 2024 "$out"

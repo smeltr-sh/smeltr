@@ -71,3 +71,5 @@ pub const FIELDS: &[(&str, Ecs, &str)] = &[
 ${rows}
 ];
 RS
+# Formatted as `cargo fmt` keeps it.
+rustfmt --edition 2024 "$out"
