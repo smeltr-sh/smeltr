@@ -1102,12 +1102,12 @@ fn serving_authority(data_dir: &std::path::Path) -> (Option<tls::Described>, war
         },
         Err(why) => warnings::Rotating::Unreadable(why),
     };
-    let signing = tls::in_force(&dir)
+    let signing = tls::current(&dir)
         .ok()
         // An operator's certificate is issued by an authority this leader does not hold, and rotating it is
         // theirs to do wherever they issue it. Telling them to use a page that refuses is worse than silence.
-        .filter(|(materials, _)| !materials.supplied)
-        .and_then(|(materials, served)| tls::signing_root(&materials.ca_pem, &served).ok());
+        .filter(|materials| !materials.supplied)
+        .and_then(|materials| tls::signing_root(&materials.ca_pem, &materials.served).ok());
     (signing, rotating)
 }
 
@@ -1118,11 +1118,11 @@ fn serving_certificate(data_dir: &std::path::Path) -> Option<warnings::Serving> 
         return None;
     }
     let dir = tls::dir_of(data_dir);
-    let (_, served) = tls::in_force(&dir).ok()?;
+    let served = tls::current(&dir).ok()?.served;
     Some(warnings::Serving {
         certificate: tls::describe(&served, "the certificate this leader serves").ok()?,
         source: acme::source(&dir).ok()?,
-        entry: entry_in_force(&dir).ok().flatten(),
+        entry: tls::served(&dir).ok().flatten().map(|entry| entry.name),
         acme: acme::state(&dir).unwrap_or_default(),
     })
 }
@@ -2358,12 +2358,17 @@ async fn store_value(state: AppState, name: String, value: String, chain: Option
     let wanted = name.clone();
     let running = running_deployments(&state).await;
     let pinned = tokio::task::spawn_blocking(move || {
+        // What the leader serves is kept as what the fleet runs is.
+        let served = served_entries(&tls::dir_of(&data_dir))?;
         kept_versions(&data_dir, &entitlements, &running).map(|mut deployed| {
-            deployed
-                .remove(&wanted)
-                .unwrap_or_default()
-                .into_iter()
+            (deployed.remove(&wanted).unwrap_or_default().into_iter())
                 .map(|(_, version)| version)
+                .chain(
+                    served
+                        .into_iter()
+                        .filter(|entry| entry.name == wanted)
+                        .map(|entry| entry.version),
+                )
                 .collect::<Vec<i64>>()
         })
     })
@@ -2450,75 +2455,29 @@ fn newest_chain(store: &dyn Store, name: &str) -> Result<Option<(i64, String)>, 
     Ok(store.certificate_chain(name, version)?.map(|chain| (version, chain)))
 }
 
-/// The newest chain and private key of the certificate `name`, `None` where it has none this leader can open.
-pub fn newest_certificate(store: &dyn Store, name: &str) -> Result<Option<(String, String)>, StoreError> {
+/// The newest version of the certificate `name`, with its chain and private key, `None` where it has none this leader
+/// can open.
+pub fn newest_certificate(store: &dyn Store, name: &str) -> Result<Option<(i64, String, String)>, StoreError> {
     let Some((version, chain)) = newest_chain(store, name)? else {
         return Ok(None);
     };
     let opened = store.secrets_for_delivery(&[(name.to_string(), version)], &[])?;
-    Ok(opened.into_iter().next().map(|d| (chain, d.value)))
+    Ok(opened.into_iter().next().map(|d| (version, chain, d.value)))
 }
 
-/// Which list entry each copy in `tls/` was taken from, by the copy's leaf fingerprint, as `acme` records which
-/// copies are its own. Read off the copy rather than the list's newest version: a version under another root is
-/// stored at once and served only once the fleet holds that root.
-const FROM_THE_LIST: &str = "from-the-list.json";
-
-/// The names of the list entries the leader serves, or is rotating to. None where it serves plain HTTP or holds no
-/// TLS folder.
-pub fn served_names(tls_dir: &std::path::Path) -> Result<Vec<String>, String> {
+/// The list entries the leader serves, or is rotating to, each at the version it serves. None where it serves plain
+/// HTTP or holds no TLS folder.
+pub fn served_entries(tls_dir: &std::path::Path) -> Result<Vec<tls::Entry>, String> {
     if !crate::startup_config::leader_tls_enabled() || !tls_dir.exists() {
         return Ok(Vec::new());
     }
-    let copies = copies_from_the_list(tls_dir)?;
-    Ok(fingerprints_in_use(tls_dir)?
-        .iter()
-        .filter_map(|fingerprint| copies.get(fingerprint).cloned())
-        .collect())
+    let rotating = tls::rotation(tls_dir)?.and_then(|rotation| rotation.entry);
+    Ok(tls::served(tls_dir)?.into_iter().chain(rotating).collect())
 }
 
-/// The name of the list entry the certificate in force was copied from, `None` where it came from no entry.
-pub fn entry_in_force(tls_dir: &std::path::Path) -> Result<Option<String>, String> {
-    let (materials, served) = tls::in_force(tls_dir)?;
-    if !materials.supplied {
-        return Ok(None);
-    }
-    let fingerprint = tls::describe(&served, "the certificate")?.fingerprint;
-    Ok(copies_from_the_list(tls_dir)?.remove(&fingerprint))
-}
-
-/// Records that the copy whose leaf is `fingerprint` was taken from the entry `name`. Before the copy is served, so
-/// one the leader serves always has its name; the record forgets copies no longer in use.
-pub fn record_copy(tls_dir: &std::path::Path, fingerprint: &str, name: &str) -> Result<(), String> {
-    let in_use = fingerprints_in_use(tls_dir)?;
-    let mut copies = copies_from_the_list(tls_dir)?;
-    copies.retain(|fingerprint, _| in_use.contains(fingerprint));
-    copies.insert(fingerprint.to_string(), name.to_string());
-    let path = tls_dir.join(FROM_THE_LIST);
-    let json = serde_json::to_vec_pretty(&copies).map_err(|e| e.to_string())?;
-    tls::write_durably(&path, &json).map_err(|e| format!("{}: {e}", path.display()))
-}
-
-fn copies_from_the_list(tls_dir: &std::path::Path) -> Result<std::collections::BTreeMap<String, String>, String> {
-    let path = tls_dir.join(FROM_THE_LIST);
-    match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(std::collections::BTreeMap::new()),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    }
-}
-
-/// The leaf fingerprints of the supplied certificate in force and of the one an open rotation puts in force.
-fn fingerprints_in_use(tls_dir: &std::path::Path) -> Result<Vec<String>, String> {
-    let mut in_use = Vec::new();
-    let (materials, served) = tls::in_force(tls_dir)?;
-    if materials.supplied {
-        in_use.push(tls::describe(&served, "the certificate")?.fingerprint);
-    }
-    if let Some(incoming) = tls::incoming_certificate(tls_dir)? {
-        in_use.push(tls::describe(&incoming, "the incoming certificate")?.fingerprint);
-    }
-    Ok(in_use)
+/// The names of [`served_entries`].
+pub fn served_names(tls_dir: &std::path::Path) -> Result<Vec<String>, String> {
+    Ok(served_entries(tls_dir)?.into_iter().map(|entry| entry.name).collect())
 }
 
 async fn list_certificates(
@@ -2757,7 +2716,8 @@ async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) 
     match served_names(&tls::dir_of(&state.data_dir)) {
         Ok(served) if served.contains(&name) => {
             return Json(Envelope::failed_one(format!(
-                "the leader serves {name:?}; choose another certificate for it first"
+                "the leader serves {name:?}; choose another certificate under Admin → System → Leader certificate \
+                 first"
             )));
         }
         Ok(_) => {}
@@ -3125,6 +3085,20 @@ async fn forget_secret_version(
     State(state): State<AppState>,
     Path((name, version)): Path<(String, i64)>,
 ) -> Json<Envelope> {
+    match served_entries(&tls::dir_of(&state.data_dir)) {
+        Ok(served)
+            if served
+                .iter()
+                .any(|entry| entry.name == name && entry.version == version) =>
+        {
+            return Json(Envelope::failed_one(format!(
+                "the leader serves {name:?} v{version}; choose another certificate under Admin → System → Leader \
+                 certificate first"
+            )));
+        }
+        Ok(_) => {}
+        Err(e) => return Json(Envelope::failed_one(e)),
+    }
     let data_dir = state.data_dir.clone();
     let entitlements = state.entitlements.clone();
     let wanted = name.clone();
@@ -5410,9 +5384,10 @@ mod authority_delivery_tests {
         let data_dir = a_leader_with_an_authority("supplied");
         let dir = tls::dir_of(&data_dir);
         let materials = tls::current(&dir).expect("an authority");
-        let chain = std::fs::read(&materials.server_cert_path).unwrap();
-        let key = std::fs::read(&materials.server_key_path).unwrap();
-        tls::install(&dir, &chain, &key, &materials.ca_pem, &["localhost".to_string()], &[]).expect("a supplied set");
+        let (_, chain, key) = tls::to_serve(&dir).unwrap();
+        tls::tests::listing(&dir);
+        tls::tests::install(&dir, &chain, &key, &materials.ca_pem, &["localhost".to_string()], &[])
+            .expect("a supplied set");
 
         assert_eq!(
             authority_to_hand(&data_dir, &[], true).map(|pem| pem.into_bytes()),
@@ -5780,29 +5755,61 @@ mod certificate_list_tests {
 
     /// A leader's TLS directory serving its own authority's certificate.
     fn own(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("smeltr-certificate-list-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let tls_dir = dir.join("tls");
+        let tls_dir = tls::tests::scratch(&format!("certificate-list-{tag}"));
         tls::ensure(&tls_dir, names(), A_YEAR, &[]).expect("an authority");
         tls_dir
     }
 
-    /// The entry served is the one chosen, though another holds the same certificate, and none once the leader
-    /// goes back to its own.
+    /// The entry served is the one chosen, and none once the leader goes back to its own.
     #[test]
     fn the_leader_serves_the_entry_chosen_by_name() {
         let dir = own("chosen");
-        let theirs = tls::ensure(&own("chosen-theirs"), names(), A_YEAR, &[]).unwrap();
-        let chain = std::fs::read(&theirs.server_cert_path).unwrap();
-        let key = std::fs::read(&theirs.server_key_path).unwrap();
-        let fingerprint = tls::describe(&chain, "the certificate").unwrap().fingerprint;
+        let theirs_dir = own("chosen-theirs");
+        let theirs = tls::current(&theirs_dir).unwrap();
+        let (_, chain, key) = tls::to_serve(&theirs_dir).unwrap();
 
-        record_copy(&dir, &fingerprint, "receiver").unwrap();
-        tls::install(&dir, &chain, &key, &theirs.ca_pem, &names(), &[]).unwrap();
-        assert_eq!(served_names(&dir).unwrap(), ["receiver"]);
+        tls::tests::install(&dir, &chain, &key, &theirs.ca_pem, &names(), &[]).unwrap();
+        assert_eq!(served_names(&dir).unwrap(), ["supplied"]);
 
         tls::uninstall(&dir).unwrap();
         assert!(served_names(&dir).unwrap().is_empty());
+    }
+
+    /// The version the leader serves stays in the list until another is served: not deleted, not forgotten, and
+    /// not pruned however many come after it.
+    #[tokio::test]
+    async fn the_version_served_is_kept() {
+        let state = super::secrets_delivery_tests::state("served-version");
+        let dir = tls::dir_of(&state.data_dir);
+        tls::read_list(&dir, state.store.clone());
+        let own = tls::ensure(&dir, names(), A_YEAR, &[]).unwrap();
+        let (_, chain, key) = tls::to_serve(&dir).unwrap();
+        let (chain, key) = (String::from_utf8(chain).unwrap(), String::from_utf8(key).unwrap());
+        state.store.create_certificate("leader", "", &chain, &key).unwrap();
+        let entry = tls::Entry {
+            name: "leader".to_string(),
+            version: 1,
+            ca: String::from_utf8(own.ca_pem).unwrap(),
+        };
+        tls::serve(&dir, &entry, &names(), &[]).unwrap();
+
+        let refused = delete_secret(State(state.clone()), Path("leader".to_string())).await;
+        assert!(!refused.0.ok, "the served entry was deleted");
+        let refused = forget_secret_version(State(state.clone()), Path(("leader".to_string(), 1))).await;
+        assert!(!refused.0.ok, "the served version was forgotten");
+
+        for _ in 0..crate::startup_config::leader_secret_versions() + 1 {
+            let stored = store_value(state.clone(), "leader".to_string(), key.clone(), Some(chain.clone())).await;
+            assert!(stored.0.ok, "{:?}", stored.0.errors);
+        }
+        assert!(
+            state.store.certificate_chain("leader", 1).unwrap().is_some(),
+            "the served version was pruned"
+        );
+        assert!(
+            state.store.certificate_chain("leader", 2).unwrap().is_none(),
+            "nothing was pruned"
+        );
     }
 
     // -- certificates this leader issues ----------------------------------
@@ -5870,7 +5877,7 @@ mod certificate_list_tests {
         let signing = tls::signing_root_fingerprint(&tls::dir_of(&state.data_dir)).unwrap();
         assert_eq!(entry.chain.last().unwrap().fingerprint, signing);
 
-        let (chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
+        let (_, chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
         tls::is_pair(chain.as_bytes(), key.as_bytes()).expect("the key is the certificate's");
         crate::io::trust::refuse_unless_usable(&chain, crate::io::trust::Side::Server).expect("serves");
         crate::io::trust::refuse_unless_usable(&chain, crate::io::trust::Side::Client).expect("presents as a client");
@@ -5896,7 +5903,7 @@ mod certificate_list_tests {
     async fn an_issued_certificate_is_not_replaced() {
         let state = issuing("issue-replace");
         assert!(issue(&state, "acme", &["receiver.example.com"]).await.ok);
-        let (chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
+        let (_, chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
         let out = replace_certificate(
             State(state.clone()),
             Path("acme".to_string()),
@@ -5977,7 +5984,7 @@ mod certificate_list_tests {
 
         assert_eq!(renewed(&state, leaf.not_before_millis + 1).await, ["acme"]);
         assert!(!state.store.key_standing().unwrap().unopenable.contains(&acme));
-        let (chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
+        let (_, chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
         tls::is_pair(chain.as_bytes(), key.as_bytes()).expect("the new key is the new certificate's");
     }
 

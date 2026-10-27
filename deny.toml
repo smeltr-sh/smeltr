@@ -19,6 +19,11 @@ ignore = [
     { id = "RUSTSEC-2026-0347", reason = "smeltr never enables ECH" },
     { id = "RUSTSEC-2026-0348", reason = "smeltr does not enable rustls's brotli feature" },
     { id = "RUSTSEC-2026-0349", reason = "a network attacker can make a later connection classical-only; no fix until rustls-ffi takes 0.23.46" },
+    # 2026-10-26: zstd 0.14.3 fixes these, and smeltr is on it. apache-avro 0.22, the newest, still takes zstd 0.13,
+    # which has no fixed release, and only the tests use it, to read Avro files. Each leaves once apache-avro moves.
+    { id = "RUSTSEC-2026-0391", reason = "zstd 0.13, through apache-avro in the tests only" },
+    { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7, through apache-avro in the tests only" },
+    { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7, through apache-avro in the tests only" },
 ]
 
 [licenses]
@@ -59,13 +64,11 @@ skip = [
     { crate = "getrandom@0.3.4", reason = "ahash, through arrow" },
     { crate = "hashbrown@0.14.5", reason = "dashmap, through gix-tempfile" },
     { crate = "hashbrown@0.16.1", reason = "clru through gix-pack, and rsqlite-vfs through rusqlite" },
-    { crate = "itertools@0.13.0", reason = "bindgen, building aws-lc-fips-sys" },
-    { crate = "prettyplease@0.2.37", reason = "bindgen, building aws-lc-fips-sys" },
+    { crate = "itertools@0.13.0", reason = "prost-derive" },
     { crate = "heck@0.4.1", reason = "ouroboros_macro, through apache-avro" },
     { crate = "zstd@0.13.3", reason = "apache-avro's zstandard, in the tests" },
     { crate = "zstd-safe@7.3.0", reason = "zstd 0.13, through apache-avro in the tests" },
-    { crate = "shlex@1.3.0", reason = "bindgen, building aws-lc-fips-sys" },
-    { crate = "syn@2.0.119", reason = "bindgen, gix-macros, tracing-attributes and other proc macros not yet on syn 3" },
+    { crate = "syn@2.0.119", reason = "gix-macros, tracing-attributes and other proc macros not yet on syn 3" },
     { crate = "num-bigint@0.4.8", reason = "der-parser, through x509-parser" },
     { crate = "spin@0.9.9", reason = "multer, through axum" },
     { crate = "untrusted@0.7.1", reason = "aws-lc-rs" },

@@ -10,15 +10,24 @@
 <script lang="ts">
   import { reported } from './errors.svelte';
   import Field from './Field.svelte';
-  import { getSample, putSample, type SampleDto, type SampleRecordDto } from './api';
+  import Clamped from './Clamped.svelte';
+  import { SvelteSet } from 'svelte/reactivity';
+  import FindBox, { type FindFilter } from './FindBox.svelte';
+  import InlineError from './InlineError.svelte';
+  import {
+    getSample,
+    previewPipeline,
+    putSample,
+    type SampleDto,
+    type SampleRecordDto,
+  } from './api';
+  import { buildFileConfig } from './pipeline';
   import {
     cellMistyped,
     cellText,
     editColumns,
     matches,
     pastedRecords,
-    readFrom,
-    readFromFields,
     withCell,
     type EditColumn,
   } from './sampleEdit';
@@ -48,10 +57,13 @@
   let source = $state('');
   let rows: Row[] = $state([]);
   let columns: EditColumn[] = $state([]);
-  let readFields: string[] = $state([]);
   let selected: Set<number> = $state(new Set());
   let editing: number | null = $state(null);
   let query = $state('');
+  let find = $state<FindFilter>({ kind: 'none' });
+  /** How many records the sample holds as saved. */
+  let saved = $state(0);
+  let findError = $state('');
   let showAll = $state(false);
   let pasted = $state('');
   let saving = $state(false);
@@ -67,8 +79,8 @@
       name = got.sample.name;
       source = got.sample.source ?? '';
       rows = got.sample.records.map((record, key) => ({ key, record, changed: false }));
+      saved = rows.length;
       columns = editColumns(got.sample);
-      readFields = readFromFields(got.sample);
     } catch (e) {
       loadFailed = true;
       reported(e);
@@ -76,7 +88,19 @@
   }
   load();
 
-  let found = $derived(rows.filter((r) => matches(r.record, query)));
+  // An expression runs over the sample as saved, through no steps: its rows are the saved records' places, which are
+  // the draft's keys until the draft changes a record or drops one.
+  const config = JSON.stringify(buildFileConfig('sample', 'sample', [], [], []));
+  const evaluate = (expression: string) =>
+    previewPipeline({ config, sample: id, showInternal: true, filter: expression });
+  let drafted = $derived(
+    rows.length !== saved || rows.some((r) => r.changed) || pasted.trim() !== '',
+  );
+  const keeps = (r: Row) =>
+    find.kind === 'expression'
+      ? find.rows.has(r.key)
+      : find.kind !== 'keyword' || matches(r.record, find.text);
+  let found = $derived(rows.filter(keeps));
   let shown = $derived(showAll ? found : found.slice(0, SHOWN));
   let adding = $derived(pastedRecords(pasted, columns));
   let pasteError = $derived('error' in adding ? adding.error : '');
@@ -99,8 +123,14 @@
     editing = null;
   }
 
+  // Which long cells the reader has opened, by record and column.
+  const opened = new SvelteSet<string>();
+  /** Past this many characters a cell is given room to be read in: with every internal field a column, the table
+   * would otherwise squeeze it to a sliver. */
+  const LONG = 60;
+
   function open(e: Event, key: number) {
-    if (!(e.target as Element).closest('.tick, .right')) editing = key;
+    if (!(e.target as Element).closest('.tick, .right, .more')) editing = key;
   }
 
   function remove(key: number) {
@@ -156,13 +186,19 @@
 
     <Field label="Records" group>
       <div class="actions">
-        <input
-          class="search"
-          type="search"
-          aria-label="Search records"
-          placeholder="Search records"
-          bind:value={query}
-        />
+        <div class="search">
+          <FindBox
+            bind:query
+            bind:filter={find}
+            bind:error={findError}
+            {evaluate}
+            paused={drafted}
+            remember={`smeltr-sample-expressions:${id}`}
+            id="find-records"
+            label="Search records"
+            placeholder="Search records"
+          />
+        </div>
         <span class="count">{selected.size} of {rows.length} selected</span>
         <span class="spacer"></span>
         <button
@@ -178,11 +214,17 @@
           onclick={() => keepTicked(false)}>Remove selected</button
         >
       </div>
+      <InlineError message={findError} />
+      {#if find.kind === 'paused'}
+        <p class="dim">
+          Not applied: an expression filters the saved sample, and you have unsaved changes.
+        </p>
+      {/if}
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th class="tick">
+              <th class="tick pin">
                 <input
                   type="checkbox"
                   aria-label="Select every record shown"
@@ -194,16 +236,13 @@
                     )}
                 />
               </th>
-              <th>#</th>
+              <th class="num pin">#</th>
               {#each columns as c (c.name)}
                 <th class="mono"
                   >{c.name}{#if c.type}<small>{c.type}</small>{/if}</th
                 >
               {/each}
-              {#if readFields.length > 0}
-                <th>Read from<small>{readFields.join(' · ')}</small></th>
-              {/if}
-              <th></th>
+              <th class="pin end"></th>
             </tr>
           </thead>
           <tbody>
@@ -217,7 +256,7 @@
                 onclick={(e) => open(e, r.key)}
                 onfocusin={(e) => open(e, r.key)}
               >
-                <td class="tick">
+                <td class="tick pin">
                   <input
                     type="checkbox"
                     aria-label={`Select record ${r.key + 1}`}
@@ -225,7 +264,7 @@
                     onchange={(e) => tick([r.key], e.currentTarget.checked)}
                   />
                 </td>
-                <td class="mono dim">{r.key + 1}</td>
+                <td class="mono dim num pin">{r.key + 1}</td>
                 {#each columns as c (c.name)}
                   {#if editing === r.key}
                     <td>
@@ -244,15 +283,23 @@
                       />
                     </td>
                   {:else}
-                    <td class="mono" class:error={cellMistyped(r.record, c.name)}
-                      >{cellText(r.record, c.name)}</td
+                    {@const text = cellText(r.record, c.name)}
+                    {@const at = `${r.key}/${c.name}`}
+                    <td
+                      class="mono"
+                      class:long={text.length > LONG}
+                      class:error={cellMistyped(r.record, c.name)}
                     >
+                      <Clamped
+                        {text}
+                        open={opened.has(at)}
+                        ontoggle={() => (opened.has(at) ? opened.delete(at) : opened.add(at))}
+                        label={`${c.name}, record ${r.key + 1}`}
+                      />
+                    </td>
                   {/if}
                 {/each}
-                {#if readFields.length > 0}
-                  <td class="mono dim nowrap">{readFrom(r.record, readFields)}</td>
-                {/if}
-                <td class="right">
+                <td class="right pin end">
                   <button
                     type="button"
                     class="compact"
@@ -323,7 +370,9 @@
     flex-grow: 1;
   }
   .search {
-    max-width: 18rem;
+    display: flex;
+    flex: 1;
+    max-width: 24rem;
   }
   .count {
     color: var(--dim);
@@ -332,8 +381,8 @@
   .mono {
     font-family: var(--mono);
   }
-  .nowrap {
-    white-space: nowrap;
+  td.long {
+    min-width: 28rem;
   }
   .table-wrap {
     overflow-x: auto;
@@ -369,17 +418,38 @@
   }
   .tick {
     width: 2rem;
+    box-sizing: border-box;
+  }
+  /* With every field a column the table runs past the screen and scrolls; a record's tick, number and remove stay in
+     view at its edges. Opaque, so the fields scroll under them. */
+  .pin {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--panel);
+  }
+  .num.pin {
+    left: 2rem;
+  }
+  .pin.end {
+    left: auto;
+    right: 0;
   }
   .right {
     text-align: right;
   }
   /* The record being edited: the open rail every open thing takes. */
-  tr.open {
+  tr.open > .tick {
     box-shadow: inset 3px 0 0 var(--accent);
   }
   /* A record changed in this draft, marked as a diff marks one (STYLE_GUIDE.md, "Cards"). */
   tr.changed {
-    box-shadow: inset 3px 0 0 var(--added);
     background: color-mix(in oklch, var(--added) 7%, transparent);
+  }
+  tr.changed > .tick {
+    box-shadow: inset 3px 0 0 var(--added);
+  }
+  tr.changed > .pin {
+    background: color-mix(in oklch, var(--added) 7%, var(--panel));
   }
 </style>

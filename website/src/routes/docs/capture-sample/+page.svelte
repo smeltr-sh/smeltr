@@ -98,9 +98,10 @@
     <strong>Edit</strong> on a sample's row under Build → Resources → Samples to change it.
   </p>
   <p>
-    You need at least one captured record to save. Choose <strong>Discard</strong> if the records are
-    not useful. Capture only enough to test the case you care about: saved samples become part of the
-    versioned configuration.
+    You need at least one captured record to save. Choose <strong>Discard</strong> if the records
+    are not useful. Capture only enough to test the case you care about. A saved sample stays on
+    your branch and deploys only when a test uses it; the change's review lists the others under
+    <strong>Left out</strong>.
   </p>
   <h2 id="blocked">Capture a blocked source</h2>
   <p>

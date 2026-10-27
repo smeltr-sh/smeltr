@@ -60,6 +60,7 @@
       links: [
         { href: '/docs/operations', title: 'Operate the fleet' },
         { href: '/docs/upgrade', title: 'Upgrade' },
+        { href: '/docs/release-extras', title: 'Release extras' },
         { href: '/docs/logs-metrics', title: 'Logs & metrics' },
         { href: '/docs/delivery', title: 'Delivery' },
         { href: '/docs/backup-recovery', title: 'Backup & recovery' },

@@ -496,6 +496,11 @@
         is not what clients are being served. Restart the leader to serve it.
       </InlineError>
     {/if}
+    {#if certificates.unserved}
+      <InlineError>
+        {certificates.unserved}
+      </InlineError>
+    {/if}
     <Panel>
       {#snippet title()}
         Current authority
@@ -522,10 +527,6 @@
           {:else if supplied && certificates?.entry}
             Serves the certificate "{certificates.entry}" from
             <a href="#/admin/certificates">Admin → Certificates</a>. Replace it there to renew it.
-          {:else if supplied}
-            Serves a certificate uploaded before certificates were kept in
-            <a href="#/admin/certificates">Admin → Certificates</a>. It is not in the list; add it
-            there and choose it here to manage it.
           {:else}
             What this leader serves, signed by the current authority and issued afresh at every
             start.

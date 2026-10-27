@@ -117,9 +117,7 @@
     onchange={(e) => setFormat(value, e.currentTarget.value as 'text' | 'avro', stream)}
   >
     <option value="text">text</option>
-    <option value="avro"
-      >{stream ? 'avro — one Avro message per record' : 'avro — records from Avro files'}</option
-    >
+    <option value="avro">avro</option>
   </select>
 </Field>
 

@@ -148,6 +148,11 @@
     Browsers must be told to trust a new authority separately. If the page says the socket refused
     the reload, restart the leader. Replace proxy certificates at the proxy.
   </p>
+  <p>
+    If the leader starts and cannot serve the certificate you chose, for example because it expired,
+    it serves a "Leader issued" certificate instead. Admin → System → Leader certificate says why
+    and what to do.
+  </p>
   <h2 id="acme">Order a certificate over ACME</h2>
   <p>
     Let's Encrypt and other certificate authorities issue certificates automatically over ACME. The
@@ -206,12 +211,20 @@
     </li>
     <li>If an order fails, the page shows why, and the leader tries again every hour.</li>
     <li>
+      If the secrets <a href="/docs/secrets#encryption-key">encryption key</a> is regenerated, the leader
+      orders a new certificate right away, because it can no longer open the private key of the one it
+      has.
+    </li>
+    <li>
       <strong>Save</strong> keeps your changes for the next renewal. <strong>Renew now</strong> orders
       a certificate right away.
     </li>
     <li>A renewal under a new root is a switch, like the first order.</li>
   </ul>
-  <p>The leader stops renewing once you choose another source.</p>
+  <p>
+    The leader keeps renewing after you choose another source, so connection identities that present
+    the certificate named <strong>acme</strong> in Admin → Certificates stay current.
+  </p>
   <h3>Advanced settings</h3>
   <p>Under <strong>Advanced</strong>:</p>
   <ul>

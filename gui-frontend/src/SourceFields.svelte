@@ -291,11 +291,7 @@
     </Field>
     {#if (source.framing ?? 'lines') === 'lines'}
       <Nested>
-        <LineBreakerField
-          value={source.lineBreaker}
-          placeholder={'([\\r\\n]+)\\d{4}-'}
-          onchange={(v) => (source.lineBreaker = v)}
-        />
+        <LineBreakerField value={source.lineBreaker} onchange={(v) => (source.lineBreaker = v)} />
       </Nested>
     {/if}
   {/if}
@@ -872,7 +868,7 @@
         Each partition stops reading at this point and goes idle.
       {/snippet}
       <select value={stopKind(source)} onchange={(e) => setStop(source, e.currentTarget.value)}>
-        <option value="never">never &mdash; keep reading</option>
+        <option value="never">never</option>
         <option value="timestamp">at a time</option>
       </select>
     </Field>
@@ -972,7 +968,7 @@
         }}
       >
         <option value="tcp">tcp</option>
-        <option value="udp">udp &mdash; one message per datagram</option>
+        <option value="udp">udp</option>
       </select>
     </Field>
   {/if}
@@ -1126,7 +1122,6 @@
       {#if source.transport !== 'udp'}
         <LineBreakerField
           value={source.lineBreaker}
-          placeholder={'(\\x00)'}
           onchange={(v) => {
             if (source.type === 'syslogReceiver') source.lineBreaker = v;
           }}

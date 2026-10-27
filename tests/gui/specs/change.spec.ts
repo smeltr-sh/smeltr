@@ -389,6 +389,21 @@ test('a sample the branch deleted is put back from its card on the change page',
     name: 'keep',
     records: [{ _raw: 'a line' }],
   });
+  // A sample reaches main only with a test that uses it.
+  await api.put('/api/pipelines/p?branch=seed&scope=shared', {
+    id: 'p',
+    name: 'p',
+    steps: [{ type: 'drop', id: 'none', condition: 'false' }],
+  });
+  await api.put('/api/tests?branch=seed&scope=shared', {
+    id: 'keep',
+    name: 'keep',
+    pipeline: 'p',
+    sample: 'keep',
+    lockedAt: 0,
+    rowsIn: 1,
+    expected: [null],
+  });
   await api.openChange('seed', 'Add a sample');
   await api.deploy('seed');
   await api.delete('/api/samples/keep?branch=tidy&scope=shared');
@@ -478,4 +493,30 @@ test('History shows who changed what, who deployed it, and when', async ({
       exact: true,
     }),
   ).toBeVisible();
+});
+
+test('a review sets apart the samples no test uses, which the deploy leaves out', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  const on = '?branch=scratch&scope=shared';
+  await putTables(api, 'scratch', [table('colors')]);
+  await api.put(`/api/samples${on}`, {
+    id: 'tried',
+    name: 'capture 14:20',
+    records: [{ _raw: 'a' }],
+  });
+  await api.openChange('scratch', 'Colors, and a capture');
+
+  await goto(admin, leader, '#/changes/review/scratch');
+  const staying = admin.locator('.left-out');
+  await expect(staying.getByRole('heading', { name: 'Left out' })).toBeVisible();
+  await expect(staying.getByText('capture 14:20', { exact: true })).toBeVisible();
+  await expect(staying.getByRole('button', { name: 'Undo changes' })).toHaveCount(0);
+  await expect(admin.getByText('1 sample left out', { exact: true })).toBeVisible();
+
+  await api.deploy('scratch');
+  const main = await api.get('/api/samples?branch=main&scope=shared');
+  expect(main.samples).toEqual([]);
 });

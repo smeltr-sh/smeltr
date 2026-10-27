@@ -118,6 +118,11 @@
 </div>
 
 <style>
+  /* A glyph on its own face sits as a block, so the chip is as tall as one with words. */
+  .chip > :global(svg) {
+    display: block;
+  }
+
   .chip {
     display: inline-flex;
     align-items: center;
