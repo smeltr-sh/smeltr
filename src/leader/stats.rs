@@ -488,7 +488,7 @@ fn pipeline_stats(
 }
 
 /// The steps of the pipeline at `index` that actually run, in order. A comment emits nothing and a disabled step is
-/// skipped at compile (`plan::plan`), but both take a `FunctionId` and a place in `step_ids`, so listing that
+/// skipped at compile (`plan::compile`), but both take a `FunctionId` and a place in `step_ids`, so listing that
 /// directly would show a reader steps that cost nothing because they do not exist at runtime.
 fn running_steps(system: &LoadedSystem, index: usize) -> Vec<String> {
     fn walk(steps: &[Step], step_ids: &[String], out: &mut Vec<String>) {
