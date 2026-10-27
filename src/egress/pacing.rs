@@ -89,8 +89,8 @@ pub struct Pacing {
     batch: usize,
     /// The most the target may be right now: the destination's fair share of the pool, or a stated buffer.
     ceiling: usize,
-    /// The bytes worth having queued and in flight: the rate times the least round trip, times this round's gain, in whole
-    /// batches.
+    /// The bytes worth having queued and in flight: the rate times the least round trip, times this round's gain,
+    /// in whole batches.
     target: usize,
     /// Bytes handed to the destination so far.
     dispatched: u64,
