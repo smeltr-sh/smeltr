@@ -1179,11 +1179,20 @@ fn workers_behind_target(snapshot: &[ThreadHealth]) -> impl Iterator<Item = (Str
         .into_iter()
         .filter(|(_, t)| t.stopped_at_millis.is_none())
         .filter_map(|(worker_id, t)| {
-            let desired = t.supervising.as_ref()?.desired_commit.as_deref()?;
-            (t.commit.as_deref() != Some(desired)).then(|| (worker_id.to_string(), desired.to_string()))
+            let supervising = t.supervising.as_ref()?;
+            let desired = supervising.desired_commit.as_deref()?;
+            not_running_as_found(t.commit.as_deref(), desired, supervising.failure.as_deref())
+                .then(|| (worker_id.to_string(), desired.to_string()))
         })
         .collect::<Vec<_>>()
         .into_iter()
+}
+
+/// Whether a worker is not running `desired` as it found it: on another commit, or on it but refusing to restart
+/// it, which a new version of a certificate it presents asks for. A worker refusing keeps running the old version
+/// until it expires, so it is as stuck as one that never deployed.
+fn not_running_as_found(running: Option<&str>, desired: &str, failure: Option<&str>) -> bool {
+    running != Some(desired) || failure.is_some()
 }
 
 /// The clock this warning ages against, which is a worker's wait for one particular commit rather than its wait
@@ -2269,7 +2278,7 @@ fn worker_not_deploying_its_target(
         .filter_map(|(worker_id, t)| {
             let supervising = t.supervising.as_ref()?;
             let desired = supervising.desired_commit.as_deref()?;
-            (t.commit.as_deref() != Some(desired)).then_some((
+            not_running_as_found(t.commit.as_deref(), desired, supervising.failure.as_deref()).then_some((
                 worker_id,
                 BehindTarget {
                     desired,
@@ -2310,6 +2319,11 @@ fn worker_not_deploying_its_target(
                 // operator about every other failure here -- that the old bundle is still processing -- is the
                 // opposite of true for this one.
                 message: match (failure, running) {
+                    (Some(why), Some(running)) if running == desired => {
+                        format!(
+                            "worker {worker_id} could not restart {desired}: {why}. It is still running it as it was"
+                        )
+                    }
                     (Some(why), Some(_)) => {
                         format!("worker {worker_id} has not deployed {desired}: {why}. It is still running what it had")
                     }
@@ -3089,6 +3103,48 @@ mod tests {
                 .iter()
                 .any(|w| w.condition == Condition::WorkerNotDeployingItsTarget),
             "a deployment that has only just started is not a failure"
+        );
+    }
+
+    /// A worker on the commit it found that refused to restart onto a new version of a certificate it presents keeps
+    /// presenting the old one until it expires. Nothing else says so: the expiry warning reads the newest version.
+    #[test]
+    fn a_worker_refusing_to_restart_what_it_runs_is_a_warning() {
+        let refusing =
+            "source \"in\" presents a certificate whose Extended Key Usage does not permit client authentication";
+        let snapshot = vec![behind("w1", Some("newer"), "newer", Some(refusing))];
+        assert!(
+            currently_active_facts(&snapshot, NOW, INTERVAL, &deployed()).contains(&not_deploying_key("w1", "newer"))
+        );
+        let stuck = HashMap::from([(not_deploying_key("w1", "newer"), NOW - 600_000)]);
+        let warnings = derive(
+            &snapshot,
+            &[],
+            &stuck,
+            NOW,
+            INTERVAL,
+            None,
+            &deployed(),
+            None,
+            &Rotating::None,
+            &[],
+            &settled(),
+            &[],
+            None,
+            None,
+            None,
+        );
+        let raised = (warnings.iter())
+            .find(|w| w.condition == Condition::WorkerNotDeployingItsTarget)
+            .expect("a worker refusing to restart is a warning");
+        assert_eq!(
+            raised.message,
+            format!("worker w1 could not restart newer: {refusing}. It is still running it as it was")
+        );
+
+        let running = vec![behind("w1", Some("newer"), "newer", None)];
+        assert!(
+            !currently_active_facts(&running, NOW, INTERVAL, &deployed()).contains(&not_deploying_key("w1", "newer"))
         );
     }
 
