@@ -315,7 +315,13 @@ fn own_entry(dir: &Path, sans: &[String], validity: Duration) -> Result<(Entry, 
 /// The newest version of the leader's own entry, where [`own_entry`] would serve it as it is.
 fn own_current(dir: &Path, issued: &Issued) -> Result<Entry, String> {
     let list = list_of(dir)?;
-    if list.kept_certificates().map_err(|e| e.to_string())?.get(OWN_ENTRY) != Some(&Kept::Issued(issued.clone())) {
+    // The names as a set: the same names in another order serve the same clients, and a new version for them would
+    // restart every worker presenting it.
+    let sorted = |names: &[String]| std::collections::BTreeSet::from_iter(names.iter().cloned());
+    let same =
+        |kept: &Issued| kept.validity_days == issued.validity_days && sorted(&kept.names) == sorted(&issued.names);
+    if !matches!(list.kept_certificates().map_err(|e| e.to_string())?.get(OWN_ENTRY), Some(Kept::Issued(kept)) if same(kept))
+    {
         return Err(format!(
             "this leader does not issue {OWN_ENTRY:?} for {:?}",
             issued.names
@@ -3266,6 +3272,21 @@ pub(crate) mod tests {
 
         let refused = check_supplied(&chain_and_its_key, &key, &ca, &names(), &[]).expect_err("a key was accepted");
         assert!(refused.contains("private key"), "{refused}");
+    }
+
+    /// The same names in another order are the same names: a start does not issue a new version for them.
+    #[test]
+    fn a_start_with_its_names_reordered_issues_nothing() {
+        let dir = scratch("reordered");
+        ensure(&dir, names(), A_YEAR, &[]).expect("a first start");
+        let mut reordered = names();
+        reordered.reverse();
+        assert_ne!(reordered, names(), "the fixture needs two names");
+        ensure(&dir, reordered, A_YEAR, &[]).expect("a start");
+        assert_eq!(
+            super::super::certificate_versions(list_in(&dir).as_ref()).unwrap()[OWN_ENTRY],
+            1
+        );
     }
 
     /// An earlier build kept the leader's own key on disk, unsealed. A start serving the list's entry removes it.
