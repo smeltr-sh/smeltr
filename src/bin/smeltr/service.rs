@@ -175,8 +175,8 @@ mod imp {
                         && std::fs::rename(&path, path.with_extension("log.1")).is_ok()
                         && let Ok(file) = open_log(&path)
                     {
-                        // Closed one turn late: a write that looked up the old handle just before the swap is done with it
-                        // by then.
+                        // Closed a second later: a write that looked up the old handle just before the swap is done
+                        // with it by then.
                         let previous = std::mem::replace(&mut current, point_stderr_at(file));
                         std::thread::sleep(Duration::from_secs(1));
                         unsafe { CloseHandle(previous as HANDLE) };
