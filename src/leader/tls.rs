@@ -111,6 +111,11 @@ pub fn ensure(dir: &Path, sans: Vec<String>, validity: Duration, required: &[Str
     let _replacing = changing();
     let (own, authority_created) = match own_entry(dir, &sans, validity) {
         Ok(own) => {
+            // Where an earlier build kept its own certificate, its key unsealed. The list holds it now.
+            let _ = (
+                remove_file_durably(&dir.join("key.pem")),
+                remove_file_durably(&dir.join("cert.pem")),
+            );
             if temporary(dir).is_some() {
                 replaced_what_is_served(dir);
             }
@@ -3261,6 +3266,18 @@ pub(crate) mod tests {
 
         let refused = check_supplied(&chain_and_its_key, &key, &ca, &names(), &[]).expect_err("a key was accepted");
         assert!(refused.contains("private key"), "{refused}");
+    }
+
+    /// An earlier build kept the leader's own key on disk, unsealed. A start serving the list's entry removes it.
+    #[test]
+    fn a_start_removes_the_key_an_earlier_build_kept_on_disk() {
+        let dir = scratch("earlier-key");
+        ensure(&dir, names(), A_YEAR, &[]).expect("a first start");
+        for file in ["key.pem", "cert.pem"] {
+            std::fs::write(dir.join(file), "left by an earlier build").unwrap();
+        }
+        ensure(&dir, names(), A_YEAR, &[]).expect("a start");
+        assert!(!dir.join("key.pem").exists() && !dir.join("cert.pem").exists());
     }
 
     /// Every worker's rustls enforces Extended Key Usage, so a certificate issued for clients alone would cut the
