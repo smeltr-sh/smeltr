@@ -157,7 +157,7 @@ sudo journalctl -u smeltr-leader -b</code
     service account and restart policy explicitly. Preserve the data, key and configuration across
     replacing the executable. Do not start a second leader against the same data.
   </p>
-  <p>To uninstall, stop the service and remove what it runs from:</p>
+  <p>To uninstall, stop and remove the service, then delete its executable:</p>
   <pre><code
       >sudo systemctl disable --now smeltr-leader
 sudo rm /etc/systemd/system/smeltr-leader.service
@@ -165,9 +165,10 @@ sudo systemctl daemon-reload
 sudo rm -r /opt/smeltr</code
     ></pre>
   <p>
-    <code>/var/lib/smeltr</code> and <code>/etc/smeltr</code> hold the data, the configuration and
-    the secrets encryption key. Back them up before you delete them and the
-    <code>smeltr</code> account, or keep them to install again.
+    These commands leave <code>/var/lib/smeltr</code>, <code>/etc/smeltr</code> and the
+    <code>smeltr</code> account in place. <code>/var/lib/smeltr</code> and <code>/etc/smeltr</code> hold
+    the data, the configuration and the secrets encryption key. Back them up before you delete them, or
+    keep them to install again.
   </p>
 
   <h2 id="windows-service">Run as a Windows service</h2>
@@ -206,14 +207,14 @@ Start-Service Smeltr</code
     To replace the executable, run <code>Stop-Service Smeltr</code>, the
     <code>Expand-Archive</code> line again, then <code>Start-Service Smeltr</code>.
   </p>
-  <p>To uninstall, stop the service and remove what it runs from:</p>
+  <p>To uninstall, stop and remove the service, then delete its executable:</p>
   <pre><code
       >Stop-Service Smeltr
 sc.exe delete Smeltr
 Remove-Item -Recurse 'C:\Program Files\Smeltr'</code
     ></pre>
   <p>
-    <code>C:\ProgramData\Smeltr</code> holds the data, the configuration, the secrets encryption key and
-    the log. Back it up before you delete it, or keep it to install again.
+    These commands leave <code>C:\ProgramData\Smeltr</code> in place. It holds the data, the configuration,
+    the secrets encryption key and the log. Back it up before you delete it, or keep it to install again.
   </p>
 </GuideLayout>
