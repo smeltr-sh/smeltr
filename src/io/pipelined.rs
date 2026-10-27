@@ -152,9 +152,7 @@ impl<S: Sender> Pool<S> {
     /// Give one more sender its thread, if one is parked and, past those spawned at the start, `lend` allows it.
     fn spawn_one(&mut self) {
         if self.parked.is_empty()
-            || self.handles.len() >= self.started
-                && !self.handles.is_empty()
-                && self.lend.as_mut().is_some_and(|lend| !lend())
+            || (self.handles.len() >= self.started && self.lend.as_mut().is_some_and(|lend| !lend()))
         {
             return;
         }

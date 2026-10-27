@@ -842,9 +842,10 @@ fn run(
     abandon(returns, &mut owner, &mut redo);
 }
 
-/// Tell the pacing model a batch came back, and carry its target to the queue and the metrics when it moves. The ceiling is read each time: the pool's share moves as other queues come and go. The model's
-/// headroom under the ceiling is averaged over time and reported every [`HEADROOM_EVERY`]: none for long is a
-/// destination memory holds back.
+/// Tell the pacing model a batch came back, and carry its target to the queue and the metrics when it moves. The
+/// ceiling is read each time: the pool's share moves as other queues come and go. The model's headroom under the
+/// ceiling is averaged over time and reported every [`HEADROOM_EVERY`]: none for long is a destination memory holds
+/// back.
 #[allow(clippy::too_many_arguments)]
 fn pace(
     pacing: &mut Option<Pacing>,

@@ -214,8 +214,8 @@ below which the work per batch outweighs the batch. The senders a destination
 starts with are held whatever the traffic too. A paced destination starts
 another sender when all its senders are busy. Each sender borrows what it
 holds from the pool before it starts and keeps it while the destination
-lives, and the target is held to what the pool lends beyond the senders. A sender gone idle hands back what its allocator
-holds free.
+lives, and the target is held to what the pool lends beyond the senders. A
+sender gone idle hands back what its allocator holds free.
 
 ```mermaid
 flowchart LR
