@@ -87,7 +87,6 @@ export type Route =
   // `only` narrows a list to the objects an editor's Connections linked to (`connections.ts`).
   | { tab: 'build'; page: 'sources'; json: boolean; focus?: string; only?: string[] }
   | { tab: 'build'; page: 'destinations'; json: boolean; focus?: string; only?: string[] }
-  | { tab: 'build'; page: 'identities'; json: boolean }
   | { tab: 'build'; page: 'samples' }
   // `sample` carries the choice from a sample row's "Run in a pipeline"
   // link, so the list can say which sample opening a pipeline will preview.
@@ -274,7 +273,6 @@ export const RESOURCES_TABS: SectionItem[] = [
   { label: 'Samples', hash: '#/build' },
   { label: 'Lookup tables', hash: '#/build/lookups' },
   { label: 'Grok patterns', hash: '#/build/grok' },
-  { label: 'Connection identities', hash: '#/build/identities' },
 ];
 
 /** The Resources tabs the person signed in may open: samples are an editor's. */
@@ -331,7 +329,6 @@ const SECTION_OF: Record<Route['page'], string | null> = {
   graph: null,
   sources: 'Sources',
   destinations: 'Destinations',
-  identities: 'Resources',
   samples: 'Resources',
   pipelines: 'Pipelines',
   routes: 'Routes',
@@ -372,7 +369,6 @@ export function section(route: Route): { items: SectionItem[]; here: string } | 
 const SCOPED_PAGES: ReadonlySet<Route['page']> = new Set([
   'sources',
   'destinations',
-  'identities',
   'samples',
   'pipelines',
   'pipeline',
@@ -508,7 +504,6 @@ export function parseRoute(hash: string): Route {
           return { tab: 'build', page, json: false, focus: decodeURIComponent(parts[2]) };
         return { tab: 'build', page, json: false, ...only(search) };
       }
-      if (parts[1] === 'identities') return { tab: 'build', page: 'identities', json: json(2) };
       if (parts[1] === 'lookups') return { tab: 'build', page: 'lookups', json: json(2) };
       if (parts[1] === 'grok')
         return { tab: 'build', page: 'grok', json: json(2), ...only(search) };
@@ -662,7 +657,7 @@ function pipelineCrumb(id: string, names: PipelineNames): string {
  * themselves here, the same way a `RESOURCES_TABS` entry names itself in
  * the tab strip. */
 function drilledInto(route: Route, names: PipelineNames): Crumb[] {
-  const [samplesTab, lookupsTab, grokTab, identitiesTab] = RESOURCES_TABS;
+  const [samplesTab, lookupsTab, grokTab] = RESOURCES_TABS;
   switch (route.page) {
     case 'samples':
       return [{ label: samplesTab.label }];
@@ -670,8 +665,6 @@ function drilledInto(route: Route, names: PipelineNames): Crumb[] {
       return [{ label: lookupsTab.label }];
     case 'grok':
       return [{ label: grokTab.label }];
-    case 'identities':
-      return [{ label: identitiesTab.label }];
     case 'route-preview':
       return [{ label: 'route preview' }];
     case 'pipeline':
@@ -767,7 +760,6 @@ const HELD_PAGES: Record<string, string> = {
   manifest: 'routes',
   lookups: 'lookups',
   grok: 'grok',
-  identities: 'identities',
 };
 
 const SECTION_PAGES: Record<string, string> = {
@@ -776,7 +768,6 @@ const SECTION_PAGES: Record<string, string> = {
   'routes.json': 'routes',
   'lookup-tables.json': 'lookups',
   'grok-patterns.json': 'grok',
-  'identities.json': 'identities',
 };
 
 /** Where a bundle path is edited: the scope holding it, and the page holding

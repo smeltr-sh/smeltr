@@ -24,10 +24,11 @@
     headerValueRefusal,
     setBatched,
     setSingle,
-    identityRefusal,
+    tlsRefusal,
+    tlsSet,
     type HttpBatched,
   } from './http';
-  import IdentityPicker from './IdentityPicker.svelte';
+  import TlsFields from './TlsFields.svelte';
   import IcebergFields from './IcebergFields.svelte';
   import DeltaFields from './DeltaFields.svelte';
   import SchemaRegistryFields from './SchemaRegistryFields.svelte';
@@ -35,7 +36,6 @@
     LIMITS,
     OBJECT_PREFIX,
     type DestinationDto,
-    type IdentityDto,
     type SecretDto,
     type DocIdPolicy,
     type Compression,
@@ -62,13 +62,10 @@
 
   let {
     destination,
-    identities,
     secrets,
     mechanisms,
   }: {
     destination: DestinationDto;
-    /** Every identity the destination may name. */
-    identities: IdentityDto[];
     /** The secret catalog, so a credential can be pointed at one the leader holds. */
     secrets: SecretDto[];
     /** The SASL mechanisms this leader's build can select. */
@@ -166,22 +163,10 @@
       <input type="text" bind:value={destination.defaultTopic} />
     </Field>
     {@render formatFields(destination, AVRO_STREAM_FORMATS, 'json', streamFormatHelp)}
-    <IdentityPicker
-      value={destination.identity}
-      {identities}
-      farEnd="destination"
-      onchange={(v) => {
-        if (destination.type === 'kafka') destination.identity = v;
-      }}
-    />
+    <TlsFields value={destination} farEnd="destination" />
     <div class="section">
       <div class="section-head">security</div>
-      <KafkaSecurity
-        value={destination}
-        {secrets}
-        {mechanisms}
-        hasIdentity={destination.identity !== undefined}
-      />
+      <KafkaSecurity value={destination} {secrets} {mechanisms} hasTls={tlsSet(destination)} />
     </div>
     <Advanced label="Delivery and client properties" modified={kafkaModified(destination)}>
       <Field field="compression" label="compression">
@@ -249,11 +234,7 @@
           }}
         />
       </Field>
-      <KafkaPropsEditor
-        value={destination}
-        {secrets}
-        hasIdentity={destination.identity !== undefined}
-      />
+      <KafkaPropsEditor value={destination} {secrets} hasTls={tlsSet(destination)} />
     </Advanced>
   {:else if destination.type === 'eventHubs'}
     <Field required field="namespace" label="namespace">
@@ -333,7 +314,7 @@
       label="endpoint"
       bind:value={l.endpoint}
       sends
-      error={identityRefusal(l.endpoint, l.identity) ?? null}
+      error={tlsRefusal(l.endpoint, l) ?? null}
       placeholder={'https://{name}.{region}.ingest.monitor.azure.com'}
     >
       {#snippet help()}
@@ -354,12 +335,7 @@
     </Field>
     <ConnectorAccess store="logAnalytics" value={l} show="credential" {secrets} />
     <Advanced label="Advanced" modified={logAnalyticsModified(l)}>
-      <IdentityPicker
-        value={l.identity}
-        {identities}
-        farEnd="destination"
-        onchange={(v) => (l.identity = v)}
-      />
+      <TlsFields value={l} farEnd="destination" />
       <ConnectorAccess store="logAnalytics" value={l} show="advanced" />
       <RequestDelivery value={l} sizeDefault={LIMITS.logAnalyticsRequestBytes.default}>
         {#snippet sizeHelp()}
@@ -381,14 +357,7 @@
     <Field required field="defaultIndex" label="default index">
       <input type="text" bind:value={destination.defaultIndex} />
     </Field>
-    <IdentityPicker
-      value={destination.identity}
-      {identities}
-      farEnd="destination"
-      onchange={(v) => {
-        if (destination.type === 'elasticsearch') destination.identity = v;
-      }}
-    />
+    <TlsFields value={destination} farEnd="destination" />
     <ConnectorAccess store="elasticsearch" value={destination} show="credential" {secrets} />
     <Field field="docId" label="duplicate documents">
       {#snippet help()}
@@ -589,14 +558,7 @@
         <option value="receipt">received &mdash; may lose events</option>
       </select>
     </Field>
-    <IdentityPicker
-      value={destination.identity}
-      {identities}
-      farEnd="destination"
-      onchange={(v) => {
-        if (destination.type === 'splunkHec') destination.identity = v;
-      }}
-    />
+    <TlsFields value={destination} farEnd="destination" />
     <Advanced label="Advanced" modified={splunkModified(destination)}>
       <RequestDelivery
         value={destination}
@@ -629,7 +591,7 @@
       label="url"
       bind:value={h.url}
       sends={sendsCredential(h)}
-      error={identityRefusal(h.url, h.identity) ?? null}
+      error={tlsRefusal(h.url, h) ?? null}
       placeholder={h.type === 'prometheus'
         ? 'https://prometheus.internal/api/v1/write'
         : 'https://collector.internal/ingest'}
@@ -722,12 +684,7 @@
       {/snippet}
     </PropsEditor>
     <Advanced label="Advanced" modified={httpModified(h)}>
-      <IdentityPicker
-        value={h.identity}
-        {identities}
-        farEnd="destination"
-        onchange={(v) => (h.identity = v)}
-      />
+      <TlsFields value={h} farEnd="destination" />
       {#if h.type === 'http'}
         <Field field="compression" label="compression">
           {#snippet help()}
@@ -767,9 +724,9 @@
       {/if}
     </Advanced>
   {:else if destination.type === 'iceberg'}
-    <IcebergFields value={destination} {secrets} {identities} />
+    <IcebergFields value={destination} {secrets} />
   {:else if destination.type === 'delta'}
-    <DeltaFields value={destination} {secrets} {identities} />
+    <DeltaFields value={destination} {secrets} />
   {:else if isObjectStore(destination)}
     {@const o = destination}
     {#if o.type === 'azureBlob'}
@@ -845,14 +802,7 @@
       </Nested>
     {/if}
     {#if isCloud(o)}
-      <IdentityPicker
-        value={o.identity}
-        {identities}
-        farEnd="destination"
-        onchange={(v) => {
-          if (isCloud(o)) o.identity = v;
-        }}
-      />
+      <TlsFields value={o} farEnd="destination" />
     {/if}
     <Advanced
       label={o.type === 'sftp' ? 'Delivery' : 'Endpoint and delivery'}

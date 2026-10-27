@@ -61,8 +61,8 @@ job = attributes["job"] as str;`;
   <h2 id="example">Example</h2>
   <p>
     Takes remote_write on port 9090, over TLS with the
-    <a href="/docs/secrets#identities">identity</a> <code>receiver-tls</code>. Senders present the
-    token held in the worker-host variable <code>PROM_TOKEN</code>.
+    <a href="/docs/certificates#connectors">certificate</a> <code>receiver-tls</code>. Senders
+    present the token held in the worker-host variable <code>PROM_TOKEN</code>.
   </p>
   <pre><code>{@html highlight(json(examples.prometheusReceiverSource))}</code></pre>
   <ProductScreenshot
@@ -70,7 +70,7 @@ job = attributes["job"] as str;`;
     height={2000}
     crop={{ x: 608, y: 638, width: 1664, height: 724 }}
     alt="The Prometheus receiver form on the Sources page: id prometheus, port 9090, no tokens yet."
-    caption="The same source in the Sources page's add dialog, before you add its token and identity."
+    caption="The same source in the Sources page's add dialog, before you add its token and certificate."
   />
   <p>Prometheus sends to it with a <code>remote_write</code> block like this:</p>
   <pre><code>{prometheus}</code></pre>
@@ -213,22 +213,22 @@ job = attributes["job"] as str;`;
   <h2 id="senders">Tokens and certificates</h2>
   <p>
     Anyone a receiver admits can put records into the group's pipelines, so a receiver needs
-    <code>tokens</code>, an <code>identity</code> with authorities, or both. The leader refuses a receiver
-    with neither.
+    <code>tokens</code>, an <code>certificate</code> and <code>trustedAuthorities</code>, or both.
+    The leader refuses a receiver with neither.
   </p>
   <ul>
     <li>
       <strong>Tokens:</strong> a sender presents one as
       <code>Authorization: Bearer &lt;token&gt;</code>, Prometheus's <code>authorization</code>
-      block. The receiver refuses any other request before reading its body. Without an identity, the
+      block. The receiver refuses any other request before reading its body. Without a certificate, the
       token crosses the network in the clear, so use a token alone only behind a balancer that terminates
       TLS.
     </li>
     <li>
-      <strong>Client certificates:</strong> with an
-      <a href="/docs/secrets#identities">identity</a>, the receiver serves TLS with the identity's
-      certificate and key. If the identity has authorities, every connection, health checks
-      included, must present a certificate that chains to one of them: Prometheus's
+      <strong>Client certificates:</strong> with a
+      <a href="/docs/certificates#connectors">certificate</a>, the receiver serves TLS with it. With
+      <code>trustedAuthorities</code>, every connection, health checks included, must present a
+      certificate that chains to one of them: Prometheus's
       <code>tls_config</code> with <code>cert_file</code> and <code>key_file</code>.
     </li>
   </ul>
@@ -271,9 +271,10 @@ job = attributes["job"] as str;`;
 
   <h2 id="health">Health check</h2>
   <p>
-    <code>GET /health</code> on the receiver's port answers 200 while the receiver takes requests and
-    503 while it is full, blocked or stopping. It needs no token. Point a balancer's health check or a
-    readiness probe at it, so a busy worker gets no requests until it can take them. Under an identity
+    <code>GET /health</code> on the receiver's port answers 200 while the receiver takes requests
+    and 503 while it is full, blocked or stopping. It needs no token. Point a balancer's health
+    check or a readiness probe at it, so a busy worker gets no requests until it can take them. With
+    <code>trustedAuthorities</code>
     with authorities it needs a client certificate like any other request.
   </p>
 
@@ -329,9 +330,9 @@ job = attributes["job"] as str;`;
   <dl>
     <dt><strong>The sender cannot connect</strong></dt>
     <dd>
-      Check that the port is open on every worker and that the sender's address reaches them. An
-      identity with authorities refuses a connection without a certificate that chains to one of
-      them.
+      Check that the port is open on every worker and that the sender's address reaches them. A
+      receiver with <code>trustedAuthorities</code> refuses a connection without a certificate that chains
+      to one of them.
     </dd>
     <dt><strong>Every request gets 401</strong></dt>
     <dd>

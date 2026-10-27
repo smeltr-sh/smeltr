@@ -96,8 +96,8 @@ struct Draw {
     kind: Kind,
     /// The source's object in the bundle.
     source: Map<String, Value>,
-    /// The identity the bundle declares, by its id, when the source names one.
-    identity: Option<&'static str>,
+    /// Whether the source trusts an authority of its own.
+    tls: bool,
     /// The setting broken, if one was. `Some(None)` is a break the save refuses on no one field of it.
     broken: Option<Option<&'static str>>,
 }
@@ -112,7 +112,7 @@ const OPTIONS: &[&str] = &[
     "kind.azureBlobList",
     "kind.azureBlobQueue",
     "kind.sftp",
-    "identity",
+    "tls",
     "encoding",
     "framing.lines",
     "framing.object",
@@ -184,8 +184,8 @@ const OPTIONS: &[&str] = &[
     "broken.avroFields",
     "broken.avroFraming",
     "broken.avroEncoding",
-    "broken.identity",
-    "broken.identityPlain",
+    "broken.certificate",
+    "broken.tlsPlain",
     "mangled",
 ];
 
@@ -303,17 +303,16 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, only: Option<Kind>) ->
             ])),
         );
     }
-    let mut identity = None;
-    // An identity is the client's TLS, so only a source reached over https takes one.
-    if kind != Kind::Sftp && !target.live() && all_https(&d) && rng.chance(4) {
-        cov.reach("identity");
-        identity = Some("client");
-        d.insert("identity".into(), json!("client"));
+    // TLS settings are the client's, so only a source reached over https takes them.
+    let tls = kind != Kind::Sftp && !target.live() && all_https(&d) && rng.chance(4);
+    if tls {
+        cov.reach("tls");
+        d.insert("trustedAuthorities".into(), json!(authority_pem()));
     }
     let mut draw = Draw {
         kind,
         source: d,
-        identity,
+        tls,
         broken: None,
     };
     if !target.live() && rng.chance(2) {
@@ -409,7 +408,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
         false => vec!["lineBreaker", "encoding"],
     };
     if kind != Kind::Sftp {
-        breaks.extend(["identity", "identityPlain"]);
+        breaks.extend(["certificate", "tlsPlain"]);
     }
     match kind {
         Kind::S3Sqs => breaks.extend(["queueUrl", "visibilitySecs"]),
@@ -458,12 +457,12 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
             set("encoding", json!(rng.pick(&["klingon", "", "utf-9"])));
             Some("encoding")
         }
-        "identity" => {
-            set("identity", json!("nobody"));
-            Some("identity")
+        "certificate" => {
+            set("certificate", json!(" "));
+            Some("certificate")
         }
-        "identityPlain" => {
-            // An identity is refused where no address it would sign negotiates TLS, at the first of them.
+        "tlsPlain" => {
+            // TLS settings are refused where no address they would guard negotiates TLS, at the first of them.
             d.remove("authEndpoint");
             let (endpoint, field) = match kind {
                 Kind::S3Sqs => {
@@ -481,11 +480,11 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
                     ("http://localhost:4443", "pubsubEndpoint")
                 }
                 Kind::GcsList => ("http://localhost:4443", "endpoint"),
-                Kind::Sftp => unreachable!("an SFTP source names no identity"),
+                Kind::Sftp => unreachable!("an SFTP source sets no TLS"),
             };
             d.insert("endpoint".into(), json!(endpoint));
-            d.insert("identity".into(), json!("client"));
-            draw.identity = Some("client");
+            d.insert("trustedAuthorities".into(), json!(authority_pem()));
+            draw.tls = true;
             Some(field)
         }
         "queueUrl" => {
@@ -599,19 +598,15 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
     }
 }
 
-/// `draw` as a whole bundle: the source, one route from it to a Kafka destination, and the identity it names.
+/// `draw` as a whole bundle: the source, and one route from it to a Kafka destination.
 fn bundle(draw: &Draw) -> Value {
-    let mut b = json!({
+    json!({
         "version": 1,
         "sources": [Value::Object(draw.source.clone())],
         "destinations": [{"id": "out", "type": "kafka", "brokers": "b:9092", "defaultTopic": "t"}],
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["out"]}]}],
-    });
-    if let Some(id) = draw.identity {
-        b["identities"] = json!([{"id": id, "authorities": authority_pem()}]);
-    }
-    b
+    })
 }
 
 // -- what the save says ------------------------------------------------------------------------------------------
@@ -644,7 +639,7 @@ fn trimmed(d: &Map<String, Value>, key: &str) -> Option<String> {
 fn check_loaded(draw: &Draw, c: &ObjectSourceConfig, named: &[SecretRef]) -> Result<(), String> {
     let d = &draw.source;
     let mut cmp = Compare::default();
-    cmp.expect("identity", draw.identity.is_some(), c.identity.is_some());
+    cmp.expect("tls", draw.tls, c.tls.is_some());
     cmp.expect("framing", expected_framing(d), &c.framing);
     cmp.expect("format", text(d, "format"), c.avro.as_ref().map(|_| "avro".to_string()));
     let label = text(d, "encoding").unwrap_or("auto".into());

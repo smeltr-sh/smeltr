@@ -1459,7 +1459,7 @@ fn check_connectors<T: serde::de::DeserializeOwned + serde::Serialize>(
             );
             assert!(!r.what.is_empty(), "{ctx}: no description");
             // Each example reads, and the leader refuses nothing of it that it does not already refuse of the
-            // first. A refusal that quotes the example, such as of an identity the bundle does not declare, is
+            // first. A refusal that quotes the example, such as of a certificate the leader does not hold, is
             // compared as if it quoted the first.
             for e in &r.examples {
                 let mut with = full.clone();
@@ -1634,15 +1634,8 @@ fn every_connector_example_loads() {
         } else {
             continue;
         };
-        // An example naming an identity is shown beside one the page declares, here one naming a certificate from
-        // the list.
-        let identities: Vec<_> = (example.get("identity").and_then(|i| i.as_str()))
-            .map(|id| serde_json::json!({ "id": id, "certificate": { "secret": id, "version": 1 } }))
-            .into_iter()
-            .collect();
-        let file =
-            serde_json::from_value(serde_json::json!({ "version": 1, "identities": identities, section: [example] }))
-                .unwrap_or_else(|e| panic!("{name} does not load: {e}"));
+        let file = serde_json::from_value(serde_json::json!({ "version": 1, section: [example] }))
+            .unwrap_or_else(|e| panic!("{name} does not load: {e}"));
         let errors = smeltr::config_file::validation_errors(file);
         assert!(errors.is_empty(), "{name} is refused: {errors:?}");
     }

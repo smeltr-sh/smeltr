@@ -12,11 +12,11 @@
   import Field from './Field.svelte';
   import Nested from './Nested.svelte';
   import UrlField from './UrlField.svelte';
-  import IdentityPicker from './IdentityPicker.svelte';
+  import TlsFields from './TlsFields.svelte';
   import ConnectorAccess from './ConnectorAccess.svelte';
   import SecretRefInput from './SecretRefInput.svelte';
   import TokenListInput from './TokenListInput.svelte';
-  import type { IdentityDto, SecretDto } from './api';
+  import type { SecretDto } from './api';
   import {
     TABLE_NAMINGS,
     catalogTableRefusal,
@@ -33,11 +33,7 @@
     type TableNaming,
   } from './delta';
 
-  let {
-    value: d,
-    secrets,
-    identities,
-  }: { value: DeltaDestination; secrets: SecretDto[]; identities: IdentityDto[] } = $props();
+  let { value: d, secrets }: { value: DeltaDestination; secrets: SecretDto[] } = $props();
 
   const naming = $derived(namingOf(d));
 
@@ -162,12 +158,7 @@
 {#if naming === 'location'}
   <ConnectorAccess store="s3" value={d} show="credential" {secrets} />
 {/if}
-<IdentityPicker
-  value={d.identity}
-  {identities}
-  farEnd="destination"
-  onchange={(v) => (d.identity = v)}
-/>
+<TlsFields value={d} farEnd="destination" />
 <Advanced label="Storage" modified={storageModified(d)} bind:open={storageOpen}>
   {#if naming === 'unityCatalog'}
     <UrlField

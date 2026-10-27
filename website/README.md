@@ -257,8 +257,8 @@ The homepage introduces the source → Smeltr → destination data path without 
 connector count. `/docs/sources` and `/docs/destinations` follow
 [Reference pages](#reference-pages). The kind indexes live in
 `src/lib/connections.ts`, settings in `src/lib/connector-reference.json` and
-examples in `src/lib/connector-examples.json`. Shared authentication and
-connection identities live in `/docs/secrets`. Keep private repository links
+examples in `src/lib/connector-examples.json`. Shared authentication
+lives in `/docs/secrets`. Keep private repository links
 out of rendered pages. The setup guide retains `#connections` as
 a short set of links for existing bookmarks.
 The setup guide's completion checklist links each expected result to its procedure.

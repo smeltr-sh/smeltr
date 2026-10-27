@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { CaptureBatch, CaptureStatus, IdentityDto, SourceDto } from './api';
+import type { CaptureBatch, CaptureStatus, SourceDto } from './api';
 import {
   captureRequest,
   cellText,
@@ -179,13 +179,11 @@ describe('captureRequest', () => {
     });
   });
 
-  it('carries a source and the identity it names', () => {
+  it('carries a source as the form has it', () => {
     const source = { id: 'm', type: 'metrics' } as SourceDto;
-    const identity = { id: 'i' } as IdentityDto;
-    expect(captureRequest({ source, identity }, ask)).toEqual({
+    expect(captureRequest({ source }, ask)).toEqual({
       group: 'east',
       source,
-      identity,
       filter: 'level == "error"',
       maxMatches: 50,
       deadlineSecs: 20,

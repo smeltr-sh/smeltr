@@ -23,9 +23,6 @@ use crate::plan::topology::{DestinationKind, MAX_SENDERS};
 /// The destination's id in every generated file.
 const LAKE: &str = "lake";
 
-/// The identity the generated file declares. Any other name is one it does not.
-const DECLARED_IDENTITY: &str = "trust";
-
 const LOCATIONS: Pool = &[
     (r#""s3://lake/tables/web""#, false),
     (r#""s3a://lake/web""#, false),
@@ -311,13 +308,13 @@ fn known(rng: &mut Rng) -> Case {
         _ => {}
     }
 
-    let identity = match rng.below(4) {
-        0 => Some(DECLARED_IDENTITY),
-        1 if !clean => Some("nobody"),
+    let certificate = match rng.below(4) {
+        0 => Some("lake-client"),
+        1 if !clean => Some(" "),
         _ => None,
     };
-    if identity.is_some_and(|i| i != DECLARED_IDENTITY) {
-        refused.insert("identity");
+    if certificate.is_some_and(|c| c.trim().is_empty()) {
+        refused.insert("certificate");
     }
 
     let endpoint = rng.chance(2).then(|| rng.pick(ADDRESSES));
@@ -327,8 +324,8 @@ fn known(rng: &mut Rng) -> Case {
     {
         refused.insert("endpoint");
     }
-    // An identity is offered only over TLS.
-    if identity.is_some() && !endpoint_https {
+    // A certificate is presented only over TLS.
+    if certificate.is_some() && !endpoint_https {
         refused.insert("endpoint");
     }
 
@@ -380,7 +377,7 @@ fn known(rng: &mut Rng) -> Case {
         ("secretAccessKey", secret_key.map(|(v, _)| v)),
         ("roleArn", role.map(|(v, _)| v)),
         ("externalId", external_id.map(|(v, _)| v)),
-        ("identity", identity.map(Value::from)),
+        ("certificate", certificate.map(Value::from)),
     ];
     for (key, value) in storage {
         if let Some(v) = value {
@@ -483,7 +480,7 @@ fn garbage(rng: &mut Rng) -> Case {
     let mut dest = json!({ "id": LAKE, "type": "delta" });
     let fields = dest.as_object_mut().unwrap();
     let address: Pool = &[(r#""https://s3.us-west-2.amazonaws.com""#, false)];
-    let declared: Pool = &[(r#""trust""#, false)];
+    let declared: Pool = &[(r#""lake-client""#, false), (r#"" ""#, true)];
     let density = 1 + rng.below(6);
     for (key, pool) in [
         ("location", LOCATIONS),
@@ -494,7 +491,7 @@ fn garbage(rng: &mut Rng) -> Case {
         ("secretAccessKey", SECRETS),
         ("roleArn", ROLES),
         ("externalId", EXTERNAL_IDS),
-        ("identity", declared),
+        ("certificate", declared),
         ("compression", COMPRESSIONS),
         ("inFlight", IN_FLIGHTS),
         ("maxObjectBytes", OBJECT_BYTES),
@@ -539,19 +536,10 @@ fn garbage(rng: &mut Rng) -> Case {
     }
 }
 
-/// A self-signed certificate, for the declared identity to trust.
-fn authority() -> String {
-    let key = rcgen::KeyPair::generate().unwrap();
-    let params = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
-    params.self_signed(&key).unwrap().pem()
-}
-
-/// The example bundle with `case`'s destination in it, the identity it may name, and, when it is routed, a route
-/// delivering to it.
-fn bundle(case: &Case, authority: &str) -> String {
+/// The example bundle with `case`'s destination in it and, when it is routed, a route delivering to it.
+fn bundle(case: &Case) -> String {
     let mut file = parse(example_json());
     file["destinations"].as_array_mut().unwrap().push(case.dest.clone());
-    file["identities"] = json!([{ "id": DECLARED_IDENTITY, "authorities": authority }]);
     if case.routed {
         let catch_all = file["routes"]
             .as_array_mut()
@@ -605,9 +593,9 @@ fn built(case: &Case, system: &super::LoadedSystem) -> Result<(), String> {
     if !in_range {
         return Err(format!("built limits out of range: {c:?}"));
     }
-    let named = case.dest.get("identity").is_some();
-    if c.identity.is_some() != named || !system.topology.identities.is_empty() != named {
-        return Err(format!("named identity {named}, built {:?}", c.identity));
+    let named = case.dest.get("certificate").is_some();
+    if c.tls.as_ref().is_some_and(|t| t.certificate.is_some()) != named {
+        return Err(format!("named a certificate {named}, built {:?}", c.tls));
     }
     // What egress and the worker's memory budget read from the kind.
     let _ = (dest.kind.payload(), dest.kind.id_field());
@@ -639,7 +627,7 @@ const OPTIONS: [&str; 21] = [
     "secretAccessKey",
     "roleArn",
     "externalId",
-    "identity",
+    "certificate",
     "compression",
     "inFlight",
     "maxObjectBytes",
@@ -659,8 +647,7 @@ fn options_set(case: &Case) -> Vec<String> {
 
 /// Runs `generate` over the seeds (`fuzz_loader::run`), marking what each case reaches besides its refusals.
 fn run(seeds: std::ops::Range<u64>, generate: fn(&mut Rng) -> Case, expected: Vec<String>) {
-    let authority = authority();
-    let bundle = |case: &Case| bundle(case, &authority);
+    let bundle = |case: &Case| bundle(case);
     fuzz_loader::run(
         seeds,
         generate,

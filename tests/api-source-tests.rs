@@ -65,7 +65,7 @@ fn source(url: String, follow_links: bool) -> Box<dyn Source> {
             }),
             sign_in: None,
         }),
-        identity: None,
+        tls: None,
         poll_interval: Duration::from_secs(3600),
     });
     let mut secrets = HeldSecrets::default();
@@ -163,7 +163,7 @@ fn okta(org: String) -> Box<dyn Source> {
             }),
             start: ListStart::Everything,
         }),
-        identity: None,
+        tls: None,
         poll_interval: Duration::from_secs(3600),
     });
     let mut secrets = HeldSecrets::default();
@@ -507,7 +507,7 @@ fn an_okta_service_app_signs_in_with_dpop_and_replaces_a_refused_token() {
             },
             start: ListStart::Everything,
         }),
-        identity: None,
+        tls: None,
         poll_interval: Duration::from_secs(3600),
     });
     let mut secrets = HeldSecrets::default();
@@ -567,7 +567,7 @@ fn a_refused_service_app_says_what_to_check_of_its_keys() {
             },
             start: ListStart::Everything,
         }),
-        identity: None,
+        tls: None,
         poll_interval: Duration::from_secs(3600),
     });
     let mut secrets = HeldSecrets::default();
@@ -604,7 +604,7 @@ fn signed_in(
             since: None,
             sign_in: Some(sign_in),
         }),
-        identity: None,
+        tls: None,
         poll_interval,
     });
     let mut secrets = HeldSecrets::default();

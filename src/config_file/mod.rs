@@ -51,7 +51,7 @@ pub use bundle::{
 };
 pub use dto::{
     AnswerDto, AssignmentDto, BufferBytes, CompoundTypeDto, CustomPatternDto, DataTypeDto, DeliverRuleDto,
-    DestinationDto, DestinationKindDto, FetchBytes, FieldDto, FileConfig, GrokPatternDto, IdentityDto, LeaderSecretDto,
+    DestinationDto, DestinationKindDto, FetchBytes, FieldDto, FileConfig, GrokPatternDto, LeaderSecretDto,
     LookupOutputDto, LookupSourceDto, LookupTableDto, MatchKindDto, MultiplicityDto, OnExceptionDto, PUBSUB_ENDPOINT,
     ParserKindDto, PipelineDto, RenamePairDto, RouteDto, SecretRefDto, SourceDto, SourceKindDto, SqlKind, SqlSourceDto,
     StartPositionDto, StepDto,

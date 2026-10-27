@@ -235,8 +235,8 @@ describe('attention', () => {
     ]);
     const broken = warning('workerSilent', 'failed', { subjectId: 'w9', group: 'g9' });
     expect(attention([], readingOf, [broken], ['g9']).map((a) => a.subject)).toEqual(['w9']);
-    const twice = warning('identityExpiring', 'warning', {
-      subjectKind: 'identity',
+    const twice = warning('certificateExpiring', 'warning', {
+      subjectKind: 'source',
       subjectId: 'tls',
     });
     expect(attention([node('quiet', 'destination')], readingOf, [twice, twice])).toHaveLength(1);

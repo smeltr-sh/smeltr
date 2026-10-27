@@ -348,11 +348,13 @@ spec:
   </p>
   <ul>
     <li>
-      A receiver served under an identity speaks TLS, so its probe adds <code>scheme: HTTPS</code>.
+      A receiver that names a certificate speaks TLS, so its probe adds <code>scheme: HTTPS</code>.
     </li>
     <li>
-      Under an identity with authorities, every connection to the receiver must present a client
-      certificate, <code>/health</code> included. An <code>httpGet</code> probe has none, so use a
+      With authorities, every connection to the receiver must present a client certificate, <code
+        >/health</code
+      >
+      included. An <code>httpGet</code> probe has none, so use a
       <code>tcpSocket</code> probe on the receiver port there. It confirms only that the worker listens.
     </li>
     <li>

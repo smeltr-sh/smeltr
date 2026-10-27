@@ -632,11 +632,6 @@
         {@const DestinationsPage = pages.destinations}
         <DestinationsPage showJson={route.json} focus={route.focus} only={route.only} />
       {/if}
-    {:else if route.page === 'identities'}
-      {#if pages.identities}
-        {@const IdentitiesPage = pages.identities}
-        <IdentitiesPage showJson={route.json} />
-      {/if}
     {:else if route.page === 'samples'}
       {#if pages.samples}
         {@const SamplesPage = pages.samples}

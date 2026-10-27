@@ -225,7 +225,7 @@ pub fn ensure_own(dir: &Path, sans: Vec<String>, validity: Duration) -> Result<M
 }
 
 /// A certificate this leader's authority issues for `names`, as a chain ending at that root and its private key,
-/// both PEM. For an entry of the certificate list, which a receiver serves and an identity presents, so it permits
+/// both PEM. For an entry of the certificate list, which a receiver serves and a client presents, so it permits
 /// both server and client authentication. Never outlives the authority, as the leader's own certificate never does.
 pub fn issue(dir: &Path, names: Vec<String>, validity: Duration) -> Result<(String, String), String> {
     let _reading = changing();
@@ -769,6 +769,19 @@ pub fn check_supplied(
                 .to_string(),
         );
     }
+
+    // A worker's rustls enforces Extended Key Usage, so a certificate not for servers is one every worker refuses.
+    use crate::io::trust::{Side, Unusable};
+    crate::io::trust::usable(&String::from_utf8_lossy(chain), Side::Server).map_err(|why| match why {
+        Unusable::NotFor(_) => "this leader would serve a certificate whose Extended Key Usage does not permit \
+             server authentication, so a worker or browser refuses this certificate at the handshake: this leader \
+             serves it as a server certificate. Choose a certificate issued for servers"
+            .to_string(),
+        Unusable::NoSignature => "this leader would serve a certificate whose Key Usage does not permit a digital \
+             signature, so it cannot sign the handshake a worker or browser requires"
+            .to_string(),
+        Unusable::Unreadable(why) => format!("this leader would serve a certificate {why}"),
+    })?;
 
     // Asked of the verifier rather than by comparing strings, and of every name this leader is reached at rather
     // than the first. A client matches a name against a certificate by rules a string comparison does not know:
@@ -1749,9 +1762,8 @@ fn root_of_key(ca_pem: &[u8], key_pem: &str) -> Result<Described, String> {
 
 /// Whether `key` is the private key `chain`'s certificate was issued for.
 ///
-/// The check the leader already makes about its own certificate, offered to whatever else holds an operator's
-/// certificate beside a key kept somewhere else -- an outbound identity, whose certificate is committed and whose
-/// key is a secret, so the two can be moved apart and nothing else would notice until a handshake failed.
+/// The check the leader already makes about its own certificate, offered to the certificate list, which refuses a
+/// chain and a key that do not belong together: nothing else would notice until a handshake failed.
 pub fn is_pair(chain: &[u8], key: &[u8]) -> Result<(), String> {
     rustls_config(chain, key).map(|_| ())
 }
@@ -3165,6 +3177,21 @@ pub(crate) mod tests {
 
         let refused = check_supplied(&chain_and_its_key, &key, &ca, &names(), &[]).expect_err("a key was accepted");
         assert!(refused.contains("private key"), "{refused}");
+    }
+
+    /// Every worker's rustls enforces Extended Key Usage, so a certificate issued for clients alone would cut the
+    /// whole fleet off from this leader.
+    #[test]
+    fn a_certificate_not_for_servers_is_refused() {
+        let dir = scratch("not-for-servers");
+        let ca = ensure(&dir, names(), A_YEAR, &[]).expect("an authority").ca_pem;
+        let ca_key = std::fs::read_to_string(dir.join(CA_KEY)).unwrap();
+        let params = leaf_params(names(), A_YEAR, vec![ExtendedKeyUsagePurpose::ClientAuth], "names").unwrap();
+        let (chain, key) = sign(params, &ca_key, "a client certificate").unwrap();
+
+        let refused =
+            check_supplied(chain.as_bytes(), key.as_bytes(), &ca, &names(), &[]).expect_err("a client's was accepted");
+        assert!(refused.contains("server authentication"), "{refused}");
     }
 
     #[test]

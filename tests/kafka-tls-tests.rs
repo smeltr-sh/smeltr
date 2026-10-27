@@ -1,8 +1,8 @@
-//! An identity against a *real* broker that serves TLS and demands a client certificate.
+//! A certificate against a *real* broker that serves TLS and demands a client certificate.
 //!
-//! `config_file`'s tests establish that an identity is refused where it disagrees with itself, and
+//! `config_file`'s tests establish that TLS settings are refused where they disagree with themselves, and
 //! `elastic-tls-tests` proves the handshake for the connector whose TLS this code configures directly. Neither can
-//! reach what actually breaks here: whether librdkafka accepts the inline PEM properties an identity synthesizes,
+//! reach what actually breaks here: whether librdkafka accepts the inline PEM properties the TLS settings synthesize,
 //! reads a key out of a string rather than a file, and completes the handshake. A build whose librdkafka was
 //! compiled without `ssl.certificate.pem` passes every other test in the suite and fails this one.
 //!
@@ -17,9 +17,7 @@ use std::time::Duration;
 use smeltr::format::encoding::Encoding;
 use smeltr::io::kafka::{KafkaDestination, KafkaSource, total_partitions};
 use smeltr::io::{Destination, OutgoingRecord, OwnedRecord};
-use smeltr::plan::topology::{
-    HeldSecrets, Identity, KafkaDestinationConfig, KafkaProps, KafkaSourceConfig, SecretRef, StartPosition,
-};
+use smeltr::plan::topology::{HeldSecrets, KafkaDestinationConfig, KafkaProps, KafkaSourceConfig, StartPosition, Tls};
 use std::borrow::Cow;
 
 use rdkafka::config::ClientConfig;
@@ -31,13 +29,13 @@ fn hand(dest: &mut dyn Destination, rows: &[OutgoingRecord<'_>]) {
     dest.deliver(0, Cow::Owned(rows)).unwrap();
 }
 
-/// The name the key is held under. An identity names a credential like every other connector does.
+/// The name the certificate is held under.
 const CERTIFICATE: &str = "smeltr-tls-client";
 
-/// What `up.sh` wrote, as an identity and the secrets a worker would hold for it.
+/// What `up.sh` wrote, as TLS settings and the secrets a worker would hold for them.
 ///
 /// `None` when the rig is not up, which `live::service` has already decided is a skip or a failure.
-fn rig(test_name: &str) -> Option<(String, Identity, HeldSecrets)> {
+fn rig(test_name: &str) -> Option<(String, Tls, HeldSecrets)> {
     let brokers = live::service(test_name, "KAFKA_TLS_BROKERS", "a TLS Kafka broker (`just tls-up`)")?;
     let read = |var: &str| {
         let path = live::service(test_name, var, "a certificate from `just tls-up`")?;
@@ -54,17 +52,14 @@ fn rig(test_name: &str) -> Option<(String, Identity, HeldSecrets)> {
         value: key,
         chain: Some(certificate),
     }]);
-    let identity = Identity {
-        id: "acme".to_string(),
-        certificate: Some(SecretRef::LeaderStored {
-            name: CERTIFICATE.to_string(),
-            version: 1,
-        }),
+    let tls = Tls {
+        of: "source \"acme\"".into(),
+        certificate: Some(CERTIFICATE.to_string()),
         authorities: Some(authorities),
         trust_public: true,
-        presented: smeltr::plan::topology::PresentedAs::CLIENT,
+        side: smeltr::io::trust::Side::Client,
     };
-    Some((brokers, identity, secrets))
+    Some((brokers, tls, secrets))
 }
 
 fn metrics() -> smeltr::metrics::MetricsHandle {
@@ -75,8 +70,8 @@ fn topic() -> String {
     std::env::var("KAFKA_TLS_TOPIC").unwrap_or_else(|_| "smeltr-tls-tests".to_string())
 }
 
-/// `security.protocol` is the operator's, not the identity's: an identity says what this client presents and
-/// trusts, never whether SASL is also in play. Save-time validation refuses an identity without it.
+/// `security.protocol` is the operator's: the TLS settings say what this client presents and trusts, never
+/// whether SASL is also in play. Save-time validation refuses them without it.
 fn tls_props() -> KafkaProps {
     KafkaProps {
         literal: vec![("security.protocol".into(), "SSL".into())],
@@ -84,7 +79,7 @@ fn tls_props() -> KafkaProps {
     }
 }
 
-fn source(brokers: &str, identity: Option<Identity>) -> KafkaSourceConfig {
+fn source(brokers: &str, tls: Option<Tls>) -> KafkaSourceConfig {
     KafkaSourceConfig {
         service: smeltr::plan::topology::KafkaService::Kafka,
         encoding: Encoding::Auto,
@@ -92,7 +87,7 @@ fn source(brokers: &str, identity: Option<Identity>) -> KafkaSourceConfig {
         brokers: brokers.to_string(),
         topics: vec![topic()],
         group_id: "smeltr-tls-tests".to_string(),
-        identity: identity.map(Arc::new),
+        tls,
         start: StartPosition::Earliest,
         stop: None,
         deployed_at: 0,
@@ -104,18 +99,18 @@ fn source(brokers: &str, identity: Option<Identity>) -> KafkaSourceConfig {
 }
 
 /// Through smeltr's own path, not a hand-built client: `KafkaSource::new` and `total_partitions` each configure
-/// their own client, and a regression that dropped the identity from one of them would connect as nobody while a
+/// their own client, and a regression that dropped the TLS settings from one of them would connect as nobody while a
 /// test that assembled its own `ClientConfig` still passed.
 ///
 /// `total_partitions` decides how many readers a source gets, so a source it cannot count is one the deployment
 /// mis-sizes.
 #[test]
-fn a_source_under_an_identity_connects_through_the_paths_deploy_uses() {
-    let name = "a_source_under_an_identity_connects_through_the_paths_deploy_uses";
-    let Some((brokers, identity, secrets)) = rig(name) else {
+fn a_source_under_a_certificate_connects_through_the_paths_deploy_uses() {
+    let name = "a_source_under_a_certificate_connects_through_the_paths_deploy_uses";
+    let Some((brokers, tls, secrets)) = rig(name) else {
         return;
     };
-    let config = source(&brokers, Some(identity));
+    let config = source(&brokers, Some(tls));
 
     // `up.sh` gave the topic two partitions: a refused connection returns `None`, and an auto-created topic would
     // have one, so the count is what tells a real answer from either.
@@ -124,20 +119,20 @@ fn a_source_under_an_identity_connects_through_the_paths_deploy_uses() {
         Some(2),
         "counting partitions needs a completed mutual-TLS handshake"
     );
-    KafkaSource::new(&config, &secrets).expect("open a source under an identity");
+    KafkaSource::new(&config, &secrets).expect("open a source under a certificate");
 }
 
 /// The producer is the other call site that configures a client, and the reason both go through one function. A
 /// destination builds even when the broker never answers, so only a delivered record proves the handshake.
 #[test]
-fn a_destination_under_an_identity_delivers_to_a_broker_that_demands_one() {
-    let name = "a_destination_under_an_identity_delivers_to_a_broker_that_demands_one";
-    let Some((brokers, identity, secrets)) = rig(name) else {
+fn a_destination_under_a_certificate_delivers_to_a_broker_that_demands_one() {
+    let name = "a_destination_under_a_certificate_delivers_to_a_broker_that_demands_one";
+    let Some((brokers, tls, secrets)) = rig(name) else {
         return;
     };
     let config = KafkaDestinationConfig {
         payload: smeltr::plan::config::Payload::Record,
-        identity: Some(Arc::new(identity)),
+        tls: Some(tls),
         brokers,
         props: tls_props(),
         default_topic: topic(),
@@ -150,7 +145,7 @@ fn a_destination_under_an_identity_delivers_to_a_broker_that_demands_one() {
         avro: None,
     };
     let mut dest = KafkaDestination::new(&config, 0, metrics(), &secrets).expect("open a destination");
-    hand(&mut dest, &[OutgoingRecord::new(b"under-an-identity")]);
+    hand(&mut dest, &[OutgoingRecord::new(b"under-a-certificate")]);
     dest.flush()
         .expect("delivering a record needs a completed mutual-TLS handshake");
 }
@@ -161,7 +156,7 @@ fn a_destination_under_an_identity_delivers_to_a_broker_that_demands_one() {
 #[test]
 fn a_client_presenting_no_certificate_is_refused() {
     let name = "a_client_presenting_no_certificate_is_refused";
-    let Some((brokers, identity, _)) = rig(name) else {
+    let Some((brokers, tls, _)) = rig(name) else {
         return;
     };
 
@@ -169,7 +164,7 @@ fn a_client_presenting_no_certificate_is_refused() {
         .set("bootstrap.servers", &brokers)
         .set("group.id", "smeltr-tls-tests-anon")
         .set("security.protocol", "SSL")
-        .set("ssl.ca.pem", identity.authorities.as_deref().unwrap_or_default())
+        .set("ssl.ca.pem", tls.authorities.as_deref().unwrap_or_default())
         .create()
         .expect("build a client that presents nothing");
 
@@ -179,26 +174,26 @@ fn a_client_presenting_no_certificate_is_refused() {
     );
 }
 
-/// An identity that presents nothing is a real configuration -- a far end asking for no certificate needs only the
+/// TLS settings that present nothing are a real configuration -- a far end asking for no certificate needs only the
 /// authorities -- and this broker is not that far end. Through smeltr's own path, so what is refused is the
 /// deployment's own way of connecting rather than a hand-built client's.
 #[test]
-fn an_identity_that_presents_nothing_is_refused_by_a_broker_that_demands_one() {
-    let name = "an_identity_that_presents_nothing_is_refused_by_a_broker_that_demands_one";
-    let Some((brokers, identity, _)) = rig(name) else {
+fn trust_alone_is_refused_by_a_broker_that_demands_a_certificate() {
+    let name = "trust_alone_is_refused_by_a_broker_that_demands_a_certificate";
+    let Some((brokers, tls, _)) = rig(name) else {
         return;
     };
-    let trust_only = Identity {
-        id: "trust-only".to_string(),
+    let trust_only = Tls {
+        of: "source \"trust-only\"".into(),
         certificate: None,
-        authorities: identity.authorities,
+        authorities: tls.authorities,
         trust_public: true,
-        presented: smeltr::plan::topology::PresentedAs::CLIENT,
+        side: smeltr::io::trust::Side::Client,
     };
 
     assert_eq!(
         total_partitions(&source(&brokers, Some(trust_only)), &HeldSecrets::default()),
         None,
-        "an identity presenting no certificate counted partitions on a broker that demands one"
+        "a client presenting no certificate counted partitions on a broker that demands one"
     );
 }

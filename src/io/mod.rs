@@ -141,8 +141,8 @@ pub fn build_destination(
                 (None, None) => None,
             };
             // What this destination presents and trusts, resolved once: every transport below shares it, so an
-            // identity's certificate is parsed once rather than once per sender.
-            let config = http::agent_config(c.identity.as_deref(), secrets)?;
+            // certificate is parsed once rather than once per sender.
+            let config = http::agent_config(c.tls.as_ref(), secrets)?;
             let protocol = elastic::Elastic::new(c.default_index.clone())
                 .with_doc_id_policy(c.doc_id)
                 .with_unwritten(http::Unwritten::new(metrics.clone(), id));
@@ -172,7 +172,7 @@ pub fn build_destination(
         }
         DestinationKind::SplunkHec(c) => {
             let token = http::credential("splunk destination", "token", &c.token, secrets)?;
-            let config = http::agent_config(c.identity.as_deref(), secrets)?;
+            let config = http::agent_config(c.tls.as_ref(), secrets)?;
             // One transport per sender, as Elasticsearch's, and each with its own channel: Splunk tracks
             // acknowledgements per channel.
             let make = || splunk::transport(c, &token, &config);
@@ -186,7 +186,7 @@ pub fn build_destination(
         }
         DestinationKind::Http(c) => {
             let credentials = http::credential_headers("http destination", &c.credentials, secrets)?;
-            let config = http::agent_config(c.identity.as_deref(), secrets)?;
+            let config = http::agent_config(c.tls.as_ref(), secrets)?;
             let d = http_post::destination(c, &credentials, None, "http", &config, metrics, id);
             Ok(Box::new(d))
         }
@@ -196,13 +196,13 @@ pub fn build_destination(
             let sign_in: http::SharedSignIn = Arc::new(std::sync::Mutex::new(Box::new(entra::Entra::new(
                 &c.sign_in, resource, secrets, what,
             )?)));
-            let config = http::agent_config(c.http.identity.as_deref(), secrets)?;
+            let config = http::agent_config(c.http.tls.as_ref(), secrets)?;
             let d = http_post::destination(&c.http, &[], Some(sign_in), "logAnalytics", &config, metrics, id);
             Ok(Box::new(d))
         }
         DestinationKind::Prometheus(c) => {
             let credentials = http::credential_headers("prometheus destination", &c.credentials, secrets)?;
-            let config = http::agent_config(c.identity.as_deref(), secrets)?;
+            let config = http::agent_config(c.tls.as_ref(), secrets)?;
             let transport = remote_write::transport(c, &credentials, &config);
             // No senders: every request goes from this thread, so one lands before the next is sent.
             Ok(Box::new(

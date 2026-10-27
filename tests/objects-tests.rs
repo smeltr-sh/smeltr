@@ -33,7 +33,7 @@ fn config(format: ObjectFormat, compression: Compression) -> ObjectsDestinationC
         format,
         compression,
         storage_class: None,
-        identity: None,
+        tls: None,
         in_flight: 1,
         max_object_bytes: 1024 * 1024,
         buffer_bytes: 1024 * 1024,

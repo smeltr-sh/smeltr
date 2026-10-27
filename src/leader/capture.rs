@@ -46,10 +46,6 @@ pub struct CaptureRequest {
     /// an outgoing row is what a pipeline finished, which no route takes in.
     #[serde(default)]
     pub destination: Option<String>,
-    /// The identity that source names, where it names one. Sent as configuration like the source itself: a
-    /// capture samples the author's branch, which nothing here reads.
-    #[serde(default)]
-    pub identity: Option<crate::config_file::IdentityDto>,
     #[serde(default)]
     pub filter: Option<String>,
     /// Where a Kafka or Event Hubs source's capture starts. Absent, it reads from the latest.
@@ -360,7 +356,6 @@ impl Captures {
             group: request.group,
             source: request.source,
             destination: request.destination,
-            identity: request.identity,
             filter: request.filter,
             // The latest is where a capture reads from without one, so it is no start of its own.
             start: request
@@ -611,7 +606,7 @@ mod tests {
                     brokers: "b1:9092".to_string(),
                     topics: vec!["orders".to_string()],
                     group_id: "production".to_string(),
-                    identity: None,
+                    tls: Default::default(),
                     start: Default::default(),
                     stop: None,
                     fetch_bytes: Default::default(),
@@ -620,7 +615,6 @@ mod tests {
                 },
             }),
             destination: None,
-            identity: None,
             filter: None,
             start: None,
             max_matches: None,

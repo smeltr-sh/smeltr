@@ -50,14 +50,8 @@ pub const CATALOG: &[Route] = &[
         body: "DestinationDto[] (each { id, exceptions?, type, ...kind fields }, as GET /api/config returns them)",
     },
     Route {
-        method: "PUT",
-        path: "/api/identities",
-        what: "Replace the area's identities list on a branch; refused if a certificate and its stored key are not a pair. Query: scope, branch.",
-        body: "{ id, description?, certificate?: pem, key?: secretRef, authorities?: pem, trustPublic?: bool }[]",
-    },
-    Route {
         method: "POST",
-        path: "/api/identities/describe",
+        path: "/api/certificates/describe",
         what: "Describe the certificates in a PEM (subject, expiry, fingerprint). No query.",
         body: "{ pem: string }",
     },
@@ -118,14 +112,14 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/connections",
-        what: "What a change to one object reaches in each group that runs it. Query: scope, branch, kind (source|route|pipeline|destination|lookupTable|grokPattern|identity), id.",
+        what: "What a change to one object reaches in each group that runs it. Query: scope, branch, kind (source|route|pipeline|destination|lookupTable|grokPattern), id.",
         body: "",
     },
     Route {
         method: "POST",
         path: "/api/undo",
         what: "Put one object back as it was where the branch left main, as one save. Query: scope, branch.",
-        body: "{ section: 'sources'|'destinations'|'routes'|'lookupTables'|'grokPatterns'|'identities'|'pipelines', id: string }",
+        body: "{ section: 'sources'|'destinations'|'routes'|'lookupTables'|'grokPatterns'|'pipelines', id: string }",
     },
     Route {
         method: "POST",
@@ -167,7 +161,7 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/sql/statement",
         what: "Show the SQL statements an SQL source would run (first, later, run) and their binds. No query.",
-        body: "{ source: SourceDto (an SQL source), identity?: IdentityDto }",
+        body: "{ source: SourceDto (an SQL source) }",
     },
     // -- branches and changes --
     Route {
@@ -271,7 +265,7 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/captures",
         what: "Open a capture of one source or at one destination in a group; returns the session id and clamped bounds. No query.",
-        body: "{ group, source?: SourceDto, destination?: id, identity?: IdentityDto, filter?, start?: StartPosition, maxMatches?, maxBytes?, deadlineSecs? }",
+        body: "{ group, source?: SourceDto, destination?: id, filter?, start?: StartPosition, maxMatches?, maxBytes?, deadlineSecs? }",
     },
     Route {
         method: "GET",

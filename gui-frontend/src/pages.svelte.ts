@@ -10,7 +10,6 @@ const LOAD = {
   graph: () => import('./MapPage.svelte'),
   sources: () => import('./SourcesPage.svelte'),
   destinations: () => import('./DestinationsPage.svelte'),
-  identities: () => import('./IdentitiesPage.svelte'),
   samples: () => import('./SamplesPage.svelte'),
   pipelines: () => import('./PipelinesListPage.svelte'),
   lookups: () => import('./LookupTablesPage.svelte'),

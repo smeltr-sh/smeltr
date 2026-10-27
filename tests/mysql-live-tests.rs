@@ -17,7 +17,7 @@ use mysql_async::prelude::Queryable as _;
 use smeltr::core::column::DataType;
 use smeltr::io::mysql::{MySqlConnection, MySqlDriver};
 use smeltr::io::sql::{Dialect, Poll, Query, Statement};
-use smeltr::io::sql_source::{Driver, Mode, Position, SqlSource, SqlSourceConfig, Start, Tls, Verdict};
+use smeltr::io::sql_source::{Driver, Encrypted, Mode, Position, SqlSource, SqlSourceConfig, Start, Verdict};
 use smeltr::io::values::Value;
 use smeltr::io::{CommitMap, Progress, RecordObject, Source, SourceRecord, TopicPartition};
 use smeltr::plan::topology::{HeldSecrets, SecretRef, SourceMeta};
@@ -61,7 +61,7 @@ fn unique(prefix: &str) -> String {
 }
 
 /// A driver signed in as `user`, its password a stored secret.
-fn driver_with(server: &Server, user: &str, tls: Tls) -> Result<MySqlDriver, smeltr::io::IoError> {
+fn driver_with(server: &Server, user: &str, encrypted: Encrypted) -> Result<MySqlDriver, smeltr::io::IoError> {
     let mut secrets = HeldSecrets::default();
     secrets.set_stored([("mysql-password".to_string(), 1, PASSWORD.to_string())]);
     let connection = MySqlConnection {
@@ -73,14 +73,14 @@ fn driver_with(server: &Server, user: &str, tls: Tls) -> Result<MySqlDriver, sme
             name: "mysql-password".to_string(),
             version: 1,
         }),
-        tls,
-        identity: None,
+        encrypted,
+        tls: None,
     };
     MySqlDriver::new(connection, &secrets)
 }
 
 fn driver(server: &Server, user: &str) -> MySqlDriver {
-    driver_with(server, user, Tls::Disable).expect("a driver")
+    driver_with(server, user, Encrypted::Disable).expect("a driver")
 }
 
 /// The database's owner, for writing the rows a source reads.
@@ -788,7 +788,7 @@ fn json_bytes_and_odd_types_arrive_as_their_declared_types() {
 fn require_tls_refuses_a_server_whose_certificate_it_cannot_verify() {
     for server in servers("require_tls_refuses_a_server_whose_certificate_it_cannot_verify") {
         // Each image serves a certificate it signed itself at its first start, which no root here trusts.
-        let mut d = driver_with(&server, READER, Tls::Require).expect("a driver");
+        let mut d = driver_with(&server, READER, Encrypted::Require).expect("a driver");
         let err = d.run(&bare("SELECT 1 AS one"), &[]).expect_err("an unverified server");
         assert!(err.contains("invalid peer certificate"), "{}: {err}", server.name);
         let mut clear = driver(&server, READER);
@@ -919,7 +919,6 @@ fn run_describes_the_query_and_reads_before_any_field_is_declared() {
                 group: "g".to_string(),
                 source: Some(source),
                 destination: None,
-                identity: None,
                 secrets: Vec::new(),
                 filter: None,
                 start: None,

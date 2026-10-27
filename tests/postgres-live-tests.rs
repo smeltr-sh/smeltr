@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use smeltr::core::column::DataType;
 use smeltr::io::postgres::{PostgresConnection, PostgresDriver};
 use smeltr::io::sql::{Dialect, Poll, Query, Statement};
-use smeltr::io::sql_source::Tls;
+use smeltr::io::sql_source::Encrypted;
 use smeltr::io::sql_source::{Driver, Mode, Position, SqlSource, SqlSourceConfig, Start, Verdict};
 use smeltr::io::values::Value;
 use smeltr::io::{CommitMap, Progress, RecordObject, Source, SourceRecord, TopicPartition};
@@ -51,8 +51,8 @@ fn driver(host: &str, port: u16, user: &str) -> PostgresDriver {
             name: "postgres-password".to_string(),
             version: 1,
         }),
-        tls: Tls::Disable,
-        identity: None,
+        encrypted: Encrypted::Disable,
+        tls: None,
     };
     PostgresDriver::new(connection, &secrets).expect("a driver")
 }
@@ -805,7 +805,6 @@ fn run_describes_the_query_and_reads_before_any_field_is_declared() {
             group: "g".to_string(),
             source: Some(source),
             destination: None,
-            identity: None,
             secrets: Vec::new(),
             filter: None,
             start: None,

@@ -8,7 +8,7 @@
 //!   readers ──commit, place, pause──► the shared consumer
 //! ```
 //!
-//! One client has one `group.id`, so sources share a client only when they share a group, brokers, identity,
+//! One client has one `group.id`, so sources share a client only when they share a group, brokers, TLS,
 //! properties, `fetchBytes` and whether a fresh partition starts at the earliest or the latest record. Topics, the
 //! start a source places a fresh partition at, and its stop are each source's own. Two sources may not read one
 //! topic in one group: the group would split its partitions between them.
@@ -298,7 +298,7 @@ fn client_config(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Result<Cl
 
     // After smeltr's own keys. Load-time validation already refuses the reserved ones
     // (`config_file::load::RESERVED_KAFKA_PROPS`).
-    apply_client_config(&mut client_config, &config.props, config.identity.as_deref(), secrets)?;
+    apply_client_config(&mut client_config, &config.props, config.tls.as_ref(), secrets)?;
 
     // `auto.offset.reset` places a partition with no committed offset at earliest or latest. For a time,
     // `Routes::place` sets it, and this is the fallback when that cannot.
@@ -1614,7 +1614,7 @@ mod tests {
             brokers: "127.0.0.1:1".to_string(),
             topics: topics.iter().map(|t| t.to_string()).collect(),
             group_id: "g".to_string(),
-            identity: None,
+            tls: None,
             start: StartPosition::Earliest,
             stop: None,
             deployed_at: 0,

@@ -23,9 +23,6 @@ use crate::plan::topology::{CatalogSignIn, DestinationKind, MAX_SENDERS};
 /// The destination's id in every generated file.
 const TABLE: &str = "table";
 
-/// The identity the generated file declares. Any other name is one it does not.
-const DECLARED_IDENTITY: &str = "trust";
-
 /// An address a credential is sent to: the catalog, the tokenUrl, the endpoint and the authEndpoint. Plain http to
 /// another host is the admin's to choose: the form warns, and the loader takes it.
 struct Address {
@@ -279,21 +276,21 @@ fn known(rng: &mut Rng) -> Case {
     };
     let fine = |a: &&Address| !clean || a.fine();
 
-    let identity = match rng.below(4) {
-        0 => Some(DECLARED_IDENTITY),
-        1 if !clean => Some("nobody"),
+    let certificate = match rng.below(4) {
+        0 => Some("lake-client"),
+        1 if !clean => Some(" "),
         _ => None,
     };
-    if identity.is_some_and(|i| i != DECLARED_IDENTITY) {
-        refused.insert("identity");
+    if certificate.is_some_and(|c| c.trim().is_empty()) {
+        refused.insert("certificate");
     }
 
-    // An identity is offered only over TLS.
+    // A certificate is presented only over TLS.
     let catalogs: Vec<_> = (ADDRESSES.iter().filter(fine))
-        .filter(|a| !clean || identity.is_none() || a.https)
+        .filter(|a| !clean || certificate.is_none() || a.https)
         .collect();
     let catalog = *rng.pick(&catalogs);
-    if catalog.blank() || !catalog.web || (identity.is_some() && !catalog.https) {
+    if catalog.blank() || !catalog.web || (certificate.is_some() && !catalog.https) {
         refused.insert("catalog");
     }
 
@@ -421,7 +418,7 @@ fn known(rng: &mut Rng) -> Case {
         ("tokenUrl", token_url.map(|a| parse(a.json))),
         ("scope", scope.map(|(v, _)| v)),
         ("signingName", signing_name.map(|(v, _)| v)),
-        ("identity", identity.map(Value::from)),
+        ("certificate", certificate.map(Value::from)),
         ("region", region.map(|(v, _)| v)),
         ("endpoint", endpoint.map(|a| parse(a.json))),
         ("authEndpoint", auth_endpoint.map(|a| parse(a.json))),
@@ -542,7 +539,7 @@ fn garbage(rng: &mut Rng) -> Case {
         (r#""https://catalog.example.com""#, false),
         (r#""http://localhost:8181""#, false),
     ];
-    let declared: Pool = &[(r#""trust""#, false)];
+    let declared: Pool = &[(r#""lake-client""#, false), (r#"" ""#, true)];
     let terms: Vec<String> = TERMS.iter().map(|(t, ..)| Value::from(*t).to_string()).collect();
     let density = 1 + rng.below(6);
     for (key, pool) in [
@@ -556,7 +553,7 @@ fn garbage(rng: &mut Rng) -> Case {
         ("tokenUrl", address),
         ("scope", SCOPES),
         ("signingName", SIGNING_NAMES),
-        ("identity", declared),
+        ("certificate", declared),
         ("region", REGIONS),
         ("endpoint", address),
         ("authEndpoint", address),
@@ -605,19 +602,10 @@ fn garbage(rng: &mut Rng) -> Case {
     }
 }
 
-/// A self-signed certificate, for the declared identity to trust.
-fn authority() -> String {
-    let key = rcgen::KeyPair::generate().unwrap();
-    let params = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
-    params.self_signed(&key).unwrap().pem()
-}
-
-/// The example bundle with `case`'s destination in it, the identity it may name, and, when it is routed, a route
-/// delivering to it.
-fn bundle(case: &Case, authority: &str) -> String {
+/// The example bundle with `case`'s destination in it and, when it is routed, a route delivering to it.
+fn bundle(case: &Case) -> String {
     let mut file = parse(example_json());
     file["destinations"].as_array_mut().unwrap().push(case.dest.clone());
-    file["identities"] = json!([{ "id": DECLARED_IDENTITY, "authorities": authority }]);
     if case.routed {
         let catch_all = file["routes"]
             .as_array_mut()
@@ -711,9 +699,9 @@ fn built(case: &Case, system: &super::LoadedSystem) -> Result<(), String> {
     if !in_range {
         return Err(format!("built limits out of range: {c:?}"));
     }
-    let named = case.dest.get("identity").is_some();
-    if c.identity.is_some() != named || !system.topology.identities.is_empty() != named {
-        return Err(format!("named identity {named}, built {:?}", c.identity));
+    let named = case.dest.get("certificate").is_some();
+    if c.tls.as_ref().is_some_and(|t| t.certificate.is_some()) != named {
+        return Err(format!("named a certificate {named}, built {:?}", c.tls));
     }
     // What egress and the worker's memory budget read from the kind.
     let _ = (dest.kind.payload(), dest.kind.id_field());
@@ -742,7 +730,7 @@ const OPTIONS: [&str; 25] = [
     "tokenUrl",
     "scope",
     "signingName",
-    "identity",
+    "certificate",
     "region",
     "endpoint",
     "authEndpoint",
@@ -772,8 +760,7 @@ fn sign_in(case: &Case) -> &'static str {
 
 /// Runs `generate` over the seeds (`fuzz_loader::run`), marking what each case reaches besides its refusals.
 fn run(seeds: std::ops::Range<u64>, generate: fn(&mut Rng) -> Case, expected: Vec<String>) {
-    let authority = authority();
-    let bundle = |case: &Case| bundle(case, &authority);
+    let bundle = |case: &Case| bundle(case);
     fuzz_loader::run(
         seeds,
         generate,

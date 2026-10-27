@@ -24,8 +24,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 
 use smeltr::config_file::{
-    self, DestinationDto, FileConfig, IdentityDto, LookupSourceDto, LookupTableDto, PipelineDto, RawBundle, RouteDto,
-    SourceDto,
+    self, DestinationDto, FileConfig, LookupSourceDto, LookupTableDto, PipelineDto, RawBundle, RouteDto, SourceDto,
 };
 use smeltr::leader::envelope::{ApiError, Envelope};
 use smeltr::leader::store::Actor;
@@ -475,7 +474,6 @@ fn errors_of_merge(
         name: raw.file.name.clone(),
         sources: [&shared_raw.file.sources[..], &raw.file.sources[..]].concat(),
         destinations: [&shared_raw.file.destinations[..], &raw.file.destinations[..]].concat(),
-        identities: [&shared_raw.file.identities[..], &raw.file.identities[..]].concat(),
         pipelines: [&shared_raw.file.pipelines[..], &raw.file.pipelines[..]].concat(),
         routes: [&shared_raw.file.routes[..], &raw.file.routes[..]].concat(),
         lookup_tables: [&shared_raw.file.lookup_tables[..], &raw.file.lookup_tables[..]].concat(),
@@ -562,7 +560,6 @@ impl Save {
 enum Touches {
     Sources,
     Destinations,
-    Identities,
     Routes,
     LookupTables,
     GrokPatterns,
@@ -593,7 +590,6 @@ fn edits_for(file: &FileConfig, old: &RawBundle, touches: Touches) -> Result<Vec
     match touches {
         Touches::Sources => return section("sources.json", json_bytes(&file.sources)),
         Touches::Destinations => return section("destinations.json", json_bytes(&file.destinations)),
-        Touches::Identities => return section("identities.json", json_bytes(&file.identities)),
         Touches::Routes => return section("routes.json", json_bytes(&file.routes)),
         Touches::GrokPatterns => {
             return section(config_file::GROK_PATTERNS_FILE, json_bytes(&file.grok_patterns));
@@ -1012,11 +1008,18 @@ pub(crate) async fn blocking_save(f: impl FnOnce() -> Envelope<Save> + Send + 's
 // -- sources / destinations / routes ---------------------------------------
 
 pub async fn put_sources(
+    State(state): State<smeltr::leader::AppState>,
     Extension(actor): Extension<Actor>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(sources): Json<Vec<SourceDto>>,
 ) -> Json<Envelope<Save>> {
+    let named = (sources.iter())
+        .filter_map(|s| Some((format!("source {:?}", s.id), s.tls()?.certificate?)))
+        .collect();
+    if let Some(refused) = refuse_unlisted_certificates(&state, named).await {
+        return refused;
+    }
     let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
     blocking_save(move || {
         save_on_branch(
@@ -1033,11 +1036,18 @@ pub async fn put_sources(
 }
 
 pub async fn put_destinations(
+    State(state): State<smeltr::leader::AppState>,
     Extension(actor): Extension<Actor>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(destinations): Json<Vec<DestinationDto>>,
 ) -> Json<Envelope<Save>> {
+    let named = (destinations.iter())
+        .filter_map(|d| Some((format!("destination {:?}", d.id), d.tls()?.certificate?)))
+        .collect();
+    if let Some(refused) = refuse_unlisted_certificates(&state, named).await {
+        return refused;
+    }
     let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
     blocking_save(move || {
         save_on_branch(
@@ -1053,38 +1063,40 @@ pub async fn put_destinations(
     .await
 }
 
-/// Identities, with the one check that needs more than the bundle: whether each certificate an identity names is a
-/// version the leader's certificate list holds.
-pub async fn put_identities(
-    State(state): State<smeltr::leader::AppState>,
-    Extension(actor): Extension<Actor>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
-    Json(identities): Json<Vec<IdentityDto>>,
-) -> Json<Envelope<Save>> {
-    let store = state.store.clone();
-    let checked = identities.clone();
-    let mismatched = match blocking(move || unlisted_certificates(store.as_ref(), &checked)).await {
-        Ok(mismatched) => mismatched,
-        Err(e) => return Json(Envelope::failed_one(e)),
-    };
-    if !mismatched.is_empty() {
-        return Json(Envelope::failed(mismatched.into_iter().map(ApiError::new).collect()));
+/// The refusal of a save whose connectors name a certificate the leader's list does not hold, each a `(what, name)`
+/// pair. A worker would refuse the deploy anyway; refusing here says so to the person who typed the name.
+async fn refuse_unlisted_certificates(
+    state: &smeltr::leader::AppState,
+    named: Vec<(String, String)>,
+) -> Option<Json<Envelope<Save>>> {
+    if named.is_empty() {
+        return None;
     }
-
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    blocking_save(move || {
-        save_on_branch(
-            &branch,
-            base,
-            &scope,
-            Touches::Identities,
-            "edit identities".into(),
-            &actor,
-            |file| file.identities = identities,
+    let store = state.store.clone();
+    let listed = blocking(move || {
+        let records = store.list_secrets().map_err(|e| e.to_string())?;
+        Ok::<_, String>(
+            records
+                .into_iter()
+                .filter(|r| r.certificate)
+                .map(|r| r.name)
+                .collect::<Vec<_>>(),
         )
     })
-    .await
+    .await;
+    let listed = match listed {
+        Ok(listed) => listed,
+        Err(e) => return Some(Json(Envelope::failed_one(e))),
+    };
+    let unlisted: Vec<ApiError> = (named.into_iter())
+        .filter(|(_, name)| !listed.contains(name))
+        .map(|(what, name)| {
+            ApiError::new(format!(
+                "{what} names the certificate {name:?}, which is not in Admin → Certificates. Choose one from the list"
+            ))
+        })
+        .collect();
+    (!unlisted.is_empty()).then(|| Json(Envelope::failed(unlisted)))
 }
 
 /// What a PEM says about itself, so the editor can show a subject and an expiry beside the field it was pasted
@@ -1116,30 +1128,6 @@ pub async fn describe_certificates(Json(req): Json<DescribeRequest>) -> Json<Des
             error: Some(error),
         }),
     }
-}
-
-/// Which of `identities` names a certificate the list does not hold at that version, as ready-to-print lines.
-fn unlisted_certificates(
-    store: &dyn smeltr::leader::store::Store,
-    identities: &[IdentityDto],
-) -> Result<Vec<String>, String> {
-    let mut out = Vec::new();
-    for i in identities {
-        let Some(listed) = i.listed_certificate() else {
-            continue;
-        };
-        let chain = store
-            .certificate_chain(&listed.secret, listed.version)
-            .map_err(|e| e.to_string())?;
-        if chain.is_none() {
-            out.push(format!(
-                "identity {:?} names {:?} at version {}, which the certificate list does not hold. Choose a \
-                 certificate from the list",
-                i.id, listed.secret, listed.version
-            ));
-        }
-    }
-    Ok(out)
 }
 
 pub async fn put_routes(
@@ -1641,7 +1629,6 @@ pub enum Section {
     Routes,
     LookupTables,
     GrokPatterns,
-    Identities,
     Pipelines,
 }
 
@@ -1653,7 +1640,6 @@ impl Section {
             Section::Routes => Touches::Routes,
             Section::LookupTables => Touches::LookupTables,
             Section::GrokPatterns => Touches::GrokPatterns,
-            Section::Identities => Touches::Identities,
             Section::Pipelines => Touches::OnlyPipelines,
         }
     }
@@ -1665,7 +1651,6 @@ impl Section {
             Section::Routes => "route",
             Section::LookupTables => "lookup table",
             Section::GrokPatterns => "grok pattern",
-            Section::Identities => "identity",
             Section::Pipelines => "pipeline",
         }
     }
@@ -1686,20 +1671,14 @@ pub enum UndoRequest {
 
 /// Puts one object, or one file no section owns, back the way it was where the branch left `main`, as one save on
 /// the branch.
-/// An identity put back is held to `put_identities`'s check of the list, which is why this needs `AppState`.
 pub async fn undo(
-    State(state): State<smeltr::leader::AppState>,
     Extension(actor): Extension<Actor>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(req): Json<UndoRequest>,
 ) -> Json<Envelope<Save>> {
     let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    blocking_save(move || {
-        let unlisted = |identities: &[IdentityDto]| unlisted_certificates(state.store.as_ref(), identities);
-        undo_in(&leader_data_dir(), &branch, base, &scope, req, &actor, unlisted)
-    })
-    .await
+    blocking_save(move || undo_in(&leader_data_dir(), &branch, base, &scope, req, &actor)).await
 }
 
 /// `now` with the object `id` as `was` holds it, after the object it followed there, or removed when `was` has
@@ -1779,7 +1758,6 @@ fn undo_in(
     scope: &str,
     req: UndoRequest,
     author: &Actor,
-    unlisted: impl FnOnce(&[IdentityDto]) -> Result<Vec<String>, String>,
 ) -> Envelope<Save> {
     let writing = match Writing::open_in(data_dir, branch, base.as_deref(), scope) {
         Ok(writing) => writing,
@@ -1821,7 +1799,6 @@ fn undo_in(
         Section::Destinations => put_back_into(&was.destinations, &mut file.destinations, id, |o| &o.id),
         Section::Routes => put_back_into(&was.routes, &mut file.routes, id, |o| &o.id),
         Section::GrokPatterns => put_back_into(&was.grok_patterns, &mut file.grok_patterns, id, |o| &o.id),
-        Section::Identities => put_back_into(&was.identities, &mut file.identities, id, |o| &o.id),
         Section::Pipelines => put_back_into(&was.pipelines, &mut file.pipelines, id, |o| &o.id),
         Section::LookupTables => match put_back(&was.lookup_tables, &file.lookup_tables, id, |o| &o.id) {
             Some(p) => {
@@ -1853,14 +1830,6 @@ fn undo_in(
             section.noun(),
             git::MAIN_BRANCH
         ));
-    }
-
-    if let Section::Identities = section {
-        match unlisted(&file.identities) {
-            Ok(mismatched) if mismatched.is_empty() => {}
-            Ok(mismatched) => return Envelope::failed(mismatched.into_iter().map(ApiError::new).collect()),
-            Err(e) => return Envelope::failed_one(e),
-        }
     }
 
     // Pinned to the commit `file` was read from, so the save differs from it in this one section and in nothing a
@@ -2596,7 +2565,6 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
         };
         let old = RawBundle {
             file: file.clone(),
@@ -3084,13 +3052,11 @@ mod tests {
                 "{path} is as it was"
             );
         }
-        for path in ["routes.json", "identities.json"] {
-            assert_eq!(
-                config_file::FileSet::read(&mut files, path).unwrap(),
-                None,
-                "{path} stays absent"
-            );
-        }
+        assert_eq!(
+            config_file::FileSet::read(&mut files, "routes.json").unwrap(),
+            None,
+            "routes.json stays absent"
+        );
         let raw = reading.raw().file;
         assert_eq!((raw.sources.len(), raw.pipelines.len()), (1, 2), "both saves landed");
         std::fs::remove_dir_all(&data).ok();
@@ -3114,7 +3080,6 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
         };
         let old = RawBundle {
             file: file.clone(),
@@ -4211,52 +4176,7 @@ mod tests {
             section,
             id: id.to_string(),
         };
-        undo_in(data, "work", None, "shared", req, &Actor::system(), |_| Ok(vec![]))
-    }
-
-    /// An identity put back is checked for a certificate the list does not hold, as a save of identities is.
-    #[test]
-    fn an_identity_put_back_is_held_to_the_list_check() {
-        let data = main_with_routes("undo-identity");
-        let key = rcgen::KeyPair::generate().unwrap();
-        let ca = rcgen::CertificateParams::new(vec!["smeltr-test".to_string()]).unwrap();
-        let authorities = ca.self_signed(&key).unwrap().pem();
-        let identity: IdentityDto =
-            serde_json::from_value(serde_json::json!({"id": "i1", "authorities": authorities})).unwrap();
-        commit_to(
-            &data,
-            git::MAIN_BRANCH,
-            &[("identities.json", json_bytes(&vec![identity]))],
-        );
-        save_work(&data, Touches::Identities, |file| file.identities.clear());
-        let tip = git::branch_tip(&git::repo_path(&data), "work");
-
-        let req = UndoRequest::Object {
-            section: Section::Identities,
-            id: "i1".to_string(),
-        };
-        let mut checked = vec![];
-        let refused = undo_in(&data, "work", None, "shared", req, &Actor::system(), |identities| {
-            checked = identities.iter().map(|i| i.id.clone()).collect();
-            Ok(vec![
-                "identity \"i1\" names \"c\" at version 1, which the certificate list does not hold".to_string(),
-            ])
-        });
-        assert_eq!(checked, ["i1"], "the section as the undo leaves it");
-        assert!(
-            !refused.ok && refused.errors[0].message.contains("does not hold"),
-            "{refused:?}"
-        );
-        assert_eq!(
-            git::branch_tip(&git::repo_path(&data), "work"),
-            tip,
-            "nothing was saved"
-        );
-
-        let undone = undo_on_work(&data, Section::Identities, "i1");
-        assert!(undone.ok, "{undone:?}");
-        assert_eq!(work(&data).identities.len(), 1);
-        std::fs::remove_dir_all(&data).ok();
+        undo_in(data, "work", None, "shared", req, &Actor::system())
     }
 
     fn work(data: &Path) -> FileConfig {
@@ -4375,7 +4295,7 @@ mod tests {
 
     fn undo_file_on_work(data: &Path, path: &str) -> Envelope<Save> {
         let req = UndoRequest::File { path: path.to_string() };
-        undo_in(data, "work", None, "shared", req, &Actor::system(), |_| Ok(vec![]))
+        undo_in(data, "work", None, "shared", req, &Actor::system())
     }
 
     fn on_work(data: &Path, path: &str) -> Option<Vec<u8>> {

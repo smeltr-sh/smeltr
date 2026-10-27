@@ -90,7 +90,7 @@ pub fn destination(
         &config.storage,
         &root.bucket,
         grant,
-        config.identity.as_deref(),
+        config.tls.as_ref(),
         config.stall_after,
         secrets,
         &runtime,
@@ -134,7 +134,7 @@ fn unity_table(
     secrets: &HeldSecrets,
 ) -> Result<(String, objects::CatalogGrant), IoError> {
     let secret = crate::io::held(secrets, &table.client_secret, "the delta destination", "client secret")?;
-    // The destination's identity is for storage: one trusting a private CA would refuse the workspace's certificate.
+    // The destination's TLS is for storage: one trusting a private CA would refuse the workspace's certificate.
     let agent = crate::io::http::agent_config(None, secrets)?.new_agent();
     // A sign-in and a call each take at most half a stall, so asking for credentials takes at most one.
     let mut catalog = UnityCatalog::new(

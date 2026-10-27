@@ -66,7 +66,6 @@
     type DestinationDto,
     type SourceDto,
     type MutationResult,
-    type IdentityDto,
     type SecretDto,
     type FileConfigDto,
     type AskAt,
@@ -142,8 +141,7 @@
   let placing = $state<((dest: string) => void) | null>(null);
   /** Makes a source being made from a route card that card's (`RouteFlow`). */
   let sourcing = $state<((source: string) => void) | null>(null);
-  /** What a destination made here may name: this scope's identities and `shared/`'s, and the catalogs. */
-  let identities: IdentityDto[] = $state([]);
+  /** What a destination made here may name: the catalogs. */
   let secrets: SecretDto[] = $state([]);
   let mechanisms: string[] = $state([]);
   const GROUP_ROWS = CATEGORIES.flatMap((c) => [c, ...kindsOf(c)]);
@@ -189,7 +187,6 @@
       sharedPipelineIds = new Set();
       destinationIds = config.destinations.map((d) => d.id);
       destinations = config.destinations;
-      identities = config.identities;
       await addShared();
     },
     onDiscard: () => {
@@ -363,7 +360,6 @@
     sharedPipelineIds = new Set(shared.pipelines.map((p) => p.id));
     destinationIds = [...destinationIds, ...shared.destinations.map((x) => x.id)];
     destinations = [...destinations, ...shared.destinations];
-    identities = [...shared.identities, ...identities];
   }
 
   /** Saves `made` with the rest of `list` on its own, as its own page would, against the commit this page read: the
@@ -680,7 +676,6 @@
     <NewDestination
       open={placing !== null}
       unavailable={destinationIds}
-      {identities}
       {secrets}
       {mechanisms}
       onadd={addDestination}
@@ -689,7 +684,6 @@
     <NewSource
       open={sourcing !== null}
       unavailable={sourceIds}
-      {identities}
       {secrets}
       {mechanisms}
       readAt={routesEditor.readAtCommit}

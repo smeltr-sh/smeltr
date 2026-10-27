@@ -77,6 +77,8 @@ const LISTED = [
     versions: [{ version: 1, setAt: 0, usable: true }],
     chain: [],
     served: false,
+    forServers: true,
+    forClients: true,
   },
 ];
 

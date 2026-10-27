@@ -1185,7 +1185,7 @@ pub fn run_cold_capture(
     }
     let encoding = dto.kind.encoding();
 
-    let kind = match source_kind_of(dto, invitation.identity.clone()) {
+    let kind = match source_kind_of(dto) {
         Ok(kind) => kind,
         Err(e) => {
             tracing::warn!(
@@ -1218,9 +1218,8 @@ pub fn run_cold_capture(
 
     // The capture's own certificate arrived with this invitation, lent for this session alone, so it is checked
     // here as a deploy checks the ones its commit names.
-    if let crate::plan::topology::SourceKind::Kafka(k) = &kind
-        && let Some(identity) = &k.identity
-        && let Some(why) = crate::plan::topology::identity_certificate_error(identity, &secrets)
+    if let Some(tls) = kind.tls()
+        && let Some(why) = crate::plan::topology::certificate_error(tls, &secrets)
     {
         captures.fail(admitted, why);
         return;
@@ -1354,8 +1353,7 @@ fn run_sql_capture(
 
     let mut secrets = secrets.clone();
     secrets.take(invitation.secrets.clone());
-    let database =
-        crate::config_file::sql_connection(&dto, invitation.identity.as_ref()).expect("an SQL source names a database");
+    let database = crate::config_file::sql_connection(&dto).expect("an SQL source names a database");
     let place = database.address();
     let opened = match database {
         SqlDatabase::Postgres(connection) => crate::io::postgres::PostgresDriver::new(connection, &secrets)
@@ -1445,7 +1443,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
         };
         (config, meta)
     } else {
-        match source_kind_of(dto.clone(), invitation.identity.clone()) {
+        match source_kind_of(dto.clone()) {
             Ok(crate::plan::topology::SourceKind::Sql(sql)) => {
                 let mut config = sql.source;
                 if let Mode::Incrementing(p) | Mode::UpdatedAt(p) = &mut config.mode {
@@ -1511,14 +1509,11 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
 /// How long a cold capture waits on one poll. Short enough that a deadline is noticed promptly on a silent source.
 const POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// One source DTO as the compiler's `SourceKind`, under the identity it names.
+/// One source DTO as the compiler's `SourceKind`.
 ///
 /// Loaded as a one-source configuration rather than converted by hand, so a capture's source is validated exactly as
 /// a deployment's is and there is one conversion in the codebase rather than two.
-pub fn source_kind_of(
-    dto: crate::config_file::SourceDto,
-    identity: Option<crate::config_file::IdentityDto>,
-) -> Result<crate::plan::topology::SourceKind, String> {
+pub fn source_kind_of(dto: crate::config_file::SourceDto) -> Result<crate::plan::topology::SourceKind, String> {
     let file = crate::config_file::FileConfig {
         version: crate::config_file::CURRENT_VERSION,
         sources: vec![dto],
@@ -1527,7 +1522,6 @@ pub fn source_kind_of(
         routes: Vec::new(),
         lookup_tables: Vec::new(),
         grok_patterns: Vec::new(),
-        identities: identity.into_iter().collect(),
         on_exception: None,
         name: None,
     };
@@ -1568,7 +1562,7 @@ mod tests {
                 brokers: "b1:9092".to_string(),
                 topics: vec!["orders".to_string()],
                 group_id: "production-group".to_string(),
-                identity: None,
+                tls: Default::default(),
                 start: Default::default(),
                 stop: None,
                 fetch_bytes: Default::default(),
@@ -1576,53 +1570,6 @@ mod tests {
                 props: Default::default(),
             },
         }
-    }
-
-    /// The identity a capture's source names travels with the invitation, and is what the rebuilt source
-    /// presents. A worker follows `main`, so an identity it had to look up is one it would not find.
-    #[test]
-    fn a_capture_rebuilds_its_source_under_the_identity_the_invitation_carried() {
-        let identity = crate::config_file::IdentityDto {
-            id: "acme".to_string(),
-            description: None,
-            certificate: Some(crate::config_file::SecretRefDto::LeaderStored(
-                crate::config_file::LeaderSecretDto {
-                    secret: "acme".to_string(),
-                    version: 1,
-                },
-            )),
-            key: None,
-            authorities: None,
-            trust_public: None,
-        };
-        let mut source = kafka_source("orders");
-        if let SourceKindDto::Kafka {
-            identity: named, props, ..
-        } = &mut source.kind
-        {
-            *named = Some("acme".to_string());
-            // The operator's, not the identity's, and refused without it: librdkafka defaults to plaintext,
-            // where nothing an identity holds is used.
-            props
-                .properties
-                .insert("security.protocol".to_string(), "SSL".to_string());
-        }
-
-        let built = source_kind_of(source.clone(), Some(identity)).expect("a source under the identity it names");
-        let crate::plan::topology::SourceKind::Kafka(kafka) = built else {
-            panic!("a Kafka source did not build as one");
-        };
-        assert_eq!(
-            kafka.identity.as_ref().map(|i| i.id.as_str()),
-            Some("acme"),
-            "the source was rebuilt without the identity it connects out under"
-        );
-
-        let without = source_kind_of(source, None).expect_err("a source naming an identity nothing declared");
-        assert!(
-            without.contains("acme"),
-            "an identity the invitation did not carry was not named as the problem: {without:?}"
-        );
     }
 
     /// A capture's certificate is delivered fresh with the invitation, so it is checked here as a deploy checks the
@@ -1634,25 +1581,11 @@ mod tests {
         params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
         let server_only = params.self_signed(&key).unwrap().pem();
 
-        let identity = crate::config_file::IdentityDto {
-            id: "acme".to_string(),
-            description: None,
-            certificate: Some(crate::config_file::SecretRefDto::LeaderStored(
-                crate::config_file::LeaderSecretDto {
-                    secret: "acme".to_string(),
-                    version: 1,
-                },
-            )),
-            key: None,
-            authorities: None,
-            trust_public: None,
-        };
         let mut source = kafka_source("orders");
-        if let SourceKindDto::Kafka {
-            identity: named, props, ..
-        } = &mut source.kind
-        {
-            *named = Some("acme".to_string());
+        if let SourceKindDto::Kafka { tls, props, .. } = &mut source.kind {
+            tls.certificate = Some("acme".to_string());
+            // The operator's, and refused without it: librdkafka defaults to plaintext, where nothing the TLS
+            // settings say is used.
             props
                 .properties
                 .insert("security.protocol".to_string(), "SSL".to_string());
@@ -1660,7 +1593,6 @@ mod tests {
 
         let mut inv = invitation("s1", 10, 1_000_000, 60);
         inv.source = Some(source);
-        inv.identity = Some(identity);
         inv.secrets = vec![crate::heartbeat::SecretDelivery {
             name: "acme".to_string(),
             version: 1,
@@ -1682,11 +1614,11 @@ mod tests {
         match &reports[0].finished {
             Some(CaptureEnd::Failed(reason)) => {
                 assert!(
-                    reason.contains("acme") && reason.contains("client authentication"),
+                    reason.contains("orders") && reason.contains("client authentication"),
                     "{reason}"
                 )
             }
-            other => panic!("expected Failed to name the identity, got {other:?}"),
+            other => panic!("expected Failed to name the source, got {other:?}"),
         }
     }
 
@@ -1696,7 +1628,6 @@ mod tests {
             group: "prod-west".to_string(),
             source: Some(kafka_source("orders")),
             destination: None,
-            identity: None,
             secrets: Vec::new(),
             filter: None,
             start: None,

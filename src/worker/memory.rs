@@ -91,13 +91,13 @@ pub(super) fn source_parts<'a>(sources: impl IntoIterator<Item = &'a SourceConfi
     parts
 }
 
-/// Whether two Kafka sources read through one client: the same brokers, group, identity, properties, `fetchBytes`
+/// Whether two Kafka sources read through one client: the same brokers, group, TLS, properties, `fetchBytes`
 /// and fallback for a partition with no committed offset (`io::kafka::Clients`).
 fn one_client(a: &KafkaSourceConfig, b: &KafkaSourceConfig) -> bool {
     let latest = |k: &KafkaSourceConfig| matches!(k.start, StartPosition::Latest);
     a.brokers == b.brokers
         && a.group_id == b.group_id
-        && a.identity == b.identity
+        && a.tls == b.tls
         && a.props == b.props
         && a.fetch_bytes == b.fetch_bytes
         && latest(a) == latest(b)
