@@ -2372,7 +2372,7 @@ pub struct Known<'a> {
 /// (`crate::leader::registry::Registry::series`), which only [`lag_climbing`] and
 /// [`recent_logs`] need; `deployed_groups` is every group the deployed commit holds a subtree for, which
 /// only [`group_not_deployed`] needs -- the rest read `snapshot` alone.
-pub fn derive(facts: &Known, now_ms: i64) -> Vec<Warning> {
+pub fn derive(known: &Known, now_ms: i64) -> Vec<Warning> {
     let Known {
         snapshot,
         credentials,
@@ -2388,7 +2388,7 @@ pub fn derive(facts: &Known, now_ms: i64) -> Vec<Warning> {
         held,
         remote,
         newer,
-    } = *facts;
+    } = *known;
     let mut out = worker_silent(snapshot, credentials, now_ms, heartbeat_interval);
     out.extend(enrolled_never_heartbeating(snapshot, credentials));
     out.extend(source_blocked(snapshot, starts));
