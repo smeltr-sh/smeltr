@@ -212,7 +212,10 @@ impl<S: Sender> Pool<S> {
             });
             return Ok(());
         }
-        for job in jobs {
+        // Counted before any is sent: an answer that comes while a later one waits for a sender must not complete it.
+        let count = jobs.len();
+        self.batches.entry(batch).or_default().open += count;
+        for (sent, job) in jobs.into_iter().enumerate() {
             if self.outstanding >= self.handles.len() {
                 // A sender whose answer has arrived is free: spawn only when none is.
                 self.take_arrived();
@@ -221,10 +224,17 @@ impl<S: Sender> Pool<S> {
                 self.spawn_one();
             }
             while self.outstanding >= self.handles.len() {
-                self.recv_one()?;
+                if let Err(e) = self.recv_one() {
+                    // The rest are dropped: the batch completes on those already sent, or is forgotten if none was.
+                    if let Some(answers) = self.batches.get_mut(&batch) {
+                        answers.open -= count - sent;
+                        if answers.open == 0 {
+                            self.batches.remove(&batch);
+                        }
+                    }
+                    return Err(e);
+                }
             }
-            // Counted as pushed: a failure above drops the rest, and the batch completes on those already sent.
-            self.batches.entry(batch).or_default().open += 1;
             // Senders that have all stopped are found out when their completions channel closes.
             self.jobs.push((batch, job));
             self.outstanding += 1;

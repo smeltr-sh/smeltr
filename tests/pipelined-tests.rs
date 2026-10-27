@@ -361,14 +361,19 @@ fn a_batch_of_several_requests_completes_once_with_all_their_refusals() {
 #[test]
 fn a_failed_request_fails_its_batch_and_no_other() {
     let mut pool = Pool::new((0..3).map(|_| Part).collect(), 3);
-    pool.submit(1, vec![(0, None), (100, Some(0))]).unwrap();
+    pool.submit(1, vec![(0, None), (1000, Some(0))]).unwrap();
     pool.submit(2, vec![(0, Some(5))]).unwrap();
-    std::thread::sleep(Duration::from_millis(50));
-    let done = pool.poll().expect("the batch beside it lands");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let done = loop {
+        let done = pool.poll().expect("the batch beside it lands");
+        if !done.is_empty() || Instant::now() > deadline {
+            break done;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
     assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![2]);
     assert!(pool.poll().unwrap().is_empty(), "not while a request of it is open");
-    std::thread::sleep(Duration::from_millis(100));
-    pool.poll().expect_err("then the failure");
+    pool.drain().expect_err("then the failure");
     assert_eq!(pool.outstanding(), 0);
 }
 
@@ -381,4 +386,14 @@ fn a_batch_of_no_requests_completes_at_once() {
         pool.poll().unwrap().iter().map(|c| c.batch).collect::<Vec<_>>(),
         vec![3]
     );
+}
+
+/// A batch whose requests wait for the one sender completes once, after the last: an answer that comes while a later
+/// request waits does not complete it.
+#[test]
+fn a_batch_waiting_on_one_sender_completes_once_after_its_last_request() {
+    let mut pool = Pool::new(vec![Part], 1);
+    pool.submit(7, vec![(10, Some(0)), (10, None), (10, Some(2))]).unwrap();
+    pool.drain().expect_err("its second request failed");
+    assert!(pool.poll().unwrap().is_empty(), "and it completed only as failed");
 }
