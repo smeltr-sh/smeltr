@@ -27,7 +27,7 @@ use serde_json::{Map, Value, json};
 use smeltr::config_file::load_str;
 use smeltr::core::column::DataType;
 use smeltr::io::OwnedRecord;
-use smeltr::io::elastic_mapping::{Ecs, mapping};
+use smeltr::io::elastic_mapping::{Ecs, disagreements, mapping};
 use smeltr::plan::topology::{DestinationKind, DocIdPolicy, ElasticDestinationConfig, HeldSecrets, SecretRef};
 
 use crate::harness::destination::{
@@ -779,7 +779,7 @@ fn body(rng: &mut Rng, cov: &mut Reached, rows: &Rows, n: usize, pad: usize) -> 
         }
         _ => {
             let mut doc = match rows.record {
-                Some(record) => document(rng, record),
+                Some(record) => document(rng, record, ""),
                 None => json!({"msg": message(rng)}),
             };
             doc["n"] = json!(n);
@@ -1566,11 +1566,26 @@ const MAPPING_OPTIONS: &[&str] = &[
     "type.struct",
     "type.null",
     "type.variant",
+    "ecs.keyword",
     "ecs.keywordText",
     "ecs.matchOnlyText",
     "ecs.wildcard",
     "ecs.wildcardText",
     "ecs.unindexed",
+    "ecs.unindexedLong",
+    "ecs.constantKeyword",
+    "ecs.ip",
+    "ecs.date",
+    "ecs.long",
+    "ecs.float",
+    "ecs.double",
+    "ecs.scaledFloat",
+    "ecs.boolean",
+    "ecs.geoPoint",
+    "ecs.flattened",
+    "ecs.object",
+    "ecs.nested",
+    "ecs.disagrees",
 ];
 
 fn draw_type(rng: &mut Rng, depth: usize) -> DataType {
@@ -1618,11 +1633,139 @@ fn draw_struct(rng: &mut Rng, depth: usize, names: &[&str]) -> DataType {
             (name.to_string(), ty)
         })
         .collect();
-    DataType::Struct(fields, rng.chance(2))
+    let mut record = DataType::Struct(fields, rng.chance(2));
+    if depth == 0 {
+        for _ in 0..rng.below(4) {
+            let (path, ecs) = *rng.pick(ECS_TYPED);
+            let ty = if rng.chance(2) {
+                held_by(rng, ecs)
+            } else {
+                draw_type(rng, 1)
+            };
+            put(&mut record, &path.split('.').collect::<Vec<_>>(), ty);
+        }
+    }
+    record
 }
 
-/// Checks `m` is the mapping of `ty` at `path`, and notes what it reached. `None` is a field left out.
-fn check_mapping(ty: &DataType, m: Option<&Value>, path: &str, cov: &mut Coverage) -> Result<(), String> {
+/// ECS fields of each type ECS maps a field as, but a string, under names apart from `TOP`'s but for `event`.
+const ECS_TYPED: &[(&str, Ecs)] = &[
+    ("source.ip", Ecs::Ip),
+    ("source.port", Ecs::Long),
+    ("source.geo.location", Ecs::GeoPoint),
+    ("container.cpu.usage", Ecs::ScaledFloat),
+    ("container.security_context.privileged", Ecs::Boolean),
+    ("container.labels", Ecs::Object),
+    ("data_stream.type", Ecs::ConstantKeyword),
+    ("log.syslog.structured_data", Ecs::Flattened),
+    ("email.attachments", Ecs::Nested),
+    ("tls.server.x509.public_key_exponent", Ecs::UnindexedLong),
+    ("gen_ai.request.temperature", Ecs::Double),
+    ("event.risk_score", Ecs::Float),
+];
+
+/// A type ECS's `ecs` holds.
+fn held_by(rng: &mut Rng, ecs: Ecs) -> DataType {
+    let number = |rng: &mut Rng| if rng.chance(2) { DataType::I64 } else { DataType::F64 };
+    match ecs {
+        Ecs::Ip => DataType::Str,
+        Ecs::Long | Ecs::UnindexedLong => DataType::I64,
+        Ecs::GeoPoint if rng.chance(2) => DataType::Str,
+        Ecs::GeoPoint => DataType::Struct(vec![("lat".into(), number(rng)), ("lon".into(), number(rng))], false),
+        Ecs::Float | Ecs::Double | Ecs::ScaledFloat => number(rng),
+        Ecs::Boolean => DataType::Bool,
+        Ecs::Flattened if rng.chance(3) => DataType::Variant,
+        Ecs::Nested if rng.chance(2) => DataType::Array(Box::new(draw_struct(rng, 1, NESTED))),
+        Ecs::Flattened | Ecs::Object | Ecs::Nested => draw_struct(rng, 1, NESTED),
+        _ => DataType::Str,
+    }
+}
+
+/// `ty` at `keys` under `record`, making each object on the way. A field on the way that is no object is left as
+/// it is, and `ty` with it.
+fn put(record: &mut DataType, keys: &[&str], ty: DataType) {
+    let DataType::Struct(fields, _) = record else {
+        return;
+    };
+    let (key, rest) = keys.split_first().expect("a path has a key");
+    let at = match fields.iter().position(|(k, _)| k == key) {
+        Some(i) => i,
+        None => {
+            fields.push((key.to_string(), DataType::Struct(Vec::new(), false)));
+            fields.len() - 1
+        }
+    };
+    if rest.is_empty() {
+        fields[at].1 = ty;
+    } else {
+        put(&mut fields[at].1, rest, ty);
+    }
+}
+
+/// How the product's ECS table (`io::ecs_fields::FIELDS`) maps the field at `path`, where it names it.
+fn ecs_at(path: &str) -> Option<Ecs> {
+    let fields = smeltr::io::ecs_fields::FIELDS;
+    let i = fields.binary_search_by(|(n, _)| (*n).cmp(path)).ok()?;
+    Some(fields[i].1)
+}
+
+/// Whether ECS's mapping `ecs` holds a value of type `ty` as ECS means it: written out here, apart from the product's.
+fn ecs_holds(ecs: Ecs, ty: &DataType) -> bool {
+    use DataType as T;
+    let number = |t: &T| matches!(t, T::I64 | T::F64);
+    match (ecs, ty) {
+        (Ecs::Nested, T::Array(e)) => matches!(**e, T::Struct(..)),
+        (_, T::Array(_)) => false,
+        (
+            Ecs::Keyword
+            | Ecs::KeywordText
+            | Ecs::MatchOnlyText
+            | Ecs::Wildcard
+            | Ecs::WildcardText
+            | Ecs::ConstantKeyword
+            | Ecs::Unindexed
+            | Ecs::Ip
+            | Ecs::GeoPoint,
+            T::Str,
+        ) => true,
+        (Ecs::Long | Ecs::UnindexedLong, T::I64 | T::Duration) => true,
+        (Ecs::Float | Ecs::Double | Ecs::ScaledFloat, t) => number(t),
+        (Ecs::Date, T::DateTime) | (Ecs::Boolean, T::Bool) => true,
+        (Ecs::GeoPoint, T::Struct(f, false)) => {
+            f.len() == 2
+                && ["lat", "lon"]
+                    .iter()
+                    .all(|n| f.iter().any(|(k, t)| k == n && number(t)))
+        }
+        (Ecs::Flattened, T::Struct(..) | T::Variant) | (Ecs::Object | Ecs::Nested, T::Struct(..)) => true,
+        _ => false,
+    }
+}
+
+/// Checks `m` is the mapping of `ty` at `path`, and notes what it reached. `None` is a field left out. Each field ECS
+/// maps as a type that does not hold its own is added to `disagree`.
+fn check_mapping(
+    ty: &DataType,
+    m: Option<&Value>,
+    path: &str,
+    cov: &mut Coverage,
+    disagree: &mut Vec<String>,
+) -> Result<(), String> {
+    let ecs = if path.is_empty() { None } else { ecs_at(path) };
+    if let DataType::Array(element) = ty {
+        cov.reach("type.array");
+        if !(ecs == Some(Ecs::Nested) && ecs_holds(Ecs::Nested, ty)) {
+            return check_mapping(element, m, path, cov, disagree);
+        }
+    }
+    match ecs {
+        Some(e) if ecs_holds(e, ty) => return check_ecs(e, ty, m, path, cov, disagree),
+        Some(_) if !matches!(ty, DataType::Null | DataType::Variant) => {
+            cov.reach("ecs.disagrees");
+            disagree.push(path.to_string());
+        }
+        _ => {}
+    }
     let scalar = |name: &str| Some(json!({ "type": name }));
     let want = match ty {
         DataType::Null | DataType::Variant => {
@@ -1659,33 +1802,12 @@ fn check_mapping(ty: &DataType, m: Option<&Value>, path: &str, cov: &mut Coverag
         }
         DataType::Str => {
             cov.reach("type.str");
-            return check_string(m, path, cov);
+            return check_keyword(m, path);
         }
-        DataType::Array(element) => {
-            cov.reach("type.array");
-            return check_mapping(element, m, path, cov);
-        }
-        DataType::Struct(fields, _) => {
+        DataType::Array(_) => unreachable!("an array is its elements"),
+        DataType::Struct(..) => {
             cov.reach("type.struct");
-            let Some(properties) = m.and_then(|m| m.get("properties")).and_then(Value::as_object) else {
-                return Err(format!("{path}: a struct maps as {m:?}"));
-            };
-            if m.unwrap().as_object().unwrap().len() != 1 {
-                return Err(format!("{path}: a struct maps with more than its properties: {m:?}"));
-            }
-            for (name, t) in fields {
-                let at = if path.is_empty() {
-                    name.clone()
-                } else {
-                    format!("{path}.{name}")
-                };
-                check_mapping(t, properties.get(name), &at, cov)?;
-            }
-            let known: BTreeSet<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
-            if let Some(extra) = properties.keys().find(|k| !known.contains(k.as_str())) {
-                return Err(format!("{path}: maps {extra:?}, which is no field of it"));
-            }
-            return Ok(());
+            return check_properties(ty, m, path, cov, disagree);
         }
     };
     if m != want.as_ref() {
@@ -1694,56 +1816,127 @@ fn check_mapping(ty: &DataType, m: Option<&Value>, path: &str, cov: &mut Coverag
     Ok(())
 }
 
-/// A string maps as ECS names it, else as a keyword, and a keyword it indexes never passes the 32766 bytes past which
-/// Elasticsearch refuses the whole document.
+/// Checks `m` is `{"properties": ...}` of the struct `ty`, its fields each mapped as `check_mapping` says.
+fn check_properties(
+    ty: &DataType,
+    m: Option<&Value>,
+    path: &str,
+    cov: &mut Coverage,
+    disagree: &mut Vec<String>,
+) -> Result<(), String> {
+    let DataType::Struct(fields, _) = ty else {
+        unreachable!("properties are a struct's")
+    };
+    let Some(properties) = m.and_then(|m| m.get("properties")).and_then(Value::as_object) else {
+        return Err(format!("{path}: a struct maps as {m:?}"));
+    };
+    if m.unwrap().as_object().unwrap().len() != 1 {
+        return Err(format!("{path}: a struct maps with more than its properties: {m:?}"));
+    }
+    for (name, t) in fields {
+        let at = if path.is_empty() {
+            name.clone()
+        } else {
+            format!("{path}.{name}")
+        };
+        check_mapping(t, properties.get(name), &at, cov, disagree)?;
+    }
+    let known: BTreeSet<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+    if let Some(extra) = properties.keys().find(|k| !known.contains(k.as_str())) {
+        return Err(format!("{path}: maps {extra:?}, which is no field of it"));
+    }
+    Ok(())
+}
+
+/// Checks `m` is how ECS maps a field it maps as `ecs`, of a type `ecs` holds.
 ///
 /// What ECS names is read from `io::ecs_fields::FIELDS`, the product's own table, so this checks that a field the
 /// table names is mapped as the table says, not that the table is right: the `ecs.*` options record that each of its
 /// kinds was reached. [`well_known_ecs_fields_map_as_ecs_says`] checks a few fields against ECS itself.
-fn check_string(m: Option<&Value>, path: &str, cov: &mut Coverage) -> Result<(), String> {
-    let m = m.ok_or_else(|| format!("{path}: a string left out"))?;
-    let fields = smeltr::io::ecs_fields::FIELDS;
-    let ecs = fields
-        .binary_search_by(|(n, _)| (*n).cmp(path))
-        .ok()
-        .map(|i| fields[i].1);
-    let kind = m["type"].as_str().unwrap_or_default();
-    let want = match ecs {
-        None => "keyword",
-        Some(Ecs::KeywordText) => {
-            cov.reach("ecs.keywordText");
-            "keyword"
-        }
-        Some(Ecs::Unindexed) => {
-            cov.reach("ecs.unindexed");
-            if m["index"] != json!(false) {
-                return Err(format!("{path}: ECS keeps it unindexed, and it maps as {m}"));
-            }
-            "keyword"
-        }
-        Some(Ecs::MatchOnlyText) => {
-            cov.reach("ecs.matchOnlyText");
-            "match_only_text"
-        }
-        Some(Ecs::Wildcard) => {
-            cov.reach("ecs.wildcard");
-            "wildcard"
-        }
-        Some(Ecs::WildcardText) => {
-            cov.reach("ecs.wildcardText");
-            "wildcard"
+fn check_ecs(
+    ecs: Ecs,
+    ty: &DataType,
+    m: Option<&Value>,
+    path: &str,
+    cov: &mut Coverage,
+    disagree: &mut Vec<String>,
+) -> Result<(), String> {
+    let m = m.ok_or_else(|| format!("{path}: a field ECS maps as {ecs:?} left out"))?;
+    let text = json!({ "text": { "type": "match_only_text" } });
+    let only = |want: Value| {
+        if *m == want {
+            Ok(())
+        } else {
+            Err(format!("{path}: ECS's {ecs:?} maps as {m}, not {want}"))
         }
     };
-    if kind != want {
-        return Err(format!("{path}: a string maps as {m}, not as a {want}"));
-    }
-    if kind == "keyword" && m["index"] != json!(false) {
-        let above = m["ignore_above"].as_u64().unwrap_or(u64::MAX);
-        if above * 4 > 32766 {
-            return Err(format!(
-                "{path}: a keyword indexes up to {above} characters, past 32766 bytes"
-            ));
+    let (option, checked) = match ecs {
+        Ecs::Keyword => ("ecs.keyword", check_keyword(Some(m), path)),
+        Ecs::KeywordText => {
+            let keyword = check_keyword(Some(m), path);
+            (
+                "ecs.keywordText",
+                keyword.and_then(|_| {
+                    only(json!({ "type": "keyword", "ignore_above": m["ignore_above"], "fields": text }))
+                }),
+            )
         }
+        Ecs::Unindexed => (
+            "ecs.unindexed",
+            only(json!({ "type": "keyword", "index": false, "doc_values": false })),
+        ),
+        Ecs::UnindexedLong => (
+            "ecs.unindexedLong",
+            only(json!({ "type": "long", "index": false, "doc_values": false })),
+        ),
+        Ecs::MatchOnlyText => ("ecs.matchOnlyText", only(json!({ "type": "match_only_text" }))),
+        Ecs::Wildcard => ("ecs.wildcard", only(json!({ "type": "wildcard" }))),
+        Ecs::WildcardText => ("ecs.wildcardText", only(json!({ "type": "wildcard", "fields": text }))),
+        Ecs::ConstantKeyword => ("ecs.constantKeyword", only(json!({ "type": "constant_keyword" }))),
+        Ecs::Ip => ("ecs.ip", only(json!({ "type": "ip" }))),
+        Ecs::Date => ("ecs.date", only(json!({ "type": "date" }))),
+        Ecs::Long => ("ecs.long", only(json!({ "type": "long" }))),
+        Ecs::Float => ("ecs.float", only(json!({ "type": "float" }))),
+        Ecs::Double => ("ecs.double", only(json!({ "type": "double" }))),
+        Ecs::ScaledFloat => (
+            "ecs.scaledFloat",
+            only(json!({ "type": "scaled_float", "scaling_factor": 1000 })),
+        ),
+        Ecs::Boolean => ("ecs.boolean", only(json!({ "type": "boolean" }))),
+        Ecs::GeoPoint => ("ecs.geoPoint", only(json!({ "type": "geo_point" }))),
+        Ecs::Flattened => ("ecs.flattened", only(json!({ "type": "flattened" }))),
+        Ecs::Object => ("ecs.object", check_properties(ty, Some(m), path, cov, disagree)),
+        Ecs::Nested => {
+            let element = match ty {
+                DataType::Array(e) => &**e,
+                t => t,
+            };
+            let mut properties = m.clone();
+            let nested = properties.as_object_mut().and_then(|o| o.remove("type")) == Some(json!("nested"));
+            let checked = if nested {
+                check_properties(element, Some(&properties), path, cov, disagree)
+            } else {
+                Err(format!("{path}: ECS's nested field maps as {m}"))
+            };
+            ("ecs.nested", checked)
+        }
+    };
+    cov.reach(option);
+    checked
+}
+
+/// Checks `m` is a keyword that indexes a value only while it stays under the 32766 bytes past which Elasticsearch
+/// refuses the whole document.
+fn check_keyword(m: Option<&Value>, path: &str) -> Result<(), String> {
+    let m = m.ok_or_else(|| format!("{path}: a string left out"))?;
+    if m["type"] != "keyword" {
+        return Err(format!("{path}: a string maps as {m}, not as a keyword"));
+    }
+    let above = m["ignore_above"].as_u64().unwrap_or(u64::MAX);
+    if above * 4 > 32766 {
+        return Err(format!(
+            "{path}: a keyword indexes up to {above} characters, past 32766 bytes"
+        ));
     }
     Ok(())
 }
@@ -1797,13 +1990,32 @@ fn elastic_mapping_fuzz() {
         if m.as_object().unwrap().len() != 1 {
             return Err(format!("more than mappings: {m}"));
         }
-        check_mapping(&record, Some(root), "", &mut cov).map_err(|e| format!("{e}\n{record:?}\n{m}"))
+        let mut disagree = Vec::new();
+        check_mapping(&record, Some(root), "", &mut cov, &mut disagree).map_err(|e| format!("{e}\n{record:?}\n{m}"))?;
+        let named: Vec<String> = disagreements(&record).iter().map(|d| d.keys.join(".")).collect();
+        if named != disagree {
+            return Err(format!("disagreements {named:?}, not {disagree:?}\n{record:?}"));
+        }
+        Ok(())
     });
     cov.assert_complete();
 }
 
 /// A JSON document of type `ty`, as the cluster reads one its mapping was made for.
-fn document(rng: &mut Rng, ty: &DataType) -> Value {
+fn document(rng: &mut Rng, ty: &DataType, path: &str) -> Value {
+    // A field mapped as ECS maps it takes only what that mapping reads.
+    let ecs = if path.is_empty() { None } else { ecs_at(path) }.filter(|e| ecs_holds(*e, ty));
+    match (ecs, ty) {
+        (Some(Ecs::Ip), _) => return json!(rng.pick(&["10.0.0.1", "::1", "2001:db8::7"])),
+        (Some(Ecs::GeoPoint), DataType::Str) => return json!(rng.pick(&["41.12,-71.34", "0,0"])),
+        (Some(Ecs::GeoPoint), _) => return json!({ "lat": 41.5, "lon": -71.25 }),
+        // Every document of an index holds the one value its first gave.
+        (Some(Ecs::ConstantKeyword), _) => return json!("logs"),
+        // A float keeps no number past its range, and a scaled float none past a long's once scaled.
+        (Some(Ecs::Float | Ecs::ScaledFloat), _) => return json!(*rng.pick(&[0, 1]) as f64 * 0.25),
+        (Some(Ecs::Flattened), DataType::Variant) => return json!({ "k": format!("v{}", rng.below(100)) }),
+        _ => {}
+    }
     match ty {
         DataType::Null => Value::Null,
         DataType::Bool => json!(rng.chance(2)),
@@ -1825,13 +2037,18 @@ fn document(rng: &mut Rng, ty: &DataType) -> Value {
         DataType::Bytes => json!(rng.pick(&["", "aGVsbG8=", "AA==", "/+8="])),
         // Elasticsearch maps a field it was not told of from the first value it sees, so a variant is one kind.
         DataType::Variant => json!(format!("v{}", rng.below(100))),
-        DataType::Array(element) => Value::Array((0..rng.below(3)).map(|_| document(rng, element)).collect()),
+        DataType::Array(element) => Value::Array((0..rng.below(3)).map(|_| document(rng, element, path)).collect()),
         DataType::Struct(fields, _) => {
             let mut doc = Map::new();
             for (name, t) in fields {
                 // A row may leave out a field its record declares.
                 if !rng.chance(5) {
-                    doc.insert(name.clone(), document(rng, t));
+                    let at = if path.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{path}.{name}")
+                    };
+                    doc.insert(name.clone(), document(rng, t, &at));
                 }
             }
             Value::Object(doc)

@@ -16,6 +16,7 @@ use crate::core::id::{FunctionId, SlotId};
 use crate::format::record::RecordView;
 use crate::leader::envelope::{ApiError, Empty, Envelope};
 use crate::plan;
+use crate::plan::config::CompileError;
 use crate::plan::output::{RowFilter, run_to_json_marked};
 use crate::plan::plan::Plan;
 use crate::plan::resolve::Origin;
@@ -885,11 +886,8 @@ pub fn run_preview(
         keep_bindings(&mut plan);
     }
 
-    let warnings: Vec<ApiError> = plan
-        .warnings
-        .iter()
-        .map(|e| ApiError::from_compile(e, system.step_id_for(Some(pipeline_cfg.id), e.function)))
-        .collect();
+    let warn = |e: &CompileError| ApiError::from_compile(e, system.step_id_for(Some(pipeline_cfg.id), e.function));
+    let mut warnings: Vec<ApiError> = plan.warnings.iter().map(warn).collect();
 
     // A pipeline has no answers of its own: it is previewed under the group's.
     let on_exception = &system.topology.on_exception;
@@ -904,6 +902,7 @@ pub fn run_preview(
         }
     };
     if records.is_empty() {
+        warnings.extend(ecs_warnings(&plan, &record).iter().map(warn));
         return Envelope::ok(Preview {
             stage: None,
             pipeline_names,
@@ -1024,6 +1023,7 @@ pub fn run_preview(
 
     // The dictionary is of every row: a filter chooses what is shown, not what the pipeline writes.
     let sampled = plan::dictionary::with_sample(&record, rows.iter().filter_map(|(r, _)| r.json.as_ref()));
+    warnings.extend(ecs_warnings(&plan, &sampled).iter().map(warn));
     let unfiltered = filter.as_ref().map(|_| rows.len() as u32);
     let rows = rows
         .into_iter()
@@ -1044,6 +1044,44 @@ pub fn run_preview(
         parsers,
         warnings,
     })
+}
+
+/// A warning for each field of `record`, what `plan` writes, whose type is not one ECS's type for it holds
+/// (`io::elastic_mapping::disagreements`), at the step that wrote the field. A field the source gave is at no step.
+fn ecs_warnings(plan: &Plan, record: &DataType) -> Vec<CompileError> {
+    crate::io::elastic_mapping::disagreements(record)
+        .into_iter()
+        .map(|d| {
+            let path = d.keys.join(".");
+            let message = format!("`{path}` is {}, but ECS maps it as {}", d.ty, d.ecs.name());
+            CompileError::new(writer(plan, &d.keys), message)
+        })
+        .collect()
+}
+
+/// The step that wrote the field at `keys` of what `plan` writes: the one that bound its leaf, or the unclaimed
+/// fields of the object holding it. `None` where the source gave it.
+fn writer(plan: &Plan, keys: &[String]) -> Option<FunctionId> {
+    let mut at = &plan.tree;
+    let mut slot = None;
+    for key in keys {
+        match at.fields.get(key) {
+            Some(tree::Node::Object(o)) => at = o,
+            Some(tree::Node::Leaf(s)) => {
+                slot = Some(*s);
+                break;
+            }
+            None => {
+                slot = at.unclaimed;
+                break;
+            }
+        }
+    }
+    let origin = plan.provenance.iter().find(|o| Some(o.slot) == slot)?;
+    match origin.origin {
+        Origin::Function(f) => Some(f),
+        _ => None,
+    }
 }
 
 /// Clear every `reuse` that would hand away a binding of a name, so `touched` can read each binding after the run.
@@ -1486,6 +1524,53 @@ mod tests {
         BUNDLE
             .replace(r#""condition":"_raw.","#, "")
             .replace(r#""when":"n.","#, "")
+    }
+
+    #[test]
+    fn a_field_ecs_maps_as_another_type_is_warned_at_the_step_that_wrote_it() {
+        let config = compiling().replace(
+            r#""body":"x = 1;""#,
+            r#""body":"$[\"@timestamp\"] = \"now\"; source = {ip: \"::1\"};""#,
+        );
+        let previewed = run_preview(
+            PreviewRequest {
+                config,
+                pipeline: Some("p".into()),
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Default::default(),
+            &[],
+            Vec::new(),
+        );
+        let warned: Vec<_> = (previewed.body.warnings.iter())
+            .map(|w| (w.step.as_deref(), w.message.as_str()))
+            .collect();
+        assert_eq!(warned, [(Some("s"), "`@timestamp` is str, but ECS maps it as date")]);
+    }
+
+    #[test]
+    fn a_field_a_spread_laid_was_written_by_the_spreading_step() {
+        use crate::plan::config::{FunctionConfig, FunctionKind, PipelineConfig, Step};
+        let code = |id, body: &str| Step::Function(FunctionConfig::new(id, FunctionKind::Code { body: body.into() }));
+        let p = PipelineConfig {
+            id: 0,
+            name: "p".into(),
+            body: vec![code(0, "Object.assign($, json(_raw));"), code(1, "x = 1;")],
+            step_ids: Vec::new(),
+            lookup_tables: Default::default(),
+            grok_patterns: Default::default(),
+        };
+        let plan = plan::plan::compile(&p, &SourceMeta::NONE).unwrap();
+        let keys = |k: &[&str]| k.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        assert_eq!(writer(&plan, &keys(&["@timestamp"])), Some(0));
+        assert_eq!(writer(&plan, &keys(&["x"])), Some(1));
+        assert_eq!(writer(&plan, &keys(&["_raw"])), None);
     }
 
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {
