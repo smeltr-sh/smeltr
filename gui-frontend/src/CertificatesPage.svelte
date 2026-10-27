@@ -165,10 +165,9 @@
 <SectionShell>
   <PageHeader title="Certificates">
     {#snippet help()}
-      Certificates and their private keys, for the leader and for sources and destinations to
-      present. Usable as says what a certificate's Extended Key Usage permits: the leader and a
-      receiver use a server certificate, and a connector connecting out uses a client certificate.
-      Neither means no TLS connection accepts it, and -- means this leader cannot open it.
+      Certificates for the leader and workers. Used by sources and destinations. Server certificates
+      can be used by the leader and receiver sources. Client certificates can be used by pull
+      sources and destinations. A certificate must have either or both to be usable.
     {/snippet}
   </PageHeader>
 
