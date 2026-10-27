@@ -358,7 +358,7 @@ fn a_refused_record_comes_back_as_a_rejection_not_a_failed_batch() {
 /// a zero there would read as a stalled destination rather than an absent question.
 #[test]
 fn the_concurrency_a_destination_allows_is_reported_and_only_when_it_has_one() {
-    /// Reports whatever it is told to, so this test is about egress reading the figure, not about AIMD.
+    /// Reports whatever it is told to, so this test is about egress reading the figure, not about what sets it.
     #[derive(Clone)]
     struct Reporting(Arc<std::sync::Mutex<Option<usize>>>);
 

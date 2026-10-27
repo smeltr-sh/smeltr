@@ -1324,8 +1324,9 @@ impl KafkaDestination {
     fn produce(&mut self, out: OutgoingRecord<'_>) -> Result<(), IoError> {
         use std::sync::atomic::Ordering::Relaxed;
         let topic = out.placement.unwrap_or(&self.default_topic);
-        let payload = out.value.len() + out.key.map_or(0, <[u8]>::len);
-        let held = held_bytes(out.value.len(), out.key.map_or(0, <[u8]>::len));
+        let key_len = out.key.map_or(0, <[u8]>::len);
+        let payload = out.value.len() + key_len;
+        let held = held_bytes(out.value.len(), key_len);
         let sent = Box::new(Sent { seq: self.seq, held });
         let mut record = BaseRecord::with_opaque_to(topic, sent).payload(out.value);
         if let Some(k) = out.key {

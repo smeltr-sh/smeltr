@@ -7,8 +7,8 @@
 //! How many may be outstanding is the pacing model's to say (`egress::pacing`): its target in bytes, over the request
 //! size, is the limit, never above the sender count. The configured figure is where the limit starts, until the
 //! model's first word. A destination that asks to be sent less (429) is obeyed by the sender that was asked, which
-//! waits out the backoff; the model sees that as a longer round trip and a lower rate, and holds less in flight. Not
-//! for Kafka: librdkafka pipelines on its own threads.
+//! waits out the backoff, and its completion says it was throttled, so the model caps what it holds below what was in
+//! flight then. Not for Kafka: librdkafka pipelines on its own threads.
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
