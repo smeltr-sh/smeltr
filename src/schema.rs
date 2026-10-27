@@ -323,6 +323,20 @@ pub fn check(schemas: &[Arc<Schema>], record: &DataType) -> Vec<Finding> {
     out
 }
 
+/// What `finding`, of a check against `schemas`, says to a pipeline's author.
+pub fn describe(schemas: &[Arc<Schema>], finding: &Finding) -> String {
+    let path = finding.path();
+    let title = (schemas.iter().find(|s| s.id == finding.schema)).map_or(&finding.schema, |s| &s.title);
+    match &finding.misfit {
+        Misfit::Type {
+            ty,
+            type_name,
+            written_as,
+        } => format!("`{path}` is {ty}, but {title} maps it as {type_name}. Write it as {written_as}."),
+        Misfit::Missing => format!("{title} requires `{path}`, and no step writes it."),
+    }
+}
+
 fn same_kind(a: &Misfit, b: &Misfit) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b)
 }

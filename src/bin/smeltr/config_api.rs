@@ -478,7 +478,7 @@ fn errors_of_merge(
         routes: [&shared_raw.file.routes[..], &raw.file.routes[..]].concat(),
         lookup_tables: [&shared_raw.file.lookup_tables[..], &raw.file.lookup_tables[..]].concat(),
         grok_patterns: [&shared_raw.file.grok_patterns[..], &raw.file.grok_patterns[..]].concat(),
-        schemas: vec![],
+        schemas: [&shared_raw.file.schemas[..], &raw.file.schemas[..]].concat(),
     };
     config_file::fill_default_group_ids(&mut merged.sources, group_id);
 

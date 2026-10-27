@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use super::git;
+use crate::config_file::SchemaFinding;
 
 /// A test that ran and did not produce what it locked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,11 +34,14 @@ pub struct NotLoading {
     pub why: String,
 }
 
-/// What the checks found: groups that do not load at `commit`, and tests that fail at `tests_at`.
+/// What the checks found: groups that do not load at `commit`, what breaks a schema there, and tests that fail at
+/// `tests_at`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Findings {
     pub commit: String,
     pub not_loading: Vec<NotLoading>,
+    /// Each group's schema findings (`LoadedSystem::schema_findings`), with the group.
+    pub schemas: Vec<(String, SchemaFinding)>,
     /// The commit `failing` was found at. Behind `commit` while that commit's tests are still running.
     pub tests_at: String,
     pub failing: Vec<FailingTest>,
@@ -98,7 +102,7 @@ impl DeployChecks {
             state.loading = Some(commit.clone());
         }
 
-        let listed = not_loading(&repo, &commit);
+        let listed = checked(&repo, &commit);
         let mut state = self.state.lock().unwrap();
         // A reader that started on another commit since owns the next answer; this one's is already old.
         if state.loading.as_deref() != Some(commit.as_str()) {
@@ -106,11 +110,12 @@ impl DeployChecks {
         }
         state.loading = None;
         // A commit whose groups could not be listed is not known to be clean, so the next reader tries again.
-        let Ok(not_loading) = listed else {
+        let Ok((not_loading, schemas)) = listed else {
             return state.known.clone();
         };
         state.known.commit = commit.clone();
         state.known.not_loading = not_loading;
+        state.known.schemas = schemas;
         if let Some(runner) = self.runner.get() {
             state.wanted = Some(commit);
             if !state.running {
@@ -122,11 +127,25 @@ impl DeployChecks {
     }
 }
 
-fn not_loading(repo: &Path, commit: &str) -> Result<Vec<NotLoading>, git::GitError> {
-    Ok(git::groups_that_do_not_load(repo, commit)?
-        .into_iter()
-        .map(|(group, why)| NotLoading { group, why })
-        .collect())
+/// The groups that do not load at `commit`, and the schema findings of each that does.
+fn checked(repo: &Path, commit: &str) -> Result<(Vec<NotLoading>, Vec<(String, SchemaFinding)>), git::GitError> {
+    let mut not_loading = Vec::new();
+    let mut schemas = Vec::new();
+    for group in super::tree::groups_at(repo, commit)? {
+        match super::tree::load_group_at(repo, commit, &group) {
+            Err(e) => not_loading.push(NotLoading {
+                group,
+                why: e.to_string(),
+            }),
+            // Loading compiled it, so this compile does not fail.
+            Ok(system) => {
+                if let Ok(compiled) = system.compile_topology() {
+                    schemas.extend(system.schema_findings(&compiled).into_iter().map(|f| (group.clone(), f)));
+                }
+            }
+        }
+    }
+    Ok((not_loading, schemas))
 }
 
 /// Run the wanted commit's tests until no commit is wanted, keeping each answer only while it is still the deployed
@@ -209,6 +228,39 @@ mod tests {
         assert_eq!(found.not_loading.len(), 1, "{found:?}");
         assert_eq!(found.not_loading[0].group, "west");
         assert!(found.failing.is_empty(), "no runner, no tests");
+    }
+
+    #[test]
+    fn what_breaks_a_schema_at_the_deployed_commit_is_found_with_its_group() {
+        let data = std::env::temp_dir().join(format!("smeltr-deploy-checks-schemas-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let files: [(&str, &str); 4] = [
+            ("system.json", r#"{"version":1}"#),
+            (
+                "sources.json",
+                r#"[{"id":"k","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}]"#,
+            ),
+            ("routes.json", r#"[{"id":"r","source":"k","pipeline":"p","deliver":[]}]"#),
+            (
+                "pipelines/p.json",
+                r#"{"id":"p","name":"p","schemas":["ocsf/authentication"],"steps":[]}"#,
+            ),
+        ];
+        let edits: Vec<git::FileEdit> = (files.iter())
+            .map(|(path, content)| git::FileEdit {
+                path: format!("groups/east/{path}"),
+                content: Some(content.as_bytes().to_vec()),
+            })
+            .collect();
+        assert!(git::seed_first_commit(&git::repo_path(&data), &edits, "seed").unwrap());
+        let found = DeployChecks::default().findings(&data);
+        assert!(found.not_loading.is_empty(), "{found:?}");
+        assert!(
+            found.schemas.iter().any(|(group, f)| group == "east"
+                && f.pipeline == "p"
+                && f.message == "OCSF Authentication requires `class_uid`, and no step writes it."),
+            "{found:?}"
+        );
     }
 
     #[test]

@@ -2436,6 +2436,7 @@ export type WarningCondition =
   | 'remoteNotFollowed'
   | 'deployDoesNotLoad'
   | 'deployFailsTests'
+  | 'deployBreaksSchemas'
   | 'declaredFieldFailing'
   | 'declaredFieldGone'
   | 'streamUnrouted'
@@ -2534,6 +2535,8 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Deployed config does not load';
     case 'deployFailsTests':
       return 'Test failing';
+    case 'deployBreaksSchemas':
+      return 'Rows break a schema';
     case 'declaredFieldFailing':
       return 'Field not its declared type';
     case 'declaredFieldGone':

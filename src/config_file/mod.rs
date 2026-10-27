@@ -92,6 +92,16 @@ pub fn validate_at(file: FileConfig, declared_at: &load::DeclaredAt) -> Result<L
     Ok(system)
 }
 
+/// A pipeline's rows breaking a schema it produces, or a destination it delivers to accepting none it does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaFinding {
+    /// The pipeline's id.
+    pub pipeline: String,
+    /// The step that wrote the field, by its id. `None` for a field no step writes, and for a destination's.
+    pub step: Option<String>,
+    pub message: String,
+}
+
 /// The compiler's inputs, with every string id resolved to an integer id. Not yet compiled: `load_str` stops here so
 /// the preview endpoint can list pipelines whose expressions do not compile.
 #[derive(Debug, Default)]
@@ -216,6 +226,63 @@ impl LoadedSystem {
     /// What each destination that writes columns writes, route by route, and an error for each record it cannot hold.
     /// An Iceberg or Delta destination writes Parquet, and a destination writing Avro or CSV writes Parquet's columns
     /// as Avro (`io::avro`) or CSV (`io::csv`).
+    /// Where a pipeline's rows break the schemas it produces, and where it delivers to a destination that accepts
+    /// none of them, over every route `compiled` runs it on. A finding never refuses the system.
+    pub fn schema_findings(&self, compiled: &CompiledTopology) -> Vec<SchemaFinding> {
+        let mut out: Vec<SchemaFinding> = Vec::new();
+        let mut push = |f: SchemaFinding| {
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        };
+        for route in &compiled.routes {
+            let pipeline = self.pipeline_ids.get(route.pipeline).cloned().unwrap_or_default();
+            let produces = self.produced_by(route.pipeline);
+            if let Some(plan) = compiled.plan_for(route.source, route.pipeline)
+                && !produces.is_empty()
+            {
+                let record = crate::plan::dictionary::record_type(plan, &route.on_exception.tag_field);
+                // A field the source gave is the first step's to fix, which the record enters through.
+                let first = (self.pipelines.iter().find(|p| p.id == route.pipeline))
+                    .and_then(|p| p.body.first())
+                    .map(|step| match step {
+                        crate::plan::config::Step::Function(f) => f.id,
+                        crate::plan::config::Step::If { id, .. } => *id,
+                    });
+                for f in crate::schema::check(produces, &record) {
+                    let at = match f.misfit {
+                        crate::schema::Misfit::Type { .. } => crate::plan::dictionary::writer(plan, &f.keys).or(first),
+                        crate::schema::Misfit::Missing => None,
+                    };
+                    push(SchemaFinding {
+                        pipeline: pipeline.clone(),
+                        step: self.step_id_for(Some(route.pipeline), at),
+                        message: crate::schema::describe(produces, &f),
+                    });
+                }
+            }
+            for dest in route.deliver.iter().flat_map(|rule| &rule.to) {
+                let Some(accepts) = self.accepts.get(dest) else {
+                    continue;
+                };
+                if accepts.iter().any(|a| produces.iter().any(|p| p.id == a.id)) {
+                    continue;
+                }
+                let name = (self.topology.destinations.iter().find(|d| d.id == *dest)).map_or("", |d| d.name.as_str());
+                let titles: Vec<&str> = accepts.iter().map(|a| a.title.as_str()).collect();
+                push(SchemaFinding {
+                    pipeline: pipeline.clone(),
+                    step: None,
+                    message: format!(
+                        "destination {name:?} accepts {}, and pipeline {pipeline:?} produces none of them",
+                        titles.join(", ")
+                    ),
+                });
+            }
+        }
+        out
+    }
+
     fn parquet_records(&self, compiled: &CompiledTopology) -> (HashMap<DestId, Records>, Vec<CompileError>) {
         let parquet: Vec<_> = self
             .topology
@@ -450,6 +517,40 @@ mod tests {
                           "deliver": [{{ "to": [] }}, {{ "when": {when:?}, "to": ["out"] }}] }}]
             }}"#
         )
+    }
+
+    #[test]
+    fn a_pipelines_schema_findings_are_at_its_steps_and_its_destinations() {
+        let json = r#"{
+          "version": 1,
+          "sources": [{ "id": "k", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g" }],
+          "destinations": [{ "id": "out", "type": "kafka", "brokers": "b:9092", "defaultTopic": "t",
+                             "accepts": ["ocsf/authentication"] }],
+          "pipelines": [{ "id": "p", "name": "p", "schemas": ["ecs"],
+                          "steps": [{ "id": "s", "type": "code", "body": "$[\"@timestamp\"] = \"now\";" }] }],
+          "routes": [{ "id": "r", "source": "k", "pipeline": "p", "deliver": [{ "to": ["out"] }] }]
+        }"#;
+        let system = load_str(json).unwrap();
+        let compiled = system.compile_topology().unwrap();
+        let found: Vec<_> = (system.schema_findings(&compiled).into_iter())
+            .map(|f| (f.pipeline, f.step, f.message))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (
+                    "p".to_string(),
+                    Some("s".to_string()),
+                    "`@timestamp` is str, but ECS maps it as date. Write it as datetime.".to_string()
+                ),
+                (
+                    "p".to_string(),
+                    None,
+                    "destination \"out\" accepts OCSF Authentication, and pipeline \"p\" produces none of them"
+                        .to_string()
+                ),
+            ]
+        );
     }
 
     #[test]

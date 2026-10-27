@@ -89,7 +89,7 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
         grok_patterns: Vec::new(),
         on_exception: None,
         name: None,
-        schemas: vec![],
+        schemas: Vec::new(),
     };
     let mut invalid = config_file::validation_errors(one_source.clone());
     // Run reads an SQL source's query before its author has declared fields or chosen a mode: the worker declares
@@ -651,7 +651,7 @@ mod tests {
                 grok_patterns: Vec::new(),
                 on_exception: None,
                 name: None,
-                schemas: vec![],
+                schemas: Vec::new(),
             }
         };
 
@@ -713,7 +713,7 @@ mod tests {
             grok_patterns: Vec::new(),
             on_exception: None,
             name: None,
-            schemas: vec![],
+            schemas: Vec::new(),
         };
 
         let lent_now = lent(&store, &source("cli")).unwrap();
