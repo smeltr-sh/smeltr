@@ -14,8 +14,8 @@
       what: s.what,
       values: s.values,
     }));
-  // A setting under neither role's table applies to every install.
   const role = (r: string) => data.settings.filter((s) => s.key.startsWith(`${r}.`));
+  // A setting under neither role's table applies to every install.
   const shared = data.settings.filter((s) => !/^(leader|worker)\./.test(s.key));
   const sections = [
     { id: 'network', title: 'Before you start' },
