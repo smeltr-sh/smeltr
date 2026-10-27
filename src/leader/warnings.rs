@@ -2321,7 +2321,8 @@ fn worker_not_deploying_its_target(
                 message: match (failure, running) {
                     (Some(why), Some(running)) if running == desired => {
                         format!(
-                            "worker {worker_id} could not restart {desired}: {why}. It is still running it as it was"
+                            "worker {worker_id} could not restart {desired} with the certificates it holds now: {why}. It keeps \
+                             running {desired} unchanged"
                         )
                     }
                     (Some(why), Some(_)) => {
@@ -3139,7 +3140,9 @@ mod tests {
             .expect("a worker refusing to restart is a warning");
         assert_eq!(
             raised.message,
-            format!("worker w1 could not restart newer: {refusing}. It is still running it as it was")
+            format!(
+                "worker w1 could not restart newer with the certificates it holds now: {refusing}. It keeps running newer unchanged"
+            )
         );
 
         let running = vec![behind("w1", Some("newer"), "newer", None)];
