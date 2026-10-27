@@ -2347,30 +2347,48 @@ pub const NOT_DEPLOYING: &str = "workerNotDeployingItsTarget";
 /// worker gives a runtime, so a deployment that is merely slow is never reported as one that failed.
 const NOT_DEPLOYING_AFTER_MS: i64 = 5 * 60 * 1000;
 
+/// What the leader knows when it derives the warnings: the fleet's reports and what the leader holds itself.
+#[derive(Clone, Copy)]
+pub struct Facts<'a> {
+    pub snapshot: &'a [ThreadHealth],
+    pub credentials: &'a [WorkerCredentialRecord],
+    pub starts: &'a HashMap<FactKey, i64>,
+    pub heartbeat_interval: Duration,
+    pub series_store: Option<&'a RegistryStore>,
+    pub deployed_groups: &'a HashSet<String>,
+    pub signing: Option<&'a crate::leader::tls::Described>,
+    pub rotating: &'a Rotating,
+    pub codes: &'a [crate::leader::store::UsableEnrollmentCode],
+    pub presenting: &'a crate::leader::enrollment_codes::Presenting,
+    pub deployed_certificates: &'a [DeployedCertificate],
+    pub held: Option<&'a crate::leader::git::Hold>,
+    pub remote: Option<&'a crate::leader::remote::Failure>,
+    pub newer: Option<&'a crate::leader::updates::Newer>,
+}
+
 /// The fixed catalog (design doc, Control plane), read fresh from `snapshot` and `credentials` on every call.
 /// `starts` is the fact clock's answer (`Registry::observe_facts`) for whichever facts need one; a warning with no
 /// entry there carries no start time. `series_store` is the durable registry's series half
 /// (`crate::leader::registry::Registry::series`), which only [`lag_climbing`] and
 /// [`recent_logs`] need; `deployed_groups` is every group the deployed commit holds a subtree for, which
 /// only [`group_not_deployed`] needs -- the rest read `snapshot` alone.
-#[allow(clippy::too_many_arguments)]
-pub fn derive(
-    snapshot: &[ThreadHealth],
-    credentials: &[WorkerCredentialRecord],
-    starts: &HashMap<FactKey, i64>,
-    now_ms: i64,
-    heartbeat_interval: Duration,
-    series_store: Option<&RegistryStore>,
-    deployed_groups: &HashSet<String>,
-    signing: Option<&crate::leader::tls::Described>,
-    rotating: &Rotating,
-    codes: &[crate::leader::store::UsableEnrollmentCode],
-    presenting: &crate::leader::enrollment_codes::Presenting,
-    deployed_certificates: &[DeployedCertificate],
-    held: Option<&crate::leader::git::Hold>,
-    remote: Option<&crate::leader::remote::Failure>,
-    newer: Option<&crate::leader::updates::Newer>,
-) -> Vec<Warning> {
+pub fn derive(facts: &Facts, now_ms: i64) -> Vec<Warning> {
+    let Facts {
+        snapshot,
+        credentials,
+        starts,
+        heartbeat_interval,
+        series_store,
+        deployed_groups,
+        signing,
+        rotating,
+        codes,
+        presenting,
+        deployed_certificates,
+        held,
+        remote,
+        newer,
+    } = *facts;
     let mut out = worker_silent(snapshot, credentials, now_ms, heartbeat_interval);
     out.extend(enrolled_never_heartbeating(snapshot, credentials));
     out.extend(source_blocked(snapshot, starts));
@@ -3083,21 +3101,23 @@ mod tests {
 
         let just_now = HashMap::from([(not_deploying_key("w1", "newer"), NOW)]);
         let warnings = derive(
-            &snapshot,
-            &[],
-            &just_now,
+            &Facts {
+                snapshot: &snapshot,
+                credentials: &[],
+                starts: &just_now,
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert!(
             !warnings
@@ -3119,21 +3139,23 @@ mod tests {
         );
         let stuck = HashMap::from([(not_deploying_key("w1", "newer"), NOW - 600_000)]);
         let warnings = derive(
-            &snapshot,
-            &[],
-            &stuck,
+            &Facts {
+                snapshot: &snapshot,
+                credentials: &[],
+                starts: &stuck,
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         let raised = (warnings.iter())
             .find(|w| w.condition == Condition::WorkerNotDeployingItsTarget)
@@ -3163,21 +3185,23 @@ mod tests {
         )];
         let stuck = HashMap::from([(not_deploying_key("w1", "newer"), NOW - 600_000)]);
         let warnings = derive(
-            &snapshot,
-            &[],
-            &stuck,
+            &Facts {
+                snapshot: &snapshot,
+                credentials: &[],
+                starts: &stuck,
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         let raised = warnings
             .iter()
@@ -3205,21 +3229,23 @@ mod tests {
         let long_ago = HashMap::from([(not_deploying_key("w1", "first"), NOW - 600_000)]);
         assert!(
             derive(
-                &stuck_on_first,
-                &[],
-                &long_ago,
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
+                &Facts {
+                    snapshot: &stuck_on_first,
+                    credentials: &[],
+                    starts: &long_ago,
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None
+                },
+                NOW
             )
             .iter()
             .any(|w| w.condition == Condition::WorkerNotDeployingItsTarget),
@@ -3230,21 +3256,23 @@ mod tests {
         let now_on_second = vec![behind("w1", None, "second", None)];
         assert!(
             derive(
-                &now_on_second,
-                &[],
-                &long_ago,
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
+                &Facts {
+                    snapshot: &now_on_second,
+                    credentials: &[],
+                    starts: &long_ago,
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None
+                },
+                NOW
             )
             .iter()
             .all(|w| w.condition != Condition::WorkerNotDeployingItsTarget),
@@ -3264,21 +3292,23 @@ mod tests {
         )];
         let stuck = HashMap::from([(not_deploying_key("w1", "first"), NOW - 600_000)]);
         let warnings = derive(
-            &snapshot,
-            &[],
-            &stuck,
+            &Facts {
+                snapshot: &snapshot,
+                credentials: &[],
+                starts: &stuck,
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         let raised = warnings
             .iter()
@@ -3302,21 +3332,23 @@ mod tests {
         let snapshot = vec![behind("w1", Some("same"), "same", None)];
         let long_ago = HashMap::from([(not_deploying_key("w1", "same"), NOW - 600_000)]);
         let warnings = derive(
-            &snapshot,
-            &[],
-            &long_ago,
+            &Facts {
+                snapshot: &snapshot,
+                credentials: &[],
+                starts: &long_ago,
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert!(
             !warnings
@@ -4452,21 +4484,23 @@ mod tests {
 
     fn log_warnings_with(store: &RegistryStore, credentials: &[WorkerCredentialRecord]) -> Vec<Warning> {
         derive(
-            &[],
-            credentials,
-            &HashMap::new(),
+            &Facts {
+                snapshot: &[],
+                credentials,
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: Some(store),
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            Some(store),
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         )
     }
 
@@ -4695,21 +4729,23 @@ mod tests {
         )]
         .into();
         let warnings = derive(
-            &snapshot,
-            &[credential("w1", false)],
-            &starts,
+            &Facts {
+                snapshot: &snapshot,
+                credentials: &[credential("w1", false)],
+                starts: &starts,
+                heartbeat_interval: INTERVAL,
+                series_store: Some(&store),
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            Some(&store),
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
 
         assert!(
@@ -4981,21 +5017,23 @@ mod tests {
     fn nothing_wrong_is_an_empty_catalog() {
         let healthy = vec![thread_health("w1", "reader-1", 0, vec![])];
         let warnings = derive(
-            &healthy,
-            &[credential("w1", false)],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &healthy,
+                credentials: &[credential("w1", false)],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert!(warnings.is_empty());
     }
@@ -5004,21 +5042,23 @@ mod tests {
     fn worker_silent_raises_past_the_threshold_and_is_absent_within_it() {
         let quiet = vec![thread_health("w1", "t0", 10_000, vec![])];
         let warnings = derive(
-            &quiet,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &quiet,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Worker);
@@ -5030,21 +5070,23 @@ mod tests {
         let fresh = vec![thread_health("w1", "t0", 500, vec![])];
         assert!(
             derive(
-                &fresh,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
+                &Facts {
+                    snapshot: &fresh,
+                    credentials: &[],
+                    starts: &HashMap::new(),
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None
+                },
+                NOW
             )
             .is_empty(),
             "within the threshold, silence is absent -- this is the point of derived, never stored"
@@ -5055,21 +5097,23 @@ mod tests {
     fn worker_silent_excludes_a_revoked_worker() {
         let quiet = vec![thread_health("w1", "t0", 10_000, vec![])];
         let warnings = derive(
-            &quiet,
-            &[credential("w1", true)],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &quiet,
+                credentials: &[credential("w1", true)],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert!(warnings.is_empty(), "revocation is deliberate, not a failure");
     }
@@ -5245,21 +5289,23 @@ mod tests {
         let long_ago = HashMap::from([(not_deploying_key("w1", "newer"), NOW - 60 * 60 * 1000)]);
         let derived = |snapshot: &[ThreadHealth]| {
             derive(
-                snapshot,
-                &[credential("w1", false)],
-                &long_ago,
+                &Facts {
+                    snapshot,
+                    credentials: &[credential("w1", false)],
+                    starts: &long_ago,
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None,
+                },
                 NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
             )
         };
 
@@ -5286,21 +5332,23 @@ mod tests {
     fn enrolled_never_heartbeating_raises_and_clears_once_a_thread_appears() {
         let creds = vec![credential("w2", false)];
         let warnings = derive(
-            &[],
-            &creds,
-            &HashMap::new(),
+            &Facts {
+                snapshot: &[],
+                credentials: &creds,
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Worker);
@@ -5314,21 +5362,23 @@ mod tests {
         let now_reporting = vec![thread_health("w2", "t0", 0, vec![])];
         assert!(
             derive(
-                &now_reporting,
-                &creds,
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
+                &Facts {
+                    snapshot: &now_reporting,
+                    credentials: &creds,
+                    starts: &HashMap::new(),
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None
+                },
+                NOW
             )
             .is_empty(),
             "absent the moment a thread shows up, even an empty bootstrap one"
@@ -5338,21 +5388,23 @@ mod tests {
     #[test]
     fn enrolled_never_heartbeating_excludes_a_revoked_worker() {
         let warnings = derive(
-            &[],
-            &[credential("w3", true)],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &[],
+                credentials: &[credential("w3", true)],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert!(warnings.is_empty());
     }
@@ -5369,21 +5421,23 @@ mod tests {
             )],
         )];
         let warnings = derive(
-            &held,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &held,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
@@ -5396,21 +5450,23 @@ mod tests {
         let resumed = vec![thread_health("w1", "reader-3", 0, vec![])];
         assert!(
             derive(
-                &resumed,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
+                &Facts {
+                    snapshot: &resumed,
+                    credentials: &[],
+                    starts: &HashMap::new(),
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None
+                },
+                NOW
             )
             .is_empty(),
             "the fact clears the moment the reader stops reporting a reason"
@@ -5431,21 +5487,23 @@ mod tests {
             thread_health("w2", "reader-3", 0, vec![caused("held")]),
         ];
         let w = derive(
-            &health,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &health,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         let got: Vec<_> = w.iter().map(|w| (w.condition, w.message.as_str())).collect();
         assert_eq!(got.len(), 2, "{w:?}");
@@ -5472,21 +5530,23 @@ mod tests {
             }
             let health = vec![thread_health("w1", "reader-3", 0, vec![m])];
             let w = derive(
-                &health,
-                &[],
-                &HashMap::new(),
+                &Facts {
+                    snapshot: &health,
+                    credentials: &[],
+                    starts: &HashMap::new(),
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None,
+                },
                 NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
             );
             assert_eq!(w.len(), 1, "{w:?}");
             (w[0].condition, w[0].severity)
@@ -5507,41 +5567,45 @@ mod tests {
         let mut starts = HashMap::new();
         starts.insert(FactKey::new(SOURCE_BLOCKED, scoped_subject("g", "7")), NOW - 240_000);
         let warnings = derive(
-            &held,
-            &[],
-            &starts,
+            &Facts {
+                snapshot: &held,
+                credentials: &[],
+                starts: &starts,
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings[0].since_millis, Some(NOW - 240_000));
 
         // No entry in the clock (as if this were the fact's first heartbeat) leaves it unknown rather than "now".
         let warnings = derive(
-            &held,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &held,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings[0].since_millis, None);
     }
@@ -5561,21 +5625,23 @@ mod tests {
             )],
         )];
         let warnings = derive(
-            &unreachable,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &unreachable,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
@@ -5591,21 +5657,23 @@ mod tests {
         let recovered = vec![thread_health("w1", "reader-3", 0, vec![])];
         assert!(
             derive(
-                &recovered,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
+                &Facts {
+                    snapshot: &recovered,
+                    credentials: &[],
+                    starts: &HashMap::new(),
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None
+                },
+                NOW
             )
             .is_empty(),
             "the fact clears the moment the reader stops reporting a reason"
@@ -5685,21 +5753,23 @@ mod tests {
         )];
         assert!(
             derive(
-                &idle,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
+                &Facts {
+                    snapshot: &idle,
+                    credentials: &[],
+                    starts: &HashMap::new(),
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None
+                },
+                NOW
             )
             .is_empty()
         );
@@ -5716,40 +5786,44 @@ mod tests {
         let mut starts = HashMap::new();
         starts.insert(FactKey::new(SOURCE_UNREACHABLE, scoped_subject("g", "7")), NOW - 60_000);
         let warnings = derive(
-            &unreachable,
-            &[],
-            &starts,
+            &Facts {
+                snapshot: &unreachable,
+                credentials: &[],
+                starts: &starts,
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings[0].since_millis, Some(NOW - 60_000));
 
         let warnings = derive(
-            &unreachable,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &unreachable,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings[0].since_millis, None);
     }
@@ -5765,21 +5839,23 @@ mod tests {
             vec![blocked_metric("7", "blocked"), unreachable_metric("7", "down")],
         )];
         let warnings = derive(
-            &both,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &both,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings.len(), 2);
         assert!(warnings.iter().any(|w| w.condition == Condition::SourceBlocked));
@@ -5797,21 +5873,23 @@ mod tests {
             vec![destination_healthy_metric("2", 0.0)],
         )];
         let warnings = derive(
-            &down,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &down,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
@@ -5831,21 +5909,23 @@ mod tests {
         )];
         assert!(
             derive(
-                &recovered,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
+                &Facts {
+                    snapshot: &recovered,
+                    credentials: &[],
+                    starts: &HashMap::new(),
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None
+                },
+                NOW
             )
             .is_empty(),
             "the fact clears the moment the gauge reports healthy again"
@@ -5869,21 +5949,23 @@ mod tests {
         // is a `DestinationUnreachable` extrapolated from a row nothing has refreshed in just as long.
         assert!(
             !derive(
-                &frozen,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
+                &Facts {
+                    snapshot: &frozen,
+                    credentials: &[],
+                    starts: &HashMap::new(),
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None
+                },
+                NOW
             )
             .iter()
             .any(|w| w.condition == Condition::DestinationUnreachable),
@@ -5901,21 +5983,23 @@ mod tests {
         orphan.report.kind = None;
         assert!(
             !derive(
-                &[orphan],
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
+                &Facts {
+                    snapshot: &[orphan],
+                    credentials: &[],
+                    starts: &HashMap::new(),
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None
+                },
+                NOW
             )
             .iter()
             .any(|w| w.condition == Condition::DestinationUnreachable),
@@ -5937,40 +6021,44 @@ mod tests {
             NOW - 90_000,
         );
         let warnings = derive(
-            &down,
-            &[],
-            &starts,
+            &Facts {
+                snapshot: &down,
+                credentials: &[],
+                starts: &starts,
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings[0].since_millis, Some(NOW - 90_000));
 
         let warnings = derive(
-            &down,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &down,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings[0].since_millis, None);
     }
@@ -5984,21 +6072,23 @@ mod tests {
             egress_thread_health("w2", "egress-2", 0, vec![destination_healthy_metric("2", 1.0)]),
         ];
         let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &snapshot,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         let w = warnings
             .iter()
@@ -6018,21 +6108,23 @@ mod tests {
             egress_thread_health("w2", "egress-2", stale_ago, vec![destination_healthy_metric("2", 1.0)]),
         ];
         let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &snapshot,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         let w = warnings
             .iter()
@@ -6055,21 +6147,23 @@ mod tests {
             ],
         )];
         let warnings = derive(
-            &both,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &both,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings.len(), 2);
         assert!(warnings.iter().any(|w| w.condition == Condition::DestinationRefusing));
@@ -6089,21 +6183,23 @@ mod tests {
             vec![refusal_metric("2", NOW - 500, "429 es_rejected_execution_exception")],
         )];
         let warnings = derive(
-            &fresh,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &fresh,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Destination);
@@ -6120,21 +6216,23 @@ mod tests {
         )];
         assert!(
             derive(
-                &old,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
+                &Facts {
+                    snapshot: &old,
+                    credentials: &[],
+                    starts: &HashMap::new(),
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None
+                },
+                NOW
             )
             .is_empty(),
             "the ring keeps history; a warning is not a log of what once happened"
@@ -6153,21 +6251,23 @@ mod tests {
             thread_health("w2", "egress-2", 0, vec![refusal_metric("2", NOW - 100, "new wording")]),
         ];
         let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &snapshot,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(
             warnings.len(),
@@ -6367,21 +6467,23 @@ mod tests {
     fn derive_folds_lag_climbing_into_the_catalog() {
         let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0]);
         let warnings = derive(
-            &[],
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &[],
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: Some(&store),
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            Some(&store),
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].condition, Condition::LagClimbing);
@@ -6391,21 +6493,23 @@ mod tests {
     fn group_not_deployed_raises_for_a_worker_whose_group_main_holds_no_subtree_for() {
         let heartbeating = vec![thread_health("w1", "t0", 0, vec![])];
         let warnings = derive(
-            &heartbeating,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &heartbeating,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &HashSet::new(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &HashSet::new(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
@@ -6426,21 +6530,23 @@ mod tests {
         let heartbeating = vec![thread_health("w1", "t0", 0, vec![])];
         assert!(
             derive(
-                &heartbeating,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
+                &Facts {
+                    snapshot: &heartbeating,
+                    credentials: &[],
+                    starts: &HashMap::new(),
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None
+                },
+                NOW
             )
             .is_empty(),
             "the worker is fine -- the group it reports is what main lacks"
@@ -6453,21 +6559,23 @@ mod tests {
         let mut starts = HashMap::new();
         starts.insert(FactKey::new(GROUP_NOT_DEPLOYED, "w1"), NOW - 60_000);
         let warnings = derive(
-            &heartbeating,
-            &[],
-            &starts,
+            &Facts {
+                snapshot: &heartbeating,
+                credentials: &[],
+                starts: &starts,
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &HashSet::new(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &HashSet::new(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         assert_eq!(warnings[0].since_millis, Some(NOW - 60_000));
     }
@@ -6526,21 +6634,23 @@ mod tests {
         ];
         let deployed = HashSet::from(["g1".to_string(), "g2".to_string()]);
         let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &snapshot,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed,
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed,
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         let held: Vec<&Warning> = warnings
             .iter()
@@ -6568,21 +6678,23 @@ mod tests {
         ];
         let deployed = HashSet::from(["g1".to_string(), "g2".to_string()]);
         let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &snapshot,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed,
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed,
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         let held: Vec<&Warning> = warnings
             .iter()
@@ -6610,21 +6722,23 @@ mod tests {
             thread_health("w3", "reader-3", 0, vec![idle_poll("7")]),
         ];
         let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &snapshot,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         let w = warnings
             .iter()
@@ -6642,21 +6756,23 @@ mod tests {
             thread_health("w2", "egress-2", 0, vec![refusal_metric("2", NOW - 100, "429")]),
         ];
         let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &snapshot,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
         let w = warnings
             .iter()
@@ -6681,21 +6797,23 @@ mod tests {
         let snapshot = vec![thread_health("w1", "capture", 0, vec![from_capture])];
 
         let warnings = derive(
-            &snapshot,
-            &[],
-            &HashMap::new(),
+            &Facts {
+                snapshot: &snapshot,
+                credentials: &[],
+                starts: &HashMap::new(),
+                heartbeat_interval: INTERVAL,
+                series_store: None,
+                deployed_groups: &deployed(),
+                signing: None,
+                rotating: &Rotating::None,
+                codes: &[],
+                presenting: &settled(),
+                deployed_certificates: &[],
+                held: None,
+                remote: None,
+                newer: None,
+            },
             NOW,
-            INTERVAL,
-            None,
-            &deployed(),
-            None,
-            &Rotating::None,
-            &[],
-            &settled(),
-            &[],
-            None,
-            None,
-            None,
         );
 
         assert!(
@@ -6713,21 +6831,23 @@ mod tests {
         )];
         assert!(
             !derive(
-                &as_a_fact,
-                &[],
-                &HashMap::new(),
-                NOW,
-                INTERVAL,
-                None,
-                &deployed(),
-                None,
-                &Rotating::None,
-                &[],
-                &settled(),
-                &[],
-                None,
-                None,
-                None,
+                &Facts {
+                    snapshot: &as_a_fact,
+                    credentials: &[],
+                    starts: &HashMap::new(),
+                    heartbeat_interval: INTERVAL,
+                    series_store: None,
+                    deployed_groups: &deployed(),
+                    signing: None,
+                    rotating: &Rotating::None,
+                    codes: &[],
+                    presenting: &settled(),
+                    deployed_certificates: &[],
+                    held: None,
+                    remote: None,
+                    newer: None
+                },
+                NOW
             )
             .is_empty(),
             "the harness raises when the name is one the catalog reads"
