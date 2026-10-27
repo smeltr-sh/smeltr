@@ -65,7 +65,6 @@ const base: FileConfigDto = {
   ],
   lookupTables: [{ id: 'geoip', type: 'mmdb', path: 'lookups/geoip.mmdb' }],
   grokPatterns: [],
-  identities: [],
 };
 
 /** `base`, with `edit` applied to a copy of it. */
@@ -100,34 +99,39 @@ describe('changeText, one object changed one way', () => {
     expect(text(next).subject).toBe('Remove destination kafka-dlq');
   });
 
-  it('says an identity edited, naming what changed', () => {
+  it("says a connector's TLS edited, naming what changed", () => {
     const before = after((c) => {
-      c.identities.push({ id: 'acme', authorities: 'cert-v1' });
+      c.sources.push({
+        id: 'acme',
+        type: 'kafka',
+        brokers: 'b',
+        topics: [],
+        trustedAuthorities: 'cert-v1',
+      });
     });
     const next = structuredClone(before);
-    next.identities[0].authorities = 'cert-v2';
-    expect(text(next, before).subject).toBe('Update identity acme: authorities cert-v1 → cert-v2');
+    (next.sources.at(-1) as { trustedAuthorities?: string }).trustedAuthorities = 'cert-v2';
+    expect(text(next, before).subject).toBe(
+      'Update source acme: trustedAuthorities cert-v1 → cert-v2',
+    );
   });
 
   it('never lets a multiline PEM value break the subject onto a second line', () => {
     const before = after((c) => {
-      c.identities.push({
+      c.sources.push({
         id: 'acme',
-        authorities: '-----BEGIN CERTIFICATE-----\nMIIBCjCBtAIBADAA\n-----END CERTIFICATE-----',
+        type: 'kafka',
+        brokers: 'b',
+        topics: [],
+        trustedAuthorities:
+          '-----BEGIN CERTIFICATE-----\nMIIBCjCBtAIBADAA\n-----END CERTIFICATE-----',
       });
     });
     const next = structuredClone(before);
-    next.identities[0].authorities =
+    (next.sources.at(-1) as { trustedAuthorities?: string }).trustedAuthorities =
       '-----BEGIN CERTIFICATE-----\nMIIBDkCBtAIBADAA\n-----END CERTIFICATE-----';
     const { subject } = text(next, before);
     expect(subject.split('\n')).toHaveLength(1);
-  });
-
-  it('pluralizes identities, not "identitys"', () => {
-    const next = after((c) => {
-      c.identities.push({ id: 'acme', authorities: 'a' }, { id: 'other', authorities: 'b' });
-    });
-    expect(text(next).subject).toBe('Add 2 identities');
   });
 
   it('tells a rename from a change of behavior', () => {

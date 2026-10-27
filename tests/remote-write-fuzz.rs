@@ -242,8 +242,7 @@ fn size(rng: &mut Rng) -> Value {
     }
 }
 
-/// A system with one Prometheus destination of random settings, and the identities it may name, and the settings it
-/// sets. Half the systems take every setting from values the check passes, so valid ones are reached as often as
+/// A system with one Prometheus destination of random settings, and the settings it sets. Half the systems take every setting from values the check passes, so valid ones are reached as often as
 /// refused ones.
 fn random_system(rng: &mut Rng, authority: &str) -> (String, Vec<String>) {
     let wild = rng.chance(2);
@@ -299,13 +298,34 @@ fn random_system(rng: &mut Rng, authority: &str) -> (String, Vec<String>) {
         };
         d.insert("credentials".into(), credentials);
     }
+    // An authority, what is no certificate, or none; a certificate the worker holds, or one it does not; and
+    // whether public roots are trusted, which beside neither is refused.
     if rng.chance(3) {
-        let identity = if loose(rng) {
-            any(rng, vec![json!("bare"), json!("missing"), json!(""), json!(3)])
+        let authorities = if loose(rng) {
+            any(
+                rng,
+                vec![json!("not a certificate"), json!(""), json!(3), json!(authority)],
+            )
         } else {
-            json!("acme")
+            json!(authority)
         };
-        d.insert("identity".into(), identity);
+        d.insert("trustedAuthorities".into(), authorities);
+    }
+    if rng.chance(4) {
+        let certificate = if loose(rng) {
+            any(rng, vec![json!(""), json!(" "), json!(3), json!("missing")])
+        } else {
+            json!("client")
+        };
+        d.insert("certificate".into(), certificate);
+    }
+    if rng.chance(4) {
+        let trusts = if loose(rng) {
+            any(rng, vec![json!("yes"), json!(1), json!(true)])
+        } else {
+            json!(rng.chance(2))
+        };
+        d.insert("trustPublic".into(), trusts);
     }
     for field in ["maxRequestBytes", "bufferBytes"] {
         if rng.chance(2) {
@@ -332,17 +352,8 @@ fn random_system(rng: &mut Rng, authority: &str) -> (String, Vec<String>) {
     if d.get("version") == Some(&json!("2.0")) {
         set.push("version 2.0".into());
     }
-    // An identity trusting an authority, alone or beside one with a certificate pasted into the bundle, one trusting
-    // what is no certificate, or none.
-    let identities = match rng.below(4) {
-        0 => json!([{"id": "acme", "authorities": authority}]),
-        1 => json!([{"id": "acme", "authorities": authority}, {"id": "bare", "certificate": authority}]),
-        2 => json!([{"id": "acme", "authorities": "not a certificate"}]),
-        _ => json!([]),
-    };
     let system = json!({
         "version": 1,
-        "identities": identities,
         "sources": [{"id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
         "destinations": [d],
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
@@ -359,7 +370,7 @@ enum Reached {
     Refused,
     /// Valid, and the destination they make delivered a sample.
     Delivered,
-    /// Valid, and this worker holds no credential or identity they name, which the destination says rather than
+    /// Valid, and this worker holds no credential or certificate they name, which the destination says rather than
     /// sending without.
     Unresolved,
 }
@@ -382,7 +393,7 @@ fn settle(json: &str, secrets: &HeldSecrets) -> Result<Reached, String> {
     };
     let (Ok(credentials), Ok(agent)) = (
         credential_headers("prometheus destination", &c.credentials, secrets),
-        agent_config(c.identity.as_deref(), secrets),
+        agent_config(c.tls.as_ref(), secrets),
     ) else {
         return Ok(Reached::Unresolved);
     };
@@ -436,12 +447,14 @@ fn deliver<T: Transport>(
 }
 
 /// Every setting of a Prometheus destination, as a bundle names it.
-const SETTINGS: [&str; 8] = [
+const SETTINGS: [&str; 10] = [
     "url",
     "version",
     "headers",
     "credentials",
-    "identity",
+    "certificate",
+    "trustedAuthorities",
+    "trustPublic",
     "maxRequestBytes",
     "bufferBytes",
     "stallAfterSecs",
@@ -451,12 +464,19 @@ const SETTINGS: [&str; 8] = [
 /// none panics the check, the load or the build. Each setting is reached in a destination that delivers.
 #[test]
 fn random_settings_are_refused_or_build_a_destination_that_delivers() {
-    let authority = certs::Authority::new("remote-write-fuzz").pem;
+    let authority = certs::Authority::new("remote-write-fuzz");
+    let client = authority.issue("client", Vec::new());
     let mut secrets = HeldSecrets::default();
     secrets.set_stored([
         ("token".to_string(), 1, "Bearer t-123".to_string()),
         ("newline".to_string(), 1, "Bearer t-123\n".to_string()),
     ]);
+    secrets.take([smeltr::heartbeat::SecretDelivery {
+        name: "client".to_string(),
+        version: 1,
+        value: client.key,
+        chain: Some(client.certificate),
+    }]);
     let delivering = |setting: &str| format!("{setting} in a destination that delivers");
     let mut coverage = Coverage::new(
         (SETTINGS.iter().map(|s| s.to_string()))
@@ -466,7 +486,7 @@ fn random_settings_are_refused_or_build_a_destination_that_delivers() {
     );
     fuzz::run(1..10_000, |seed| {
         let mut rng = Rng::seeded(seed);
-        let (json, set) = random_system(&mut rng, &authority);
+        let (json, set) = random_system(&mut rng, &authority.pem);
         let reached = match catch_unwind(AssertUnwindSafe(|| settle(&json, &secrets))) {
             Ok(Ok(reached)) => reached,
             Ok(Err(e)) => return Err(format!("{e}\n{json}")),
@@ -1070,7 +1090,7 @@ fn fuzz_one(seed: u64, coverage: &mut Coverage) -> Result<(), String> {
         version,
         headers: Vec::new(),
         credentials: Vec::new(),
-        identity: None,
+        tls: None,
         max_request_bytes,
         buffer_bytes: max_request_bytes,
         stall_after: Duration::from_millis(stall_after),
@@ -1298,7 +1318,7 @@ fn live_run(seed: u64, base: &str, out_of_order: bool, coverage: &mut Coverage) 
         version,
         headers,
         credentials: Vec::new(),
-        identity: None,
+        tls: None,
         max_request_bytes,
         buffer_bytes: *rng.pick(&[4 << 20, 64 << 20]).max(&max_request_bytes),
         stall_after: Duration::from_secs(*rng.pick(&[5, 10, 30])),

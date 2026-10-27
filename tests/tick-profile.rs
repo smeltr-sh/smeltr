@@ -86,7 +86,7 @@ fn produce_with(brokers: &str, topic: &str, n: usize, row: impl Fn(usize) -> Vec
             brokers: brokers.to_string(),
             default_topic: topic.to_string(),
             service: smeltr::plan::topology::KafkaService::Kafka,
-            identity: None,
+            tls: None,
             buffer_bytes: 64 * 1024 * 1024,
             props: Default::default(),
             avro: None,

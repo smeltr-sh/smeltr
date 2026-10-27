@@ -6,12 +6,11 @@
   import SourceFields from './SourceFields.svelte';
   import { SOURCE_KINDS } from './sourceKinds';
   import { SOURCE_TYPES, blankSource, isSql, typeLabel } from './sources';
-  import type { IdentityDto, SecretDto, SourceDto } from './api';
+  import type { SecretDto, SourceDto } from './api';
 
   let {
     open,
     unavailable,
-    identities,
     secrets,
     mechanisms,
     readAt,
@@ -23,7 +22,6 @@
     open: boolean;
     /** Every id the new one may not take. */
     unavailable: string[];
-    identities: IdentityDto[];
     secrets: SecretDto[];
     mechanisms: string[];
     /** The commit the caller read, for what `SourceFields` saves on its own. */
@@ -51,6 +49,6 @@
   {oncancel}
 >
   {#snippet fields(draft)}
-    <SourceFields source={draft} {identities} {secrets} {mechanisms} {readAt} {onsaved} />
+    <SourceFields source={draft} {secrets} {mechanisms} {readAt} {onsaved} />
   {/snippet}
 </NewObject>

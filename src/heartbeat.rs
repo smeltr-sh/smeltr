@@ -857,9 +857,6 @@ pub struct CaptureInvitation {
     /// egress thread takes; one whose deployment does not answers that it runs no such destination.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<String>,
-    /// The identity that source names, where it names one. A worker has no bundle to look it up in either.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub identity: Option<crate::config_file::IdentityDto>,
     /// A `Bool` expression over the record and the source's declared fields, compiled the way a route condition is
     /// (`plan::topology`). `None` keeps everything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1378,7 +1375,7 @@ mod client {
     }
 
     /// Every root a worker verifies its leader by: the authorities in `leader_ca_pem`, and the public roots too when
-    /// `trust_public` (`io::trust::trusting`), as an identity trusts. The heartbeat and git's fetch both trust this,
+    /// `trust_public` (`io::trust::trusting`), as a connector trusts. The heartbeat and git's fetch both trust this,
     /// so the two never disagree about a leader.
     pub fn leader_roots(
         leader_ca_pem: Option<&[u8]>,
@@ -1529,7 +1526,7 @@ pub use client::{
 mod trust_tests {
     use super::{REQUEST_BUDGET, agent_trusting, leader_roots};
 
-    /// As an identity trusts: the authority, and the public roots unless the worker says not to.
+    /// As a connector trusts: the authority, and the public roots unless the worker says not to.
     #[test]
     fn a_worker_trusts_its_leaders_authority_and_the_public_roots_unless_told_not_to() {
         let authority = rcgen::generate_simple_self_signed(vec!["leader.test".to_string()])
@@ -2276,7 +2273,6 @@ mod tests {
             group: "g".to_string(),
             source: serde_json::from_str(r#"{"id":"probe","type":"metrics","bucketSeconds":5}"#).unwrap(),
             destination: None,
-            identity: None,
             filter: None,
             start: None,
             max_matches: 1,

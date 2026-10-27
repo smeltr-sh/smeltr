@@ -1,6 +1,6 @@
 //! Every link between a bundle's objects, from one walk over a `FileConfig`: which source a route reads, which
 //! pipeline it runs and where it delivers, which tables and grok patterns a pipeline reads, which pipelines it calls,
-//! where a destination's refusals go, and which identity a source or destination connects under.
+//! where a destination's refusals go.
 //!
 //! `impact` answers from these what a change reaches. [`Links::connections`] answers what a change to one object
 //! reaches before anything changes: the blast radius an editor shows (user story A5).
@@ -22,7 +22,6 @@ pub enum Kind {
     Destination,
     LookupTable,
     GrokPattern,
-    Identity,
 }
 
 /// One object of a bundle.
@@ -85,10 +84,6 @@ pub struct Links {
     pub pattern_names: BTreeMap<String, BTreeSet<String>>,
     /// Destination id -> where its refusals go, directly.
     pub refusals: BTreeMap<String, BTreeSet<String>>,
-    /// Source id -> the identity it connects under.
-    pub source_identity: BTreeMap<String, String>,
-    /// Destination id -> the identity it connects under.
-    pub destination_identity: BTreeMap<String, String>,
     /// Where the group's own exception answers deliver: a row any source reads can end there.
     pub group_deliveries: BTreeSet<String>,
 }
@@ -103,14 +98,6 @@ impl Links {
             links
                 .refusals
                 .insert(d.id.clone(), delivered_to(&d.on_exception).collect());
-            if let Some(identity) = d.identity() {
-                links.destination_identity.insert(d.id.clone(), identity.to_string());
-            }
-        }
-        for s in &file.sources {
-            if let Some(identity) = s.identity() {
-                links.source_identity.insert(s.id.clone(), identity.to_string());
-            }
         }
         for p in &file.pipelines {
             let (mut calls, mut tables) = (BTreeSet::new(), BTreeSet::new());
@@ -235,19 +222,6 @@ impl Links {
                     .map(|(p, _)| p.clone());
                 self.pipelines_downstream(pipelines.collect::<Vec<_>>(), down);
             }
-            Kind::Identity => {
-                for (s, identity) in &self.source_identity {
-                    if identity == id {
-                        down.insert(Object::new(Kind::Source, s));
-                        down.extend(self.connections(&Object::new(Kind::Source, s)).downstream);
-                    }
-                }
-                for (d, identity) in &self.destination_identity {
-                    if identity == id {
-                        down.extend(destinations(&self.refusal_chain([d.clone()])));
-                    }
-                }
-            }
         }
         c.downstream.remove(object);
         c
@@ -341,7 +315,7 @@ mod tests {
     fn bundle() -> FileConfig {
         let kafka_source = |id: &str| {
             json!({"id": id, "type": "kafka", "brokers": "b:9092", "topics": [id],
-                                             "groupId": "g", "identity": "fw-cert"})
+                                             "groupId": "g"})
         };
         let kafka_dest = |id: &str, dlq: Option<&str>| {
             let mut d = json!({"id": id, "type": "kafka", "brokers": "b:9092", "defaultTopic": id});
@@ -451,17 +425,6 @@ mod tests {
         through_fw_line.insert(Object::new(GrokPattern, "FW_LINE"));
         assert_eq!(ip.downstream, through_fw_line);
         assert!(ip.upstream.is_empty());
-    }
-
-    /// An identity reaches what connects under it, and everything that does.
-    #[test]
-    fn an_identity_reaches_what_connects_under_it() {
-        let c = connections(Identity, "fw-cert");
-        assert!(c.upstream.is_empty());
-        for o in [(Source, "fw-a"), (Source, "fw-b"), (Destination, "es-net-b")] {
-            assert!(c.downstream.contains(&Object::new(o.0, o.1)), "{o:?}");
-        }
-        assert!(!c.downstream.contains(&Object::new(Source, "web")));
     }
 
     /// Something nothing links to answers empty.

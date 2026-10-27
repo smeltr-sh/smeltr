@@ -24,9 +24,7 @@ use crate::io::{
     Rejection, Source, SourceRecord, TopicPartition,
 };
 use crate::metrics::MetricsHandle;
-use crate::plan::topology::{
-    HeldSecrets, Identity, KafkaDestinationConfig, KafkaProps, KafkaSourceConfig, StopPosition,
-};
+use crate::plan::topology::{HeldSecrets, KafkaDestinationConfig, KafkaProps, KafkaSourceConfig, StopPosition, Tls};
 
 mod client;
 mod entra;
@@ -159,7 +157,7 @@ pub fn total_partitions(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Op
         .set("group.id", &config.group_id);
     // The same configuration the source itself gets: a secured broker answers a metadata request no sooner than any
     // other, so without it this asks anonymously, fails, and the source is sized as `Unknown`.
-    apply_client_config(&mut client_config, &config.props, config.identity.as_deref(), secrets).ok()?;
+    apply_client_config(&mut client_config, &config.props, config.tls.as_ref(), secrets).ok()?;
     // A throwaway consumer for one metadata call, not a `KafkaSource`: nothing here reads its connectivity health
     // back.
     let consumer: BaseConsumer = client_config.create().ok()?;
@@ -227,43 +225,43 @@ fn supports_gssapi() -> bool {
     cfg!(any(windows, target_os = "linux"))
 }
 
-/// Everything an operator configured about this client, over smeltr's own keys: the identity it connects under,
+/// Everything an operator configured about this client, over smeltr's own keys: the TLS it speaks,
 /// then the properties.
 ///
 /// One function, so a consumer and a producer cannot be set up differently. The order would matter if anything
-/// could set a property an identity also sets, since `ClientConfig::set` keeps the last value and says nothing;
+/// could set a property its TLS also sets, since `ClientConfig::set` keeps the last value and says nothing;
 /// load-time validation refuses that pair, which is what leaves the order free to be the readable one.
 fn apply_client_config(
     config: &mut ClientConfig,
     props: &KafkaProps,
-    identity: Option<&Identity>,
+    tls: Option<&Tls>,
     secrets: &HeldSecrets,
 ) -> Result<(), IoError> {
-    apply_client_config_on(config, props, identity, secrets, entra::in_workload())
+    apply_client_config_on(config, props, tls, secrets, entra::in_workload())
 }
 
 /// [`apply_client_config`] on a host that is, or is not, a pod with a workload identity.
 fn apply_client_config_on(
     config: &mut ClientConfig,
     props: &KafkaProps,
-    identity: Option<&Identity>,
+    tls: Option<&Tls>,
     secrets: &HeldSecrets,
     in_workload: bool,
 ) -> Result<(), IoError> {
-    apply_identity(config, identity, secrets)?;
-    // Without an identity librdkafka would trust the host's store alone. A client given its own roots keeps them.
+    apply_tls(config, tls, secrets)?;
+    // Speaking no TLS of its own, librdkafka would trust the host's store alone. A client given its own roots keeps them.
     let own_roots = props.literal.iter().any(|(k, _)| k.starts_with("ssl.ca."))
         || props.credentials.iter().any(|(k, _)| k.starts_with("ssl.ca."));
-    let tls = props
+    let ssl = props
         .literal
         .iter()
         .any(|(k, v)| k == "security.protocol" && v.to_ascii_uppercase().ends_with("SSL"));
-    if identity.is_none() && tls && !own_roots {
+    if tls.is_none() && ssl && !own_roots {
         config.set("ssl.ca.pem", super::trust::pem(None)?);
     }
     // librdkafka asks a token endpoint over its own HTTPS client, which trusts nothing it is not given. A token
     // endpoint is a public identity provider, not the brokers, so it gets the platform's roots, and only where the
-    // brokers do: an identity's private authorities are the brokers' business.
+    // brokers do: a connector's private authorities are the brokers' business.
     let oidc = props
         .literal
         .iter()
@@ -271,7 +269,7 @@ fn apply_client_config_on(
     let own_https_roots = props.literal.iter().any(|(k, _)| k.starts_with("https.ca."))
         || props.credentials.iter().any(|(k, _)| k.starts_with("https.ca."));
     let workload = entra::workload_config(props).filter(|_| in_workload);
-    if identity.is_none() && oidc && workload.is_none() && !own_https_roots {
+    if tls.is_none() && oidc && workload.is_none() && !own_https_roots {
         config.set("https.ca.pem", super::trust::pem(None)?);
     }
     apply_props(config, props, secrets)?;
@@ -305,21 +303,17 @@ fn managed_identity_query(props: &KafkaProps, client_id: Option<&str>) -> Option
     Some(format!("{config}&client_id={client_id}"))
 }
 
-/// Sets the inline PEM properties an identity carries. librdkafka reads each of these from memory, so nothing is
-/// written to the worker's disk. The chain and key come through `trust::presented`, so one librdkafka could not read is
-/// refused in the words every other client uses, before any handshake.
+/// Sets the inline PEM properties the connector's TLS carries. librdkafka reads each of these from memory, so
+/// nothing is written to the worker's disk. The chain and key come through `trust::presented`, so one librdkafka
+/// could not read is refused in the words every other client uses, before any handshake.
 ///
-/// The security protocol is not set here: an identity says what this client presents and trusts, not whether SASL
-/// is also in play, and load-time validation has already refused an identity under a protocol that
-/// negotiates no TLS.
-fn apply_identity(
-    config: &mut ClientConfig,
-    identity: Option<&Identity>,
-    secrets: &HeldSecrets,
-) -> Result<(), IoError> {
-    let Some(identity) = identity else { return Ok(()) };
-    config.set("ssl.ca.pem", super::trust::pem(Some(identity))?);
-    if let Some(presented) = super::trust::presented(identity, secrets)? {
+/// The security protocol is not set here: the TLS says what this client presents and trusts, not whether SASL is
+/// also in play, and load-time validation has already refused TLS of the connector's own under a protocol that
+/// negotiates none.
+fn apply_tls(config: &mut ClientConfig, tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<(), IoError> {
+    let Some(tls) = tls else { return Ok(()) };
+    config.set("ssl.ca.pem", super::trust::pem(Some(tls))?);
+    if let Some(presented) = super::trust::presented(tls, secrets)? {
         config.set("ssl.certificate.pem", presented.chain_pem);
         config.set("ssl.key.pem", presented.key_pem);
     }
@@ -413,7 +407,7 @@ impl KafkaSource {
             return Err(IoError::transient("a source must name at least one topic".to_string()));
         }
         let avro = (config.avro.as_ref())
-            .map(|a| crate::io::avro::AvroReader::new(a, config.identity.as_deref(), secrets))
+            .map(|a| crate::io::avro::AvroReader::new(a, config.tls.as_ref(), secrets))
             .transpose()?;
         let (client, slot) = clients.attach(config, secrets)?;
         Ok(KafkaSource {
@@ -1270,7 +1264,7 @@ impl KafkaDestination {
         producer_config.set("compression.type", config.compression.as_property());
         // Broker-enforced throttling and the producer queue's depth are reported nowhere else; see `publish_stats`.
         producer_config.set("statistics.interval.ms", STATS_INTERVAL.as_millis().to_string());
-        apply_client_config(&mut producer_config, &config.props, config.identity.as_deref(), secrets)?;
+        apply_client_config(&mut producer_config, &config.props, config.tls.as_ref(), secrets)?;
         // Asked before the producer exists, because librdkafka fixes its sizes when a client is built. Under the
         // producer's own configuration, so a secured broker answers.
         match measure_link(&producer_config, &config.default_topic) {
@@ -1303,7 +1297,7 @@ impl KafkaDestination {
             ),
         }
         let avro = (config.avro.as_ref())
-            .map(|r| crate::io::avro::AvroWriter::new(r, config.identity.as_deref(), secrets))
+            .map(|r| crate::io::avro::AvroWriter::new(r, config.tls.as_ref(), secrets))
             .transpose()?;
         let producer: BaseProducer<DeliveryTracker> = producer_config.create_with_context(tracker)?;
         // The first token now, so the first delivery does not wait on a sign-in. Later ones come through its polls.
@@ -1730,7 +1724,7 @@ mod tests {
             brokers: mock.bootstrap_servers(),
             topics: vec!["recovery-topic".to_string()],
             group_id: "recovery-group".to_string(),
-            identity: None,
+            tls: None,
             start: StartPosition::Earliest,
             stop: None,
             deployed_at: 0,
@@ -2098,7 +2092,7 @@ mod tests {
             brokers: mock.bootstrap_servers(),
             topics: topics.iter().map(|t| t.to_string()).collect(),
             group_id: group.to_string(),
-            identity: None,
+            tls: None,
             start: StartPosition::Earliest,
             stop: Some(StopPosition::Timestamp(RANGE_STOP)),
             deployed_at: 0,
@@ -2188,7 +2182,7 @@ mod tests {
                 brokers: mock.bootstrap_servers(),
                 default_topic: "down-topic".to_string(),
                 service: crate::plan::topology::KafkaService::Kafka,
-                identity: None,
+                tls: None,
                 buffer_bytes: 64 * 1024 * 1024,
                 props: Default::default(),
                 avro: None,
@@ -2256,7 +2250,7 @@ mod tests {
             brokers: mock.bootstrap_servers(),
             topics: vec![topic.to_string()],
             group_id: "lag-group".to_string(),
-            identity: None,
+            tls: None,
             start: StartPosition::Earliest,
             stop: None,
             deployed_at: 0,
@@ -2315,7 +2309,7 @@ mod tests {
             brokers: mock.bootstrap_servers(),
             topics: vec!["drop-topic".to_string()],
             group_id: "drop-group".to_string(),
-            identity: None,
+            tls: None,
             start: StartPosition::Earliest,
             stop: None,
             deployed_at: 0,
@@ -2355,7 +2349,7 @@ mod tests {
             brokers: mock.bootstrap_servers(),
             topics: vec!["idle-topic".to_string()],
             group_id: "idle-group".to_string(),
-            identity: None,
+            tls: None,
             start: StartPosition::Earliest,
             stop: None,
             deployed_at: 0,
@@ -2394,7 +2388,7 @@ mod tests {
                 brokers: mock.bootstrap_servers(),
                 default_topic: "stats-topic".to_string(),
                 service: crate::plan::topology::KafkaService::Kafka,
-                identity: None,
+                tls: None,
                 buffer_bytes: 64 * 1024 * 1024,
                 props: Default::default(),
                 avro: None,
@@ -2448,7 +2442,7 @@ mod tests {
             brokers: mock.bootstrap_servers(),
             topics: vec!["commit-topic".to_string()],
             group_id: "commit-group".to_string(),
-            identity: None,
+            tls: None,
             start: StartPosition::Earliest,
             stop: None,
             deployed_at: 0,
@@ -2559,7 +2553,7 @@ mod tests {
             brokers: "kafka-nowhere.invalid:9092".to_string(),
             topics: vec!["a-topic".to_string()],
             group_id: "a-group".to_string(),
-            identity: None,
+            tls: None,
             start: StartPosition::Earliest,
             stop: None,
             deployed_at: 0,

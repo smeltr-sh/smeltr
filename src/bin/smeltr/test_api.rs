@@ -388,7 +388,7 @@ fn run_in(
 
     // What the change reaches, read against `main` -- the tree it would be deployed onto. Merged with `shared/` on
     // both sides for a group scope, the same way `exec_file` is: an edit landing only in `shared/` -- a source, a
-    // lookup table, an identity -- still has to show up as touched.
+    // lookup table -- still has to show up as touched.
     let deployed = if touched_only {
         Some(config_api::Reading::open_in(
             data_dir,
@@ -885,7 +885,6 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
             on_exception: None,
             name: None,
         });
@@ -1426,7 +1425,6 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
-            identities: vec![],
             on_exception: None,
             name: None,
         }

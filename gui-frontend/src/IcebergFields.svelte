@@ -10,11 +10,11 @@
   import Field from './Field.svelte';
   import Nested from './Nested.svelte';
   import UrlField from './UrlField.svelte';
-  import IdentityPicker from './IdentityPicker.svelte';
+  import TlsFields from './TlsFields.svelte';
   import ConnectorAccess from './ConnectorAccess.svelte';
   import SecretRefInput from './SecretRefInput.svelte';
   import TokenListInput from './TokenListInput.svelte';
-  import type { IdentityDto, SecretDto } from './api';
+  import type { SecretDto } from './api';
   import {
     SIGN_INS,
     SIGNING_NAMES,
@@ -30,11 +30,7 @@
     type IcebergDestination,
   } from './iceberg';
 
-  let {
-    value: d,
-    secrets,
-    identities,
-  }: { value: IcebergDestination; secrets: SecretDto[]; identities: IdentityDto[] } = $props();
+  let { value: d, secrets }: { value: IcebergDestination; secrets: SecretDto[] } = $props();
 
   const signIn = $derived(signInOf(d));
   const partitionError = $derived(
@@ -162,12 +158,7 @@
     {/if}
   </Nested>
 {/if}
-<IdentityPicker
-  value={d.identity}
-  {identities}
-  farEnd="destination"
-  onchange={(v) => (d.identity = v)}
-/>
+<TlsFields value={d} farEnd="destination" />
 <Advanced label="Catalog and storage" modified={catalogStorageModified(d)} bind:open={storageOpen}>
   <Field optional field="warehouse" label="warehouse">
     {#snippet help()}

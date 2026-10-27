@@ -46,8 +46,9 @@
       <a href="/docs/secrets">credential</a>.
     </li>
     <li>
-      Select a <a href="/docs/secrets#identities">connection identity</a> for a private CA or a client
-      certificate.
+      For a private CA or a client certificate, fill in the <a href="/docs/certificates#connectors"
+        >TLS settings</a
+      >.
     </li>
   </ul>
 

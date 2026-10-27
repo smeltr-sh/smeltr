@@ -408,7 +408,7 @@ impl UreqFetch {
 /// Opens `config` as a live source.
 pub fn open(config: &ApiSourceConfig, secrets: &HeldSecrets) -> Result<Box<dyn Source>, IoError> {
     use crate::plan::topology::Api as Kind;
-    let agent = super::http::agent_config(config.identity.as_deref(), secrets)?;
+    let agent = super::http::agent_config(config.tls.as_ref(), secrets)?;
     match &config.api {
         Kind::HttpApi(c) => {
             let mut headers = c.headers.clone();

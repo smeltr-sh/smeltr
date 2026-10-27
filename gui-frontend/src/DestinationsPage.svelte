@@ -28,7 +28,6 @@
     type DestinationDto,
     type ExceptionsDto,
     type RouteDto,
-    type IdentityDto,
     type SecretDto,
   } from './api';
   import { mayCapture } from './access';
@@ -47,9 +46,6 @@
   /** What `shared/` declares, which this group delivers to as well. Never saved from here: the page writes its
    * own scope, and these belong to the bundle every group draws on. */
   let sharedDestinations: DestinationDto[] = $state([]);
-  /** Every identity a destination here may name: this scope's own and `shared/`'s, the same two
-   * subtrees the group runs merged. */
-  let identities: IdentityDto[] = $state([]);
   /** The group's exception answers and routes, as read: what a destination's own answer to Refused lays over, and
    * what the load checks beside it. */
   let group = $state<ExceptionsDto | undefined>(undefined);
@@ -73,7 +69,6 @@
     put: putDestinations,
     validation,
     onLoaded: async (config) => {
-      identities = config.identities;
       group = config.exceptions;
       routes = config.routes;
       await loadShared();
@@ -84,7 +79,6 @@
   async function loadShared() {
     const shared = await sharedConfig();
     sharedDestinations = shared ? shared.destinations : [];
-    if (shared) identities = [...shared.identities, ...identities];
   }
 
   void editor.load();
@@ -195,7 +189,7 @@
             </Field>
             <Field label="type"><span class="fixed">{typeLabel(destination.type)}</span></Field>
           </div>
-          <DestinationFields {destination} {identities} {secrets} {mechanisms} />
+          <DestinationFields {destination} {secrets} {mechanisms} />
           <ExceptionsFold
             bind:value={destination.exceptions}
             name={destination.id}
@@ -225,7 +219,6 @@
       <NewDestination
         open={adding}
         unavailable={unavailable()}
-        {identities}
         {secrets}
         {mechanisms}
         onadd={add}

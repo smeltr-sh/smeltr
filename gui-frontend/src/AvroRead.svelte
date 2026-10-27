@@ -62,13 +62,12 @@
   import Field from './Field.svelte';
   import SchemaRegistryFields from './SchemaRegistryFields.svelte';
   import CaptureFlow from './CaptureFlow.svelte';
-  import { FIELD_TYPES, type IdentityDto, type SecretDto, type SourceDto } from './api';
+  import { FIELD_TYPES, type SecretDto, type SourceDto } from './api';
 
   let {
     value,
     stream,
     secrets,
-    identities,
   }: {
     /** The source itself, as the page edits it. */
     value: Read;
@@ -76,13 +75,11 @@
     stream: boolean;
     /** The secret catalog, for the registry's password. */
     secrets: SecretDto[];
-    /** Every identity the source may name, for the one a capture of it reads under. */
-    identities: IdentityDto[];
   } = $props();
 
   // A fill is a capture of the source as it stands on the page: the worker answers with the fields of the schema its
   // newest message was written with.
-  let filling = $state<{ source: SourceDto; identity?: IdentityDto } | null>(null);
+  let filling = $state<{ source: SourceDto } | null>(null);
   let filled = $state<{ worker: string; fields: number } | null>(null);
 
   function startFill() {
@@ -90,9 +87,7 @@
     const source = $state.snapshot(value) as unknown as SourceDto & Read;
     // A row not yet named is one the load refuses, and the capture builds the source as the load does.
     source.fields = source.fields?.filter((f) => f.name.trim() !== '');
-    const named = 'identity' in source ? source.identity : undefined;
-    const identity = identities.find((i) => i.id === named);
-    filling = { source, identity: identity && ($state.snapshot(identity) as IdentityDto) };
+    filling = { source };
   }
 
   function take(status: CaptureStatus): string | undefined {

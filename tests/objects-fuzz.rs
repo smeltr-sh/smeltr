@@ -63,8 +63,8 @@ struct Draw {
     store: Store,
     /// The destination's object in the bundle.
     destination: Map<String, Value>,
-    /// The identity the bundle declares, by its id, when the destination names one.
-    identity: Option<&'static str>,
+    /// Whether the destination trusts an authority of its own.
+    tls: bool,
     /// The setting broken, if one was. `Some(None)` is a break the save refuses on no one field of it.
     broken: Option<Option<&'static str>>,
 }
@@ -100,7 +100,7 @@ const OPTIONS: &[&str] = &[
     "stallAfterSecs",
     "fileIntervalSecs",
     "storageClass",
-    "identity",
+    "tls",
     "s3.kmsKeyId",
     "row.prefix",
     "row.prefixRefused",
@@ -117,7 +117,7 @@ const OPTIONS: &[&str] = &[
     "broken.stallAfterSecs",
     "broken.fileIntervalSecs",
     "broken.storageClass",
-    "broken.identity",
+    "broken.tls",
     "broken.bucket",
     "broken.s3.kmsKeyId",
     "mangled",
@@ -136,7 +136,7 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, only: Option<Store>) -
     let mut d = Map::new();
     d.insert("id".into(), json!("lake"));
     d.insert("type".into(), json!(type_name(store)));
-    let mut identity = None;
+    let mut tls = false;
     match store {
         Store::S3 => {
             d.insert("bucket".into(), json!(rng.pick(&["logs", "logs-2024", "a.b.c"])));
@@ -162,22 +162,22 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, only: Option<Store>) -
             cov.reach("storageClass");
             d.insert("storageClass".into(), json!(class));
         }
-        // An identity is the client's TLS: an emulator speaks plain HTTP, which load refuses one on.
+        // TLS settings are the client's: an emulator speaks plain HTTP, which load refuses them on.
         let https = d
             .get("endpoint")
             .and_then(Value::as_str)
             .is_none_or(|e| e.starts_with("https://"));
         if !target.live() && https && rng.chance(4) {
-            cov.reach("identity");
-            identity = Some("client");
-            d.insert("identity".into(), json!("client"));
+            cov.reach("tls");
+            tls = true;
+            d.insert("trustedAuthorities".into(), json!(authority_pem()));
         }
     }
     draw_objects(rng, cov, store, &mut d);
     let mut draw = Draw {
         store,
         destination: d,
-        identity,
+        tls,
         broken: None,
     };
     if !target.live() && rng.chance(3) {
@@ -297,7 +297,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
         breaks.push("compression");
     }
     if draw.store != Store::Sftp {
-        breaks.extend(["storageClass", "identity", "bucket"]);
+        breaks.extend(["storageClass", "tls", "bucket"]);
     }
     if draw.store == Store::S3 {
         breaks.push("s3.kmsKeyId");
@@ -350,15 +350,15 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
             set("storageClass", json!(rng.pick(&["COLD_STORAGE", " ", "standard"])));
             Some("storageClass")
         }
-        "identity" => {
-            // Named, and either not declared or reached over plain HTTP.
+        "tls" => {
+            // A certificate by a blank name, or an authority reached over plain HTTP.
             if rng.chance(2) {
-                set("identity", json!("nobody"));
-                Some("identity")
+                set("certificate", json!(" "));
+                Some("certificate")
             } else {
-                set("identity", json!("client"));
+                set("trustedAuthorities", json!(authority_pem()));
                 set("endpoint", json!("http://127.0.0.1:9000"));
-                draw.identity = Some("client");
+                draw.tls = true;
                 Some("endpoint")
             }
         }
@@ -379,20 +379,15 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
     }
 }
 
-/// `draw` as a whole bundle: a Kafka source, one route through `pipeline` to the destination, and the identity it
-/// names.
+/// `draw` as a whole bundle: a Kafka source, and one route through `pipeline` to the destination.
 fn bundle(draw: &Draw, pipeline: &str) -> Value {
-    let mut b = json!({
+    json!({
         "version": 1,
         "sources": [{"id": "s", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
         "destinations": [Value::Object(draw.destination.clone())],
         "pipelines": [{"id": "p", "name": "p", "steps": pipeline_steps(pipeline)}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["lake"]}]}],
-    });
-    if let Some(id) = draw.identity {
-        b["identities"] = json!([{"id": id, "authorities": authority_pem()}]);
-    }
-    b
+    })
 }
 
 fn pipeline_steps(code: &str) -> Value {
@@ -469,7 +464,7 @@ fn check_loaded(draw: &Draw, c: &ObjectsDestinationConfig, named: &[SecretRef]) 
         c.file_interval.as_secs(),
     );
     cmp.expect("storageClass", text(d, "storageClass"), &c.storage_class);
-    cmp.expect("identity", draw.identity.is_some(), c.identity.is_some());
+    cmp.expect("tls", draw.tls, c.tls.is_some());
     match &c.cloud {
         Cloud::S3(s3) => {
             cmp.expect("bucket", text(d, "bucket").unwrap(), &s3.bucket);
@@ -1100,7 +1095,7 @@ fn live_options(store: Store) -> Vec<&'static str> {
         .filter(|o| {
             !o.starts_with("broken.")
                 && !o.starts_with("store.")
-                && !["mangled", "identity", "secret.workerLocal", "objects.several"].contains(o)
+                && !["mangled", "tls", "secret.workerLocal", "objects.several"].contains(o)
                 && !["s3.", "gcs.", "azure.", "sftp."].iter().any(|p| o.starts_with(p))
         })
         .collect();

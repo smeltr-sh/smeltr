@@ -513,7 +513,7 @@ fn run(catalog: &str, s3: &str, seed: u64, case: &Case) -> Seen {
             role: None,
         }),
         compression: case.compression,
-        identity: None,
+        tls: None,
         in_flight: case.in_flight,
         max_object_bytes: case.max_object_bytes,
         buffer_bytes: case.buffer_bytes,

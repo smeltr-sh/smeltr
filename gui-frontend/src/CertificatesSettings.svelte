@@ -750,7 +750,7 @@
         {/if}
       {:else if source === 'upload'}
         <div class="setting">
-          <CertificatePicker bind:value={chosen} note={coverNote} />
+          <CertificatePicker bind:value={chosen} note={coverNote} usableAs="server" />
           {#snippet coverNote()}
             {@const cover = mustCover(certificates!, location.hostname)}
             {cover.names}

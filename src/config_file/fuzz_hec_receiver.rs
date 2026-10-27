@@ -64,36 +64,35 @@ const LINE_BREAKERS: Pool = &[
     (r#""(a*)""#, true),
 ];
 
-/// The identities the generated file declares, each by its id: what it holds, and so what a receiver serving TLS
-/// under it comes to.
-struct Declared {
-    id: &'static str,
-    /// It holds a certificate a receiver can present.
+/// The TLS settings a generated receiver may set, and so what serving TLS under them comes to.
+struct Serving {
+    /// It names a certificate to present.
     serves: bool,
-    /// It holds authorities, which admit a sender whose certificate chains to them.
+    /// It names authorities, which admit a sender whose certificate chains to them.
     vouches: bool,
 }
 
-const IDENTITIES: &[Declared] = &[
-    Declared {
-        id: "served",
+const SERVINGS: &[Serving] = &[
+    Serving {
         serves: true,
         vouches: false,
     },
-    Declared {
-        id: "vouching",
+    Serving {
         serves: true,
         vouches: true,
     },
     // Authorities alone: no certificate to present.
-    Declared {
-        id: "trusting",
+    Serving {
         serves: false,
         vouches: true,
     },
 ];
 
-/// What a worker may hold for the certificate an identity names, and whether it refuses to present it.
+/// Stands for the authority's PEM in a generated source, which `bundle` fills in: a case is generated from its seed
+/// alone.
+const AUTHORITY: &str = "@authority";
+
+/// What a worker may hold for the certificate a receiver names, and whether it refuses to present it.
 const HELD: [(&str, bool); 4] = [
     ("a certificate for serving", false),
     // Extended Key Usage of client authentication alone.
@@ -127,7 +126,7 @@ struct Case {
     source: Value,
     /// The fields the loader must refuse, when `known` generated it.
     refused: Option<BTreeSet<&'static str>>,
-    /// What the worker holds for the certificate its identity names, of [`HELD`].
+    /// What the worker holds for the certificate it names, of [`HELD`].
     held: usize,
 }
 
@@ -176,31 +175,38 @@ fn known(rng: &mut Rng) -> Case {
         }
     }
 
-    let identity = match rng.below(3) {
+    let serving = match rng.below(3) {
         0 => None,
-        1 if !clean && rng.chance(4) => Some(Err("nobody")),
+        1 if !clean && rng.chance(4) => Some(Err(" ")),
         _ => {
-            let fit: Vec<_> = IDENTITIES.iter().filter(|i| !clean || i.serves).collect();
+            let fit: Vec<_> = SERVINGS.iter().filter(|s| !clean || s.serves).collect();
             Some(Ok(*rng.pick(&fit)))
         }
     };
-    let vouches = match identity {
-        Some(Ok(declared)) => {
-            fields.insert("identity".into(), declared.id.into());
-            if !declared.serves {
-                refused.insert("identity");
+    let vouches = match serving {
+        Some(Ok(serving)) => {
+            if serving.serves {
+                fields.insert("certificate".into(), "receiver".into());
+            } else {
+                refused.insert("certificate");
             }
-            declared.vouches
+            if serving.vouches && !clean && rng.chance(4) {
+                fields.insert("trustedAuthorities".into(), "not a certificate".into());
+                refused.insert("trustedAuthorities");
+            } else if serving.vouches {
+                fields.insert("trustedAuthorities".into(), AUTHORITY.into());
+            }
+            serving.vouches
         }
-        Some(Err(undeclared)) => {
-            fields.insert("identity".into(), undeclared.into());
-            refused.insert("identity");
+        Some(Err(blank)) => {
+            fields.insert("certificate".into(), blank.into());
+            refused.insert("certificate");
             false
         }
         None => false,
     };
 
-    // A clean case admits someone: a token, or a sender its identity's authorities vouch for.
+    // A clean case admits someone: a token, or a sender its authorities vouch for.
     let least = usize::from(clean && !vouches);
     let mut tokens = serde_json::Map::new();
     for _ in 0..least + rng.below(3) {
@@ -295,21 +301,20 @@ fn garbage(rng: &mut Rng) -> Case {
     let mut source = json!({ "id": HEC, "type": "hecReceiver" });
     let fields = source.as_object_mut().unwrap();
     let density = 1 + rng.below(6);
-    let identities: Vec<String> = (IDENTITIES.iter().map(|i| Value::from(i.id).to_string()))
-        .chain([r#""nobody""#.to_string()])
-        .collect();
     for (key, pool) in [("port", PORTS), ("maxRequestBytes", MAX_REQUEST_BYTES)] {
         // A port is there most of the time, so the rules past its absence are reached.
         if (key == "port" && !rng.chance(8)) || rng.chance(3) {
             fields.insert(key.into(), garbage_value(rng, PIECES, pool, density));
         }
     }
-    if rng.chance(2) {
-        let identity = match rng.chance(density) {
-            true => random_value(rng, PIECES),
-            false => parse(rng.pick(&identities)),
-        };
-        fields.insert("identity".into(), identity);
+    for (key, sound) in [("certificate", "receiver"), ("trustedAuthorities", AUTHORITY)] {
+        if rng.chance(2) {
+            let value = match rng.chance(density) {
+                true => random_value(rng, PIECES),
+                false => sound.into(),
+            };
+            fields.insert(key.into(), value);
+        }
     }
     let name = |rng: &mut Rng| match rng.chance(density) {
         true => random_text(rng, PIECES),
@@ -361,7 +366,7 @@ fn garbage(rng: &mut Rng) -> Case {
     }
 }
 
-/// PEM for an authority to trust. A certificate an identity presents is a list entry the bundle names, so the
+/// PEM for an authority to trust. A certificate a receiver presents is a list entry the bundle names, so the
 /// loader reads no PEM for it.
 struct Pems {
     authority: String,
@@ -376,38 +381,16 @@ impl Pems {
                 .pem(),
         }
     }
-
-    /// The declared identity named `named`, as the file declares it.
-    fn identities(&self, named: Option<&str>) -> Value {
-        let listed = json!({ "secret": "receiver", "version": 1 });
-        let declare = |presents: bool, authorities: Option<&str>| {
-            let mut identity = json!({});
-            if presents {
-                identity["certificate"] = listed.clone();
-            }
-            if let Some(authorities) = authorities {
-                identity["authorities"] = authorities.into();
-            }
-            identity
-        };
-        let all = IDENTITIES.iter().filter(|d| Some(d.id) == named).map(|declared| {
-            let mut identity = match declared.id {
-                "served" => declare(true, None),
-                "vouching" => declare(true, Some(&self.authority)),
-                _ => declare(false, Some(&self.authority)),
-            };
-            identity["id"] = declared.id.into();
-            identity
-        });
-        Value::Array(all.collect())
-    }
 }
 
-/// The example bundle with `case`'s source in it, and the identity it names where that is one of [`IDENTITIES`].
+/// The example bundle with `case`'s source in it, its authorities filled in where it stands for them.
 fn bundle(case: &Case, pems: &Pems) -> String {
     let mut file = parse(example_json());
-    file["sources"].as_array_mut().unwrap().push(case.source.clone());
-    file["identities"] = pems.identities(case.source.get("identity").and_then(Value::as_str));
+    let mut source = case.source.clone();
+    if source.get("trustedAuthorities").and_then(Value::as_str) == Some(AUTHORITY) {
+        source["trustedAuthorities"] = pems.authority.clone().into();
+    }
+    file["sources"].as_array_mut().unwrap().push(source);
     file.to_string()
 }
 
@@ -471,9 +454,9 @@ fn built(case: &Case, system: &super::LoadedSystem) -> Result<(), String> {
         return Err(format!("built sourcetypes {built:?}, not {sourcetypes:?}"));
     }
 
-    let named = field("identity").and_then(Value::as_str);
-    if r.identity.as_ref().map(|i| i.id.as_str()) != named {
-        return Err(format!("named identity {named:?}, built {:?}", r.identity));
+    let named = field("certificate").and_then(Value::as_str);
+    if r.tls.as_ref().and_then(|t| t.certificate.as_deref()) != named {
+        return Err(format!("named the certificate {named:?}, built {:?}", r.tls));
     }
     let max = field("maxRequestBytes")
         .and_then(Value::as_u64)
@@ -488,16 +471,21 @@ fn built(case: &Case, system: &super::LoadedSystem) -> Result<(), String> {
         .compile_topology()
         .map_err(|e| format!("the accepted bundle does not compile: {e:?}"))?;
 
-    if r.identity.as_ref().is_some_and(|i| i.certificate.is_some()) {
+    if let Some(name) = named {
         let (what, refuses) = HELD[case.held];
         let mut held = HeldSecrets::default();
         held.take([SecretDelivery {
-            name: "receiver".to_string(),
+            name: name.to_string(),
             version: 1,
             value: "key".to_string(),
             chain: CHAINS[case.held].clone(),
         }]);
-        let errors = system.topology.identity_certificate_errors(&held);
+        // A value with no certificate is held as a secret, so the certificate goes missing rather than unusable.
+        // The tokens are missing too, which is not what is asked here.
+        let mut errors: Vec<String> = (system.topology.missing_secrets(&held).into_iter())
+            .filter(|e| e.contains("the certificate"))
+            .collect();
+        errors.extend(system.topology.certificate_errors(&held));
         if errors.is_empty() == refuses {
             return Err(format!("a worker holding {what} came to {errors:?}"));
         }
@@ -505,10 +493,9 @@ fn built(case: &Case, system: &super::LoadedSystem) -> Result<(), String> {
     Ok(())
 }
 
-/// What a worker makes of the certificate the accepted receiver's identity names, where it names one.
+/// What a worker makes of the certificate the accepted receiver names, where it names one.
 fn presents(case: &Case) -> Option<String> {
-    let identity = case.source.get("identity").and_then(Value::as_str);
-    IDENTITIES.iter().find(|i| Some(i.id) == identity && i.serves)?;
+    case.source.get("certificate")?;
     Some(held_label(HELD[case.held]))
 }
 
@@ -521,9 +508,10 @@ fn held_label((what, refuses): (&str, bool)) -> String {
 }
 
 /// Every option of a HEC receiver, by its name in the file.
-const OPTIONS: [&str; 7] = [
+const OPTIONS: [&str; 8] = [
     "port",
-    "identity",
+    "certificate",
+    "trustedAuthorities",
     "maxRequestBytes",
     "tokens",
     "acknowledgement",
@@ -537,7 +525,7 @@ fn options(case: &Case) -> Vec<&'static str> {
     let inner = |key: &str, of: &str| {
         (case.source.get(key).and_then(Value::as_object).into_iter().flatten()).any(|(_, v)| v.get(of).is_some())
     };
-    let mut set: Vec<_> = OPTIONS[..4].iter().copied().filter(|o| set(o)).collect();
+    let mut set: Vec<_> = OPTIONS[..5].iter().copied().filter(|o| set(o)).collect();
     if inner("tokens", "acknowledgement") {
         set.push("acknowledgement");
     }
@@ -552,10 +540,10 @@ fn options(case: &Case) -> Vec<&'static str> {
 
 /// How a sender reaches the accepted or refused receiver: plain, or over TLS, and how it is admitted.
 fn admits(case: &Case) -> &'static str {
-    let identity = case.source.get("identity").and_then(Value::as_str);
+    let tls = case.source.get("certificate").is_some() || case.source.get("trustedAuthorities").is_some();
     let tokens = (case.source.get("tokens").and_then(Value::as_object)).is_some_and(|t| !t.is_empty());
-    let vouches = IDENTITIES.iter().any(|i| Some(i.id) == identity && i.vouches);
-    match (identity.is_some(), tokens, vouches) {
+    let vouches = case.source.get("trustedAuthorities").is_some();
+    match (tls, tokens, vouches) {
         (false, true, _) => "a token in the clear",
         (true, true, _) => "a token over TLS",
         (true, false, true) => "a certificate",
@@ -592,7 +580,7 @@ fn run(seeds: std::ops::Range<u64>, generate: fn(&mut Rng) -> Case, expected: Ve
 #[test]
 fn known_hec_receiver_configs_get_the_verdict_the_rules_give() {
     // Every field the rules refuse at: a token's and a sourcetype's own are refused at the map holding them.
-    let refusals = OPTIONS[..4]
+    let refusals = OPTIONS[..5]
         .iter()
         .chain(&["sourcetypes"])
         .map(|o| format!("refused at {o}"));

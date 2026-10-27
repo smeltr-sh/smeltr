@@ -86,7 +86,6 @@ fn declares(file: &FileConfig, kind: Kind) -> HashSet<&str> {
         Kind::Destination => file.destinations.iter().map(|o| o.id.as_str()).collect(),
         Kind::LookupTable => file.lookup_tables.iter().map(|o| o.id.as_str()).collect(),
         Kind::GrokPattern => file.grok_patterns.iter().map(|o| o.id.as_str()).collect(),
-        Kind::Identity => file.identities.iter().map(|o| o.id.as_str()).collect(),
     }
 }
 

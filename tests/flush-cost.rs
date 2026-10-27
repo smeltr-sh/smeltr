@@ -43,7 +43,7 @@ fn dest(brokers: &str, topic: &str, props: &[(&str, &str)]) -> KafkaDestination 
             brokers: brokers.to_string(),
             default_topic: topic.to_string(),
             service: smeltr::plan::topology::KafkaService::Kafka,
-            identity: None,
+            tls: None,
             buffer_bytes: 64 * 1024 * 1024,
             props: KafkaProps {
                 literal: props.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),

@@ -1,15 +1,15 @@
-//! What every client smeltr opens verifies its far end against: Mozilla's roots and the host's own store, with an
-//! identity's authorities added, or the authorities alone when the identity does not trust public roots.
+//! What every client smeltr opens verifies its far end against: Mozilla's roots and the host's own store, with the
+//! connector's authorities added, or the authorities alone when the connector does not trust public roots.
 //!
 //! ```mermaid
 //! flowchart LR
 //!   M[Mozilla's roots] --> P[public]
 //!   H[the host's store] --> P
 //!   P -->|unless trustPublic is false| R[what a client trusts]
-//!   A[the identity's authorities] --> R
+//!   A[the connector's authorities] --> R
 //! ```
 //!
-//! A receiver never takes these: whom it admits is its identity's authorities alone (`io::receiver`). What an identity
+//! A receiver never takes these: whom it admits is its own authorities alone (`io::receiver`). What a connector
 //! presents, a client's certificate or a receiver's, is read here too ([`presented`]), so every connector says the
 //! same thing about a certificate or a key it cannot use.
 
@@ -19,7 +19,7 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 use super::IoError;
-use crate::plan::topology::{HeldSecrets, Identity};
+use crate::plan::topology::{HeldSecrets, Tls};
 
 /// Mozilla's roots and the host's, read once per process. A host store that will not read, wholly or in part, is
 /// logged and left out, so the public roots still verify what Mozilla's alone would.
@@ -40,19 +40,19 @@ pub fn public() -> &'static [CertificateDer<'static>] {
     })
 }
 
-/// Every root a client under `identity` trusts. Without an identity, the public roots.
-pub fn roots(identity: Option<&Identity>) -> Result<Vec<CertificateDer<'static>>, IoError> {
-    let Some(identity) = identity else {
+/// Every root a client speaking `tls` trusts. Speaking none of its own, the public roots.
+pub fn roots(tls: Option<&Tls>) -> Result<Vec<CertificateDer<'static>>, IoError> {
+    let Some(tls) = tls else {
         return Ok(public().to_vec());
     };
-    let authorities = match &identity.authorities {
-        Some(pem) => certificates(identity, pem, "what it trusts")?,
+    let authorities = match &tls.authorities {
+        Some(pem) => certificates(tls, pem, "what it trusts")?,
         None => Vec::new(),
     };
-    Ok(trusting(authorities, identity.trust_public))
+    Ok(trusting(authorities, tls.trust_public))
 }
 
-/// What a client given `authorities` trusts: those, and the public roots too when `trust_public`. An identity's rule,
+/// What a client given `authorities` trusts: those, and the public roots too when `trust_public`. A connector's rule,
 /// for a client that holds its authorities without one: a worker's, for its leader.
 pub fn trusting(authorities: Vec<CertificateDer<'static>>, trust_public: bool) -> Vec<CertificateDer<'static>> {
     let public = if trust_public { public() } else { &[] };
@@ -60,15 +60,15 @@ pub fn trusting(authorities: Vec<CertificateDer<'static>>, trust_public: bool) -
 }
 
 /// `roots` as a ureq client takes them.
-pub fn ureq_roots(identity: Option<&Identity>) -> Result<ureq::tls::RootCerts, IoError> {
-    let roots = roots(identity)?
+pub fn ureq_roots(tls: Option<&Tls>) -> Result<ureq::tls::RootCerts, IoError> {
+    let roots = roots(tls)?
         .iter()
         .map(|der| ureq::tls::Certificate::from_der(der.as_ref()).to_owned())
         .collect();
     Ok(ureq::tls::RootCerts::Specific(Arc::new(roots)))
 }
 
-/// A ureq client's TLS under no identity: the public roots, and no certificate.
+/// A ureq client's TLS speaking none of its own: the public roots, and no certificate.
 pub fn public_tls() -> ureq::tls::TlsConfig {
     let roots = public()
         .iter()
@@ -80,16 +80,16 @@ pub fn public_tls() -> ureq::tls::TlsConfig {
 }
 
 /// `roots`, as the store a rustls client is built on. A host certificate rustls cannot use is skipped, as the
-/// platform's own clients skip it; an identity's authorities are checked when its bundle is saved.
-pub fn store(identity: Option<&Identity>) -> Result<Arc<rustls::RootCertStore>, IoError> {
+/// platform's own clients skip it; a connector's authorities are checked when its bundle is saved.
+pub fn store(tls: Option<&Tls>) -> Result<Arc<rustls::RootCertStore>, IoError> {
     let mut store = rustls::RootCertStore::empty();
-    store.add_parsable_certificates(roots(identity)?);
+    store.add_parsable_certificates(roots(tls)?);
     Ok(Arc::new(store))
 }
 
 /// `roots`, as PEM, for a client that reads its roots from a string (librdkafka's `ssl.ca.pem`).
-pub fn pem(identity: Option<&Identity>) -> Result<String, IoError> {
-    Ok(pem_of(&roots(identity)?))
+pub fn pem(tls: Option<&Tls>) -> Result<String, IoError> {
+    Ok(pem_of(&roots(tls)?))
 }
 
 /// `roots` as PEM, one block each, in order.
@@ -114,7 +114,7 @@ pub fn write_pem_file(roots: &[CertificateDer<'static>], path: &std::path::Path)
     crate::leader::tls::write_durably(path, pem_of(roots).as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The certificate an identity presents, and the key it signs with.
+/// The certificate a connector presents, and the key it signs with.
 pub struct Presented {
     /// Leaf first, with any intermediates after it.
     pub chain: Vec<CertificateDer<'static>>,
@@ -125,20 +125,19 @@ pub struct Presented {
     pub key_pem: String,
 }
 
-/// What `identity` presents, or `None` when it holds no certificate. A certificate this worker cannot obtain is an
+/// What `tls` presents, or `None` when it names no certificate. A certificate this worker cannot obtain is an
 /// error here, never a connection that silently falls back to presenting nothing.
-pub fn presented(identity: &Identity, secrets: &HeldSecrets) -> Result<Option<Presented>, IoError> {
-    let Some(reference) = &identity.certificate else {
+pub fn presented(tls: &Tls, secrets: &HeldSecrets) -> Result<Option<Presented>, IoError> {
+    let Some(name) = &tls.certificate else {
         return Ok(None);
     };
-    let named = |what: &str| IoError::transient(format!("the identity {:?}: {what}", identity.id));
-    let (chain_pem, key_pem) = secrets.certificate(reference).ok_or_else(|| {
+    let named = |what: &str| IoError::transient(format!("{}: {what}", tls.of));
+    let (chain_pem, key_pem) = secrets.certificate(name).ok_or_else(|| {
         named(&format!(
-            "it presents {}, which this worker does not have",
-            reference.describe()
+            "it presents the certificate {name:?}, which this worker does not have"
         ))
     })?;
-    let chain = certificates(identity, &chain_pem, "its certificate")?;
+    let chain = certificates(tls, &chain_pem, "its certificate")?;
     // Every accepted key format is unencrypted PEM: an encrypted one reaches here as a parse failure, and saying so
     // is the difference between a fixable message and a handshake nobody can explain.
     let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
@@ -151,10 +150,10 @@ pub fn presented(identity: &Identity, secrets: &HeldSecrets) -> Result<Option<Pr
     }))
 }
 
-/// Every certificate in `pem`, one of `identity`'s fields, in the order it was written. `what` names the field for
-/// an operator reading the failure.
-pub fn certificates(identity: &Identity, pem: &str, what: &str) -> Result<Vec<CertificateDer<'static>>, IoError> {
-    let named = |why: String| IoError::transient(format!("the identity {:?}: {what} {why}", identity.id));
+/// Every certificate in `pem`, one of `tls`'s fields, in the order it was written. `what` names the field for an
+/// operator reading the failure.
+pub fn certificates(tls: &Tls, pem: &str, what: &str) -> Result<Vec<CertificateDer<'static>>, IoError> {
+    let named = |why: String| IoError::transient(format!("{}: {what} {why}", tls.of));
     let all = CertificateDer::pem_slice_iter(pem.as_bytes())
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| named(format!("is not a certificate: {e}")))?;
@@ -177,7 +176,7 @@ pub fn key_file(path: &std::path::Path) -> Result<PrivateKeyDer<'static>, String
 }
 
 /// Which side of a TLS handshake a certificate is presented from.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
     /// By a connector connecting out.
     Client,
@@ -185,63 +184,79 @@ pub enum Side {
     Server,
 }
 
-/// Refuses a presented certificate that cannot authenticate from `side`: Extended Key Usage naming purposes that
-/// leave out that side's, or Key Usage naming permissions that do not include the handshake signature either side
-/// makes. Read with the same library the connectors build their TLS configs against: a deploy must not accept what a
-/// handshake would go on to refuse. Either extension absent entirely rules nothing out -- RFC 5280's own default --
-/// so only one naming purposes or permissions and excluding what this needs is refused.
-pub fn refuse_unless_usable(pem: &str, side: Side) -> Result<(), String> {
+/// Why a certificate cannot authenticate from a side of the handshake.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Unusable {
+    /// Its Extended Key Usage names purposes that leave out that side's.
+    NotFor(Side),
+    /// Its Key Usage names permissions that leave out the signature either side makes.
+    NoSignature,
+    /// It could not be read, and why.
+    Unreadable(String),
+}
+
+/// Whether a presented certificate can authenticate from `side`. Read with the same library the connectors build
+/// their TLS configs against: a deploy must not accept what a handshake would go on to refuse. Either extension
+/// absent entirely rules nothing out -- RFC 5280's own default -- so only one naming purposes or permissions and
+/// excluding what this needs is refused.
+pub fn usable(pem: &str, side: Side) -> Result<(), Unusable> {
     let leaf = CertificateDer::pem_slice_iter(pem.as_bytes())
         .next()
-        .ok_or_else(|| "it holds no certificate".to_string())?
-        .map_err(|e| format!("{e}"))?;
+        .ok_or_else(|| Unusable::Unreadable("it holds no certificate".to_string()))?
+        .map_err(|e| Unusable::Unreadable(format!("{e}")))?;
     let (_, cert) = x509_parser::parse_x509_certificate(leaf.as_ref())
-        .map_err(|e| format!("that is not a certificate this can read: {e}"))?;
+        .map_err(|e| Unusable::Unreadable(format!("that is not a certificate this can read: {e}")))?;
     match (cert.extended_key_usage(), side) {
-        (Ok(Some(eku)), Side::Client) if !eku.value.client_auth => {
-            return Err(
-                "whose Extended Key Usage does not permit client authentication, so a far end enforcing it \
-                 refuses this certificate at the handshake -- a connector connecting out presents it as a client \
-                 certificate"
-                    .to_string(),
-            );
-        }
-        (Ok(Some(eku)), Side::Server) if !eku.value.server_auth => {
-            return Err(
-                "whose Extended Key Usage does not permit server authentication, so a sender refuses this \
-                 certificate at the handshake -- a receiver presents it as a server certificate"
-                    .to_string(),
-            );
-        }
+        (Ok(Some(eku)), Side::Client) if !eku.value.client_auth => return Err(Unusable::NotFor(side)),
+        (Ok(Some(eku)), Side::Server) if !eku.value.server_auth => return Err(Unusable::NotFor(side)),
         (Ok(_), _) => {}
-        (Err(e), _) => return Err(format!("whose Extended Key Usage could not be read: {e}")),
+        (Err(e), _) => {
+            return Err(Unusable::Unreadable(format!(
+                "whose Extended Key Usage could not be read: {e}"
+            )));
+        }
     }
     // Either end signs the handshake, which is what digitalSignature names permission for: rustls offers only
     // ephemeral key exchange, so no end encrypts with its certificate's key. Present but false is a certificate
     // meant for key exchange, not signing -- the Extended Key Usage names the purpose, this the means, and a far
     // end enforcing KeyUsage checks both.
     match cert.key_usage() {
-        Ok(Some(usage)) if !usage.value.digital_signature() => Err(
-            "whose Key Usage does not permit a digital signature, so it cannot sign the handshake a far end \
-             enforcing it requires"
-                .to_string(),
-        ),
+        Ok(Some(usage)) if !usage.value.digital_signature() => Err(Unusable::NoSignature),
         Ok(_) => Ok(()),
-        Err(e) => Err(format!("whose Key Usage could not be read: {e}")),
+        Err(e) => Err(Unusable::Unreadable(format!("whose Key Usage could not be read: {e}"))),
     }
+}
+
+/// Refuses a presented certificate that cannot authenticate from `side` ([`usable`]), saying why as the clause
+/// after "a certificate", for a connector presenting it.
+pub fn refuse_unless_usable(pem: &str, side: Side) -> Result<(), String> {
+    usable(pem, side).map_err(|why| match why {
+        Unusable::NotFor(Side::Client) => "whose Extended Key Usage does not permit client authentication, so a far \
+             end enforcing it refuses this certificate at the handshake: a connector connecting out presents it as \
+             a client certificate. Choose a certificate issued for clients"
+            .to_string(),
+        Unusable::NotFor(Side::Server) => "whose Extended Key Usage does not permit server authentication, so a \
+             sender refuses this certificate at the handshake: a receiver serves it as a server certificate. Choose \
+             a certificate issued for servers"
+            .to_string(),
+        Unusable::NoSignature => "whose Key Usage does not permit a digital signature, so it cannot sign the \
+             handshake a far end enforcing it requires"
+            .to_string(),
+        Unusable::Unreadable(why) => why,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn identity(authorities: Option<&str>, trust_public: bool) -> Identity {
-        Identity {
-            id: "acme".to_string(),
+    fn speaking(authorities: Option<&str>, trust_public: bool) -> Tls {
+        Tls {
+            of: "source \"in\"".to_string(),
             certificate: None,
             authorities: authorities.map(str::to_string),
             trust_public,
-            presented: Default::default(),
+            side: Side::Client,
         }
     }
 
@@ -253,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn without_an_identity_a_client_trusts_mozillas_roots() {
+    fn a_client_speaking_no_tls_of_its_own_trusts_mozillas_roots() {
         let roots = roots(None).unwrap();
         assert!(roots.len() >= webpki_root_certs::TLS_SERVER_ROOT_CERTS.len());
         assert!(
@@ -264,23 +279,23 @@ mod tests {
     }
 
     #[test]
-    fn an_identitys_authorities_are_added_to_the_public_roots() {
+    fn a_connectors_authorities_are_added_to_the_public_roots() {
         let ca = authority();
-        let roots = roots(Some(&identity(Some(&ca), true))).unwrap();
+        let roots = roots(Some(&speaking(Some(&ca), true))).unwrap();
         assert_eq!(roots.len(), public().len() + 1);
     }
 
     #[test]
-    fn an_identity_that_does_not_trust_public_roots_trusts_its_authorities_alone() {
+    fn a_connector_that_does_not_trust_public_roots_trusts_its_authorities_alone() {
         let ca = authority();
-        let roots = roots(Some(&identity(Some(&ca), false))).unwrap();
+        let roots = roots(Some(&speaking(Some(&ca), false))).unwrap();
         assert_eq!(roots.len(), 1);
     }
 
     #[test]
     fn the_pem_reads_back_as_the_same_roots() {
         let ca = authority();
-        let id = identity(Some(&ca), true);
+        let id = speaking(Some(&ca), true);
         let back = CertificateDer::pem_slice_iter(pem(Some(&id)).unwrap().as_bytes())
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
@@ -297,7 +312,7 @@ mod tests {
 
     #[test]
     fn authorities_that_are_not_certificates_are_refused() {
-        let error = roots(Some(&identity(Some("not a certificate"), true))).unwrap_err();
+        let error = roots(Some(&speaking(Some("not a certificate"), true))).unwrap_err();
         assert!(error.to_string().contains("holds no certificate"), "{error}");
     }
 }

@@ -11,8 +11,8 @@ use crate::live;
 use smeltr::io::line_breaker::LineBreaker;
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
 use smeltr::plan::topology::{
-    ApiRecords, HecReceiverConfig, HeldSecrets, HttpReceiverConfig, Identity, Receiver, ReceiverConfig, SecretRef,
-    Signal, SourceKind,
+    ApiRecords, HecReceiverConfig, HeldSecrets, HttpReceiverConfig, Receiver, ReceiverConfig, SecretRef, Signal,
+    SourceKind, Tls,
 };
 
 fn free_port() -> SocketAddr {
@@ -46,7 +46,7 @@ fn receiver(listen: SocketAddr, records: ApiRecords) -> Box<dyn Source> {
             }),
             listen,
             tokens: vec![("ci".into(), token())],
-            identity: None,
+            tls: None,
             max_request_bytes: 1024,
         },
         &secrets,
@@ -297,7 +297,7 @@ fn tls_send(at: SocketAddr, pki: &Pki, with_certificate: bool) -> (u16, String) 
     exchange(stream, "POST", "/ingest", None, b"{}")
 }
 
-/// Served under an identity with authorities, a receiver takes only a sender whose certificate chains to them, and
+/// Served under a certificate with authorities, a receiver takes only a sender whose certificate chains to them, and
 /// needs no token.
 #[test]
 fn a_receiver_with_authorities_admits_only_a_sender_they_vouch_for() {
@@ -318,16 +318,13 @@ fn a_receiver_with_authorities_admits_only_a_sender_they_vouch_for() {
             }),
             listen: at,
             tokens: Vec::new(),
-            identity: Some(Arc::new(Identity {
-                id: "receiver".into(),
-                certificate: Some(SecretRef::LeaderStored {
-                    name: "receiver".into(),
-                    version: 1,
-                }),
+            tls: Some(Tls {
+                of: "source \"receiver\"".into(),
+                certificate: Some("receiver".into()),
                 authorities: Some(pki.ca.clone()),
-                trust_public: true,
-                presented: smeltr::plan::topology::PresentedAs::SERVER,
-            })),
+                trust_public: false,
+                side: smeltr::io::trust::Side::Server,
+            }),
             max_request_bytes: 1024,
         },
         &secrets,
@@ -366,7 +363,7 @@ fn hec_receiver(listen: SocketAddr) -> Box<dyn Source> {
             }),
             listen,
             tokens: vec![("forwarder".into(), token()), ("vector".into(), acker)],
-            identity: None,
+            tls: None,
             max_request_bytes: 4096,
         },
         &secrets,
@@ -602,7 +599,7 @@ fn otlp_receiver_of(listen: SocketAddr, signal: Signal, max_request_bytes: usize
             receiver: Receiver::Otlp(signal),
             listen,
             tokens: vec![("collector".into(), token())],
-            identity: None,
+            tls: None,
             max_request_bytes,
         },
         &secrets,
@@ -1280,7 +1277,7 @@ fn prometheus_receiver_reading(listen: SocketAddr, max_request_bytes: usize) -> 
             receiver: Receiver::Prometheus,
             listen,
             tokens: vec![("prometheus".into(), token())],
-            identity: None,
+            tls: None,
             max_request_bytes,
         },
         &secrets,
@@ -2305,7 +2302,7 @@ fn elastic_receiver_reading(listen: SocketAddr, max_request_bytes: usize) -> Box
             receiver: Receiver::Elastic,
             listen,
             tokens: vec![("shippers".into(), token()), ("beats".into(), keyed)],
-            identity: None,
+            tls: None,
             max_request_bytes,
         },
         &secrets,

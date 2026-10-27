@@ -3,7 +3,7 @@
 A system of the [design document](../smeltr-design.md).
 
 Configuration is a directory of files, the **bundle**: sources, destinations,
-identities, routes, lookup tables, grok patterns, one file per pipeline, and the samples and
+routes, lookup tables, grok patterns, one file per pipeline, and the samples and
 tests an author works from. It is meant to be read by humans and reviewed like code,
 so it lives in git and a deploy points the fleet at a commit on `main`. Every
 object is keyed by a string id, unique in its scope.
@@ -120,21 +120,21 @@ timeout keeps its partitions and moves none of the group's. The cost is a worker
 that leaves for good, or comes back under a new id: what it read waits out the
 session timeout before the group hands it on.
 
-## A connector names an identity
+## A connector names a certificate
 
-An identity is what a worker shows the source or destination it connects out
-to, and which authorities it verifies that far end against; either half may be
-empty. What it shows is a certificate from the leader's list, named by name and
-version like a stored secret (`security.md`, A certificate travels with its
-key). A client trusts those authorities on top of the public roots, Mozilla's
-and its host's, unless the identity trusts no public root; a receiver admits by
-the authorities alone (`io::trust`). One object, because both are the same
-organization's PKI and are chosen together. One concept, because a connector must not have to know that
-one kind of client reaches TLS through properties and another through a client
-the code builds. An identity a connector also answers by hand, or one under a
-protocol that negotiates no TLS, is refused at save time: there is one place
-each answer comes from, and configuration nothing reads is a lie about what is
-running.
+A connector's TLS is its own settings: the certificate it presents, which is
+an entry of the leader's list named by name (`security.md`, A certificate
+travels with its key), and the trusted authorities it verifies the far end against,
+PEM in the bundle. A worker presents the entry's newest version. A form's
+save refuses a name the list does not hold. A client
+trusts the authorities on top of the public roots, Mozilla's and its host's,
+unless told to trust the authorities alone; a receiver serves the certificate
+and admits by the authorities alone (`io::trust`). One shape for every
+connector, because a connector must not have to know that one kind of client
+reaches TLS through properties and another through a client the code builds.
+TLS a connector also answers by hand, or under a protocol that negotiates no
+TLS, is refused at save time: there is one place each answer comes from, and
+configuration nothing reads is a lie about what is running.
 
 ## The GUI is sugar over the file, never a second copy
 

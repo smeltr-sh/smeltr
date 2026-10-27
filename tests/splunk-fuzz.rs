@@ -3,7 +3,7 @@
 //!
 //! Offline, a destination the save refuses is refused on the setting that was broken. One it accepts loads as its
 //! bundle says, loads the same after a save, builds when this worker holds its token and refuses to when it does not,
-//! and delivers drawn batches to a collector in this process, over TLS when it names an identity. That collector
+//! and delivers drawn batches to a collector in this process, over TLS when it sets its own TLS. That collector
 //! answers as HEC does -- a channel where acknowledgement asks for one, an `ackId` to poll, a blank event refused by
 //! its number, a busy answer, a body over its limit -- and what it took must be exactly the rows sent, each once in
 //! its envelope or line, less the ones HEC refuses. A token whose acknowledgement disagrees with the destination's
@@ -27,7 +27,9 @@ use smeltr::plan::topology::{
     Acknowledgement, DestinationKind, Endpoint, HeldSecrets, SecretRef, SplunkHecDestinationConfig, take_zone,
 };
 
-use crate::harness::destination::{self, Broken, Pki, Reached, connector_secrets, unknown_key_taken};
+use crate::harness::destination::{
+    self, AUTHORITIES, Broken, ClientTls, Pki, Reached, connector_secrets, set_tls, unknown_key_taken,
+};
 use crate::harness::fuzz::Rng;
 use crate::live;
 
@@ -80,8 +82,8 @@ const OPTIONS: &[&str] = &[
     "acknowledgement.indexer",
     "acknowledgement.default",
     "acknowledgement.receipt",
-    "identity.authorities",
-    "identity.certificate",
+    "tls.trustedAuthorities",
+    "tls.certificate",
     "inFlight",
     "maxRequestBytes",
     "bufferBytes",
@@ -122,8 +124,8 @@ const OPTIONS: &[&str] = &[
     "broken.format.bytesOnEvent",
     "broken.field.json",
     "broken.field.blank",
-    "broken.identity.undeclared",
-    "broken.identity.plainHttp",
+    "broken.certificate",
+    "broken.tls.plainHttp",
     "broken.stallAfterSecs",
     "broken.maxRequestBytes",
     "broken.bufferBytes.range",
@@ -157,8 +159,8 @@ impl Target<'_> {
 struct Draw {
     /// The destination's object in the bundle.
     destination: Map<String, Value>,
-    /// Whether the bundle declares the identity `client`, and if so whether it presents a certificate.
-    identity: Option<bool>,
+    /// Whether the destination trusts the collector's authority, and if so whether it presents a certificate.
+    tls: Option<bool>,
     /// The path the collector serves HEC under.
     base_path: &'static str,
     /// The zone of the worker that runs the destination.
@@ -172,12 +174,12 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target) -> Draw {
     d.insert("id".into(), json!("hec"));
     d.insert("type".into(), json!("splunkHec"));
 
-    let identity = (!live && rng.chance(4)).then(|| rng.chance(2));
+    let tls = (!live && rng.chance(4)).then(|| rng.chance(2));
     let mut base_path = "";
     let mut url = match target {
         Target::Live(s) => s.hec.trim_end_matches('/').to_string(),
         Target::Offline { port } => {
-            let at = if identity.is_some() {
+            let at = if tls.is_some() {
                 cov.reach("url.localhost");
                 format!("https://localhost:{port}")
             } else if rng.chance(2) {
@@ -279,20 +281,27 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target) -> Draw {
         }
     }
 
-    if let Some(certificate) = identity {
+    if let Some(certificate) = tls {
         cov.reach(if certificate {
-            "identity.certificate"
+            "tls.certificate"
         } else {
-            "identity.authorities"
+            "tls.trustedAuthorities"
         });
-        d.insert("identity".into(), json!("client"));
+        set_tls(
+            &mut d,
+            if certificate {
+                ClientTls::Presents
+            } else {
+                ClientTls::Trusts
+            },
+        );
     }
 
     draw_limits(rng, cov, target, &mut d);
 
     let mut draw = Draw {
         destination: d,
-        identity,
+        tls,
         base_path,
         zone,
         broken: None,
@@ -395,8 +404,8 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Broken {
         "format.bytesOnEvent",
         "field.json",
         "field.blank",
-        "identity.undeclared",
-        "identity.plainHttp",
+        "certificate",
+        "tls.plainHttp",
         "stallAfterSecs",
         "maxRequestBytes",
         "bufferBytes.range",
@@ -464,15 +473,15 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Broken {
             set("field", json!(rng.pick(&["", " "])));
             Broken::Field(Some("field"))
         }
-        "identity.undeclared" => {
-            set("identity", json!("nobody"));
-            Broken::Field(Some("identity"))
+        "certificate" => {
+            set("certificate", json!(" "));
+            Broken::Field(Some("certificate"))
         }
-        "identity.plainHttp" => {
-            // An identity on a URL that never negotiates TLS, so nothing it holds would be used.
-            set("identity", json!("client"));
+        "tls.plainHttp" => {
+            // TLS settings on a URL that never negotiates TLS, so nothing they say would be used.
+            set("trustedAuthorities", json!(AUTHORITIES));
             set("url", json!("http://127.0.0.1:8088"));
-            draw.identity = Some(false);
+            draw.tls = Some(false);
             Broken::Field(Some("url"))
         }
         "stallAfterSecs" => {
@@ -529,7 +538,7 @@ fn pki() -> &'static Pki {
     PKI.get_or_init(|| Pki::new("smeltr hec fuzz", "hec.internal", &["localhost"]))
 }
 
-/// `draw` as a whole bundle: a Kafka source, one route to the destination, and the identity it names.
+/// `draw` as a whole bundle: a Kafka source, one route to the destination, and the authority it trusts.
 fn bundle(draw: &Draw) -> Value {
     let mut b = json!({
         "version": 1,
@@ -538,13 +547,8 @@ fn bundle(draw: &Draw) -> Value {
         "pipelines": [{"id": "p", "name": "p", "steps": []}],
         "routes": [{"id": "r", "source": "s", "pipeline": "p", "deliver": [{"to": ["hec"]}]}],
     });
-    if let Some(certificate) = draw.identity {
-        let pki = pki();
-        let mut identity = json!({"id": "client", "authorities": pki.authority.pem});
-        if certificate {
-            identity["certificate"] = json!({"secret": "client", "version": 1});
-        }
-        b["identities"] = json!([identity]);
+    if let Some(authorities) = b["destinations"][0].get_mut("trustedAuthorities") {
+        *authorities = json!(pki().authority.pem);
     }
     b
 }
@@ -565,7 +569,7 @@ fn held(draw: &Draw, token: &str) -> (HeldSecrets, bool) {
     }
     let mut secrets = HeldSecrets::default();
     secrets.set_stored(stored);
-    if draw.identity == Some(true) {
+    if draw.tls == Some(true) {
         secrets.take([smeltr::heartbeat::SecretDelivery {
             name: "client".to_string(),
             version: 1,
@@ -677,9 +681,9 @@ fn check_loaded(draw: &Draw, c: &SplunkHecDestinationConfig, named: &[SecretRef]
         format!("{:?}", c.acknowledgement),
     );
     expect(
-        "identity",
-        format!("{:?}", draw.identity.is_some()),
-        format!("{:?}", c.identity.is_some()),
+        "tls",
+        format!("{:?}", draw.tls),
+        format!("{:?}", c.tls.as_ref().map(|t| t.certificate.is_some())),
     );
     let request = d.get("maxRequestBytes").map_or(MIB, bytes_of);
     expect("maxRequestBytes", request.to_string(), c.max_request_bytes.to_string());
@@ -1630,7 +1634,7 @@ fn offline_seed(seed: u64, reached: &mut Reached) -> Result<(), String> {
         }
     };
     let split_limit = faults.limit;
-    let tls = draw.identity.map(|certificate| {
+    let tls = draw.tls.map(|certificate| {
         if certificate {
             pki().mutual()
         } else {
@@ -1701,7 +1705,7 @@ fn live_options() -> Vec<&'static str> {
         .filter(|o| {
             !o.starts_with("broken.")
                 && !o.starts_with("fault.")
-                && !o.starts_with("identity.")
+                && !o.starts_with("tls.")
                 // One Splunk, at one address.
                 && !o.starts_with("zoneUrls.")
                 && ![

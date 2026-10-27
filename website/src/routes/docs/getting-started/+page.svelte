@@ -77,7 +77,7 @@
       <a href="/docs/destinations">Destinations</a> — output types, delivery settings, and verification.
     </li>
     <li>
-      <a href="/docs/secrets">Secrets &amp; credentials</a> — shared credentials and connection identities.
+      <a href="/docs/secrets">Secrets &amp; credentials</a> — shared credentials.
     </li>
   </ul>
 

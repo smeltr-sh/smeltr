@@ -499,8 +499,6 @@ flowchart LR
   source --> route --> pipeline --> destination -- refused --> destination2[destination]
   table --> pipeline
   pattern --> pipeline
-  identity --> source
-  identity --> destination
 ```
 
 Each row is a kind of object, named for the side it sits on where the
