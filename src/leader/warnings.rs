@@ -4978,8 +4978,8 @@ mod tests {
                         "stalled",
                         &[("subject", "archive"), ("error", "archive refused")],
                     ),
-                    site_event(2, NOW - 40_000, "kafka.link", "first", &[("subject", "a")]),
-                    site_event(3, NOW - 10_000, "kafka.link", "second", &[("subject", "b")]),
+                    site_event(2, NOW - 40_000, "kafka.message_ceiling", "first", &[("subject", "a")]),
+                    site_event(3, NOW - 10_000, "kafka.message_ceiling", "second", &[("subject", "b")]),
                 ],
             )
             .unwrap();

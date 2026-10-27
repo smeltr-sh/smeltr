@@ -870,9 +870,9 @@ fn check_held(sent: &[Vec<Sent>], read: &[Read], lossy: bool, retried: bool) -> 
 
 // -- the offline fuzzer -------------------------------------------------------------------------------------------
 
-/// Seeds checked at once. A seed that delivers builds a producer, whose `broker_ceiling` asks the mock for its request
-/// ceiling and waits out `LINK_TIMEOUT` for an answer the mock never gives, so seeds one after another would take
-/// minutes.
+/// Seeds checked at once. A seed that delivers builds a producer, whose `message_ceiling` asks the mock for its message
+/// ceiling and waits out `MESSAGE_CEILING_TIMEOUT` for an answer the mock never gives, so seeds one after another
+/// would take minutes.
 const WORKERS: usize = 32;
 
 #[test]

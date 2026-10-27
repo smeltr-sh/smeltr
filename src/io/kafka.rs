@@ -63,16 +63,16 @@ const LAG_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 // `session.timeout.ms`, `heartbeat.interval.ms` and `queued.min.messages` stay at librdkafka's defaults. The fetch
 // sizes follow `fetchBytes`. The producer's batch, linger and requests in flight stay at librdkafka's own; its record
-// may be as large as the broker takes, and its batch is lowered to that where it is less (`broker_ceiling`).
+// may be as large as the broker takes, and its batch is lowered to that where it is less (`message_ceiling`).
 // Compression and security are the operator's, through `apply_props`.
 
 /// What smeltr calls itself to a broker.
 const CLIENT_ID: &str = "smeltr";
 
-/// Budget for the question a destination asks its broker before its producer is built (`broker_ceiling`). A broker
+/// Budget for the question a destination asks its broker before its producer is built (`message_ceiling`). A broker
 /// that cannot answer in this time gets librdkafka's defaults and a deployment that goes ahead. Destinations are built
 /// one after another, so an unreachable broker costs a deployment this much per destination.
-const LINK_TIMEOUT: Duration = Duration::from_secs(5);
+const MESSAGE_CEILING_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// librdkafka's own `batch.size` and `message.max.bytes`. A producer keeps this batch unless its broker takes less.
 const DEFAULT_BATCH_BYTES: usize = 1_000_000;
@@ -1160,21 +1160,15 @@ fn receive_message_bytes(fetch_bytes: usize) -> usize {
     (fetch_request_bytes(fetch_bytes) + RECEIVE_FRAMING_BYTES).max(DEFAULT_RECEIVE_MESSAGE_BYTES)
 }
 
-/// The largest request the broker takes, asked before the producer is built (`request_ceiling`), with where it came
-/// from. `None` when the broker could not be asked or did not answer; the producer then keeps librdkafka's own batch.
-fn broker_ceiling(base: &ClientConfig, topic: &str) -> Option<(usize, &'static str)> {
+/// The Kafka message ceiling: the topic's effective `max.message.bytes`, asked before the producer is built, with
+/// where it came from. What the topic set, else what the broker gives every topic: one DescribeConfigs on the topic
+/// answers both, since the broker fills in its default where the topic set nothing, and says which it was. `None`
+/// when it is not readable: an ACL that refuses Describe, a broker too old for the call, or no answer in time.
+fn message_ceiling(base: &ClientConfig, topic: &str) -> Option<(usize, &'static str)> {
     let admin: AdminClient<DefaultClientContext> = base.create().ok()?;
     entra::sign_in_unpolled(admin.inner(), base.get("sasl.oauthbearer.config"));
-    request_ceiling(&admin, topic)
-}
-
-/// The topic's effective `max.message.bytes`: what the topic set, else what the broker gives every topic. One
-/// DescribeConfigs on the topic answers both, since the broker fills in its default where the topic set nothing,
-/// and says which it was. `None` when it is not readable: an ACL that refuses Describe, a broker too old for the
-/// call, or no answer in time.
-fn request_ceiling(admin: &AdminClient<DefaultClientContext>, topic: &str) -> Option<(usize, &'static str)> {
     let wanted = [ResourceSpecifier::Topic(topic)];
-    let options = AdminOptions::new().request_timeout(Some(LINK_TIMEOUT));
+    let options = AdminOptions::new().request_timeout(Some(MESSAGE_CEILING_TIMEOUT));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1257,10 +1251,10 @@ impl KafkaDestination {
         // before the producer exists, because librdkafka fixes its sizes when a client is built, and under the
         // producer's own configuration, so a secured broker answers.
         let (ceiling, ceiling_from) =
-            broker_ceiling(&producer_config, &config.default_topic).unwrap_or((DEFAULT_BATCH_BYTES, "default"));
+            message_ceiling(&producer_config, &config.default_topic).unwrap_or((DEFAULT_BATCH_BYTES, "default"));
         let (message_bytes, batch_bytes) = request_sizes(ceiling);
         tracing::info!(
-            target: "kafka.link",
+            target: "kafka.message_ceiling",
             destination = %id,
             topic = %config.default_topic,
             ceiling_bytes = ceiling,
