@@ -888,6 +888,11 @@ pub fn run_preview(
 
     let warn = |e: &CompileError| ApiError::from_compile(e, system.step_id_for(Some(pipeline_cfg.id), e.function));
     let mut warnings: Vec<ApiError> = plan.warnings.iter().map(warn).collect();
+    // A field the source gave is warned of at the first step, which the record enters through.
+    let first = pipeline_cfg.body.first().map(|step| match step {
+        plan::config::Step::Function(f) => f.id,
+        plan::config::Step::If { id, .. } => *id,
+    });
 
     // A pipeline has no answers of its own: it is previewed under the group's.
     let on_exception = &system.topology.on_exception;
@@ -902,7 +907,7 @@ pub fn run_preview(
         }
     };
     if records.is_empty() {
-        warnings.extend(ecs_warnings(&plan, &record).iter().map(warn));
+        warnings.extend(ecs_warnings(&plan, &record, first).iter().map(warn));
         return Envelope::ok(Preview {
             stage: None,
             pipeline_names,
@@ -1023,7 +1028,7 @@ pub fn run_preview(
 
     // The dictionary is of every row: a filter chooses what is shown, not what the pipeline writes.
     let sampled = plan::dictionary::with_sample(&record, rows.iter().filter_map(|(r, _)| r.json.as_ref()));
-    warnings.extend(ecs_warnings(&plan, &sampled).iter().map(warn));
+    warnings.extend(ecs_warnings(&plan, &sampled, first).iter().map(warn));
     let unfiltered = filter.as_ref().map(|_| rows.len() as u32);
     let rows = rows
         .into_iter()
@@ -1047,15 +1052,15 @@ pub fn run_preview(
 }
 
 /// A warning for each field of `record`, what `plan` writes, whose type is not one ECS's type for it holds
-/// (`io::elastic_mapping::disagreements`), at the step that wrote the field. A field the source gave is at no step.
-fn ecs_warnings(plan: &Plan, record: &DataType) -> Vec<CompileError> {
+/// (`io::elastic_mapping::disagreements`), at the step that wrote the field, or at `first` where the source gave it.
+fn ecs_warnings(plan: &Plan, record: &DataType, first: Option<FunctionId>) -> Vec<CompileError> {
     crate::io::elastic_mapping::disagreements(record)
         .into_iter()
         .map(|d| {
             let path = d.keys.join(".");
             let (ecs, written) = (d.ecs.name(), d.ecs.written_as());
             let message = format!("`{path}` is {}, but ECS maps it as {ecs}. Write it as {written}.", d.ty);
-            CompileError::new(writer(plan, &d.keys), message)
+            CompileError::new(writer(plan, &d.keys).or(first), message)
         })
         .collect()
 }
@@ -1564,6 +1569,41 @@ mod tests {
             warned,
             [(
                 Some("s"),
+                "`@timestamp` is str, but ECS maps it as date. Write it as datetime."
+            )]
+        );
+    }
+
+    #[test]
+    fn a_field_the_source_gave_is_warned_at_the_first_step() {
+        let column = |name: &str| crate::heartbeat::CaptureColumn {
+            name: name.into(),
+            ty: "str".into(),
+        };
+        let columns = [column("_raw"), column("@timestamp")];
+        let previewed = run_preview(
+            PreviewRequest {
+                config: compiling(),
+                pipeline: Some("p".into()),
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Default::default(),
+            &columns,
+            Vec::new(),
+        );
+        let warned: Vec<_> = (previewed.body.warnings.iter())
+            .map(|w| (w.step.as_deref(), w.message.as_str()))
+            .collect();
+        assert_eq!(
+            warned,
+            [(
+                Some("u"),
                 "`@timestamp` is str, but ECS maps it as date. Write it as datetime."
             )]
         );
