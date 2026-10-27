@@ -18,6 +18,7 @@
     field,
     warning = null,
     optional = false,
+    usableAs,
   }: {
     value: string | undefined;
     label?: string;
@@ -30,6 +31,9 @@
     warning?: string | null;
     /** Offers "none", for a choice that may present nothing. */
     optional?: boolean;
+    /** The side it is presented from: only a certificate usable from it is offered, since a worker refuses any
+     * other. */
+    usableAs: 'server' | 'client';
   } = $props();
 
   /** `undefined` until the list arrives, so a name it does not hold is not offered as missing before then. */
@@ -38,6 +42,8 @@
     .then((listed) => (certificates = listed))
     .catch(reported);
 
+  const usable = (c: CertificateDto) => (usableAs === 'server' ? c.forServers : c.forClients);
+  const offered = $derived(certificates?.filter(usable));
   const entry = $derived(certificates?.find((c) => c.name === value));
   const chosen = $derived(entry?.chain[0]);
 </script>
@@ -59,11 +65,13 @@
     {:else}
       <option value={undefined} disabled>choose one</option>
     {/if}
-    {#each certificates ?? [] as c (c.name)}
+    {#each offered ?? [] as c (c.name)}
       <option value={c.name}>{c.name}</option>
     {/each}
     {#if value !== undefined && certificates && !entry}
       <option {value}>{value} (not listed)</option>
+    {:else if entry && !usable(entry)}
+      <option {value}>{value} (not usable as a {usableAs} certificate)</option>
     {/if}
   </select>
 </Field>

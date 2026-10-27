@@ -63,6 +63,7 @@
 <CertificatePicker
   bind:value={value.certificate}
   label={serves ? 'server certificate' : 'client certificate'}
+  usableAs={serves ? 'server' : 'client'}
   field="certificate"
   optional
   warning={serves && value.certificate === undefined

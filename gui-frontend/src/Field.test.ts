@@ -12,19 +12,21 @@ let target: HTMLDivElement;
 async function signInAs(areas: Record<string, string>) {
   vi.stubGlobal(
     'fetch',
-    vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            authenticated: true,
-            userId: 'u_1',
-            displayName: 'Lee Park',
-            administrator: false,
-            mustChangePassword: false,
-            access: { administrator: false, areas },
-          }),
-          { headers: { 'content-type': 'application/json' } },
-        ),
+    vi.fn(async (url: string) =>
+      // The certificate picker asks for the list; everything else here is the session.
+      String(url).includes('/api/certificates')
+        ? new Response('[]', { headers: { 'content-type': 'application/json' } })
+        : new Response(
+            JSON.stringify({
+              authenticated: true,
+              userId: 'u_1',
+              displayName: 'Lee Park',
+              administrator: false,
+              mustChangePassword: false,
+              access: { administrator: false, areas },
+            }),
+            { headers: { 'content-type': 'application/json' } },
+          ),
     ),
   );
   await load();
