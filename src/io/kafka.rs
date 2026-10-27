@@ -63,8 +63,8 @@ const LAG_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 // `session.timeout.ms`, `heartbeat.interval.ms` and `queued.min.messages` stay at librdkafka's defaults. The fetch
 // sizes follow `fetchBytes`. The producer's batch, linger and requests in flight stay at librdkafka's own; its record
-// may be as large as the broker takes, and its batch is lowered to that where it is less (`broker_ceiling`). Compression and security are the operator's,
-// through `apply_props`.
+// may be as large as the broker takes, and its batch is lowered to that where it is less (`broker_ceiling`).
+// Compression and security are the operator's, through `apply_props`.
 
 /// What smeltr calls itself to a broker.
 const CLIENT_ID: &str = "smeltr";
