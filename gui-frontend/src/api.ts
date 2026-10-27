@@ -493,8 +493,8 @@ export type HttpBody = 'lines' | 'jsonArray' | 'single';
 export const COMPRESSIONS: Compression[] = ['none', 'gzip', 'snappy', 'lz4', 'zstd'];
 
 /** How many replicas hold a Kafka batch before it counts as delivered, mirroring `config_file::dto::AcksDto`. */
-export type Acks = 'none' | 'one' | 'all';
-export const ACKS: Acks[] = ['none', 'one', 'all'];
+export const ACKS = ['none', 'one', 'all'] as const;
+export type Acks = (typeof ACKS)[number];
 
 /** Bounds and defaults of the numeric delivery settings, mirroring the
  * newtypes in `config_file::dto` (`BulkBytes`, `FetchBytes`, ...). The Rust

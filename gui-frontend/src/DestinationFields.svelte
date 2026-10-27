@@ -41,6 +41,7 @@
     type Compression,
     type SchemaRegistry,
     type HttpCompression,
+    type Acks,
     COMPRESSIONS,
     ACKS,
     STORAGE_CLASSES,
@@ -196,7 +197,7 @@
           value={destination.acks ?? 'all'}
           onchange={(e) => {
             if (destination.type !== 'kafka') return;
-            const v = e.currentTarget.value as (typeof ACKS)[number];
+            const v = e.currentTarget.value as Acks;
             if (v === 'all') delete destination.acks;
             else destination.acks = v;
           }}
