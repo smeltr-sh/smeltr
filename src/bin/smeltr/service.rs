@@ -41,8 +41,8 @@ mod imp {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::IntoRawHandle;
     use std::path::{Path, PathBuf};
-    use std::sync::OnceLock;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
     use windows_sys::Win32::Foundation::{
@@ -66,8 +66,10 @@ mod imp {
     static START: OnceLock<fn()> = OnceLock::new();
     static STOP: OnceLock<fn()> = OnceLock::new();
     /// The handle `RegisterServiceCtrlHandlerExW` gave, as an address: a pointer is not `Sync`.
-    static HANDLE: OnceLock<usize> = OnceLock::new();
+    static STATUS_HANDLE: OnceLock<usize> = OnceLock::new();
     static CHECKPOINT: AtomicU32 = AtomicU32::new(0);
+    /// Whether stopped has been reported, held across each report so a stop-pending tick never follows it.
+    static REPORTED_STOPPED: Mutex<bool> = Mutex::new(false);
 
     pub fn run(start: fn(), stop: fn()) -> ! {
         let _ = START.set(start);
@@ -109,7 +111,7 @@ mod imp {
             );
             std::process::exit(1);
         }
-        let _ = HANDLE.set(handle as usize);
+        let _ = STATUS_HANDLE.set(handle as usize);
         // As systemd's `WorkingDirectory` would. Made if missing, so a first start works, inheriting its parent's
         // access; the install docs lock it down first.
         let dir = service_dir();
@@ -216,7 +218,7 @@ mod imp {
     }
 
     fn report(state: SERVICE_STATUS_CURRENT_STATE, accepted: u32, wait_hint: Duration) {
-        let Some(&handle) = HANDLE.get() else { return };
+        let Some(&handle) = STATUS_HANDLE.get() else { return };
         let status = SERVICE_STATUS {
             dwServiceType: SERVICE_WIN32_OWN_PROCESS,
             dwCurrentState: state,
@@ -231,6 +233,10 @@ mod imp {
             },
             dwWaitHint: wait_hint.as_millis() as u32,
         };
-        unsafe { SetServiceStatus(handle as _, &status) };
+        let mut stopped = REPORTED_STOPPED.lock().unwrap_or_else(|e| e.into_inner());
+        if !*stopped {
+            unsafe { SetServiceStatus(handle as _, &status) };
+            *stopped = state == SERVICE_STOPPED;
+        }
     }
 }
