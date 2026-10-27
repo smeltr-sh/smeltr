@@ -31,7 +31,7 @@ use crate::handoff::Ready;
 use crate::io::{BatchCompletion, BatchId, Destination, Dispatched, HeldRefusal, IoError, OwnedRecord, Rejection};
 use crate::metrics::MetricsHandle;
 use crate::worker::capture::{Captures, HeldAt};
-use pacing::{Completion, Pacing, Sent};
+use pacing::{Completion, Pacing};
 
 /// Which reader a unit came from, and where its completion goes.
 type ReaderId = u64;
@@ -40,10 +40,8 @@ type ReaderId = u64;
 struct Owed {
     rejections: Vec<Rejection>,
     unit: Unit,
-    /// What the pacing model knew when it was handed to the destination, once the queue is paced.
-    sent: Option<Sent>,
-    /// The source was not refused room before it went: the source, not the link, bounded it. See `pacing::Completion`.
-    app_limited: bool,
+    /// What the pacing model is told when it is acknowledged, once the queue is paced.
+    paced: Option<Completion>,
 }
 
 /// One reader's batch, as far as one destination is concerned. Owned rows: they cross a thread boundary.
@@ -662,22 +660,17 @@ fn run(
     // Held while any are kept, so a capture at this destination waits to be shown them.
     let mut holding: Option<crate::worker::capture::Holding> = None;
     // The pacing model, once the queue is paced. Its target is the queue's budget, and so what is in flight.
-    let mut pacing: Option<Pacing> = None;
-    // How far the link stood below the share, averaged over each stretch and written at its end.
-    let mut headroom = Headroom::default();
+    let mut pacer: Option<Pacer> = None;
 
     loop {
-        if pacing.is_none()
+        if pacer.is_none()
             && let Some(&floor) = queue.paced.get()
         {
             if queue.sender_bytes.get().is_some() {
                 let queue = queue.clone();
                 destination.lend_senders(Box::new(move || queue.take_sender()));
             }
-            let p = Pacing::new(floor, queue.share());
-            queue.set_budget(p.queue_bytes());
-            note_queue_budget(metrics, id, queue);
-            pacing = Some(p);
+            pacer = Some(Pacer::new(floor, queue, metrics, id));
         }
         // Here, not only where the queue is polled: a unit that keeps failing is re-sent forever without asking for new
         // work.
@@ -715,7 +708,7 @@ fn run(
             let delivered = destination.deliver(local, Cow::Borrowed(&unit.rows));
             // Once the destination has taken it: a Kafka producer at its bound holds `deliver` until it has room,
             // and that wait is this side's, not the link's round trip.
-            let sent = pacing.as_mut().map(|p| p.dispatched(unit.bytes, Instant::now()));
+            let paced = pacer.as_mut().map(|p| p.dispatched(unit.bytes, app_limited));
             match delivered {
                 Err(e) => {
                     note_stall(metrics, id, name, &e, &mut stalled);
@@ -729,17 +722,9 @@ fn run(
                 // Nothing will report it later, so report it now.
                 Ok((Dispatched::Complete, rejections)) => {
                     clear_stall(metrics, id, name, &mut stalled, &mut backoff);
-                    pace(
-                        &mut pacing,
-                        queue,
-                        metrics,
-                        id,
-                        unit.bytes,
-                        sent,
-                        app_limited,
-                        false,
-                        &mut headroom,
-                    );
+                    if let (Some(p), Some(c)) = (&mut pacer, paced) {
+                        p.completed(queue, c);
+                    }
                     finish(queue, returns, metrics, id, unit, rejections, &mut waiting);
                 }
                 // Refusals seen at hand-over wait for the acknowledgment, so one completion carries every refusal
@@ -753,8 +738,7 @@ fn run(
                         Owed {
                             rejections,
                             unit,
-                            sent,
-                            app_limited,
+                            paced,
                         },
                     );
                 }
@@ -781,17 +765,15 @@ fn run(
                     };
                     owed.rejections.extend(c.rejections);
                     clear_stall(metrics, id, name, &mut stalled, &mut backoff);
-                    pace(
-                        &mut pacing,
-                        queue,
-                        metrics,
-                        id,
-                        owed.unit.bytes,
-                        owed.sent,
-                        owed.app_limited,
-                        c.throttled,
-                        &mut headroom,
-                    );
+                    if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
+                        p.completed(
+                            queue,
+                            Completion {
+                                throttled: c.throttled,
+                                ..paced
+                            },
+                        );
+                    }
                     finish(queue, returns, metrics, id, owed.unit, owed.rejections, &mut waiting);
                 }
             }
@@ -842,47 +824,60 @@ fn run(
     abandon(returns, &mut owner, &mut redo);
 }
 
-/// Tell the pacing model a batch came back, and carry its target to the queue and the metrics when it moves. The
-/// ceiling is read each time: the pool's share moves as other queues come and go. The model's headroom under the
-/// ceiling is averaged over time and reported every [`HEADROOM_EVERY`]: none for long is a destination memory holds
-/// back.
-#[allow(clippy::too_many_arguments)]
-fn pace(
-    pacing: &mut Option<Pacing>,
-    queue: &Queue,
-    metrics: &MetricsHandle,
+/// The pacing model for one destination's queue, and what it reports.
+struct Pacer {
+    model: Pacing,
+    /// How far the link stood below the share, averaged over each stretch and written at its end.
+    headroom: Headroom,
+    metrics: MetricsHandle,
     id: DestId,
-    bytes: usize,
-    sent: Option<Sent>,
-    app_limited: bool,
-    throttled: bool,
-    headroom: &mut Headroom,
-) {
-    let (Some(p), Some(sent)) = (pacing, sent) else { return };
-    let before = p.target();
-    let ceiling = queue.share();
-    p.set_ceiling(ceiling);
-    p.completed(
+}
+
+impl Pacer {
+    /// Starts the model at `floor` bytes, one batch, and sets the queue's budget to it.
+    fn new(floor: usize, queue: &Queue, metrics: &MetricsHandle, id: DestId) -> Pacer {
+        let model = Pacing::new(floor, queue.share());
+        queue.set_budget(model.queue_bytes());
+        note_queue_budget(metrics, id, queue);
+        Pacer {
+            model,
+            headroom: Headroom::default(),
+            metrics: metrics.clone(),
+            id,
+        }
+    }
+
+    /// A batch of `bytes` handed to the destination: what the model is told when it is acknowledged.
+    fn dispatched(&mut self, bytes: usize, app_limited: bool) -> Completion {
         Completion {
             bytes,
-            sent,
+            sent: self.model.dispatched(bytes, Instant::now()),
             app_limited,
-            throttled,
-        },
-        Instant::now(),
-    );
-    if p.target() != before {
-        queue.set_budget(p.queue_bytes());
-        note_queue_budget(metrics, id, queue);
+            throttled: false,
+        }
     }
-    let share = p.headroom() as f64 / ceiling.max(1) as f64;
-    if let Some(mean) = headroom.add(share, Instant::now()) {
-        let label = id.to_string();
-        metrics.gauge(
-            "smeltr_destination_pace_headroom_ratio",
-            &[("destination", label.as_str())],
-            mean,
-        );
+
+    /// Tell the model a batch came back, and carry its target to the queue and the metrics when it moves. The ceiling
+    /// is read each time: the pool's share moves as other queues come and go. The model's headroom under the ceiling
+    /// is averaged over time and reported every [`HEADROOM_EVERY`]: none for long is a destination memory holds back.
+    fn completed(&mut self, queue: &Queue, c: Completion) {
+        let before = self.model.target();
+        let ceiling = queue.share();
+        self.model.set_ceiling(ceiling);
+        self.model.completed(c, Instant::now());
+        if self.model.target() != before {
+            queue.set_budget(self.model.queue_bytes());
+            note_queue_budget(&self.metrics, self.id, queue);
+        }
+        let share = self.model.headroom() as f64 / ceiling.max(1) as f64;
+        if let Some(mean) = self.headroom.add(share, Instant::now()) {
+            let label = self.id.to_string();
+            self.metrics.gauge(
+                "smeltr_destination_pace_headroom_ratio",
+                &[("destination", label.as_str())],
+                mean,
+            );
+        }
     }
 }
 
