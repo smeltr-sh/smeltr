@@ -27,7 +27,7 @@ use serde_json::{Map, Value, json};
 use smeltr::config_file::load_str;
 use smeltr::core::column::DataType;
 use smeltr::io::OwnedRecord;
-use smeltr::io::elastic_mapping::{Ecs, disagreements, mapping};
+use smeltr::io::elastic_mapping::{Ecs, mapping};
 use smeltr::plan::topology::{DestinationKind, DocIdPolicy, ElasticDestinationConfig, HeldSecrets, SecretRef};
 
 use crate::harness::destination::{
@@ -1688,7 +1688,7 @@ fn put(record: &mut DataType, keys: &[&str], ty: DataType) {
 /// How the product's ECS table (`io::ecs_fields::FIELDS`) maps the field at `path`, where it names it.
 fn ecs_at(path: &str) -> Option<Ecs> {
     let fields = smeltr::io::ecs_fields::FIELDS;
-    let i = fields.binary_search_by(|(n, _)| (*n).cmp(path)).ok()?;
+    let i = fields.binary_search_by(|(n, ..)| (*n).cmp(path)).ok()?;
     Some(fields[i].1)
 }
 
@@ -1978,9 +1978,10 @@ fn elastic_mapping_fuzz() {
         }
         let mut disagree = Vec::new();
         check_mapping(&record, Some(root), "", &mut cov, &mut disagree).map_err(|e| format!("{e}\n{record:?}\n{m}"))?;
-        let named: Vec<String> = disagreements(&record).iter().map(|d| d.keys.join(".")).collect();
+        let ecs = smeltr::schema::builtin("ecs").expect("ECS is built in");
+        let named: Vec<String> = ecs.check(&record).iter().map(|f| f.path()).collect();
         if named != disagree {
-            return Err(format!("disagreements {named:?}, not {disagree:?}\n{record:?}"));
+            return Err(format!("ECS finds {named:?}, not {disagree:?}\n{record:?}"));
         }
         Ok(())
     });

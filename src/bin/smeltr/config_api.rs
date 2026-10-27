@@ -478,6 +478,7 @@ fn errors_of_merge(
         routes: [&shared_raw.file.routes[..], &raw.file.routes[..]].concat(),
         lookup_tables: [&shared_raw.file.lookup_tables[..], &raw.file.lookup_tables[..]].concat(),
         grok_patterns: [&shared_raw.file.grok_patterns[..], &raw.file.grok_patterns[..]].concat(),
+        schemas: vec![],
     };
     config_file::fill_default_group_ids(&mut merged.sources, group_id);
 
@@ -2554,6 +2555,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             steps: vec![],
+            schemas: vec![],
         };
         let file = FileConfig {
             version: 1,
@@ -2565,6 +2567,7 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
+            schemas: vec![],
         };
         let old = RawBundle {
             file: file.clone(),
@@ -2705,6 +2708,7 @@ mod tests {
             id: "x".to_string(),
             name: "x".to_string(),
             steps: vec![],
+            schemas: vec![],
         })
         .unwrap();
         let stale = Some("0".repeat(40));
@@ -2812,6 +2816,7 @@ mod tests {
             id: "New Pipeline".into(),
             name: name.into(),
             steps,
+            schemas: vec![],
         };
         let save = |id: &str, pipeline| {
             let response = save_on_branch_in(
@@ -3040,6 +3045,7 @@ mod tests {
                 id: "new".to_string(),
                 name: "new".to_string(),
                 steps: vec![],
+                schemas: vec![],
             })
         });
 
@@ -3069,6 +3075,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             steps: vec![],
+            schemas: vec![],
         };
         let file = FileConfig {
             version: 1,
@@ -3080,6 +3087,7 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
+            schemas: vec![],
         };
         let old = RawBundle {
             file: file.clone(),
@@ -3200,6 +3208,7 @@ mod tests {
                 id: "passthrough".to_string(),
                 name: "passthrough".to_string(),
                 steps: vec![],
+                schemas: vec![],
             })
             .unwrap(),
         );
@@ -3315,6 +3324,7 @@ mod tests {
                 id: "passthrough".to_string(),
                 name: "passthrough".to_string(),
                 steps: vec![],
+                schemas: vec![],
             })
             .unwrap(),
             "the group's own pipeline",

@@ -6,6 +6,7 @@
 //! hide an unrelated bad pipeline.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use std::path::PathBuf;
@@ -26,6 +27,7 @@ use crate::plan::config::{
     TimeSource,
 };
 use crate::plan::parse_call::split_dots_default;
+use crate::schema::Schema;
 use crate::plan::topology::{
     AccessKey, Acknowledgement, AfterCommit, ApiRecords, AssumedRole, AzureAccess, AzureCredential, AzureStore,
     CatalogSignIn, Cloud, DeliverRule, DeltaDestinationConfig, DestinationConfig, DestinationKind, DocIdPolicy,
@@ -306,6 +308,7 @@ pub(crate) fn from_file_config_at(
             .at("pattern")
             .push(e.to_string());
     }
+    let (produces, accepts) = resolve_schemas(&file, &mut attributed_errors);
 
     // References resolved against a map built from duplicate ids would only add secondary errors on top of the real
     // one.
@@ -404,7 +407,66 @@ pub(crate) fn from_file_config_at(
         },
         pipelines,
         pipeline_ids: file.pipelines.iter().map(|p| p.id.clone()).collect(),
+        produces,
+        accepts: file
+            .destinations
+            .iter()
+            .zip(accepts)
+            .map(|(d, a)| (maps.destinations[&d.id], a))
+            .filter(|(_, a)| !a.is_empty())
+            .collect(),
     })
+}
+
+/// The schemas each pipeline produces and each destination accepts, in the file's order, each id resolved against
+/// the built-in schemas and the ones the bundle declares. A declared schema that does not read, or whose id is a
+/// built-in's or another's, and an id that names no schema, are errors on the item that has it.
+fn resolve_schemas(
+    file: &FileConfig,
+    attributed: &mut Vec<ValidationError>,
+) -> (Vec<Vec<Arc<Schema>>>, Vec<Vec<Arc<Schema>>>) {
+    let mut declared: HashMap<&str, Arc<Schema>> = HashMap::new();
+    let mut seen = HashSet::new();
+    for dto in &file.schemas {
+        let errors = &mut ItemErrors::new(attributed, "schemas", &dto.id);
+        if crate::schema::reserved(&dto.id) {
+            errors.push(format!("{:?} is a built-in schema's id; give this schema another", dto.id));
+            continue;
+        }
+        if !seen.insert(dto.id.as_str()) {
+            errors.push(format!("duplicate schema id {:?}", dto.id));
+            continue;
+        }
+        match crate::schema::json_schema::read(&dto.id, &dto.schema) {
+            Ok(schema) => {
+                declared.insert(&dto.id, Arc::new(schema));
+            }
+            Err(e) => errors.at("schema").push(e),
+        }
+    }
+    let mut resolve = |section: &'static str, id: &str, field: &'static str, ids: &[String]| -> Vec<Arc<Schema>> {
+        let mut errors = ItemErrors::new(attributed, section, id);
+        ids.iter()
+            .filter_map(|s| {
+                let found = declared.get(s.as_str()).cloned().or_else(|| crate::schema::builtin(s));
+                if found.is_none() {
+                    errors.at(field).push(format!("no schema has the id {s:?}"));
+                }
+                found
+            })
+            .collect()
+    };
+    let produces = file
+        .pipelines
+        .iter()
+        .map(|p| resolve("pipelines", &p.id, "schemas", &p.schemas))
+        .collect();
+    let accepts = file
+        .destinations
+        .iter()
+        .map(|d| resolve("destinations", &d.id, "accepts", &d.accepts))
+        .collect();
+    (produces, accepts)
 }
 
 /// Every credential and every certificate the bundle's connectors name, from the file's own walks: the ones the
@@ -6358,6 +6420,71 @@ mod tests {
         let patterns = r#"[{ "id": "VENDOR", "pattern": "a" }, { "id": "VENDOR", "pattern": "b" }]"#;
         let err = load_str(&naming_vendor(patterns)).unwrap_err();
         assert!(err.to_string().contains("duplicate grok pattern id"), "{err}");
+    }
+
+    // -- schemas ------------------------------------------------------------
+
+    /// A pipeline producing `produces` and a destination accepting `accepts`, with `schemas` as the bundle's own.
+    fn with_schemas(schemas: &str, produces: &str, accepts: &str) -> FileConfig {
+        serde_json::from_str(&format!(
+            r#"{{
+              "version": 1,
+              "schemas": {schemas},
+              "destinations": [{{ "id": "d", "type": "kafka", "brokers": "b:9092", "defaultTopic": "t",
+                                  "accepts": {accepts} }}],
+              "pipelines": [{{ "id": "p", "name": "p", "schemas": {produces}, "steps": [] }}]
+            }}"#
+        ))
+        .unwrap()
+    }
+
+    const LOGIN: &str = r#"[{ "id": "acme-login", "schema": {
+        "type": "object", "properties": { "user": { "type": "string" } }, "required": ["user"] } }]"#;
+
+    #[test]
+    fn a_pipeline_and_a_destination_name_built_in_and_declared_schemas() {
+        let system = from_file_config_at(
+            with_schemas(LOGIN, r#"["ecs", "acme-login"]"#, r#"["ocsf/authentication"]"#),
+            &DeclaredAt::new(),
+        )
+        .unwrap();
+        let ids = |s: &[Arc<Schema>]| s.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(system.produced_by(0)), ["ecs", "acme-login"]);
+        assert_eq!(
+            system.accepts.values().map(|a| ids(a)).collect::<Vec<_>>(),
+            [["ocsf/authentication"]]
+        );
+    }
+
+    /// The one error `file` has, on the item and setting it names.
+    fn the_error(file: FileConfig) -> (String, String, Option<&'static str>, String) {
+        let errors = validation_errors(file);
+        let [e] = errors.as_slice() else {
+            panic!("{errors:?}")
+        };
+        let item = e.item.as_ref().unwrap_or_else(|| panic!("{e:?}"));
+        (item.section.to_string(), item.id.clone(), e.field, e.message.clone())
+    }
+
+    #[test]
+    fn a_schema_id_that_names_no_schema_is_refused_on_what_names_it() {
+        let (section, id, field, message) = the_error(with_schemas("[]", r#"["acme-login"]"#, "[]"));
+        assert_eq!((section.as_str(), id.as_str(), field), ("pipelines", "p", Some("schemas")));
+        assert!(message.contains("\"acme-login\""), "{message}");
+        let (section, _, field, _) = the_error(with_schemas("[]", "[]", r#"["ocsf/nothing"]"#));
+        assert_eq!((section.as_str(), field), ("destinations", Some("accepts")));
+    }
+
+    #[test]
+    fn a_declared_schema_with_a_built_ins_id_or_that_does_not_read_is_refused_on_its_item() {
+        let (section, id, field, _) = the_error(with_schemas(r#"[{ "id": "ocsf/mine", "schema": {} }]"#, "[]", "[]"));
+        assert_eq!((section.as_str(), id.as_str(), field), ("schemas", "ocsf/mine", None));
+        let broken = r#"[{ "id": "mine", "schema": { "type": "string" } }]"#;
+        let (section, id, field, _) = the_error(with_schemas(broken, "[]", "[]"));
+        assert_eq!((section.as_str(), id.as_str(), field), ("schemas", "mine", Some("schema")));
+        let twice = r#"[{ "id": "mine", "schema": { "type": "object" } }, { "id": "mine", "schema": {} }]"#;
+        let (_, _, _, message) = the_error(with_schemas(twice, "[]", "[]"));
+        assert!(message.contains("duplicate schema id"), "{message}");
     }
 
     // -- shared lookup tables -----------------------------------------------

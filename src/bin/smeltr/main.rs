@@ -2892,6 +2892,7 @@ mod tests {
             grok_patterns: vec![],
             on_exception: None,
             name: None,
+            schemas: vec![],
         }
     }
 
@@ -2927,6 +2928,7 @@ mod tests {
                         }],
                     },
                 ],
+                schemas: vec![],
             }],
             ..empty_file()
         }
@@ -2977,6 +2979,7 @@ mod tests {
                 id: "enrich".to_string(),
                 name: "enrich".to_string(),
                 steps: vec![eval_step("mark", "enriched", "true")],
+                schemas: vec![],
             }],
             ..empty_file()
         };
@@ -3516,6 +3519,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             steps,
+            schemas: vec![],
         };
         let raw = RawBundle {
             file: FileConfig {
@@ -3533,6 +3537,7 @@ mod tests {
                 grok_patterns: vec![],
                 on_exception: None,
                 name: None,
+                schemas: vec![],
             },
             unreadable: Vec::new(),
         };

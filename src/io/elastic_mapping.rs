@@ -1,6 +1,6 @@
 //! A record type (`plan::dictionary`) as an Elasticsearch mapping: the body of `PUT /<index>`, and the `template`
 //! of an index template. A field ECS names takes ECS's mapping (`io::ecs_fields`) where the record's type is one ECS's
-//! type holds; where it is not, the field takes its own type's mapping, and `disagreements` names it.
+//! type holds; where it is not, the field takes its own type's mapping, and the `ecs` schema's check names it.
 
 use serde_json::{Map, Value, json};
 
@@ -9,24 +9,8 @@ use crate::core::column::DataType;
 /// `{"mappings": {"properties": ...}}` for a record of type `record`. A field whose type only the row knows is left
 /// out, for Elasticsearch to map from the first document that carries it.
 pub fn mapping(record: &DataType) -> Value {
-    let properties = field(record, &mut Vec::new(), &mut Vec::new());
+    let properties = field(record, &mut Vec::new());
     json!({ "mappings": properties.unwrap_or_else(|| json!({ "properties": {} })) })
-}
-
-/// Each field of `record` that ECS names but whose type is not one ECS's type holds, in the record's order.
-pub fn disagreements(record: &DataType) -> Vec<Disagreement> {
-    let mut out = Vec::new();
-    field(record, &mut Vec::new(), &mut out);
-    out
-}
-
-/// A field whose type ECS's mapping would not hold: `@timestamp` as a string, which ECS maps as a date.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Disagreement {
-    /// The field's keys from the record's root.
-    pub keys: Vec<String>,
-    pub ty: DataType,
-    pub ecs: Ecs,
 }
 
 /// How ECS maps a field it names.
@@ -100,7 +84,7 @@ impl Ecs {
 
     /// Whether a value of type `ty` is one this mapping holds as ECS means it. `ty` is no array, but under `Nested`,
     /// which holds an array of objects as it holds one.
-    fn holds(self, ty: &DataType) -> bool {
+    pub fn holds(self, ty: &DataType) -> bool {
         use DataType as T;
         let leaf = match (self, ty) {
             (Ecs::Nested, T::Array(e)) => &**e,
@@ -138,7 +122,7 @@ impl Ecs {
 /// How ECS maps the field at `path`, where ECS names it.
 fn ecs(path: &str) -> Option<Ecs> {
     let fields = crate::io::ecs_fields::FIELDS;
-    let i = fields.binary_search_by(|(name, _)| (*name).cmp(path)).ok()?;
+    let i = fields.binary_search_by(|(name, ..)| (*name).cmp(path)).ok()?;
     Some(fields[i].1)
 }
 
@@ -173,9 +157,8 @@ fn ecs_mapping(ecs: Ecs, properties: Option<Value>) -> Value {
     }
 }
 
-/// The mapping of a field of type `ty` at `keys`, where it has one, adding to `disagreements` each field under it ECS
-/// maps as a type that does not hold its own.
-fn field(ty: &DataType, keys: &mut Vec<String>, disagreements: &mut Vec<Disagreement>) -> Option<Value> {
+/// The mapping of a field of type `ty` at `keys`, where it has one.
+fn field(ty: &DataType, keys: &mut Vec<String>) -> Option<Value> {
     // The root is no field, and a field's path is its keys dotted, as Elasticsearch reads them.
     let named = (!keys.is_empty()).then(|| ecs(&keys.join("."))).flatten();
     // Elasticsearch has no array type: a field holds one value or many of one mapping. Only a nested field maps
@@ -183,26 +166,17 @@ fn field(ty: &DataType, keys: &mut Vec<String>, disagreements: &mut Vec<Disagree
     if let DataType::Array(element) = ty
         && !(named == Some(Ecs::Nested) && Ecs::Nested.holds(ty))
     {
-        return field(element, keys, disagreements);
+        return field(element, keys);
     }
     let held = named.filter(|e| e.holds(ty));
-    if let (Some(e), None) = (named, held)
-        && !matches!(ty, DataType::Null | DataType::Variant)
-    {
-        disagreements.push(Disagreement {
-            keys: keys.clone(),
-            ty: ty.clone(),
-            ecs: e,
-        });
-    }
     let name = match (ty, held) {
         (DataType::Array(element), _) => {
-            return Some(ecs_mapping(Ecs::Nested, properties(element, keys, disagreements)));
+            return Some(ecs_mapping(Ecs::Nested, properties(element, keys)));
         }
         (DataType::Struct(..), Some(e @ (Ecs::Object | Ecs::Nested))) => {
-            return Some(ecs_mapping(e, properties(ty, keys, disagreements)));
+            return Some(ecs_mapping(e, properties(ty, keys)));
         }
-        (DataType::Struct(..), None) => return properties(ty, keys, disagreements),
+        (DataType::Struct(..), None) => return properties(ty, keys),
         (_, Some(e)) => return Some(ecs_mapping(e, None)),
         (DataType::Bool, None) => "boolean",
         // A duration is written as integer microseconds.
@@ -219,14 +193,14 @@ fn field(ty: &DataType, keys: &mut Vec<String>, disagreements: &mut Vec<Disagree
 }
 
 /// `{"properties": ...}` for an object of type `ty`, or `None` for any other type.
-fn properties(ty: &DataType, keys: &mut Vec<String>, disagreements: &mut Vec<Disagreement>) -> Option<Value> {
+fn properties(ty: &DataType, keys: &mut Vec<String>) -> Option<Value> {
     let DataType::Struct(fields, _) = ty else {
         return None;
     };
     let mut properties = Map::new();
     for (key, t) in fields {
         keys.push(key.clone());
-        if let Some(m) = field(t, keys, disagreements) {
+        if let Some(m) = field(t, keys) {
             properties.insert(key.clone(), m);
         }
         keys.pop();
@@ -356,11 +330,10 @@ mod tests {
             } } } } } },
         } } });
         assert_eq!(mapping(&record), want);
-        assert_eq!(disagreements(&record), []);
     }
 
     #[test]
-    fn a_field_whose_type_ecs_does_not_hold_keeps_its_own_and_is_named() {
+    fn a_field_whose_type_ecs_does_not_hold_keeps_its_own() {
         let record = st(
             &[
                 ("@timestamp", DataType::Str),
@@ -389,31 +362,13 @@ mod tests {
             "event": { "properties": {} },
         } } });
         assert_eq!(mapping(&record), want);
-        let named: Vec<(String, DataType, &str)> = disagreements(&record)
-            .into_iter()
-            .map(|d| (d.keys.join("."), d.ty, d.ecs.name()))
-            .collect();
-        // A variant is no disagreement: only the row knows its type.
-        assert_eq!(
-            named,
-            [
-                ("@timestamp".to_string(), DataType::Str, "date"),
-                ("source.port".to_string(), DataType::Str, "long"),
-                ("source.geo.location".to_string(), DataType::F64, "geo_point"),
-                (
-                    "user.name".to_string(),
-                    st(&[("first", DataType::Str)], false),
-                    "keyword"
-                ),
-            ]
-        );
     }
 
-    /// What a disagreement tells the author to write is a type ECS's mapping holds.
+    /// What a misfit tells the author to write is a type ECS's mapping holds.
     #[test]
     fn each_ecs_type_holds_what_it_says_to_write() {
         let object = st(&[("a", DataType::Str)], true);
-        for (name, ecs) in crate::io::ecs_fields::FIELDS {
+        for (name, ecs, _) in crate::io::ecs_fields::FIELDS {
             let ty = match ecs.written_as() {
                 "struct" => object.clone(),
                 "array(struct)" => DataType::Array(Box::new(object.clone())),
@@ -434,7 +389,7 @@ mod tests {
 
     #[test]
     fn the_ecs_table_is_sorted_for_its_search() {
-        let names: Vec<&str> = crate::io::ecs_fields::FIELDS.iter().map(|(n, _)| *n).collect();
+        let names: Vec<&str> = crate::io::ecs_fields::FIELDS.iter().map(|(n, ..)| *n).collect();
         assert!(names.windows(2).all(|w| w[0] < w[1]));
     }
 }

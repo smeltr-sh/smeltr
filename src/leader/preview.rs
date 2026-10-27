@@ -4,6 +4,7 @@
 //! routes, its test runner and the demo's preview service give one answer.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::config_file::{self, Verdict};
 use crate::core::batch::Batch;
@@ -22,6 +23,7 @@ use crate::plan::plan::Plan;
 use crate::plan::resolve::Origin;
 use crate::plan::topology::SourceMeta;
 use crate::plan::tree;
+use crate::schema::{Misfit, Schema};
 
 #[derive(serde::Deserialize)]
 pub struct PreviewRequest {
@@ -907,7 +909,7 @@ pub fn run_preview(
         }
     };
     if records.is_empty() {
-        warnings.extend(ecs_warnings(&plan, &record, first).iter().map(warn));
+        warnings.extend(schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first).iter().map(warn));
         return Envelope::ok(Preview {
             stage: None,
             pipeline_names,
@@ -1028,7 +1030,7 @@ pub fn run_preview(
 
     // The dictionary is of every row: a filter chooses what is shown, not what the pipeline writes.
     let sampled = plan::dictionary::with_sample(&record, rows.iter().filter_map(|(r, _)| r.json.as_ref()));
-    warnings.extend(ecs_warnings(&plan, &sampled, first).iter().map(warn));
+    warnings.extend(schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first).iter().map(warn));
     let unfiltered = filter.as_ref().map(|_| rows.len() as u32);
     let rows = rows
         .into_iter()
@@ -1051,16 +1053,31 @@ pub fn run_preview(
     })
 }
 
-/// A warning for each field of `record`, what `plan` writes, whose type is not one ECS's type for it holds
-/// (`io::elastic_mapping::disagreements`), at the step that wrote the field, or at `first` where the source gave it.
-fn ecs_warnings(plan: &Plan, record: &DataType, first: Option<FunctionId>) -> Vec<CompileError> {
-    crate::io::elastic_mapping::disagreements(record)
+/// A warning for each field of `record`, what `plan` writes, that breaks the schemas the pipeline produces
+/// (`schema::check`): at the step that wrote the field, or at `first` where the source gave it. A field the schemas
+/// require and the record lacks has no step that wrote it, and is warned of with none.
+fn schema_warnings(
+    produces: &[Arc<Schema>],
+    plan: &Plan,
+    record: &DataType,
+    first: Option<FunctionId>,
+) -> Vec<CompileError> {
+    crate::schema::check(produces, record)
         .into_iter()
-        .map(|d| {
-            let path = d.keys.join(".");
-            let (ecs, written) = (d.ecs.name(), d.ecs.written_as());
-            let message = format!("`{path}` is {}, but ECS maps it as {ecs}. Write it as {written}.", d.ty);
-            CompileError::new(writer(plan, &d.keys).or(first), message)
+        .map(|f| {
+            let path = f.path();
+            let title = produces.iter().find(|s| s.id == f.schema).map_or(&f.schema, |s| &s.title);
+            match &f.misfit {
+                Misfit::Type {
+                    ty,
+                    type_name,
+                    written_as,
+                } => CompileError::new(
+                    writer(plan, &f.keys).or(first),
+                    format!("`{path}` is {ty}, but {title} maps it as {type_name}. Write it as {written_as}."),
+                ),
+                Misfit::Missing => CompileError::new(None, format!("{title} requires `{path}`, and no step writes it.")),
+            }
         })
         .collect()
 }
@@ -1540,12 +1557,12 @@ mod tests {
             .replace(r#""when":"n.","#, "")
     }
 
-    #[test]
-    fn a_field_ecs_maps_as_another_type_is_warned_at_the_step_that_wrote_it() {
-        let config = compiling().replace(
-            r#""body":"x = 1;""#,
-            r#""body":"$[\"@timestamp\"] = \"now\"; source = {ip: \"::1\"};""#,
-        );
+    /// `compiling`, its pipeline producing `schemas`.
+    fn producing(schemas: &str) -> String {
+        compiling().replace(r#""id":"p","name":"P","#, &format!(r#""id":"p","name":"P","schemas":{schemas},"#))
+    }
+
+    fn warnings_of(config: String, columns: &[crate::heartbeat::CaptureColumn]) -> Vec<(Option<String>, String)> {
         let previewed = run_preview(
             PreviewRequest {
                 config,
@@ -1559,19 +1576,28 @@ mod tests {
                 capture_filter: None,
             },
             Default::default(),
-            &[],
+            columns,
             Vec::new(),
         );
-        let warned: Vec<_> = (previewed.body.warnings.iter())
-            .map(|w| (w.step.as_deref(), w.message.as_str()))
-            .collect();
+        (previewed.body.warnings.iter())
+            .map(|w| (w.step.clone(), w.message.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_field_ecs_maps_as_another_type_is_warned_at_the_step_that_wrote_it() {
+        let body = r#""body":"$[\"@timestamp\"] = \"now\"; source = {ip: \"::1\"};""#;
+        let config = producing(r#"["ecs"]"#).replace(r#""body":"x = 1;""#, body);
         assert_eq!(
-            warned,
+            warnings_of(config, &[]),
             [(
-                Some("s"),
-                "`@timestamp` is str, but ECS maps it as date. Write it as datetime."
+                Some("s".to_string()),
+                "`@timestamp` is str, but ECS maps it as date. Write it as datetime.".to_string()
             )]
         );
+        // A pipeline that produces no schema is held to none.
+        let config = compiling().replace(r#""body":"x = 1;""#, body);
+        assert_eq!(warnings_of(config, &[]), []);
     }
 
     #[test]
@@ -1581,31 +1607,24 @@ mod tests {
             ty: "str".into(),
         };
         let columns = [column("_raw"), column("@timestamp")];
-        let previewed = run_preview(
-            PreviewRequest {
-                config: compiling(),
-                pipeline: Some("p".into()),
-                sample: None,
-                show_internal: false,
-                at_micros: None,
-                filter: None,
-                attribution: false,
-                after_dot: None,
-                capture_filter: None,
-            },
-            Default::default(),
-            &columns,
-            Vec::new(),
-        );
-        let warned: Vec<_> = (previewed.body.warnings.iter())
-            .map(|w| (w.step.as_deref(), w.message.as_str()))
-            .collect();
         assert_eq!(
-            warned,
+            warnings_of(producing(r#"["ecs"]"#), &columns),
             [(
-                Some("u"),
-                "`@timestamp` is str, but ECS maps it as date. Write it as datetime."
+                Some("u".to_string()),
+                "`@timestamp` is str, but ECS maps it as date. Write it as datetime.".to_string()
             )]
+        );
+    }
+
+    #[test]
+    fn a_field_the_schema_requires_and_no_step_writes_is_warned_at_no_step() {
+        let warned = warnings_of(producing(r#"["ocsf/authentication"]"#), &[]);
+        assert!(
+            warned.contains(&(
+                None,
+                "OCSF Authentication requires `class_uid`, and no step writes it.".to_string()
+            )),
+            "{warned:?}"
         );
     }
 

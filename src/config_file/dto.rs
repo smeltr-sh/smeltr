@@ -144,6 +144,8 @@ pub struct FileConfig {
     pub lookup_tables: Vec<LookupTableDto>,
     #[serde(default, rename = "grokPatterns")]
     pub grok_patterns: Vec<GrokPatternDto>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schemas: Vec<SchemaDto>,
     /// The group's answer to every exception kind. Absent means encoding is ignored, delivery blocks, and every other
     /// category is tagged.
     #[serde(default, rename = "exceptions", skip_serializing_if = "Option::is_none")]
@@ -1199,6 +1201,9 @@ pub struct DestinationDto {
     /// The destination's answer to `Refused`, over the group's. It names no other kind.
     #[serde(default, rename = "exceptions", skip_serializing_if = "Option::is_none")]
     pub on_exception: Option<OnExceptionDto>,
+    /// The schemas, by id, a pipeline that sends here produces one of. Empty accepts any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepts: Vec<String>,
     #[serde(flatten)]
     pub kind: DestinationKindDto,
 }
@@ -3100,6 +3105,9 @@ pub struct PipelineDto {
     pub name: String,
     #[serde(default)]
     pub steps: Vec<StepDto>,
+    /// The schemas its rows keep, by id: each row one of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schemas: Vec<String>,
 }
 
 /// `plan::config::OnException`, over the answers of the layer below: the built-in ones, then the group's. Each key
@@ -3286,6 +3294,16 @@ pub enum ParserKindDto {
 pub struct CustomPatternDto {
     pub name: String,
     pub pattern: String,
+}
+
+/// A schema the bundle declares (`schema`), as JSON Schema, named by id from the pipelines that produce it and the
+/// destinations that accept it. No id is a built-in's (`schema::reserved`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaDto {
+    pub id: String,
+    /// The JSON Schema document, whole.
+    pub schema: serde_json::Value,
 }
 
 /// A named grok pattern, declared once for the bundle and named as `%{id}` from any grok in it.

@@ -273,6 +273,7 @@ fn new_manifest(name: Option<String>) -> FileConfig {
         grok_patterns: vec![],
         on_exception: None,
         name,
+        schemas: vec![],
     }
 }
 
@@ -794,6 +795,7 @@ mod tests {
                 ..Default::default()
             }),
             name: Some("West".to_string()),
+            schemas: vec![],
         };
         let edit = git::FileEdit {
             path: "groups/west/system.json".to_string(),
@@ -848,6 +850,7 @@ mod tests {
             grok_patterns: vec![],
             on_exception: None,
             name: Some(name.to_string()),
+            schemas: vec![],
         };
         let edit = git::FileEdit {
             path: format!("groups/{id}/system.json"),
@@ -987,6 +990,7 @@ mod tests {
             grok_patterns: vec![],
             on_exception: None,
             name: Some("East, Renamed".to_string()),
+            schemas: vec![],
         };
         let edit = git::FileEdit {
             path: "groups/east/system.json".to_string(),

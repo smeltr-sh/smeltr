@@ -24,6 +24,7 @@ pub mod process;
 mod releases;
 pub mod resources;
 pub mod runtime;
+pub mod schema;
 pub mod startup_config;
 pub mod streams;
 pub mod version;

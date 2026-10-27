@@ -36,6 +36,7 @@ mod sample;
 mod test;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::core::column::DataType;
 use crate::core::error::ExceptionKind;
@@ -44,7 +45,7 @@ use crate::plan::config::{Answer, CompileError, PipelineConfig};
 use crate::plan::topology::{CompiledTopology, DestinationKind, Records, TopologyConfig};
 
 pub use bundle::{
-    BundleError, DirFileSet, FileSet, GROK_PATTERNS_FILE, GROUPS_DIR, LOOKUP_TABLES_FILE, LOOKUPS_DIR, RawBundle,
+    BundleError, DirFileSet, FileSet, GROK_PATTERNS_FILE, GROUPS_DIR, LOOKUP_TABLES_FILE, LOOKUPS_DIR, RawBundle, SCHEMAS_FILE,
     SECTION_FILES, SHARED_DIR, bundle_files, group_subtree, is_safe_group_id, is_safe_group_name, is_safe_secret_name,
     load_bundle_dir, load_bundle_from, load_group_dir, load_group_from, manifest_bytes, read_raw_from,
     slugged_pipelines, slugify, unsafe_group_id, unsafe_group_name, unsafe_secret_name,
@@ -53,7 +54,7 @@ pub use dto::{
     AnswerDto, AssignmentDto, BufferBytes, CompoundTypeDto, CustomPatternDto, DataTypeDto, DeliverRuleDto,
     DestinationDto, DestinationKindDto, FetchBytes, FieldDto, FileConfig, GrokPatternDto, LeaderSecretDto,
     LookupOutputDto, LookupSourceDto, LookupTableDto, MatchKindDto, MultiplicityDto, OnExceptionDto, PUBSUB_ENDPOINT,
-    ParserKindDto, PipelineDto, RenamePairDto, RouteDto, SecretRefDto, SourceDto, SourceKindDto, SqlKind, SqlSourceDto,
+    ParserKindDto, PipelineDto, RenamePairDto, RouteDto, SchemaDto, SecretRefDto, SourceDto, SourceKindDto, SqlKind, SqlSourceDto,
     StartPositionDto, StepDto,
 };
 pub use impact::{Impact, Reached, Reason, pipeline_answers_differ, pipelines_touched};
@@ -100,6 +101,10 @@ pub struct LoadedSystem {
     /// `PipelineConfig::id` (a compiler-local index) back to the DTO's string id, so a `CompileError::pipeline`
     /// can be reported the way the file that declared it names it.
     pub pipeline_ids: Vec<String>,
+    /// The schemas each pipeline produces, by `PipelineConfig::id`.
+    pub produces: Vec<Vec<Arc<crate::schema::Schema>>>,
+    /// The schemas each destination accepts, for the destinations that name any.
+    pub accepts: HashMap<DestId, Vec<Arc<crate::schema::Schema>>>,
 }
 
 impl LoadedSystem {
@@ -186,6 +191,11 @@ impl LoadedSystem {
     pub fn pipeline(&self, id: &str) -> Option<&PipelineConfig> {
         let index = self.pipeline_ids.iter().position(|p| p == id)?;
         self.pipelines.iter().find(|p| p.id == index)
+    }
+
+    /// The schemas the pipeline `PipelineConfig::id` names produces.
+    pub fn produced_by(&self, pipeline: usize) -> &[Arc<crate::schema::Schema>] {
+        self.produces.get(pipeline).map_or(&[], Vec::as_slice)
     }
 
     /// The step a `CompileError`'s `pipeline`/`function` indices name, by its own string id. `function` is a

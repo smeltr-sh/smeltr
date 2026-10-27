@@ -698,6 +698,7 @@ mod tests {
                 buffer_bytes: Default::default(),
                 props: Default::default(),
             },
+            accepts: vec![],
         }
     }
 
@@ -706,6 +707,7 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             steps,
+            schemas: vec![],
         }
     }
 
@@ -756,6 +758,7 @@ mod tests {
             grok_patterns: vec![],
             on_exception: None,
             name: None,
+            schemas: vec![],
         }
     }
 
