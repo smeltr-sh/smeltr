@@ -842,7 +842,7 @@ test('A2: a parser writes into the object it names, and its fields are suggested
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
   await admin.getByRole('button', { name: /^Parser _raw as JSON/ }).click();
-  await admin.getByRole('button', { name: /^Advanced/ }).click();
+  await admin.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   const into = admin.getByRole('textbox', { name: 'write into' });
   await expect(into).toHaveValue('$');
   await into.fill('order');
@@ -1734,7 +1734,7 @@ test("A10: a Kafka source's group id is blank under Advanced, reading as its wor
     await dialog.getByRole('button', { name: 'Kafka', exact: true }).click();
     const field = dialog.getByRole('textbox', { name: 'group id' });
     await expect(field).toBeHidden();
-    await dialog.getByRole('button', { name: /^Advanced/ }).click();
+    await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
     await expect(field).toHaveValue('');
     await dialog.getByRole('button', { name: 'About group id' }).click();
     await admin.screenshot({ path: test.info().outputPath(`kafka-group-id-${scope}.png`) });
@@ -2118,7 +2118,7 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
   const draft = admin.locator('.chip-draft');
   await draft.fill('192.168.0.0/16');
   await draft.press('Enter');
-  await admin.getByRole('button', { name: /^Advanced/ }).click();
+  await admin.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   const certificate = admin.getByRole('combobox', { name: /^server certificate/ });
   await expect(certificate).toBeVisible();
   const lineBreaker = admin.getByRole('textbox', { name: 'line breaker' });
@@ -2244,7 +2244,7 @@ test('A10: an HTTP API source signs in as an app through its issuer and is saved
   await dialog
     .getByRole('textbox', { name: /^issuer/ })
     .fill('https://login.example.com/realms/acme');
-  await dialog.getByRole('button', { name: /^Advanced/ }).click();
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   await dialog.getByRole('textbox', { name: /^scope/ }).fill('read:events');
   await dialog.screenshot({ path: test.info().outputPath('http-api-sign-in-form.png') });
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
@@ -2811,7 +2811,7 @@ test('A10: a Prometheus remote_write destination is added from its form, its Aut
     .getByRole('combobox', { name: /source$/ })
     .last()
     .selectOption('prom-write-token');
-  await dialog.getByRole('button', { name: /^Advanced/ }).click();
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   // One request at a time keeps each series in order, so there is no concurrency to set.
   await expect(dialog.getByRole('spinbutton', { name: /^starting concurrency/ })).toHaveCount(0);
   await dialog.screenshot({ path: test.info().outputPath('prometheus-destination-form.png') });
@@ -2879,7 +2879,7 @@ test('A10: a Log Analytics workspace destination is added from its form, signed 
   await dialog
     .getByRole('combobox', { name: 'client secret source' })
     .selectOption('law-principal');
-  await dialog.getByRole('button', { name: /^Advanced/ }).click();
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   await expect(dialog.getByRole('textbox', { name: /^auth endpoint/ })).toBeVisible();
   await dialog.screenshot({ path: test.info().outputPath('log-analytics-destination-form.png') });
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
@@ -2921,7 +2921,7 @@ test('A10: an Elasticsearch destination sends from each zone to its own address,
   await dialog.getByRole('textbox', { name: /^id/ }).fill('logs');
   await dialog.getByRole('textbox', { name: /^url/ }).fill('https://es.internal:9200');
   await dialog.getByRole('textbox', { name: /^default index/ }).fill('logs');
-  await dialog.getByRole('button', { name: /^Advanced/ }).click();
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
 
   const zones = dialog.getByRole('textbox', { name: 'zone', exact: true });
   const urls = dialog.getByRole('textbox', { name: 'zone URL', exact: true });
