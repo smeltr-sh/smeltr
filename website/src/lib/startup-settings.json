@@ -1,6 +1,41 @@
 {
   "settings": [
     {
+      "key": "log_level",
+      "env": "SMELTR_LOG_LEVEL",
+      "default": "`info`",
+      "what": "The lowest severity logged. A top-level key.",
+      "values": [
+        {
+          "value": "error",
+          "what": "Logs errors."
+        },
+        {
+          "value": "warn",
+          "what": "Logs warnings and errors."
+        },
+        {
+          "value": "info",
+          "what": "Logs info, warnings and errors."
+        },
+        {
+          "value": "debug",
+          "what": "Logs everything but trace."
+        },
+        {
+          "value": "trace",
+          "what": "Logs everything."
+        }
+      ]
+    },
+    {
+      "key": "leader.enabled",
+      "env": "SMELTR_LEADER_ENABLED",
+      "default": "`false`",
+      "examples": ["true"],
+      "what": "Whether this process runs the leader."
+    },
+    {
       "key": "leader.http.port",
       "env": "SMELTR_GUI_PORT",
       "default": "`443`",
@@ -23,13 +58,6 @@
         "https://smeltr.example.com,https://smeltr.internal:8443"
       ],
       "what": "The scheme, host and port browsers use. Several origins, separated by commas, must share one scheme."
-    },
-    {
-      "key": "leader.enabled",
-      "env": "SMELTR_LEADER_ENABLED",
-      "default": "`false`",
-      "examples": ["true"],
-      "what": "Whether this process runs the leader."
     },
     {
       "key": "leader.storage.data_dir",
@@ -102,27 +130,6 @@
       "what": "Whether this install runs a worker. With `leader.enabled`, one service runs both."
     },
     {
-      "key": "worker.group",
-      "env": "SMELTR_WORKER_GROUP",
-      "default": "`default`",
-      "examples": ["edge", "dmz-collectors"],
-      "what": "The worker group it joins. It must name a deployed group."
-    },
-    {
-      "key": "worker.zone",
-      "env": "SMELTR_WORKER_ZONE",
-      "default": "unset",
-      "examples": ["eu-west-1a"],
-      "what": "The availability zone this worker runs in, for connectors that prefer their own zone."
-    },
-    {
-      "key": "worker.listen_address",
-      "env": "SMELTR_WORKER_LISTEN_ADDRESS",
-      "default": "`::`",
-      "examples": ["10.0.0.5", "127.0.0.1"],
-      "what": "The address every receiver on this worker listens on. :: is all IPv4 and IPv6 addresses."
-    },
-    {
       "key": "worker.leader.url",
       "env": "SMELTR_LEADER_URL",
       "default": "unset",
@@ -142,6 +149,34 @@
       "default": "`true`",
       "examples": ["false"],
       "what": "Whether the worker also trusts the public roots, Mozilla's and the host's own. If off, then the worker will not trust the public roots and the leader's certificate must chain to the given CA."
+    },
+    {
+      "key": "worker.enrollment_code",
+      "env": "SMELTR_WORKER_ENROLLMENT_CODE",
+      "default": "unset",
+      "examples": ["smeltrenroll-1-system-aaaa-bbbb"],
+      "what": "The code a worker enrolls with, and enrolls again with if the leader forgets it."
+    },
+    {
+      "key": "worker.group",
+      "env": "SMELTR_WORKER_GROUP",
+      "default": "`default`",
+      "examples": ["edge", "dmz-collectors"],
+      "what": "The worker group it joins. It must name a deployed group."
+    },
+    {
+      "key": "worker.zone",
+      "env": "SMELTR_WORKER_ZONE",
+      "default": "unset",
+      "examples": ["eu-west-1a"],
+      "what": "The availability zone this worker runs in, for connectors that prefer their own zone."
+    },
+    {
+      "key": "worker.listen_address",
+      "env": "SMELTR_WORKER_LISTEN_ADDRESS",
+      "default": "`::`",
+      "examples": ["10.0.0.5", "127.0.0.1"],
+      "what": "The address every receiver on this worker listens on. :: is all IPv4 and IPv6 addresses."
     },
     {
       "key": "worker.storage.state_dir",
@@ -177,13 +212,6 @@
       "default": "unset",
       "examples": ["300", "3600"],
       "what": "Seconds without a heartbeat reaching the leader after which the worker stops its deployment. Unset, it never does, so a leader outage never stops data flowing."
-    },
-    {
-      "key": "worker.enrollment_code",
-      "env": "SMELTR_WORKER_ENROLLMENT_CODE",
-      "default": "unset",
-      "examples": ["smeltrenroll-1-system-aaaa-bbbb"],
-      "what": "The code a worker enrolls with, and enrolls again with if the leader forgets it."
     },
     {
       "key": "worker.metrics_endpoint.enabled",
@@ -233,34 +261,6 @@
       "default": "unset",
       "examples": ["s3cret"],
       "what": "The basic auth password for `user`. Without TLS it crosses the network in clear."
-    },
-    {
-      "key": "log_level",
-      "env": "SMELTR_LOG_LEVEL",
-      "default": "`info`",
-      "what": "The lowest severity logged. A top-level key.",
-      "values": [
-        {
-          "value": "error",
-          "what": "Logs errors."
-        },
-        {
-          "value": "warn",
-          "what": "Logs warnings and errors."
-        },
-        {
-          "value": "info",
-          "what": "Logs info, warnings and errors."
-        },
-        {
-          "value": "debug",
-          "what": "Logs everything but trace."
-        },
-        {
-          "value": "trace",
-          "what": "Logs everything."
-        }
-      ]
     }
   ]
 }
