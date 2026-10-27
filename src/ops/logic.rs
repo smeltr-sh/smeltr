@@ -277,12 +277,11 @@ fn take_varlen(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataType, 
     b.reserve(ctx.pool, total);
     // A word at a time: which source holds a value under its mask, for 64 rows at once.
     let mut held = vec![0u64; ins.len()];
-    #[allow(clippy::needless_range_loop)] // `w` indexes a word of every source's mask, not one slice.
     for w in 0..bits::words_for(len) {
         let mut any = 0u64;
-        for (k, h) in held.iter_mut().enumerate() {
-            *h = match &readers[k] {
-                Some(r) => takes[k][w] & r.validity().map_or(!0, |v| v.bits()[w]),
+        for (h, (reader, take)) in held.iter_mut().zip(readers.iter().zip(takes)) {
+            *h = match reader {
+                Some(r) => take[w] & r.validity().map_or(!0, |v| v.bits()[w]),
                 None => 0,
             };
             any |= *h;
