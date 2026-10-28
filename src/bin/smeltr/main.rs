@@ -439,6 +439,7 @@ async fn preview(
             &branch,
             &scope,
             req,
+            Vec::new(),
         ))
     };
     Json(
@@ -451,14 +452,21 @@ async fn preview(
 /// A preview of what the editor is looking at on `branch`: its sample and any lookup path in it resolve the same way
 /// a save would, against the bundle on that branch. A group's preview runs with `shared/` merged in, as the group
 /// runs once deployed, so a pipeline calling a shared pipeline or reading a shared lookup table previews rather than
-/// naming it unknown. `data_dir` explicit, as for `Reading::open_in`.
-fn preview_on(data_dir: &std::path::Path, branch: &str, scope: &str, mut req: PreviewRequest) -> Envelope<Preview> {
+/// naming it unknown. `data_dir` explicit, as for `Reading::open_in`. `records` are run where the request names no
+/// sample: what an import hands over.
+fn preview_on(
+    data_dir: &std::path::Path,
+    branch: &str,
+    scope: &str,
+    mut req: PreviewRequest,
+    records: Vec<smeltr::io::RecordObject>,
+) -> Envelope<Preview> {
     let reading = match config_api::Reading::open_in(data_dir, branch, scope) {
         Ok(reading) => reading,
         Err(e) => return Preview::failed("load", vec![ApiError::new(e)], vec![]),
     };
     let sample = match &req.sample {
-        None => Ok((Vec::new(), Vec::new())),
+        None => Ok((Vec::new(), records)),
         Some(id) => match config_file::read_sample(&mut reading.files(), id) {
             Ok(Some(sample)) => Ok((sample.columns, sample.records)),
             Ok(None) => Err(format!("there is no sample {id:?} on this branch")),
@@ -477,6 +485,54 @@ fn preview_on(data_dir: &std::path::Path, branch: &str, scope: &str, mut req: Pr
         }
         Err(message) => Preview::failed("sample", vec![ApiError::new(message)], vec![]),
     }
+}
+
+/// A schema imported by a pipeline: `pipeline` of `config` run over `records`, an uploaded file's, on `branch` as a
+/// preview runs, and each row it writes a field of the schema `id` (`schema_catalog::from_rows`).
+#[derive(serde::Deserialize)]
+struct ImportRequest {
+    /// A single-file `config_file` JSON document: the bundle the importer is in.
+    config: String,
+    /// The importer, by `PipelineDto::id`.
+    pipeline: String,
+    id: String,
+    #[serde(default)]
+    title: String,
+    records: Vec<smeltr::io::RecordObject>,
+}
+
+async fn import_schema(
+    axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
+    Json(req): Json<ImportRequest>,
+) -> Json<Envelope<smeltr::leader::schema_catalog::ReadSchema>> {
+    let (branch, scope) = (q.name().to_string(), q.scope().to_string());
+    let run = move || {
+        let preview = preview_on(
+            &smeltr::startup_config::leader_data_dir(),
+            &branch,
+            &scope,
+            PreviewRequest {
+                config: req.config,
+                pipeline: Some(req.pipeline),
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
+            },
+            req.records,
+        );
+        if !preview.ok {
+            return Ok::<_, String>(Envelope::failed(preview.errors));
+        }
+        Ok(
+            smeltr::leader::schema_catalog::from_rows(&req.id, &req.title, &preview.body.rows)
+                .map_or_else(Envelope::failed_one, Envelope::ok),
+        )
+    };
+    Json(blocking(run).await.unwrap_or_else(Envelope::failed_one))
 }
 
 /// Rewrites `req.config`, a group's own bundle, into that bundle merged with `shared/` at the commit `reading`
@@ -2016,6 +2072,7 @@ async fn run_leader() {
         .route("/api/routes", put(config_api::put_routes))
         .route("/api/grok-patterns", put(config_api::put_grok_patterns))
         .route("/api/schemas", put(config_api::put_schemas))
+        .route("/api/schemas/import", post(import_schema))
         .route("/api/schemas/from-json-schema", post(schema_api::from_json_schema))
         .route("/api/schemas/to-json-schema", post(schema_api::to_json_schema))
         // An edited CSV travels whole in this body, so it is as large as the file.
@@ -3056,6 +3113,7 @@ mod tests {
                 after_dot: None,
                 capture_filter: None,
             },
+            Vec::new(),
         );
 
         assert!(
@@ -3091,6 +3149,7 @@ mod tests {
                 after_dot: None,
                 capture_filter: None,
             },
+            Vec::new(),
         );
         assert!(!response.ok, "{} rows", response.rows.len());
         std::fs::remove_dir_all(&data).ok();

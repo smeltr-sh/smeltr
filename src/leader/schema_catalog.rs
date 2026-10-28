@@ -17,7 +17,7 @@ pub struct FromJsonSchema {
 }
 
 /// A schema read from JSON Schema, as a bundle declares one.
-#[derive(Default, serde::Serialize)]
+#[derive(Debug, Default, serde::Serialize)]
 pub struct ReadSchema {
     pub schema: SchemaDto,
 }
@@ -40,6 +40,49 @@ pub fn to_json_schema(schema: &SchemaDto) -> Result<WrittenSchema, String> {
     crate::schema::read(schema).map(|s| WrittenSchema {
         schema: json_schema::write(&s),
     })
+}
+
+/// The schema `id` an importer pipeline produced: each row it wrote has a `field`, a `type`, and may have `required`
+/// and `description`, as a schema's table does. `rows` is the pipeline's output (`preview::RowOut`), in which a row
+/// without those, or with them wrong, is refused by its number.
+pub fn from_rows(id: &str, title: &str, rows: &[crate::leader::preview::RowOut]) -> Result<ReadSchema, String> {
+    let mut fields = Vec::new();
+    for row in rows {
+        let Some(json) = row.json.as_ref().and_then(Value::as_object) else {
+            continue;
+        };
+        let text = |key: &str| -> Result<Option<String>, String> {
+            match json.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(s)) => Ok(Some(s.clone())),
+                Some(other) => Err(format!("row {}: `{key}` is {other}, not text", row.row)),
+            }
+        };
+        let field = text("field")?.ok_or_else(|| format!("row {}: no `field`", row.row))?;
+        let ty = text("type")?.ok_or_else(|| format!("row {}: no `type` for `{field}`", row.row))?;
+        let required = match json.get("required") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            Some(other) => return Err(format!("row {}: `required` is {other}, not a bool", row.row)),
+        };
+        fields.push(crate::config_file::SchemaFieldDto {
+            field,
+            ty,
+            required,
+            description: text("description")?.unwrap_or_default(),
+        });
+    }
+    if fields.is_empty() {
+        return Err("the importer wrote no rows".to_string());
+    }
+    let schema = SchemaDto {
+        id: id.to_string(),
+        title: title.to_string(),
+        description: String::new(),
+        fields,
+    };
+    crate::schema::read(&schema)?;
+    Ok(ReadSchema { schema })
 }
 
 /// What breaks a schema in `file`, a group's bundle merged with `shared/`: each pipeline's rows against the schemas it
@@ -89,5 +132,38 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn an_importers_rows_are_a_schema_and_a_row_lacking_its_field_or_type_is_refused() {
+        use crate::leader::preview::RowOut;
+        let row = |n: u32, json: Value| RowOut {
+            row: n,
+            json: Some(json),
+            exceptions: Vec::new(),
+            steps: None,
+            dropped_by: None,
+        };
+        let rows = [
+            row(
+                0,
+                json!({ "field": "@timestamp", "type": "datetime", "required": true, "description": "When." }),
+            ),
+            row(1, json!({ "field": "source.ip", "type": "str" })),
+            row(2, json!(null)),
+        ];
+        let schema = from_rows("ecs", "ECS", &rows).unwrap().schema;
+        assert_eq!(schema.fields.len(), 2);
+        assert!(schema.fields[0].required);
+        assert_eq!(schema.fields[1].ty, "str");
+        let refused = |rows: &[RowOut]| from_rows("x", "", rows).unwrap_err();
+        assert_eq!(refused(&[row(3, json!({ "type": "str" }))]), "row 3: no `field`");
+        assert_eq!(refused(&[row(4, json!({ "field": "a" }))]), "row 4: no `type` for `a`");
+        assert_eq!(
+            refused(&[row(5, json!({ "field": "a", "type": 1 }))]),
+            "row 5: `type` is 1, not text"
+        );
+        assert!(refused(&[row(6, json!({ "field": "a", "type": "nope" }))]).starts_with("`a`: `nope` is no type"));
+        assert_eq!(refused(&[]), "the importer wrote no rows");
     }
 }

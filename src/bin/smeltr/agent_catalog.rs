@@ -69,6 +69,12 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "POST",
+        path: "/api/schemas/import",
+        what: "A schema imported by a pipeline: pipeline of config run over records, each row it writes a field. Query: scope, branch.",
+        body: "{ config: string, pipeline: string, id: string, title?: string, records: object[] }",
+    },
+    Route {
+        method: "POST",
         path: "/api/schemas/from-json-schema",
         what: "A JSON Schema document read as a schema: its table of fields. No query.",
         body: "{ id?: string, schema: object }",

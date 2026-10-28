@@ -55,7 +55,11 @@ a declaration spells one, so a schema, a parser's field table and a
 declaration read the same. A bundle declares its schemas as such tables, and
 JSON Schema is read in and written out (`schema::json_schema`). A pipeline
 names the schemas it produces, and a destination may name the schemas it
-accepts. Both are checked at save to name a schema the group can see.
+accepts. Both are checked at save to name a schema the group can see. A
+schema is also imported: a pipeline of the bundle run over an uploaded
+file's records writes one row per field, `field`, `type`, `required` and
+`description`, and the rows are the schema. ECS and OCSF come in that way,
+as any file of fields does.
 
 ```mermaid
 flowchart LR

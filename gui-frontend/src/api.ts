@@ -5306,6 +5306,29 @@ export function fromJsonSchema(id: string, doc: Record<string, unknown>): Promis
   return post('/api/schemas/from-json-schema', { id, schema: doc }, 'quiet');
 }
 
+/** The schema `id` that `pipeline` of `config`, the bundle as the editor holds it, writes when run over `records`, an
+ * uploaded file's, on the branch: each row it writes is a field. Not `ok`, with why, where the pipeline does not run
+ * or a row is no field. */
+export function importSchema(req: {
+  id: string;
+  title?: string;
+  config: FileConfigDto;
+  pipeline: string;
+  records: SampleRecordDto[];
+}): Promise<ReadSchema> {
+  return post(
+    branched('/api/schemas/import'),
+    {
+      config: JSON.stringify(req.config),
+      pipeline: req.pipeline,
+      id: req.id,
+      title: req.title ?? '',
+      records: req.records,
+    },
+    'quiet',
+  );
+}
+
 export interface WrittenSchema {
   ok: boolean;
   errors: ApiError[];

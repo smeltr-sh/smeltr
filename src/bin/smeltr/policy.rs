@@ -91,6 +91,7 @@ pub fn need(method: &Method, path: &str, query: Option<&str>) -> Need {
         (Method::GET | Method::HEAD | Method::PUT, ["samples"])
         | (Method::GET | Method::HEAD | Method::DELETE, ["samples", _])
         | (Method::POST, ["preview"])
+        | (Method::POST, ["schemas", "import"])
         | (Method::POST, ["route-preview"])
         | (Method::POST, ["captures", _, "save"]) => scoped(Level::Editor),
         (Method::POST, ["captures"])

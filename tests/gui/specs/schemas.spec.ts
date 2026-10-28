@@ -1,5 +1,7 @@
 // Schemas: a bundle's schemas opened and searched by field, one added from a JSON Schema, a pipeline's Produces and
 // a destination's accepts, and what review finds where rows do not fit.
+import { fileURLToPath } from 'node:url';
+
 import { test, expect, goto, type Api } from '../fleet';
 
 const ON = '?branch=work&scope=shared';
@@ -136,6 +138,79 @@ test("a destination's accepts is saved with it", async ({ admin, leader, api }) 
 
   const saved = await api.get(`/api/config${ON}`);
   expect(saved.config.destinations[0].accepts).toEqual(['audit']);
+});
+
+/** The ECS importer: one row per field of ECS's `generated/csv/fields.csv` (Elastic Common Schema, Apache 2.0). The
+ * header row is dropped; each other row's column 4 is the field, 5 its ECS type, 7 whether it is an array, 9 its
+ * description. `tests/gui/fixtures/ecs-fields-excerpt.csv` is that file's first rows. */
+const ECS_IMPORTER = {
+  id: 'ecs-importer',
+  name: 'ECS importer',
+  steps: [
+    { type: 'drop', id: 'header', condition: '_raw.startsWith("ECS_Version,")' },
+    {
+      type: 'code',
+      id: 'row',
+      body: [
+        'Object.assign($, csv(_raw, [null, null, null, "field", "ecs", null, "normalization", null, "description"]))',
+        'type = ecs == "date" ? "datetime"',
+        '  : ecs == "long" ? "i64"',
+        '  : ecs == "float" || ecs == "scaled_float" || ecs == "double" ? "f64"',
+        '  : ecs == "boolean" ? "bool"',
+        '  : ecs == "object" || ecs == "geo_point" ? "{...}"',
+        '  : ecs == "nested" ? "array<{...}>"',
+        '  : ecs == "flattened" ? "variant"',
+        '  : "str";',
+        'if (normalization == "array") { type = "array<" + type + ">"; }',
+        'required = field == "@timestamp";',
+        'delete(_raw, ecs, normalization);',
+      ].join('\n'),
+    },
+  ],
+};
+
+test('a schema is imported by a pipeline of the bundle run over an uploaded file', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/pipelines/ecs-importer${ON}`, ECS_IMPORTER);
+  await goto(admin, leader, '#/build/schemas');
+  await admin.getByRole('button', { name: '+ Add schema' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Import', exact: true }).click();
+  await dialog.getByLabel('id', { exact: true }).fill('ecs');
+  await dialog.getByRole('combobox', { name: 'Importer' }).selectOption('ecs-importer');
+  await dialog
+    .getByLabel(/^File/)
+    .setInputFiles(fileURLToPath(new URL('../fixtures/ecs-fields-excerpt.csv', import.meta.url)));
+  await expect(dialog.getByText('ecs-fields-excerpt.csv: 13 records')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(admin.getByRole('cell', { name: '@timestamp*', exact: true })).toBeVisible();
+  await expect(
+    admin.getByRole('cell', {
+      name: 'Unique number allocated to the autonomous system.',
+      exact: true,
+    }),
+  ).toBeVisible();
+  await admin.screenshot({ path: 'results/schemas-imported.png' });
+
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  const saved = await api.get(`/api/config${ON}`);
+  const fields = saved.config.schemas[0].fields;
+  expect(saved.config.schemas[0].id).toBe('ecs');
+  expect(fields).toHaveLength(12);
+  expect(fields[0]).toEqual({
+    field: '@timestamp',
+    type: 'datetime',
+    required: true,
+    description: 'Date/time when the event originated.',
+  });
+  expect(fields.find((f: { field: string }) => f.field === 'tags').type).toBe('array<str>');
+  expect(fields.find((f: { field: string }) => f.field === 'labels').type).toBe('{...}');
+  expect(fields.find((f: { field: string }) => f.field === 'client.as.number').type).toBe('i64');
 });
 
 /** On `branch`, in group `default`: a pipeline producing `login` that writes nothing, routed from a metrics source

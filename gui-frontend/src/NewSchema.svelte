@@ -1,10 +1,12 @@
 <!--
-  Adding a schema (`NewObject`): from a JSON Schema pasted or uploaded, or empty. What it starts from is the draft's `type`; the schema itself is made on Add (`SchemasPage`).
+  Adding a schema (`NewObject`): imported by a pipeline of the bundle run over an uploaded file, from a JSON Schema
+  pasted or uploaded, or empty. What it starts from is the draft's `type`; the schema itself is made on Add
+  (`SchemasPage`).
 -->
 <script lang="ts" module>
   import type { CatalogType } from './TypeCatalog.svelte';
 
-  export type SchemaStart = 'jsonSchema' | 'empty';
+  export type SchemaStart = 'import' | 'jsonSchema' | 'empty';
 
   /** A schema being added, before it is one. */
   export type SchemaDraft = {
@@ -12,14 +14,29 @@
     type: SchemaStart;
     /** The JSON Schema, as text, for `jsonSchema`. */
     text: string;
+    /** The importer, by pipeline id, for `import`. */
+    pipeline: string;
+    /** The uploaded file's records, for `import`. */
+    records: SampleRecordDto[];
+    /** The uploaded file's name, shown. */
+    fileName: string;
   };
 
   const LABELS: Record<SchemaStart, string> = {
+    import: 'Import',
     jsonSchema: 'JSON Schema',
     empty: 'empty',
   };
 
   export const SCHEMA_STARTS: CatalogType<SchemaStart>[] = [
+    {
+      type: 'import',
+      label: 'Import',
+      category: 'From a file',
+      help: 'A pipeline of the bundle reads a file and writes one row per field: ECS, OCSF, a spreadsheet.',
+      // An arrow into a tray.
+      glyph: { d: 'M32 8 V40 M20 28 L32 40 L44 28 M12 46 V56 H52 V46' },
+    },
     {
       type: 'jsonSchema',
       label: 'JSON Schema',
@@ -42,28 +59,58 @@
   import NewObject from './NewObject.svelte';
   import Field from './Field.svelte';
   import { suggestId } from './ids';
+  import { recordsFromText, type SampleRecordDto } from './api';
+  import { count } from './time';
 
   let {
     open,
     unavailable,
+    importers,
     onadd,
     oncancel,
   }: {
     open: boolean;
     /** Every id the new one may not take. */
     unavailable: string[];
+    /** The pipelines an import may run, by id, with their names. */
+    importers: { id: string; name: string }[];
     /** Takes the draft, and makes the schema. The dialog stays open until its owner closes it. */
     onadd: (draft: SchemaDraft) => void | Promise<void>;
     oncancel: () => void;
   } = $props();
 
   function blank(type: SchemaStart, taken: string[]): SchemaDraft {
-    return { id: suggestId('schema', taken), type, text: '' };
+    return {
+      id: suggestId('schema', taken),
+      type,
+      text: '',
+      pipeline: '',
+      records: [],
+      fileName: '',
+    };
   }
 
   async function upload(draft: SchemaDraft, input: HTMLInputElement) {
     const file = input.files?.[0];
     if (file) draft.text = await file.text();
+  }
+
+  async function uploadRecords(draft: SchemaDraft, input: HTMLInputElement) {
+    const file = input.files?.[0];
+    if (!file) return;
+    draft.records = recordsFromText(await file.text());
+    draft.fileName = file.name;
+  }
+
+  function ready(d: SchemaDraft): boolean {
+    switch (d.type) {
+      case 'jsonSchema':
+        return d.text.trim() !== '';
+      case 'import':
+        return d.pipeline !== '' && d.records.length > 0;
+      default:
+        return true;
+    }
   }
 </script>
 
@@ -74,12 +121,31 @@
   types={SCHEMA_STARTS}
   {blank}
   typeLabel={(t) => LABELS[t]}
-  ready={(d) => d.type !== 'jsonSchema' || d.text.trim() !== ''}
+  {ready}
   {onadd}
   {oncancel}
 >
   {#snippet fields(draft)}
-    {#if draft.type === 'jsonSchema'}
+    {#if draft.type === 'import'}
+      <Field
+        required
+        label="Importer"
+        help="A pipeline that writes one row per field: field, type, required, description."
+      >
+        <select bind:value={draft.pipeline}>
+          <option value="">Choose a pipeline…</option>
+          {#each importers as p (p.id)}
+            <option value={p.id}>{p.name || p.id}</option>
+          {/each}
+        </select>
+      </Field>
+      <Field required label="File" help="One record per line, as a sample is uploaded.">
+        <input type="file" onchange={(e) => uploadRecords(draft, e.currentTarget)} />
+        {#if draft.fileName}
+          <span class="dim">{draft.fileName}: {count(draft.records.length, 'record')}</span>
+        {/if}
+      </Field>
+    {:else if draft.type === 'jsonSchema'}
       <Field required label="JSON Schema">
         <textarea
           class="mono"
@@ -115,5 +181,10 @@
 
   .mono {
     font-family: var(--mono);
+  }
+
+  .dim {
+    color: var(--dim);
+    font-size: var(--text-note);
   }
 </style>

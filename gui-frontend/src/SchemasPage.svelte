@@ -26,10 +26,12 @@
   import { resourcesTabs } from './nav';
   import {
     fromJsonSchema,
+    importSchema,
     toJsonSchema,
     sharedConfig,
     putSchemas,
     type DestinationDto,
+    type FileConfigDto,
     type PipelineDto,
     type SchemaDto,
   } from './api';
@@ -49,6 +51,8 @@
   /** What names a schema, here and in `shared/`. */
   let pipelines: PipelineDto[] = $state([]);
   let destinations: DestinationDto[] = $state([]);
+  /** The group's own bundle as loaded, which an import runs a pipeline of. */
+  let config: FileConfigDto | null = $state(null);
   const validation = provideValidation('schemas');
   const editor = new SectionEditor<SchemaDto[]>('schemas', {
     get: () => schemas,
@@ -57,11 +61,12 @@
     put: putSchemas,
     what: 'schemas',
     validation,
-    onLoaded: async (config) => {
+    onLoaded: async (loaded) => {
+      config = loaded;
       const shared = await sharedConfig();
       sharedSchemas = shared?.schemas ?? [];
-      pipelines = [...(shared?.pipelines ?? []), ...config.pipelines];
-      destinations = [...(shared?.destinations ?? []), ...config.destinations];
+      pipelines = [...(shared?.pipelines ?? []), ...loaded.pipelines];
+      destinations = [...(shared?.destinations ?? []), ...loaded.destinations];
     },
   });
   void editor.load();
@@ -99,7 +104,17 @@
 
   async function add(draft: SchemaDraft) {
     let schema: SchemaDto = { id: draft.id, fields: [] };
-    if (draft.type === 'jsonSchema') {
+    if (draft.type === 'import') {
+      if (!config) throw new Error('the bundle has not loaded');
+      const read = await importSchema({
+        id: draft.id,
+        config: $state.snapshot(config),
+        pipeline: draft.pipeline,
+        records: draft.records,
+      });
+      if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
+      schema = read.schema;
+    } else if (draft.type === 'jsonSchema') {
       let doc: Record<string, unknown>;
       try {
         doc = JSON.parse(draft.text);
@@ -275,7 +290,13 @@
     </div>
   </SectionShell>
 
-  <NewSchema open={adding} unavailable={taken} onadd={add} oncancel={() => (adding = false)} />
+  <NewSchema
+    open={adding}
+    unavailable={taken}
+    importers={pipelines.map((p) => ({ id: p.id, name: p.name }))}
+    onadd={add}
+    oncancel={() => (adding = false)}
+  />
 {/if}
 
 {#snippet row(id: string, kind: string, description: string, fromShared = false)}
