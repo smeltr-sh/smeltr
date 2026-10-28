@@ -197,7 +197,7 @@ test('a field the schema requires and the rows lack is a column of its own, with
     'aria-expanded',
     'true',
   );
-  await expect(admin.getByText('OCSF Authentication requires, missing here:')).toBeVisible();
+  await expect(admin.getByText('Required by OCSF Authentication:')).toBeVisible();
   await expect(admin.getByText(/^OCSF Authentication requires: `activity_id`/)).toBeVisible();
   await admin.screenshot({ path: 'results/schemas-missing.png' });
 });

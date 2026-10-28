@@ -906,7 +906,7 @@
                             {@const bySchema = Map.groupBy(missing.values(), (m) => m.schema)}
                             {#each bySchema as [schema, fields] (schema)}
                               <div class="missing-fields">
-                                <p class="missing">{schema} requires, missing here:</p>
+                                <p class="missing">Required by {schema}:</p>
                                 {#each fields as m (m.path)}
                                   <span class="mono missing">{m.path}</span>
                                   <span class="mono missing">{m.written_as}</span>
