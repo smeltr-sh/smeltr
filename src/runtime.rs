@@ -20,7 +20,6 @@ use crate::core::column::{Column, DataType};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind, INGEST_FUNCTION, Read};
 use crate::core::id::{DestId, SlotId, SourceId};
-use crate::format::encoding::Encoding;
 use crate::format::json::scalar_text;
 use crate::format::record::RecordView;
 use crate::handoff::{Acks, BlockCause, Handed, Handoff, Ready, Report, Reports, Taken};
@@ -655,7 +654,6 @@ impl Worker {
     pub fn new(
         source_id: SourceId,
         source: Box<dyn Source>,
-        encoding: Encoding,
         topology: CompiledTopology,
         destinations: Vec<DestinationTarget>,
         memory: MemoryBudget,
@@ -665,7 +663,7 @@ impl Worker {
         let lane = Arc::new(Lane::new(
             source_id,
             None,
-            topology.meta_for(source_id).with_encoding(encoding),
+            topology.meta_for(source_id),
             Handoff::new(),
             destinations.iter().map(|d| d.id).collect(),
             reports,

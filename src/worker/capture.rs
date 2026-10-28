@@ -1466,13 +1466,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
         declares_none.then(|| meta.clone()),
     );
     let metrics = crate::metrics::MetricsHandle::new(registry.clone(), CAPTURE_LABEL);
-    drive(
-        cold,
-        &mut source,
-        &meta,
-        &metrics,
-        Some(SqlSource::read_once),
-    );
+    drive(cold, &mut source, &meta, &metrics, Some(SqlSource::read_once));
 }
 
 /// A session this worker reads a source of its own for, and the source as it reads it (`cold_source_config`). Built

@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::id::{DestId, FunctionId};
 use smeltr::egress::Egress;
-use smeltr::format::encoding::Encoding;
 use smeltr::handoff::{Handed, Handoff, Ready, Report, reports};
 use smeltr::io::fake::{AsyncDestination, FakeSource};
 use smeltr::io::{SourceRecord, TopicPartition};
@@ -60,7 +59,6 @@ fn worker(source: &FakeSource, dest: &AsyncDestination) -> Worker {
     let mut w = Worker::new(
         0,
         Box::new(source.clone()),
-        Encoding::Auto,
         topology,
         Vec::new(),
         MemoryBudget::unlimited(),

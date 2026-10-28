@@ -259,7 +259,6 @@ fn run_in_group(
     let mut worker = Worker::new(
         system.topology.sources[0].id,
         Box::new(source),
-        system.topology.sources[0].kind.encoding(),
         topology,
         destinations,
         MemoryBudget::unlimited(),

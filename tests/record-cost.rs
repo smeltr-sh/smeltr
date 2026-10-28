@@ -119,7 +119,6 @@ fn time(bundle: &str, source: Box<dyn Source>, meta: SourceMeta) -> (f64, refere
     let mut worker = Worker::new(
         system.topology.sources[0].id,
         source,
-        system.topology.sources[0].kind.encoding(),
         topology,
         destinations,
         MemoryBudget::unlimited(),
