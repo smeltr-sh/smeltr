@@ -31,10 +31,10 @@ use crate::io::{
     SourceRecord, TopicPartition,
 };
 use crate::metrics::MetricsHandle;
+use crate::plan::compile::Plan;
 use crate::plan::config::{Answer, Payload};
 use crate::plan::exec;
 use crate::plan::output::{RaisedIn, answer_rows, tag_column, tag_or_not};
-use crate::plan::plan::Plan;
 use crate::plan::topology::{CompiledRoute, CompiledTopology, Placement, SourceMeta, route_masks};
 
 /// The block reason for a destination that stopped taking records. The cause is quoted: a missing topic, an unreachable
@@ -3405,7 +3405,7 @@ fn seed_ingest_batch(
     source: Option<&str>,
 ) -> Batch {
     let rows = records.len();
-    let layout: Vec<DataType> = crate::plan::plan::ingest_fields(meta)
+    let layout: Vec<DataType> = crate::plan::compile::ingest_fields(meta)
         .into_iter()
         .map(|(_, t)| t)
         .collect();

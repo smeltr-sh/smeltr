@@ -12,8 +12,8 @@ use smeltr::core::batch::Batch;
 
 use smeltr::core::column::{Column, DataType};
 use smeltr::core::error::ExceptionKind;
+use smeltr::plan::compile::{Plan, compile};
 use smeltr::plan::config::{CompileError, LookupAt, LookupFile, LookupSource, PipelineConfig, Step};
-use smeltr::plan::plan::{Plan, compile};
 
 use smeltr::plan::topology::SourceMeta;
 

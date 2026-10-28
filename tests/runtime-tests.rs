@@ -16,8 +16,8 @@ use smeltr::io::{
     TopicPartition,
 };
 use smeltr::metrics::{MetricValue, Metrics, MetricsHandle};
+use smeltr::plan::compile::compile;
 use smeltr::plan::config::{Answer, OnException, Payload, PipelineConfig, Step};
-use smeltr::plan::plan::compile;
 use smeltr::plan::topology::{
     DeliverRule, RouteConfig, SourceMeta, SourceMetas, compile_topology, compile_topology_with,
 };

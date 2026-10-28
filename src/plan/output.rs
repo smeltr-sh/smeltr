@@ -11,9 +11,9 @@ use crate::core::error::{ErrorSink, Exception};
 use crate::core::id::SlotId;
 use crate::core::variant;
 use crate::format::record::RecordView;
+use crate::plan::compile::Plan;
 use crate::plan::config::{Answer, OnException};
 use crate::plan::exec::run;
-use crate::plan::plan::Plan;
 
 /// Run `plan` and serialize every row still live, in row order. Dropped rows are absent.
 pub fn run_to_json<'a>(plan: &'a Plan, batch: &mut Batch, ctx: &mut Ctx<'a>) -> Vec<Vec<u8>> {
