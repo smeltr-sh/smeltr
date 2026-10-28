@@ -295,7 +295,7 @@ describe('DemoLeader', () => {
     const leader = new DemoLeader(recording(), 'http://service', null, Date.now);
     const heard: boolean[] = [];
     leader.wake((waking) => heard.push(waking));
-    const proposed = leader.answer('POST', at('/api/onboard/propose'), '{}');
+    const proposed = leader.answer('POST', at('/api/preview/onboard'), '{}');
     await vi.advanceTimersByTimeAsync(3_000);
     expect(asked).toEqual(['http://service/wake', 'http://service/wake']);
     up = true;
@@ -309,7 +309,7 @@ describe('DemoLeader', () => {
   it("says what the service said when it refuses, or that it can't be reached", async () => {
     const leader = new DemoLeader(recording(), 'http://service', null, () => RECORDED);
     const propose = () =>
-      leader.answer('POST', at('/api/onboard/propose'), JSON.stringify({ records: [] }));
+      leader.answer('POST', at('/api/preview/onboard'), JSON.stringify({ records: [] }));
     vi.stubGlobal(
       'fetch',
       async () =>

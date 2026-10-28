@@ -400,7 +400,7 @@ async fn grok_captures(Json(req): Json<GrokCapturesRequest>) -> Json<Envelope<Gr
     Json(captures_of(req))
 }
 
-/// The records of a captured sample, for `/api/onboard/propose`.
+/// The records of a captured sample, for `/api/preview/onboard`.
 #[derive(serde::Deserialize)]
 pub struct OnboardRequest {
     records: Vec<smeltr::io::RecordObject>,
@@ -1006,7 +1006,7 @@ async fn setup_leader(
             "/api/branches",
             get(branch_api::list_branches).post(branch_api::create_branch),
         )
-        .route("/api/sql/statement", post(sql_api::sql_statement))
+        .route("/api/preview/sql", post(sql_api::sql_statement))
         .route("/api/captures", post(capture_api::start_capture))
         .route("/api/captures/:session", get(capture_api::capture_status))
         .route("/api/captures/:session/stop", post(capture_api::stop_capture))
@@ -1967,10 +1967,10 @@ async fn run_leader() {
 
     let app = Router::new()
         .route("/api/areas/:area/preview/pipeline", post(preview))
-        .route("/api/grok-captures", post(grok_captures))
-        .route("/api/onboard/propose", post(onboard_propose))
-        .route("/api/line-breaker", post(line_breaker))
-        .route("/api/format", post(format))
+        .route("/api/preview/grok", post(grok_captures))
+        .route("/api/preview/onboard", post(onboard_propose))
+        .route("/api/preview/line-breaker", post(line_breaker))
+        .route("/api/preview/format", post(format))
         .route("/api/areas/:area/preview/routes", post(route_preview))
         .route("/api/areas/:area/lookups/file", get(config_api::get_lookup_file))
         .route("/api/areas/:area/lookups/mmdb", get(config_api::get_lookup_mmdb))
@@ -2021,7 +2021,7 @@ async fn run_leader() {
                 .put(config_api::put_file)
                 .delete(config_api::delete_file),
         )
-        .route("/api/certificates/describe", post(config_api::describe_certificates))
+        .route("/api/preview/certificate", post(config_api::describe_certificates))
         .route("/api/areas/:area/undo", post(config_api::undo))
         .route("/api/areas/:area/routes", put(config_api::put_routes))
         .route("/api/areas/:area/grok-patterns", put(config_api::put_grok_patterns))

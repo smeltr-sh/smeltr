@@ -503,7 +503,7 @@ struct OnboardBody {
     filed: Option<Vec<serde_json::Value>>,
 }
 
-/// What a captured sample reads as, answered as the leader's `/api/onboard/propose` answers it. A sample past what one
+/// What a captured sample reads as, answered as the leader's `/api/preview/onboard` answers it. A sample past what one
 /// may hold is refused with 413.
 async fn onboard_propose(State(service): State<Service>, Json(body): Json<OnboardBody>) -> axum::response::Response {
     use axum::response::IntoResponse;

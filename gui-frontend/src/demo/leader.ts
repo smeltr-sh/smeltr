@@ -683,10 +683,10 @@ export class DemoLeader {
         };
         return this.saveCapture(capture, name, scope, save);
       }
-      if (path === '/api/grok-captures') return this.ask('/grok-captures', json());
-      if (path === '/api/line-breaker') return this.ask('/line-breaker', json());
-      if (path === '/api/format') return this.ask('/format', json());
-      if (path === '/api/onboard/propose') return this.ask('/onboard/propose', json());
+      if (path === '/api/preview/grok') return this.ask('/grok-captures', json());
+      if (path === '/api/preview/line-breaker') return this.ask('/line-breaker', json());
+      if (path === '/api/preview/format') return this.ask('/format', json());
+      if (path === '/api/preview/onboard') return this.ask('/onboard/propose', json());
       if (path === '/api/captures') return this.startCapture(json());
       const capture = path.match(/^\/api\/captures\/([^/]+)\/(stop|discard)$/);
       if (capture) {

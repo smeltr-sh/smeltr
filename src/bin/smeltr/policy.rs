@@ -70,12 +70,7 @@ pub fn need(method: &Method, path: &str) -> Need {
         (Method::POST, ["captures"])
         | (Method::GET | Method::HEAD, ["captures", _])
         | (Method::POST, ["captures", _, "stop" | "discard"])
-        | (Method::POST, ["grok-captures"])
-        | (Method::POST, ["onboard", "propose"])
-        | (Method::POST, ["line-breaker"])
-        | (Method::POST, ["format"])
-        | (Method::POST, ["certificates", "describe"])
-        | (Method::POST, ["sql", "statement"])
+        | (Method::POST, ["preview", _])
         // Names, versions and where each is used, never a value: what a secret picker offers whoever saves a form.
         | (Method::GET | Method::HEAD, ["secrets"])
         | (Method::GET | Method::HEAD, ["certificates"]) => Need::Somewhere(Level::Editor),
@@ -292,12 +287,12 @@ mod tests {
             (Method::GET, "/api/captures/c1"),
             (Method::POST, "/api/captures/c1/stop"),
             (Method::POST, "/api/captures/c1/discard"),
-            (Method::POST, "/api/grok-captures"),
-            (Method::POST, "/api/onboard/propose"),
-            (Method::POST, "/api/line-breaker"),
-            (Method::POST, "/api/format"),
-            (Method::POST, "/api/certificates/describe"),
-            (Method::POST, "/api/sql/statement"),
+            (Method::POST, "/api/preview/grok"),
+            (Method::POST, "/api/preview/onboard"),
+            (Method::POST, "/api/preview/line-breaker"),
+            (Method::POST, "/api/preview/format"),
+            (Method::POST, "/api/preview/certificate"),
+            (Method::POST, "/api/preview/sql"),
             (Method::GET, "/api/secrets"),
             (Method::GET, "/api/certificates"),
         ] {

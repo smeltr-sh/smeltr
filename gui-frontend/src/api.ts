@@ -469,7 +469,7 @@ export interface SqlStatementsResult {
 
 /** The statements an SQL source runs, built by the leader as a poll builds them. Nothing connects. */
 export function sqlStatement(source: SourceDto): Promise<SqlStatementsResult> {
-  return post('/api/sql/statement', { source }, 'quiet');
+  return post('/api/preview/sql', { source }, 'quiet');
 }
 
 /** Which of OpenTelemetry's signals an OTLP receiver takes, mirroring `plan::topology::Signal`. */
@@ -1535,7 +1535,7 @@ export function putDestinations(
 export function describeCertificates(
   pem: string,
 ): Promise<{ certificates: DescribedCertificate[] } | { error: string }> {
-  return post('/api/certificates/describe', { pem }, 'quiet');
+  return post('/api/preview/certificate', { pem }, 'quiet');
 }
 
 export function putRoutes(routes: RouteDto[], base?: string | null): Promise<MutationResult> {
@@ -2039,7 +2039,7 @@ export function grokCaptures(
   customPatterns: { name: string; pattern: string }[],
   grokPatterns: GrokPatternDto[] = [],
 ): Promise<GrokCaptures> {
-  return post('/api/grok-captures', { patterns, customPatterns, grokPatterns }, 'quiet');
+  return post('/api/preview/grok', { patterns, customPatterns, grokPatterns }, 'quiet');
 }
 
 /** Whether a save would take a line breaker, asked as one is typed. Not `ok` when it would refuse it, with why, in
@@ -2050,7 +2050,7 @@ export interface LineBreakerVerdict {
 }
 
 export function lineBreakerVerdict(pattern: string): Promise<LineBreakerVerdict> {
-  return post('/api/line-breaker', { pattern }, 'quiet');
+  return post('/api/preview/line-breaker', { pattern }, 'quiet');
 }
 
 /** Pipeline code laid out in the style, or `code: null` where it does not parse yet. */
@@ -2061,7 +2061,7 @@ export interface Formatted {
 }
 
 export function formatCode(code: string, kind: 'expr' | 'block'): Promise<Formatted> {
-  return post('/api/format', { code, kind }, 'quiet');
+  return post('/api/preview/format', { code, kind }, 'quiet');
 }
 
 // -- onboarding -----------------------------------------------------------
@@ -2090,7 +2090,7 @@ const PROPOSED_FROM = 200;
 // each one's `__source` goes too.
 export function proposeOnboard(records: SampleRecordDto[]): Promise<OnboardProposal> {
   const filed = records.map((r) => r.__source ?? null);
-  return post('/api/onboard/propose', { records: records.slice(0, PROPOSED_FROM), filed }, 'quiet');
+  return post('/api/preview/onboard', { records: records.slice(0, PROPOSED_FROM), filed }, 'quiet');
 }
 
 // -- tests --------------------------------------------------------------

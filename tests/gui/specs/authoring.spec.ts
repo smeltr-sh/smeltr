@@ -458,7 +458,7 @@ for (const [what, proposal, note] of [
       { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
     ]);
     await fleet.startWorker(leader, api, 'default', 'w1');
-    await admin.route('**/api/onboard/propose', (r) => r.fulfill({ json: proposal }));
+    await admin.route('**/api/preview/onboard', (r) => r.fulfill({ json: proposal }));
     await goto(admin, leader, '#/build/routes');
     await admin.getByRole('button', { name: '+ Add route' }).click();
     await admin
@@ -1398,7 +1398,7 @@ test('A4: a save pressed from a code field saves its layout', async ({ admin, le
     .click();
   const body = admin.locator('textarea').last();
   await body.fill('x=2');
-  await admin.route('**/api/format', async (route) => {
+  await admin.route('**/api/preview/format', async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     await route.continue();
   });
