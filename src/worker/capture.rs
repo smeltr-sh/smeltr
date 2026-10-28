@@ -1264,12 +1264,10 @@ fn drive<S: crate::io::Source + ?Sized>(
 ) {
     let session = &admitted.invitation.session;
     // Only a capture naming its source opens one to drive.
-    let source_id = &admitted
-        .invitation
-        .source
-        .as_ref()
-        .expect("a driven capture names its source")
-        .id;
+    let Some(named) = &admitted.invitation.source else {
+        return captures.fail(admitted, "the capture names no source to read");
+    };
+    let source_id = &named.id;
     let itself = admitted.invitation.reads_source_itself();
     // A sample holds everything its source set, read or not.
     source.keep_headers(true);
