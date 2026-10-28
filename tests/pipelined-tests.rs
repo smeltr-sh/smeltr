@@ -377,17 +377,6 @@ fn a_failed_request_fails_its_batch_and_no_other() {
     assert_eq!(pool.outstanding(), 0);
 }
 
-/// A batch with no request to send completes at once.
-#[test]
-fn a_batch_of_no_requests_completes_at_once() {
-    let mut pool = Pool::new(vec![Part], 1);
-    pool.submit(3, Vec::new()).unwrap();
-    assert_eq!(
-        pool.poll().unwrap().iter().map(|c| c.batch).collect::<Vec<_>>(),
-        vec![3]
-    );
-}
-
 /// A batch whose requests wait for the one sender completes once, after the last: an answer that comes while a later
 /// request waits does not complete it.
 #[test]

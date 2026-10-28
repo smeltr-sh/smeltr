@@ -199,19 +199,12 @@ impl<S: Sender> Pool<S> {
 
     /// Hand `jobs` over as `batch`, each to a sender of its own. The batch completes once, when the last of them is
     /// answered: with every refusal they report, or with the first failure. Blocks while every sender is busy and no
-    /// more may be spawned.
+    /// more may be spawned. `jobs` is never empty: no answer would complete a batch of none.
     pub fn submit(&mut self, batch: BatchId, jobs: Vec<S::Job>) -> Result<(), IoError> {
         if let Some(e) = self.failed.take() {
             return Err(e);
         }
-        if jobs.is_empty() {
-            self.stashed.push(BatchCompletion {
-                batch,
-                rejections: Vec::new(),
-                throttled: false,
-            });
-            return Ok(());
-        }
+        debug_assert!(!jobs.is_empty(), "a batch of no requests is never answered");
         // Counted before any is sent: an answer that comes while a later one waits for a sender must not complete it.
         let count = jobs.len();
         self.batches.entry(batch).or_default().open += count;

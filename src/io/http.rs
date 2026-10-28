@@ -626,7 +626,8 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
             }
         }
         full.extend(groups.into_iter().filter(|g| !g.pending.is_empty()));
-        let Some(pool) = &mut self.pool else {
+        // A batch with nothing to send is done: no answer will come for it.
+        let Some(pool) = self.pool.as_mut().filter(|_| !full.is_empty()) else {
             for group in &mut full {
                 refused.extend(self.post(&rows, group)?);
             }
