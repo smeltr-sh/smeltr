@@ -69,8 +69,7 @@ const CLIENT_ID: &str = "smeltr";
 
 /// Budget for each question a destination asks its broker before its producer is built (`message_ceiling`). A broker
 /// that cannot answer in this time gets librdkafka's defaults and a deployment that goes ahead. Destinations are built
-/// one after another, so an unreachable broker costs a deployment twice this per destination: once for the
-/// topic's metadata, once for its configs.
+/// one after another, so an unreachable broker costs a deployment this much per destination.
 const MESSAGE_CEILING_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// librdkafka's own `batch.size` and `message.max.bytes`. A producer keeps this batch unless its broker takes less.
@@ -1158,8 +1157,14 @@ fn message_ceiling(base: &ClientConfig, topic: &str) -> Option<(usize, &'static 
     let admin: AdminClient<DefaultClientContext> = base.create().ok()?;
     entra::sign_in_unpolled(admin.inner(), base.get("sasl.oauthbearer.config"));
     // Metadata first: a broker that creates topics on demand creates a missing one for it, so a destination that has
-    // sent nothing yet still finds its topic there, and the topic has configs to read.
-    let _ = admin.inner().fetch_metadata(Some(topic), MESSAGE_CEILING_TIMEOUT);
+    // sent nothing yet still finds its topic there. A broker that does not answer this will not answer the next.
+    if admin
+        .inner()
+        .fetch_metadata(Some(topic), MESSAGE_CEILING_TIMEOUT)
+        .is_err()
+    {
+        return None;
+    }
     let wanted = [ResourceSpecifier::Topic(topic)];
     let options = AdminOptions::new().request_timeout(Some(MESSAGE_CEILING_TIMEOUT));
     let runtime = tokio::runtime::Builder::new_current_thread()
