@@ -3833,6 +3833,35 @@ mod tests {
         )
     }
 
+    /// A lookup-table save to a scope that is not one is refused as every save is, before its contents are read:
+    /// no commit, the scope's reason, and nothing moved to carry a change over from.
+    #[test]
+    fn a_lookup_table_save_to_no_scope_is_refused_like_any_save() {
+        let data = a_repo("lookup-no-scope");
+        for (scope, reason) in [("", NO_SCOPE), ("../escaped", "../escaped")] {
+            let edit =
+                serde_json::json!({ "id": "hosts", "type": "csv", "path": "", "delimiter": ";", "contents": "x" });
+            // As `put_lookup_tables` answers it.
+            let refused = match Writing::open_in(&data, "work", None, scope) {
+                Ok(writing) => {
+                    save_lookup_tables(writing, vec![serde_json::from_value(edit).unwrap()], &Actor::system())
+                }
+                Err(e) => Save::refused(e),
+            };
+            assert!(!refused.ok, "{scope:?}");
+            assert!(
+                refused.errors[0].message.contains(reason),
+                "{scope:?}: {}",
+                refused.errors[0].message
+            );
+            assert!(
+                refused.body.commit.is_none() && refused.body.conflict.is_none(),
+                "{scope:?}"
+            );
+        }
+        std::fs::remove_dir_all(&data).ok();
+    }
+
     /// The file and the table that names it land in one commit, and a pipeline that looks the table up is compiled
     /// against the new file, which its parent does not hold.
     #[test]
@@ -4102,6 +4131,35 @@ mod tests {
             id: id.to_string(),
         };
         undo_in(data, "work", None, "shared", req, &Actor::system())
+    }
+
+    /// Undo reads and saves on one `Writing`, so a save that lands on the branch between the two is not
+    /// overwritten: the swap on the commit that was read refuses it and names both commits.
+    #[test]
+    fn a_save_on_a_writing_the_branch_moved_past_is_refused_with_both_commits() {
+        let data = main_with_routes("undo-moved");
+        save_work(&data, Touches::OnlyPipelines, |file| {
+            file.pipelines = vec![pipeline_p(Some("1"))]
+        });
+        let writing = Writing::open_in(&data, "work", None, "shared").unwrap();
+        let read_at = writing.parent.clone();
+        save_work(&data, Touches::OnlyPipelines, |file| {
+            file.pipelines = vec![pipeline_p(Some("2"))]
+        });
+        let moved = git::branch_tip(&git::repo_path(&data), "work").unwrap();
+
+        let refused = writing.save(Touches::OnlyPipelines, "undo", &Actor::system(), |file| {
+            file.pipelines = vec![pipeline_p(None)]
+        });
+        assert!(!refused.ok, "{refused:?}");
+        let conflict = refused.body.conflict.expect("a branch that moved says which commits");
+        assert_eq!((conflict.base, conflict.now), (read_at, Some(moved)));
+        assert_eq!(
+            as_json(&work(&data).pipelines),
+            as_json(&vec![pipeline_p(Some("2"))]),
+            "the save in between stands"
+        );
+        std::fs::remove_dir_all(&data).ok();
     }
 
     fn work(data: &Path) -> FileConfig {
