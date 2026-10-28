@@ -68,6 +68,7 @@
   import { parsePath, pushKey } from './names';
   import { SvelteMap } from 'svelte/reactivity';
   import StepGlyph from './StepGlyph.svelte';
+  import StateMark from './StateMark.svelte';
   import { errorText, grokCaptures, type GrokPatternDto, type LookupTableDto } from './api';
   import { sharedGrokSuggestions } from './grokPatterns';
   import { beginReconcile, endReconcile } from './grokFields';
@@ -464,7 +465,7 @@
 
 {#snippet stepErrorList()}
   {#if listedErrors.length > 0 || stepWarningMessages.length > 0}
-    <div class="step-errors" class:warn={listedErrors.length === 0}>
+    <div class="step-errors callout {listedErrors.length > 0 ? 'error' : 'warn'}">
       {#each listedErrors as message}
         {@render stepMessage(message, false)}
       {/each}
@@ -477,17 +478,9 @@
 
 {#snippet stepMessage(message: string, warn: boolean)}
   <div class="step-error-msg" class:warn>
-    {@render glyph(warn)}
+    <StateMark state={warn ? 'warning' : 'error'} size={15} />
     <span>{message}</span>
   </div>
-{/snippet}
-
-{#snippet glyph(warn: boolean)}
-  <svg class="error-glyph" class:warn viewBox="0 0 24 24" fill="none" aria-hidden="true">
-    <path d="M12 3.5 L22 20.5 H2 Z" fill="currentColor" />
-    <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
-    <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
-  </svg>
 {/snippet}
 
 {#snippet more()}
@@ -720,7 +713,7 @@
         </span>
         <span class="summary">{stepSummary(step)}</span>
         {#if stepErrors.length > 0 || stepWarningMessages.length > 0}
-          {@render glyph(stepErrors.length === 0)}
+          <StateMark state={stepErrors.length === 0 ? 'warning' : 'error'} size={15} />
         {/if}
       </button>
       {#if stepCounts && (stepCounts.dropped > 0 || stepCounts.failed > 0)}
@@ -1677,22 +1670,6 @@
     width: auto;
   }
 
-  /* The same cutout technique the logo itself uses (STYLE_GUIDE.md, Logo):
-     a background-colored shape punched through a filled one, so the mark
-     reads without a second color. In the header it sits on the card's own
-     panel; in the message band below it sits on that band's own tint, which
-     is close enough to the panel color for the cutout to still read clean. */
-  .error-glyph {
-    width: 15px;
-    height: 15px;
-    flex-shrink: 0;
-    color: var(--error);
-  }
-
-  .error-glyph .cutout {
-    fill: var(--field);
-  }
-
   .comment-badge {
     color: var(--comment-ink);
   }
@@ -1822,7 +1799,6 @@
     gap: 0.4rem;
     margin: 0 0.7rem 0.7rem;
     padding: 0.55rem 0.7rem;
-    background: color-mix(in oklab, var(--error) 12%, var(--panel));
     border-radius: var(--radius);
   }
 
@@ -1831,21 +1807,11 @@
     gap: 0.5rem;
     align-items: flex-start;
     font-size: var(--text-note);
-    color: var(--error);
     line-height: 1.45;
   }
 
-  .step-error-msg .error-glyph {
+  .step-error-msg :global(.state-mark) {
     margin-top: 0.1rem;
-  }
-
-  .step-errors.warn {
-    background: color-mix(in oklab, var(--warn) 12%, var(--panel));
-  }
-
-  .step-error-msg.warn,
-  .error-glyph.warn {
-    color: var(--warn);
   }
 
   .body {
