@@ -21,8 +21,8 @@
      paint clipped -- a color nobody chose. */
   --counter: oklch(56% 0.15 250);
   --error: oklch(48% 0.2 25);
-  /* Orange, dark enough to read as text on --bg and --panel. Dark mode
-     keeps gold, which there would sit too near the accent as orange. */
+  /* Orange, dark enough to read as text on --bg and --panel. Like the
+     accent it asks for attention, so it shares the accent's warmth. */
   --warn: oklch(52% 0.13 55);
   --added: oklch(46% 0.13 145);
   --removed: oklch(54% 0.18 25);

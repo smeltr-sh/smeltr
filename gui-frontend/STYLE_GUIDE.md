@@ -89,9 +89,9 @@ one dark (see "Theme"). A palette changes colors only.
 A palette is one base hue and an accent well round the wheel from it,
 as Foundry is steel against molten orange. The base colors the band, and
 in dark it tints the surfaces faintly; light surfaces keep Foundry's
-near-white, so the band is the only large field of color. The accent keeps
-clear of the state hues -- green, yellow and red -- so a primary action
-never reads as a status.
+near-white, so the band is the only large field of color. The accent says
+"look here", so it may share its warmth with `--warn`; it keeps clear of
+green and red, so a primary action never reads as worked or failed.
 
 | Token | Role |
 |---|---|
