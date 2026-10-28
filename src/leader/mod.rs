@@ -1082,21 +1082,23 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let deploy_warnings = warnings::deploy_checked(&findings, &starts);
     let mut out = tokio::task::spawn_blocking(move || {
         warnings::derive(
-            &snapshot,
-            &credentials,
-            &starts,
+            &warnings::Known {
+                snapshot: &snapshot,
+                credentials: &credentials,
+                starts: &starts,
+                heartbeat_interval,
+                series_store: registry.series(),
+                deployed_groups: &deployed,
+                signing: signing.as_ref(),
+                rotating: &rotating,
+                codes: &codes,
+                presenting: &presenting,
+                deployed_certificates: &certificates,
+                held: held.as_ref(),
+                remote: remote_failure.as_ref(),
+                newer: newer_release.as_ref(),
+            },
             now_ms,
-            heartbeat_interval,
-            registry.series(),
-            &deployed,
-            signing.as_ref(),
-            &rotating,
-            &codes,
-            &presenting,
-            &certificates,
-            held.as_ref(),
-            remote_failure.as_ref(),
-            newer_release.as_ref(),
         )
     })
     .await
