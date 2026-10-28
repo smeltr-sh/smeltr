@@ -14,7 +14,7 @@ succeeded. What the API answers never holds a secret's value.
 flowchart LR
   worker[Worker] -- Bearer token --> wgate{the worker's token} --> w["/api/worker/"]
   person[Person: GUI, agent] -- session cookie --> o["/api/, outside /api/worker/"]
-  integration[Integration] -- Bearer key --> o
+  integration[Integration] -- Bearer token --> o
   anyone[Anyone] --> open["open routes"]
   o --> gate{the gate: what the operator route needs}
   gate --> handler[handler]
@@ -36,7 +36,7 @@ envelope, and a failure is a status with a line of text.
 
 **Operator.** Everything else under `/api/`, outside `/api/worker/`. A person
 calls with a session cookie, and an unsafe method also carries a matching
-Origin and the CSRF header. An integration calls with its Bearer key.
+Origin and the CSRF header. An integration calls with its Bearer token.
 
 ## Who may call what
 
