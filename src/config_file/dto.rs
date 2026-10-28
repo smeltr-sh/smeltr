@@ -1592,8 +1592,8 @@ pub enum DestinationKindDto {
         tls: TlsDto,
         #[serde(default, skip_serializing_if = "InFlight::is_default")]
         in_flight: InFlight,
-        #[serde(default, skip_serializing_if = "RequestBytes::is_default")]
-        max_request_bytes: RequestBytes,
+        #[serde(default, skip_serializing_if = "HttpRequestBytes::is_default")]
+        max_request_bytes: HttpRequestBytes,
         /// Unset means the default, or one whole request if that is larger.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         buffer_bytes: Option<BufferBytes>,
@@ -2788,27 +2788,39 @@ impl AcknowledgementDto {
     }
 }
 
-/// Bytes of events one HEC request may carry before the destination sends early. Stated as a size or a number of
-/// bytes, like every byte figure in a bundle.
+/// Bytes of events one request may carry before the destination sends early, `DEFAULT` when unset. Stated as a size
+/// or a number of bytes, like every byte figure in a bundle.
+///
+/// The default is the HEC content limit Splunk Cloud's service details give
+/// (<https://docs.splunk.com/Documentation/SplunkCloud/latest/Service/SplunkCloudservice>).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-pub struct RequestBytes(#[serde(with = "super::bytes")] pub usize);
+pub struct RequestBytes<const DEFAULT: usize = { 1024 * 1024 }>(#[serde(with = "super::bytes")] pub usize);
+
+/// An HTTP destination's request size: one whole batch by default, so a batch is one request. A literal, so a change
+/// to the batch size does not change what a stored destination means.
+pub type HttpRequestBytes = RequestBytes<{ 4 * 1024 * 1024 }>;
+const _: () = assert!(
+    HttpRequestBytes::DEFAULT >= crate::worker::TICK_MAX_BYTES,
+    "a batch is one request"
+);
 
 impl RequestBytes {
-    /// The HEC content limit Splunk Cloud's service details give
-    /// (<https://docs.splunk.com/Documentation/SplunkCloud/latest/Service/SplunkCloudservice>).
-    pub const DEFAULT: usize = 1024 * 1024;
     pub const MIN: usize = 4 * 1024;
     pub const MAX: usize = 100 * 1024 * 1024;
+}
+
+impl<const DEFAULT: usize> RequestBytes<DEFAULT> {
+    pub const DEFAULT: usize = DEFAULT;
 
     pub fn is_default(&self) -> bool {
-        self.0 == Self::DEFAULT
+        self.0 == DEFAULT
     }
 }
 
-impl Default for RequestBytes {
+impl<const DEFAULT: usize> Default for RequestBytes<DEFAULT> {
     fn default() -> Self {
-        RequestBytes(Self::DEFAULT)
+        RequestBytes(DEFAULT)
     }
 }
 

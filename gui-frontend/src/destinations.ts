@@ -49,7 +49,11 @@ export function httpModified(d: HeaderedDestination): boolean {
     tlsSet(d) ||
     (d.type === 'http' && d.zoneUrls !== undefined) ||
     (d.type === 'http' && (d.compression ?? 'none') !== 'none') ||
-    requestDeliveryModified(d, 'maxRequestBytes', LIMITS.maxRequestBytes.default)
+    requestDeliveryModified(
+      d,
+      'maxRequestBytes',
+      (d.type === 'http' ? LIMITS.httpRequestBytes : LIMITS.maxRequestBytes).default,
+    )
   );
 }
 
