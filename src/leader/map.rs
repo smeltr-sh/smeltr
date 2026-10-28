@@ -695,6 +695,7 @@ mod tests {
                 format: Default::default(),
                 field: None,
                 compression: Default::default(),
+                acks: Default::default(),
                 stall_after_secs: Default::default(),
                 buffer_bytes: Default::default(),
                 props: Default::default(),

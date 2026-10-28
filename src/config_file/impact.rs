@@ -672,6 +672,7 @@ mod tests {
                 format: Default::default(),
                 field: None,
                 compression: Default::default(),
+                acks: crate::config_file::dto::AcksDto::All,
                 stall_after_secs: Default::default(),
                 buffer_bytes: Default::default(),
                 props: Default::default(),
