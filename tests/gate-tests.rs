@@ -269,7 +269,7 @@ const OPERATOR_ROUTES: &[&str] = &[
     "/api/areas/shared/tests",
     "/api/branches",
     "/api/branches/work/timeline",
-    "/api/history",
+    "/api/main/history",
     "/api/worker-groups",
     "/api/users",
     "/api/security-events",
@@ -1567,7 +1567,7 @@ fn a_renamed_person_keeps_the_commits_they_wrote() {
         serde_json::json!({ "displayName": "Someone Else" }),
     );
 
-    let (_, history) = leader.get_as(&op.session, "/api/history?limit=5");
+    let (_, history) = leader.get_as(&op.session, "/api/main/history?limit=5");
     let newest = &history["commits"][0];
     assert_eq!(
         newest["author"], "Administrator",
@@ -1582,7 +1582,7 @@ fn a_renamed_person_keeps_the_commits_they_wrote() {
 fn what_the_leader_did_for_itself_names_no_person() {
     let leader = start("attribution-system");
     let op = operator(&leader);
-    let (status, history) = leader.get_as(&op.session, "/api/history?limit=20");
+    let (status, history) = leader.get_as(&op.session, "/api/main/history?limit=20");
     assert_eq!(status, 200, "{history}");
     let seeded = history["commits"]
         .as_array()
@@ -1619,7 +1619,7 @@ fn a_client_cannot_name_the_author() {
     );
     leader.post_as(&op, "/api/branches/work/deploy", serde_json::json!({}));
 
-    let (_, history) = leader.get_as(&op.session, "/api/history?limit=5");
+    let (_, history) = leader.get_as(&op.session, "/api/main/history?limit=5");
     let newest = &history["commits"][0];
     assert_eq!(newest["author"], "Administrator", "{history}");
     assert_ne!(newest["authorId"], "u_someone_else", "{history}");
@@ -1836,7 +1836,7 @@ fn a_deploy_records_the_author_and_the_deployer_separately() {
     let (status, deployed) = leader.post_as(&admin, "/api/branches/work/deploy", serde_json::json!({}));
     assert_eq!(status, 200, "{deployed}");
 
-    let (_, history) = leader.get_as(&admin.session, "/api/history?limit=5");
+    let (_, history) = leader.get_as(&admin.session, "/api/main/history?limit=5");
     let newest = &history["commits"][0];
     assert_eq!(
         newest["author"], "Dana Okafor",
@@ -1860,7 +1860,7 @@ fn deploying_your_own_change_names_you_as_both() {
     let op = operator(&leader);
     deploy_something(&leader, &op);
 
-    let (_, history) = leader.get_as(&op.session, "/api/history?limit=5");
+    let (_, history) = leader.get_as(&op.session, "/api/main/history?limit=5");
     let newest = &history["commits"][0];
     assert_eq!(newest["author"], "Administrator", "{history}");
     assert_eq!(newest["deployer"], "Administrator", "{history}");
@@ -2657,7 +2657,7 @@ fn an_editor_saves_in_their_group_and_does_not_deploy() {
 
     let (status, body) = leader.post_as(&editor, "/api/branches/dana/deploy", serde_json::json!({}));
     assert_eq!(status, 403, "an editor deployed a change: {body}");
-    let (status, body) = leader.post_as(&editor, "/api/deploy", serde_json::json!({}));
+    let (status, body) = leader.post_as(&editor, "/api/main/deploy", serde_json::json!({}));
     assert_eq!(status, 403, "an editor deployed a commit: {body}");
     let (status, body) = leader.get_as(&editor.session, "/api/users");
     assert_eq!(status, 403, "an editor read the roster: {body}");

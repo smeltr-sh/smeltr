@@ -990,7 +990,7 @@ const deploy: Move = {
     }
     await expect(page).not.toHaveURL(/#\/changes\/review/);
     const api = await j.truth();
-    const history: History = await api.get('/api/history');
+    const history: History = await api.get('/api/main/history');
     expect(history.commits[0].subject).toBe(title);
     // A deploy leaves out the samples no test names, and the journey writes no tests: main keeps its own.
     const main = world.deploys[world.deploys.length - 1].config;
@@ -1058,7 +1058,7 @@ const rollBack: Move = {
       .click();
     await expect(page).toHaveURL(/#\/status\?deploying=/);
     const api = await j.truth();
-    const history: History = await api.get('/api/history');
+    const history: History = await api.get('/api/main/history');
     expect(history.held).toBeDefined();
     expect(history.commits.find((c) => c.commit === history.deployed)?.subject).toBe(subject);
     // Until a worker has taken the rollback, it still reports the commit a release returns to, and a capture after
@@ -1102,7 +1102,7 @@ const release: Move = {
       .getByRole('button', { name: 'Release' })
       .click();
     await expect(page).toHaveURL(/#\/status\?deploying=/);
-    const history: History = await (await j.truth()).get('/api/history');
+    const history: History = await (await j.truth()).get('/api/main/history');
     expect(history.held).toBeUndefined();
     expect(history.deployed).toBe(history.commits[0].commit);
     world.held = false;

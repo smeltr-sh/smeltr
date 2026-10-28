@@ -190,13 +190,13 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "GET",
-        path: "/api/diff",
+        path: "/api/main/diff",
         what: "Files and unified diff between two commits. Query: from, to, path.",
         body: "",
     },
     Route {
         method: "GET",
-        path: "/api/history",
+        path: "/api/main/history",
         what: "main's history newest first, with the deployed commit and any hold. Query: limit (default 50, max 500).",
         body: "",
     },
@@ -256,7 +256,7 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "POST",
-        path: "/api/deploy",
+        path: "/api/main/deploy",
         what: "Deploy a commit already in main's history (this is also rollback). No query.",
         body: "{ commit: string, confirm?: boolean (deploy even if a group does not load) }",
     },

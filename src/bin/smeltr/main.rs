@@ -1000,7 +1000,7 @@ async fn setup_leader(
         .route("/api/map/measurements", get(get_map_measurements))
         .route("/api/areas/:area/stats", get(get_stats))
         .route("/api/branches/:name/deploy", post(branch_api::deploy_change))
-        .route("/api/deploy", post(branch_api::deploy_commit))
+        .route("/api/main/deploy", post(branch_api::deploy_commit))
         // Here for `State<AppState>`: the listing says what of each branch the remote holds.
         .route(
             "/api/branches",
@@ -1990,12 +1990,12 @@ async fn run_leader() {
         .route("/api/branches/:name/threads/:id", post(branch_api::resolve_thread))
         .route("/api/branches/:name/reviews", post(branch_api::review_change))
         .route("/api/branches/:name/timeline", get(branch_api::change_timeline))
-        // `/api/branches/:name/deploy` and `/api/deploy` are on `admin_and_cluster` instead: both wait their turn
+        // `/api/branches/:name/deploy` and `/api/main/deploy` are on `admin_and_cluster` instead: both wait their turn
         // with the remote's syncs, which needs `State<AppState>`.
         .route("/api/branches/:name/bring-current", post(branch_api::bring_current))
-        .route("/api/history", get(branch_api::history))
+        .route("/api/main/history", get(branch_api::history))
         .route("/api/branches/:name/diff", get(branch_api::branch_diff))
-        .route("/api/diff", get(branch_api::commit_diff))
+        .route("/api/main/diff", get(branch_api::commit_diff))
         .route("/api/areas/:area/samples", get(config_api::list_samples))
         .route(
             "/api/areas/:area/samples/:id",

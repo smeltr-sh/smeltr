@@ -83,8 +83,7 @@ pub fn need(method: &Method, path: &str) -> Need {
         // Branches and changes. Which areas a change touches is in the branch, so reviewing and deploying one, and
         // reading and running its own tests, is checked again by its handler.
         (Method::GET | Method::HEAD, ["branches"])
-        | (Method::GET | Method::HEAD, ["history"])
-        | (Method::GET | Method::HEAD, ["diff"])
+        | (Method::GET | Method::HEAD, ["main", "history" | "diff"])
         | (Method::GET | Method::HEAD, ["branches", _, "diff"])
         | (Method::GET | Method::HEAD, ["branches", _, "tests"])
         | (Method::GET | Method::HEAD, ["branches", _, "timeline"])
@@ -96,7 +95,7 @@ pub fn need(method: &Method, path: &str) -> Need {
         | (Method::POST, ["branches", _, "test-runs" | "open" | "close" | "bring-current"]) => {
             Need::Somewhere(Level::Editor)
         }
-        (Method::POST, ["branches", _, "reviews" | "deploy"]) | (Method::POST, ["deploy"]) => {
+        (Method::POST, ["branches", _, "reviews" | "deploy"]) | (Method::POST, ["main", "deploy"]) => {
             Need::Somewhere(Level::Deployer)
         }
 
@@ -339,8 +338,8 @@ mod tests {
     fn branches_and_changes() {
         for (method, path) in [
             (Method::GET, "/api/branches"),
-            (Method::GET, "/api/history"),
-            (Method::GET, "/api/diff"),
+            (Method::GET, "/api/main/history"),
+            (Method::GET, "/api/main/diff"),
             (Method::GET, "/api/branches/b/diff"),
             (Method::GET, "/api/branches/b/timeline"),
             (Method::POST, "/api/branches/b/comments"),
@@ -361,7 +360,7 @@ mod tests {
         for (method, path) in [
             (Method::POST, "/api/branches/b/reviews"),
             (Method::POST, "/api/branches/b/deploy"),
-            (Method::POST, "/api/deploy"),
+            (Method::POST, "/api/main/deploy"),
         ] {
             assert_eq!(need(&method, path), Need::Somewhere(Level::Deployer), "{method} {path}");
         }

@@ -937,7 +937,7 @@ fn brought_current(
     }
 }
 
-// -- GET /api/history, POST /api/deploy -----------------------------------
+// -- GET /api/main/history, POST /api/main/deploy -------------------------
 
 #[derive(serde::Deserialize)]
 pub struct HistoryQuery {
@@ -1116,7 +1116,7 @@ fn would_not_load(commit: &str, broken: Vec<(String, String)>) -> Envelope<Branc
     )
 }
 
-// -- GET /api/diff --------------------------------------------------------
+// -- GET /api/main/diff ---------------------------------------------------
 
 /// What landed between two commits. A save refused because the branch moved names both of them, and this is what
 /// the writer holding the only copy of their change reads before deciding which of the two to keep.

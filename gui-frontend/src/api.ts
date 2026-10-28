@@ -4353,7 +4353,7 @@ export function branchDiff(name: string, path?: string): Promise<DiffResult> {
 export function commitDiff(from: string, to: string, path?: string): Promise<DiffResult> {
   const q = new URLSearchParams({ from, to });
   if (path) q.set('path', path);
-  return apiJson(`/api/diff?${q}`);
+  return apiJson(`/api/main/diff?${q}`);
 }
 
 /** A change was opened, closed or retitled. */
@@ -4574,14 +4574,14 @@ export interface HistoryResult {
 
 /** `main`'s history, newest first, with what the fleet runs and any hold. */
 export function history(limit?: number): Promise<HistoryResult> {
-  return apiJson(`/api/history${limit ? `?limit=${limit}` : ''}`);
+  return apiJson(`/api/main/history${limit ? `?limit=${limit}` : ''}`);
 }
 
 /** Deploy a commit already in `main`'s history. A rollback is this and
  * nothing else (W7); deploying `main`'s head releases a hold. One where a
  * group does not load is refused with `doesNotLoad` unless `confirm`. */
 export function deployCommit(commit: string, confirm = false): Promise<BranchMutationResult> {
-  return post('/api/deploy', { commit, confirm }, 'severe');
+  return post('/api/main/deploy', { commit, confirm }, 'severe');
 }
 
 // -- accounts ---------------------------------------------------------------
