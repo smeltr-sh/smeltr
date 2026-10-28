@@ -391,7 +391,8 @@ async fn map(State(service): State<Service>, Json(fleet): Json<Fleet>) -> Json<E
     )
 }
 
-/// One object of a branch: the leader's `/api/connections` question, over the groups that run it.
+/// One object of a branch: the leader's `/api/areas/:area/:section/:id/connections` question, over the groups that
+/// run it.
 #[derive(serde::Deserialize)]
 struct ConnectionsBody {
     #[serde(flatten)]
@@ -400,7 +401,7 @@ struct ConnectionsBody {
     id: String,
 }
 
-/// What a change to one object reaches, as the leader's `/api/connections` answers it.
+/// What a change to one object reaches, as the leader's `/api/areas/:area/:section/:id/connections` answers it.
 async fn connections(
     State(service): State<Service>,
     Json(body): Json<ConnectionsBody>,

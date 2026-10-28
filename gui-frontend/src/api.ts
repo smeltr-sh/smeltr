@@ -1306,8 +1306,7 @@ export function currentBaseCommit(): string | null {
 // so a page that holds what it read is never wrong about which bundle that was.
 
 /** Matches `config_file::SHARED_DIR`. Always exists, which is why it is
- * where a scope that stops existing sends you. Every config call names its
- * scope: the leader refuses one that names none. */
+ * where a scope that stops existing sends you. */
 export const SHARED_SCOPE = 'shared';
 const SCOPE_KEY = 'smeltr-scope';
 
@@ -1360,31 +1359,17 @@ export function leaveScope(name: string, keepBase?: string | null): boolean {
 
 function branched(url: string, name: string = branch): string {
   const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}branch=${encodeURIComponent(name)}&scope=${encodeURIComponent(scope)}`;
-}
-
-/** `branched()` without `scope=` -- for a call whose scope the server derives or does not use at all, so
- * sending the chip's would be inert-but-present, which reads as meaningful when it is not. */
-function branchOnly(url: string, name: string = branch): string {
-  const sep = url.includes('?') ? '&' : '?';
   return `${url}${sep}branch=${encodeURIComponent(name)}`;
 }
 
-/** What a review's test calls need: `onBranch`, the branch under review, and `ownScopes=true` telling
- * the server to derive that branch's own scopes (`test_api::TestScopeQuery`) rather than trust the chip
- * -- the chip is the reviewer's own editing scope, not the change's.
- *
- * `true` spelled out: the field is a `bool`, and serde reads only `true` or `false` there. `1` is a
- * deserialize error, which arrives as an HTTP 400 in place of the test results. */
-function reviewScoped(url: string, onBranch: string): string {
-  const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}branch=${encodeURIComponent(onBranch)}&ownScopes=true`;
+/** `rest` within area `inArea`, the chip's unless named: `/api/areas/<area><rest>`. */
+function inArea(rest: string, area: string = scope): string {
+  return `/api/areas/${encodeURIComponent(area)}${rest}`;
 }
 
 /** What a config call needs beyond its URL and its body. Each field is
  * documented on `configJson`, the only thing that reads one. */
 interface ConfigCall {
-  scoped?: boolean;
   adopt?: boolean;
   base?: string | null;
   /** How a failure is shown (`apiJson`). */
@@ -1397,10 +1382,6 @@ interface ConfigCall {
  * one of them lands the same way a first edit always has.
  * A refused save carries no commit, so the base stays what it was until a
  * read moves it.
- *
- * `scoped` is false for a write the scope chip has nothing to say about --
- * a worker group is not held in one -- so the chip's value is not sent as
- * inert-but-present. Everything else about a config write still applies.
  *
  * `adopt` decides whether this call's commit becomes the shared base, and
  * defaults to true: ordinarily a GET here is the page's own primary read,
@@ -1425,7 +1406,7 @@ interface ConfigCall {
 async function configJson<T extends { commit?: string | null }>(
   url: string,
   init?: RequestInit,
-  { scoped = true, adopt = true, base, weight }: ConfigCall = {},
+  { adopt = true, base, weight }: ConfigCall = {},
 ): Promise<T> {
   const method = init?.method;
   const write = !!method && method !== 'GET';
@@ -1449,18 +1430,14 @@ async function configJson<T extends { commit?: string | null }>(
   }
   const headers = new Headers(init?.headers);
   // The two empty values mean different things, so this cannot take a default
-  // the way `scoped` and `adopt` do: `undefined` is "I did not say", which
+  // the way `adopt` does: `undefined` is "I did not say", which
   // takes the shared base, and `null` is "against no commit", which sends
   // nothing.
   const against = base === undefined ? baseCommit : base;
   if (write && against) {
     headers.set('x-smeltr-base-commit', against);
   }
-  const result = await apiJson<T>(
-    scoped ? branched(url) : branchOnly(url),
-    { ...init, headers },
-    weight,
-  );
+  const result = await apiJson<T>(branched(url), { ...init, headers }, weight);
   if (result.commit && adopt) {
     baseCommit = result.commit;
   }
@@ -1482,7 +1459,7 @@ function putBody(body: unknown): RequestInit {
 }
 
 export function getConfig(): Promise<GetConfigResult> {
-  return configJson('/api/config');
+  return configJson(inArea(''));
 }
 
 /** A save landed on the branch it was aimed at. */
@@ -1493,9 +1470,9 @@ export const SAVED_EVENT = 'smeltr:saved';
  * comparing a branch against `main` in every scope it touched, and none of
  * those reads is where the editor happens to be. */
 export function configAt(onBranch: string, inScope: string, at?: string): Promise<GetConfigResult> {
-  const q = new URLSearchParams({ branch: onBranch, scope: inScope });
+  const q = new URLSearchParams({ branch: onBranch });
   if (at) q.set('at', at);
-  return apiJson(`/api/config?${q}`);
+  return apiJson(`${inArea('', inScope)}?${q}`);
 }
 
 /** `shared/`'s bundle on the current branch, which a group's pages show beside the group's own, since a group
@@ -1524,10 +1501,10 @@ export async function undoChanges(
   what: UndoTarget,
   base: string,
 ): Promise<MutationResult> {
-  const q = new URLSearchParams({ branch: onBranch, scope: inScope });
+  const q = new URLSearchParams({ branch: onBranch });
   // Refused beside the undo that asked.
   const result = await apiJson<MutationResult>(
-    `/api/undo?${q}`,
+    `${inArea('/undo', inScope)}?${q}`,
     {
       method: 'POST',
       headers: { 'x-smeltr-base-commit': base },
@@ -1542,14 +1519,14 @@ export async function undoChanges(
 }
 
 export function putSources(sources: SourceDto[], base?: string | null): Promise<MutationResult> {
-  return configJson('/api/sources', putBody(sources), { base });
+  return configJson(inArea('/sources'), putBody(sources), { base });
 }
 
 export function putDestinations(
   destinations: DestinationDto[],
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson('/api/destinations', putBody(destinations), { base });
+  return configJson(inArea('/destinations'), putBody(destinations), { base });
 }
 
 /** What the leader reads out of a PEM: every certificate in it, or why it is
@@ -1562,7 +1539,7 @@ export function describeCertificates(
 }
 
 export function putRoutes(routes: RouteDto[], base?: string | null): Promise<MutationResult> {
-  return configJson('/api/routes', putBody(routes), { base });
+  return configJson(inArea('/routes'), putBody(routes), { base });
 }
 
 /** The group's manifest. A `null` leaves the built-in answers. Refused in `shared/`: the manifest is a group's own. */
@@ -1572,21 +1549,21 @@ export function putManifest(
   },
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson('/api/manifest', putBody(manifest), { base });
+  return configJson(inArea('/manifest'), putBody(manifest), { base });
 }
 
 export function putGrokPatterns(
   grokPatterns: GrokPatternDto[],
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson('/api/grok-patterns', putBody(grokPatterns), { base });
+  return configJson(inArea('/grok-patterns'), putBody(grokPatterns), { base });
 }
 
 export function putLookupTables(
   lookupTables: LookupTableDto[],
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson('/api/lookup-tables', putBody(lookupTables), { base });
+  return configJson(inArea('/lookups'), putBody(lookupTables), { base });
 }
 
 /** A lookup file upload: one commit on the branch, like every other save. */
@@ -1610,7 +1587,11 @@ export function uploadLookupFile(
   const body = new FormData();
   body.append('file', file);
   const q = delimiter ? `?${new URLSearchParams({ delimiter })}` : '';
-  return configJson(`/api/lookup/upload${q}`, { method: 'POST', body }, { base, weight: 'quiet' });
+  return configJson(
+    inArea(`/lookups/upload${q}`),
+    { method: 'POST', body },
+    { base, weight: 'quiet' },
+  );
 }
 
 /** A CSV lookup file's whole text. */
@@ -1618,7 +1599,7 @@ type LookupFileResult = { ok: boolean; errors: ApiError[]; text?: string; commit
 
 export function getLookupFile(path: string): Promise<LookupFileResult> {
   const q = new URLSearchParams({ path });
-  return configJson(`/api/lookup/file?${q}`, undefined, { adopt: false, weight: 'quiet' });
+  return configJson(inArea(`/lookups/file?${q}`), undefined, { adopt: false, weight: 'quiet' });
 }
 
 /** A CSV lookup file's whole text at commit `at` of `onBranch`, as `configAt` reads a bundle. */
@@ -1628,8 +1609,8 @@ export function lookupFileAt(
   path: string,
   at: string,
 ): Promise<LookupFileResult> {
-  const q = new URLSearchParams({ branch: onBranch, scope: inScope, path, at });
-  return apiJson(`/api/lookup/file?${q}`, undefined, 'quiet');
+  const q = new URLSearchParams({ branch: onBranch, path, at });
+  return apiJson(`${inArea('/lookups/file', inScope)}?${q}`, undefined, 'quiet');
 }
 
 /** An MMDB file's metadata, and with `ip` the record for that address: `null` on a miss. */
@@ -1647,13 +1628,13 @@ export interface LookupMmdbResult {
 
 export function getLookupMmdb(path: string, ip?: string): Promise<LookupMmdbResult> {
   const q = new URLSearchParams(ip ? { path, ip } : { path });
-  return configJson(`/api/lookup/mmdb?${q}`, undefined, { adopt: false, weight: 'quiet' });
+  return configJson(inArea(`/lookups/mmdb?${q}`), undefined, { adopt: false, weight: 'quiet' });
 }
 
 // -- files that do not load --------------------------------------------------
 //
 // A file that does not parse never reaches the section editor that owns it, so it is reached
-// here instead: by its full path in the repository, as raw text. Saving and deleting one are
+// here instead: by its path in its area's bundle, as raw text. Saving and deleting one are
 // writes like any other, on the branch and against its base.
 
 /** One file of a bundle that does not load. */
@@ -1675,8 +1656,7 @@ export interface UnreadableFilesResult {
 /** The files of `inScope`'s bundle that do not load. Not the page's own read, so it does not
  * move the base. */
 export function unreadableFiles(inScope: string = scope): Promise<UnreadableFilesResult> {
-  const q = new URLSearchParams({ scope: inScope });
-  return configJson(`/api/config/unreadable?${q}`, undefined, { scoped: false, adopt: false });
+  return configJson(inArea('/unreadable', inScope), undefined, { adopt: false });
 }
 
 /** `unreadableFiles` at commit `at` of `onBranch`, as `configAt` reads a bundle. */
@@ -1685,8 +1665,8 @@ export function unreadableAt(
   inScope: string,
   at: string,
 ): Promise<UnreadableFilesResult> {
-  const q = new URLSearchParams({ branch: onBranch, scope: inScope, at });
-  return apiJson(`/api/config/unreadable?${q}`);
+  const q = new URLSearchParams({ branch: onBranch, at });
+  return apiJson(`${inArea('/unreadable', inScope)}?${q}`);
 }
 
 export interface ConfigFileResult {
@@ -1697,10 +1677,17 @@ export interface ConfigFileResult {
   commit?: string;
 }
 
-/** One file's raw text, by its full path. The path names its scope, so the chip's is not sent. */
+/** The route of a file by its full path in the repository, as `unreadableFiles` lists it: the area the path
+ * names, and the rest of it within that area's bundle (`policy::area_of_path`). */
+function fileRoute(path: string): string {
+  const [top, ...rest] = path.split('/');
+  const [area, within] = top === 'groups' ? [rest[0] ?? '', rest.slice(1)] : [top, rest];
+  return inArea(`/files/${within.map(encodeURIComponent).join('/')}`, area);
+}
+
+/** One file's raw text, by its full path. The path names its area, so the chip's is not used. */
 export function getConfigFile(path: string): Promise<ConfigFileResult> {
-  const q = new URLSearchParams({ path });
-  return configJson(`/api/config/file?${q}`, undefined, { scoped: false });
+  return configJson(fileRoute(path));
 }
 
 export function putConfigFile(
@@ -1708,21 +1695,19 @@ export function putConfigFile(
   text: string,
   base?: string | null,
 ): Promise<MutationResult> {
-  const q = new URLSearchParams({ path });
-  return configJson(`/api/config/file?${q}`, putBody({ text }), { scoped: false, base });
+  return configJson(fileRoute(path), putBody({ text }), { base });
 }
 
 export function deleteConfigFile(path: string, base?: string | null): Promise<MutationResult> {
-  const q = new URLSearchParams({ path });
-  return configJson(`/api/config/file?${q}`, { method: 'DELETE' }, { scoped: false, base });
+  return configJson(fileRoute(path), { method: 'DELETE' }, { base });
 }
 
 export function listPipelines(): Promise<ListPipelinesResult> {
-  return configJson('/api/pipelines');
+  return configJson(inArea('/pipelines'));
 }
 
 export function getPipeline(id: string): Promise<GetPipelineResult> {
-  return configJson(`/api/pipelines/${encodeURIComponent(id)}`);
+  return configJson(inArea(`/pipelines/${encodeURIComponent(id)}`));
 }
 
 export function putPipeline(
@@ -1730,11 +1715,11 @@ export function putPipeline(
   pipeline: PipelineDto,
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson(`/api/pipelines/${encodeURIComponent(id)}`, putBody(pipeline), { base });
+  return configJson(inArea(`/pipelines/${encodeURIComponent(id)}`), putBody(pipeline), { base });
 }
 
 export function deletePipeline(id: string): Promise<MutationResult> {
-  return configJson(`/api/pipelines/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return configJson(inArea(`/pipelines/${encodeURIComponent(id)}`), { method: 'DELETE' });
 }
 
 // -- samples ----------------------------------------------------------------
@@ -1828,11 +1813,11 @@ export interface GetSampleResult {
 }
 
 export function listSamples(): Promise<ListSamplesResult> {
-  return configJson('/api/samples');
+  return configJson(inArea('/samples'));
 }
 
 export function getSample(id: string): Promise<GetSampleResult> {
-  return configJson(`/api/samples/${encodeURIComponent(id)}`);
+  return configJson(inArea(`/samples/${encodeURIComponent(id)}`));
 }
 
 /** One sample of `inScope` at commit `at` of `onBranch`, read as `configAt` reads a bundle. */
@@ -1842,17 +1827,17 @@ export function sampleAt(
   id: string,
   at: string,
 ): Promise<GetSampleResult> {
-  const q = new URLSearchParams({ branch: onBranch, scope: inScope, at });
-  return apiJson(`/api/samples/${encodeURIComponent(id)}?${q}`);
+  const q = new URLSearchParams({ branch: onBranch, at });
+  return apiJson(`${inArea(`/samples/${encodeURIComponent(id)}`, inScope)}?${q}`);
 }
 
-/** Create or replace: the sample carries its own id. */
+/** Create or replace, by the sample's own id. */
 export function putSample(sample: SampleDto): Promise<MutationResult> {
-  return configJson('/api/samples', putBody(sample));
+  return configJson(inArea(`/samples/${encodeURIComponent(sample.id)}`), putBody(sample));
 }
 
 export function deleteSample(id: string): Promise<MutationResult> {
-  return configJson(`/api/samples/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return configJson(inArea(`/samples/${encodeURIComponent(id)}`), { method: 'DELETE' });
 }
 
 // -- pipeline preview ---------------------------------------------------
@@ -1988,7 +1973,7 @@ export interface DictionaryOut {
 
 export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
   return post(
-    branched('/api/preview'),
+    branched(inArea('/preview/pipeline')),
     {
       config: req.config,
       pipeline: req.pipeline ?? null,
@@ -2284,11 +2269,13 @@ export interface RunTestsResult {
  * another open change's tests without switching the nav's own scope, any more than it switches its
  * branch). */
 export function listTests(onBranch?: string): Promise<ListTestsResult> {
-  return apiJson(onBranch ? reviewScoped('/api/tests', onBranch) : branched('/api/tests'));
+  return apiJson(
+    onBranch ? `/api/branches/${encodeURIComponent(onBranch)}/tests` : branched(inArea('/tests')),
+  );
 }
 
 export function getTest(id: string): Promise<GetTestResult> {
-  return apiJson(branched(`/api/tests/${encodeURIComponent(id)}`));
+  return apiJson(branched(inArea(`/tests/${encodeURIComponent(id)}`)));
 }
 
 /** One test of `inScope` at commit `at` of `onBranch`, read as `configAt` reads a bundle. */
@@ -2298,17 +2285,17 @@ export function testAt(
   id: string,
   at: string,
 ): Promise<GetTestResult> {
-  const q = new URLSearchParams({ branch: onBranch, scope: inScope, at });
-  return apiJson(`/api/tests/${encodeURIComponent(id)}?${q}`);
+  const q = new URLSearchParams({ branch: onBranch, at });
+  return apiJson(`${inArea(`/tests/${encodeURIComponent(id)}`, inScope)}?${q}`);
 }
 
 /** Lock a test, or replace one under the same id. */
 export function putTest(test: TestDto): Promise<MutationResult> {
-  return configJson('/api/tests', putBody(test));
+  return configJson(inArea(`/tests/${encodeURIComponent(test.id)}`), putBody(test));
 }
 
 export function deleteTest(id: string): Promise<MutationResult> {
-  return configJson(`/api/tests/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return configJson(inArea(`/tests/${encodeURIComponent(id)}`), { method: 'DELETE' });
 }
 
 /** Run tests against a branch, other than the one being edited when `onBranch` names one -- a change under
@@ -2318,7 +2305,9 @@ export function runTests(
   opts: { ids?: string[]; touched?: boolean } = {},
   onBranch?: string,
 ): Promise<RunTestsResult> {
-  const url = onBranch ? reviewScoped('/api/tests/run', onBranch) : branched('/api/tests/run');
+  const url = onBranch
+    ? `/api/branches/${encodeURIComponent(onBranch)}/test-runs`
+    : branched(inArea('/test-runs'));
   return post(url, { ids: opts.ids ?? [], touched: opts.touched ?? false }, 'quiet');
 }
 
@@ -2326,7 +2315,7 @@ export function runTests(
 //
 // Where a sample's records would go: which routes match, what each matched
 // pipeline produces, and which destinations the delivery rules choose
-// (`runtime::preview_routes`). Distinct from `/api/preview`, which runs one
+// (`runtime::preview_routes`). Distinct from `preview/pipeline`, which runs one
 // pipeline over a sample and answers rows in, rows out.
 
 /** One document a route produced, and where it would go. */
@@ -2395,7 +2384,7 @@ export function routePreview(
   atMicros?: number,
 ): Promise<RoutePreviewResult> {
   return post(
-    branched('/api/route-preview'),
+    branched(inArea('/preview/routes')),
     { config, sample, at_micros: atMicros ?? null },
     'quiet',
   );
@@ -2795,16 +2784,15 @@ export function saveCapture(
   /** The scope the sample is saved into, when it is not the chip's: the source's own. */
   into?: string,
 ): Promise<SaveCaptureResult & { commit?: string }> {
-  const url = `/api/captures/${encodeURIComponent(session)}/save`;
   return configJson(
-    into ? `${url}?scope=${encodeURIComponent(into)}` : url,
+    inArea('/samples', into),
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, name, source }),
+      body: JSON.stringify({ capture: session, id, name, source }),
     },
     // A capture says what went wrong in its own flow, from start to save.
-    { base, scoped: !into, weight: 'quiet' },
+    { base, weight: 'quiet' },
   );
 }
 
@@ -3028,8 +3016,7 @@ export function getClusterStatus(): Promise<ClusterStatus> {
 // gated by the same operator cookie as everything else under `/api`. A worker
 // group is different: it is a manifest in the config repository (design
 // doc, Control plane), so listing and creating one names the branch,
-// through `branchOnly()`
-// -- never `scope=`, since a group's own id is its scope
+// through `branched()` -- never an area, since a group's own id is its area
 // (`worker_groups_api::create_group_in`) and listing reads the whole tree.
 
 /** What a worker-revoking call answers. */
@@ -3052,7 +3039,7 @@ export interface ListWorkerGroupsResult {
  * roster, the map -- leaves it false, so a read racing the page's own does not silently move the
  * base out from under an edit already in flight. */
 export function listWorkerGroups(asBase = false): Promise<ListWorkerGroupsResult> {
-  return configJson('/api/worker-groups', undefined, { scoped: false, adopt: asBase });
+  return configJson('/api/worker-groups', undefined, { adopt: asBase });
 }
 
 export interface CreateWorkerGroupResult {
@@ -3074,15 +3061,11 @@ export function createWorkerGroup(
   name: string,
   hue?: number,
 ): Promise<CreateWorkerGroupResult> {
-  return configJson(
-    '/api/worker-groups',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, name, ...(hue === undefined ? {} : { hue }) }),
-    },
-    { scoped: false },
-  );
+  return configJson('/api/worker-groups', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, name, ...(hue === undefined ? {} : { hue }) }),
+  });
 }
 
 /** Renames an existing group. A config write on a branch like any other, so
@@ -3098,7 +3081,7 @@ export function updateWorkerGroup(id: string, name: string): Promise<CreateWorke
       body: JSON.stringify({ name }),
     },
     // Refused beside the name being edited.
-    { scoped: false, weight: 'quiet' },
+    { weight: 'quiet' },
   );
 }
 
@@ -3108,13 +3091,7 @@ export function updateWorkerGroup(id: string, name: string): Promise<CreateWorke
  * still running under this id has nothing to run and stops its pipelines
  * until it is moved to another group or shut down. */
 export function deleteWorkerGroup(id: string): Promise<CreateWorkerGroupResult> {
-  return configJson(
-    `/api/worker-groups/${encodeURIComponent(id)}`,
-    { method: 'DELETE' },
-    {
-      scoped: false,
-    },
-  );
+  return configJson(`/api/worker-groups/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export type SetGroupHueResult = { ok: boolean; errors: ApiError[] };
@@ -3695,7 +3672,7 @@ export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
 // The whole fleet's compiled topology, one band per worker group: every source, pipeline and
 // destination a route or delivery rule actually names, marked by the warning catalog. Reads what
 // is committed, not an editor's in-progress buffer -- there is no draft form of a map, and no
-// `scope=` either: the map has its own group filter, below the branch chip, unrelated to the
+// area either: the map has its own group filter, below the branch chip, unrelated to the
 // scope an editor is working in (design doc "One fleet, many groups": "a group is a filter on that view rather than a mode that hides the rest").
 
 export type MapNodeKind = 'source' | 'pipeline' | 'destination';
@@ -3827,7 +3804,7 @@ export type MapResponse = {
   commit?: string;
 };
 
-/** Branch only -- never `scope=`, which names an editor's own bundle and has nothing to do with
+/** Branch only -- never an area, which names an editor's own bundle and has nothing to do with
  * what the fleet runs. */
 export function getMap(): Promise<MapResponse> {
   return apiJson(`/api/map?branch=${encodeURIComponent(branch)}`, undefined, 'quiet');
@@ -4153,14 +4130,8 @@ export function getStats(
   id: string,
   windowMinutes: number,
 ): Promise<StatsResponse> {
-  const q = new URLSearchParams({
-    branch,
-    group,
-    kind,
-    id,
-    windowMinutes: String(windowMinutes),
-  });
-  return apiJson(`/api/stats?${q}`);
+  const q = new URLSearchParams({ branch, kind, id, windowMinutes: String(windowMinutes) });
+  return apiJson(`${inArea('/stats', group)}?${q}`);
 }
 
 // -- pipeline callers -----------------------------------------------------
@@ -4176,7 +4147,7 @@ export type PipelineCallersResponse = {
 };
 
 export function getPipelineCallers(): Promise<PipelineCallersResponse> {
-  return apiJson(branched('/api/pipeline-callers'), undefined, 'quiet');
+  return apiJson(branched(inArea('/pipeline-callers')), undefined, 'quiet');
 }
 
 // -- connections (blast radius, user story A5) ----------------------------
@@ -4206,9 +4177,19 @@ export type ConnectionsResponse = {
   drawnIn: string[];
 };
 
+/** The section of an area's path that holds each kind of object. */
+const SECTION_OF: Record<ConnectionKind, string> = {
+  source: 'sources',
+  route: 'routes',
+  pipeline: 'pipelines',
+  destination: 'destinations',
+  lookupTable: 'lookups',
+  grokPattern: 'grok-patterns',
+};
+
 export function getConnections(kind: ConnectionKind, id: string): Promise<ConnectionsResponse> {
-  const q = new URLSearchParams({ kind, id });
-  return apiJson(branched(`/api/connections?${q}`), undefined, 'quiet');
+  const object = `/${SECTION_OF[kind]}/${encodeURIComponent(id)}/connections`;
+  return apiJson(branched(inArea(object)), undefined, 'quiet');
 }
 
 // -- branches -------------------------------------------------------------

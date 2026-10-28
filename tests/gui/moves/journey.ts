@@ -225,7 +225,7 @@ async function configOn(api: Api, branch: string): Promise<Config> {
   const names = new Map<string, string>();
   const routes: { source: string; pipeline: string; deliver?: { to: string[] }[] }[] = [];
   for (const scope of ['shared', 'default']) {
-    const res = await api.get(`/api/config?branch=${on}&scope=${scope}`);
+    const res = await api.get(`/api/areas/${scope}?branch=${on}`);
     c.sources.push(...res.config.sources.map((s: { id: string }) => s.id));
     c.destinations.push(...res.config.destinations.map((d: { id: string }) => d.id));
     for (const p of res.config.pipelines as {
@@ -241,7 +241,7 @@ async function configOn(api: Api, branch: string): Promise<Config> {
     routes.push(...res.config.routes);
     c.lookups.push(...(res.config.lookupTables ?? []).map((t: { id: string }) => t.id));
     c.grokPatterns.push(...(res.config.grokPatterns ?? []).map((p: { id: string }) => p.id));
-    const samples: { name: string }[] = (await api.get(`/api/samples?branch=${on}&scope=${scope}`))
+    const samples: { name: string }[] = (await api.get(`/api/areas/${scope}/samples?branch=${on}`))
       .samples;
     c.samples.push(...samples.map((s) => s.name));
   }
@@ -584,7 +584,7 @@ const routeStream: Move = {
     const on = encodeURIComponent(world.branch ?? 'main');
     const routes: { source: string; condition?: string }[] = [];
     for (const scope of ['shared', 'default'])
-      routes.push(...(await api.get(`/api/config?branch=${on}&scope=${scope}`)).config.routes);
+      routes.push(...(await api.get(`/api/areas/${scope}?branch=${on}`)).config.routes);
     expect(routes.find((r) => r.source === source)?.condition).toBe(condition);
     return `route ${source}'s stream ${METRICS_STREAM} from the map, its pipeline from a capture as ${sample}`;
   },
@@ -715,7 +715,7 @@ const fillAvro: Move = {
     world.editing.sources.push(id);
     await editingIsSaved(j);
     const on = encodeURIComponent(world.branch!);
-    const res = await (await j.truth()).get(`/api/config?branch=${on}&scope=shared`);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${on}`);
     const saved = res.config.sources.find((s: { id: string }) => s.id === id);
     expect(saved.fields, `${id} declares the file's fields`).toEqual(fields);
     return `add Avro source ${id}, its fields filled from a message${typed ? ', total typed str first' : ''}`;
@@ -907,8 +907,8 @@ const blastRadius: Move = {
     const on = encodeURIComponent(world.branch ?? 'main');
     const reached: string[] = [];
     for (const scope of ['shared', 'default']) {
-      const q = `kind=source&id=${encodeURIComponent(route.source)}&branch=${on}&scope=${scope}`;
-      const res = await api.get(`/api/connections?${q}`);
+      const source = encodeURIComponent(route.source);
+      const res = await api.get(`/api/areas/${scope}/sources/${source}/connections?branch=${on}`);
       reached.push(...res.downstream.map((o: { id: string }) => o.id));
     }
     expect(reached).toContain(to);
@@ -1358,7 +1358,7 @@ const declareFromProduction: Move = {
     const declared: { name: string; type: unknown }[] = [];
     for (const scope of ['shared', 'default']) {
       const res = await truth.get(
-        `/api/config?branch=${encodeURIComponent(world.branch!)}&scope=${scope}`,
+        `/api/areas/${scope}?branch=${encodeURIComponent(world.branch!)}`,
       );
       for (const p of res.config.pipelines as {
         name: string;
@@ -1405,7 +1405,7 @@ const writeInto: Move = {
     const written: string[] = [];
     for (const scope of ['shared', 'default']) {
       const res = await truth.get(
-        `/api/config?branch=${encodeURIComponent(world.branch!)}&scope=${scope}`,
+        `/api/areas/${scope}?branch=${encodeURIComponent(world.branch!)}`,
       );
       for (const p of res.config.pipelines as {
         name: string;
@@ -1497,7 +1497,7 @@ const addLookup: Move = {
     await save(j, unsaved(page));
     world.editing.lookups.push(id);
     await editingIsSaved(j);
-    const res = await (await j.truth()).get(`/api/config?branch=${world.branch}&scope=shared`);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${world.branch}`);
     const table = res.config.lookupTables.find((t: { id: string }) => t.id === id);
     expect(table.rows).toHaveLength(rows);
     return `add lookup table ${id} of ${rows} row(s)`;
@@ -1519,7 +1519,7 @@ const addGrokPattern: Move = {
     await save(j, unsaved(page));
     world.editing.grokPatterns.push(id);
     await editingIsSaved(j);
-    const res = await (await j.truth()).get(`/api/config?branch=${world.branch}&scope=shared`);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${world.branch}`);
     const saved = res.config.grokPatterns.find((p: { id: string }) => p.id === id);
     expect(saved.pattern).toBe(pattern);
     return `add grok pattern ${id}`;
@@ -1583,17 +1583,16 @@ const editSample: Move = {
     const name = rng.pick(world.editing.samples);
     const api = await j.truth();
     // Read where the GUI edits: main until a save names a branch. A capture made in a group's scope is saved there.
-    const on = (scope: string) =>
-      `branch=${encodeURIComponent(world.branch ?? 'main')}&scope=${scope}`;
+    const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
     let scope = 'shared';
     let id: string | undefined;
     for (scope of ['shared', 'default']) {
-      const { samples } = await api.get(`/api/samples?${on(scope)}`);
+      const { samples } = await api.get(`/api/areas/${scope}/samples?${on}`);
       id = samples.find((s: { name: string }) => s.name === name)?.id;
       if (id) break;
     }
     const read = async () =>
-      (await api.get(`/api/samples/${encodeURIComponent(id!)}?${on(scope)}`)).sample
+      (await api.get(`/api/areas/${scope}/samples/${encodeURIComponent(id!)}?${on}`)).sample
         .records as Record<string, unknown>[];
     // Each record by the number the editor gives it, which it keeps while others go.
     let draft = (await read()).map((record, i) => ({ n: i + 1, record }));
@@ -2466,7 +2465,7 @@ async function setFirstValue(j: Journey, branch: string, id: string, value: stri
   await page.getByLabel('row 1 value').fill(value);
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await unsaved(page)();
-  const res = await (await j.truth()).get(`/api/config?branch=${branch}&scope=shared`);
+  const res = await (await j.truth()).get(`/api/areas/shared?branch=${branch}`);
   const table = res.config.lookupTables.find((t: { id: string }) => t.id === id);
   expect(table.rows[0][1], `${id} on ${branch}`).toBe(value);
 }
@@ -2528,7 +2527,7 @@ const bringCurrent: Move = {
     await page.getByLabel('Keep').selectOption(keep);
     await page.getByRole('button', { name: 'Apply' }).click();
     await expect(page.getByText('Current with main', { exact: true })).toBeVisible();
-    const res = await (await j.truth()).get(`/api/config?branch=${mine}&scope=shared`);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${mine}`);
     const table = res.config.lookupTables.find((t: { id: string }) => t.id === id);
     expect(table.rows[0][1]).toBe(keep === 'main' ? `theirs-${n}` : `mine-${n}`);
     await editingIsSaved(j);

@@ -1,6 +1,6 @@
 <!--
-  Routes page: `routes.json`, read through `GET /api/config` and written
-  with `PUT /api/routes`, plus the raw-JSON page. Routes are unordered: each
+  Routes page: `routes.json`, read through `GET /api/areas/:area` and written
+  with `PUT /api/areas/:area/routes`, plus the raw-JSON page. Routes are unordered: each
   sees every row of its source (`plan::topology::route_masks`), so a row two
   routes match runs both.
 

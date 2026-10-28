@@ -261,20 +261,20 @@ const OPERATOR_ROUTES: &[&str] = &[
     "/api/cluster",
     "/api/map",
     "/api/map/measurements",
-    "/api/stats",
-    "/api/config",
-    "/api/pipelines",
-    "/api/sources",
-    "/api/samples",
-    "/api/tests",
+    "/api/areas/shared/stats",
+    "/api/areas/shared",
+    "/api/areas/shared/pipelines",
+    "/api/areas/shared/sources",
+    "/api/areas/shared/samples",
+    "/api/areas/shared/tests",
     "/api/branches",
     "/api/changes",
     "/api/history",
     "/api/worker-groups",
     "/api/users",
     "/api/security-events",
-    "/api/pipeline-callers",
-    "/api/connections?kind=pipeline&id=p1",
+    "/api/areas/shared/pipeline-callers",
+    "/api/areas/shared/pipelines/p1/connections",
     "/api/settings/oidc",
 ];
 
@@ -763,7 +763,7 @@ fn a_connector_names_only_a_certificate_the_list_holds() {
     let receiver = serde_json::json!([{"id": "hook", "type": "httpReceiver", "port": 9443, "certificate": "receiver",
                                               "tokens": {"t": "HOOK_TOKEN"}}]);
 
-    let (_, refused) = leader.put_as(&op, "/api/sources?scope=west&branch=work", receiver.clone());
+    let (_, refused) = leader.put_as(&op, "/api/areas/west/sources?branch=work", receiver.clone());
     assert_eq!(refused["ok"], false, "{refused}");
     assert!(
         refused["errors"][0]["message"]
@@ -776,7 +776,7 @@ fn a_connector_names_only_a_certificate_the_list_holds() {
     let upload = serde_json::json!({"name": "receiver", "certificate": certificate, "privateKey": private_key});
     let (_, listed) = leader.post_as(&op, "/api/certificates", upload);
     assert_eq!(listed["ok"], true, "{listed}");
-    let (_, saved) = leader.put_as(&op, "/api/sources?scope=west&branch=work", receiver);
+    let (_, saved) = leader.put_as(&op, "/api/areas/west/sources?branch=work", receiver);
     assert_eq!(saved["ok"], true, "{saved}");
 }
 
@@ -1007,10 +1007,10 @@ impl FakeModel {
         }
         let input = match asked.contains("write") {
             true => serde_json::json!({
-                "method": "PUT", "path": "/api/pipelines/p1", "query": {"scope": "shared", "branch": "agent-work"},
+                "method": "PUT", "path": "/api/areas/shared/pipelines/p1", "query": {"branch": "agent-work"},
                 "body": {"id": "p1", "name": "p1", "steps": []},
             }),
-            false => serde_json::json!({"method": "GET", "path": "/api/pipelines", "query": {"scope": "shared"}}),
+            false => serde_json::json!({"method": "GET", "path": "/api/areas/shared/pipelines"}),
         };
         serde_json::json!({
             "content": [{"type": "tool_use", "id": "tu_1", "name": "request", "input": input}],
@@ -2624,12 +2624,12 @@ fn a_viewer_reads_their_group_and_saves_nothing() {
     let (leader, _op, provider) = with_west_roles("oidc-viewer");
     let viewer = provider_account(&leader, &provider, &["smeltr-west-view"]);
 
-    let (status, body) = leader.get_as(&viewer.session, "/api/config?scope=west");
+    let (status, body) = leader.get_as(&viewer.session, "/api/areas/west");
     assert_eq!(status, 200, "{body}");
-    let (status, body) = leader.get_as(&viewer.session, "/api/config?scope=east");
+    let (status, body) = leader.get_as(&viewer.session, "/api/areas/east");
     assert_eq!(status, 403, "read a group no role gives: {body}");
 
-    let (status, body) = leader.put_as(&viewer, "/api/sources?scope=west&branch=dana", a_source());
+    let (status, body) = leader.put_as(&viewer, "/api/areas/west/sources?branch=dana", a_source());
     assert_eq!(status, 403, "a viewer saved: {body}");
     let (status, body) = leader.get_as(&viewer.session, "/api/users");
     assert_eq!(status, 403, "a viewer read the roster: {body}");
@@ -2641,10 +2641,10 @@ fn an_editor_saves_in_their_group_and_does_not_deploy() {
     let (leader, _op, provider) = with_west_roles("oidc-editor");
     let editor = provider_account(&leader, &provider, &["smeltr-west-edit"]);
 
-    let (status, body) = leader.put_as(&editor, "/api/sources?scope=west&branch=dana", a_source());
+    let (status, body) = leader.put_as(&editor, "/api/areas/west/sources?branch=dana", a_source());
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["ok"], true, "{body}");
-    let (status, body) = leader.put_as(&editor, "/api/sources?scope=east&branch=dana", a_source());
+    let (status, body) = leader.put_as(&editor, "/api/areas/east/sources?branch=dana", a_source());
     assert_eq!(status, 403, "saved in a group no role gives: {body}");
 
     let (status, body) = leader.post_as(
@@ -2685,16 +2685,16 @@ fn signed_in(leader: &Leader, session: &Session) -> bool {
 fn a_group_change_at_the_provider_reaches_a_signed_in_person() {
     let (leader, _op, provider) = with_west_roles_and("oidc-refresh-groups", &[QUICK_REFRESH]);
     let dana_now = provider_account(&leader, &provider, &["smeltr-west-view"]);
-    assert_eq!(leader.get_as(&dana_now.session, "/api/config?scope=west").0, 200);
+    assert_eq!(leader.get_as(&dana_now.session, "/api/areas/west").0, 200);
 
     provider.becomes(dana(&[]));
     eventually("the viewer role going", || {
-        leader.get_as(&dana_now.session, "/api/config?scope=west").0 == 403
+        leader.get_as(&dana_now.session, "/api/areas/west").0 == 403
     });
     provider.becomes(dana(&["smeltr-west-edit"]));
     eventually("the editor role arriving", || {
         leader
-            .put_as(&dana_now, "/api/sources?scope=west&branch=dana", a_source())
+            .put_as(&dana_now, "/api/areas/west/sources?branch=dana", a_source())
             .0
             == 200
     });
@@ -2748,7 +2748,7 @@ fn an_account_holding_no_role_reaches_no_operator_route() {
         let (status, body) = leader.get_as(&nobody.session, route);
         assert_eq!(status, 403, "{route} answered someone holding nothing: {body}");
     }
-    let (status, body) = leader.put_as(&nobody, "/api/sources?scope=west&branch=dana", a_source());
+    let (status, body) = leader.put_as(&nobody, "/api/areas/west/sources?branch=dana", a_source());
     assert_eq!(status, 403, "{body}");
 }
 

@@ -277,7 +277,7 @@ test('rotating a secret points what uses it at the new version, and deploying it
     value: 'first-value',
   });
   const using = 'use-es-key';
-  await api.put(`/api/destinations?branch=${using}&scope=default`, [
+  await api.put(`/api/areas/default/destinations?branch=${using}`, [
     {
       id: 'es-out',
       type: 'elasticsearch',
@@ -354,11 +354,10 @@ test('a receiver names a certificate from the list, and replacing the certificat
     certificate: fullChain(pki),
     privateKey: pki.privateKey,
   });
-  await api.put('/api/sources?branch=work&scope=shared', [
+  await api.put('/api/areas/shared/sources?branch=work', [
     { id: 'firewalls', type: 'syslogReceiver', port: 6514, allowFrom: ['10.0.0.0/8'] },
   ]);
-  const sources = async () =>
-    (await api.get('/api/config?branch=work&scope=shared')).config.sources;
+  const sources = async () => (await api.get('/api/areas/shared?branch=work')).config.sources;
 
   await goto(admin, leader, '#/build/sources');
   await admin.getByRole('button', { name: /^firewalls\b/ }).click();
@@ -461,7 +460,7 @@ test('the leader issues a certificate for the names given, and a receiver presen
   const leaf = issued!.chain[0];
   expect(Math.floor((leaf.notAfterMillis - leaf.notBeforeMillis) / 86_400_000)).toBe(730);
 
-  await api.put('/api/sources?branch=work&scope=shared', [
+  await api.put('/api/areas/shared/sources?branch=work', [
     { id: 'hook', type: 'httpReceiver', port: 8088, tokens: { ci: 'HOOK_TOKEN' } },
   ]);
   await goto(admin, leader, '#/build/sources');
@@ -583,7 +582,7 @@ test('a person asks their agent, sees what it asked the leader, and deletes the 
   try {
     await agentsOn(api, model);
     model.answer(
-      [request('GET', '/api/pipelines', { scope: 'shared' })],
+      [request('GET', '/api/areas/shared/pipelines')],
       [say('You have **no pipelines** yet.')],
     );
     await admin.reload();
@@ -597,7 +596,7 @@ test('a person asks their agent, sees what it asked the leader, and deletes the 
     await expect(admin.locator('strong', { hasText: 'no pipelines' })).toBeVisible();
     await expect(conversationLink(admin, 'What pipelines do I have')).toBeVisible();
 
-    const call = admin.getByRole('button', { name: /GET \/api\/pipelines\?scope=shared/ });
+    const call = admin.getByRole('button', { name: /GET \/api\/areas\/shared\/pipelines/ });
     await expect(call).toContainText('200');
     await call.click();
     await expect(admin.getByRole('heading', { name: 'Answered' })).toBeVisible();

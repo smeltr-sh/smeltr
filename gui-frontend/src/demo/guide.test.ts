@@ -4,8 +4,7 @@ import { TASKS, sawStatus, type World } from './guide';
 
 const answers = (recorded as { answers: Record<string, { body: unknown }> }).answers;
 const network = (branch: string) =>
-  (answers[`/api/config?branch=${branch}&scope=network`].body as { config: World['config'] })
-    .config;
+  (answers[`/api/areas/network?branch=${branch}`].body as { config: World['config'] }).config;
 
 const fresh = (over: Partial<World> = {}): World => ({
   sawStatus: false,

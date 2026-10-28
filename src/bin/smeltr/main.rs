@@ -44,15 +44,16 @@ use smeltr::leader::preview::{
 use smeltr::leader::sessions;
 
 async fn route_preview(
+    axum::extract::Path(area): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
     Json(req): Json<RoutePreviewRequest>,
 ) -> Json<Envelope<RoutePreview>> {
-    let (branch, scope) = (q.name().to_string(), q.scope().to_string());
+    let branch = q.name().to_string();
     let read = move || {
         Ok::<_, String>(route_preview_on(
             &smeltr::startup_config::leader_data_dir(),
             &branch,
-            &scope,
+            &area,
             req,
         ))
     };
@@ -98,7 +99,7 @@ fn route_preview_on(
 // The whole fleet's compiled topology for a branch, as nodes and edges banded by worker group (design doc "The
 // map"; `smeltr::leader::map` builds it). Unlike preview and route preview (`leader::preview`), this reads the branch's own
 // stored bundle rather than a client-supplied draft: the map is a view of what is committed, not of an editor's
-// in-progress buffer, so it needs only a branch name -- never a `?scope=`, which names the bundle an *editor* is
+// in-progress buffer, so it needs only a branch name -- never an area, which names the bundle an *editor* is
 // working in and has nothing to say about what the fleet runs (`docs/user-stories.md` G2: "a group is a filter on
 // that view rather than a mode that hides the rest"). The gate let in anyone viewing somewhere, so the groups are
 // the ones the caller holds (`map::visible_groups`).
@@ -223,7 +224,7 @@ async fn get_map_measurements(
 //
 // One node's counts, for the map's focus view (`smeltr::leader::stats`). Reads one group's committed bundle rather
 // than every group's, which `/api/map` needs and this does not: the question is about one object, and the group it
-// runs in is part of naming it. The gate never reads `?group=`, so viewer in it is checked here.
+// runs in is part of naming it.
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -231,7 +232,6 @@ struct StatsQuery {
     /// Branch only, the same as the map's: stats are about what the fleet runs, never about an editor's buffer.
     #[serde(flatten)]
     branch: config_api::BranchQuery,
-    group: String,
     kind: smeltr::leader::map::NodeKind,
     id: String,
     #[serde(default = "default_stats_window_minutes")]
@@ -244,23 +244,11 @@ fn default_stats_window_minutes() -> i64 {
 
 async fn get_stats(
     axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
-    axum::Extension(access): axum::Extension<smeltr::leader::access::Access>,
+    axum::extract::Path(group): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<StatsQuery>,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    use smeltr::leader::access::Level;
-    if !access.allows(&q.group, Level::Viewer) {
-        return gate::refuse(
-            axum::http::StatusCode::FORBIDDEN,
-            &format!("this needs {} in {}", Level::Viewer.as_str(), q.group),
-        );
-    }
-    stats_of(state, q).await.into_response()
-}
-
-async fn stats_of(state: smeltr::leader::AppState, q: StatsQuery) -> Json<Envelope<smeltr::leader::stats::Stats>> {
+) -> Json<Envelope<smeltr::leader::stats::Stats>> {
     let branch = q.branch.name().to_string();
-    let (group, kind, id) = (q.group.clone(), q.kind, q.id.clone());
+    let (kind, id) = (q.kind, q.id.clone());
     let window =
         std::time::Duration::from_secs((q.window_minutes.clamp(1, smeltr::leader::MAX_WINDOW_MINUTES) * 60) as u64);
 
@@ -329,28 +317,39 @@ fn group_bundles(
 // What a change to one object reaches, in each group that runs it (user story A5, blast radius): the editor's
 // question before anything changes, answered from the bundles alone (`leader::connections`).
 
-#[derive(serde::Deserialize)]
-struct ConnectionsQuery {
-    kind: config_file::Kind,
-    id: String,
+/// The kind of object a section of an area's path holds: `sources`, `pipelines`, and so on.
+fn kind_of_section(section: &str) -> Option<config_file::Kind> {
+    use config_file::Kind;
+    Some(match section {
+        "sources" => Kind::Source,
+        "routes" => Kind::Route,
+        "pipelines" => Kind::Pipeline,
+        "destinations" => Kind::Destination,
+        "lookups" => Kind::LookupTable,
+        "grok-patterns" => Kind::GrokPattern,
+        _ => return None,
+    })
 }
 
 async fn get_connections(
     axum::Extension(access): axum::Extension<smeltr::leader::access::Access>,
+    axum::extract::Path((area, section, id)): axum::extract::Path<(String, String, String)>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
-    axum::extract::Query(object): axum::extract::Query<ConnectionsQuery>,
 ) -> Json<Envelope<smeltr::leader::connections::ObjectConnections>> {
-    let (branch, scope) = (q.name().to_string(), q.scope().to_string());
+    let Some(kind) = kind_of_section(&section) else {
+        return Json(Envelope::failed_one(format!("an area holds no section {section:?}")));
+    };
+    let branch = q.name().to_string();
     let read = move || -> Result<_, String> {
         let shared = config_api::Reading::open(&branch, config_file::SHARED_DIR)?;
         // A group's own object runs in that group alone; one `shared/` declares, in every group the caller may see.
-        let groups = if scope == config_file::SHARED_DIR {
+        let groups = if area == config_file::SHARED_DIR {
             visible_groups(&shared, &access)?
         } else {
-            vec![scope.clone()]
+            vec![area.clone()]
         };
         let groups = group_bundles(&shared, groups)?;
-        let object = config_file::Object::new(object.kind, &object.id);
+        let object = config_file::Object::new(kind, &id);
         Ok(smeltr::leader::connections::of(&shared.raw(), &groups, &object))
     };
     Json(blocking(read).await.into())
@@ -370,10 +369,11 @@ struct PipelineCallers {
 }
 
 async fn pipeline_callers(
+    axum::extract::Path(area): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
 ) -> Json<Envelope<PipelineCallers>> {
-    let (branch, scope) = (q.name().to_string(), q.scope().to_string());
-    let read = move || Ok::<_, String>(run_pipeline_callers(config_api::Reading::open(&branch, &scope)?.raw()));
+    let branch = q.name().to_string();
+    let read = move || Ok::<_, String>(run_pipeline_callers(config_api::Reading::open(&branch, &area)?.raw()));
     Json(blocking(read).await.unwrap_or_else(Envelope::failed_one))
 }
 
@@ -393,9 +393,9 @@ fn run_pipeline_callers(raw: config_file::RawBundle) -> Envelope<PipelineCallers
 
 /// The captures of a grok pattern, with no sample and no pipeline.
 ///
-/// Deliberately not part of `/api/preview`: that needs a chosen sample and answers nothing once compilation fails, and
-/// both are exactly when an editor most needs the names -- a step whose pattern just gained a capture nothing declares
-/// does not compile, and it is this list that says what to declare.
+/// Deliberately not part of an area's `preview/pipeline`: that needs a chosen sample and answers nothing once
+/// compilation fails, and both are exactly when an editor most needs the names -- a step whose pattern just gained a
+/// capture nothing declares does not compile, and it is this list that says what to declare.
 async fn grok_captures(Json(req): Json<GrokCapturesRequest>) -> Json<Envelope<GrokCaptures>> {
     Json(captures_of(req))
 }
@@ -427,16 +427,17 @@ async fn line_breaker(Json(req): Json<LineBreakerRequest>) -> Json<Envelope> {
 }
 
 async fn preview(
+    axum::extract::Path(area): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
     Json(req): Json<PreviewRequest>,
 ) -> Json<Envelope<Preview>> {
     // Reading the branch spawns git, so it goes off the async executor.
-    let (branch, scope) = (q.name().to_string(), q.scope().to_string());
+    let branch = q.name().to_string();
     let read = move || {
         Ok::<_, String>(preview_on(
             &smeltr::startup_config::leader_data_dir(),
             &branch,
-            &scope,
+            &area,
             req,
         ))
     };
@@ -546,19 +547,20 @@ struct UploadQuery {
 async fn upload_lookup(
     axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
     axum::extract::Extension(actor): axum::extract::Extension<smeltr::leader::store::Actor>,
+    axum::extract::Path(area): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
     axum::extract::Query(upload): axum::extract::Query<UploadQuery>,
     headers: axum::http::HeaderMap,
     mut multipart: Multipart,
 ) -> Json<Envelope<Upload>> {
-    let (branch, scope) = (q.name().to_string(), q.scope().to_string());
+    let branch = q.name().to_string();
     let base = config_api::base_commit(&headers);
     let delimiter = match config_file::to_byte(upload.delimiter.as_deref().unwrap_or(","), "delimiter") {
         Ok(delimiter) => delimiter,
         Err(e) => return Json(Envelope::failed_one(e)),
     };
     // Opened before anything is stored: the store sits inside the repository, which a first save creates.
-    let writing = match blocking(move || config_api::Writing::open(&branch, base.as_deref(), &scope)).await {
+    let writing = match blocking(move || config_api::Writing::open(&branch, base.as_deref(), &area)).await {
         Ok(writing) => writing,
         Err(e) => return Json(Envelope::failed_one(e)),
     };
@@ -996,7 +998,7 @@ async fn setup_leader(
         .route("/api/cluster", get(cluster::cluster_status))
         .route("/api/map", get(get_map))
         .route("/api/map/measurements", get(get_map_measurements))
-        .route("/api/stats", get(get_stats))
+        .route("/api/areas/:area/stats", get(get_stats))
         .route("/api/changes/:branch/deploy", post(branch_api::deploy_change))
         .route("/api/deploy", post(branch_api::deploy_commit))
         // Here for `State<AppState>`: the listing says what of each branch the remote holds.
@@ -1008,7 +1010,6 @@ async fn setup_leader(
         .route("/api/captures", post(capture_api::start_capture))
         .route("/api/captures/:session", get(capture_api::capture_status))
         .route("/api/captures/:session/stop", post(capture_api::stop_capture))
-        .route("/api/captures/:session/save", post(capture_api::save_capture))
         .route("/api/captures/:session/discard", post(capture_api::discard_capture))
         // Not on `app` below with the rest of the worker-groups routes: both need `State<AppState>` -- the listing
         // for `shared`'s hue, the create for a new group's -- the same reason `get_map` is here. `deploy_change`
@@ -1020,13 +1021,16 @@ async fn setup_leader(
         .route("/api/worker-groups/:id/hue", put(worker_groups_api::set_group_hue))
         // Not on `app` below with the rest of the config routes: saving a connector asks the certificate list whether
         // it holds the certificate named.
-        .route("/api/sources", put(config_api::put_sources))
-        .route("/api/destinations", put(config_api::put_destinations))
+        .route("/api/areas/:area/sources", put(config_api::put_sources))
+        .route("/api/areas/:area/destinations", put(config_api::put_destinations))
+        // Not on `app` below with the rest of the samples routes: the capture a sample is made from is held in
+        // `State<AppState>`.
+        .route("/api/areas/:area/samples", post(capture_api::save_capture))
         // Not on `app` below with the rest of the config routes: retention after an upload keeps what the fleet runs,
         // which the registry knows. A lookup file is streamed to disk, so the limit is what a disk takes rather than
         // what memory holds.
         .route(
-            "/api/lookup/upload",
+            "/api/areas/:area/lookups/upload",
             post(upload_lookup).layer(axum::extract::DefaultBodyLimit::max(
                 smeltr::lookup::store::MAX_FILE_BYTES as usize,
             )),
@@ -1962,14 +1966,14 @@ async fn run_leader() {
     }
 
     let app = Router::new()
-        .route("/api/preview", post(preview))
+        .route("/api/areas/:area/preview/pipeline", post(preview))
         .route("/api/grok-captures", post(grok_captures))
         .route("/api/onboard/propose", post(onboard_propose))
         .route("/api/line-breaker", post(line_breaker))
         .route("/api/format", post(format))
-        .route("/api/route-preview", post(route_preview))
-        .route("/api/lookup/file", get(config_api::get_lookup_file))
-        .route("/api/lookup/mmdb", get(config_api::get_lookup_mmdb))
+        .route("/api/areas/:area/preview/routes", post(route_preview))
+        .route("/api/areas/:area/lookups/file", get(config_api::get_lookup_file))
+        .route("/api/areas/:area/lookups/mmdb", get(config_api::get_lookup_mmdb))
         .route("/api/branches/:name", delete(branch_api::delete_branch))
         // GET/POST `/api/worker-groups` and PUT `/api/worker-groups/:id/hue` are on `admin_and_cluster` instead:
         // both need `State<AppState>`, which only that router carries.
@@ -1990,44 +1994,50 @@ async fn run_leader() {
         .route("/api/history", get(branch_api::history))
         .route("/api/branches/:name/diff", get(branch_api::branch_diff))
         .route("/api/diff", get(branch_api::commit_diff))
+        .route("/api/areas/:area/samples", get(config_api::list_samples))
         .route(
-            "/api/samples",
-            get(config_api::list_samples).put(config_api::put_sample),
+            "/api/areas/:area/samples/:id",
+            get(config_api::get_sample)
+                .put(config_api::put_sample)
+                .delete(config_api::delete_sample),
         )
+        .route("/api/areas/:area/tests", get(test_api::list_tests))
         .route(
-            "/api/samples/:id",
-            get(config_api::get_sample).delete(config_api::delete_sample),
+            "/api/areas/:area/tests/:id",
+            get(test_api::get_test)
+                .put(test_api::put_test)
+                .delete(test_api::delete_test),
         )
-        .route("/api/tests", get(test_api::list_tests).put(test_api::put_test))
-        .route("/api/tests/:id", get(test_api::get_test).delete(test_api::delete_test))
-        .route("/api/tests/run", post(test_api::run_tests))
-        .route("/api/config", get(config_api::get_config))
-        .route("/api/config/unreadable", get(config_api::get_unreadable))
+        .route("/api/areas/:area/test-runs", post(test_api::run_tests))
+        .route("/api/branches/:name/tests", get(test_api::list_change_tests))
+        .route("/api/branches/:name/test-runs", post(test_api::run_change_tests))
+        .route("/api/areas/:area", get(config_api::get_config))
+        .route("/api/areas/:area/unreadable", get(config_api::get_unreadable))
         .route(
-            "/api/config/file",
+            "/api/areas/:area/files/*path",
             get(config_api::get_file)
                 .put(config_api::put_file)
                 .delete(config_api::delete_file),
         )
         .route("/api/certificates/describe", post(config_api::describe_certificates))
-        .route("/api/undo", post(config_api::undo))
-        .route("/api/routes", put(config_api::put_routes))
-        .route("/api/grok-patterns", put(config_api::put_grok_patterns))
+        .route("/api/areas/:area/undo", post(config_api::undo))
+        .route("/api/areas/:area/routes", put(config_api::put_routes))
+        .route("/api/areas/:area/grok-patterns", put(config_api::put_grok_patterns))
         // An edited CSV travels whole in this body, so it is as large as the file.
         .route(
-            "/api/lookup-tables",
+            "/api/areas/:area/lookups",
             put(config_api::put_lookup_tables).layer(axum::extract::DefaultBodyLimit::max(256 << 20)),
         )
-        .route("/api/manifest", put(config_api::put_manifest))
-        .route("/api/pipelines", get(config_api::list_pipelines))
+        .route("/api/areas/:area/manifest", put(config_api::put_manifest))
+        .route("/api/areas/:area/pipelines", get(config_api::list_pipelines))
         .route(
-            "/api/pipelines/:id",
+            "/api/areas/:area/pipelines/:id",
             get(config_api::get_pipeline)
                 .put(config_api::put_pipeline)
                 .delete(config_api::delete_pipeline),
         )
-        .route("/api/pipeline-callers", get(pipeline_callers))
-        .route("/api/connections", get(get_connections))
+        .route("/api/areas/:area/pipeline-callers", get(pipeline_callers))
+        .route("/api/areas/:area/:section/:id/connections", get(get_connections))
         .route("/api/docs", get(docs_api::list))
         .route("/api/docs/page", get(docs_api::page));
 
@@ -3550,50 +3560,5 @@ mod tests {
             response.callers.get("enrich-geo"),
             Some(&vec!["audit".to_string(), "clicks".to_string(), "orders".to_string()])
         );
-    }
-    /// The gate never reads `?group=`, so a viewer of one group asking for another's stats is refused here, before
-    /// anything is read.
-    #[tokio::test]
-    async fn stats_for_a_group_the_caller_does_not_hold_is_refused() {
-        use std::sync::Arc;
-
-        use smeltr::leader::access::{Access, Level};
-
-        let key = std::env::temp_dir().join(format!("smeltr-main-stats-{}.key", std::process::id()));
-        let state = smeltr::leader::AppState {
-            store: Arc::new(
-                smeltr::leader::sqlite_store::SqliteStore::open(std::path::Path::new(":memory:"), &key).unwrap(),
-            ),
-            registry: Arc::new(smeltr::leader::registry::Registry::default()),
-            captures: Arc::new(smeltr::leader::capture::Captures::default()),
-            data_dir: std::env::temp_dir(),
-            entitlements: Arc::new(smeltr::leader::Entitlements::default()),
-            verify_limiter: Arc::new(smeltr::leader::VerifyLimiter::default()),
-            expiries: Default::default(),
-            throughput: Default::default(),
-            deploy_checks: Default::default(),
-            origin_hosts: Vec::new(),
-            remote: Default::default(),
-            updates: Default::default(),
-            directives: Default::default(),
-        };
-        let query: super::StatsQuery =
-            serde_json::from_value(serde_json::json!({"group": "search", "kind": "source", "id": "orders"})).unwrap();
-        let payments = Access::Areas(std::collections::BTreeMap::from([(
-            "payments".to_string(),
-            Level::Viewer,
-        )]));
-
-        let response = super::get_stats(
-            axum::extract::State(state),
-            axum::Extension(payments),
-            axum::extract::Query(query),
-        )
-        .await;
-
-        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(body["error"], "this needs viewer in search");
     }
 }

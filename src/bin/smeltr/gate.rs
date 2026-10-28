@@ -289,7 +289,7 @@ pub async fn require_principal(
         );
     }
 
-    let need = policy::need(&method, &path, req.uri().query());
+    let need = policy::need(&method, &path);
     if !need.met_by(&access) {
         return refuse(StatusCode::FORBIDDEN, &need.refusal());
     }
@@ -639,8 +639,8 @@ mod tests {
 
         fn router(auth: Auth) -> Router {
             Router::new()
-                .route("/api/config", get(reached))
-                .route("/api/sources", put(reached))
+                .route("/api/areas/:area", get(reached))
+                .route("/api/areas/:area/sources", put(reached))
                 .route("/api/users", get(reached))
                 .route_layer(axum::middleware::from_fn_with_state(auth, require_principal))
         }
@@ -710,14 +710,14 @@ mod tests {
             let auth = auth(store);
             let at = serve(auth.clone()).await;
 
-            let (status, body) = ask(at, &auth, &viewer, "GET", "/api/config?scope=payments").await;
+            let (status, body) = ask(at, &auth, &viewer, "GET", "/api/areas/payments").await;
             assert_eq!((status, body.as_str()), (200, "reached"));
 
-            let (status, body) = ask(at, &auth, &viewer, "PUT", "/api/sources?scope=payments").await;
+            let (status, body) = ask(at, &auth, &viewer, "PUT", "/api/areas/payments/sources").await;
             assert_eq!(status, 403, "{body}");
             assert!(body.contains("this needs editor in payments"), "{body}");
 
-            let (status, body) = ask(at, &auth, &viewer, "GET", "/api/config?scope=search").await;
+            let (status, body) = ask(at, &auth, &viewer, "GET", "/api/areas/search").await;
             assert_eq!(status, 403, "{body}");
             assert!(body.contains("this needs viewer in search"), "{body}");
 
@@ -735,7 +735,7 @@ mod tests {
             let auth = auth(store);
             let at = serve(auth.clone()).await;
 
-            for target in ["/api/config", "/api/config?scope=payments"] {
+            for target in ["/api/areas/payments", "/api/areas/shared"] {
                 let (status, body) = ask(at, &auth, &nobody, "GET", target).await;
                 assert_eq!(status, 403, "{target}: {body}");
             }
@@ -761,7 +761,7 @@ mod tests {
                 ask(at, &auth, &person, "GET", "/api/users").await,
                 (200, "reached".to_string())
             );
-            assert_eq!(ask(at, &auth, &person, "PUT", "/api/sources?scope=search").await.0, 200);
+            assert_eq!(ask(at, &auth, &person, "PUT", "/api/areas/search/sources").await.0, 200);
         }
 
         fn payments_deployer() -> Role {
@@ -785,16 +785,13 @@ mod tests {
             let agent = serve_by_agent(auth.clone()).await;
 
             assert_eq!(
-                ask(direct, &auth, &person, "PUT", "/api/sources?scope=payments")
+                ask(direct, &auth, &person, "PUT", "/api/areas/payments/sources")
                     .await
                     .0,
                 200
             );
-            assert_eq!(
-                ask(agent, &auth, &person, "GET", "/api/config?scope=payments").await.0,
-                200
-            );
-            let (status, body) = ask(agent, &auth, &person, "PUT", "/api/sources?scope=payments").await;
+            assert_eq!(ask(agent, &auth, &person, "GET", "/api/areas/payments").await.0, 200);
+            let (status, body) = ask(agent, &auth, &person, "PUT", "/api/areas/payments/sources").await;
             assert_eq!(status, 403, "{body}");
             assert!(body.contains("this needs editor in payments"), "{body}");
 
@@ -811,11 +808,11 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(
-                ask(agent, &auth, &person, "PUT", "/api/sources?scope=payments").await.0,
+                ask(agent, &auth, &person, "PUT", "/api/areas/payments/sources").await.0,
                 200
             );
             assert_eq!(
-                ask(agent, &auth, &person, "GET", "/api/config?scope=search").await.0,
+                ask(agent, &auth, &person, "GET", "/api/areas/search").await.0,
                 403,
                 "agent permissions never reach past their person"
             );
@@ -837,10 +834,7 @@ mod tests {
             let agent = serve_by_agent(auth.clone()).await;
 
             assert_eq!(ask(agent, &auth, &person, "GET", "/api/users").await.0, 403);
-            assert_eq!(
-                ask(agent, &auth, &person, "GET", "/api/config?scope=search").await.0,
-                200
-            );
+            assert_eq!(ask(agent, &auth, &person, "GET", "/api/areas/search").await.0, 200);
             let event = accounts::event_for(&Actor::system(), "agent-permissions-put", &person.id, "ok");
             store
                 .put_agent_permissions(&person.id, &AgentPermissions::Everything, &event)

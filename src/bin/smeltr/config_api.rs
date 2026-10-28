@@ -41,41 +41,27 @@ pub const UNNAMED_BRANCH: &str = git::MAIN_BRANCH;
 /// scripted caller both behave, and both skip the staleness check.
 const BASE_COMMIT_HEADER: &str = "x-smeltr-base-commit";
 
-/// What a config or test request that names no scope is answered.
-pub const NO_SCOPE: &str = "no scope named: add scope=shared or scope=<group id>";
-
 #[derive(serde::Deserialize, Default)]
 pub struct BranchQuery {
     branch: Option<String>,
-    scope: Option<String>,
 }
 
 impl BranchQuery {
     pub fn name(&self) -> &str {
         self.branch.as_deref().unwrap_or(UNNAMED_BRANCH)
     }
-
-    /// The scope this request names, unparsed. Absent reads as empty, which names no scope the same as `?scope=`
-    /// does, and [`Scope::parse`] refuses both: a caller that forgot the scope must not land in `shared/`, the
-    /// bundle every group draws on. `Reading::open`/`Writing::open` are the one place this becomes a path.
-    pub fn scope(&self) -> &str {
-        self.scope.as_deref().unwrap_or_default()
-    }
 }
 
 /// Which bundle a request names: the one every group draws on, or one group's own subtree (design doc, Control
-/// plane). The
-/// single point a `?scope=` becomes a path, so an id `git::group_subtree` would refuse can never reach one.
+/// plane). The single point the area in a request's path becomes a path in the repository, so an id
+/// `git::group_subtree` would refuse can never reach one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Scope(String);
 
 impl Scope {
-    /// `raw` as a `?scope=` names it: `"shared"`, or a group id. Refuses an empty one, which names no scope, and
-    /// whatever `git::group_subtree` would, with the same message.
+    /// `raw` as a request's path names the area: `"shared"`, or a group id. Refuses whatever `git::group_subtree`
+    /// would, with the same message.
     fn parse(raw: &str) -> Result<Scope, String> {
-        if raw.is_empty() {
-            return Err(NO_SCOPE.to_string());
-        }
         if raw == smeltr::config_file::SHARED_DIR {
             return Ok(Scope(smeltr::config_file::SHARED_DIR.to_string()));
         }
@@ -936,7 +922,7 @@ fn refuse_worse(
     ))
 }
 
-// -- GET /api/config ------------------------------------------------------
+// -- GET /api/areas/:area -------------------------------------------------
 
 #[derive(Default, serde::Serialize)]
 pub struct Config {
@@ -967,23 +953,23 @@ pub struct ConfigQuery {
 }
 
 impl ConfigQuery {
-    /// The scope at `at`, or at the branch's tip where none is named.
-    pub(crate) fn open_in(&self, data_dir: &Path) -> Result<Reading, String> {
-        let (branch, scope) = (self.branch.name(), self.branch.scope());
+    /// `area` at `at`, or at the branch's tip where none is named.
+    pub(crate) fn open_in(&self, data_dir: &Path, area: &str) -> Result<Reading, String> {
+        let branch = self.branch.name();
         match &self.at {
-            Some(at) => Reading::open_commit_in(data_dir, branch, scope, at),
-            None => Reading::open_in(data_dir, branch, scope),
+            Some(at) => Reading::open_commit_in(data_dir, branch, area, at),
+            None => Reading::open_in(data_dir, branch, area),
         }
     }
 }
 
-pub async fn get_config(Query(q): Query<ConfigQuery>) -> Json<Envelope<Config>> {
-    let read = blocking(move || Ok::<_, ApiError>(config_in(&leader_data_dir(), &q))).await;
+pub async fn get_config(AxPath(area): AxPath<String>, Query(q): Query<ConfigQuery>) -> Json<Envelope<Config>> {
+    let read = blocking(move || Ok::<_, ApiError>(config_in(&leader_data_dir(), &area, &q))).await;
     Json(read.unwrap_or_else(Envelope::failed_one))
 }
 
-fn config_in(data_dir: &Path, q: &ConfigQuery) -> Envelope<Config> {
-    let reading = match q.open_in(data_dir) {
+fn config_in(data_dir: &Path, area: &str, q: &ConfigQuery) -> Envelope<Config> {
+    let reading = match q.open_in(data_dir, area) {
         Ok(reading) => reading,
         Err(e) => return Envelope::failed_one(e),
     };
@@ -1010,6 +996,7 @@ pub(crate) async fn blocking_save(f: impl FnOnce() -> Envelope<Save> + Send + 's
 pub async fn put_sources(
     State(state): State<smeltr::leader::AppState>,
     Extension(actor): Extension<Actor>,
+    AxPath(area): AxPath<String>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(sources): Json<Vec<SourceDto>>,
@@ -1020,12 +1007,12 @@ pub async fn put_sources(
     if let Some(refused) = refuse_unlisted_certificates(&state, named).await {
         return refused;
     }
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
+    let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         save_on_branch(
             &branch,
             base,
-            &scope,
+            &area,
             Touches::Sources,
             "edit sources".into(),
             &actor,
@@ -1038,6 +1025,7 @@ pub async fn put_sources(
 pub async fn put_destinations(
     State(state): State<smeltr::leader::AppState>,
     Extension(actor): Extension<Actor>,
+    AxPath(area): AxPath<String>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(destinations): Json<Vec<DestinationDto>>,
@@ -1048,12 +1036,12 @@ pub async fn put_destinations(
     if let Some(refused) = refuse_unlisted_certificates(&state, named).await {
         return refused;
     }
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
+    let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         save_on_branch(
             &branch,
             base,
-            &scope,
+            &area,
             Touches::Destinations,
             "edit destinations".into(),
             &actor,
@@ -1132,16 +1120,17 @@ pub async fn describe_certificates(Json(req): Json<DescribeRequest>) -> Json<Des
 
 pub async fn put_routes(
     Extension(actor): Extension<Actor>,
+    AxPath(area): AxPath<String>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(routes): Json<Vec<RouteDto>>,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
+    let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         save_on_branch(
             &branch,
             base,
-            &scope,
+            &area,
             Touches::Routes,
             "edit routes".into(),
             &actor,
@@ -1153,16 +1142,17 @@ pub async fn put_routes(
 
 pub async fn put_grok_patterns(
     Extension(actor): Extension<Actor>,
+    AxPath(area): AxPath<String>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(patterns): Json<Vec<config_file::GrokPatternDto>>,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
+    let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         save_on_branch(
             &branch,
             base,
-            &scope,
+            &area,
             Touches::GrokPatterns,
             "edit grokPatterns".into(),
             &actor,
@@ -1190,12 +1180,13 @@ impl ManifestBody {
 /// every group draws on `shared/` and each answers for its own rows.
 pub async fn put_manifest(
     Extension(actor): Extension<Actor>,
+    AxPath(area): AxPath<String>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(body): Json<ManifestBody>,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    if scope == config_file::SHARED_DIR {
+    let (branch, base) = (q.name().to_string(), base_commit(&headers));
+    if area == config_file::SHARED_DIR {
         return Json(Envelope::failed_one(
             "shared/ has no manifest: each group answers for its own rows",
         ));
@@ -1204,7 +1195,7 @@ pub async fn put_manifest(
         save_on_branch(
             &branch,
             base,
-            &scope,
+            &area,
             Touches::OnlyManifest,
             "edit manifest".into(),
             &actor,
@@ -1225,12 +1216,13 @@ pub struct LookupTableEdit {
 
 pub async fn put_lookup_tables(
     Extension(actor): Extension<Actor>,
+    AxPath(area): AxPath<String>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(tables): Json<Vec<LookupTableEdit>>,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    blocking_save(move || save_lookup_tables_in(&leader_data_dir(), &branch, base, &scope, tables, &actor)).await
+    let (branch, base) = (q.name().to_string(), base_commit(&headers));
+    blocking_save(move || save_lookup_tables_in(&leader_data_dir(), &branch, base, &area, tables, &actor)).await
 }
 
 fn save_lookup_tables_in(
@@ -1406,32 +1398,36 @@ pub struct LookupFileQuery {
 
 /// Runs `read` off the executor, since it spawns git, and answers `{ok: true, ...its fields}` or `{ok: false, error}`.
 async fn lookup_read(
+    area: String,
     q: LookupFileQuery,
-    read: fn(&Path, &LookupFileQuery) -> Result<serde_json::Value, String>,
+    read: fn(&Path, &str, &LookupFileQuery) -> Result<serde_json::Value, String>,
 ) -> Json<Envelope<serde_json::Value>> {
-    Json(blocking(move || read(&leader_data_dir(), &q)).await.into())
+    Json(blocking(move || read(&leader_data_dir(), &area, &q)).await.into())
 }
 
 /// A CSV lookup file's text, for the editor to page, search and change, and the commit it was read at.
-pub async fn get_lookup_file(Query(q): Query<LookupFileQuery>) -> Json<Envelope<serde_json::Value>> {
-    lookup_read(q, lookup_text_in).await
+pub async fn get_lookup_file(
+    AxPath(area): AxPath<String>,
+    Query(q): Query<LookupFileQuery>,
+) -> Json<Envelope<serde_json::Value>> {
+    lookup_read(area, q, lookup_text_in).await
 }
 
-fn lookup_text_in(data_dir: &Path, q: &LookupFileQuery) -> Result<serde_json::Value, String> {
-    let (file, commit) = read_lookup_file_in(data_dir, q)?;
+fn lookup_text_in(data_dir: &Path, area: &str, q: &LookupFileQuery) -> Result<serde_json::Value, String> {
+    let (file, commit) = read_lookup_file_in(data_dir, area, q)?;
     let text = String::from_utf8(file.map().map_err(|e| e.to_string())?.to_vec())
         .map_err(|e| format!("`{}` is not UTF-8 text, so it cannot be edited as a table: {e}", q.path))?;
     Ok(serde_json::json!({ "text": text, "commit": commit }))
 }
 
 /// A lookup file at the branch's current commit or at `at`, and that commit. Only a path in `lookups/` is read.
-fn read_lookup_file_in(data_dir: &Path, q: &LookupFileQuery) -> Result<(LookupFile, String), String> {
+fn read_lookup_file_in(data_dir: &Path, area: &str, q: &LookupFileQuery) -> Result<(LookupFile, String), String> {
     let path = q.path.as_str();
     config_file::refuse_outside_lookups(path)?;
-    let (branch, scope) = (q.branch.name(), q.branch.scope());
+    let branch = q.branch.name();
     let reading = match &q.at {
-        Some(at) => Reading::open_commit_in(data_dir, branch, scope, at)?,
-        None => Reading::open_in(data_dir, branch, scope)?,
+        Some(at) => Reading::open_commit_in(data_dir, branch, area, at)?,
+        None => Reading::open_in(data_dir, branch, area)?,
     };
     let at = reading.at().lookup(path).map_err(|e| e.to_string())?;
     Ok((
@@ -1445,8 +1441,11 @@ fn read_lookup_file_in(data_dir: &Path, q: &LookupFileQuery) -> Result<(LookupFi
 
 /// What an MMDB file says about itself, and the record for `ip` when one is named: null when no network holds it.
 /// The file is read-only here.
-pub async fn get_lookup_mmdb(Query(q): Query<LookupFileQuery>) -> Json<Envelope<serde_json::Value>> {
-    lookup_read(q, mmdb_info_in).await
+pub async fn get_lookup_mmdb(
+    AxPath(area): AxPath<String>,
+    Query(q): Query<LookupFileQuery>,
+) -> Json<Envelope<serde_json::Value>> {
+    lookup_read(area, q, mmdb_info_in).await
 }
 
 /// Network counts by the stored file's hash. A count is a walk of the whole trie, so each file is walked once per
@@ -1454,11 +1453,11 @@ pub async fn get_lookup_mmdb(Query(q): Query<LookupFileQuery>) -> Json<Envelope<
 static NETWORK_COUNTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
     std::sync::LazyLock::new(Default::default);
 
-fn mmdb_info_in(data_dir: &Path, q: &LookupFileQuery) -> Result<serde_json::Value, String> {
+fn mmdb_info_in(data_dir: &Path, area: &str, q: &LookupFileQuery) -> Result<serde_json::Value, String> {
     let ip: Option<std::net::IpAddr> = (q.ip.as_deref())
         .map(|ip| ip.trim().parse().map_err(|_| format!("{ip:?} is not an IP address")))
         .transpose()?;
-    let (file, _) = read_lookup_file_in(data_dir, q)?;
+    let (file, _) = read_lookup_file_in(data_dir, area, q)?;
     let oid = file
         .pointer()
         .map_err(|e| e.to_string())?
@@ -1500,9 +1499,9 @@ pub struct Pipelines {
     commit: Option<String>,
 }
 
-pub async fn list_pipelines(Query(q): Query<BranchQuery>) -> Json<Envelope<Pipelines>> {
-    let (branch, scope) = (q.name().to_string(), q.scope().to_string());
-    let reading = match blocking(move || open_for_read(&branch, &scope)).await {
+pub async fn list_pipelines(AxPath(area): AxPath<String>, Query(q): Query<BranchQuery>) -> Json<Envelope<Pipelines>> {
+    let branch = q.name().to_string();
+    let reading = match blocking(move || open_for_read(&branch, &area)).await {
         Ok(reading) => reading,
         Err(e) => return Json(Envelope::failed_one(e)),
     };
@@ -1526,11 +1525,11 @@ pub struct Pipeline {
 }
 
 pub async fn get_pipeline(
-    AxPath(id): AxPath<String>,
+    AxPath((area, id)): AxPath<(String, String)>,
     Query(q): Query<BranchQuery>,
 ) -> (StatusCode, Json<Envelope<Pipeline>>) {
-    let (branch, scope) = (q.name().to_string(), q.scope().to_string());
-    let reading = match blocking(move || open_for_read(&branch, &scope)).await {
+    let branch = q.name().to_string();
+    let reading = match blocking(move || open_for_read(&branch, &area)).await {
         Ok(reading) => reading,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(Envelope::failed_one(e)));
@@ -1565,16 +1564,16 @@ pub async fn get_pipeline(
 /// Create-or-replace by the stable `:id`. Display names may repeat or change; the path owns the identity.
 pub async fn put_pipeline(
     Extension(actor): Extension<Actor>,
-    AxPath(id): AxPath<String>,
+    AxPath((area, id)): AxPath<(String, String)>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(pipeline): Json<PipelineDto>,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
+    let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         // The History page shows this; a person knows a pipeline by its name, not its id.
         let message = format!("edit pipeline {}", pipeline.name);
-        save_on_branch(&branch, base, &scope, Touches::OnlyPipelines, message, &actor, |file| {
+        save_on_branch(&branch, base, &area, Touches::OnlyPipelines, message, &actor, |file| {
             replace_pipeline(file, &id, pipeline)
         })
     })
@@ -1592,14 +1591,14 @@ fn replace_pipeline(file: &mut FileConfig, id: &str, mut pipeline: PipelineDto) 
 
 pub async fn delete_pipeline(
     Extension(actor): Extension<Actor>,
-    AxPath(id): AxPath<String>,
+    AxPath((area, id)): AxPath<(String, String)>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
+    let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         // The history names what was deleted, and a pipeline's id is not shown to its author.
-        let name = open_for_read(&branch, &scope)
+        let name = open_for_read(&branch, &area)
             .ok()
             .and_then(|r| {
                 r.raw()
@@ -1611,14 +1610,14 @@ pub async fn delete_pipeline(
             })
             .unwrap_or_else(|| id.clone());
         let message = format!("delete pipeline {name}");
-        save_on_branch(&branch, base, &scope, Touches::OnlyPipelines, message, &actor, |file| {
+        save_on_branch(&branch, base, &area, Touches::OnlyPipelines, message, &actor, |file| {
             file.pipelines.retain(|p| p.id != id);
         })
     })
     .await
 }
 
-// -- POST /api/undo ---------------------------------------------------------
+// -- POST /api/areas/:area/undo ---------------------------------------------
 
 /// A section an object is undone in, as the editor names it.
 #[derive(Clone, Copy, serde::Deserialize)]
@@ -1673,12 +1672,13 @@ pub enum UndoRequest {
 /// the branch.
 pub async fn undo(
     Extension(actor): Extension<Actor>,
+    AxPath(area): AxPath<String>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(req): Json<UndoRequest>,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    blocking_save(move || undo_in(&leader_data_dir(), &branch, base, &scope, req, &actor)).await
+    let (branch, base) = (q.name().to_string(), base_commit(&headers));
+    blocking_save(move || undo_in(&leader_data_dir(), &branch, base, &area, req, &actor)).await
 }
 
 /// `now` with the object `id` as `was` holds it, after the object it followed there, or removed when `was` has
@@ -1955,10 +1955,10 @@ fn fill_written(reading: &Reading, samples: &mut [config_file::SampleSummary]) -
     Ok(())
 }
 
-pub async fn list_samples(Query(q): Query<BranchQuery>) -> Json<Envelope<Samples>> {
-    let (branch, scope) = (q.name().to_string(), q.scope().to_string());
+pub async fn list_samples(AxPath(area): AxPath<String>, Query(q): Query<BranchQuery>) -> Json<Envelope<Samples>> {
+    let branch = q.name().to_string();
     let read = blocking(move || {
-        let reading = open_for_read(&branch, &scope)?;
+        let reading = open_for_read(&branch, &area)?;
         let (mut samples, unreadable) = config_file::list_samples(&mut reading.files());
         fill_written(&reading, &mut samples)?;
         Ok::<_, ApiError>((samples, unreadable, reading.commit))
@@ -1980,9 +1980,12 @@ pub async fn list_samples(Query(q): Query<BranchQuery>) -> Json<Envelope<Samples
 }
 
 /// A sample at the branch's tip, or at the commit `at` names.
-pub async fn get_sample(AxPath(id): AxPath<String>, Query(q): Query<ConfigQuery>) -> Json<Envelope<Sample>> {
+pub async fn get_sample(
+    AxPath((area, id)): AxPath<(String, String)>,
+    Query(q): Query<ConfigQuery>,
+) -> Json<Envelope<Sample>> {
     let read = blocking(move || {
-        let reading = q.open_in(&leader_data_dir())?;
+        let reading = q.open_in(&leader_data_dir(), &area)?;
         let sample = config_file::read_sample(&mut reading.files(), &id).map_err(|e| ApiError::new(e.to_string()))?;
         Ok::<_, ApiError>((sample, reading.commit))
     })
@@ -2005,23 +2008,25 @@ pub async fn get_sample(AxPath(id): AxPath<String>, Query(q): Query<ConfigQuery>
     }
 }
 
-/// The sample carries its own id, so one call both creates and replaces.
+/// Create-or-replace by the `:id` in the path, which is the sample's id whatever the body says.
 pub async fn put_sample(
     Extension(actor): Extension<Actor>,
+    AxPath((area, id)): AxPath<(String, String)>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
-    Json(sample): Json<config_file::SampleDto>,
+    Json(mut sample): Json<config_file::SampleDto>,
 ) -> Json<Envelope<Save>> {
+    sample.id = id;
     if let Err(message) = config_file::refuse_sample_size(sample.records.len()) {
         return Json(Envelope::failed_one(message));
     }
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
+    let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         let message = format!("save sample {}", sample.name);
         write_sample_file(
             &branch,
             base,
-            &scope,
+            &area,
             &sample.id,
             Some(config_file::sample_bytes(&sample)),
             &message,
@@ -2034,14 +2039,14 @@ pub async fn put_sample(
 /// Removing it from the branch. The blob stays reachable in history, which is what makes a rollback restore it.
 pub async fn delete_sample(
     Extension(actor): Extension<Actor>,
-    AxPath(id): AxPath<String>,
+    AxPath((area, id)): AxPath<(String, String)>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
+    let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         let message = format!("delete sample {id}");
-        write_sample_file(&branch, base, &scope, &id, None, &message, &actor)
+        write_sample_file(&branch, base, &area, &id, None, &message, &actor)
     })
     .await
 }
@@ -2170,7 +2175,7 @@ fn write_one_file(
     }
 }
 
-// -- /api/config/unreadable, /api/config/file --------------------------------
+// -- /api/areas/:area/unreadable, /api/areas/:area/files/*path -------------
 //
 // A file the lenient read could not parse has no page to edit it on, so it is edited as text. Only a file the read
 // names is reachable here, which keeps these routes from opening any other file in the repository.
@@ -2244,28 +2249,15 @@ fn unreadable_of(reading: Reading) -> Result<(Vec<UnreadableFile>, String), ApiE
 }
 
 /// What does not load at the branch's tip, or at the commit `at` names.
-pub async fn get_unreadable(Query(q): Query<ConfigQuery>) -> Json<Envelope<Unreadable>> {
+pub async fn get_unreadable(AxPath(area): AxPath<String>, Query(q): Query<ConfigQuery>) -> Json<Envelope<Unreadable>> {
     let read = move || {
-        let (files, commit) = unreadable_of(q.open_in(&leader_data_dir())?)?;
+        let (files, commit) = unreadable_of(q.open_in(&leader_data_dir(), &area)?)?;
         Ok::<_, ApiError>(Unreadable {
             files,
             commit: Some(commit),
         })
     };
     Json(blocking(read).await.into())
-}
-
-#[derive(serde::Deserialize)]
-pub struct FileQuery {
-    branch: Option<String>,
-    /// The file's path in the repository, as `/api/config/unreadable` lists it.
-    path: String,
-}
-
-impl FileQuery {
-    fn branch(&self) -> &str {
-        self.branch.as_deref().unwrap_or(UNNAMED_BRANCH)
-    }
 }
 
 #[derive(serde::Deserialize)]
@@ -2281,20 +2273,6 @@ pub struct File {
     /// The commit `text` was read at, which the write sends back. Absent when the read failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     commit: Option<String>,
-}
-
-/// `path` as the scope it is in and its path within that scope's bundle.
-fn scope_of_file(path: &str) -> Result<(String, String), String> {
-    let within = |rest: &str| (!rest.is_empty()).then(|| rest.to_string());
-    let found = if let Some(rest) = path.strip_prefix(&format!("{}/", config_file::SHARED_DIR)) {
-        within(rest).map(|rest| (config_file::SHARED_DIR.to_string(), rest))
-    } else if let Some(rest) = path.strip_prefix(&format!("{}/", config_file::GROUPS_DIR)) {
-        rest.split_once('/')
-            .and_then(|(group, rest)| within(rest).map(|rest| (group.to_string(), rest)))
-    } else {
-        None
-    };
-    found.ok_or_else(|| format!("{path} is in no bundle: a path starts shared/ or groups/<id>/"))
 }
 
 /// Whether `within` is a file of `files` that does not load.
@@ -2322,21 +2300,24 @@ fn refuse_unlisted(files: &mut dyn config_file::FileSet, within: &str, path: &st
     ))
 }
 
-/// `path`'s text, and the commit it was read at.
-fn read_listed_file(data_dir: &Path, branch: &str, path: &str) -> Result<(String, String), String> {
-    let (scope, within) = scope_of_file(path)?;
-    let reading = Reading::open_in(data_dir, branch, &scope)?;
-    refuse_unlisted(&mut reading.files(), &within, path, branch)?;
-    match config_file::FileSet::read(&mut reading.files(), &within) {
+/// The text of `within`, a path in `area`'s bundle, and the commit it was read at.
+fn read_listed_file(data_dir: &Path, branch: &str, area: &str, within: &str) -> Result<(String, String), String> {
+    let reading = Reading::open_in(data_dir, branch, area)?;
+    let path = &format!("{}/{within}", reading.prefix);
+    refuse_unlisted(&mut reading.files(), within, path, branch)?;
+    match config_file::FileSet::read(&mut reading.files(), within) {
         Ok(Some(bytes)) => Ok((String::from_utf8_lossy(&bytes).into_owned(), reading.commit)),
         Ok(None) => Err(format!("{path} is not on {branch}")),
         Err(e) => Err(format!("{path}: {e}")),
     }
 }
 
-pub async fn get_file(Query(q): Query<FileQuery>) -> Json<Envelope<File>> {
-    let path = q.path.clone();
-    let read = blocking(move || read_listed_file(&leader_data_dir(), q.branch(), &q.path)).await;
+pub async fn get_file(
+    AxPath((area, within)): AxPath<(String, String)>,
+    Query(q): Query<BranchQuery>,
+) -> Json<Envelope<File>> {
+    let path = within.clone();
+    let read = blocking(move || read_listed_file(&leader_data_dir(), q.name(), &area, &within)).await;
     let (errors, text, commit) = match read {
         Ok((text, commit)) => (vec![], text, Some(commit)),
         Err(e) => (vec![ApiError::new(e)], String::new(), None),
@@ -2346,50 +2327,50 @@ pub async fn get_file(Query(q): Query<FileQuery>) -> Json<Envelope<File>> {
 
 pub async fn put_file(
     Extension(actor): Extension<Actor>,
-    Query(q): Query<FileQuery>,
+    AxPath((area, within)): AxPath<(String, String)>,
+    Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(body): Json<FileBody>,
 ) -> Json<Envelope<Save>> {
     let base = base_commit(&headers);
     blocking_save(move || {
         let content = Some(body.text.into_bytes());
-        write_listed_file(&leader_data_dir(), q.branch(), base, &q.path, content, &actor)
+        write_listed_file(&leader_data_dir(), q.name(), base, &area, &within, content, &actor)
     })
     .await
 }
 
 pub async fn delete_file(
     Extension(actor): Extension<Actor>,
-    Query(q): Query<FileQuery>,
+    AxPath((area, within)): AxPath<(String, String)>,
+    Query(q): Query<BranchQuery>,
     headers: HeaderMap,
 ) -> Json<Envelope<Save>> {
     let base = base_commit(&headers);
-    blocking_save(move || write_listed_file(&leader_data_dir(), q.branch(), base, &q.path, None, &actor)).await
+    blocking_save(move || write_listed_file(&leader_data_dir(), q.name(), base, &area, &within, None, &actor)).await
 }
 
-/// One commit setting `path` to `content`, or removing it when that is `None`, if the branch's read lists it as a
-/// file that does not load.
+/// One commit setting `within`, a path in `area`'s bundle, to `content`, or removing it when that is `None`, if the
+/// branch's read lists it as a file that does not load.
 fn write_listed_file(
     data_dir: &Path,
     branch: &str,
     base: Option<String>,
-    path: &str,
+    area: &str,
+    within: &str,
     content: Option<Vec<u8>>,
     author: &Actor,
 ) -> Envelope<Save> {
-    let (scope, within) = match scope_of_file(path) {
-        Ok(found) => found,
-        Err(e) => return Envelope::failed_one(e),
-    };
-    let writing = match Writing::open_in(data_dir, branch, base.as_deref(), &scope) {
+    let writing = match Writing::open_in(data_dir, branch, base.as_deref(), area) {
         Ok(writing) => writing,
         Err(e) => return Save::refused(e),
     };
-    if let Err(e) = refuse_unlisted(&mut writing.files(), &within, path, branch) {
+    let path = &format!("{}/{within}", writing.prefix);
+    if let Err(e) = refuse_unlisted(&mut writing.files(), within, path, branch) {
         return Envelope::failed_one(e);
     }
     if content.is_none()
-        && let Err(e) = refuse_removing_manifest(&writing, &within, path)
+        && let Err(e) = refuse_removing_manifest(&writing, within, path)
     {
         return Envelope::failed_one(e);
     }
@@ -2397,7 +2378,10 @@ fn write_listed_file(
         Some(_) => format!("edit {path}"),
         None => format!("delete {path}"),
     };
-    let edits = vec![git::FileEdit { path: within, content }];
+    let edits = vec![git::FileEdit {
+        path: within.to_string(),
+        content,
+    }];
     if let Err(response) = refuse_worse_read(&writing, &edits) {
         return response;
     }
@@ -2625,9 +2609,8 @@ mod tests {
         let writing = Writing::open_in(&data, "work", None, "west").unwrap();
         writing.commit(vec![fix], "fix", &Actor::system()).unwrap();
         let at = |commit: Option<&str>| -> Vec<String> {
-            let q: ConfigQuery =
-                serde_json::from_value(serde_json::json!({ "branch": "work", "scope": "west", "at": commit })).unwrap();
-            unreadable_of(q.open_in(&data).unwrap())
+            let q: ConfigQuery = serde_json::from_value(serde_json::json!({ "branch": "work", "at": commit })).unwrap();
+            unreadable_of(q.open_in(&data, "west").unwrap())
                 .unwrap()
                 .0
                 .into_iter()
@@ -2697,8 +2680,8 @@ mod tests {
     #[test]
     fn a_listed_file_is_read_and_written_as_text_and_leaves_the_list_once_it_loads() {
         let data = a_repo_with_files_that_do_not_load("unreadable-edit");
-        let path = "groups/west/pipelines/x.json";
-        let (text, commit) = read_listed_file(&data, "work", path).unwrap();
+        let (path, within) = ("groups/west/pipelines/x.json", "pipelines/x.json");
+        let (text, commit) = read_listed_file(&data, "work", "west", within).unwrap();
         assert_eq!(text, "{ broken");
 
         let fixed = serde_json::to_string(&PipelineDto {
@@ -2712,7 +2695,8 @@ mod tests {
             &data,
             "work",
             stale,
-            path,
+            "west",
+            within,
             Some(fixed.clone().into_bytes()),
             &Actor::system(),
         );
@@ -2721,7 +2705,8 @@ mod tests {
             &data,
             "work",
             Some(commit),
-            path,
+            "west",
+            within,
             Some(fixed.into_bytes()),
             &Actor::system(),
         );
@@ -2730,7 +2715,7 @@ mod tests {
         let still: Vec<String> = listed(&data, "west").into_iter().map(|(p, _)| p).collect();
         assert!(!still.iter().any(|p| p == path), "{still:?}");
         assert!(
-            read_listed_file(&data, "work", path).is_err(),
+            read_listed_file(&data, "work", "west", within).is_err(),
             "it loads now, so it is not listed"
         );
         std::fs::remove_dir_all(&data).ok();
@@ -2749,8 +2734,14 @@ mod tests {
         writing.commit(vec![old], "seed", &Actor::system()).unwrap();
 
         assert!(listed(&data, "west").contains(&(path.to_string(), true)));
-        assert!(read_listed_file(&data, "work", path).unwrap().0.contains(r#"["x"]"#));
-        let response = write_listed_file(&data, "work", None, path, None, &Actor::system());
+        let within = "samples/old.json";
+        assert!(
+            read_listed_file(&data, "work", "west", within)
+                .unwrap()
+                .0
+                .contains(r#"["x"]"#)
+        );
+        let response = write_listed_file(&data, "work", None, "west", within, None, &Actor::system());
         assert!(response.ok, "deleted: {response:?}");
         assert!(!listed(&data, "west").iter().any(|(p, _)| p == path));
         std::fs::remove_dir_all(&data).ok();
@@ -2761,7 +2752,7 @@ mod tests {
     #[test]
     fn a_listed_file_other_than_a_group_s_manifest_can_be_deleted() {
         let data = a_repo_with_files_that_do_not_load("unreadable-delete");
-        let response = write_listed_file(&data, "work", None, "shared/system.json", None, &Actor::system());
+        let response = write_listed_file(&data, "work", None, "shared", "system.json", None, &Actor::system());
         assert!(response.ok, "deleted: {response:?}");
         assert_eq!(
             listed(&data, "shared"),
@@ -2769,7 +2760,7 @@ mod tests {
             "shared/ has no manifest left to fail"
         );
 
-        let response = write_listed_file(&data, "work", None, "groups/west/system.json", None, &Actor::system());
+        let response = write_listed_file(&data, "work", None, "west", "system.json", None, &Actor::system());
         assert!(!response.ok, "a group's manifest is what makes it a group");
         assert!(
             listed(&data, "west")
@@ -2783,16 +2774,16 @@ mod tests {
     #[test]
     fn a_file_that_loads_is_neither_read_nor_written_nor_deleted_as_text() {
         let data = a_repo_with_files_that_do_not_load("unreadable-unlisted");
-        for path in [
-            "groups/west/sources.json",
-            "groups/west/../west/pipelines/x.json",
-            "groups/west",
-            "README.md",
+        for (area, within) in [
+            ("west", "sources.json"),
+            ("west", "../west/pipelines/x.json"),
+            ("west", ""),
+            ("..", "README.md"),
         ] {
-            assert!(read_listed_file(&data, "work", path).is_err(), "{path} read");
+            assert!(read_listed_file(&data, "work", area, within).is_err(), "{within} read");
             for content in [Some(b"[]".to_vec()), None] {
-                let response = write_listed_file(&data, "work", None, path, content, &Actor::system());
-                assert!(!response.ok, "{path} written: {response:?}");
+                let response = write_listed_file(&data, "work", None, area, within, content, &Actor::system());
+                assert!(!response.ok, "{within} written: {response:?}");
             }
         }
         let reading = Reading::open_in(&data, "work", "west").unwrap();
@@ -3378,7 +3369,7 @@ mod tests {
         };
         let manifest = br#"{"version":1}"#.to_vec();
 
-        // `?scope=` names a group by its id; `shared` is the subtree every group draws on.
+        // An area is a group's id, or `shared`, the subtree every group draws on.
         for (first, second) in [("west", "shared"), ("shared", "west")] {
             let data = a_repo(&format!("merge-{first}-first"));
 
@@ -3800,34 +3791,9 @@ mod tests {
     #[test]
     fn a_write_that_names_no_branch_is_refused() {
         let data = a_repo("unnamed-branch");
-        let unnamed = BranchQuery {
-            scope: Some(config_file::SHARED_DIR.to_string()),
-            ..BranchQuery::default()
-        };
+        let unnamed = BranchQuery::default();
         assert_eq!(unnamed.name(), git::MAIN_BRANCH);
-        assert!(Writing::open_in(&data, unnamed.name(), None, unnamed.scope()).is_err());
-        std::fs::remove_dir_all(&data).ok();
-    }
-
-    /// A request that names no scope reads and writes nothing, rather than landing in `shared/`, the bundle every
-    /// group draws on. `?scope=` with nothing after it names none either.
-    #[test]
-    fn a_request_that_names_no_scope_is_refused() {
-        let data = a_repo("unnamed-scope");
-        for (branch, scope) in [(Some("work"), None), (Some("work"), Some("")), (None, None)] {
-            let q = BranchQuery {
-                branch: branch.map(str::to_string),
-                scope: scope.map(str::to_string),
-            };
-            assert_eq!(
-                Reading::open_in(&data, q.name(), q.scope()).err().as_deref(),
-                Some(NO_SCOPE)
-            );
-            let refused = Writing::open_in(&data, q.name(), None, q.scope())
-                .err()
-                .map(|r| r.message);
-            assert_eq!(refused.as_deref(), Some(NO_SCOPE));
-        }
+        assert!(Writing::open_in(&data, unnamed.name(), None, config_file::SHARED_DIR).is_err());
         std::fs::remove_dir_all(&data).ok();
     }
 
@@ -3837,7 +3803,6 @@ mod tests {
             // Where `a_repo_holding` seeds its files.
             branch: BranchQuery {
                 branch: Some("work".to_string()),
-                scope: Some(config_file::SHARED_DIR.to_string()),
             },
             path,
             ip,
@@ -3861,8 +3826,11 @@ mod tests {
             at: at.map(str::to_string),
             ..query("lookups/a.csv", None)
         };
-        lookup_text_in(&data, &work(None)).expect_err("gone at the tip");
-        assert_eq!(lookup_text_in(&data, &work(Some(&held))).unwrap()["text"], "ip,host\n");
+        lookup_text_in(&data, config_file::SHARED_DIR, &work(None)).expect_err("gone at the tip");
+        assert_eq!(
+            lookup_text_in(&data, config_file::SHARED_DIR, &work(Some(&held))).unwrap()["text"],
+            "ip,host\n"
+        );
         std::fs::remove_dir_all(&data).ok();
     }
 
@@ -3873,11 +3841,11 @@ mod tests {
             &[("lookups/a.csv", b"ip,host\n"), ("lookups/b.bin", b"\xff")],
         );
         assert_eq!(
-            lookup_text_in(&data, &query("lookups/a.csv", None)).unwrap()["text"],
+            lookup_text_in(&data, config_file::SHARED_DIR, &query("lookups/a.csv", None)).unwrap()["text"],
             "ip,host\n"
         );
         for refused in ["system.json", "lookups/../system.json", "/etc/passwd", "lookups/b.bin"] {
-            lookup_text_in(&data, &query(refused, None)).expect_err(refused);
+            lookup_text_in(&data, config_file::SHARED_DIR, &query(refused, None)).expect_err(refused);
         }
         std::fs::remove_dir_all(&data).ok();
     }
@@ -3891,7 +3859,7 @@ mod tests {
                 include_bytes!("../../lookup/test-data/test-city.mmdb"),
             )],
         );
-        let info = |ip| mmdb_info_in(&data, &query("lookups/city.mmdb", ip));
+        let info = |ip| mmdb_info_in(&data, config_file::SHARED_DIR, &query("lookups/city.mmdb", ip));
         let started = std::time::Instant::now();
         let all = info(None).unwrap();
         eprintln!("walked {} networks in {:?}", all["networks"], started.elapsed());
@@ -4464,11 +4432,10 @@ mod tests {
         let q = ConfigQuery {
             branch: BranchQuery {
                 branch: Some(branch.to_string()),
-                scope: Some(config_file::SHARED_DIR.to_string()),
             },
             at: at.map(str::to_string),
         };
-        config_in(data, &q)
+        config_in(data, config_file::SHARED_DIR, &q)
     }
 
     /// A read at a commit is the scope as that commit holds it, for any commit of the branch or of `main`.

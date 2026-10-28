@@ -13,7 +13,7 @@ export const PIPELINE = 'edited';
 /** Pipelines arranged beside it for a Call step to inline. Each can be called once: a second call repeats its
  * step ids, which the leader refuses. */
 export const CALLEES = ['callee-a', 'callee-b'];
-export const ON = '?branch=work&scope=shared';
+export const ON = '?branch=work';
 /** The sample the editor previews on, arranged beside the pipeline: a record for each `_raw` a condition can name. */
 export const SAMPLE = 'rows';
 export const RAWS = ['1', '2', '3'];
@@ -460,7 +460,7 @@ export async function savedSteps(api: Api): Promise<StepModel[]> {
         };
     }
   };
-  const res = await api.get(`/api/pipelines/${PIPELINE}${ON}`);
+  const res = await api.get(`/api/areas/shared/pipelines/${PIPELINE}${ON}`);
   return (res.pipeline.steps as Dto[]).map(of);
 }
 

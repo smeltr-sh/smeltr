@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-const ON = '?branch=work&scope=shared';
+const ON = '?branch=work';
 
 /** Captures three records in the open capture dialog and saves them as the sample `name`. */
 async function captureThree(page: Page, name: string) {
@@ -33,7 +33,7 @@ test('A1: a sample that does not load is listed on the Samples page and can be d
   api,
   leader,
 }) => {
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/old${ON}`, {
     id: 'old',
     name: 'old',
     records: [{ a: 1 }],
@@ -129,7 +129,9 @@ test("A1: a capture from smeltr's own metrics source, read by a worker, is saved
   api,
   fleet,
 }) => {
-  await api.put(`/api/sources${ON}`, [{ id: 'own-metrics', type: 'metrics', bucketSeconds: 1 }]);
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
+  ]);
   await fleet.startWorker(leader, api, 'default', 'w1');
 
   await goto(admin, leader, '#/build');
@@ -154,14 +156,16 @@ test('A1: a route card turns at a second destination, takes conditions on its li
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [{ id: 'own-metrics', type: 'metrics', bucketSeconds: 10 }]);
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 10 },
+  ]);
   for (const id of ['p', 'q'])
-    await api.put(`/api/pipelines/${id}${ON}`, {
+    await api.put(`/api/areas/shared/pipelines/${id}${ON}`, {
       id,
       name: id,
       steps: [{ type: 'parser', id: 'body', input: '_raw', kind: { type: 'json' }, declared: [] }],
     });
-  await api.put(`/api/destinations${ON}`, [
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
     { id: 'es-b', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'b' },
   ]);
@@ -198,8 +202,10 @@ test('A1: a route card turns at a second destination, takes conditions on its li
   await admin.locator('.menu').getByRole('button', { name: 'es-a' }).click();
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect.poll(async () => (await api.get(`/api/config${ON}`)).config.routes.length).toBe(2);
-  const config = await api.get(`/api/config${ON}`);
+  await expect
+    .poll(async () => (await api.get(`/api/areas/shared${ON}`)).config.routes.length)
+    .toBe(2);
+  const config = await api.get(`/api/areas/shared${ON}`);
   expect(config.config.routes).toEqual([
     expect.objectContaining({
       source: 'own-metrics',
@@ -222,16 +228,16 @@ test('A1: one route of a card moves to another source and opens on its card', as
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
     { id: 'm1', type: 'metrics', bucketSeconds: 10 },
     { id: 'm2', type: 'metrics', bucketSeconds: 10 },
   ]);
   for (const id of ['p', 'q'])
-    await api.put(`/api/pipelines/${id}${ON}`, { id, name: id, steps: [] });
-  await api.put(`/api/destinations${ON}`, [
+    await api.put(`/api/areas/shared/pipelines/${id}${ON}`, { id, name: id, steps: [] });
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
   ]);
-  await api.put(`/api/routes${ON}`, [
+  await api.put(`/api/areas/shared/routes${ON}`, [
     { id: 'r1', source: 'm1', condition: null, pipeline: 'p', deliver: [{ to: ['es-a'] }] },
     { id: 'r2', source: 'm1', condition: null, pipeline: 'q', deliver: [{ to: ['es-a'] }] },
   ]);
@@ -252,7 +258,9 @@ test('A1: one route of a card moves to another source and opens on its card', as
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect
     .poll(async () =>
-      (await api.get(`/api/config${ON}`)).config.routes.map((r: { source: string }) => r.source),
+      (await api.get(`/api/areas/shared${ON}`)).config.routes.map(
+        (r: { source: string }) => r.source,
+      ),
     )
     .toEqual(['m1', 'm2']);
 });
@@ -262,13 +270,15 @@ test('A1: a destination keeps its place when a condition is added on its line, a
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
-  await api.put(`/api/pipelines/p${ON}`, { id: 'p', name: 'p', steps: [] });
-  await api.put(`/api/destinations${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'm1', type: 'metrics', bucketSeconds: 10 },
+  ]);
+  await api.put(`/api/areas/shared/pipelines/p${ON}`, { id: 'p', name: 'p', steps: [] });
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
     { id: 'es-b', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'b' },
   ]);
-  await api.put(`/api/routes${ON}`, [
+  await api.put(`/api/areas/shared/routes${ON}`, [
     { id: 'r1', source: 'm1', condition: null, pipeline: 'p', deliver: [{ to: ['es-a', 'es-b'] }] },
   ]);
   await goto(admin, leader, '#/build/routes');
@@ -293,7 +303,7 @@ test('A1: a destination keeps its place when a condition is added on its line, a
   // The order is the rules' order, so it is saved with the route.
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect
-    .poll(async () => (await api.get(`/api/config${ON}`)).config.routes[0].deliver)
+    .poll(async () => (await api.get(`/api/areas/shared${ON}`)).config.routes[0].deliver)
     .toEqual([{ to: ['es-b'] }, { when: '_raw == "x"', to: ['es-a'] }]);
 });
 
@@ -302,14 +312,16 @@ test('A1: a destination two pipelines send to has a pill under each, and a pipel
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'm1', type: 'metrics', bucketSeconds: 10 },
+  ]);
   for (const id of ['p', 'q'])
-    await api.put(`/api/pipelines/${id}${ON}`, { id, name: id, steps: [] });
-  await api.put(`/api/destinations${ON}`, [
+    await api.put(`/api/areas/shared/pipelines/${id}${ON}`, { id, name: id, steps: [] });
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
     { id: 'es-b', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'b' },
   ]);
-  await api.put(`/api/routes${ON}`, [
+  await api.put(`/api/areas/shared/routes${ON}`, [
     { id: 'r1', source: 'm1', condition: null, pipeline: 'p', deliver: [{ to: ['es-a'] }] },
     { id: 'r2', source: 'm1', condition: null, pipeline: 'q', deliver: [{ to: ['es-b', 'es-a'] }] },
   ]);
@@ -333,13 +345,15 @@ test("A1: a condition's suggestions show over the destinations below it", async 
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
-  await api.put(`/api/pipelines/p${ON}`, { id: 'p', name: 'p', steps: [] });
-  await api.put(`/api/destinations${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'm1', type: 'metrics', bucketSeconds: 10 },
+  ]);
+  await api.put(`/api/areas/shared/pipelines/p${ON}`, { id: 'p', name: 'p', steps: [] });
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
     { id: 'es-b', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'b' },
   ]);
-  await api.put(`/api/routes${ON}`, [
+  await api.put(`/api/areas/shared/routes${ON}`, [
     { id: 'r1', source: 'm1', condition: null, pipeline: 'p', deliver: [{ to: ['es-a', 'es-b'] }] },
   ]);
   await goto(admin, leader, '#/build/routes');
@@ -364,12 +378,14 @@ test("A1: a destination two of one pipeline's lines reach has a pill for each", 
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
-  await api.put(`/api/pipelines/p${ON}`, { id: 'p', name: 'p', steps: [] });
-  await api.put(`/api/destinations${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'm1', type: 'metrics', bucketSeconds: 10 },
+  ]);
+  await api.put(`/api/areas/shared/pipelines/p${ON}`, { id: 'p', name: 'p', steps: [] });
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
   ]);
-  await api.put(`/api/routes${ON}`, [
+  await api.put(`/api/areas/shared/routes${ON}`, [
     {
       id: 'r1',
       source: 'm1',
@@ -393,7 +409,7 @@ test("A1: a destination two of one pipeline's lines reach has a pill for each", 
   await expect.poll(() => card.locator('.pill .name').allTextContents()).toEqual(['es-a']);
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect
-    .poll(async () => (await api.get(`/api/config${ON}`)).config.routes[0].deliver)
+    .poll(async () => (await api.get(`/api/areas/shared${ON}`)).config.routes[0].deliver)
     .toEqual([{ to: ['es-a'] }, { when: '_raw == "x"', to: [] }]);
 });
 
@@ -416,7 +432,7 @@ test('A1: a route is started before anything else is saved, its source made from
   await expect(admin.getByRole('dialog')).toBeHidden();
   await expect(source).toHaveValue('metrics-1');
   // Saved there and then, as a destination made from the card is.
-  const config = await api.get(`/api/config${ON}`);
+  const config = await api.get(`/api/areas/shared${ON}`);
   expect(config.config.sources).toContainEqual(
     expect.objectContaining({ id: 'metrics-1', type: 'metrics' }),
   );
@@ -438,7 +454,9 @@ for (const [what, proposal, note] of [
   ],
 ] as const) {
   test(`A1: a capture whose records ${what} says so`, async ({ admin, leader, api, fleet }) => {
-    await api.put(`/api/sources${ON}`, [{ id: 'own-metrics', type: 'metrics', bucketSeconds: 1 }]);
+    await api.put(`/api/areas/shared/sources${ON}`, [
+      { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
+    ]);
     await fleet.startWorker(leader, api, 'default', 'w1');
     await admin.route('**/api/onboard/propose', (r) => r.fulfill({ json: proposal }));
     await goto(admin, leader, '#/build/routes');
@@ -462,13 +480,15 @@ test('A1: a source with no route is routed from the map, its pipeline made from 
   fleet,
 }) => {
   // Deployed, so a worker runs it and reports the rows no route takes.
-  await api.put(`/api/sources?branch=arrive&scope=shared`, [
+  await api.put(`/api/areas/shared/sources?branch=arrive`, [
     { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
   ]);
   await api.openChange('arrive', 'Read own metrics');
   await api.deploy('arrive');
   // The browser's branch, from what is deployed.
-  await api.put(`/api/sources${ON}`, [{ id: 'own-metrics', type: 'metrics', bucketSeconds: 2 }]);
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 2 },
+  ]);
   await fleet.startWorker(leader, api, 'default', 'w1');
 
   // Once the worker reports rows no route takes, the map draws the source, and its panel lists the stream they
@@ -521,7 +541,7 @@ test('A1: a source with no route is routed from the map, its pipeline made from 
   // none of the stream's rows untaken.
   await expect(admin).toHaveURL(/#\/map/);
 
-  const config = await api.get(`/api/config${ON}`);
+  const config = await api.get(`/api/areas/shared${ON}`);
   // Both ids are minted; the pipeline is named for the source.
   const made = config.config.pipelines.find(
     (p: { name: string }) => p.name === 'own-metrics-parse',
@@ -551,7 +571,7 @@ test('A1: a capture of a Kafka source starts where it is asked to', async ({
   api,
   fleet,
 }) => {
-  await api.put(`/api/sources${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
     { id: 'orders', type: 'kafka', brokers: '127.0.0.1:9', topics: ['orders'], groupId: 'orders' },
   ]);
   await fleet.startWorker(leader, api, 'default', 'w1');
@@ -588,8 +608,8 @@ test('A1: a capture from the pipeline page can target a destination', async ({
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [{ id: 'storefront', type: 'logs' }]);
-  await api.put(`/api/destinations${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [{ id: 'storefront', type: 'logs' }]);
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-web', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'web' },
   ]);
 
@@ -620,12 +640,12 @@ async function jsonPipeline(
   declared: { name: string; type: string }[],
   sample: { id: string; name: string; source?: string; records: string[] },
 ) {
-  await api.put(`/api/pipelines/${id}${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/${id}${ON}`, {
     id,
     name: id,
     steps: [{ type: 'parser', id: 'body', input: '_raw', kind: { type: 'json' }, declared }],
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/${encodeURIComponent(sample.id)}${ON}`, {
     id: sample.id,
     name: sample.name,
     source: sample.source,
@@ -653,7 +673,7 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
     offset,
     bytes: btoa(raw),
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/busy-hour${ON}`, {
     id: 'busy-hour',
     name: 'orders, a busy hour',
     source: 'orders-west',
@@ -668,7 +688,7 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
     ],
     records: ORDERS.map((raw, i) => ({ _raw: raw, __source: read(i, 100 + i, raw) })),
   });
-  await api.put(`/api/tests${ON}`, {
+  await api.put(`/api/areas/shared/tests/orders-parse${ON}`, {
     id: 'orders-parse',
     name: 'orders parse',
     pipeline: 'orders',
@@ -728,7 +748,7 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
     '3',
   );
 
-  const saved = (await api.get(`/api/samples/busy-hour${ON}`)).sample;
+  const saved = (await api.get(`/api/areas/shared/samples/busy-hour${ON}`)).sample;
   expect(saved.records).toEqual([
     { _raw: ORDERS[0], __source: read(0, 100, ORDERS[0]) },
     // The bytes a byte record is read from are the edited text.
@@ -744,7 +764,7 @@ test('A1: a SQL sample is edited a column at a time, and a value fixed to its ty
   api,
 }) => {
   const db = { name: 'billing-db', type: 'postgres', database: 'billing' };
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/invoices${ON}`, {
     id: 'invoices',
     name: 'invoices',
     source: 'billing-db',
@@ -777,7 +797,7 @@ test('A1: a SQL sample is edited a column at a time, and a value fixed to its ty
   await admin.getByRole('button', { name: 'Save sample' }).click();
   await expect(records).toBeHidden();
 
-  const saved = (await api.get(`/api/samples/invoices${ON}`)).sample;
+  const saved = (await api.get(`/api/areas/shared/samples/invoices${ON}`)).sample;
   expect(saved.records[0]).toEqual({ invoice_id: 1, amount: 20, __source: db });
 });
 
@@ -822,7 +842,7 @@ test('A2: the parser proposes its declared fields from a sample, and the analyst
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Saved.')).toBeVisible();
-  const saved = await api.get(`/api/pipelines/orders${ON}`);
+  const saved = await api.get(`/api/areas/shared/pipelines/orders${ON}`);
   const names = saved.pipeline.steps[0].declared.map((f: { name: string }) => f.name);
   expect(names.sort()).toEqual(['discount', 'id', 'total']);
 });
@@ -863,7 +883,7 @@ test('A2: a parser writes into the object it names, and its fields are suggested
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Saved.')).toBeVisible();
-  const step = (await api.get(`/api/pipelines/orders${ON}`)).pipeline.steps[0];
+  const step = (await api.get(`/api/areas/shared/pipelines/orders${ON}`)).pipeline.steps[0];
   expect(step.into).toBe('order');
   expect(step.declared.map((f: { name: string }) => f.name).sort()).toEqual(['coupon', 'id']);
   // What arrives: the parsed keys under `order`, declared or not.
@@ -905,8 +925,12 @@ test('A2: a sample is picked from the Sample menu, its output searched by keywor
     name: 'orders',
     records: ORDERS,
   });
-  await api.put(`/api/samples${ON}`, { id: 'other', name: 'other', records: [{ _raw: '{}' }] });
-  await api.put(`/api/tests${ON}`, {
+  await api.put(`/api/areas/shared/samples/other${ON}`, {
+    id: 'other',
+    name: 'other',
+    records: [{ _raw: '{}' }],
+  });
+  await api.put(`/api/areas/shared/tests/orders-parse${ON}`, {
     id: 'orders-parse',
     name: 'orders parse',
     pipeline: 'orders',
@@ -985,11 +1009,13 @@ test('A2: a sample pasted or captured from the Sample menu is saved and run', as
     name: 'orders',
     records: ORDERS,
   });
-  await api.put(`/api/sources${ON}`, [{ id: 'own-metrics', type: 'metrics', bucketSeconds: 1 }]);
-  await api.put(`/api/destinations${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
+  ]);
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
   ]);
-  await api.put(`/api/routes${ON}`, [
+  await api.put(`/api/areas/shared/routes${ON}`, [
     {
       id: 'r1',
       source: 'own-metrics',
@@ -1027,8 +1053,8 @@ test('A2: a sample pasted or captured from the Sample menu is saved and run', as
 /** A source, destinations and a `web` pipeline routed from one to them: every record to `es-web`, a server error
  * to `kafka-alerts` too. `es-dlq` is there for an exception answer to name. */
 async function webRoutes(api: Api, sampleRecords: string[]) {
-  await api.put(`/api/sources${ON}`, [{ id: 'storefront', type: 'logs' }]);
-  await api.put(`/api/destinations${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [{ id: 'storefront', type: 'logs' }]);
+  await api.put(`/api/areas/shared/destinations${ON}`, [
     { id: 'es-web', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'web' },
     { id: 'kafka-alerts', type: 'kafka', brokers: '127.0.0.1:9', defaultTopic: 'alerts' },
     { id: 'es-dlq', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'dlq' },
@@ -1039,7 +1065,7 @@ async function webRoutes(api: Api, sampleRecords: string[]) {
     source: 'storefront',
     records: sampleRecords,
   });
-  await api.put(`/api/routes${ON}`, [
+  await api.put(`/api/areas/shared/routes${ON}`, [
     {
       id: 'web',
       source: 'storefront',
@@ -1058,7 +1084,7 @@ test('A2: a field shown from the Fields menu stays shown on a sample that would 
   leader,
   api,
 }) => {
-  await api.put(`/api/pipelines/wide${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/wide${ON}`, {
     id: 'wide',
     name: 'wide',
     steps: [{ type: 'parser', id: 'body', input: '_raw', kind: { type: 'json' } }],
@@ -1075,7 +1101,7 @@ test('A2: a field shown from the Fields menu stays shown on a sample that would 
     ['few', (f: number) => f >= 50],
     ['many', (f: number) => f < 5],
   ] as const)
-    await api.put(`/api/samples${ON}`, {
+    await api.put(`/api/areas/shared/samples/${encodeURIComponent(id)}${ON}`, {
       id,
       name: id,
       records: [0, 1, 2].map((i) => ({ _raw: JSON.stringify(record(rare, i)) })),
@@ -1136,7 +1162,7 @@ test('A4: a compile error is written once, on its step, and the error chip jumps
   leader,
   api,
 }) => {
-  await api.put(`/api/pipelines/orders${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
     id: 'orders',
     name: 'orders',
     steps: [
@@ -1144,7 +1170,7 @@ test('A4: a compile error is written once, on its step, and the error chip jumps
       { type: 'code', id: 'code-1', filter: 'true', disabled: false, body: 'x = 1;' },
     ],
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
     id: 'orders-sample',
     name: 'orders',
     records: ORDERS.map((raw) => ({ _raw: raw })),
@@ -1177,7 +1203,7 @@ test('A4: a compile error is written once, on its step, and the error chip jumps
 // ◎ pauses the records after a step: the steps after it are dimmed, a record a later step drops is back, and ✕
 // shows the whole pipeline again.
 test('◎ pauses the records after a step', async ({ admin, leader, api }) => {
-  await api.put(`/api/pipelines/orders${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
     id: 'orders',
     name: 'orders',
     steps: [
@@ -1191,7 +1217,7 @@ test('◎ pauses the records after a step', async ({ admin, leader, api }) => {
       },
     ],
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
     id: 'orders-sample',
     name: 'orders',
     records: ORDERS.map((raw) => ({ _raw: raw })),
@@ -1222,7 +1248,7 @@ test('A3: a field names the steps that touched it, a step card counts what it dr
   leader,
   api,
 }) => {
-  await api.put(`/api/pipelines/web${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/web${ON}`, {
     id: 'web',
     name: 'web',
     steps: [
@@ -1240,7 +1266,7 @@ test('A3: a field names the steps that touched it, a step card counts what it dr
       { type: 'code', id: 'calc', body: 'path = "web" + path;' },
     ],
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/web${ON}`, {
     id: 'web',
     name: 'web hour',
     records: [
@@ -1293,12 +1319,12 @@ test('A4: after a refused save, a new compile error is still shown', async ({
   leader,
   api,
 }) => {
-  await api.put(`/api/pipelines/orders${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
     id: 'orders',
     name: 'orders',
     steps: [{ type: 'code', id: 'code-1', filter: 'true', disabled: false, body: 'x = 1;' }],
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
     id: 'orders-sample',
     name: 'orders',
     records: ORDERS.map((raw) => ({ _raw: raw })),
@@ -1331,12 +1357,12 @@ test('A4: a code field is laid out when it is left, and a warning is written on 
   leader,
   api,
 }) => {
-  await api.put(`/api/pipelines/orders${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
     id: 'orders',
     name: 'orders',
     steps: [{ type: 'code', id: 'code-1', filter: 'true', disabled: false, body: 'x = 1;' }],
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
     id: 'orders-sample',
     name: 'orders',
     records: ORDERS.map((raw) => ({ _raw: raw })),
@@ -1359,7 +1385,7 @@ test('A4: a code field is laid out when it is left, and a warning is written on 
 // A4, the whole trip. Save pressed straight from a code field saves the field as it is laid out, however slowly the
 // layout comes back.
 test('A4: a save pressed from a code field saves its layout', async ({ admin, leader, api }) => {
-  await api.put(`/api/pipelines/orders${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
     id: 'orders',
     name: 'orders',
     steps: [{ type: 'code', id: 'code-1', filter: 'true', disabled: false, body: 'x = 1;' }],
@@ -1381,7 +1407,7 @@ test('A4: a save pressed from a code field saves its layout', async ({ admin, le
   await expect(admin.getByText('Saved.')).toBeVisible();
   await expect(body).toHaveValue('x = 2;');
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden();
-  const saved = (await api.get(`/api/pipelines/orders${ON}`)).pipeline;
+  const saved = (await api.get(`/api/areas/shared/pipelines/orders${ON}`)).pipeline;
   expect(saved.steps[0].body).toBe('x = 2;');
 });
 
@@ -1483,7 +1509,7 @@ test('A8: a route sends its unparseable rows where the analyst says, and the pre
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.routes[0].exceptions).toEqual({
     categories: { parse: { deliver: ['es-dlq'] } },
   });
@@ -1503,7 +1529,7 @@ test('A8: a route sends its unparseable rows where the analyst says, and the pre
 /** A pipeline that parses `store` and looks it up in `table` by `keyColumn`, writing `valueColumn` as `region`, and
  * a sample of three stores. */
 async function storesPipeline(api: Api, table: string, keyColumn: string, valueColumn: string) {
-  await api.put(`/api/pipelines/stores${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/stores${ON}`, {
     id: 'stores',
     name: 'stores',
     steps: [
@@ -1526,7 +1552,7 @@ async function storesPipeline(api: Api, table: string, keyColumn: string, valueC
       },
     ],
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/stores-sample${ON}`, {
     id: 'stores-sample',
     name: 'sales',
     records: ['{"store":"s1"}', '{"store":"s2"}', '{"store":"s9"}'].map((raw) => ({ _raw: raw })),
@@ -1569,7 +1595,7 @@ test('A9: a lookup table typed in by hand enriches the records of a pipeline tha
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.lookupTables).toEqual([
     {
       id: 'regions',
@@ -1611,10 +1637,10 @@ test('a grok pattern added on its page is named by a grok step in a pipeline', a
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.grokPatterns).toEqual([{ id: 'STORE', pattern: 'store-%{INT:store}' }]);
 
-  await api.put(`/api/pipelines/stores${ON}`, {
+  await api.put(`/api/areas/shared/pipelines/stores${ON}`, {
     id: 'stores',
     name: 'stores',
     steps: [
@@ -1627,7 +1653,7 @@ test('a grok pattern added on its page is named by a grok step in a pipeline', a
       },
     ],
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`/api/areas/shared/samples/stores-sample${ON}`, {
     id: 'stores-sample',
     name: 'sales',
     records: [{ _raw: 'store-7' }],
@@ -1664,7 +1690,7 @@ test('A9: an uploaded CSV lookup table enriches the records of a pipeline that n
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.lookupTables).toMatchObject([
     { id: 'store-regions', type: 'csv', headers: ['store', 'region'] },
   ]);
@@ -1750,7 +1776,7 @@ test('E8: a Kafka source is moved to now by changing its start, and the page say
   leader,
   api,
 }) => {
-  await api.put(`/api/sources${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
     { id: 'orders', type: 'kafka', brokers: '127.0.0.1:9', topics: ['orders'] },
   ]);
   await goto(admin, leader, '#/build/sources');
@@ -1771,7 +1797,7 @@ test('E8: a Kafka source is moved to now by changing its start, and the page say
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   const [source] = saved.config.sources;
   expect(source.start.type).toBe('timestamp');
   expect(source.start.millis).toBeGreaterThanOrEqual(asked);
@@ -1805,7 +1831,7 @@ test('A10: an S3 source that lists its bucket is added from its form and saved a
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
     {
       id: 'landing',
@@ -1858,7 +1884,7 @@ test('A10: an Okta source is added from its form as a service app and saved as t
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
     {
       id: 'okta-audit',
@@ -2024,7 +2050,7 @@ test('A10: HTTP, HEC, OTLP, Prometheus and Elasticsearch receivers are added fro
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
     {
       id: 'otel-logs',
@@ -2086,7 +2112,7 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
     tokens: { uf: { secret: 'forwarder-token', version: 1 } },
     sourcetypes: { java_app: { lineBreaker: '([\\r\\n]+)\\d{4}-' } },
   };
-  await api.put(`/api/sources${ON}`, [
+  await api.put(`/api/areas/shared/sources${ON}`, [
     s2s,
     { id: 'firewalls', type: 'syslogReceiver', port: 6514, allowFrom: ['10.0.0.0/8'] },
   ]);
@@ -2138,7 +2164,7 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
     s2s,
     {
@@ -2188,7 +2214,7 @@ test('A10: an HTTP API source is added from its form, reading an array and askin
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
     {
       id: 'events',
@@ -2252,7 +2278,7 @@ test('A10: an HTTP API source signs in as an app through its issuer and is saved
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
     {
       id: 'events',
@@ -2294,7 +2320,7 @@ test('A10: an HTTP API source POSTs a JSON body and is saved as the leader accep
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.sources).toEqual([
     {
       id: 'telemetry',
@@ -2340,7 +2366,7 @@ test('A10: an SFTP destination is added from its form and saved as the leader ac
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'drop-box',
@@ -2393,7 +2419,7 @@ test('A10: an Elasticsearch destination signs in with a username and password', 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'search',
@@ -2434,7 +2460,7 @@ test('A10: a Delta destination is added from its form and saved as the leader ac
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     { id: 'lake-web', type: 'delta', location: 's3://lake/tables/web', partitionBy: ['host'] },
   ]);
@@ -2499,7 +2525,7 @@ test('A10: a Unity Catalog Delta destination is added from its form and saved as
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'lake-uc',
@@ -2560,7 +2586,7 @@ test('A10: an Event Hubs destination is added from its form and saved as the lea
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'alerts-hub',
@@ -2627,7 +2653,7 @@ test('A10: an Event Hubs destination signs in as a service principal or the host
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  let saved = await api.get(`/api/config${ON}`);
+  let saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'alerts-hub',
@@ -2655,7 +2681,7 @@ test('A10: an Event Hubs destination signs in as a service principal or the host
   await admin.screenshot({ path: test.info().outputPath('event-hubs-user-assigned-identity.png') });
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
-  saved = await api.get(`/api/config${ON}`);
+  saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'alerts-hub',
@@ -2672,7 +2698,7 @@ test('A10: an Event Hubs destination signs in as a service principal or the host
   await admin.screenshot({ path: test.info().outputPath('event-hubs-managed-identity.png') });
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
-  saved = await api.get(`/api/config${ON}`);
+  saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     { id: 'alerts-hub', type: 'eventHubs', namespace: 'acme-logs', defaultEventHub: 'alerts' },
   ]);
@@ -2719,7 +2745,7 @@ test('A10: an HTTP destination is added from its form, its secret header as a cr
   // The bar goes once the save has landed; the button alone hides as soon as it reads "Saving…".
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'intake',
@@ -2764,7 +2790,7 @@ test('A10: an HTTP destination batches text or bytes as a JSON array of strings'
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'archive',
@@ -2820,7 +2846,7 @@ test('A10: a Prometheus remote_write destination is added from its form, its Aut
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'prom-out',
@@ -2887,7 +2913,7 @@ test('A10: a Log Analytics workspace destination is added from its form, signed 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'law',
@@ -2947,7 +2973,7 @@ test('A10: an Elasticsearch destination sends from each zone to its own address,
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toEqual([
     {
       id: 'logs',
@@ -3004,7 +3030,7 @@ test('A10: an S3 destination writes unmodified source bytes, which an S3 source 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`/api/areas/shared${ON}`);
   expect(saved.config.destinations).toMatchObject([
     { id: 'archive', type: 's3', format: 'bytes', newlines: 'refuse' },
   ]);
@@ -3022,7 +3048,7 @@ test('A10: the Sources page names the worker that holds a listing source', async
   fleet,
 }) => {
   const branch = 'listing';
-  await api.put(`/api/sources?branch=${branch}&scope=shared`, [
+  await api.put(`/api/areas/shared/sources?branch=${branch}`, [
     {
       id: 'landing',
       type: 's3List',

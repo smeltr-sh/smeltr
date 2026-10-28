@@ -28,7 +28,11 @@ describe('a save through a validation', () => {
       error('a route names nothing'),
     );
     // As `apiJson` reports a refusal before the page reads it.
-    errors.report(errors.call('PUT', '/api/destinations', 'bar'), answer.errors, answer.errors);
+    errors.report(
+      errors.call('PUT', '/api/areas/shared/destinations', 'bar'),
+      answer.errors,
+      answer.errors,
+    );
     await v.save(async () => answer);
     expect(v.message('es', 'url')).toBe('no URL');
     const [entry] = errors.entries;

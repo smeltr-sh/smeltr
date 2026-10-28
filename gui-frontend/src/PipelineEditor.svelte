@@ -1,7 +1,7 @@
 <!--
-  One pipeline's builder: loaded from `GET /api/pipelines/:id` (blank for
+  One pipeline's builder: loaded from `GET /api/areas/:area/pipelines/:id` (blank for
   `id === 'new'`), run in-process against a saved sample through
-  `/api/preview`, and saved with `PUT /api/pipelines/:id`, which the
+  `/api/areas/:area/preview/pipeline`, and saved with `PUT /api/areas/:area/pipelines/:id`, which the
   backend validates against the whole bundle.
 
   The records come from a saved sample, so what a preview ran over has a
@@ -740,7 +740,7 @@
     return result.errors.filter((e) => !placed.has(e));
   });
 
-  /** One `/api/preview` call over `stepsSubset`: the whole tree for a
+  /** One `/api/areas/:area/preview/pipeline` call over `stepsSubset`: the whole tree for a
    * Run, a truncated one for each side of a per-step diff. Goes through
    * `previewPipeline`, like every other config call, so it carries the
    * branch being edited. The rows still being written stay out of it.
