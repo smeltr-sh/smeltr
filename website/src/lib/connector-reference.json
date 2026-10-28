@@ -4832,8 +4832,8 @@
           {
             "name": "maxRequestBytes",
             "type": "size",
-            "default": "1 MiB",
-            "examples": ["4 MiB", "256 KiB", "10 MB"],
+            "default": "4 MiB",
+            "examples": ["8 MiB", "1 MiB", "10 MB"],
             "what": "The most one request carries, before compression. A record larger than this still goes as a single record. 4 KiB to 100 MiB."
           },
           {

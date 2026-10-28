@@ -504,6 +504,8 @@ export const LIMITS = {
   inFlight: { min: 1, max: 64, default: 4 },
   maxBulkBytes: { min: 64 * 1024, max: 100 * 1024 * 1024, default: 5 * 1024 * 1024 },
   maxRequestBytes: { min: 4 * 1024, max: 100 * 1024 * 1024, default: 1024 * 1024 },
+  /** An HTTP destination's `maxRequestBytes` (`HttpRequestBytes`): one whole batch by default. */
+  httpRequestBytes: { min: 4 * 1024, max: 100 * 1024 * 1024, default: 4 * 1024 * 1024 },
   /** A Log Analytics destination's `maxRequestBytes`: at most what the Logs Ingestion API takes in one call. */
   logAnalyticsRequestBytes: { min: 4 * 1024, max: 1024 * 1024, default: 1024 * 1024 },
   /** A receiver's `maxRequestBytes` (`MaxRequestBytes`): at most what one request may hold of its inbox. */
