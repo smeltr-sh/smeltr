@@ -152,7 +152,7 @@ pub fn system_prompt(catalog: &[Route]) -> String {
            person before deploying anything.\n\
          - `:area` is `shared` or a worker group's id.\n\
          - `at` reads at a commit instead of a branch's tip.\n\
-         - Most answers are `{ ok, errors, ...fields }`.\n\
+         - Every JSON answer is `{ ok, errors, ...fields }`; a list comes under a named field.\n\
          - Bodies are camelCase, except `/api/areas/:area/preview/pipeline` and `.../preview/routes`, whose fields are snake_case.\n\n\
          Routes (method, path, what it does, body):\n",
     );
