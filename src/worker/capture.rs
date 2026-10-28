@@ -627,6 +627,14 @@ impl Captures {
         self.deployed.lock().unwrap().sources.iter().any(|s| s == source)
     }
 
+    /// Whether `admitted` needs no reader of its own: it names no source, so it was admitted finished, or a
+    /// deployment reading its source serves it, as one does any session that does not read its source itself.
+    pub fn served(&self, admitted: &Admitted) -> bool {
+        let invitation = &admitted.invitation;
+        (invitation.source.as_ref())
+            .is_none_or(|source| !invitation.reads_source_itself() && self.is_deployed(&source.id))
+    }
+
     /// Whether any session is watching `source`, by the name the author gave it. Checked before a batch's text is
     /// gathered, so a worker running no capture answers from one atomic load.
     pub fn watching(&self, source: &str) -> bool {
@@ -1182,7 +1190,6 @@ pub fn run_cold_capture(
     if dto.kind.sql().is_some() {
         return run_sql_capture(captures, admitted, dto, registry, secrets);
     }
-    let encoding = dto.kind.encoding();
 
     let kind = match source_kind_of(dto) {
         Ok(kind) => kind,
@@ -1240,14 +1247,7 @@ pub fn run_cold_capture(
             return;
         }
     };
-    drive(
-        captures,
-        admitted,
-        source.as_mut(),
-        &crate::runtime::Reading { meta, encoding },
-        &metrics,
-        None,
-    );
+    drive(captures, admitted, source.as_mut(), &meta, &metrics, None);
 }
 
 /// Poll `source` into `admitted` until the session closes or a deployment starts reading the source. A session that
@@ -1258,7 +1258,7 @@ fn drive<S: crate::io::Source + ?Sized>(
     captures: &Captures,
     admitted: &Admitted,
     source: &mut S,
-    reading: &crate::runtime::Reading,
+    meta: &SourceMeta,
     metrics: &crate::metrics::MetricsHandle,
     run: Option<fn(&S) -> bool>,
 ) {
@@ -1267,13 +1267,11 @@ fn drive<S: crate::io::Source + ?Sized>(
         return captures.fail(admitted, "the capture names neither one source nor one destination");
     };
     let source_id = &named.id;
-    let itself = admitted.invitation.reads_source_itself();
     // A sample holds everything its source set, read or not.
     source.keep_headers(true);
 
-    // A deployment that starts reading the source serves the session from then on, unless the session reads the
-    // source itself.
-    while captures.open(admitted) && (itself || !captures.is_deployed(source_id)) {
+    // A deployment that starts reading the source serves the session from then on.
+    while captures.open(admitted) && !captures.served(admitted) {
         let records = match source.poll_batch(
             crate::worker::TICK_MAX_ROWS,
             crate::worker::TICK_MAX_BYTES,
@@ -1306,7 +1304,7 @@ fn drive<S: crate::io::Source + ?Sized>(
         }
         // The decode ingest would have done, with this source's own encoding: a captured record is text, however it
         // was captured.
-        let decoded = reading.decode(&records);
+        let decoded = crate::runtime::decode_records(&records, meta);
         let text: Vec<&str> = decoded.text.iter().map(AsRef::as_ref).collect();
         // Labeled by the source's own name rather than a positional id, which `Subjects::resolve` leaves as it is:
         // the source may be in no deployment.
@@ -1485,7 +1483,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
         captures,
         admitted,
         &mut source,
-        &crate::runtime::Reading { meta, encoding },
+        &meta.with_encoding(encoding),
         &metrics,
         Some(SqlSource::read_once),
     );

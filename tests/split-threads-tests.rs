@@ -119,10 +119,7 @@ fn two_lanes_to(
         lanes.push(Arc::new(Lane::new(
             source_id,
             Some(format!("source-{source_id}")),
-            smeltr::runtime::Reading {
-                meta: topology.meta_for(source_id),
-                encoding: Encoding::Auto,
-            },
+            topology.meta_for(source_id),
             Handoff::watched(ready.clone(), 8_000_000),
             to[source_id as usize].clone(),
             tx,
@@ -729,10 +726,7 @@ fn capturing_routes(
     let lane = Arc::new(Lane::new(
         0,
         Some("source-0".to_string()),
-        smeltr::runtime::Reading {
-            meta: topology.meta_for(0),
-            encoding: Encoding::Auto,
-        },
+        topology.meta_for(0),
         Handoff::watched(ready.clone(), 8_000_000),
         vec![0],
         tx,
