@@ -1,11 +1,10 @@
 <!--
-  Adding a schema (`NewObject`): from a JSON Schema pasted or uploaded, from a copy of a built-in, or empty. What
-  it starts from is the draft's `type`; the schema itself is made on Add (`SchemasPage`).
+  Adding a schema (`NewObject`): from a JSON Schema pasted or uploaded, or empty. What it starts from is the draft's `type`; the schema itself is made on Add (`SchemasPage`).
 -->
 <script lang="ts" module>
   import type { CatalogType } from './TypeCatalog.svelte';
 
-  export type SchemaStart = 'jsonSchema' | 'builtin' | 'empty';
+  export type SchemaStart = 'jsonSchema' | 'empty';
 
   /** A schema being added, before it is one. */
   export type SchemaDraft = {
@@ -13,13 +12,10 @@
     type: SchemaStart;
     /** The JSON Schema, as text, for `jsonSchema`. */
     text: string;
-    /** The built-in copied, for `builtin`. */
-    from: string;
   };
 
   const LABELS: Record<SchemaStart, string> = {
     jsonSchema: 'JSON Schema',
-    builtin: 'copy of a built-in',
     empty: 'empty',
   };
 
@@ -31,14 +27,6 @@
       help: 'Upload or paste a JSON Schema: your own, or one exported from here.',
       // A page with its corner folded.
       glyph: { d: 'M14 6 H40 L52 18 V58 H14 Z M40 6 V18 H52' },
-    },
-    {
-      type: 'builtin',
-      label: 'ECS or an OCSF class',
-      category: 'From a built-in',
-      help: 'Copy a built-in schema, to change it.',
-      // Two pages, one over the other.
-      glyph: { d: 'M10 14 H38 V54 H10 Z M20 6 H48 V46 H42 V12 H20 Z' },
     },
     {
       type: 'empty',
@@ -54,27 +42,23 @@
   import NewObject from './NewObject.svelte';
   import Field from './Field.svelte';
   import { suggestId } from './ids';
-  import type { SchemaSummary } from './api';
 
   let {
     open,
     unavailable,
-    builtins,
     onadd,
     oncancel,
   }: {
     open: boolean;
     /** Every id the new one may not take. */
     unavailable: string[];
-    /** What a copy may start from. */
-    builtins: SchemaSummary[];
     /** Takes the draft, and makes the schema. The dialog stays open until its owner closes it. */
     onadd: (draft: SchemaDraft) => void | Promise<void>;
     oncancel: () => void;
   } = $props();
 
   function blank(type: SchemaStart, taken: string[]): SchemaDraft {
-    return { id: suggestId('schema', taken), type, text: '', from: '' };
+    return { id: suggestId('schema', taken), type, text: '' };
   }
 
   async function upload(draft: SchemaDraft, input: HTMLInputElement) {
@@ -90,8 +74,7 @@
   types={SCHEMA_STARTS}
   {blank}
   typeLabel={(t) => LABELS[t]}
-  ready={(d) =>
-    d.type === 'jsonSchema' ? d.text.trim() !== '' : d.type === 'builtin' ? d.from !== '' : true}
+  ready={(d) => d.type !== 'jsonSchema' || d.text.trim() !== ''}
   {onadd}
   {oncancel}
 >
@@ -112,15 +95,6 @@
           onchange={(e) => upload(draft, e.currentTarget)}
         />
       </label>
-    {:else if draft.type === 'builtin'}
-      <Field required label="copy of">
-        <select bind:value={draft.from}>
-          <option value="" disabled>choose a built-in schema</option>
-          {#each builtins as b (b.id)}
-            <option value={b.id}>{b.id} — {b.title}</option>
-          {/each}
-        </select>
-      </Field>
     {/if}
   {/snippet}
 </NewObject>

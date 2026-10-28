@@ -1039,7 +1039,7 @@ export interface PipelineDto {
   id: string;
   name: string;
   steps: unknown[];
-  /** The schemas its rows are held to, by id: `ecs`, `ocsf/<class>`, or the bundle's own. */
+  /** The schemas its rows are held to, by their ids in the bundle. */
   schemas?: string[];
 }
 
@@ -5278,33 +5278,8 @@ export function deleteConversation(id: string): Promise<object | AccountRefusal>
 
 // -- schemas ----------------------------------------------------------------
 //
-// The catalog (`src/bin/smeltr/schema_api.rs`): what is built in, and what any schema holds. A bundle's own schemas
-// are its config, saved with `putSchemas`.
-
-/** A schema in the catalog. */
-export interface SchemaSummary {
-  id: string;
-  title: string;
-  description: string;
-  origin: 'ecs' | 'ocsf' | 'bundle';
-  /** An OCSF class's category uid. */
-  category?: number;
-  classUid?: number;
-}
-
-export interface SchemaCatalog {
-  ok: boolean;
-  errors: ApiError[];
-  ecsVersion: string;
-  ocsfVersion: string;
-  /** OCSF's categories, by uid. */
-  categories: { uid: number; name: string; caption: string }[];
-  schemas: SchemaSummary[];
-}
-
-export function builtinSchemas(): Promise<SchemaCatalog> {
-  return apiJson('/api/schemas/builtin', undefined, 'quiet');
-}
+// The catalog (`src/bin/smeltr/schema_api.rs`): what a schema holds. A bundle's schemas are its config, saved with
+// `putSchemas`.
 
 /** One field of a schema's object. */
 export interface SchemaField {
@@ -5330,10 +5305,10 @@ export interface SchemaObject {
   fields: SchemaField[];
 }
 
-/** One object of a schema, the root where `at` is absent: a built-in by `id`, or one written as JSON Schema. Not
- * `ok`, with why, where the JSON Schema does not read. */
+/** One object of a schema written as JSON Schema, the root where `at` is absent. Not `ok`, with why, where the JSON
+ * Schema does not read. */
 export function schemaObject(
-  of: { id: string } | { schema: Record<string, unknown> },
+  of: { schema: Record<string, unknown> },
   at?: number,
 ): Promise<SchemaObject> {
   return post('/api/schemas/object', { ...of, at }, 'quiet');
@@ -5346,16 +5321,9 @@ export interface SchemaMatches {
   matches: { id: string; fields: string[] }[];
 }
 
-/** The schemas whose id, title or a field's path holds `q`, the bundle's own (`schemas`) among them. */
+/** Those of `schemas` whose id, title or a field's path holds `q`. */
 export function searchSchemas(q: string, schemas: SchemaDto[]): Promise<SchemaMatches> {
   return post('/api/schemas/search', { q, schemas }, 'quiet');
-}
-
-/** A built-in schema as JSON Schema. */
-export function exportSchema(
-  id: string,
-): Promise<{ ok: boolean; errors: ApiError[]; schema: Record<string, unknown> }> {
-  return apiJson(`/api/schemas/export?id=${encodeURIComponent(id)}`);
 }
 
 /** One schema finding at a branch's tip (`LoadedSystem::schema_findings`). */

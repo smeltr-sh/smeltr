@@ -1,7 +1,7 @@
 <!--
   One schema's fields, as a table: each field's name, the schema's own type for it, what a pipeline writes to keep
-  it, and what it means. A field that holds an object opens to its fields in place, read when it is opened: OCSF's
-  objects name each other, and themselves, so a schema is read an object at a time.
+  it, and what it means. A field that holds an object opens to its fields in place, read when it is opened: a
+  schema's objects may name each other, and themselves, so a schema is read an object at a time.
 -->
 <script lang="ts">
   import { schemaObject, type SchemaField, type SchemaObject } from './api';
@@ -10,8 +10,8 @@
   let {
     of,
   }: {
-    /** A built-in by its id, or one of the bundle's by its JSON Schema. */
-    of: { id: string } | { schema: Record<string, unknown> };
+    /** One of the bundle's, by its JSON Schema. */
+    of: { schema: Record<string, unknown> };
   } = $props();
 
   /** Each object read, by its index in the schema. */

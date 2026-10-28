@@ -418,24 +418,17 @@ pub(crate) fn from_file_config_at(
     })
 }
 
+/// Each object's schemas, in the file's order.
+type SchemasOf = Vec<Vec<Arc<Schema>>>;
+
 /// The schemas each pipeline produces and each destination accepts, in the file's order, each id resolved against
-/// the built-in schemas and the ones the bundle declares. A declared schema that does not read, or whose id is a
-/// built-in's or another's, and an id that names no schema, are errors on the item that has it.
-fn resolve_schemas(
-    file: &FileConfig,
-    attributed: &mut Vec<ValidationError>,
-) -> (Vec<Vec<Arc<Schema>>>, Vec<Vec<Arc<Schema>>>) {
+/// the ones the bundle declares. A declared schema that does not read, or whose id is another's, and an id that names
+/// no schema, are errors on the item that has it.
+fn resolve_schemas(file: &FileConfig, attributed: &mut Vec<ValidationError>) -> (SchemasOf, SchemasOf) {
     let mut declared: HashMap<&str, Arc<Schema>> = HashMap::new();
     let mut seen = HashSet::new();
     for dto in &file.schemas {
         let errors = &mut ItemErrors::new(attributed, "schemas", &dto.id);
-        if crate::schema::reserved(&dto.id) {
-            errors.push(format!(
-                "{:?} is a built-in schema's id; give this schema another id",
-                dto.id
-            ));
-            continue;
-        }
         if !seen.insert(dto.id.as_str()) {
             errors.push(format!("duplicate schema id {:?}", dto.id));
             continue;
@@ -453,7 +446,7 @@ fn resolve_schemas(
             let mut errors = ItemErrors::new(attributed, section, id);
             ids.iter()
                 .filter_map(|s| {
-                    let found = declared.get(s.as_str()).cloned().or_else(|| crate::schema::builtin(s));
+                    let found = declared.get(s.as_str()).cloned();
                     if found.is_none() {
                         errors.at(field).push(format!(
                             "{} {id:?} {names} schema {s:?}, which does not exist",
@@ -6435,21 +6428,24 @@ mod tests {
         .unwrap()
     }
 
-    const LOGIN: &str = r#"[{ "id": "acme-login", "schema": {
-        "type": "object", "properties": { "user": { "type": "string" } }, "required": ["user"] } }]"#;
+    const LOGIN: &str = r#"[
+        { "id": "acme-login", "schema": {
+            "type": "object", "properties": { "user": { "type": "string" } }, "required": ["user"] } },
+        { "id": "acme-audit", "schema": { "type": "object" } }
+    ]"#;
 
     #[test]
-    fn a_pipeline_and_a_destination_name_built_in_and_declared_schemas() {
+    fn a_pipeline_and_a_destination_name_declared_schemas() {
         let system = from_file_config_at(
-            with_schemas(LOGIN, r#"["ecs", "acme-login"]"#, r#"["ocsf/authentication"]"#),
+            with_schemas(LOGIN, r#"["acme-audit", "acme-login"]"#, r#"["acme-login"]"#),
             &DeclaredAt::new(),
         )
         .unwrap();
         let ids = |s: &[Arc<Schema>]| s.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
-        assert_eq!(ids(system.produced_by(0)), ["ecs", "acme-login"]);
+        assert_eq!(ids(system.produced_by(0)), ["acme-audit", "acme-login"]);
         assert_eq!(
             system.accepts.values().map(|a| ids(a)).collect::<Vec<_>>(),
-            [["ocsf/authentication"]]
+            [["acme-login"]]
         );
     }
 
@@ -6469,14 +6465,12 @@ mod tests {
             ("pipelines", "p", Some("schemas"))
         );
         assert!(message.contains("\"acme-login\""), "{message}");
-        let (section, _, field, _) = the_error(with_schemas("[]", "[]", r#"["ocsf/nothing"]"#));
+        let (section, _, field, _) = the_error(with_schemas("[]", "[]", r#"["nothing"]"#));
         assert_eq!((section.as_str(), field), ("destinations", Some("accepts")));
     }
 
     #[test]
-    fn a_declared_schema_with_a_built_ins_id_or_that_does_not_read_is_refused_on_its_item() {
-        let (section, id, field, _) = the_error(with_schemas(r#"[{ "id": "ocsf/mine", "schema": {} }]"#, "[]", "[]"));
-        assert_eq!((section.as_str(), id.as_str(), field), ("schemas", "ocsf/mine", None));
+    fn a_declared_schema_that_does_not_read_or_whose_id_is_taken_is_refused_on_its_item() {
         let broken = r#"[{ "id": "mine", "schema": { "type": "string" } }]"#;
         let (section, id, field, _) = the_error(with_schemas(broken, "[]", "[]"));
         assert_eq!(

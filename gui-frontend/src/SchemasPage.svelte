@@ -3,9 +3,8 @@
   raw-JSON page. A schema is a contract a pipeline's rows are held to: the pipeline names it under Produces, and a
   destination may name it under accepts.
 
-  One table, searched as one, by a schema's id, its title and its fields' paths: the group's own, editable;
-  `shared/`'s, changed in `shared/`; ECS; and OCSF's classes under its categories, each category opened on its own and
-  paged. A row opens to the schema's fields.
+  One table, searched as one, by a schema's id, its title and its fields' paths: the group's own, editable, and
+  `shared/`'s, changed in `shared/`. A row opens to the schema's fields.
 -->
 <script lang="ts">
   import EditInShared from './EditInShared.svelte';
@@ -26,28 +25,15 @@
   import TrashIcon from './TrashIcon.svelte';
   import { resourcesTabs } from './nav';
   import {
-    builtinSchemas,
-    exportSchema,
     schemaObject,
     searchSchemas,
     sharedConfig,
     putSchemas,
     type DestinationDto,
     type PipelineDto,
-    type SchemaCatalog,
     type SchemaDto,
-    type SchemaSummary,
   } from './api';
-  import {
-    byCategory,
-    downloadJson,
-    fileName,
-    PAGE,
-    paged,
-    userHash,
-    usersOf,
-    type User,
-  } from './schemas';
+  import { downloadJson, fileName, userHash, usersOf, type User } from './schemas';
   import { idProblem } from './ids';
   import { count } from './time';
   import { editable } from './access';
@@ -80,33 +66,14 @@
   });
   void editor.load();
 
-  let catalog = $state<SchemaCatalog | null>(null);
-  builtinSchemas()
-    .then((c) => (catalog = c))
-    .catch(reported);
-  let ecs = $derived(catalog?.schemas.filter((s) => s.origin === 'ecs') ?? []);
-  let categories = $derived(catalog ? byCategory(catalog.categories, catalog.schemas) : []);
-  let classCount = $derived(categories.reduce((n, c) => n + c.classes.length, 0));
   let users = $derived(usersOf(pipelines, destinations));
 
   /** The rows opened to their fields, by schema id. */
   let opened = $state(new Set<string>());
-  /** The categories opened, by uid, and the page each shows. */
-  let openCategories = $state(new Set<number>());
-  let pages = $state(new Map<number, number>());
 
-  // Land on the schema the hash names, opened, inside its category.
+  // Land on the schema the hash names, opened.
   $effect(() => {
-    if (!open || !catalog) return;
-    opened = new Set([open]);
-    const c = categories.find((c) => c.classes.some((s) => s.id === open));
-    if (c) {
-      openCategories = new Set(openCategories).add(c.uid);
-      pages = new Map(pages).set(
-        c.uid,
-        Math.floor(c.classes.findIndex((s) => s.id === open) / PAGE),
-      );
-    }
+    if (open) opened = new Set([open]);
   });
 
   function toggle<T>(set: Set<T>, key: T): Set<T> {
@@ -141,7 +108,7 @@
   function shown(id: string): boolean {
     return matches === null || matches.has(id);
   }
-  let total = $derived(schemas.length + sharedSchemas.length + ecs.length + classCount);
+  let total = $derived(schemas.length + sharedSchemas.length);
 
   // -- adding -------------------------------------------------------------
 
@@ -158,10 +125,6 @@
       }
       const read = await schemaObject({ schema });
       if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
-    } else if (draft.type === 'builtin') {
-      const res = await exportSchema(draft.from);
-      if (!res.ok) return;
-      schema = res.schema;
     } else {
       schema = {
         $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -174,15 +137,9 @@
     adding = false;
   }
 
-  async function exported(id: string) {
+  function exported(id: string) {
     const own = [...schemas, ...sharedSchemas].find((s) => s.id === id);
-    if (own) return downloadJson(fileName(id), own.schema);
-    const res = await exportSchema(id);
-    if (res.ok) downloadJson(fileName(id), res.schema);
-  }
-
-  function plural(n: number, one: string, many: string): string {
-    return `${n} ${n === 1 ? one : many}`;
+    if (own) downloadJson(fileName(id), own.schema);
   }
 
   /** A declared schema's description: its own, or its title. */
@@ -320,91 +277,6 @@
               {/if}
             {/each}
           {/if}
-
-          {#if catalog}
-            {#if ecs.some((s) => shown(s.id))}
-              <tr class="band"><th colspan="4">built-in · ECS</th></tr>
-              {#each ecs as s (s.id)}
-                {#if shown(s.id)}
-                  {@render row(s.id, `ECS ${catalog.ecsVersion}`, s.description)}
-                  {#if opened.has(s.id)}{@render detail(s.id, { id: s.id })}{/if}
-                {/if}
-              {/each}
-            {/if}
-
-            <tr class="band">
-              <th colspan="3">
-                built-in · OCSF {catalog.ocsfVersion} · {plural(classCount, 'class', 'classes')} in
-                {plural(categories.length, 'category', 'categories')}
-              </th>
-              <th class="all">
-                {#if matches === null}
-                  <button
-                    type="button"
-                    class="link"
-                    onclick={() => (openCategories = new Set(categories.map((c) => c.uid)))}
-                    >Expand all</button
-                  >
-                  ·
-                  <button type="button" class="link" onclick={() => (openCategories = new Set())}
-                    >Collapse all</button
-                  >
-                {/if}
-              </th>
-            </tr>
-            {#each categories as c (c.uid)}
-              {@const classes = c.classes.filter((s) => shown(s.id))}
-              {@const isOpen = matches !== null || openCategories.has(c.uid)}
-              {@const page = paged(classes, pages.get(c.uid) ?? 0)}
-              {@const using = [
-                ...new Map(
-                  c.classes
-                    .flatMap((s) => users.get(s.id) ?? [])
-                    .map((u) => [`${u.kind} ${u.id}`, u]),
-                ).values(),
-              ]}
-              {#if classes.length > 0}
-                <tr class="category">
-                  <td class="name">
-                    <button
-                      type="button"
-                      class="opener"
-                      aria-expanded={isOpen}
-                      onclick={() => (openCategories = toggle(openCategories, c.uid))}
-                      >{isOpen ? '▾' : '▸'} {c.caption}</button
-                    >
-                  </td>
-                  <td class="kind"
-                    >category {c.uid} · {plural(classes.length, 'class', 'classes')}</td
-                  >
-                  <td></td>
-                  <td class="used">{@render usedBy(using)}</td>
-                </tr>
-                {#if isOpen}
-                  {#each page.shown as s (s.id)}
-                    {@render row(s.id, `class ${s.classUid}`, s.description, false, true)}
-                    {#if opened.has(s.id)}{@render detail(s.id, { id: s.id })}{/if}
-                  {/each}
-                  {#if page.pages > 1}
-                    <tr class="pager">
-                      <td colspan="4">
-                        <span class="dim"
-                          >{page.first + 1}–{page.first + page.shown.length} of {classes.length} in {c.caption}</span
-                        >
-                        {#each Array.from({ length: page.pages }, (_, i) => i) as i (i)}
-                          <button
-                            type="button"
-                            aria-current={i === (pages.get(c.uid) ?? 0) ? 'page' : undefined}
-                            onclick={() => (pages = new Map(pages).set(c.uid, i))}>{i + 1}</button
-                          >
-                        {/each}
-                      </td>
-                    </tr>
-                  {/if}
-                {/if}
-              {/if}
-            {/each}
-          {/if}
         </tbody>
       </table>
       {#if matches !== null && matches.size === 0}
@@ -419,18 +291,12 @@
     </div>
   </SectionShell>
 
-  <NewSchema
-    open={adding}
-    unavailable={taken}
-    builtins={catalog?.schemas ?? []}
-    onadd={add}
-    oncancel={() => (adding = false)}
-  />
+  <NewSchema open={adding} unavailable={taken} onadd={add} oncancel={() => (adding = false)} />
 {/if}
 
-{#snippet row(id: string, kind: string, description: string, fromShared = false, indent = false)}
+{#snippet row(id: string, kind: string, description: string, fromShared = false)}
   <tr class="fixed" class:fromshared={fromShared}>
-    <td class="name" class:indent>
+    <td class="name">
       <button
         type="button"
         class="opener mono"
@@ -469,24 +335,16 @@
   {/if}
 {/snippet}
 
-{#snippet detail(
-  id: string,
-  of: { id: string } | { schema: Record<string, unknown> },
-  fromShared = false,
-)}
+{#snippet detail(id: string, of: { schema: Record<string, unknown> }, fromShared = false)}
   <tr class="detail" class:fromshared={fromShared}>
     <td colspan="4">
       <div class="actions">
         <span class="dim"
-          >{'id' in of
-            ? 'Built-in, read-only.'
-            : fromShared
-              ? 'Declared in shared/.'
-              : 'Edit it with Edit JSON.'}
+          >{fromShared ? 'Declared in shared/.' : 'Edit it with Edit JSON.'}
           <span class="required">*</span> required.</span
         >
         <span class="grow"></span>
-        <button type="button" onclick={() => void exported(id)}>Export JSON Schema</button>
+        <button type="button" onclick={() => exported(id)}>Export JSON Schema</button>
       </div>
       <SchemaFields {of} />
     </td>
@@ -520,18 +378,8 @@
     padding-top: 1rem;
   }
 
-  .band .all {
-    text-align: right;
-    text-transform: none;
-    letter-spacing: 0;
-  }
-
   .name {
     width: 16rem;
-  }
-
-  .indent {
-    padding-left: 1.6rem;
   }
 
   .kind {
@@ -544,8 +392,7 @@
     font-size: var(--text-note);
   }
 
-  .fixed td,
-  .category td {
+  .fixed td {
     padding: 0.35rem 0.5rem;
     font-size: var(--text-note);
   }
@@ -554,32 +401,18 @@
     overflow-wrap: anywhere;
   }
 
-  .category {
-    background: var(--panel);
-  }
-
-  .category .opener {
-    font-weight: 600;
-  }
-
   /* `shared/`'s own: shown, because a group's pipelines may name them, and not editable here. */
   .fromshared td:first-child {
     border-left: 3px solid oklch(var(--scope-l) var(--scope-c) var(--shared-h, 260));
   }
 
-  .opener,
-  .link {
+  .opener {
     padding: 0;
     border: none;
     background: none;
     color: inherit;
     text-align: left;
     font: inherit;
-  }
-
-  .link {
-    color: var(--accent);
-    text-decoration: underline;
   }
 
   .found {
@@ -597,22 +430,6 @@
     align-items: center;
     margin-bottom: 0.5rem;
     font-size: var(--text-note);
-  }
-
-  .pager td {
-    padding-left: 1.6rem;
-    font-size: var(--text-note);
-  }
-
-  .pager button {
-    min-width: 1.8rem;
-    margin-left: 0.3rem;
-    padding: 0.1rem 0.4rem;
-  }
-
-  .pager button[aria-current='page'] {
-    background: var(--ink);
-    color: var(--bg);
   }
 
   .required {

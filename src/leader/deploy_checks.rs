@@ -127,8 +127,11 @@ impl DeployChecks {
     }
 }
 
+/// Each schema finding, with the group it is in.
+type GroupFindings = Vec<(String, SchemaFinding)>;
+
 /// The groups that do not load at `commit`, and the schema findings of each that does.
-fn checked(repo: &Path, commit: &str) -> Result<(Vec<NotLoading>, Vec<(String, SchemaFinding)>), git::GitError> {
+fn checked(repo: &Path, commit: &str) -> Result<(Vec<NotLoading>, GroupFindings), git::GitError> {
     let mut not_loading = Vec::new();
     let mut schemas = Vec::new();
     for group in super::tree::groups_at(repo, commit)? {
@@ -239,8 +242,12 @@ mod tests {
     fn what_breaks_a_schema_at_the_deployed_commit_is_found_with_its_group() {
         let data = std::env::temp_dir().join(format!("smeltr-deploy-checks-schemas-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data);
-        let files: [(&str, &str); 4] = [
+        let files: [(&str, &str); 5] = [
             ("system.json", r#"{"version":1}"#),
+            (
+                "schemas.json",
+                r#"[{"id":"login","schema":{"title":"Login","required":["user"],"properties":{"user":{"type":"string"}}}}]"#,
+            ),
             (
                 "sources.json",
                 r#"[{"id":"k","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}]"#,
@@ -251,7 +258,7 @@ mod tests {
             ),
             (
                 "pipelines/p.json",
-                r#"{"id":"p","name":"p","schemas":["ocsf/authentication"],"steps":[]}"#,
+                r#"{"id":"p","name":"p","schemas":["login"],"steps":[]}"#,
             ),
         ];
         let edits: Vec<git::FileEdit> = (files.iter())
@@ -266,7 +273,7 @@ mod tests {
         assert!(
             found.schemas.iter().any(|(group, f)| group == "east"
                 && f.pipeline == "p"
-                && f.message.starts_with("OCSF Authentication requires `activity_id`")),
+                && f.message == "Login requires `user`; the rows lack it."),
             "{found:?}"
         );
     }

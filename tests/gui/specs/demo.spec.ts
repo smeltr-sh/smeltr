@@ -160,14 +160,24 @@ test("the samples page runs the scope's locked tests in the service", async ({ p
   await expect(page.getByText('Passing')).toHaveCount(2);
 });
 
-test('the Schemas page reads the catalog from the service', async ({ page }) => {
+test('the Schemas page reads a schema through the service', async ({ page }) => {
   await open(page, '#/build/schemas');
-  await page.getByRole('button', { name: /Identity & Access Management$/ }).click();
-  await page.getByRole('button', { name: /ocsf\/authentication$/ }).click();
+  await page.getByRole('button', { name: '+ Add schema' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'JSON Schema', exact: true }).click();
+  await dialog.getByLabel('id', { exact: true }).fill('login');
+  const login = {
+    type: 'object',
+    properties: {
+      user: { type: 'object', properties: { name: { type: 'string' } } },
+      src_endpoint: { type: 'object', properties: { port: { type: 'integer' } } },
+    },
+  };
+  await dialog.getByRole('textbox', { name: 'JSON Schema' }).fill(JSON.stringify(login));
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
   await page.getByRole('button', { name: 'Open user', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Open user.account', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Close user', exact: true })).toBeVisible();
   await page.getByRole('searchbox', { name: 'Search schemas' }).fill('src_endpoint.port');
-  await expect(page.getByRole('row').filter({ hasText: 'ocsf/authentication' })).toContainText(
-    'src_endpoint.port',
-  );
+  await expect(page.getByRole('cell').filter({ hasText: 'src_endpoint.port' })).toBeVisible();
 });

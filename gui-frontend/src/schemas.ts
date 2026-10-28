@@ -1,7 +1,6 @@
-// The schema catalog as the GUI shows it: who uses a schema, how OCSF's classes fall into its categories, and a
-// schema handed over as a file.
+// The schema catalog as the GUI shows it: who uses a schema, and a schema handed over as a file.
 
-import type { DestinationDto, PipelineDto, SchemaSummary } from './api';
+import type { DestinationDto, PipelineDto } from './api';
 
 /** One object naming a schema: a pipeline producing it, or a destination accepting it. */
 export type User = { kind: 'pipeline' | 'destination'; id: string };
@@ -29,33 +28,6 @@ export function userHash(user: User): string {
   return user.kind === 'pipeline'
     ? `#/build/pipelines/${encodeURIComponent(user.id)}`
     : `#/build/destinations/${encodeURIComponent(user.id)}`;
-}
-
-/** OCSF's classes under each of its categories, by class uid, the categories by uid. */
-export function byCategory(
-  categories: { uid: number; caption: string }[],
-  schemas: SchemaSummary[],
-): { uid: number; caption: string; classes: SchemaSummary[] }[] {
-  return [...categories]
-    .sort((a, b) => a.uid - b.uid)
-    .map((c) => ({
-      uid: c.uid,
-      caption: c.caption,
-      classes: schemas
-        .filter((s) => s.origin === 'ocsf' && s.category === c.uid)
-        .sort((a, b) => (a.classUid ?? 0) - (b.classUid ?? 0)),
-    }))
-    .filter((c) => c.classes.length > 0);
-}
-
-/** How many classes a category shows at once. */
-export const PAGE = 10;
-
-/** The page of `items` numbered `page`, from 0, and how many pages there are. */
-export function paged<T>(items: T[], page: number): { shown: T[]; pages: number; first: number } {
-  const pages = Math.max(1, Math.ceil(items.length / PAGE));
-  const at = Math.min(Math.max(page, 0), pages - 1);
-  return { shown: items.slice(at * PAGE, (at + 1) * PAGE), pages, first: at * PAGE };
 }
 
 /** A schema's file name: its id, with what a file name cannot hold made a dash. */

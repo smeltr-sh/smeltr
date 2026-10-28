@@ -474,8 +474,6 @@ mod tests {
             (Method::GET, "/api/diff"),
             (Method::GET, "/api/branches/b/diff"),
             (Method::GET, "/api/branches/b/schema-findings"),
-            (Method::GET, "/api/schemas/builtin"),
-            (Method::GET, "/api/schemas/export"),
             (Method::POST, "/api/schemas/object"),
             (Method::POST, "/api/schemas/search"),
             (Method::GET, "/api/changes/b/timeline"),

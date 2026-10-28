@@ -3,8 +3,7 @@
   pipeline produces, and what a destination accepts.
 -->
 <script lang="ts">
-  import { builtinSchemas, type SchemaDto, type SchemaSummary } from './api';
-  import { reported } from './errors.svelte';
+  import type { SchemaDto } from './api';
 
   let {
     ids = $bindable(),
@@ -13,17 +12,13 @@
     readOnly = false,
   }: {
     ids: string[];
-    /** The bundle's own schemas, `shared/`'s and the scope's, offered beside the built-ins. */
+    /** The bundle's schemas, `shared/`'s and the scope's, offered to add. */
     declared: SchemaDto[];
     /** The add choice's name, read out: "Add a schema it produces". */
     adding: string;
     readOnly?: boolean;
   } = $props();
 
-  let builtins = $state<SchemaSummary[]>([]);
-  builtinSchemas()
-    .then((c) => (builtins = c.schemas))
-    .catch(reported);
   let picking = $state('');
 
   function add(id: string) {
@@ -47,18 +42,9 @@
 {#if !readOnly}
   <select aria-label={adding} bind:value={picking} onchange={() => add(picking)}>
     <option value="">+ add schema</option>
-    {#if declared.some((d) => !ids.includes(d.id))}
-      <optgroup label="the bundle's">
-        {#each declared.filter((d) => !ids.includes(d.id)) as d (d.id)}
-          <option value={d.id}>{d.id}</option>
-        {/each}
-      </optgroup>
-    {/if}
-    <optgroup label="built-in">
-      {#each builtins.filter((b) => !ids.includes(b.id)) as b (b.id)}
-        <option value={b.id}>{b.id}</option>
-      {/each}
-    </optgroup>
+    {#each declared.filter((d) => !ids.includes(d.id)) as d (d.id)}
+      <option value={d.id}>{d.id}</option>
+    {/each}
   </select>
 {/if}
 

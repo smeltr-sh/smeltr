@@ -51,6 +51,7 @@
   import {
     isInternal,
     sampleSource,
+    type MissingField,
     type PreviewResult,
     type PreviewRow,
     type SampleRecordDto,
@@ -245,6 +246,12 @@
       ]),
     ),
   );
+  /** The missing fields by the schema requiring them. */
+  let missingBySchema = $derived.by(() => {
+    const out = new Map<string, MissingField[]>();
+    for (const m of missing.values()) out.set(m.schema, [...(out.get(m.schema) ?? []), m]);
+    return out;
+  });
 
   /** Every field the records hold, and every field the pipeline declares that none of them
    * do, which the Fields menu lists as held by none. A declared struct a record fills is its
@@ -903,8 +910,7 @@
                             {onjump}
                           />
                           {#if missing.size > 0}
-                            {@const bySchema = Map.groupBy(missing.values(), (m) => m.schema)}
-                            {#each bySchema as [schema, fields] (schema)}
+                            {#each missingBySchema as [schema, fields] (schema)}
                               <div class="missing-fields">
                                 <p class="missing">Required by {schema}:</p>
                                 {#each fields as m (m.path)}

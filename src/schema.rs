@@ -1,64 +1,30 @@
 //! A schema is a contract on a pipeline's rows: the fields a row may have by name, the type each must be, which a row
-//! must have, and what each means. ECS and every OCSF event class are built in; a bundle declares its own as JSON
-//! Schema (`json_schema`). A pipeline names the schemas it produces, and `check` holds the type of its record
-//! (`plan::dictionary`) to them.
+//! must have, and what each means. A bundle declares its schemas as JSON Schema (`json_schema`). A pipeline names the
+//! schemas it produces, and `check` holds the type of its record (`plan::dictionary`) to them.
 //!
-//! A schema is a root object and the objects under it, shared where a schema names one object from many places, as
-//! OCSF does. How a schema reads a row is its `Reading`: Elasticsearch reads a dotted key as a path and any field as
-//! one value or many, so ECS does too; JSON Schema and OCSF read a key as it is, and a field is an array only where
-//! the schema says so.
+//! A schema is a root object and the objects under it, shared where a schema names one object from many places. A
+//! key is a name as it is, and a field is an array only where the schema says so.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use crate::core::column::DataType;
-use crate::io::elastic_mapping::Ecs;
 
-pub mod ecs;
 pub mod json_schema;
-pub mod ocsf;
-mod ocsf_schema;
 
-pub use ocsf_schema::VERSION as OCSF_VERSION;
-
-/// One contract, by id: `ecs`, `ocsf/<class>`, or a bundle's own.
+/// One contract, by its id in the bundle.
 #[derive(Debug)]
 pub struct Schema {
     pub id: String,
     pub title: String,
     pub description: String,
-    pub origin: Origin,
-    pub reading: Reading,
     objects: Arc<[Object]>,
     root: usize,
 }
 
-/// Where a schema comes from.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Origin {
-    Ecs {
-        version: &'static str,
-    },
-    Ocsf {
-        version: &'static str,
-        class_uid: u32,
-        category: u32,
-    },
-    /// Declared in a bundle, as JSON Schema.
-    Bundle,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Reading {
-    /// A dotted key is a path, and any field holds one value or an array of them.
-    Elasticsearch,
-    /// A key is a name as it is, and a field is an array only where the schema says so.
-    Json,
-}
-
 #[derive(Clone, Debug)]
 pub struct Object {
-    /// The schema's own name for the object, where it has one: `user`, `network_endpoint`.
+    /// The schema's own name for the object, where it has one: the `$defs` key that names it.
     pub name: String,
     pub description: String,
     pub fields: Vec<Field>,
@@ -68,7 +34,7 @@ pub struct Object {
 pub struct Field {
     pub name: String,
     pub ty: Type,
-    /// The schema's own name for the type: `keyword`, `timestamp`, `user`.
+    /// The schema's own name for the type: `string`, `date-time`, `user`.
     pub type_name: String,
     pub array: bool,
     pub required: bool,
@@ -78,11 +44,9 @@ pub struct Field {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Type {
     Leaf(Leaf),
-    /// The object at this index of the schema's objects. An implied object is no field of its own but the path to
-    /// fields under it, as `source` is in ECS: a value of another type there is no misfit.
+    /// The object at this index of the schema's objects.
     Object {
         at: usize,
-        implied: bool,
     },
 }
 
@@ -100,8 +64,6 @@ pub enum Leaf {
     EpochMillis,
     /// Any value at all.
     Json,
-    /// As ECS maps it, for Elasticsearch.
-    Ecs(Ecs),
 }
 
 impl Leaf {
@@ -116,7 +78,6 @@ impl Leaf {
             Leaf::DateTime => *ty == T::DateTime,
             Leaf::EpochMillis => *ty == T::I64,
             Leaf::Json => true,
-            Leaf::Ecs(e) => e.holds(ty),
         }
     }
 
@@ -129,7 +90,6 @@ impl Leaf {
             Leaf::Bool => "bool",
             Leaf::DateTime => "datetime",
             Leaf::Json => "any type",
-            Leaf::Ecs(e) => e.written_as(),
         }
     }
 }
@@ -194,10 +154,10 @@ impl Schema {
     pub fn field(&self, keys: &[String]) -> Option<&Field> {
         let mut at = Some(self.root);
         let mut found = None;
-        for segment in keys.iter().flat_map(|k| self.segments(k)) {
-            let f = self.objects[at?].fields.iter().find(|f| f.name == segment)?;
+        for key in keys {
+            let f = self.objects[at?].fields.iter().find(|f| f.name == *key)?;
             at = match f.ty {
-                Type::Object { at, .. } => Some(at),
+                Type::Object { at } => Some(at),
                 Type::Leaf(_) => None,
             };
             found = Some(f);
@@ -205,39 +165,17 @@ impl Schema {
         found
     }
 
-    fn segments<'k>(&self, key: &'k str) -> Vec<&'k str> {
-        match self.reading {
-            Reading::Elasticsearch => key.split('.').collect(),
-            Reading::Json => vec![key],
-        }
-    }
-
     fn walk(&self, at: usize, fields: &[(String, DataType)], keys: &mut Vec<String>, out: &mut Vec<Finding>) {
-        let mut present = Vec::new();
+        let object = &self.objects[at];
         for (key, ty) in fields {
-            let segments = self.segments(key);
-            present.push(segments[0]);
-            // Down the path a dotted key names, to the field its last segment names.
-            let mut object = at;
-            let mut field = None;
-            for (i, segment) in segments.iter().enumerate() {
-                let Some(f) = self.objects[object].fields.iter().find(|f| f.name == *segment) else {
-                    break;
-                };
-                match f.ty {
-                    _ if i + 1 == segments.len() => field = Some(f),
-                    Type::Object { at, .. } => object = at,
-                    Type::Leaf(_) => break,
-                }
-            }
-            if let Some(f) = field {
+            if let Some(f) = object.fields.iter().find(|f| f.name == *key) {
                 keys.push(key.clone());
                 self.value(f, ty, keys, out);
                 keys.pop();
             }
         }
-        for f in self.objects[at].fields.iter().filter(|f| f.required) {
-            if !present.contains(&f.name.as_str()) {
+        for f in object.fields.iter().filter(|f| f.required) {
+            if !fields.iter().any(|(key, _)| *key == f.name) {
                 let mut keys = keys.clone();
                 keys.push(f.name.clone());
                 out.push(Finding {
@@ -250,16 +188,12 @@ impl Schema {
     }
 
     fn value(&self, f: &Field, ty: &DataType, keys: &mut Vec<String>, out: &mut Vec<Finding>) {
-        let ty = match (self.reading, f.array, ty) {
+        let ty = match (f.array, ty) {
             // Only the row knows: no misfit can be seen here.
-            (_, _, DataType::Null | DataType::Variant) => return,
-            (Reading::Elasticsearch, _, DataType::Array(element)) => return self.value(f, element, keys, out),
-            (Reading::Elasticsearch, _, ty) => ty,
-            (Reading::Json, true, DataType::Array(element)) => element,
-            (Reading::Json, false, ty @ DataType::Array(_)) | (Reading::Json, true, ty) => {
-                return self.misfit(f, ty, keys, out);
-            }
-            (Reading::Json, false, ty) => ty,
+            (_, DataType::Null | DataType::Variant) => return,
+            (true, DataType::Array(element)) => element,
+            (false, ty @ DataType::Array(_)) | (true, ty) => return self.misfit(f, ty, keys, out),
+            (false, ty) => ty,
         };
         if matches!(ty, DataType::Null | DataType::Variant) {
             return;
@@ -267,9 +201,8 @@ impl Schema {
         match f.ty {
             Type::Leaf(leaf) if !leaf.holds(ty) => self.misfit(f, ty, keys, out),
             Type::Leaf(_) => {}
-            Type::Object { at, .. } if let DataType::Struct(fields, _) = ty => self.walk(at, fields, keys, out),
-            Type::Object { implied: true, .. } => {}
-            Type::Object { implied: false, .. } => self.misfit(f, ty, keys, out),
+            Type::Object { at } if let DataType::Struct(fields, _) = ty => self.walk(at, fields, keys, out),
+            Type::Object { .. } => self.misfit(f, ty, keys, out),
         }
     }
 
@@ -292,9 +225,10 @@ impl Schema {
             Type::Leaf(leaf) => leaf.written_as(),
             Type::Object { .. } => "struct",
         };
-        match (self.reading, f.array) {
-            (Reading::Json, true) => format!("array({element})"),
-            _ => element.to_string(),
+        if f.array {
+            format!("array({element})")
+        } else {
+            element.to_string()
         }
     }
 
@@ -304,7 +238,7 @@ impl Schema {
     }
 
     /// Every field of the schema by path from its root, each with the path's keys, to `depth` objects deep. An
-    /// object OCSF names from many places, or from within itself, is listed again under each path that reaches it.
+    /// object named from many places, or from within itself, is listed again under each path that reaches it.
     pub fn fields(&self, depth: usize) -> Vec<(Vec<String>, &Field)> {
         let mut out = Vec::new();
         self.list(self.root, depth, &mut Vec::new(), &mut out);
@@ -315,7 +249,7 @@ impl Schema {
         for f in &self.objects[at].fields {
             keys.push(f.name.clone());
             out.push((keys.clone(), f));
-            if let Type::Object { at, .. } = f.ty
+            if let Type::Object { at } = f.ty
                 && depth > 1
             {
                 self.list(at, depth - 1, keys, out);
@@ -420,31 +354,10 @@ fn same_kind(a: &Misfit, b: &Misfit) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b)
 }
 
-/// Every built-in schema, ECS first and then each OCSF class by class uid.
-pub fn builtins() -> &'static [Arc<Schema>] {
-    static ALL: OnceLock<Vec<Arc<Schema>>> = OnceLock::new();
-    ALL.get_or_init(|| {
-        std::iter::once(Arc::new(ecs::schema()))
-            .chain(ocsf::schemas().into_iter().map(Arc::new))
-            .collect()
-    })
-}
-
-/// The built-in schema `id` names.
-pub fn builtin(id: &str) -> Option<Arc<Schema>> {
-    builtins().iter().find(|s| s.id == id).cloned()
-}
-
-/// Whether `id` is a built-in's, or in the space the built-ins take: a bundle's own schema may take neither.
-pub fn reserved(id: &str) -> bool {
-    id == "ecs" || id.starts_with("ecs/") || id == "ocsf" || id.starts_with("ocsf/")
-}
-
-/// Builds a schema's objects one at a time, an object named again being the one already built.
+/// Builds a schema's objects one at a time.
 #[derive(Default)]
 pub(crate) struct Objects {
     objects: Vec<Object>,
-    named: BTreeMap<String, usize>,
 }
 
 impl Objects {
@@ -457,35 +370,17 @@ impl Objects {
         &mut self.objects[at]
     }
 
-    pub(crate) fn named(&self, name: &str) -> Option<usize> {
-        self.named.get(name).copied()
-    }
-
-    pub(crate) fn name(&mut self, name: &str, at: usize) {
-        self.named.insert(name.to_string(), at);
-    }
-
     pub(crate) fn into_shared(self) -> Arc<[Object]> {
         self.objects.into()
     }
 }
 
 impl Schema {
-    pub(crate) fn new(
-        id: String,
-        title: String,
-        description: String,
-        origin: Origin,
-        reading: Reading,
-        objects: Arc<[Object]>,
-        root: usize,
-    ) -> Schema {
+    pub(crate) fn new(id: String, title: String, description: String, objects: Arc<[Object]>, root: usize) -> Schema {
         Schema {
             id,
             title,
             description,
-            origin,
-            reading,
             objects,
             root,
         }
@@ -495,6 +390,7 @@ impl Schema {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn st(fields: &[(&str, DataType)]) -> DataType {
         DataType::Struct(fields.iter().map(|(k, t)| (k.to_string(), t.clone())).collect(), false)
@@ -516,27 +412,77 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn what_a_check_finds_is_told_a_sentence_a_field_and_one_for_what_a_schema_lacks() {
-        let auth = builtin("ocsf/authentication").unwrap();
-        let record = DataType::Struct(vec![("time".to_string(), DataType::DateTime)], false);
-        let told = told(&[auth.clone()], &auth.check(&record));
-        assert_eq!(
-            told[0],
-            (
-                Some(vec!["time".to_string()]),
-                "`time` is datetime, but OCSF Authentication maps it as timestamp. Write it as i64: \
-                 `.epochMillis()` gives one."
-                    .to_string()
-            )
-        );
-        assert_eq!(told.len(), 2, "{told:?}");
-        assert!(told[1].1.starts_with("OCSF Authentication requires `activity_id`,"));
+    /// A sign-in, shaped as OCSF shapes one: a time in epoch milliseconds, objects named from many places, and
+    /// arrays of objects.
+    fn login() -> Arc<Schema> {
+        let endpoint = json!({ "$ref": "#/$defs/endpoint" });
+        let doc = json!({
+            "title": "Login",
+            "type": "object",
+            "required": ["activity_id", "time", "user", "metadata"],
+            "properties": {
+                "activity_id": { "type": "integer" },
+                "time": { "type": "integer", "format": "epoch-millis" },
+                "time_dt": { "type": "string", "format": "date-time" },
+                "user": { "$ref": "#/$defs/user" },
+                "src_endpoint": endpoint,
+                "dst_endpoint": endpoint,
+                "status": { "type": "string" },
+                "metadata": {
+                    "type": "object",
+                    "required": ["product"],
+                    "properties": { "product": { "type": "string" }, "version": { "type": "string" } },
+                },
+                "observables": { "type": "array", "items": { "$ref": "#/$defs/observable" } },
+            },
+            "$defs": {
+                "user": { "type": "object", "properties": { "name": { "type": "string" }, "uid": { "type": "string" } } },
+                "endpoint": { "type": "object", "properties": { "ip": { "type": "string" }, "port": { "type": "integer" } } },
+                "observable": { "type": "object", "properties": { "name": { "type": "string" } } },
+            },
+        });
+        Arc::new(json_schema::read("login", &doc).unwrap())
+    }
+
+    /// A network connection, which names `user` and `time` as `login` does and `connection` alone.
+    fn connection() -> Arc<Schema> {
+        let doc = json!({
+            "title": "Connection",
+            "type": "object",
+            "required": ["time", "connection"],
+            "properties": {
+                "time": { "type": "integer", "format": "epoch-millis" },
+                "user": { "type": "object", "properties": { "name": { "type": "string" } } },
+                "connection": { "type": "object", "properties": { "uid": { "type": "string" } } },
+            },
+        });
+        Arc::new(json_schema::read("connection", &doc).unwrap())
     }
 
     #[test]
-    fn ocsf_names_a_type_a_field_does_not_hold_and_each_required_field_missing() {
-        let auth = builtin("ocsf/authentication").unwrap();
+    fn what_a_check_finds_is_told_a_sentence_a_field_and_one_for_what_a_schema_lacks() {
+        let login = login();
+        let record = st(&[("time", DataType::DateTime)]);
+        let told = told(std::slice::from_ref(&login), &login.check(&record));
+        assert_eq!(
+            told,
+            [
+                (
+                    Some(vec!["time".to_string()]),
+                    "`time` is datetime, but Login maps it as epoch-millis. Write it as i64: `.epochMillis()` gives \
+                     one."
+                        .to_string()
+                ),
+                (
+                    None,
+                    "Login requires `activity_id`, `metadata`, `user`; the rows lack them.".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_check_names_a_type_a_field_does_not_hold_and_each_required_field_missing() {
         let record = st(&[
             ("time", DataType::DateTime),
             ("time_dt", DataType::DateTime),
@@ -544,52 +490,49 @@ mod tests {
             ("src_endpoint", st(&[("ip", DataType::Str), ("port", DataType::Str)])),
             ("status", DataType::Str),
             ("unmapped", st(&[("anything", DataType::Bytes)])),
-            ("message", DataType::Variant),
+            ("metadata", DataType::Variant),
         ]);
         assert_eq!(
-            shown(&auth.check(&record)),
+            shown(&login().check(&record)),
             [
-                "ocsf/authentication time: datetime not timestamp, write i64",
-                "ocsf/authentication user.uid: i64 not string, write str",
-                "ocsf/authentication src_endpoint.port: str not port, write i64",
-                "ocsf/authentication activity_id: missing",
-                "ocsf/authentication category_uid: missing",
-                "ocsf/authentication class_uid: missing",
-                "ocsf/authentication metadata: missing",
-                "ocsf/authentication severity_id: missing",
-                "ocsf/authentication type_uid: missing",
+                "login time: datetime not epoch-millis, write i64",
+                "login user.uid: i64 not string, write str",
+                "login src_endpoint.port: str not integer, write i64",
+                "login activity_id: missing",
             ]
         );
     }
 
     #[test]
-    fn an_array_ocsf_does_not_name_is_a_misfit_and_one_it_names_holds_its_elements() {
-        let auth = builtin("ocsf/authentication").unwrap();
+    fn an_array_the_schema_does_not_name_is_a_misfit_and_one_it_names_holds_its_elements() {
         let record = st(&[
             ("status", DataType::Array(Box::new(DataType::Str))),
             ("observables", DataType::Str),
-            (
-                "enrichments",
-                DataType::Array(Box::new(st(&[("name", DataType::Str), ("value", DataType::Str)]))),
-            ),
+            ("dst_endpoint", DataType::Array(Box::new(st(&[("ip", DataType::Str)])))),
         ]);
-        let mut findings = auth.check(&record);
+        let mut findings = login().check(&record);
         findings.retain(|f| f.misfit != Misfit::Missing);
         assert_eq!(
             shown(&findings),
             [
-                "ocsf/authentication status: array(str) not string, write str",
-                "ocsf/authentication observables: str not observable, write array(struct)",
+                "login status: array(str) not string, write str",
+                "login observables: str not observable, write array(struct)",
+                "login dst_endpoint: array(struct) not endpoint, write struct",
             ]
         );
+        let held = login().check(&st(&[(
+            "observables",
+            DataType::Array(Box::new(st(&[("name", DataType::Str)]))),
+        )]));
+        assert!(!held.iter().any(|f| f.path() == "observables"), "{held:?}");
     }
 
     #[test]
     fn a_required_field_inside_an_object_is_missing_only_where_the_object_is_there() {
-        let auth = builtin("ocsf/authentication").unwrap();
-        let without = auth.check(&st(&[]));
+        let login = login();
+        let without = login.check(&st(&[]));
         assert!(!without.iter().any(|f| f.keys.len() > 1));
-        let with = auth.check(&st(&[("metadata", st(&[("version", DataType::Str)]))]));
+        let with = login.check(&st(&[("metadata", st(&[("version", DataType::Str)]))]));
         assert!(
             with.iter()
                 .any(|f| f.path() == "metadata.product" && f.misfit == Misfit::Missing),
@@ -599,37 +542,21 @@ mod tests {
 
     #[test]
     fn several_schemas_break_where_each_naming_the_field_does_and_require_what_all_require() {
-        let auth = builtin("ocsf/authentication").unwrap();
-        let network = builtin("ocsf/network_activity").unwrap();
         let record = st(&[
             ("user", DataType::Str),
             ("time", DataType::DateTime),
-            ("connection_info", DataType::I64),
+            ("connection", DataType::I64),
         ]);
-        let both = check(&[auth.clone(), network.clone()], &record);
-        let shown = shown(&both);
-        // `user` is required by one and named by both differently: Authentication's is an object, and so is Network
-        // Activity's, so a string breaks both.
-        assert!(shown.contains(&"ocsf/authentication time: datetime not timestamp, write i64".to_string()));
-        assert!(shown.contains(&"ocsf/authentication class_uid: missing".to_string()));
-        assert!(!shown.iter().any(|s| s.ends_with("src_endpoint: missing")), "{shown:?}");
-        assert!(
-            shown.contains(
-                &"ocsf/network_activity connection_info: i64 not network_connection_info, write struct".to_string()
-            ),
-            "a field one schema names alone breaks where that one says: {shown:?}"
+        let shown = shown(&check(&[login(), connection()], &record));
+        assert_eq!(
+            shown,
+            [
+                "login user: str not user, write struct",
+                "login time: datetime not epoch-millis, write i64",
+                "connection connection: i64 not object, write struct",
+            ],
+            "`user` and `time` break both; `connection` is named by one alone, and no field is required by both and \
+             missing"
         );
-    }
-
-    #[test]
-    fn every_builtin_has_a_reserved_id_and_ids_are_unique() {
-        let ids: Vec<&str> = builtins().iter().map(|s| s.id.as_str()).collect();
-        assert!(ids.iter().all(|id| reserved(id)));
-        let mut sorted = ids.clone();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(sorted.len(), ids.len());
-        assert_eq!(ids[0], "ecs");
-        assert!(!reserved("acme-login") && !reserved("ecs-like") && !reserved("ocsfx"));
     }
 }

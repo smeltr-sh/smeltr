@@ -1527,12 +1527,22 @@ mod tests {
             .replace(r#""when":"n.","#, "")
     }
 
-    /// `compiling`, its pipeline producing `schemas`.
+    /// The schemas `producing` declares: `stamped`, of a `@timestamp`, and `login`, which requires `time` and `user`.
+    const SCHEMAS: &str = r#""schemas":[
+        {"id":"stamped","schema":{"title":"Stamped","type":"object",
+            "properties":{"@timestamp":{"type":"string","format":"date-time"}}}},
+        {"id":"login","schema":{"title":"Login","type":"object","required":["time","user"],
+            "properties":{"time":{"type":"integer","format":"epoch-millis"},
+                "user":{"type":"object","properties":{"name":{"type":"string"}}}}}}],"#;
+
+    /// `compiling`, declaring `SCHEMAS`, its pipeline producing `schemas`.
     fn producing(schemas: &str) -> String {
-        compiling().replace(
-            r#""id":"p","name":"P","#,
-            &format!(r#""id":"p","name":"P","schemas":{schemas},"#),
-        )
+        compiling()
+            .replacen(r#"{"version":1,"#, &format!(r#"{{"version":1,{SCHEMAS}"#), 1)
+            .replace(
+                r#""id":"p","name":"P","#,
+                &format!(r#""id":"p","name":"P","schemas":{schemas},"#),
+            )
     }
 
     fn warnings_of(config: String, columns: &[crate::heartbeat::CaptureColumn]) -> Vec<(Option<String>, String)> {
@@ -1563,25 +1573,22 @@ mod tests {
 
     #[test]
     fn the_fields_a_schema_requires_and_the_rows_lack_are_listed_with_their_types() {
-        let missing = previewed(producing(r#"["ocsf/authentication"]"#), &[]).missing;
+        let missing = previewed(producing(r#"["login"]"#), &[]).missing;
         let time = missing.iter().find(|m| m.path == "time").unwrap();
-        assert_eq!(
-            (time.written_as.as_str(), time.schema.as_str()),
-            ("i64", "OCSF Authentication")
-        );
+        assert_eq!((time.written_as.as_str(), time.schema.as_str()), ("i64", "Login"));
         assert_eq!(missing.iter().find(|m| m.path == "user").unwrap().written_as, "struct");
-        assert_eq!(missing.len(), 8, "{missing:?}");
+        assert_eq!(missing.len(), 2, "{missing:?}");
     }
 
     #[test]
-    fn a_field_ecs_maps_as_another_type_is_warned_at_the_step_that_wrote_it() {
+    fn a_field_a_schema_types_otherwise_is_warned_at_the_step_that_wrote_it() {
         let body = r#""body":"$[\"@timestamp\"] = \"now\"; source = {ip: \"::1\"};""#;
-        let config = producing(r#"["ecs"]"#).replace(r#""body":"x = 1;""#, body);
+        let config = producing(r#"["stamped"]"#).replace(r#""body":"x = 1;""#, body);
         assert_eq!(
             warnings_of(config, &[]),
             [(
                 Some("s".to_string()),
-                "`@timestamp` is str, but ECS maps it as date. Write it as datetime.".to_string()
+                "`@timestamp` is str, but Stamped maps it as date-time. Write it as datetime.".to_string()
             )]
         );
         // A pipeline that produces no schema is held to none.
@@ -1597,18 +1604,21 @@ mod tests {
         };
         let columns = [column("_raw"), column("@timestamp")];
         assert_eq!(
-            warnings_of(producing(r#"["ecs"]"#), &columns),
+            warnings_of(producing(r#"["stamped"]"#), &columns),
             [(
                 Some("u".to_string()),
-                "`@timestamp` is str, but ECS maps it as date. Write it as datetime.".to_string()
+                "`@timestamp` is str, but Stamped maps it as date-time. Write it as datetime.".to_string()
             )]
         );
     }
 
     #[test]
     fn a_field_the_schema_requires_and_no_step_writes_is_warned_at_no_step() {
-        let warned = warnings_of(producing(r#"["ocsf/authentication"]"#), &[]);
-        assert_eq!(warned, [(None, "OCSF Authentication requires `activity_id`, `category_uid`, `class_uid`, `metadata`, `severity_id`, `time`, `type_uid`, `user`; the rows lack them.".to_string())]);
+        let warned = warnings_of(producing(r#"["login"]"#), &[]);
+        assert_eq!(
+            warned,
+            [(None, "Login requires `time`, `user`; the rows lack them.".to_string())]
+        );
     }
 
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {

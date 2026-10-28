@@ -597,8 +597,6 @@ export class DemoLeader {
           id: q.get('id'),
         });
       }
-      if (path === '/api/schemas/builtin') return this.ask('/schemas/builtin', {});
-      if (path === '/api/schemas/export') return this.ask('/schemas/export', { id: q.get('id') });
       const findings = path.match(/^\/api\/branches\/([^/]+)\/schema-findings$/);
       if (findings) return this.schemaFindings(decodeURIComponent(findings[1]));
       const capture = path.match(/^\/api\/captures\/([^/]+)$/);

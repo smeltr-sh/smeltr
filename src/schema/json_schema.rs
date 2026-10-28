@@ -9,8 +9,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
 
-use super::{Field, Leaf, Object, Objects, Origin, Reading, Schema, Type};
-use crate::io::elastic_mapping::Ecs;
+use super::{Field, Leaf, Object, Objects, Schema, Type};
 
 const DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 
@@ -33,8 +32,6 @@ pub fn read(id: &str, doc: &Value) -> Result<Schema, String> {
         id.to_string(),
         text("title").unwrap_or_else(|| id.to_string()),
         text("description").unwrap_or_default(),
-        Origin::Bundle,
-        Reading::Json,
         reader.objects.into_shared(),
         root,
     ))
@@ -75,7 +72,7 @@ impl Reader<'_> {
             ["boolean"] => leaf(Leaf::Bool, "boolean"),
             ["object"] => {
                 let at = self.object(node, at)?;
-                Ok((Type::Object { at, implied: false }, "object".to_string()))
+                Ok((Type::Object { at }, "object".to_string()))
             }
             ["array"] => Err(format!("{}: an array is a field's, under `items`", shown(at))),
             // Two types at once, or none: JSON Schema leaves it open, and so does the check.
@@ -95,13 +92,7 @@ impl Reader<'_> {
                 )
             })?;
         if let Some(&object) = self.refs.get(r) {
-            return Ok((
-                Type::Object {
-                    at: object,
-                    implied: false,
-                },
-                name.to_string(),
-            ));
+            return Ok((Type::Object { at: object }, name.to_string()));
         }
         let doc = self.doc;
         let def = ["$defs", "definitions"]
@@ -121,13 +112,7 @@ impl Reader<'_> {
         self.refs.insert(r.to_string(), object);
         let fields = self.fields(def, at)?;
         self.objects.get_mut(object).fields = fields;
-        Ok((
-            Type::Object {
-                at: object,
-                implied: false,
-            },
-            name.to_string(),
-        ))
+        Ok((Type::Object { at: object }, name.to_string()))
     }
 
     fn object(&mut self, node: &Map<String, Value>, at: &str) -> Result<usize, String> {
@@ -238,11 +223,9 @@ fn object(schema: &Schema, at: usize, defs: &mut Map<String, Value>) -> Value {
 fn field(schema: &Schema, f: &Field, defs: &mut Map<String, Value>) -> Value {
     match f.ty {
         Type::Leaf(leaf) => leaf_type(leaf),
-        // ECS's objects are its paths, written where they are; a named object is a definition.
-        Type::Object { at, .. } if schema.reading == Reading::Elasticsearch || schema.object(at).name.is_empty() => {
-            object(schema, at, defs)
-        }
-        Type::Object { at, .. } => {
+        // A named object is a definition.
+        Type::Object { at } if schema.object(at).name.is_empty() => object(schema, at, defs),
+        Type::Object { at } => {
             let name = schema.object(at).name.clone();
             if !defs.contains_key(&name) {
                 // Named before it is written, so an object under it naming it again is a reference.
@@ -264,14 +247,6 @@ fn leaf_type(leaf: Leaf) -> Value {
         Leaf::DateTime => json!({ "type": "string", "format": "date-time" }),
         Leaf::EpochMillis => json!({ "type": "integer", "format": EPOCH_MILLIS }),
         Leaf::Json => json!({}),
-        Leaf::Ecs(e) => match e.written_as() {
-            "datetime" => leaf_type(Leaf::DateTime),
-            "i64" => leaf_type(Leaf::Long),
-            "f64" => leaf_type(Leaf::Float),
-            "bool" => leaf_type(Leaf::Bool),
-            _ if e == Ecs::Flattened => json!({ "type": "object" }),
-            _ => leaf_type(Leaf::Str),
-        },
     }
 }
 
@@ -279,7 +254,7 @@ fn leaf_type(leaf: Leaf) -> Value {
 mod tests {
     use super::*;
     use crate::core::column::DataType;
-    use crate::schema::{Finding, Misfit, builtin};
+    use crate::schema::Misfit;
 
     fn st(fields: &[(&str, DataType)]) -> DataType {
         DataType::Struct(fields.iter().map(|(k, t)| (k.to_string(), t.clone())).collect(), false)
@@ -358,37 +333,10 @@ mod tests {
     }
 
     #[test]
-    fn a_schema_written_and_read_back_checks_as_it_did() {
-        let auth = builtin("ocsf/authentication").unwrap();
-        let back = read("copy", &write(&auth)).unwrap();
-        let record = st(&[
-            ("time", DataType::DateTime),
-            ("time_dt", DataType::DateTime),
-            ("user", st(&[("name", DataType::I64), ("groups", DataType::Str)])),
-            ("metadata", st(&[])),
-        ]);
-        // JSON Schema names a type by its own words, so a finding is the same but for the type's name.
-        let alike = |findings: Vec<Finding>| -> Vec<(Vec<String>, Option<String>)> {
-            (findings.into_iter())
-                .map(|f| match f.misfit {
-                    Misfit::Type { written_as, .. } => (f.keys, Some(written_as)),
-                    Misfit::Missing => (f.keys, None),
-                })
-                .collect()
-        };
-        assert_eq!(alike(back.check(&record)), alike(auth.check(&record)));
-        assert_eq!(back.title, auth.title);
-
+    fn a_schema_written_and_read_back_is_the_same() {
         let login = read("acme-login", &login()).unwrap();
         let again = read("acme-login", &write(&login)).unwrap();
         assert_eq!(write(&again), write(&login));
-    }
-
-    #[test]
-    fn ecs_is_written_as_its_paths() {
-        let ecs = write(&builtin("ecs").unwrap());
-        assert_eq!(ecs["properties"]["@timestamp"]["format"], "date-time");
-        assert_eq!(ecs["properties"]["source"]["properties"]["port"]["type"], "integer");
-        assert!(ecs.get("$defs").is_none());
+        assert_eq!(again.title, login.title);
     }
 }

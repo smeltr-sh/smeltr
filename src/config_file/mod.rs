@@ -522,9 +522,14 @@ mod tests {
         let json = r#"{
           "version": 1,
           "sources": [{ "id": "k", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g" }],
+          "schemas": [
+            { "id": "stamped", "schema": { "title": "Stamped", "type": "object",
+                                           "properties": { "@timestamp": { "type": "string", "format": "date-time" } } } },
+            { "id": "login", "schema": { "title": "Login", "type": "object" } }
+          ],
           "destinations": [{ "id": "out", "type": "kafka", "brokers": "b:9092", "defaultTopic": "t",
-                             "accepts": ["ocsf/authentication"] }],
-          "pipelines": [{ "id": "p", "name": "p", "schemas": ["ecs"],
+                             "accepts": ["login"] }],
+          "pipelines": [{ "id": "p", "name": "p", "schemas": ["stamped"],
                           "steps": [{ "id": "s", "type": "code", "body": "$[\"@timestamp\"] = \"now\";" }] }],
           "routes": [{ "id": "r", "source": "k", "pipeline": "p", "deliver": [{ "to": ["out"] }] }]
         }"#;
@@ -539,13 +544,12 @@ mod tests {
                 (
                     "p".to_string(),
                     Some("s".to_string()),
-                    "`@timestamp` is str, but ECS maps it as date. Write it as datetime.".to_string()
+                    "`@timestamp` is str, but Stamped maps it as date-time. Write it as datetime.".to_string()
                 ),
                 (
                     "p".to_string(),
                     None,
-                    "destination \"out\" accepts OCSF Authentication, but pipeline \"p\" produces no schema it accepts"
-                        .to_string()
+                    "destination \"out\" accepts Login, but pipeline \"p\" produces no schema it accepts".to_string()
                 ),
             ]
         );

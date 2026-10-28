@@ -68,28 +68,16 @@ pub const CATALOG: &[Route] = &[
         body: "{ id: string, pattern: string }[]",
     },
     Route {
-        method: "GET",
-        path: "/api/schemas/builtin",
-        what: "The built-in schemas: ECS, and each OCSF class with its category. No query.",
-        body: "",
-    },
-    Route {
         method: "POST",
         path: "/api/schemas/object",
         what: "One object of a schema with its fields, the root when at is absent. No query.",
-        body: "{ id?: string, schema?: object, at?: number }",
+        body: "{ id?: string, schema: object, at?: number }",
     },
     Route {
         method: "POST",
         path: "/api/schemas/search",
-        what: "The schemas whose id, title or a field's path holds q, the bundle's own given beside. No query.",
+        what: "The schemas given whose id, title or a field's path holds q. No query.",
         body: "{ q: string, schemas?: { id, schema }[] }",
-    },
-    Route {
-        method: "GET",
-        path: "/api/schemas/export",
-        what: "A built-in schema as JSON Schema. Query: id.",
-        body: "",
     },
     Route {
         method: "PUT",

@@ -31,6 +31,8 @@ const NOT_DEFINED_HERE: &[(&str, &str)] = &[
         "CARGO_TARGET_DIR",
         "the environment cargo reads its build directory from",
     ),
+    ("allOf", "a JSON Schema keyword"),
+    ("anyOf", "a JSON Schema keyword"),
     // librdkafka and the rdkafka crate.
     ("RD_KAFKA_EVENT_ERROR", "librdkafka's event type"),
     ("WITH_SASL_CYRUS", "librdkafka build flag"),

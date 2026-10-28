@@ -1,42 +1,60 @@
-// The schema catalog: the built-ins browsed by OCSF category and searched by field, a bundle's own schema added from
-// a JSON Schema, a pipeline's Produces and a destination's accepts, and what review finds where rows do not fit.
+// The schema catalog: a bundle's schemas opened and searched by field, one added from a JSON Schema, a pipeline's
+// Produces and a destination's accepts, and what review finds where rows do not fit.
 import { test, expect, goto, type Api } from '../fleet';
 
 const ON = '?branch=work&scope=shared';
 
-test('OCSF is browsed by category a page at a time, and a class opens an object at a time', async ({
-  admin,
-  leader,
-}) => {
+/** A sign-in, as a bundle declares it: an id, a time in epoch milliseconds and a user are required. */
+const LOGIN = {
+  title: 'Login',
+  type: 'object',
+  required: ['activity_id', 'time', 'user'],
+  properties: {
+    activity_id: { type: 'integer' },
+    time: { type: 'integer', format: 'epoch-millis' },
+    user: { $ref: '#/$defs/user' },
+    src_endpoint: {
+      type: 'object',
+      properties: { ip: { type: 'string' }, port: { type: 'integer' } },
+    },
+  },
+  $defs: {
+    user: {
+      type: 'object',
+      properties: { name: { type: 'string' }, manager: { $ref: '#/$defs/user' } },
+    },
+  },
+};
+
+const AUDIT = { title: 'Audit', type: 'object', properties: { action: { type: 'string' } } };
+
+/** `shared/` declaring `login` and `audit`. */
+async function declare(api: Api) {
+  await api.put(`/api/schemas${ON}`, [
+    { id: 'login', schema: LOGIN },
+    { id: 'audit', schema: AUDIT },
+  ]);
+}
+
+test('a schema opens an object at a time', async ({ admin, leader, api }) => {
+  await declare(api);
   await goto(admin, leader, '#/build/schemas');
   await expect(admin.getByRole('heading', { name: 'Schemas' })).toBeVisible();
-
-  const discovery = admin.getByRole('button', { name: /Discovery$/ });
-  await expect(discovery).toHaveAttribute('aria-expanded', 'false');
-  await discovery.click();
-  await expect(discovery).toHaveAttribute('aria-expanded', 'true');
-  await expect(admin.getByText('1–10 of 23 in Discovery')).toBeVisible();
-  await admin.getByRole('button', { name: '3', exact: true }).click();
-  await expect(admin.getByText('21–23 of 23 in Discovery')).toBeVisible();
-  await admin.getByRole('button', { name: 'Collapse all' }).click();
-  await expect(discovery).toHaveAttribute('aria-expanded', 'false');
-
-  await admin.getByRole('button', { name: /Identity & Access Management$/ }).click();
-  await admin.getByRole('button', { name: /ocsf\/authentication$/ }).click();
-  await expect(admin.getByText('Built-in, read-only.')).toBeVisible();
+  await admin.getByRole('button', { name: /Login$/ }).click();
+  await expect(admin.getByText('Edit it with Edit JSON.')).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Close user' })).toHaveCount(0);
   await admin.getByRole('button', { name: 'Open user', exact: true }).click();
   await expect(admin.getByRole('button', { name: 'Close user', exact: true })).toBeVisible();
-  await expect(admin.getByRole('button', { name: 'Open user.account', exact: true })).toBeVisible();
-  await admin.screenshot({ path: 'results/schemas-ocsf.png' });
+  await expect(admin.getByRole('button', { name: 'Open user.manager', exact: true })).toBeVisible();
+  await admin.screenshot({ path: 'results/schemas-fields.png' });
 });
 
-test('a search finds a schema by a field it holds', async ({ admin, leader }) => {
+test('a search finds a schema by a field it holds', async ({ admin, leader, api }) => {
+  await declare(api);
   await goto(admin, leader, '#/build/schemas');
   await admin.getByRole('searchbox', { name: 'Search schemas' }).fill('src_endpoint.port');
-  const auth = admin.getByRole('row').filter({ hasText: 'ocsf/authentication' });
-  await expect(auth).toContainText('src_endpoint.port');
-  await expect(admin.getByRole('button', { name: 'Expand all' })).toHaveCount(0);
+  await expect(admin.getByRole('cell').filter({ hasText: 'src_endpoint.port' })).toBeVisible();
+  await expect(admin.getByRole('button', { name: /Audit$/ })).toBeHidden();
   await admin.getByRole('searchbox', { name: 'Search schemas' }).fill('no-field-is-called-this');
   await expect(admin.getByText(/No schema or field matches/)).toBeVisible();
 });
@@ -74,26 +92,26 @@ test("a pipeline's Produces is saved with it, and the editor says what its rows 
   leader,
   api,
 }) => {
+  await declare(api);
   await api.put(`/api/pipelines/logins${ON}`, { id: 'logins', name: 'logins', steps: [] });
   await goto(admin, leader, '#/build/pipelines/logins');
   const produces = admin.locator('.produces');
-  await produces
-    .getByRole('combobox', { name: 'Add a schema it produces' })
-    .selectOption('ocsf/authentication');
-  await expect(produces.getByRole('link', { name: 'ocsf/authentication' })).toBeVisible();
+  await produces.getByRole('combobox', { name: 'Add a schema it produces' }).selectOption('login');
+  await expect(produces.getByRole('link', { name: 'login' })).toBeVisible();
   await expect(produces.getByRole('status')).toHaveText('1 schema finding', { timeout: 15_000 });
   await expect(
-    admin.getByText(/^OCSF Authentication requires `activity_id`.*; the rows lack them\.$/),
+    admin.getByText('Login requires `activity_id`, `time`, `user`; the rows lack them.'),
   ).toBeVisible();
   await admin.screenshot({ path: 'results/schemas-produces.png' });
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
   const saved = await api.get(`/api/pipelines/logins${ON}`);
-  expect(saved.pipeline.schemas).toEqual(['ocsf/authentication']);
+  expect(saved.pipeline.schemas).toEqual(['login']);
 });
 
 test("a destination's accepts is saved with it", async ({ admin, leader, api }) => {
+  await declare(api);
   await goto(admin, leader, '#/build/destinations');
   await admin.getByRole('button', { name: '+ Add destination' }).click();
   const dialog = admin.getByRole('dialog');
@@ -103,24 +121,28 @@ test("a destination's accepts is saved with it", async ({ admin, leader, api }) 
   await dialog.getByRole('textbox', { name: 'default index' }).fill('logs');
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
-  await admin.getByRole('combobox', { name: 'Add a schema it accepts' }).selectOption('ecs');
+  await admin.getByRole('combobox', { name: 'Add a schema it accepts' }).selectOption('audit');
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
   const saved = await api.get(`/api/config${ON}`);
-  expect(saved.config.destinations[0].accepts).toEqual(['ecs']);
+  expect(saved.config.destinations[0].accepts).toEqual(['audit']);
 });
 
-/** On `branch`, in group `default`: a pipeline producing OCSF Authentication that writes nothing, routed from a
- * metrics source to a destination that accepts only ECS. */
+/** On `branch`, in group `default`: a pipeline producing `login` that writes nothing, routed from a metrics source
+ * to a destination that accepts only `audit`. */
 async function arrangeMisfit(api: Api, branch: string) {
   const on = `?branch=${branch}&scope=default`;
+  await api.put(`/api/schemas${on}`, [
+    { id: 'login', schema: LOGIN },
+    { id: 'audit', schema: AUDIT },
+  ]);
   await api.put(`/api/sources${on}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
   await api.put(`/api/pipelines/logins${on}`, {
     id: 'logins',
     name: 'logins',
     steps: [],
-    schemas: ['ocsf/authentication'],
+    schemas: ['login'],
   });
   await api.put(`/api/destinations${on}`, [
     {
@@ -128,7 +150,7 @@ async function arrangeMisfit(api: Api, branch: string) {
       type: 'elasticsearch',
       url: 'http://127.0.0.1:9',
       defaultIndex: 'logs',
-      accepts: ['ecs'],
+      accepts: ['audit'],
     },
   ]);
   await api.put(`/api/routes${on}`, [
@@ -150,9 +172,9 @@ test('review lists where the rows do not fit a schema, and the dock counts them 
   const panel = admin.getByRole('tabpanel');
   await expect(panel.getByRole('link', { name: 'logins' })).toBeVisible();
   await expect(
-    panel.getByText(/^OCSF Authentication requires `activity_id`.*; the rows lack them\.$/),
+    panel.getByText('Login requires `activity_id`, `time`, `user`; the rows lack them.'),
   ).toBeVisible();
-  await expect(panel.getByText(/destination "search" accepts ECS/)).toBeVisible();
+  await expect(panel.getByText(/destination "search" accepts Audit/)).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Approve & deploy' })).toBeEnabled();
   await admin.screenshot({ path: 'results/schemas-review.png' });
 });
@@ -162,10 +184,11 @@ test('a field the schema requires and the rows lack is a column of its own, with
   leader,
   api,
 }) => {
+  await declare(api);
   await api.put(`/api/pipelines/logins${ON}`, {
     id: 'logins',
     name: 'logins',
-    schemas: ['ocsf/authentication'],
+    schemas: ['login'],
     steps: [
       {
         type: 'parser',
@@ -192,7 +215,7 @@ test('a field the schema requires and the rows lack is a column of its own, with
   const grid = admin.locator('table.grid');
   const head = grid.locator('thead th', { hasText: 'activity_id' });
   await expect(head).toContainText('activity_id: i64', { timeout: 15_000 });
-  await expect(head).toHaveAttribute('title', /^OCSF Authentication requires activity_id/);
+  await expect(head).toHaveAttribute('title', /^Login requires activity_id/);
   await expect(grid.locator('thead th.missing-head', { hasText: /^time/ })).toHaveCount(0);
   await expect(grid.getByRole('row', { name: /^row 0 / })).toContainText('missing');
 
@@ -201,9 +224,9 @@ test('a field the schema requires and the rows lack is a column of its own, with
     'aria-expanded',
     'true',
   );
-  await expect(admin.getByText('Required by OCSF Authentication:')).toBeVisible();
+  await expect(admin.getByText('Required by Login:')).toBeVisible();
   await expect(
-    admin.getByText(/^OCSF Authentication requires `activity_id`.*; the rows lack them\.$/),
+    admin.getByText('Login requires `activity_id`, `user`; the rows lack them.'),
   ).toBeVisible();
   await admin.screenshot({ path: 'results/schemas-missing.png' });
 });

@@ -49,14 +49,14 @@ at save whether or not a step names it yet.
 ## Schemas
 
 A schema is what a pipeline's rows should hold: each field's type, and the
-fields they should have. ECS and each OCSF class are built in; a bundle declares
-its own as JSON Schema, by an id no built-in takes. A pipeline names the
+fields they should have. A bundle declares its schemas as JSON Schema. A
+pipeline names the
 schemas it produces, and a destination may name the schemas it accepts. Both
 are checked at save to name a schema the group can see.
 
 ```mermaid
 flowchart LR
-  S[schemas: built-in and the bundle's] --> P[pipeline produces]
+  S[the bundle's schemas] --> P[pipeline produces]
   S --> D[destination accepts]
   P --> F{rows fit?}
   D --> F

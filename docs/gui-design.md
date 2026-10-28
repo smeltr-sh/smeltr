@@ -522,11 +522,10 @@ after a reload.
 
 ## Schemas
 
-The Schemas page lists the bundle's own schemas, then `shared/`'s, then the
-built-ins: ECS, and OCSF by category. A category folds open to its classes a
-page at a time, since OCSF holds dozens; a search reaches into fields, so a
-field's path finds the schemas that name it. A schema folds open to its
-fields, an object at a time, and any schema exports as JSON Schema.
+The Schemas page lists the bundle's own schemas, then `shared/`'s. A search
+reaches into fields, so a field's path finds the schemas that name it. A schema
+folds open to its fields, an object at a time, and any schema exports as JSON
+Schema.
 
 A pipeline names what it produces in the editor's Produces row, and a
 destination what it accepts on its own form. Where the rows do not fit, the
