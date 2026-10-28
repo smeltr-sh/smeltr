@@ -896,7 +896,7 @@
     {/each}
 
     {#if topologyChanged || layoutError}
-      <div class="topology-notice" role="status">
+      <div class="topology-notice warn-bar" role="status">
         <span>The layout is out of date</span>
         <button type="button" class="primary" disabled={updating} onclick={updateLayout}
           >Update layout</button
@@ -1378,8 +1378,6 @@
     gap: 0.75rem;
     margin: 0 0 1rem;
     padding: 0.5rem 0.75rem;
-    border-left: 3px solid var(--warn);
-    background: color-mix(in srgb, var(--warn) 10%, var(--bg));
     font-size: var(--text-note);
   }
 

@@ -730,7 +730,7 @@
         and reads only the rows past the last one sent.
       </p>
     {:else}
-      <p class="banner warn">
+      <p class="banner warn-bar">
         <strong>Each poll scans all of <code>{ran.verdict.relation}</code></strong>, about
         {ran.verdict.rows.toLocaleString()} rows. Index the position, or filter inside your query with
         <code>:last.{positionColumn}</code>.
@@ -844,20 +844,18 @@
   .banner {
     margin: 0;
     padding: 0.5rem 0.75rem;
-    border-left: 3px solid var(--border);
     border-radius: var(--radius);
-    background: var(--field);
     font-size: var(--text-label);
+  }
+
+  .banner:not(.warn-bar) {
+    border-left: 3px solid var(--border);
+    background: var(--field);
   }
 
   .banner.good {
     border-left-color: var(--added);
     background: color-mix(in srgb, var(--added) 10%, var(--field));
-  }
-
-  .banner.warn {
-    border-left-color: var(--warn);
-    background: color-mix(in srgb, var(--warn) 14%, var(--field));
   }
 
   .banner.bad {

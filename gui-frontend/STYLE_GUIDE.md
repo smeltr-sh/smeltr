@@ -123,7 +123,7 @@ its values in every palette:
 | Token | Light | Dark | Role |
 |---|---|---|---|
 | `--error` | `oklch(48% 0.2 25)` | `oklch(70% 0.19 25)` | Validation errors, danger actions |
-| `--warn` | `oklch(60% 0.14 85)` | *(same)* | Warnings |
+| `--warn` | `oklch(52% 0.13 55)` | `oklch(78% 0.16 85)` | Warnings |
 | `--added` | `oklch(46% 0.13 145)` | `oklch(66% 0.15 145)` | Diff view, added |
 | `--removed` | `oklch(54% 0.18 25)` | `oklch(68% 0.17 20)` | Diff view, removed |
 | `--changed` | `oklch(56% 0.15 42)` | `oklch(66% 0.16 42)` | Diff view, rewritten by a step |
@@ -133,6 +133,10 @@ The `--tok-*` tokens color code in an expression field and on the
 website, which copies them. Each kind takes its own hue, so no two kinds
 blur together; numbers and the literals `true`, `false`, `null` share the
 orange family at two hues.
+
+A warning bar is `.warn-bar` (`app.css`): a `--warn` stripe on a light
+`--warn` tint, with the text in `--ink`. `--warn` text on its own tint
+reads poorly, so in a bar only the stripe and the glyph carry the color.
 
 A tint over a surface mixes in oklab:
 `color-mix(in oklab, var(--error) 12%, var(--panel))`. A surface is a

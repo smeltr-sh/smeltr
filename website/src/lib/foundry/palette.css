@@ -21,7 +21,9 @@
      paint clipped -- a color nobody chose. */
   --counter: oklch(56% 0.15 250);
   --error: oklch(48% 0.2 25);
-  --warn: oklch(60% 0.14 85);
+  /* Orange, dark enough to read as text on --bg and --panel. Dark mode
+     keeps gold, which there would sit too near the accent as orange. */
+  --warn: oklch(52% 0.13 55);
   --added: oklch(46% 0.13 145);
   --removed: oklch(54% 0.18 25);
   /* A field a step rewrote, which is neither of the above. It sits apart
@@ -76,6 +78,7 @@
     color-scheme: dark;
     --counter: oklch(66% 0.16 250);
     --error: oklch(70% 0.19 25);
+    --warn: oklch(78% 0.16 85);
     --added: oklch(66% 0.15 145);
     --removed: oklch(68% 0.17 20);
     --changed: oklch(66% 0.16 42);
@@ -110,6 +113,7 @@
   color-scheme: dark;
   --counter: oklch(66% 0.16 250);
   --error: oklch(70% 0.19 25);
+  --warn: oklch(78% 0.16 85);
   --added: oklch(66% 0.15 145);
   --removed: oklch(68% 0.17 20);
   --changed: oklch(66% 0.16 42);
