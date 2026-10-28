@@ -356,7 +356,7 @@ test('the branch list shows every branch with its state, and deletes one', async
   await putTables(api, 'parked', [table('colors')]);
   await arrangeChange(api, 'in-review', 'Add sizes', [table('sizes')]);
   await arrangeChange(api, 'turned-down', 'Add shapes', [table('shapes')]);
-  await api.post('/api/changes/turned-down/close', { reason: '' });
+  await api.post('/api/branches/turned-down/close', { reason: '' });
 
   await goto(admin, leader, '#/changes');
   const row = (name: string) => admin.getByRole('row').filter({ hasText: name });

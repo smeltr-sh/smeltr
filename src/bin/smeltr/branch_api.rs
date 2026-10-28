@@ -473,12 +473,11 @@ pub async fn delete_branch(Extension(access): Extension<Access>, AxPath(name): A
     )
 }
 
-// -- POST /api/changes, POST /api/changes/:branch/close, PATCH /api/changes/:branch ---------------------
+// -- POST /api/branches/:name/open, POST /api/branches/:name/close, PATCH /api/branches/:name ------------
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenChangeRequest {
-    branch: String,
     /// What the change is called. It becomes the commit message the deploy carries onto `main`.
     title: String,
     #[serde(default)]
@@ -506,21 +505,21 @@ pub struct RetitleChangeRequest {
 pub async fn open_change(
     Extension(actor): Extension<Actor>,
     Extension(access): Extension<Access>,
+    AxPath(branch): AxPath<String>,
     Json(req): Json<OpenChangeRequest>,
 ) -> Response {
     answered(
         blocking(move || {
-            refused_to_change(&access, &leader_data_dir(), &req.branch, Level::Editor)?;
+            refused_to_change(&access, &leader_data_dir(), &branch, Level::Editor)?;
             // No write lock: a marker is a commit on `refs/smeltr/changes/<branch>`, which nothing checks out and no
             // other write touches, and it lands by compare-and-swap on that ref.
             let repo = repo()?;
-            if let (0, _) = git::ahead_behind(&repo, &req.branch)? {
+            if let (0, _) = git::ahead_behind(&repo, &branch)? {
                 return Err(Stop::Failed(format!(
-                    "{:?} changes nothing yet -- save something on it first",
-                    req.branch
+                    "{branch:?} changes nothing yet -- save something on it first"
                 )));
             }
-            git::open_change(&repo, &req.branch, &req.title, &req.description, &actor)?;
+            git::open_change(&repo, &branch, &req.title, &req.description, &actor)?;
             Ok(BranchMutation::done(None))
         })
         .await,
@@ -565,7 +564,7 @@ pub async fn retitle_change(
     )
 }
 
-// -- GET /api/changes/:branch/timeline, POST /api/changes/:branch/comments ----------------
+// -- GET /api/branches/:name/timeline, POST /api/branches/:name/comments ----------------
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -773,7 +772,7 @@ pub async fn comment_on_change(
     Json(answered.unwrap_or_else(Envelope::failed_one))
 }
 
-// -- POST /api/changes/:branch/threads/:id --------------------------------
+// -- POST /api/branches/:name/threads/:id --------------------------------
 
 #[derive(serde::Deserialize)]
 pub struct ThreadRequest {
@@ -797,7 +796,7 @@ pub async fn resolve_thread(
     Json(answered.unwrap_or_else(Envelope::failed_one))
 }
 
-// -- POST /api/changes/:branch/reviews -----------------------------------
+// -- POST /api/branches/:name/reviews -----------------------------------
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -835,7 +834,7 @@ pub async fn review_change(
     )
 }
 
-// -- POST /api/changes/:branch/deploy, .../bring-current ------------------
+// -- POST /api/branches/:name/deploy, .../bring-current ------------------
 
 /// Approve and deploy: `main` takes the branch as one commit, the fleet is pointed at it and the branch goes. There
 /// is no separate deploy step -- workers pick it up on their next fetch (W5). A group losing its subtree this way is

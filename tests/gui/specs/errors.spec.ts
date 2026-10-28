@@ -66,7 +66,7 @@ test('a failed deploy opens a popup, which stays in the error bar once dismissed
     { id: 'colors', type: 'inline', headers: ['key', 'value'], rows: [['red', '1']] },
   ]);
   await api.openChange('ship-it', 'Add the colors table');
-  await admin.route('**/api/changes/ship-it/deploy', (r) =>
+  await admin.route('**/api/branches/ship-it/deploy', (r) =>
     r.fulfill({
       json: {
         ok: false,

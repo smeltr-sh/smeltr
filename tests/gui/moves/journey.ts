@@ -949,7 +949,7 @@ const comment: Move = {
     await expect(page.getByText(text)).toBeVisible();
     await page.reload();
     await expect(page.getByText(text)).toBeVisible();
-    const timeline = await (await j.truth()).get(`/api/changes/${world.branch}/timeline`);
+    const timeline = await (await j.truth()).get(`/api/branches/${world.branch}/timeline`);
     expect(JSON.stringify(timeline)).toContain(text);
     return `comment on "${world.change}"`;
   },

@@ -87,16 +87,16 @@ pub fn need(method: &Method, path: &str) -> Need {
         | (Method::GET | Method::HEAD, ["diff"])
         | (Method::GET | Method::HEAD, ["branches", _, "diff"])
         | (Method::GET | Method::HEAD, ["branches", _, "tests"])
-        | (Method::GET | Method::HEAD, ["changes", _, "timeline"])
-        | (Method::POST, ["changes", _, "comments"])
-        | (Method::POST, ["changes", _, "threads", _]) => Need::Somewhere(Level::Viewer),
+        | (Method::GET | Method::HEAD, ["branches", _, "timeline"])
+        | (Method::POST, ["branches", _, "comments"])
+        | (Method::POST, ["branches", _, "threads", _]) => Need::Somewhere(Level::Viewer),
         (Method::POST, ["branches"])
         | (Method::DELETE, ["branches", _])
-        | (Method::POST, ["branches", _, "test-runs"])
-        | (Method::POST, ["changes"])
-        | (Method::PATCH, ["changes", _])
-        | (Method::POST, ["changes", _, "close" | "bring-current"]) => Need::Somewhere(Level::Editor),
-        (Method::POST, ["changes", _, "reviews" | "deploy"]) | (Method::POST, ["deploy"]) => {
+        | (Method::PATCH, ["branches", _])
+        | (Method::POST, ["branches", _, "test-runs" | "open" | "close" | "bring-current"]) => {
+            Need::Somewhere(Level::Editor)
+        }
+        (Method::POST, ["branches", _, "reviews" | "deploy"]) | (Method::POST, ["deploy"]) => {
             Need::Somewhere(Level::Deployer)
         }
 
@@ -342,25 +342,25 @@ mod tests {
             (Method::GET, "/api/history"),
             (Method::GET, "/api/diff"),
             (Method::GET, "/api/branches/b/diff"),
-            (Method::GET, "/api/changes/b/timeline"),
-            (Method::POST, "/api/changes/b/comments"),
-            (Method::POST, "/api/changes/b/threads/t1"),
+            (Method::GET, "/api/branches/b/timeline"),
+            (Method::POST, "/api/branches/b/comments"),
+            (Method::POST, "/api/branches/b/threads/t1"),
         ] {
             assert_eq!(need(&method, path), Need::Somewhere(Level::Viewer), "{method} {path}");
         }
         for (method, path) in [
             (Method::POST, "/api/branches"),
             (Method::DELETE, "/api/branches/b"),
-            (Method::POST, "/api/changes"),
-            (Method::PATCH, "/api/changes/b"),
-            (Method::POST, "/api/changes/b/close"),
-            (Method::POST, "/api/changes/b/bring-current"),
+            (Method::POST, "/api/branches/b/open"),
+            (Method::PATCH, "/api/branches/b"),
+            (Method::POST, "/api/branches/b/close"),
+            (Method::POST, "/api/branches/b/bring-current"),
         ] {
             assert_eq!(need(&method, path), Need::Somewhere(Level::Editor), "{method} {path}");
         }
         for (method, path) in [
-            (Method::POST, "/api/changes/b/reviews"),
-            (Method::POST, "/api/changes/b/deploy"),
+            (Method::POST, "/api/branches/b/reviews"),
+            (Method::POST, "/api/branches/b/deploy"),
             (Method::POST, "/api/deploy"),
         ] {
             assert_eq!(need(&method, path), Need::Somewhere(Level::Deployer), "{method} {path}");

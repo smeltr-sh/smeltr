@@ -999,7 +999,7 @@ async fn setup_leader(
         .route("/api/map", get(get_map))
         .route("/api/map/measurements", get(get_map_measurements))
         .route("/api/areas/:area/stats", get(get_stats))
-        .route("/api/changes/:branch/deploy", post(branch_api::deploy_change))
+        .route("/api/branches/:name/deploy", post(branch_api::deploy_change))
         .route("/api/deploy", post(branch_api::deploy_commit))
         // Here for `State<AppState>`: the listing says what of each branch the remote holds.
         .route(
@@ -1974,23 +1974,25 @@ async fn run_leader() {
         .route("/api/areas/:area/preview/routes", post(route_preview))
         .route("/api/areas/:area/lookups/file", get(config_api::get_lookup_file))
         .route("/api/areas/:area/lookups/mmdb", get(config_api::get_lookup_mmdb))
-        .route("/api/branches/:name", delete(branch_api::delete_branch))
+        .route(
+            "/api/branches/:name",
+            delete(branch_api::delete_branch).patch(branch_api::retitle_change),
+        )
         // GET/POST `/api/worker-groups` and PUT `/api/worker-groups/:id/hue` are on `admin_and_cluster` instead:
         // both need `State<AppState>`, which only that router carries.
         .route(
             "/api/worker-groups/:id",
             put(worker_groups_api::update_worker_group).delete(worker_groups_api::delete_worker_group),
         )
-        .route("/api/changes", post(branch_api::open_change))
-        .route("/api/changes/:branch", patch(branch_api::retitle_change))
-        .route("/api/changes/:branch/close", post(branch_api::close_change))
-        .route("/api/changes/:branch/comments", post(branch_api::comment_on_change))
-        .route("/api/changes/:branch/threads/:id", post(branch_api::resolve_thread))
-        .route("/api/changes/:branch/reviews", post(branch_api::review_change))
-        .route("/api/changes/:branch/timeline", get(branch_api::change_timeline))
-        // `/api/changes/:branch/deploy` and `/api/deploy` are on `admin_and_cluster` instead: both wait their turn
+        .route("/api/branches/:name/open", post(branch_api::open_change))
+        .route("/api/branches/:name/close", post(branch_api::close_change))
+        .route("/api/branches/:name/comments", post(branch_api::comment_on_change))
+        .route("/api/branches/:name/threads/:id", post(branch_api::resolve_thread))
+        .route("/api/branches/:name/reviews", post(branch_api::review_change))
+        .route("/api/branches/:name/timeline", get(branch_api::change_timeline))
+        // `/api/branches/:name/deploy` and `/api/deploy` are on `admin_and_cluster` instead: both wait their turn
         // with the remote's syncs, which needs `State<AppState>`.
-        .route("/api/changes/:branch/bring-current", post(branch_api::bring_current))
+        .route("/api/branches/:name/bring-current", post(branch_api::bring_current))
         .route("/api/history", get(branch_api::history))
         .route("/api/branches/:name/diff", get(branch_api::branch_diff))
         .route("/api/diff", get(branch_api::commit_diff))

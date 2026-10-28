@@ -376,7 +376,7 @@ def rotate():
     r = admin.ok(admin.call("PUT", "/api/secrets/es-ingest-api-key/references", {"version": 2, "branch": b}))
     if not r.get("openedChange"):
         admin.open_change(b, "Rotate the Elasticsearch ingest key")
-    admin.ok(admin.call("PATCH", f"/api/changes/{b}", {
+    admin.ok(admin.call("PATCH", f"/api/branches/{b}", {
         "title": "Rotate the Elasticsearch ingest key to v2",
         "description": "Quarterly rotation. Every Elasticsearch destination in both groups moves to v2; v1 stays "
                        "stored until the fleet reports it running."}))

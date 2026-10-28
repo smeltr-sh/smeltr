@@ -123,10 +123,10 @@ class Client:
     # -- changes ------------------------------------------------------------------------------------
 
     def open_change(self, branch, title, description=""):
-        return self.ok(self.call("POST", "/api/changes", {"branch": branch, "title": title, "description": description}))
+        return self.ok(self.call("POST", f"/api/branches/{urllib.parse.quote(branch)}/open", {"title": title, "description": description}))
 
     def deploy(self, branch):
-        return self.ok(self.call("POST", f"/api/changes/{urllib.parse.quote(branch)}/deploy", {}))
+        return self.ok(self.call("POST", f"/api/branches/{urllib.parse.quote(branch)}/deploy", {}))
 
     def create_group(self, branch, gid, name, hue):
         return self.ok(self.call("POST", "/api/worker-groups", {"id": gid, "name": name, "hue": hue}, {"branch": branch}))

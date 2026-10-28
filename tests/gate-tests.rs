@@ -268,7 +268,7 @@ const OPERATOR_ROUTES: &[&str] = &[
     "/api/areas/shared/samples",
     "/api/areas/shared/tests",
     "/api/branches",
-    "/api/changes",
+    "/api/branches/work/timeline",
     "/api/history",
     "/api/worker-groups",
     "/api/users",
@@ -1541,13 +1541,13 @@ fn deploy_something(leader: &Leader, op: &Operator) {
 
     let (status, opened) = leader.post_as(
         op,
-        "/api/changes",
-        serde_json::json!({ "branch": "work", "title": "Add the West group", "description": "" }),
+        "/api/branches/work/open",
+        serde_json::json!({ "title": "Add the West group", "description": "" }),
     );
     assert_eq!(status, 200, "{opened}");
     assert_eq!(opened["ok"], serde_json::Value::Bool(true), "{opened}");
 
-    let (status, deployed) = leader.post_as(op, "/api/changes/work/deploy", serde_json::json!({}));
+    let (status, deployed) = leader.post_as(op, "/api/branches/work/deploy", serde_json::json!({}));
     assert_eq!(status, 200, "{deployed}");
     assert_eq!(deployed["ok"], serde_json::Value::Bool(true), "{deployed}");
 }
@@ -1614,10 +1614,10 @@ fn a_client_cannot_name_the_author() {
     assert_eq!(status, 200, "{created}");
     leader.post_as(
         &op,
-        "/api/changes",
-        serde_json::json!({ "branch": "work", "title": "Add the West group", "description": "" }),
+        "/api/branches/work/open",
+        serde_json::json!({ "title": "Add the West group", "description": "" }),
     );
-    leader.post_as(&op, "/api/changes/work/deploy", serde_json::json!({}));
+    leader.post_as(&op, "/api/branches/work/deploy", serde_json::json!({}));
 
     let (_, history) = leader.get_as(&op.session, "/api/history?limit=5");
     let newest = &history["commits"][0];
@@ -1829,11 +1829,11 @@ fn a_deploy_records_the_author_and_the_deployer_separately() {
     assert_eq!(status, 200, "{created}");
     let (status, opened) = leader.post_as(
         &dana,
-        "/api/changes",
-        serde_json::json!({ "branch": "work", "title": "Add the West group", "description": "" }),
+        "/api/branches/work/open",
+        serde_json::json!({ "title": "Add the West group", "description": "" }),
     );
     assert_eq!(status, 200, "{opened}");
-    let (status, deployed) = leader.post_as(&admin, "/api/changes/work/deploy", serde_json::json!({}));
+    let (status, deployed) = leader.post_as(&admin, "/api/branches/work/deploy", serde_json::json!({}));
     assert_eq!(status, 200, "{deployed}");
 
     let (_, history) = leader.get_as(&admin.session, "/api/history?limit=5");
@@ -2649,13 +2649,13 @@ fn an_editor_saves_in_their_group_and_does_not_deploy() {
 
     let (status, body) = leader.post_as(
         &editor,
-        "/api/changes",
-        serde_json::json!({ "branch": "dana", "title": "A storefront source", "description": "" }),
+        "/api/branches/dana/open",
+        serde_json::json!({ "title": "A storefront source", "description": "" }),
     );
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["ok"], true, "{body}");
 
-    let (status, body) = leader.post_as(&editor, "/api/changes/dana/deploy", serde_json::json!({}));
+    let (status, body) = leader.post_as(&editor, "/api/branches/dana/deploy", serde_json::json!({}));
     assert_eq!(status, 403, "an editor deployed a change: {body}");
     let (status, body) = leader.post_as(&editor, "/api/deploy", serde_json::json!({}));
     assert_eq!(status, 403, "an editor deployed a commit: {body}");

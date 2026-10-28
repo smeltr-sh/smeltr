@@ -4374,13 +4374,15 @@ export function openChange(
   title: string,
   description: string,
 ): Promise<BranchMutationResult> {
-  return announced(post('/api/changes', { branch, title, description }, 'quiet'));
+  return announced(
+    post(`/api/branches/${encodeURIComponent(branch)}/open`, { title, description }, 'quiet'),
+  );
 }
 
 /** Closing keeps the branch, so no work is lost. A reason is offered and
  * never required (W6). */
 export function closeChange(branch: string, reason: string): Promise<BranchMutationResult> {
-  return announced(post(`/api/changes/${encodeURIComponent(branch)}/close`, { reason }, 'quiet'));
+  return announced(post(`/api/branches/${encodeURIComponent(branch)}/close`, { reason }, 'quiet'));
 }
 
 /** Rename an open change. The title is `main`'s commit subject and the
@@ -4393,7 +4395,7 @@ export function retitleChange(
 ): Promise<BranchMutationResult> {
   return announced(
     apiJson(
-      `/api/changes/${encodeURIComponent(branch)}`,
+      `/api/branches/${encodeURIComponent(branch)}`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -4461,7 +4463,7 @@ export interface TimelineResult {
 
 /** What happened to the change on `branch`, oldest first. */
 export function changeTimeline(branch: string): Promise<TimelineResult> {
-  return apiJson(`/api/changes/${encodeURIComponent(branch)}/timeline`);
+  return apiJson(`/api/branches/${encodeURIComponent(branch)}/timeline`);
 }
 
 /** Comment on the change on `branch`: on the change as a whole, on what
@@ -4471,7 +4473,7 @@ export function commentOnChange(
   body: string,
   opts: { anchor?: CommentAnchor; replyTo?: string } = {},
 ): Promise<BranchMutationResult> {
-  return post(`/api/changes/${encodeURIComponent(branch)}/comments`, { body, ...opts }, 'quiet');
+  return post(`/api/branches/${encodeURIComponent(branch)}/comments`, { body, ...opts }, 'quiet');
 }
 
 /** Resolve the thread comment `id` started, or reopen it. */
@@ -4481,7 +4483,7 @@ export function resolveThread(
   resolved: boolean,
 ): Promise<BranchMutationResult> {
   return post(
-    `/api/changes/${encodeURIComponent(branch)}/threads/${encodeURIComponent(id)}`,
+    `/api/branches/${encodeURIComponent(branch)}/threads/${encodeURIComponent(id)}`,
     {
       resolved,
     },
@@ -4499,13 +4501,13 @@ export function reviewChange(
   verdict: ReviewVerdict,
   body: string,
 ): Promise<BranchMutationResult> {
-  return post(`/api/changes/${encodeURIComponent(branch)}/reviews`, { verdict, body }, 'quiet');
+  return post(`/api/branches/${encodeURIComponent(branch)}/reviews`, { verdict, body }, 'quiet');
 }
 
 /** Approve: squash-merges onto `main` and deletes the branch. Merging is
  * deploying -- there is no separate deploy step (W5). */
 export function deployChange(branch: string): Promise<BranchMutationResult> {
-  return post(`/api/changes/${encodeURIComponent(branch)}/deploy`, undefined, 'severe');
+  return post(`/api/branches/${encodeURIComponent(branch)}/deploy`, undefined, 'severe');
 }
 
 /** Bring a change current with `main`, which a change behind it must be
@@ -4523,7 +4525,7 @@ export function bringCurrent(
       side: chosen.sides[i],
     })),
   };
-  return post(`/api/changes/${encodeURIComponent(branch)}/bring-current`, { choices });
+  return post(`/api/branches/${encodeURIComponent(branch)}/bring-current`, { choices });
 }
 
 export type CommitDto = {

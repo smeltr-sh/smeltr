@@ -101,12 +101,12 @@ export class Api {
 
   /** Opens `branch` for review as `title`. */
   openChange(branch: string, title: string, description = '') {
-    return this.post('/api/changes', { branch, title, description });
+    return this.post(`/api/branches/${encodeURIComponent(branch)}/open`, { title, description });
   }
 
   /** Approves the change open on `branch`, which merges it to main and deploys it. */
   deploy(branch: string) {
-    return this.post(`/api/changes/${encodeURIComponent(branch)}/deploy`, {});
+    return this.post(`/api/branches/${encodeURIComponent(branch)}/deploy`, {});
   }
 }
 
