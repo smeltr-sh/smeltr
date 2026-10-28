@@ -59,12 +59,11 @@ it is in. `src/DisableIcon.svelte` is disable -- keep a step in its pipeline but
 out of play. Renaming is not its own sign: it is the editor a worker group happens to
 have, having nothing else to change in place.
 
-A state can have a sign too, when the page routes on it. `src/FailedIcon.svelte`
-is failed -- a row the pipeline could not process -- a triangle with a bar
-standing in it. It goes wherever those rows are named or wired: the
-pipeline's failure setting, and the routes page's account of how a path
-takes failed rows. The caller colors it:
-ink in a heading, `--warn` where the row's state is the point.
+A state has a sign, `src/StateMark.svelte`: a dot for info, a check for ok,
+a triangle for a warning, an octagon struck with an X for an error. Wherever
+the GUI shows one of these four, the sign goes with it, so the shape alone tells the
+four apart for a reader who cannot tell red from green; the state's color
+says it again. A dot, a stripe or a tint never carries one of them by itself.
 
 `src/stepGlyphs.ts` holds the step badges' paths, one per `StepType`; the
 badge sets the glyph before its label at the label's own text size.
@@ -89,9 +88,9 @@ one dark (see "Theme"). A palette changes colors only.
 A palette is one base hue and an accent well round the wheel from it,
 as Foundry is steel against molten orange. The base colors the band, and
 in dark it tints the surfaces faintly; light surfaces keep Foundry's
-near-white, so the band is the only large field of color. The accent keeps
-clear of the state hues -- green, yellow and red -- so a primary action
-never reads as a status.
+near-white, so the band is the only large field of color. The accent says
+"look here", so it may share its warmth with `--warn`; it keeps clear of
+green and red, so a primary action never reads as worked or failed.
 
 | Token | Role |
 |---|---|
@@ -123,7 +122,7 @@ its values in every palette:
 | Token | Light | Dark | Role |
 |---|---|---|---|
 | `--error` | `oklch(48% 0.2 25)` | `oklch(70% 0.19 25)` | Validation errors, danger actions |
-| `--warn` | `oklch(60% 0.14 85)` | *(same)* | Warnings |
+| `--warn` | `oklch(52% 0.13 55)` | `oklch(78% 0.16 85)` | Warnings |
 | `--added` | `oklch(46% 0.13 145)` | `oklch(66% 0.15 145)` | Diff view, added |
 | `--removed` | `oklch(54% 0.18 25)` | `oklch(68% 0.17 20)` | Diff view, removed |
 | `--changed` | `oklch(56% 0.15 42)` | `oklch(66% 0.16 42)` | Diff view, rewritten by a step |
@@ -133,6 +132,11 @@ The `--tok-*` tokens color code in an expression field and on the
 website, which copies them. Each kind takes its own hue, so no two kinds
 blur together; numbers and the literals `true`, `false`, `null` share the
 orange family at two hues.
+
+A warning or error bar is `.callout.warn` or `.callout.error` (`app.css`):
+a stripe in the state's color on a light tint of it, with the text in
+`--ink`. A state color on its own tint reads poorly, so in a bar only the
+stripe and the glyph carry the color.
 
 A tint over a surface mixes in oklab:
 `color-mix(in oklab, var(--error) 12%, var(--panel))`. A surface is a
