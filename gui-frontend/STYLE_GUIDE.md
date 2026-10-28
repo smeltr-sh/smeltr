@@ -134,9 +134,10 @@ website, which copies them. Each kind takes its own hue, so no two kinds
 blur together; numbers and the literals `true`, `false`, `null` share the
 orange family at two hues.
 
-A warning bar is `.warn-bar` (`app.css`): a `--warn` stripe on a light
-`--warn` tint, with the text in `--ink`. `--warn` text on its own tint
-reads poorly, so in a bar only the stripe and the glyph carry the color.
+A warning or error bar is `.callout.warn` or `.callout.error` (`app.css`):
+a stripe in the state's color on a light tint of it, with the text in
+`--ink`. A state color on its own tint reads poorly, so in a bar only the
+stripe and the glyph carry the color.
 
 A tint over a surface mixes in oklab:
 `color-mix(in oklab, var(--error) 12%, var(--panel))`. A surface is a

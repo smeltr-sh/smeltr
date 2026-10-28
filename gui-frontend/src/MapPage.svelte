@@ -896,7 +896,7 @@
     {/each}
 
     {#if topologyChanged || layoutError}
-      <div class="topology-notice warn-bar" role="status">
+      <div class="topology-notice callout warn" role="status">
         <span>The layout is out of date</span>
         <button type="button" class="primary" disabled={updating} onclick={updateLayout}
           >Update layout</button

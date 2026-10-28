@@ -378,7 +378,7 @@
 
 {#snippet statement()}
   {#if statements && !statements.ok}
-    <p class="banner bad">{errorText(statements.errors)}</p>
+    <p class="banner callout error">{errorText(statements.errors)}</p>
   {:else if !statements?.first}
     <p class="dim">Type a query.</p>
   {:else if !opened}
@@ -451,7 +451,7 @@
   </span>
 </div>
 {#if runError}
-  <div class="banner bad" role="alert">
+  <div class="banner callout error" role="alert">
     <strong>Run failed.</strong>
     {runError}{#if failedRun?.worker}{' '}(worker {failedRun.worker}{source.user
         ? `, as ${source.user}`
@@ -730,7 +730,7 @@
         and reads only the rows past the last one sent.
       </p>
     {:else}
-      <p class="banner warn-bar">
+      <p class="banner callout warn">
         <strong>Each poll scans all of <code>{ran.verdict.relation}</code></strong>, about
         {ran.verdict.rows.toLocaleString()} rows. Index the position, or filter inside your query with
         <code>:last.{positionColumn}</code>.
@@ -848,7 +848,7 @@
     font-size: var(--text-label);
   }
 
-  .banner:not(.warn-bar) {
+  .banner:not(.callout) {
     border-left: 3px solid var(--border);
     background: var(--field);
   }
@@ -856,11 +856,6 @@
   .banner.good {
     border-left-color: var(--added);
     background: color-mix(in srgb, var(--added) 10%, var(--field));
-  }
-
-  .banner.bad {
-    border-left-color: var(--error);
-    background: color-mix(in srgb, var(--error) 10%, var(--field));
   }
 
   .cheapest {

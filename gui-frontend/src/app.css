@@ -67,14 +67,24 @@ body {
   background: color-mix(in srgb, var(--error) 22%, transparent);
 }
 
-/* A warning: something works but may not do what was meant. The text stays
-   ink, because --warn on its own tint reads poorly; the stripe and any glyph
-   carry the color. A component's scoped rules outweigh this one, so one that
-   also draws other bars leaves these properties to it with :not(.warn-bar). */
-.warn-bar {
-  border-left: 3px solid var(--warn);
-  background: color-mix(in oklab, var(--warn) 10%, var(--field));
+/* A bar that says something about what sits beside it: `warn` when it works
+   but may not do what was meant, `error` when it fails. The text stays ink,
+   because a state color on its own tint reads poorly; the stripe and any
+   glyph carry the color. A component's scoped rules outweigh these, so one
+   that also draws other bars leaves these properties to them with
+   :not(.callout). */
+.callout {
+  border-left: 3px solid var(--callout);
+  background: color-mix(in oklab, var(--callout) 10%, var(--field));
   color: var(--ink);
+}
+
+.callout.warn {
+  --callout: var(--warn);
+}
+
+.callout.error {
+  --callout: var(--error);
 }
 
 /* An instruction that must be read before acting: data lost, a step that

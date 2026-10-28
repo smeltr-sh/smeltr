@@ -463,7 +463,7 @@
 
 {#snippet stepErrorList()}
   {#if listedErrors.length > 0 || stepWarningMessages.length > 0}
-    <div class="step-errors" class:warn-bar={listedErrors.length === 0}>
+    <div class="step-errors callout {listedErrors.length > 0 ? 'error' : 'warn'}">
       {#each listedErrors as message}
         {@render stepMessage(message, false)}
       {/each}
@@ -1843,25 +1843,16 @@
     border-radius: var(--radius);
   }
 
-  .step-errors:not(.warn-bar) {
-    background: color-mix(in oklab, var(--error) 12%, var(--panel));
-  }
-
   .step-error-msg {
     display: flex;
     gap: 0.5rem;
     align-items: flex-start;
     font-size: var(--text-note);
-    color: var(--error);
     line-height: 1.45;
   }
 
   .step-error-msg .error-glyph {
     margin-top: 0.1rem;
-  }
-
-  .step-error-msg.warn {
-    color: inherit;
   }
 
   .error-glyph.warn {

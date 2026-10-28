@@ -377,12 +377,12 @@
   .chip.on.error {
     background: color-mix(in srgb, var(--error) 15%, transparent);
     border-color: var(--error);
-    color: var(--error);
+    /* A state color on its own tint reads poorly (app.css, .callout). */
+    color: var(--ink);
   }
   .chip.on.warn {
     background: color-mix(in srgb, var(--warn) 18%, transparent);
     border-color: var(--warn);
-    /* --warn text on its own tint reads poorly (app.css, .warn-bar). */
     color: var(--ink);
   }
   .chip.on.info,
