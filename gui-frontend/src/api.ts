@@ -101,8 +101,8 @@ export type TlsDto = {
  * credential-valued property in the first map.
  *
  * Properties smeltr sets itself (`brokers`, `groupId`, `compression`,
- * `fetchBytes`, `bufferBytes`, `start`) are refused in both maps, and so are the fetch and batch sizes the worker
- * derives from those two at deployment. */
+ * `fetchBytes`, `bufferBytes`, `start`) are refused in both maps, and so are the fetch sizes the worker
+ * derives from `fetchBytes` at deployment. */
 export type KafkaProps = {
   properties?: Record<string, string>;
   credentials?: Record<string, SecretRef>;
@@ -492,6 +492,10 @@ export type HttpCompression = Extract<Compression, 'none' | 'gzip'>;
 export type HttpBody = 'lines' | 'jsonArray' | 'single';
 export const COMPRESSIONS: Compression[] = ['none', 'gzip', 'snappy', 'lz4', 'zstd'];
 
+/** How many replicas hold a Kafka batch before it counts as delivered, mirroring `config_file::dto::AcksDto`. */
+export const ACKS = ['none', 'one', 'all'] as const;
+export type Acks = (typeof ACKS)[number];
+
 /** Bounds and defaults of the numeric delivery settings, mirroring the
  * newtypes in `config_file::dto` (`BulkBytes`, `FetchBytes`, ...). The Rust
  * side is the authority; these keep the inputs from offering a value the
@@ -545,6 +549,8 @@ export type DestinationDto =
        * `bytes`. */
       field?: string;
       compression?: Compression;
+      /** Absent is `all`. */
+      acks?: Acks;
       stallAfterSecs?: number;
       bufferBytes?: ByteCount;
       /** Where `format` is `avro`: the registry each route's record is registered with. */
@@ -890,6 +896,10 @@ export type HecToken = {
   /** Whether its senders use indexer acknowledgement, as Splunk's `useACK`. Absent is not. */
   acknowledgement?: boolean;
 };
+
+/** Every destination's `bufferBytes` help, in the reference too (`connector-reference.json`). */
+export const BUFFER_HELP =
+  'Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput.';
 
 /** How an S2S receiver breaks one sourcetype's stream into events, mirroring `config_file::dto::SourcetypeDto`. */
 export type Sourcetype = {
@@ -2421,6 +2431,7 @@ export type WarningCondition =
   | 'destinationRefusing'
   | 'destinationUnreachable'
   | 'lagClimbing'
+  | 'destinationMemoryBound'
   | 'sourceRowsBelow'
   | 'sourceRowsAbove'
   | 'groupNotDeployed'
@@ -2504,6 +2515,8 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Destination unreachable';
     case 'lagClimbing':
       return 'Lag climbing';
+    case 'destinationMemoryBound':
+      return 'Held back by memory';
     case 'sourceRowsBelow':
       return 'Rows below normal';
     case 'sourceRowsAbove':

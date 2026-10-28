@@ -1097,6 +1097,8 @@ pub(super) struct Holdings {
     account: Mutex<Account>,
     reserve: usize,
     ceiling: usize,
+    /// This receiver's name in `pool`.
+    lender: u64,
     pool: Option<Arc<QueuePool>>,
     /// Woken when it gives bytes back or its turn is let go.
     freed: Notify,
@@ -1156,6 +1158,7 @@ impl Holdings {
             account: Mutex::new(Account::default()),
             reserve,
             ceiling: INBOX_BYTES,
+            lender: pool.as_ref().map_or(0, |p| p.lender()),
             pool,
             freed: Notify::new(),
             full: std::sync::atomic::AtomicU64::new(0),
@@ -1166,8 +1169,11 @@ impl Holdings {
     /// the reserve, taking the turn when it is free. Whether it took them.
     fn take(&self, bytes: usize, counted: &mut Counted, turn: &mut bool) -> bool {
         let mut account = self.account.lock().unwrap();
-        let shared =
-            account.counted.shared + bytes <= self.ceiling && self.pool.as_ref().is_none_or(|p| p.take(bytes, false));
+        let shared = account.counted.shared + bytes <= self.ceiling
+            && self
+                .pool
+                .as_ref()
+                .is_none_or(|p| p.take(self.lender, account.counted.shared, bytes, false));
         if shared {
             account.counted.shared += bytes;
             counted.shared += bytes;
@@ -1193,7 +1199,7 @@ impl Holdings {
         account.counted.shared -= counted.shared;
         account.counted.reserved -= counted.reserved;
         if let Some(pool) = &self.pool {
-            pool.give(counted.shared);
+            pool.give(self.lender, account.counted.shared, counted.shared);
         }
         drop(account);
         self.freed.notify_waiters();
@@ -1218,7 +1224,11 @@ impl Holdings {
     /// Whether a taker without the turn, or one that would take it, takes another byte.
     fn has_room(&self) -> bool {
         let account = self.account.lock().unwrap();
-        (account.counted.shared < self.ceiling && self.pool.as_ref().is_none_or(|p| p.fits(1)))
+        (account.counted.shared < self.ceiling
+            && self
+                .pool
+                .as_ref()
+                .is_none_or(|p| p.fits(self.lender, account.counted.shared, 1)))
             || (!account.turn && account.counted.reserved < self.reserve)
     }
 

@@ -902,7 +902,8 @@ fn fates(rng: &mut Rng, cov: &mut Reached, rows: &Rows, sent: &mut [Sent]) {
 
 /// What a cluster holds once `sent` is delivered under `policy`: by index, each document under its id, and the
 /// documents filed under an id the cluster made up. In the order sent, so the first write of an id is the one a
-/// `create` keeps and the last the one an `index` keeps.
+/// `create` keeps and the last the one an `index` keeps, were they to land in that order; [`Versions`] says which
+/// others may stand instead.
 #[derive(Debug, Default, PartialEq)]
 struct Held {
     by_id: BTreeMap<(String, String), Vec<u8>>,
@@ -938,14 +939,41 @@ impl Held {
     }
 }
 
-/// What the cluster holds once `sent` is delivered under `policy`, and how many documents it answered a conflict to
-/// because their id was already there.
-fn expected(policy: DocIdPolicy, sent: &[Vec<Sent>]) -> (Held, usize) {
+/// Every document written under an id written more than once. Rows land in no promised order, so any of them may
+/// be the one the cluster keeps.
+#[derive(Default)]
+struct Versions(BTreeMap<(String, String), Vec<Vec<u8>>>);
+
+impl Versions {
+    /// `want` with each id written more than once holding what `got` holds under it, where that is one of its versions.
+    fn settle(&self, mut want: Held, got: &Held, canonical: impl Fn(&[u8]) -> Vec<u8>) -> Held {
+        for (key, docs) in self.0.iter().filter(|(_, docs)| docs.len() > 1) {
+            if let Some(doc) = got.by_id.get(key)
+                && docs.iter().any(|d| canonical(d) == *doc)
+            {
+                want.by_id.insert(key.clone(), doc.clone());
+            }
+        }
+        want
+    }
+}
+
+/// What the cluster holds once `sent` is delivered under `policy`, how many documents it answered a conflict to
+/// because their id was already there, and the versions of each id.
+fn expected(policy: DocIdPolicy, sent: &[Vec<Sent>]) -> (Held, usize, Versions) {
     let mut held = Held::default();
     let mut conflicts = 0;
+    let mut versions = Versions::default();
     for s in sent.iter().flatten() {
         match s.fate {
             Some(Fate::Indexed | Fate::Retried(_)) => {
+                if let Some(id) = &s.id {
+                    versions
+                        .0
+                        .entry((s.index.clone(), id.clone()))
+                        .or_default()
+                        .push(s.row.value.clone());
+                }
                 if !held.file(policy, &s.index, s.id.as_deref(), &s.row.value) {
                     conflicts += 1;
                 }
@@ -954,7 +982,7 @@ fn expected(policy: DocIdPolicy, sent: &[Vec<Sent>]) -> (Held, usize) {
             None | Some(Fate::Refused) => {}
         }
     }
-    (held.sorted(), conflicts)
+    (held.sorted(), conflicts, versions)
 }
 
 // -- the cluster in this process ----------------------------------------------------------------------------------
@@ -1466,8 +1494,9 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     }
     let refused = written.map_err(fail)?;
     destination::check_refused(&sent, &refused, Sent::refused).map_err(fail)?;
-    let (want, conflicts) = expected(c.doc_id, &sent);
+    let (want, conflicts, versions) = expected(c.doc_id, &sent);
     let got = cluster.held.sorted();
+    let want = versions.settle(want, &got, <[u8]>::to_vec);
     if got != want {
         return Err(fail(format!("the cluster holds\n  {got:?}\nnot\n  {want:?}")));
     }
@@ -2013,10 +2042,11 @@ fn live_seed(seed: u64, url: &str, reached: &mut Reached, pki: &Pki) -> Result<(
             .collect();
         return Err(fail(format!("{e}\nrefusing {why:?}\nmapping {m}")));
     }
-    let (want, conflicts) = expected(c.doc_id, &sent);
+    let (want, conflicts, versions) = expected(c.doc_id, &sent);
     let want = canonical_held(want);
     let named: BTreeSet<(String, String)> = want.by_id.keys().cloned().collect();
     let got = read_back(url, made, &named)?;
+    let want = versions.settle(want, &got, canonical);
     if got != want {
         return Err(fail(format!("the cluster holds\n  {got:?}\nnot\n  {want:?}")));
     }

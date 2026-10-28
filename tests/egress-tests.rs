@@ -354,11 +354,11 @@ fn a_refused_record_comes_back_as_a_rejection_not_a_failed_batch() {
     assert_eq!(dest.sent().len(), 1, "the rest of the batch still went out");
 }
 
-/// The level a destination's own loop settled on is visible, and a destination that has no loop publishes no series:
-/// a zero there would read as a stalled destination rather than an absent question.
+/// The requests a destination has open are visible, and a destination that opens none of its own publishes no
+/// series: a zero there would read as a stalled destination rather than an absent question.
 #[test]
-fn the_concurrency_a_destination_allows_is_reported_and_only_when_it_has_one() {
-    /// Reports whatever it is told to, so this test is about egress reading the figure, not about AIMD.
+fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_own() {
+    /// Reports whatever it is told to, so this test is about egress reading the figure, not about what sets it.
     #[derive(Clone)]
     struct Reporting(Arc<std::sync::Mutex<Option<usize>>>);
 
@@ -1007,5 +1007,164 @@ fn a_capture_at_a_blocking_destination_sees_its_held_rows_once() {
             serde_json::json!("id-1"),
             serde_json::Value::Null
         ]
+    );
+}
+
+/// How far away [`Link`] is.
+const LINK_RTT: Duration = Duration::from_millis(20);
+
+/// A link [`LINK_RTT`] away, over which a destination answers each batch once it has been open that long. Answering
+/// on a tick instead would answer a batch sent just before it at once, and the model's least round trip, which keeps
+/// such a reading, would shrink what it holds.
+#[derive(Default)]
+struct Link(std::collections::HashMap<u64, std::time::Instant>);
+
+impl Link {
+    /// Acknowledge what `dest` has held for a round trip; how many batches that was.
+    fn answer(&mut self, dest: &AsyncDestination) -> usize {
+        // Read after `outstanding`, so a batch is never taken as open before it was.
+        let open = dest.outstanding();
+        let now = std::time::Instant::now();
+        let mut answered = 0;
+        for b in open {
+            let at = *self.0.entry(b).or_insert(now);
+            if now.duration_since(at) >= LINK_RTT {
+                self.0.remove(&b);
+                dest.complete(b);
+                answered += 1;
+            }
+        }
+        answered
+    }
+}
+
+/// What destination `id`'s queue may hold, as its egress stage last reported it.
+fn budget(registry: &Metrics, id: u32) -> Option<usize> {
+    let label = id.to_string();
+    registry.snapshot().into_iter().find_map(|s| match s.value {
+        smeltr::metrics::MetricValue::Gauge(v)
+            if s.key.name == "smeltr_destination_queue_budget_bytes"
+                && s.key.labels.iter().any(|(k, v)| *k == "destination" && *v == label) =>
+        {
+            Some(v as usize)
+        }
+        _ => None,
+    })
+}
+
+/// A paced queue starts at one batch and, while its source presses and the destination keeps up, grows its budget
+/// toward its share of the pool; it never passes that share.
+#[test]
+fn a_paced_queue_grows_from_one_batch_while_its_source_presses() {
+    let registry = Arc::new(Metrics::new());
+    let row = vec![b'x'; 64 * 1024];
+    let pool = smeltr::egress::QueuePool::new(64 * 1024 * 1024);
+    let dest = AsyncDestination::new();
+    let mut egress = Egress::start(
+        0,
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        pool.limit(),
+        MetricsHandle::new(registry.clone(), "egress-0"),
+    )
+    .borrowing(pool.clone(), row.len(), 1)
+    .paced(row.len());
+    let mut h = egress.handle();
+
+    // A source that always has more, over a link a few milliseconds away.
+    let mut link = Link::default();
+    let started = std::time::Instant::now();
+    let mut batch = 0;
+    let mut most = 0;
+    while started.elapsed() < Duration::from_secs(2) {
+        while let Dispatched::InFlight = hand(&mut h, batch, &[OutgoingRecord::new(&row)]) {
+            batch += 1;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+        link.answer(&dest);
+        most = most.max(budget(&registry, 0).unwrap_or(0));
+    }
+    assert!(most >= 8 * row.len(), "the budget grew from one batch: {most}");
+    assert!(most <= row.len() + pool.limit(), "never past the share: {most}");
+}
+
+/// Two paced queues on one pool smaller than either would hold alone. The first, alone, grows over most of it; once
+/// the second presses too, each settles near an equal share. Once the first stalls, holding what it has, the second
+/// still moves.
+#[test]
+fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neither() {
+    let registry = Arc::new(Metrics::new());
+    let row = vec![b'x'; 64 * 1024];
+    let pool = smeltr::egress::QueuePool::new(8 * 64 * 1024);
+    let batches = pool.limit() / row.len();
+    let dests = [AsyncDestination::new(), AsyncDestination::new()];
+    let mut egresses: Vec<Egress> = dests
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let metrics = MetricsHandle::new(registry.clone(), format!("egress-{i}"));
+            Egress::start(i as u32, "d", Box::new(d.clone()), timeout(), pool.limit(), metrics)
+                .borrowing(pool.clone(), row.len(), 1)
+                .paced(row.len())
+        })
+        .collect();
+    let mut handles: Vec<_> = egresses.iter_mut().map(Egress::handle).collect();
+    let mut next = [0u64; 2];
+    let mut links: [Link; 2] = Default::default();
+    // For `secs`, each of `pressing` sends while it has room and each of `answering` answers over its link.
+    // Answers each queue's budget in batches, on average over the last second, and how many batches each delivered.
+    let mut run = |secs: u64, pressing: &[usize], answering: &[usize]| {
+        let started = std::time::Instant::now();
+        let (mut held, mut samples, mut delivered) = ([0usize; 2], 0, [0usize; 2]);
+        while started.elapsed() < Duration::from_secs(secs) {
+            for &i in pressing {
+                while let Dispatched::InFlight = hand(&mut handles[i], next[i], &[OutgoingRecord::new(&row)]) {
+                    next[i] += 1;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(1));
+            let last_second = started.elapsed() + Duration::from_secs(1) >= Duration::from_secs(secs);
+            for (i, d) in dests.iter().enumerate() {
+                if answering.contains(&i) {
+                    delivered[i] += links[i].answer(d);
+                }
+                if last_second {
+                    held[i] += budget(&registry, i as u32).unwrap_or(0) / row.len();
+                }
+            }
+            samples += usize::from(last_second);
+        }
+        (held.map(|h| h / samples.max(1)), delivered)
+    };
+
+    let (alone, _) = run(2, &[0], &[0]);
+    assert!(
+        alone[0] > batches / 2,
+        "alone, the first grows over most of the pool: {alone:?} of {batches}"
+    );
+
+    let (both, delivered) = run(3, &[0, 1], &[0, 1]);
+    assert!(
+        both[1] >= batches / 4,
+        "the second gets near its share: {both:?} of {batches}"
+    );
+    assert!(
+        both[0] <= 3 * batches / 4,
+        "the first gives back toward its share: {both:?} of {batches}"
+    );
+    assert!(
+        2 * delivered[1] >= delivered[0] && 2 * delivered[0] >= delivered[1],
+        "each carries about as much: {delivered:?}"
+    );
+
+    let (stalled, delivered_stalled) = run(1, &[0, 1], &[1]);
+    assert!(
+        stalled[1] + 1 >= both[1],
+        "the first stalled, the second keeps its share: {stalled:?} after {both:?}"
+    );
+    assert!(
+        6 * delivered_stalled[1] >= delivered[1],
+        "and carries at least half as much a second: {delivered_stalled:?} in one, {delivered:?} in three"
     );
 }
