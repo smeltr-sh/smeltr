@@ -275,20 +275,16 @@ fn take_varlen(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataType, 
     let total: usize = readers.iter().flatten().map(|r| r.total_bytes(len)).sum();
     let mut b = StrBuilder::new(ctx.pool, var_type, len);
     b.reserve(ctx.pool, total);
-    // Which rows each source holds a value for: its mask under its validity, a word per 64 rows.
-    let words = bits::words_for(len);
-    let held: Vec<Vec<u64>> = readers
-        .iter()
-        .zip(takes)
-        .map(|(reader, take)| match reader {
-            Some(r) => (0..words)
-                .map(|w| take[w] & r.validity().map_or(!0, |v| v.bits()[w]))
-                .collect(),
-            None => vec![0; words],
-        })
-        .collect();
-    for w in 0..words {
-        let any = held.iter().fold(0, |any, h| any | h[w]);
+    // A word at a time: which source holds a value under its mask, for 64 rows at once.
+    let mut held = vec![0u64; ins.len()];
+    for w in 0..bits::words_for(len) {
+        let mut any = 0u64;
+        for ((h, reader), take) in held.iter_mut().zip(&readers).zip(takes) {
+            *h = reader
+                .as_ref()
+                .map_or(0, |r| take[w] & r.validity().map_or(!0, |v| v.bits()[w]));
+            any |= *h;
+        }
         for bit in 0..(len - w * 64).min(64) {
             if any >> bit & 1 == 0 {
                 b.push_null();
@@ -296,7 +292,7 @@ fn take_varlen(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataType, 
             }
             let k = held
                 .iter()
-                .position(|h| h[w] >> bit & 1 != 0)
+                .position(|h| h >> bit & 1 != 0)
                 .expect("a source holds this row");
             b.push(readers[k].as_ref().expect("held").at(w * 64 + bit));
         }
