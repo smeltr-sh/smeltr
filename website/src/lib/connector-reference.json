@@ -3868,7 +3868,7 @@
         "type": "size",
         "absent": "256 MiB",
         "examples": ["1 GiB", "4 GiB"],
-        "what": "Memory it may use on each worker for records not yet in the bucket. Files are finished early when it fills, so files reach `maxObjectBytes` only when it holds that many records before compression. 4 MiB to 32 TiB."
+        "what": "Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput. 4 MiB to 32 TiB."
       },
       {
         "name": "stallAfterSecs",
@@ -4009,6 +4009,27 @@
             ]
           },
           {
+            "name": "acks",
+            "type": "string",
+            "default": "all",
+            "examples": ["one"],
+            "what": "How many replicas must hold each batch before it counts as delivered.",
+            "values": [
+              {
+                "value": "none",
+                "what": "Counts a batch delivered once it is sent, without waiting for a replica."
+              },
+              {
+                "value": "one",
+                "what": "Waits for the partition's leader replica to write it."
+              },
+              {
+                "value": "all",
+                "what": "Waits for every in-sync replica to write it. Recommended."
+              }
+            ]
+          },
+          {
             "name": "stallAfterSecs",
             "type": "integer",
             "default": 30,
@@ -4020,7 +4041,7 @@
             "type": "size",
             "absent": "64 MiB",
             "examples": ["256 MiB", "16 MiB", "1 GiB"],
-            "what": "How much undelivered output it may hold. The Kafka client holds as much again. 4 MiB to 1 GiB."
+            "what": "Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput. 4 MiB to 1 GiB."
           },
           {
             "name": "properties",
@@ -4071,6 +4092,7 @@
             "section": "Delivery and client properties",
             "settings": [
               "compression",
+              "acks",
               "stallAfterSecs",
               "bufferBytes",
               "properties",
@@ -4232,7 +4254,7 @@
             "type": "size",
             "absent": "64 MiB",
             "examples": ["256 MiB", "16 MiB", "1 GiB"],
-            "what": "How much undelivered output it may hold. The Kafka client holds as much again. 4 MiB to 1 GiB."
+            "what": "Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput. 4 MiB to 1 GiB."
           }
         ],
         "reads": ["__destination.topic"],
@@ -4392,7 +4414,7 @@
             "type": "size",
             "absent": "64 MiB, or one bulk request if that is larger",
             "examples": ["256 MiB", "128 MiB", "1 GiB"],
-            "what": "How much undelivered output it may hold. 4 MiB to 1 GiB, and at least one bulk request."
+            "what": "Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput. 4 MiB to 1 GiB, and at least one bulk request."
           },
           {
             "name": "stallAfterSecs",
@@ -4619,7 +4641,7 @@
             "type": "size",
             "absent": "64 MiB, or one request if that is larger",
             "examples": ["256 MiB", "64 MiB", "1 GiB"],
-            "what": "How much undelivered output it may hold. 4 MiB to 1 GiB, and at least one request."
+            "what": "Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput. 4 MiB to 1 GiB, and at least one request."
           },
           {
             "name": "stallAfterSecs",
@@ -4819,7 +4841,7 @@
             "type": "size",
             "absent": "64 MiB, or one request if that is larger",
             "examples": ["256 MiB", "64 MiB", "1 GiB"],
-            "what": "How much undelivered output it may hold. 4 MiB to 1 GiB, and at least one request."
+            "what": "Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput. 4 MiB to 1 GiB, and at least one request."
           },
           {
             "name": "stallAfterSecs",
@@ -4962,7 +4984,7 @@
             "type": "size",
             "absent": "64 MiB, or one request if that is larger",
             "examples": ["256 MiB", "64 MiB", "1 GiB"],
-            "what": "How much undelivered output it may hold. 4 MiB to 1 GiB, and at least one request."
+            "what": "Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput. 4 MiB to 1 GiB, and at least one request."
           },
           {
             "name": "stallAfterSecs",
@@ -5089,7 +5111,7 @@
             "type": "size",
             "absent": "64 MiB, or one request if that is larger",
             "examples": ["256 MiB", "64 MiB", "1 GiB"],
-            "what": "How much undelivered output it may hold. 4 MiB to 1 GiB, and at least one request."
+            "what": "Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput. 4 MiB to 1 GiB, and at least one request."
           },
           {
             "name": "stallAfterSecs",
@@ -5872,7 +5894,7 @@
             "type": "size",
             "absent": "256 MiB",
             "examples": ["1 GiB", "4 GiB"],
-            "what": "Memory it may use on each worker for records not yet committed. Files are committed early when it fills. 4 MiB to 32 TiB."
+            "what": "Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput. 4 MiB to 32 TiB."
           },
           {
             "name": "stallAfterSecs",
@@ -6114,7 +6136,7 @@
             "type": "size",
             "absent": "256 MiB",
             "examples": ["1 GiB", "4 GiB"],
-            "what": "Memory it may use on each worker for records not yet committed. Files are committed early when it fills. 4 MiB to 32 TiB."
+            "what": "Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput. 4 MiB to 32 TiB."
           },
           {
             "name": "stallAfterSecs",

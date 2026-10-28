@@ -122,7 +122,10 @@
               checked={shown(f.path)}
               onchange={(e) => onshow([f.path], e.currentTarget.checked)}
             />
-            <span class="mono path">{before}<mark>{match}</mark>{after}</span>
+            <!-- A field no record holds after the step and the pipeline does not write is one it took away. -->
+            <span class="mono path" class:dim={f.count === 0 && f.type === null}
+              >{before}<mark>{match}</mark>{after}</span
+            >
             <span class="mono dim type" title={f.type ?? undefined}>{f.type ?? ''}</span>
             {#if records !== null}<button
                 type="button"

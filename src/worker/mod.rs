@@ -785,29 +785,22 @@ pub fn process_memory_budget() -> MemoryBudget {
         .clone()
 }
 
-/// The bytes a worker sizes its deployments to: `worker.runtime.memory` when set, else its container's memory limit.
-/// `None` where neither is known, since a host's whole memory is shared with whatever else runs there, and for a worker
-/// inside a leader without the setting, since the container's limit is shared with a leader of no fixed size.
-pub fn memory_to_fit(in_leader: bool) -> Option<usize> {
-    crate::startup_config::worker_memory_bytes().or_else(|| {
-        (!in_leader)
-            .then(crate::resources::container_memory_limit_bytes)
-            .flatten()
-            .map(|limit| limit as usize)
-    })
+/// The share of its container's limit, or of the host's memory, a worker sizes to when nothing states its memory. The
+/// rest is left to what runs beside it: a leader in the same process, or the host's own.
+const MACHINE_SHARE: f64 = 0.9;
+
+/// The bytes a worker sizes its deployments to: `worker.runtime.memory` when set, else [`MACHINE_SHARE`] of its
+/// container's memory limit or, with none, of the host's memory. `None` only where neither could be read.
+pub fn memory_to_fit() -> Option<usize> {
+    crate::startup_config::worker_memory_bytes()
+        .or_else(|| crate::resources::memory_limit_bytes().map(|limit| (limit as f64 * MACHINE_SHARE) as usize))
 }
 
 /// One source's reader thread.
 struct ReaderHandle {
-    thread_id: String,
-    /// Updated by the reader thread, which owns the source; read by the heartbeat.
-    partitions: Arc<Mutex<Vec<PartitionRef>>>,
-    /// Why this reader's source is blocked, while it is. Published the same way as `partitions`: the reader owns the
-    /// source, so it is the only thing that can say.
-    held: Arc<Mutex<Option<crate::heartbeat::MetricSampleDto>>>,
-    /// This reader's source's most recent connectivity error, while it has one (E4). Published the same way as
-    /// `held`, for the same reason: only the reader thread has a `&Source` to ask.
-    connection_error: Arc<Mutex<Option<crate::heartbeat::MetricSampleDto>>>,
+    /// Updated by the reader thread, which owns the source; read by the heartbeat. Only the reader can say which
+    /// partitions it holds, why its source is blocked, and its source's latest connectivity error (E4).
+    report: Arc<Mutex<child::ReaderReport>>,
     stop: Arc<Stop>,
     thread: JoinHandle<()>,
 }
@@ -862,14 +855,6 @@ struct Deployment {
     registry: Arc<Metrics>,
 }
 
-/// One reader, as the heartbeat sees it: an identity and the locks the reader thread publishes through.
-struct ReaderFacts {
-    thread_id: String,
-    partitions: Arc<Mutex<Vec<PartitionRef>>>,
-    held: Arc<Mutex<Option<crate::heartbeat::MetricSampleDto>>>,
-    connection_error: Arc<Mutex<Option<crate::heartbeat::MetricSampleDto>>>,
-}
-
 /// What the heartbeat reports about a running deployment, shared with it rather than borrowed from it.
 ///
 /// The deployment belongs to the thread that starts and stops it, and stopping joins threads that may never
@@ -877,7 +862,8 @@ struct ReaderFacts {
 /// separation exists to prevent. Every live fact here is behind the lock its own writer already published
 /// through, so this view stays current without the heartbeat reaching the deployment at all.
 struct DeployedFacts {
-    readers: Vec<ReaderFacts>,
+    /// Each reader's report, behind the lock the reader thread publishes through.
+    readers: Vec<Arc<Mutex<child::ReaderReport>>>,
     pool_thread_ids: Vec<String>,
     egress_ids: Vec<crate::core::id::DestId>,
     refusals: Arc<crate::runtime::RefusalRing>,
@@ -911,16 +897,7 @@ impl Deployment {
     /// Published once, when the deployment starts. Nothing here is copied per heartbeat.
     fn facts(&self) -> Arc<DeployedFacts> {
         Arc::new(DeployedFacts {
-            readers: self
-                .readers
-                .iter()
-                .map(|r| ReaderFacts {
-                    thread_id: r.thread_id.clone(),
-                    partitions: r.partitions.clone(),
-                    held: r.held.clone(),
-                    connection_error: r.connection_error.clone(),
-                })
-                .collect(),
+            readers: self.readers.iter().map(|r| r.report.clone()).collect(),
             pool_thread_ids: self.pool.iter().map(|t| t.thread_id.clone()).collect(),
             egress_ids: self.egress.iter().map(|e| e.id()).collect(),
             refusals: self.refusals.clone(),
@@ -965,15 +942,12 @@ const TICK_RETRY_MAX: Duration = Duration::from_secs(15);
 
 /// Ingest: poll the source, hand batches over, commit what came back. Owns the source, so it is the only thing that
 /// commits, holds, or reports which partitions this thread has.
-#[allow(clippy::too_many_arguments)]
 fn run_reader_loop(
     mut reader: Reader,
     lane: Arc<Lane>,
     acks: Acks,
     stop: Arc<Stop>,
-    partitions: Arc<Mutex<Vec<PartitionRef>>>,
-    held: Arc<Mutex<Option<crate::heartbeat::MetricSampleDto>>>,
-    connection_error: Arc<Mutex<Option<crate::heartbeat::MetricSampleDto>>>,
+    report: Arc<Mutex<child::ReaderReport>>,
     batch_bytes: usize,
 ) {
     let mut backoff = TICK_RETRY_MIN;
@@ -1005,9 +979,11 @@ fn run_reader_loop(
             .into_iter()
             .map(|(topic, partition)| PartitionRef { topic, partition })
             .collect();
-        *partitions.lock().unwrap() = current;
-        *held.lock().unwrap() = reader.blocked_fact();
-        *connection_error.lock().unwrap() = reader.connection_error_fact();
+        let (held, connection_error) = (reader.blocked_fact(), reader.connection_error_fact());
+        let mut published = report.lock().unwrap();
+        published.partitions = current;
+        published.held = held;
+        published.connection_error = connection_error;
     }
 
     // Batches already handed over are still being delivered, and their offsets are this thread's to commit.
@@ -1147,11 +1123,12 @@ fn spawn_reader(
     let destinations: Vec<crate::core::id::DestId> =
         topology.destinations_reachable_from(source_id).into_iter().collect();
 
-    let partitions = Arc::new(Mutex::new(Vec::new()));
-    let held = Arc::new(Mutex::new(None));
-    let connection_error = Arc::new(Mutex::new(None));
     let stop = Arc::new(Stop::default());
     let thread_id = format!("reader-{source_id}");
+    let report = Arc::new(Mutex::new(child::ReaderReport {
+        thread_id: thread_id.clone(),
+        ..Default::default()
+    }));
 
     let (reports, acks) = crate::handoff::reports();
     let lane = Arc::new(Lane::new(
@@ -1182,35 +1159,15 @@ fn spawn_reader(
     let handle = std::thread::Builder::new()
         .name(format!("smeltr-{thread_id}"))
         .spawn({
-            let (lane, stop, partitions, held, connection_error) = (
-                lane.clone(),
-                stop.clone(),
-                partitions.clone(),
-                held.clone(),
-                connection_error.clone(),
-            );
+            let (lane, stop, report) = (lane.clone(), stop.clone(), report.clone());
             let batch_bytes = depth.batch_bytes;
-            move || {
-                run_reader_loop(
-                    reader,
-                    lane,
-                    acks,
-                    stop,
-                    partitions,
-                    held,
-                    connection_error,
-                    batch_bytes,
-                )
-            }
+            move || run_reader_loop(reader, lane, acks, stop, report, batch_bytes)
         })
         .map_err(|e| e.to_string())?;
 
     Ok((
         ReaderHandle {
-            thread_id,
-            partitions,
-            held,
-            connection_error,
+            report,
             stop,
             thread: handle,
         },
@@ -1261,11 +1218,11 @@ fn deploy(
     let queue_pool = fitted.map(|f| crate::egress::QueuePool::new(f.pool));
     // And the receivers from one of their own.
     let receiver_pool = fitted.map(|f| crate::egress::QueuePool::new(f.receivers));
-    // A destination sized to the worker's memory keeps its default buffer, and so its senders, and its queue borrows
-    // up to its ceiling.
+    // A destination sized to the worker's memory may borrow up to the whole pool, so the pool is the most it may hold
+    // and what a reader may have outstanding toward it; its pacing holds it to what its throughput asks.
     let fitted_destinations = fitted.map(|_| &system.topology.fitted.destinations);
-    let queue_budget = |d: &crate::plan::topology::DestinationConfig| match fitted_destinations {
-        Some(fitted) if fitted.contains(&d.id) => memory::queue_budget(&d.kind),
+    let queue_budget = |d: &crate::plan::topology::DestinationConfig| match (fitted, fitted_destinations) {
+        (Some(f), Some(fitted)) if fitted.contains(&d.id) => f.pool.max(f.batch_bytes),
         _ => d.kind.queue_bytes(),
     };
     let batch_bytes = fitted.map_or(TICK_MAX_BYTES, |f| f.batch_bytes);
@@ -1276,14 +1233,43 @@ fn deploy(
     };
     for d in system.topology.destinations.iter().filter(|d| wanted.contains(&d.id)) {
         let handle = MetricsHandle::new(registry.clone(), format!("egress-{}", d.id));
-        let client = crate::io::build_destination(&d.kind, d.id, handle.clone(), secrets, topology.records.get(&d.id))
+        // A paced Kafka producer is sized at build for the most its queue may hold, since librdkafka fixes its
+        // queue's bound then; the egress queue holds it to the target from the first send.
+        //
+        // A paced HTTP destination is built with as many senders as its target could use, each spawned when every
+        // one it has is busy and lent from the pool.
+        let kind = match &d.kind {
+            crate::plan::topology::DestinationKind::Kafka(_) if borrows(d).is_some() => {
+                let mut kind = d.kind.clone();
+                kind.set_buffer_bytes(queue_budget(d).saturating_mul(2));
+                std::borrow::Cow::Owned(kind)
+            }
+            kind if borrows(d).is_some() && memory::senders_bytes(kind) > 0 => {
+                let mut kind = kind.clone();
+                kind.set_buffer_bytes(queue_budget(d).max(kind.buffer_bytes()));
+                std::borrow::Cow::Owned(kind)
+            }
+            kind => std::borrow::Cow::Borrowed(kind),
+        };
+        let client = crate::io::build_destination(&kind, d.id, handle.clone(), secrets, topology.records.get(&d.id))
             .map_err(|e| format!("destination {:?} could not be built: {e}", d.name))?;
         let stage = Egress::start(d.id, &d.name, client, d.kind.stall_after(), queue_budget(d), handle)
             .with_pool(ready.clone())
             .with_captures(captures.clone());
         let stage = match borrows(d) {
-            Some(pool) => stage.borrowing(pool.clone(), batch_bytes, memory::queue_charge(&d.kind)),
+            Some(pool) => stage
+                .borrowing(pool.clone(), batch_bytes, memory::queue_charge(&d.kind))
+                .charging_senders(memory::SENDER_BYTES),
             None => stage,
+        };
+        // Every destination but one that writes files is paced: up to its share of the pool when sized to the
+        // worker's memory, else up to the buffer it states or its kind's default. A file destination acknowledges a
+        // batch only once its file commits, at most of its buffer, so what it holds is the file it is building, not
+        // what is on the wire.
+        let stage = if d.kind.writes_files() {
+            stage
+        } else {
+            stage.paced(batch_bytes)
         };
         // A destination set to block keeps what it refuses and sends it again, since the fix is usually its own.
         egress.push(if d.on_reject == crate::plan::config::Answer::Block {
@@ -1467,7 +1453,7 @@ fn deploy(
                     "reserve",
                     batch_bytes * memory::queue_charge(&d.kind),
                 ));
-                let senders = memory::senders_bytes(&d.kind);
+                let senders = memory::starting_senders_bytes(&d.kind);
                 if senders > 0 {
                     ceilings.push(memory::Part::destination(d, "senders", senders));
                 }
@@ -5310,6 +5296,7 @@ mod tests {
             kind: DestinationKind::Kafka(KafkaDestinationConfig {
                 payload: crate::plan::config::Payload::Record,
                 compression: crate::plan::topology::Compression::None,
+                acks: crate::plan::topology::Acks::All,
                 stall_after: Duration::from_secs(30),
                 brokers: "k:9092".into(),
                 default_topic: "dlq".into(),
@@ -5702,16 +5689,7 @@ mod tests {
     fn report_of(d: &Deployment) -> child::RuntimeReport {
         let facts = d.facts();
         child::RuntimeReport {
-            readers: facts
-                .readers
-                .iter()
-                .map(|r| child::ReaderReport {
-                    thread_id: r.thread_id.clone(),
-                    partitions: r.partitions.lock().unwrap().clone(),
-                    held: r.held.lock().unwrap().clone(),
-                    connection_error: r.connection_error.lock().unwrap().clone(),
-                })
-                .collect(),
+            readers: facts.readers.iter().map(|r| r.lock().unwrap().clone()).collect(),
             pool_thread_ids: facts.pool_thread_ids.clone(),
             egress_ids: facts.egress_ids.clone(),
             egress_refusals: facts

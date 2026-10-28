@@ -774,6 +774,7 @@ impl Writer {
                     .map(|batch| BatchCompletion {
                         batch,
                         rejections: Vec::new(),
+                        throttled: false,
                     })
                     .collect())
             }

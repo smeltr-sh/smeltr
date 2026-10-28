@@ -28,6 +28,7 @@
 -->
 <script lang="ts">
   import { tick } from 'svelte';
+  import StateMark from './StateMark.svelte';
   import Clamped from './Clamped.svelte';
   import { float, type Anchor } from './float';
   import {
@@ -605,7 +606,7 @@
             {/if}
           </span>
           {#if fn.warning}
-            <span class="fn-warn">&#9888; {fn.warning}</span>
+            <span class="fn-warn"><StateMark state="warning" /> {fn.warning}</span>
           {/if}
           <span class="fn-desc">
             <Clamped
