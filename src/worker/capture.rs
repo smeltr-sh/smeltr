@@ -1263,9 +1263,8 @@ fn drive<S: crate::io::Source + ?Sized>(
     run: Option<fn(&S) -> bool>,
 ) {
     let session = &admitted.invitation.session;
-    // Only a capture naming its source opens one to drive.
     let Some(named) = &admitted.invitation.source else {
-        return captures.fail(admitted, "the capture names no source to read");
+        return captures.fail(admitted, "the capture names neither one source nor one destination");
     };
     let source_id = &named.id;
     let itself = admitted.invitation.reads_source_itself();
