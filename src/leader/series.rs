@@ -868,7 +868,8 @@ impl RegistryStore {
     ///
     /// One transaction rather than one per row. A commit is what costs -- the statements inside it are a few
     /// microseconds each -- so a fleet's write load is its heartbeat rate, not its sample rate. It is also the
-    /// truthful unit: a half-written heartbeat is a claim about a window that never held.
+    /// truthful unit: a half-written heartbeat is a claim about a window that never held. So a beat whose streams
+    /// will not write writes none of its state either, and is counted when it comes again.
     pub fn record_heartbeat(&self, beat: &HeartbeatRows<'_>) -> Result<(), StoreError> {
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction()?;
