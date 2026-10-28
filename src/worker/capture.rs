@@ -1355,7 +1355,6 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
     use crate::io::sql_source::{Mode, SqlSource, SqlSourceConfig};
     let invitation = &cold.admitted.invitation;
     let dto = &cold.config;
-    let encoding = dto.kind.encoding();
     let (kind, sql) = dto.kind.sql().expect("only an SQL source is run here");
     // Every mode reads what the capture wants a poll: Run shows the query's first rows, never its whole result.
     let wanted = u32::try_from(invitation.max_matches).unwrap_or(u32::MAX).max(1);
@@ -1470,7 +1469,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
     drive(
         cold,
         &mut source,
-        &meta.with_encoding(encoding),
+        &meta,
         &metrics,
         Some(SqlSource::read_once),
     );
