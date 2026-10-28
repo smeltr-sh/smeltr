@@ -24,7 +24,7 @@ document's systems.
 | CSV column table, `skip` (Config plane) | built |
 | Grok: `.` matches a newline (Runtime stages) | built |
 | Lookup: CSV, inline, MMDB; exact, CIDR, regex (Runtime stages) | built; files live in the leader's lookup store as Git LFS pointers |
-| Data dictionary: a pipeline's record as an Elasticsearch mapping (Compiler, Runtime stages) | built. A mapping is per pipeline; an index fed by several is merged by hand |
+| Data dictionary: a pipeline's record as an Elasticsearch mapping (Compiler, Runtime stages) | built. A field ECS names takes ECS's type where its own fits it; where not, the pipeline editor warns at the step that wrote it. A mapping is per pipeline; an index fed by several is merged by hand |
 | Non-JSON output: Avro, CSV (Scope) | built. Avro (`io::avro`): to Kafka and Event Hubs framed as Confluent frames it, each route's record registered under `<topic>-value`; to object stores and SFTP as container files holding their schema. CSV (`io::csv`): to object stores and SFTP, a column per leaf of the route's record under a header row. Not built: CSV to any other destination; Avro over HTTP or to Splunk; lz4 in a container file, which Avro has no codec for |
 
 ### Destinations

@@ -944,29 +944,22 @@ impl Transform {
     /// One turn: take a batch -- an undelivered one, or the next off some lane's queue -- run it, hand the rows on,
     /// and report to the lane it came from.
     pub fn step(&mut self, pop_timeout: Duration) -> Result<usize, IoError> {
-        let Some(Turn {
-            lane: lane_idx,
-            batch,
-            records,
-            unprocessable,
-            waiting_since,
-        }) = self.take_next(pop_timeout)
-        else {
+        let Some(turn) = self.take_next(pop_timeout) else {
             // An idle turn is what collects completions.
             self.collect()?;
             return Ok(0);
         };
-        if unprocessable {
+        if turn.unprocessable {
             // Back for room or after a failed hand-over: no pipeline runs it again.
-            return self.divert_unprocessable(lane_idx, batch, records, waiting_since, true);
+            return self.divert_unprocessable(turn);
         }
-        let lane = self.lanes[lane_idx].clone();
+        let (lane, batch) = (self.lanes[turn.lane].clone(), turn.batch);
         let reports = lane.reports.clone();
         let source_label = lane.source_id.to_string();
 
         let process_start = std::time::Instant::now();
         let mut out = Output::default();
-        let outcome = catch_unwind(AssertUnwindSafe(|| self.process_batch(&lane, &records, &mut out)));
+        let outcome = catch_unwind(AssertUnwindSafe(|| self.process_batch(&lane, &turn.records, &mut out)));
         self.metrics.incr_seconds(
             "smeltr_tick_process_seconds_total",
             &[("source", source_label.as_str())],
@@ -979,12 +972,12 @@ impl Transform {
                 .gauge("smeltr_memory_peak_bytes", &[], self.memory.peak() as f64);
             self.metrics.gauge("smeltr_memory_budget_bytes", &[], limit as f64);
         }
-        let row_count = records.len();
+        let row_count = turn.records.len();
         match outcome {
             Ok(Ok(())) => {
                 let t = std::time::Instant::now();
                 let dests = lane.destinations();
-                match self.hand_off(lane_idx, batch, records, waiting_since, false, &dests, out.rows) {
+                match self.hand_off(turn, &dests, out.rows) {
                     Err(e) => {
                         reports.send(Report::Block(BlockCause::Waiting, undeliverable(&e)));
                         return Err(e);
@@ -1015,7 +1008,7 @@ impl Transform {
             Ok(Err(held)) => {
                 lane.park_held(
                     batch,
-                    records,
+                    turn.records,
                     std::mem::take(&mut out.blocking),
                     self.captures.as_ref(),
                 );
@@ -1027,7 +1020,11 @@ impl Transform {
                 // routes produced before the panic goes with `out`.
                 self.metrics
                     .incr("smeltr_batches_poisoned_total", &[("source", source_label.as_str())], 1);
-                return self.divert_unprocessable(lane_idx, batch, records, None, false);
+                let turn = Turn {
+                    waiting_since: None,
+                    ..turn
+                };
+                return self.divert_unprocessable(turn);
             }
         }
 
@@ -1052,17 +1049,19 @@ impl Transform {
     /// having ended clean. A routed batch asks every destination its lane reaches, including ones it has nothing for:
     /// `track` put all of them on the batch's waiting list at poll time, and one handed nothing completes at once. An
     /// unprocessable one asks only where its answer sends it: the reader has stopped waiting on the rest.
-    #[allow(clippy::too_many_arguments)]
     fn hand_off(
         &mut self,
-        lane: usize,
-        id: BatchId,
-        records: Vec<SourceRecord>,
-        waiting_since: Option<std::time::Instant>,
-        unprocessable: bool,
+        turn: Turn,
         dests: &[DestId],
         mut rows: HashMap<DestId, Vec<OwnedRecord>>,
     ) -> Result<HandOff, IoError> {
+        let Turn {
+            lane,
+            batch: id,
+            records,
+            unprocessable,
+            waiting_since,
+        } = turn;
         for &dest_id in dests {
             let Some(i) = self.destinations.iter().position(|d| d.id == dest_id) else {
                 // `deploy` gives every thread a handle for every destination, so this is a worker built by hand with a
@@ -1963,25 +1962,19 @@ impl Transform {
     /// A batch a pipeline panicked on, answered as `Unprocessable` is: held, dropped, or sent where it names, each record
     /// as it arrived. Delivered, it is handed over like a routed
     /// batch -- parked for room, re-run on a failed hand-over -- to every destination it names, and its commit waits
-    /// for each, and for every DLQ one of them sends a refusal to. `again` is a batch parked here before: the reader
-    /// already waits on these alone.
-    fn divert_unprocessable(
-        &mut self,
-        lane_idx: usize,
-        batch: BatchId,
-        records: Vec<SourceRecord>,
-        waiting_since: Option<std::time::Instant>,
-        again: bool,
-    ) -> Result<usize, IoError> {
-        let lane = self.lanes[lane_idx].clone();
+    /// for each, and for every DLQ one of them sends a refusal to. A turn already unprocessable was parked here before:
+    /// the reader already waits on these alone.
+    fn divert_unprocessable(&mut self, mut turn: Turn) -> Result<usize, IoError> {
+        let again = turn.unprocessable;
+        let (lane, batch) = (self.lanes[turn.lane].clone(), turn.batch);
         let source_label = lane.source_id.to_string();
-        let rows = records.len();
+        let rows = turn.records.len();
         match self.topology.on_exception.answer(&ExceptionKind::Unprocessable).clone() {
             // Load refuses ignore and tag: no record is left to carry on.
             Answer::Block | Answer::Ignore | Answer::Tag => {
                 // Which record panicked is not known, so every one of them is shown.
                 let blocking = (0..rows).map(|i| (i, PANICKED.to_string())).collect();
-                lane.park_held(batch, records, blocking, self.captures.as_ref());
+                lane.park_held(batch, turn.records, blocking, self.captures.as_ref());
                 lane.reports.send(Report::Block(
                     BlockCause::Held,
                     unprocessable_block_reason(rows, PANICKED),
@@ -2014,10 +2007,11 @@ impl Transform {
                     });
                 }
                 let mut out = Output::default();
-                let these: Vec<_> = records.iter().enumerate().collect();
+                let these: Vec<_> = turn.records.iter().enumerate().collect();
                 self.place_delivered(&mut out, &targets, &these, &lane, None, DROPPED_UNPROCESSABLE);
                 drop(these);
-                match self.hand_off(lane_idx, batch, records, waiting_since, true, &to, out.rows) {
+                turn.unprocessable = true;
+                match self.hand_off(turn, &to, out.rows) {
                     Err(e) => {
                         lane.reports.send(Report::Block(BlockCause::Waiting, undeliverable(&e)));
                         return Err(e);

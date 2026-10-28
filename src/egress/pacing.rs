@@ -119,7 +119,7 @@ pub struct Pacing {
     /// Rounds since then, toward [`FULL_PIPE_ROUNDS`].
     rounds_without_growth: u32,
     /// The most the target may be since the destination asked to be sent less, in whole batches: BBRv2's
-    /// `inflight_hi`. Cut at most once a round trip, and grown at the end of a probe it did not ask in.
+    /// inflight_hi. Cut at most once a round trip, and grown at the end of a probe it did not ask in.
     throttled_at: Option<usize>,
     /// Whether the destination asked to be sent less this round: `throttled_at` is cut once a round.
     round_throttled: bool,

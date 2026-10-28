@@ -21,6 +21,8 @@
     type WarningSeverity,
   } from './api';
   import { ago } from './time';
+  import StateMark from './StateMark.svelte';
+  import { severityState } from './stateGlyphs';
 
   const POLL_MS = 2000;
 
@@ -108,12 +110,15 @@
     {/snippet}
     {#if warnings.length > 0}
       <span class="totals" aria-label="Issue totals">
-        {#if failedCount > 0}<span class="total failed">&#9650; <b>{failedCount}</b> failed</span
+        {#if failedCount > 0}<span class="total failed"
+            ><StateMark state="error" /> <b>{failedCount}</b> failed</span
           >{/if}
         {#if warningCount > 0}<span class="total warning"
-            >&#9650; <b>{warningCount}</b> warning</span
+            ><StateMark state="warning" /> <b>{warningCount}</b> warning</span
           >{/if}
-        {#if infoCount > 0}<span class="total info">&#9679; <b>{infoCount}</b> info</span>{/if}
+        {#if infoCount > 0}<span class="total info"
+            ><StateMark state="info" /> <b>{infoCount}</b> info</span
+          >{/if}
       </span>
     {/if}
   </PageHeader>
@@ -145,14 +150,25 @@
           <span class="group-cond mono">{group.condition}</span>
         {/snippet}
         {#snippet actions()}
-          {#if group.failed > 0}<span class="count failed">&#9650; {group.failed}</span>{/if}
-          {#if group.warning > 0}<span class="count warning">&#9650; {group.warning}</span>{/if}
-          {#if group.info > 0}<span class="count info">&#9679; {group.info}</span>{/if}
+          {#if group.failed > 0}<span class="count failed"
+              ><StateMark state="error" label="failed" /> {group.failed}</span
+            >{/if}
+          {#if group.warning > 0}<span class="count warning"
+              ><StateMark state="warning" label="warning" /> {group.warning}</span
+            >{/if}
+          {#if group.info > 0}<span class="count info"
+              ><StateMark state="info" label="info" /> {group.info}</span
+            >{/if}
         {/snippet}
         <div class="issues" role="list" aria-label={conditionLabel(group.condition)}>
           {#each group.rows as warning (`${warning.subjectKind}|${warning.subjectId}|${warning.group ?? ''}|${warning.site ?? ''}`)}
             <div class="issue-row" role="listitem">
-              <i class="sev-dot {warning.severity}"></i>
+              <span class="sev"
+                ><StateMark
+                  state={severityState(warning.severity)}
+                  label={warning.severity}
+                /></span
+              >
               <span class="issue-subject">
                 {#if warning.subjectKind === 'worker'}
                   <a
@@ -262,22 +278,9 @@
     gap: 0.75rem;
     font-size: var(--text-note);
   }
-  .sev-dot {
-    width: 0.6rem;
-    height: 0.6rem;
-    margin-top: 0.35rem;
-    border-radius: 50%;
-    background: var(--dim);
-    flex: none;
-  }
-  .sev-dot.failed {
-    background: var(--error);
-  }
-  .sev-dot.warning {
-    background: var(--warn);
-  }
-  .sev-dot.info {
-    background: var(--dim);
+  .sev {
+    display: flex;
+    margin-top: 0.15rem;
   }
   .issue-subject {
     min-width: 0;
