@@ -9,7 +9,7 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use std::time::Duration;
@@ -85,10 +85,6 @@ pub fn provider_login_of(store: &dyn Store, user: &UserRecord) -> Result<Option<
     Ok(store.oidc_identity_of(&user.id)?.and_then(|identity| identity.login))
 }
 
-pub fn no_store<T: serde::Serialize>(body: T) -> Response {
-    ([(header::CACHE_CONTROL, "no-store")], Envelope::ok(body)).into_response()
-}
-
 /// Turn a refused account operation into the status that describes it.
 fn account_error(e: AccountError) -> Response {
     let status = match e {
@@ -124,7 +120,7 @@ pub async fn list_users(State(auth): State<Auth>) -> Response {
     })
     .await;
     match listed {
-        Ok(users) => no_store(serde_json::json!({ "users": users })),
+        Ok(users) => Envelope::ok(serde_json::json!({ "users": users })).into_response(),
         Err(response) => *response,
     }
 }
@@ -206,11 +202,12 @@ pub async fn create_user(
     }
     (
         StatusCode::CREATED,
-        no_store(TemporaryPasswordDto {
+        Envelope::ok(TemporaryPasswordDto {
             user_id: created_id,
             username: created_username,
             temporary_password: password,
-        }),
+        })
+        .into_response(),
     )
         .into_response()
 }
@@ -298,7 +295,7 @@ async fn current_user(auth: &Auth, id: &str) -> Response {
     })
     .await;
     match looked_up {
-        Ok(Some(user)) => no_store(user),
+        Ok(Some(user)) => Envelope::ok(user).into_response(),
         Ok(None) => account_error(AccountError::NoSuchUser),
         Err(response) => *response,
     }
@@ -338,11 +335,12 @@ pub async fn reset_password(
         Ok(username) => username.unwrap_or_default(),
         Err(response) => return *response,
     };
-    no_store(TemporaryPasswordDto {
+    Envelope::ok(TemporaryPasswordDto {
         user_id: id,
         username,
         temporary_password: password,
     })
+    .into_response()
 }
 
 /// `POST /api/users/:id/revoke-sessions`: end every session an account holds, without touching its password.
@@ -383,7 +381,7 @@ pub async fn list_security_events(State(auth): State<Auth>, headers: HeaderMap) 
                     })
                 })
                 .collect();
-            no_store(serde_json::json!({ "events": events }))
+            Envelope::ok(serde_json::json!({ "events": events })).into_response()
         }
         Err(response) => *response,
     }
@@ -523,7 +521,7 @@ impl From<sessions::Lifetimes> for SessionSettingsDto {
 
 /// `GET /api/settings/sessions`: the deadlines in force.
 pub async fn get_session_settings(State(auth): State<Auth>) -> Response {
-    no_store(SessionSettingsDto::from(auth.sessions.lifetimes()))
+    Envelope::ok(SessionSettingsDto::from(auth.sessions.lifetimes())).into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -570,5 +568,5 @@ pub async fn put_session_settings(
         return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
     }
     auth.sessions.set_lifetimes(lifetimes);
-    no_store(SessionSettingsDto::from(lifetimes))
+    Envelope::ok(SessionSettingsDto::from(lifetimes)).into_response()
 }

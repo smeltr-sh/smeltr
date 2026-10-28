@@ -361,7 +361,6 @@ fn see_other(location: &str) -> Response {
     if let Ok(location) = HeaderValue::from_str(location) {
         headers.insert(header::LOCATION, location);
     }
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
 
@@ -396,13 +395,10 @@ pub struct OfferedDto {
 /// before anyone is signed in. Says nothing about which provider.
 pub async fn offered(State(auth): State<Auth>) -> Response {
     match usable(&auth).await {
-        Ok(settings) => (
-            [(header::CACHE_CONTROL, "no-store")],
-            Envelope::ok(OfferedDto {
-                offered: settings.is_some(),
-            }),
-        )
-            .into_response(),
+        Ok(settings) => Envelope::ok(OfferedDto {
+            offered: settings.is_some(),
+        })
+        .into_response(),
         Err(e) => {
             tracing::error!(target: "leader.identity_unavailable", error = %e, "the OIDC settings could not be read");
             store_unavailable()

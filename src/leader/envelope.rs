@@ -128,12 +128,7 @@ impl<T: serde::Serialize> IntoResponse for Envelope<T> {
                     .into_response();
             }
         };
-        let mut response = (self.status, [(header::CONTENT_TYPE, "application/json")], json).into_response();
-        if !self.succeeded() {
-            // A refusal is about this request and this moment; a cache holding one would answer it again later.
-            (response.headers_mut()).insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
-        }
-        response
+        (self.status, [(header::CONTENT_TYPE, "application/json")], json).into_response()
     }
 }
 
@@ -384,14 +379,11 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_answers_its_status_uncached() {
+    fn a_failure_answers_its_status() {
         let response = Refusal::not_found("gone").into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
-        let response = Envelope::done().into_response();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(response.headers().get(header::CACHE_CONTROL).is_none());
+        assert_eq!(Envelope::done().into_response().status(), StatusCode::OK);
     }
 
     #[test]

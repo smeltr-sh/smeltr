@@ -305,6 +305,19 @@ pub async fn harden(req: axum::extract::Request, next: axum::middleware::Next) -
     response
 }
 
+/// Every answer under `/api/` is about this request and this moment (`docs/architecture/api.md`): a cache holding one
+/// would answer it again later, or to someone else.
+pub async fn uncached(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let api = req.uri().path().starts_with("/api/");
+    let mut response = next.run(req).await;
+    if api {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+    }
+    response
+}
+
 /// What the framework answers before a handler runs -- a body that cannot be read, a query or path that does not
 /// parse, a wrong method -- in the envelope every operator and open route answers, its text the one error. A
 /// handler's own failure already is one. The worker family carries no envelope (`docs/architecture/api.md`), so it
@@ -551,14 +564,13 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_carries_json_and_is_never_cached() {
+    fn a_refusal_carries_json() {
         let response = refuse(StatusCode::UNAUTHORIZED, "sign in to use this");
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
-        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
     }
 
-    /// The GUI parses every refusal and shows its `error`. Any message must reach it whole, whatever it holds.
+    /// The GUI parses every refusal and shows its error. Any message must reach it whole, whatever it holds.
     #[tokio::test]
     async fn a_refusal_reads_back_as_the_message_it_was_given() {
         for message in [

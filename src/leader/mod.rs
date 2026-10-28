@@ -3550,18 +3550,12 @@ async fn authority(State(state): State<AppState>) -> Response {
     let materials = match tls::current_if_agreed(&tls::dir_of(&state.data_dir)) {
         Ok(materials) => materials,
         Err(e) => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                [(header::CACHE_CONTROL, "no-store")],
-                e.message().to_string(),
-            )
-                .into_response();
+            return (StatusCode::SERVICE_UNAVAILABLE, e.message().to_string()).into_response();
         }
     };
     (
         [
             (header::CONTENT_TYPE, "application/x-pem-file"),
-            (header::CACHE_CONTROL, "no-store"),
             (
                 header::CONTENT_DISPOSITION,
                 "attachment; filename=\"smeltr-leader-ca.pem\"",

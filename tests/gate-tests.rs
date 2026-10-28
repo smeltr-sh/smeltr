@@ -738,7 +738,8 @@ impl Leader {
 }
 
 /// What the framework refuses before a handler runs -- a body, query or path that cannot be read, a wrong method,
-/// a path nobody serves -- is answered in the envelope at its status, its own text the one error.
+/// a path nobody serves -- is answered in the envelope at its status, its own text the one error, and uncached like
+/// every answer under `/api/`.
 #[test]
 fn a_refusal_the_framework_answers_wears_the_envelope() {
     let leader = start("framework-refusals");
@@ -761,6 +762,7 @@ fn a_refusal_the_framework_answers_wears_the_envelope() {
             .new_agent()
             .run(request)
             .expect("the call was answered");
+        assert_eq!(response.headers()["cache-control"], "no-store", "{method} {path}");
         let status = response.status().as_u16();
         (
             status,

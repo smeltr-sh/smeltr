@@ -10,15 +10,15 @@ use std::time::Duration;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 
+use smeltr::leader::envelope::Envelope;
 use smeltr::leader::store::Actor;
 use smeltr::leader::{accounts, acme, acme_dns, blocking, tls};
 
 use crate::certificates_api::{self, Tls};
 use crate::gate::{Auth, refuse};
-use crate::users_api::no_store;
 
 #[derive(Clone)]
 pub struct Acme {
@@ -100,7 +100,7 @@ async fn read(state: &Acme) -> Result<AcmeDto, String> {
 
 async fn answer(state: &Acme) -> Response {
     match read(state).await {
-        Ok(dto) => no_store(dto),
+        Ok(dto) => Envelope::ok(dto).into_response(),
         Err(e) => refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
     }
 }

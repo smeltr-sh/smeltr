@@ -84,18 +84,14 @@ fn too_many(wait: std::time::Duration, what: &str) -> Response {
     let seconds = wait.as_secs().max(1);
     let message = format!("{what} -- try again in {seconds} seconds");
     (
-        [
-            (header::RETRY_AFTER, seconds.to_string()),
-            (header::CACHE_CONTROL, "no-store".to_string()),
-        ],
+        [(header::RETRY_AFTER, seconds.to_string())],
         Refusal::new(StatusCode::TOO_MANY_REQUESTS, message),
     )
         .into_response()
 }
 
-/// A session DTO, never cached.
 fn json(dto: SessionDto) -> Response {
-    ([(header::CACHE_CONTROL, "no-store")], Envelope::ok(dto)).into_response()
+    Envelope::ok(dto).into_response()
 }
 
 /// `GET /api/auth/session`: who this browser is, or that it is nobody.
@@ -307,10 +303,7 @@ pub async fn login(
         "ok",
     );
     (
-        [
-            (header::SET_COOKIE, auth.origin.set_cookie(&issued.token)),
-            (header::CACHE_CONTROL, "no-store".to_string()),
-        ],
+        [(header::SET_COOKIE, auth.origin.set_cookie(&issued.token))],
         Envelope::ok(SessionDto {
             authenticated: true,
             user_id: Some(current.id),
@@ -381,14 +374,7 @@ fn cleared(auth: &Auth, status: StatusCode, message: &str) -> Response {
         true => Envelope::with(serde_json::json!({ "message": message }), status, vec![]),
         false => Envelope::refused(Refusal::new(status, message)),
     };
-    (
-        [
-            (header::SET_COOKIE, auth.origin.clear_cookie()),
-            (header::CACHE_CONTROL, "no-store".to_string()),
-        ],
-        answer,
-    )
-        .into_response()
+    ([(header::SET_COOKIE, auth.origin.clear_cookie())], answer).into_response()
 }
 
 /// `POST /api/auth/session/activity`: the operator did something, so the idle clock starts again.
@@ -410,7 +396,7 @@ pub async fn activity(State(auth): State<Auth>, headers: HeaderMap) -> Response 
         return *response;
     }
     auth.sessions.touch(&token, Instant::now());
-    ([(header::CACHE_CONTROL, "no-store")], "{\"ok\":true}").into_response()
+    Envelope::done().into_response()
 }
 
 #[derive(serde::Deserialize)]

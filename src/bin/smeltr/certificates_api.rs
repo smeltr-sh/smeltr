@@ -13,13 +13,12 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 
-use smeltr::leader::envelope::Refusal;
+use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::leader::resolver::Resolver;
 use smeltr::leader::store::Actor;
 use smeltr::leader::{CertificateRequest, NewCertificate, accounts, acme, blocking, tls};
 
 use crate::gate::{Auth, refuse};
-use crate::users_api::no_store;
 
 /// The live TLS material: where it lives, what is serving it, and what a certificate written here must carry.
 pub struct Tls {
@@ -224,7 +223,7 @@ async fn show(State(state): State<Certificates>) -> Response {
 /// What is in force, as every route here answers with.
 async fn answer(state: &Certificates) -> Response {
     match read(state.tls.as_ref()).await {
-        Ok(dto) => no_store(dto),
+        Ok(dto) => Envelope::ok(dto).into_response(),
         Err(e) => refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
     }
 }
@@ -738,7 +737,7 @@ pub(crate) fn reload_socket(serving: &Tls) -> Result<(), String> {
 /// What is in force, for a route outside this module that changed it.
 pub(crate) async fn answer_in_force(serving: &Arc<Tls>) -> Response {
     match read(Some(serving)).await {
-        Ok(dto) => no_store(dto),
+        Ok(dto) => Envelope::ok(dto).into_response(),
         Err(e) => refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
     }
 }

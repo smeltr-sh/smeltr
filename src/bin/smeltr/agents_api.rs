@@ -18,7 +18,7 @@ use smeltr::leader::store::Actor;
 use smeltr::leader::{accounts, blocking};
 
 use crate::gate::{Auth, refuse};
-use crate::users_api::{no_store, store_call};
+use crate::users_api::store_call;
 
 /// Why an agent is refused a change to what it may do: only a person sets that.
 const OWN_PERMISSIONS: &str = "an agent cannot change its own permissions";
@@ -37,7 +37,7 @@ pub async fn refused_while_off(auth: &Auth) -> Option<Response> {
 pub async fn get_permissions(State(auth): State<Auth>, actor: Extension<Actor>) -> Response {
     let store = auth.store.clone();
     match store_call(move || store.agent_permissions_of(&actor.id)).await {
-        Ok(permissions) => no_store(permissions),
+        Ok(permissions) => Envelope::ok(permissions).into_response(),
         Err(response) => *response,
     }
 }
@@ -67,7 +67,7 @@ pub async fn put_permissions(
     let store = auth.store.clone();
     let (user_id, written) = (actor.id.clone(), permissions.clone());
     match store_call(move || store.put_agent_permissions(&user_id, &written, &event)).await {
-        Ok(Ok(())) => no_store(permissions),
+        Ok(Ok(())) => Envelope::ok(permissions).into_response(),
         Ok(Err(e)) => refuse(StatusCode::NOT_FOUND, &e.to_string()),
         Err(response) => *response,
     }
