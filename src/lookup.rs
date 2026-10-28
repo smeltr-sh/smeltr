@@ -3,7 +3,7 @@
 //! covers the first and third (`MatchKind::Exact`/`Regex` over a `LookupSource::Csv`/`Inline` table), `mmdb::MmdbTable`
 //! the second.
 //!
-//! Every table loads once, at `plan::plan::compile` time — never per batch, never per row. "Lookup files load once per
+//! Every table loads once, at `plan::compile::compile` time — never per batch, never per row. "Lookup files load once per
 //! deployment, `Arc`" and "missing lookup file is a compile-time error" (design doc, Compiler): `Op::Call`
 //! carries the already-loaded `Table` directly, so a compiled `Plan` never touches the filesystem again, and a bad
 //! path, a malformed CIDR/regex row, or a corrupt MMDB file is a `CompileError`, never a row-time surprise.
@@ -28,8 +28,8 @@ use crate::core::id::SlotId;
 use crate::format::csv_scan;
 use crate::ops::convert::{parse_bool, parse_f64, parse_i64};
 use crate::ops::timeparse;
+use crate::plan::compile::Output;
 use crate::plan::config::{MatchKind, Multiplicity, TimeSource};
-use crate::plan::plan::Output;
 
 #[derive(Debug)]
 pub struct LookupError(pub String);
@@ -1052,7 +1052,7 @@ pub fn run(
                 }
                 for (i, builder) in builders.iter_mut().enumerate() {
                     let Some(col_idx) = row_columns[i] else {
-                        // Validated once at compile time (`plan::plan`'s Lookup arm) -- unreachable here.
+                        // Validated once at compile time (`plan::compile`'s Lookup arm) -- unreachable here.
                         unreachable!("output column resolved at compile time");
                     };
                     let default = defaults[i].as_deref().map(str::as_bytes);
@@ -1079,7 +1079,7 @@ pub fn run(
                     let value = values.and_then(|v| v[i].as_deref()).map(str::as_bytes);
                     let default = defaults[i].as_deref().map(str::as_bytes);
                     if all {
-                        // Multiplicity is moot for Mmdb (its trie finds at most one record) -- `plan::plan` rejects
+                        // Multiplicity is moot for Mmdb (its trie finds at most one record) -- `plan::compile` rejects
                         // `All` for this source as a compile error, so this arm is unreachable in practice; kept
                         // exhaustive rather than assumed away.
                         let texts: Vec<&[u8]> = value.into_iter().collect();

@@ -6,8 +6,8 @@ use crate::core::buffer::BufferPool;
 use crate::core::column::{Column, DataType};
 use crate::format::csv_scan;
 use crate::format::spread::{self, Scanner, Spread};
+use crate::plan::compile::Output;
 use crate::plan::config::CsvConfig;
-use crate::plan::plan::Output;
 use crate::plan::tree;
 
 /// A parse of `ParserKind::Csv`: a row parses where it splits whole into fields.
@@ -73,8 +73,8 @@ mod tests {
     use crate::core::column::{DataType, StrBuilder, VarType};
     use crate::core::ctx::Ctx;
     use crate::core::error::ErrorSink;
+    use crate::plan::compile::{Plan, compile};
     use crate::plan::config::{DeclaredField, FunctionConfig, FunctionKind, ParserKind, PipelineConfig, Step};
-    use crate::plan::plan::{Plan, compile};
 
     fn compile_pipeline(config: CsvConfig, declared: &[(&str, DataType)]) -> Plan {
         let p = PipelineConfig {
@@ -107,7 +107,7 @@ mod tests {
         plan.instrs
             .iter()
             .find_map(|i| match &i.op {
-                crate::plan::plan::Op::Call { outputs, .. } => Some(outputs.clone()),
+                crate::plan::compile::Op::Call { outputs, .. } => Some(outputs.clone()),
                 _ => None,
             })
             .unwrap()

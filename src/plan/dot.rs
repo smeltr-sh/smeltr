@@ -179,7 +179,7 @@ pub fn methods_for(ty: &DataType) -> Vec<Method> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::plan::ingest_fields;
+    use crate::plan::compile::ingest_fields;
     use crate::plan::topology::SourceMeta;
 
     /// What the dot ending `src` follows, as a name, a call's name, `[]` or `unread`.

@@ -21,36 +21,55 @@ use super::series::{HeartbeatRows, LatestRow, RegistryStore, SeriesPoint};
 use super::store::StoreError;
 use super::warnings;
 
+/// What a worker process says about itself on each heartbeat, apart from its threads' reports.
+#[derive(Debug, Clone, Default)]
+pub struct WorkerFacts {
+    /// What the process was started with. Durable, so a worker that fell silent before a restart still answers
+    /// what it would do about being unable to reach the leader.
+    pub stop_after_unreachable_secs: Option<u64>,
+    /// The commit whose bundle the process reported running.
+    pub commit: Option<String>,
+    /// The process's own build. Empty from a worker older than this field.
+    pub smeltr_version: String,
+    /// The release that build is. `None` on any other build, and from a worker older than this field.
+    pub release: Option<String>,
+    /// What the worker's supervisor said it was doing. Not persisted: it describes a moment rather than a state a
+    /// restart should remember.
+    pub supervising: Option<crate::heartbeat::Supervising>,
+    /// What the process was spending against what it was allowed to run in. Not persisted, for the same reason
+    /// `supervising` is not: a live reading a restarted leader cannot refresh is worse than none.
+    pub resources: Option<crate::heartbeat::ResourceReport>,
+    /// When the authority the worker verifies the leader against expires. Durable: the worker this warns about is
+    /// one that can no longer reach the leader to say it again.
+    pub authority_expires_millis: Option<i64>,
+    /// When the worker said it was stopping, where that is the last thing it said. Durable for the same reason as
+    /// the expiry: a worker that stopped says nothing more.
+    pub stopped_at_ms: Option<i64>,
+}
+
+impl WorkerFacts {
+    /// What `req` says about its worker, heard at `now_ms`.
+    pub fn of(req: &crate::heartbeat::HeartbeatRequest, now_ms: i64) -> WorkerFacts {
+        WorkerFacts {
+            stop_after_unreachable_secs: req.stop_after_unreachable_secs,
+            commit: req.commit.clone(),
+            smeltr_version: req.smeltr_version.clone(),
+            release: req.release.clone(),
+            supervising: req.supervising.clone(),
+            resources: req.resources,
+            authority_expires_millis: req.authority_expires_millis,
+            stopped_at_ms: req.stopping.then_some(now_ms),
+        }
+    }
+}
+
 /// One thread's last report, and when it arrived. The report is the worker's own `ThreadHeartbeat`: the leader adds
 /// arrival time and nothing else, so a field added to the wire type reaches `/api/health` without a hop to teach.
 struct ThreadState {
     report: ThreadHeartbeat,
-    /// What this thread's worker process was started with, copied onto every thread it reports -- the same way
+    /// What this thread's worker process said about itself, copied onto every thread it reports -- the same way
     /// `report.group_id` already is, a per-worker fact repeated because there is no row keyed by worker alone.
-    /// Durable with the rest of the report, so a worker that fell silent before a restart still answers what it
-    /// would do about being unable to reach the leader.
-    stop_after_unreachable_secs: Option<u64>,
-    /// The commit whose bundle that process reported running, copied onto every thread for the same reason.
-    commit: Option<String>,
-    /// That process's own build, copied onto every thread for the same reason. Empty from a worker older than
-    /// this field.
-    smeltr_version: String,
-    /// The release that build is, copied onto every thread for the same reason. `None` on any other build, and
-    /// from a worker older than this field.
-    release: Option<String>,
-    /// What that worker's supervisor said it was doing, copied onto every thread for the same reason. Not
-    /// persisted: it describes a moment rather than a state a restart should remember.
-    supervising: Option<crate::heartbeat::Supervising>,
-    /// What that worker process was spending against what it was allowed to run in, copied onto every thread for
-    /// the same reason. Not persisted, for the same reason `supervising` is not: a live reading a restarted
-    /// leader cannot refresh is worse than none.
-    resources: Option<crate::heartbeat::ResourceReport>,
-    /// When the authority that worker verifies the leader against expires, copied on for the same reason. Durable
-    /// too: the worker this warns about is one that can no longer reach the leader to say it again.
-    authority_expires_millis: Option<i64>,
-    /// When that worker said it was stopping, where that is the last thing it said. Copied on for the same reason,
-    /// and durable for the same reason as the expiry: a worker that stopped says nothing more.
-    stopped_at_ms: Option<i64>,
+    worker: WorkerFacts,
     last_seen: Instant,
 }
 
@@ -178,18 +197,20 @@ impl Registry {
                         (row.worker_id, row.thread_id),
                         ThreadState {
                             report,
-                            stop_after_unreachable_secs: row.stop_after_unreachable_secs,
-                            commit: row.commit,
-                            smeltr_version: row.smeltr_version,
-                            release: row.release,
-                            supervising: row
-                                .supervising_json
-                                .as_deref()
-                                .and_then(|json| serde_json::from_str(json).ok()),
-                            // Not durable: a restarted leader has nothing to reload here until the next beat.
-                            resources: None,
-                            authority_expires_millis: row.authority_expires_millis,
-                            stopped_at_ms: row.stopped_at_ms,
+                            worker: WorkerFacts {
+                                stop_after_unreachable_secs: row.stop_after_unreachable_secs,
+                                commit: row.commit,
+                                smeltr_version: row.smeltr_version,
+                                release: row.release,
+                                supervising: row
+                                    .supervising_json
+                                    .as_deref()
+                                    .and_then(|json| serde_json::from_str(json).ok()),
+                                // Not durable: a restarted leader has nothing to reload here until the next beat.
+                                resources: None,
+                                authority_expires_millis: row.authority_expires_millis,
+                                stopped_at_ms: row.stopped_at_ms,
+                            },
                             last_seen: recovered_instant(row.last_seen_ms, now_ms),
                         },
                     );
@@ -243,7 +264,7 @@ impl Registry {
 
     /// One heartbeat: every thread it reported, durable and in memory. `reports` is the whole request's, because
     /// the durable mirror is written in one transaction -- a half-written heartbeat is a claim about a window that
-    /// never held. `stopping` is the heartbeat saying the worker is stopping; any other heartbeat says it is not.
+    /// never held. `worker.stopped_at_ms` is set by a heartbeat saying the worker is stopping, and by no other.
     ///
     /// A stopping heartbeat is the worker's last word, sent once its threads have ended. Its rows become exactly
     /// the reports it carried about the worker itself: what its threads last said is history, and history owns no
@@ -252,45 +273,23 @@ impl Registry {
     /// `window` is which window of the worker's life the beat's samples and `streams` are, and a window already
     /// recorded adds neither again (`RegistryStore::record_heartbeat`). The streams are the design doc's
     /// Observability: Streams, from a worker that stated its group.
-    #[allow(clippy::too_many_arguments)]
     pub fn record_heartbeat(
         &self,
         worker_id: &str,
         reports: Vec<ThreadHeartbeat>,
+        worker: WorkerFacts,
         window: Option<super::series::Window>,
         streams: Option<super::series::Streams<'_>>,
-        stop_after_unreachable_secs: Option<u64>,
-        commit: Option<String>,
-        smeltr_version: String,
-        release: Option<String>,
-        supervising: Option<crate::heartbeat::Supervising>,
-        resources: Option<crate::heartbeat::ResourceReport>,
-        authority_expires_millis: Option<i64>,
-        stopping: bool,
         now_ms: i64,
     ) {
-        let stopped_at_ms = stopping.then_some(now_ms);
+        let stopping = worker.stopped_at_ms.is_some();
         if let Some(store) = &self.store {
-            persist_heartbeat(
-                store,
-                worker_id,
-                &reports,
-                window,
-                streams,
-                stop_after_unreachable_secs,
-                commit.as_deref(),
-                &smeltr_version,
-                release.as_deref(),
-                supervising.as_ref(),
-                authority_expires_millis,
-                stopped_at_ms,
-                now_ms,
-            );
+            persist_heartbeat(store, worker_id, &reports, &worker, window, streams, now_ms);
         }
         let mut threads = self.threads.lock().unwrap();
         let last_seen = Instant::now();
         if stopping {
-            threads.retain(|(worker, _), _| worker != worker_id);
+            threads.retain(|(w, _), _| w != worker_id);
         }
         // What a worker says about itself rides on every one of its rows, and a heartbeat carrying no thread at
         // all still said it. Without this a worker with nothing deployed can never correct what its rows claim
@@ -298,15 +297,8 @@ impl Registry {
         //
         // `last_seen` is not touched here: liveness is the thread's own, and a thread that stopped reporting is
         // not alive because the process behind it is.
-        for (_, state) in threads.iter_mut().filter(|((worker, _), _)| worker == worker_id) {
-            state.stop_after_unreachable_secs = stop_after_unreachable_secs;
-            state.commit = commit.clone();
-            state.smeltr_version = smeltr_version.clone();
-            state.release = release.clone();
-            state.supervising = supervising.clone();
-            state.resources = resources;
-            state.authority_expires_millis = authority_expires_millis;
-            state.stopped_at_ms = stopped_at_ms;
+        for (_, state) in threads.iter_mut().filter(|((w, _), _)| w == worker_id) {
+            state.worker = worker.clone();
         }
         for report in reports
             .into_iter()
@@ -316,14 +308,7 @@ impl Registry {
                 (worker_id.to_string(), report.thread_id.clone()),
                 ThreadState {
                     report,
-                    stop_after_unreachable_secs,
-                    commit: commit.clone(),
-                    smeltr_version: smeltr_version.clone(),
-                    release: release.clone(),
-                    supervising: supervising.clone(),
-                    resources,
-                    authority_expires_millis,
-                    stopped_at_ms,
+                    worker: worker.clone(),
                     last_seen,
                 },
             );
@@ -427,11 +412,9 @@ impl Registry {
 
     /// Whether `worker_id` has heartbeated within `within` without saying it was stopping.
     pub fn heartbeating(&self, worker_id: &str, within: std::time::Duration) -> bool {
-        self.threads
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|((worker, _), s)| worker == worker_id && s.stopped_at_ms.is_none() && s.last_seen.elapsed() <= within)
+        self.threads.lock().unwrap().iter().any(|((worker, _), s)| {
+            worker == worker_id && s.worker.stopped_at_ms.is_none() && s.last_seen.elapsed() <= within
+        })
     }
 
     /// Every worker in `group` heard from within `within`.
@@ -458,14 +441,14 @@ impl Registry {
             .map(|((worker_id, _), s)| ThreadHealth {
                 worker_id: worker_id.clone(),
                 last_seen_millis_ago: now.duration_since(s.last_seen).as_millis() as u64,
-                stop_after_unreachable_secs: s.stop_after_unreachable_secs,
-                commit: s.commit.clone(),
-                smeltr_version: s.smeltr_version.clone(),
-                release: s.release.clone(),
-                supervising: s.supervising.clone(),
-                resources: s.resources,
-                authority_expires_millis: s.authority_expires_millis,
-                stopped_at_millis: s.stopped_at_ms,
+                stop_after_unreachable_secs: s.worker.stop_after_unreachable_secs,
+                commit: s.worker.commit.clone(),
+                smeltr_version: s.worker.smeltr_version.clone(),
+                release: s.worker.release.clone(),
+                supervising: s.worker.supervising.clone(),
+                resources: s.worker.resources,
+                authority_expires_millis: s.worker.authority_expires_millis,
+                stopped_at_millis: s.worker.stopped_at_ms,
                 report: s.report.clone(),
             })
             .collect()
@@ -602,25 +585,18 @@ fn about_the_worker(report: &ThreadHeartbeat) -> bool {
 ///
 /// The encoding and the subject keys are assembled here because the wire types are this module's; `series` owns
 /// the transaction and stores both opaquely.
-#[allow(clippy::too_many_arguments)]
 fn persist_heartbeat(
     store: &RegistryStore,
     worker_id: &str,
     reports: &[ThreadHeartbeat],
+    worker: &WorkerFacts,
     window: Option<super::series::Window>,
     streams: Option<super::series::Streams<'_>>,
-    stop_after_unreachable_secs: Option<u64>,
-    commit: Option<&str>,
-    smeltr_version: &str,
-    release: Option<&str>,
-    supervising: Option<&crate::heartbeat::Supervising>,
-    authority_expires_millis: Option<i64>,
-    stopped_at_ms: Option<i64>,
     now_ms: i64,
 ) {
     let threads: Vec<LatestRow<'_>> = reports
         .iter()
-        .filter(|report| stopped_at_ms.is_none() || about_the_worker(report))
+        .filter(|report| worker.stopped_at_ms.is_none() || about_the_worker(report))
         .filter_map(|report| match serde_json::to_string(report) {
             Ok(report_json) => Some(LatestRow {
                 thread_id: &report.thread_id,
@@ -641,9 +617,47 @@ fn persist_heartbeat(
         })
         .collect();
 
-    // A sample naming no subject, a fact carried as text, and a kind from a newer build are not series points:
-    // `subject_key` says which names no subject.
-    let points: Vec<SeriesPoint<'_>> = reports
+    let points = series_points(worker_id, reports);
+
+    if let Err(e) = store.record_heartbeat(&HeartbeatRows {
+        worker_id,
+        threads: &threads,
+        points: &points,
+        window,
+        streams,
+        stop_after_unreachable_secs: worker.stop_after_unreachable_secs,
+        commit: worker.commit.as_deref(),
+        smeltr_version: &worker.smeltr_version,
+        release: worker.release.as_deref(),
+        supervising_json: worker.supervising.as_ref().and_then(|s| serde_json::to_string(s).ok()),
+        authority_expires_millis: worker.authority_expires_millis,
+        stopped_at_ms: worker.stopped_at_ms,
+        now_ms,
+    }) {
+        // One transaction, so this is the whole heartbeat's mirror rather than a count of the rows that failed. An
+        // example row rides along: a store that refuses the same point every beat is diagnosable only by what it
+        // refused, and the counts alone cannot name it.
+        tracing::warn!(
+            target: "registry.heartbeat_not_persisted",
+            subject = %worker_id,
+            threads = threads.len(),
+            points = points.len(),
+            metric = points.first().map(|p| p.metric).unwrap_or_default(),
+            subject_key = points.first().map(|p| p.subject_key.as_str()).unwrap_or_default(),
+            error = %e,
+            "a heartbeat's durable mirror could not be written, so that window of history is missing and every \
+             thread it reported is stale until the next one lands. `metric` and `subject_key` are the first point \
+             it carried, as an example of the shape"
+        );
+    }
+
+    store.maybe_maintain(now_ms);
+}
+
+/// Each sample `reports` carries that is a series point. A sample naming no subject, a fact carried as text, and a
+/// kind from a newer build are not: `subject_key` says which names no subject.
+fn series_points<'a>(worker_id: &str, reports: &'a [ThreadHeartbeat]) -> Vec<SeriesPoint<'a>> {
+    reports
         .iter()
         .flat_map(|report| report.metrics.iter().map(move |s| (report, s)))
         .filter_map(|(report, sample)| {
@@ -667,41 +681,7 @@ fn persist_heartbeat(
                 value,
             })
         })
-        .collect();
-
-    if let Err(e) = store.record_heartbeat(&HeartbeatRows {
-        worker_id,
-        threads: &threads,
-        points: &points,
-        window,
-        streams,
-        stop_after_unreachable_secs,
-        commit,
-        smeltr_version,
-        release,
-        supervising_json: supervising.and_then(|s| serde_json::to_string(s).ok()),
-        authority_expires_millis,
-        stopped_at_ms,
-        now_ms,
-    }) {
-        // One transaction, so this is the whole heartbeat's mirror rather than a count of the rows that failed. An
-        // example row rides along: a store that refuses the same point every beat is diagnosable only by what it
-        // refused, and the counts alone cannot name it.
-        tracing::warn!(
-            target: "registry.heartbeat_not_persisted",
-            subject = %worker_id,
-            threads = threads.len(),
-            points = points.len(),
-            metric = points.first().map(|p| p.metric).unwrap_or_default(),
-            subject_key = points.first().map(|p| p.subject_key.as_str()).unwrap_or_default(),
-            error = %e,
-            "a heartbeat's durable mirror could not be written, so that window of history is missing and every \
-             thread it reported is stale until the next one lands. `metric` and `subject_key` are the first point \
-             it carried, as an example of the shape"
-        );
-    }
-
-    store.maybe_maintain(now_ms);
+        .collect()
 }
 
 /// Whether `next_ms` has come at `now_ms`, and if so, moves it `every` later. True for one caller per `every`.
@@ -732,36 +712,8 @@ mod tests {
     fn a_worker_expected_but_not_heard_from_holds_nothing() {
         let r = Registry::default();
         // Two workers the leader knows about, from threads the snapshot carries across a restart.
-        r.record_heartbeat(
-            "w1",
-            vec![report("t1", "g")],
-            None,
-            None,
-            None,
-            None,
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            0,
-        );
-        r.record_heartbeat(
-            "w2",
-            vec![report("t2", "g")],
-            None,
-            None,
-            None,
-            None,
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            0,
-        );
+        r.record_heartbeat("w1", vec![report("t1", "g")], WorkerFacts::default(), None, None, 0);
+        r.record_heartbeat("w2", vec![report("t2", "g")], WorkerFacts::default(), None, None, 0);
         // Only one of them has said what it holds this run.
         r.record_authority("w1", vec!["incoming".to_string()], true);
 
@@ -819,21 +771,7 @@ mod tests {
     #[test]
     fn a_worker_that_can_never_answer_is_not_waited_for() {
         let r = Registry::default();
-        r.record_heartbeat(
-            "gone",
-            vec![report("t1", "g")],
-            None,
-            None,
-            None,
-            None,
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            0,
-        );
+        r.record_heartbeat("gone", vec![report("t1", "g")], WorkerFacts::default(), None, None, 0);
         r.record_authority("gone", vec!["outgoing".to_string()], true);
         // Expected is the caller's answer, and a revoked worker is not in it.
         assert!(r.authorities_held(&HashSet::new()).is_empty());
@@ -844,21 +782,7 @@ mod tests {
     #[test]
     fn a_worker_that_has_merely_gone_quiet_is_still_waited_for() {
         let r = Registry::default();
-        r.record_heartbeat(
-            "quiet",
-            vec![report("t1", "g")],
-            None,
-            None,
-            None,
-            None,
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            0,
-        );
+        r.record_heartbeat("quiet", vec![report("t1", "g")], WorkerFacts::default(), None, None, 0);
         r.record_authority("quiet", vec!["outgoing".to_string()], true);
 
         // Nothing injects a clock here, so the moment it was last heard from is set back instead: a day, or as far
@@ -890,66 +814,10 @@ mod tests {
     #[test]
     fn snapshot_holds_one_entry_per_worker_thread_pair() {
         let r = Registry::default();
-        r.record_heartbeat(
-            "w1",
-            vec![report("t0", "pool")],
-            None,
-            None,
-            None,
-            None,
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            0,
-        );
-        r.record_heartbeat(
-            "w1",
-            vec![report("t1", "pool")],
-            None,
-            None,
-            None,
-            None,
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            0,
-        );
-        r.record_heartbeat(
-            "w2",
-            vec![report("t0", "pool")],
-            None,
-            None,
-            None,
-            None,
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            0,
-        );
-        r.record_heartbeat(
-            "w1",
-            vec![report("t0", "prod")],
-            None,
-            None,
-            None,
-            None,
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            0,
-        );
+        r.record_heartbeat("w1", vec![report("t0", "pool")], WorkerFacts::default(), None, None, 0);
+        r.record_heartbeat("w1", vec![report("t1", "pool")], WorkerFacts::default(), None, None, 0);
+        r.record_heartbeat("w2", vec![report("t0", "pool")], WorkerFacts::default(), None, None, 0);
+        r.record_heartbeat("w1", vec![report("t0", "prod")], WorkerFacts::default(), None, None, 0);
         let snapshot = r.snapshot();
         assert_eq!(snapshot.len(), 3);
         let w1t0 = snapshot
@@ -965,16 +833,13 @@ mod tests {
         r.record_heartbeat(
             "w1",
             vec![report("t0", "pool")],
+            WorkerFacts {
+                stop_after_unreachable_secs: Some(300),
+                commit: Some("c0ffee".to_string()),
+                ..Default::default()
+            },
             None,
             None,
-            Some(300),
-            Some("c0ffee".to_string()),
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
             0,
         );
         let json = serde_json::to_value(&r.snapshot()[0]).unwrap();
@@ -1073,16 +938,12 @@ mod tests {
             r.record_heartbeat(
                 "w1",
                 threads,
+                WorkerFacts {
+                    stopped_at_ms: stopping.then_some(at),
+                    ..Default::default()
+                },
                 None,
                 None,
-                None,
-                None,
-                String::new(),
-                None,
-                None,
-                None,
-                None,
-                stopping,
                 at,
             );
         };
@@ -1166,16 +1027,9 @@ mod tests {
             r.record_heartbeat(
                 "w1",
                 vec![report("t0", "pool")],
+                WorkerFacts::default(),
                 None,
                 None,
-                None,
-                None,
-                String::new(),
-                None,
-                None,
-                None,
-                None,
-                false,
                 started_at,
             );
             r.observe_facts(&HashSet::from([key.clone()]), started_at);
@@ -1217,16 +1071,13 @@ mod tests {
             r.record_heartbeat(
                 "w1",
                 vec![report("t0", "pool")],
+                WorkerFacts {
+                    commit: Some("c0ffee".to_string()),
+                    supervising: Some(supervising.clone()),
+                    ..Default::default()
+                },
                 None,
                 None,
-                None,
-                Some("c0ffee".to_string()),
-                String::new(),
-                None,
-                Some(supervising.clone()),
-                None,
-                None,
-                false,
                 started_at,
             );
         }
@@ -1259,16 +1110,13 @@ mod tests {
             r.record_heartbeat(
                 "w1",
                 vec![report("t0", "pool")],
+                WorkerFacts {
+                    stop_after_unreachable_secs: Some(300),
+                    commit: Some("c0ffee".to_string()),
+                    ..Default::default()
+                },
                 None,
                 None,
-                Some(300),
-                Some("c0ffee".to_string()),
-                String::new(),
-                None,
-                None,
-                None,
-                None,
-                false,
                 started_at,
             );
         }
@@ -1299,16 +1147,13 @@ mod tests {
         r.record_heartbeat(
             "w1",
             vec![report("t0", "pool")],
+            WorkerFacts {
+                commit: Some("c0ffee".to_string()),
+                authority_expires_millis: Some(started_at + 1000),
+                ..Default::default()
+            },
             None,
             None,
-            None,
-            Some("c0ffee".to_string()),
-            String::new(),
-            None,
-            None,
-            None,
-            Some(started_at + 1000),
-            false,
             started_at,
         );
 
@@ -1322,16 +1167,13 @@ mod tests {
         r.record_heartbeat(
             "w1",
             vec![],
+            WorkerFacts {
+                supervising: Some(supervising),
+                authority_expires_millis: Some(started_at + 9000),
+                ..Default::default()
+            },
             None,
             None,
-            None,
-            None,
-            String::new(),
-            None,
-            Some(supervising),
-            None,
-            Some(started_at + 9000),
-            false,
             started_at + 1,
         );
 
@@ -1366,16 +1208,12 @@ mod tests {
             r.record_heartbeat(
                 "w1",
                 vec![report("t0", "pool")],
+                WorkerFacts {
+                    authority_expires_millis: Some(expires),
+                    ..Default::default()
+                },
                 None,
                 None,
-                None,
-                None,
-                String::new(),
-                None,
-                None,
-                None,
-                Some(expires),
-                false,
                 started_at,
             );
         }
@@ -1424,21 +1262,7 @@ mod tests {
             value: MetricValueDto::Counter(4),
         }];
 
-        r.record_heartbeat(
-            "w1",
-            vec![reader, egress],
-            None,
-            None,
-            None,
-            None,
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            12_345,
-        );
+        r.record_heartbeat("w1", vec![reader, egress], WorkerFacts::default(), None, None, 12_345);
 
         assert_eq!(r.snapshot().len(), 2, "both threads are live state");
         let series = r.series().unwrap();
@@ -1484,21 +1308,7 @@ mod tests {
             ],
             value: MetricValueDto::Counter(5),
         }];
-        r.record_heartbeat(
-            "w1",
-            vec![with_metrics],
-            None,
-            None,
-            None,
-            None,
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            12_345,
-        );
+        r.record_heartbeat("w1", vec![with_metrics], WorkerFacts::default(), None, None, 12_345);
 
         let key = subject_key(
             "pool",
@@ -1549,21 +1359,7 @@ mod tests {
             ],
             value: MetricValueDto::Gauge(12.0),
         }];
-        r.record_heartbeat(
-            "w1",
-            vec![with_lag],
-            None,
-            None,
-            None,
-            None,
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            12_345,
-        );
+        r.record_heartbeat("w1", vec![with_lag], WorkerFacts::default(), None, None, 12_345);
 
         let key = subject_key(
             "pool",

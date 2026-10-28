@@ -5841,6 +5841,51 @@ mod tests {
         );
     }
 
+    /// A restart starts the same commit with the certificates held now, so the check it runs first refuses a new
+    /// version the commit's receiver could not serve, and what runs keeps running.
+    #[test]
+    fn a_restart_s_check_refuses_a_certificate_version_its_receiver_could_not_serve() {
+        let mut supervisor = supervisor_for(temp_dir("restart-check"));
+        let dir = repo("restart-check-repo");
+        write(&dir, "groups/g/system.json", r#"{"version":1}"#);
+        write(
+            &dir,
+            "groups/g/sources.json",
+            r#"[{"id":"syslog","type":"syslogReceiver","port":1514,"allowFrom":["10.0.0.0/8"],"certificate":"rx"}]"#,
+        );
+        let head = commit(&dir, "a receiver serving rx");
+        supervisor.repo_dir = dir;
+        let deliver = |version, purpose| {
+            let key = rcgen::KeyPair::generate().unwrap();
+            let mut params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()]).unwrap();
+            params.extended_key_usages = vec![purpose];
+            heartbeat::SecretDelivery {
+                name: "rx".to_string(),
+                version,
+                value: key.serialize_pem(),
+                chain: Some(params.self_signed(&key).unwrap().pem()),
+            }
+        };
+
+        supervisor
+            .secrets
+            .lock()
+            .unwrap()
+            .take([deliver(1, rcgen::ExtendedKeyUsagePurpose::ServerAuth)]);
+        let checked = supervisor.validate(&head).expect("a server certificate serves");
+        assert_eq!(checked.checked.get("rx"), Some(&1));
+
+        supervisor
+            .secrets
+            .lock()
+            .unwrap()
+            .take([deliver(2, rcgen::ExtendedKeyUsagePurpose::ClientAuth)]);
+        let Err(refused) = supervisor.validate(&head) else {
+            panic!("a client certificate cannot serve")
+        };
+        assert!(refused.contains("Extended Key Usage"), "{refused}");
+    }
+
     /// The leader repeats a directive until a beat names it taken, so each id is acted on once however many
     /// answers carry it.
     #[test]

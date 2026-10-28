@@ -28,12 +28,12 @@ use smeltr::core::ctx::Ctx;
 use smeltr::core::error::ErrorSink;
 use smeltr::ops::stdfuncs::{Arg, Param, ROWS, StdFunc};
 use smeltr::ops::{BinOp, UnOp};
+use smeltr::plan::compile::{Plan, compile};
 use smeltr::plan::config::{
     CsvConfig, DeclaredField, FunctionConfig, FunctionKind, GrokConfig, KvConfig, LookupOutput, LookupSource,
     MatchKind, Multiplicity, ParserKind, PipelineConfig, Step,
 };
 use smeltr::plan::output::run_to_json;
-use smeltr::plan::plan::{Plan, compile};
 use smeltr::plan::resolve::{binop_result, unop_result};
 use smeltr::plan::topology::SourceMeta;
 

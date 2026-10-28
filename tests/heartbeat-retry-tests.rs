@@ -171,16 +171,9 @@ fn a_beat_the_leader_recorded_and_sent_again_counts_once() {
         registry.record_heartbeat(
             &req.worker_id,
             req.threads,
+            smeltr::leader::registry::WorkerFacts::default(),
             Some(Window { boot_id: 7, seq }),
             None,
-            None,
-            None,
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
             1_000,
         );
     };
