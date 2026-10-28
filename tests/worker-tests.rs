@@ -453,6 +453,7 @@ fn standalone_leader_runs_its_own_embedded_worker() {
         &KafkaDestinationConfig {
             payload: smeltr::plan::config::Payload::Record,
             compression: smeltr::plan::topology::Compression::None,
+            acks: smeltr::plan::topology::Acks::All,
             stall_after: std::time::Duration::from_secs(30),
             brokers: brokers.clone(),
             default_topic: input_topic,
@@ -584,6 +585,7 @@ fn a_restarted_worker_runs_nothing_until_the_leader_answers() {
         &KafkaDestinationConfig {
             payload: smeltr::plan::config::Payload::Record,
             compression: smeltr::plan::topology::Compression::None,
+            acks: smeltr::plan::topology::Acks::All,
             stall_after: std::time::Duration::from_secs(30),
             brokers: brokers.clone(),
             default_topic: input_topic.clone(),
@@ -768,6 +770,7 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
         &KafkaDestinationConfig {
             payload: smeltr::plan::config::Payload::Record,
             compression: smeltr::plan::topology::Compression::None,
+            acks: smeltr::plan::topology::Acks::All,
             stall_after: std::time::Duration::from_secs(30),
             brokers: brokers.clone(),
             default_topic: input_topic,

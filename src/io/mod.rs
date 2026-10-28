@@ -109,6 +109,9 @@ pub fn build_source(
 /// `metrics` reaches a transport that reports on itself: librdkafka's statistics arrive on its own thread, and an HTTP
 /// destination's senders each run on one, not on the egress thread that owns this client. What an Elasticsearch or
 /// Prometheus store says it did not write is in its answer, which only the protocol reads.
+/// Leave to spawn one more sender: see [`Destination::lend_senders`].
+pub type Lend = Box<dyn FnMut() -> bool + Send>;
+
 pub fn build_destination(
     kind: &crate::plan::topology::DestinationKind,
     id: crate::core::id::DestId,
@@ -1211,6 +1214,8 @@ pub type BatchId = u64;
 pub struct BatchCompletion {
     pub batch: BatchId,
     pub rejections: Vec<Rejection>,
+    /// The destination asked to be sent less while delivering it: the pacing model cuts what it may hold.
+    pub throttled: bool,
 }
 
 /// What [`Destination::deliver`] did with a batch.
@@ -1273,8 +1278,13 @@ pub trait Destination: Send {
         Vec::new()
     }
 
-    /// How many requests this destination currently allows outstanding, for a transport that decides that for itself.
-    /// `None` from one whose concurrency is not its own to report -- librdkafka's is inside librdkafka.
+    /// Where a destination that spawns a sender when every one it has is busy gets leave to spawn one past those it
+    /// started with: `lend` answers whether the memory it holds is lent. Given once, before the first delivery. One
+    /// that spawns none ignores it.
+    fn lend_senders(&mut self, _lend: Lend) {}
+
+    /// How many requests this destination has open, for a transport that opens them itself. `None` from one whose
+    /// requests are not its own to report -- librdkafka's are inside librdkafka.
     fn concurrency(&mut self) -> Option<usize> {
         None
     }
@@ -1521,7 +1531,11 @@ pub mod fake {
                     }
                 }
             }
-            st.ready.push(BatchCompletion { batch, rejections });
+            st.ready.push(BatchCompletion {
+                batch,
+                rejections,
+                throttled: false,
+            });
         }
 
         /// Every batch `deliver` took, in order, with the rows it carried whole.
@@ -1568,6 +1582,7 @@ pub mod fake {
             st.ready.extend(pending.into_iter().map(|batch| BatchCompletion {
                 batch,
                 rejections: Vec::new(),
+                throttled: false,
             }));
             Ok(())
         }

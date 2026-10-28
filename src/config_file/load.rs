@@ -1295,6 +1295,11 @@ const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
         "compression.codec",
         "librdkafka's other spelling of `compression.type`, which is set from this destination's own `compression` field",
     ),
+    ("acks", "set from this destination's own `acks` field"),
+    (
+        "request.required.acks",
+        "librdkafka's other spelling of `acks`, which is set from this destination's own `acks` field",
+    ),
     (
         "queued.max.messages.kbytes",
         "set from this source's own `fetchBytes` field, which is what makes a reader's memory footprint a number this deployment chose",
@@ -1311,26 +1316,7 @@ const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
     ),
     (
         "queue.buffering.max.messages",
-        "left at librdkafka's own default, so it cannot undercut the bound `bufferBytes` sets on \
-         `queue.buffering.max.kbytes`; set to 0 it would remove that bound entirely",
-    ),
-    (
-        "batch.size",
-        "derived at deployment from this destination's own `bufferBytes`, the topic's partitions and the measured \
-         round trip to the broker, so one buffer says what the link carries",
-    ),
-    (
-        "message.max.bytes",
-        "set with the derived batch, capped at what the broker takes, which the worker asks it at deployment",
-    ),
-    (
-        "batch.num.messages",
-        "raised with the derived batch, so a batch of small records can fill to its bytes",
-    ),
-    (
-        "linger.ms",
-        "derived at deployment from the measured round trip to the broker, so a batch fills while the one before it \
-         is in flight",
+        "set to its maximum so the producer's half of this destination's own `bufferBytes` field bounds its queue",
     ),
     (
         "fetch.max.bytes",
@@ -1347,7 +1333,7 @@ const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
     ),
     (
         "enable.idempotence",
-        "required for the producer not to duplicate or reorder records on retry, which at-least-once delivery and the Elasticsearch dedupe story both rely on",
+        "smeltr runs the producer with it off: an idempotent producer keeps at most five requests in flight, too few for a far link",
     ),
     (
         "transactional.id",
@@ -5012,6 +4998,7 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             tls,
             props,
             compression,
+            acks,
             stall_after_secs,
             buffer_bytes,
             format,
@@ -5024,6 +5011,7 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
             props: to_kafka_props(props),
             default_topic: default_topic.clone(),
             compression: compression.to_plan(),
+            acks: acks.to_plan(),
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),
             buffer_bytes: buffer_bytes.map_or(BufferBytes::DEFAULT, |b| b.0),
             service: KafkaService::Kafka,
@@ -5049,6 +5037,7 @@ fn to_destination(dto: &DestinationDto, id: DestId) -> DestinationConfig {
                 brokers,
                 default_topic: default_event_hub.clone(),
                 compression: compression.to_plan(),
+                acks: crate::plan::topology::Acks::All,
                 stall_after: std::time::Duration::from_secs(stall_after_secs.0),
                 buffer_bytes: buffer_bytes.map_or(BufferBytes::DEFAULT, |b| b.0),
                 service: KafkaService::EventHubs,
@@ -6890,6 +6879,7 @@ mod tests {
         for (alias, canonical) in [
             ("metadata.broker.list", "bootstrap.servers"),
             ("compression.codec", "compression.type"),
+            ("request.required.acks", "acks"),
         ] {
             let json = example_json().replacen(
                 r#""groupId": "smeltr""#,
@@ -6954,13 +6944,11 @@ mod tests {
             "max.poll.interval.ms",
             "enable.idempotence",
             "statistics.interval.ms",
-            "batch.size",
-            "message.max.bytes",
-            "linger.ms",
             "fetch.max.bytes",
             "fetch.message.max.bytes",
             "receive.message.max.bytes",
-            "batch.num.messages",
+            "acks",
+            "queue.buffering.max.messages",
         ] {
             let json = example_json().replacen(
                 r#""groupId": "smeltr""#,
@@ -6974,25 +6962,6 @@ mod tests {
                 "{key} was accepted: {errors:?}"
             );
         }
-    }
-
-    /// The one property smeltr reserves without setting: leaving librdkafka's default in place is itself the
-    /// decision, and an operator lowering it would bound the producer queue somewhere `bufferBytes` cannot see.
-    #[test]
-    fn the_message_count_bound_is_reserved_though_smeltr_leaves_it_alone() {
-        let json = example_json().replacen(
-            r#""groupId": "smeltr""#,
-            r#""groupId": "smeltr", "properties": {"queue.buffering.max.messages": "1"}"#,
-            1,
-        );
-        let file: FileConfig = serde_json::from_str(&json).unwrap();
-        let errors = validation_errors(file);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("queue.buffering.max.messages") && e.contains("smeltr owns")),
-            "{errors:?}"
-        );
     }
 
     /// A transactional producer refuses every record sent outside a transaction, and smeltr begins none.

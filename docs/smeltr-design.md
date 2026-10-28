@@ -29,7 +29,7 @@ history, and a worker runs exactly one at a time.
                 └────── commit ◄──── acknowledgments ──┘
 ```
 
-Nine systems make this up. Five live inside a worker, three describe how work
+Ten systems make this up. Five live inside a worker, four describe how work
 reaches it, one crosses both tiers.
 
 | system | governs |
@@ -44,6 +44,7 @@ reaches it, one crosses both tiers.
 | [Control plane](architecture/control-plane.md) | what a worker is running and when it changes |
 | [Config plane](architecture/config-plane.md) | the bundle, its validation, and how a change becomes a commit on `main` |
 | [Security](architecture/security.md) | trust between worker and leader, people and their access, credentials, and the cryptography under them |
+| [API](architecture/api.md) | the routes the leader answers, who may call each, and the shape of an answer |
 | **Cross-cutting** | |
 | [Observability](architecture/observability.md) | the metrics registry and the cursors that read it, logs, and what each source's streams look like |
 
