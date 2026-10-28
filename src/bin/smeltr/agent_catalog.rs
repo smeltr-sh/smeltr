@@ -280,8 +280,8 @@ pub const CATALOG: &[Route] = &[
         body: "",
     },
     Route {
-        method: "POST",
-        path: "/api/captures/:session/discard",
+        method: "DELETE",
+        path: "/api/captures/:session",
         what: "Give up on a capture without saving; answers { ok }. No query.",
         body: "",
     },
@@ -429,7 +429,7 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "GET",
-        path: "/api/system/info",
+        path: "/api/system",
         what: "Version, release, a newer published release and the last look for one, and the Kafka SASL mechanisms \
                this build offers. No query.",
         body: "",
@@ -489,8 +489,8 @@ pub const CATALOG: &[Route] = &[
         body: "",
     },
     Route {
-        method: "POST",
-        path: "/api/workers/:worker_id/remove",
+        method: "DELETE",
+        path: "/api/workers/:worker_id",
         what: "Remove a worker that is revoked or silent, for good; refused while it heartbeats. No query.",
         body: "",
     },

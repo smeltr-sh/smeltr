@@ -69,7 +69,7 @@ use axum::Router;
 use axum::extract::{Extension, Json, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 
 use crate::heartbeat::{HeartbeatRequest, HeartbeatResponse, ThreadKind};
 use envelope::Envelope;
@@ -939,7 +939,7 @@ pub fn health_snapshot(state: &AppState) -> HealthResponse {
     }
 }
 
-/// What `GET /api/system/info` serves: this leader process's own build, for Admin -> System -> General, and what
+/// What `GET /api/system` serves: this leader process's own build, for Admin -> System -> General, and what
 /// that build can do that another build of the same version might not.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -3522,7 +3522,7 @@ async fn authority(State(state): State<AppState>) -> Response {
 pub fn admin_router() -> Router<AppState> {
     Router::new()
         .route("/api/health", get(health))
-        .route("/api/system/info", get(system_info))
+        .route("/api/system", get(system_info))
         .route("/api/warnings", get(list_warnings))
         .route("/api/flow", get(get_flow))
         .route("/api/streams", get(get_streams))
@@ -3539,7 +3539,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/workers/:worker_id/revoke", post(revoke_worker))
         .route("/api/workers/:worker_id/restart", post(restart_worker))
         .route("/api/workers/:worker_id/shutdown", post(shutdown_worker))
-        .route("/api/workers/:worker_id/remove", post(remove_worker))
+        .route("/api/workers/:worker_id", delete(remove_worker))
         .route(
             "/api/settings/workers",
             get(forget::get_settings).put(forget::put_settings),

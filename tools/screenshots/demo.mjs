@@ -147,7 +147,8 @@ for (const [branch, scope] of ['main', ...listed].flatMap((b) =>
     },
     [area, q, branch === 'main'],
   );
-  if (read.configured.config) answers[keyOf(`${area}?${q}`)] = { status: 200, body: read.configured };
+  if (read.configured.config)
+    answers[keyOf(`${area}?${q}`)] = { status: 200, body: read.configured };
   for (const answer of read.each)
     answers[keyOf(`${area}/samples/${encodeURIComponent(answer.sample.id)}?${q}`)] = {
       status: 200,
@@ -173,13 +174,17 @@ for (const node of answers['/api/map?branch=main'].body.nodes) {
   const { group, kind, authorId: id } = node;
   const q = new URLSearchParams({ branch: 'main', kind, id, windowMinutes: '10' });
   const key = keyOf(`/api/areas/${group}/stats?${q}`);
-  answers[key] = { status: 200, body: await reader.evaluate((u) => fetch(u).then((r) => r.json()), key) };
+  answers[key] = {
+    status: 200,
+    body: await reader.evaluate((u) => fetch(u).then((r) => r.json()), key),
+  };
 }
 await reader.close();
 
 // The fleet moving: every live answer read again every five seconds for a minute, so the demo's Map, charts and
 // counters move as the fleet's did. A config read is not live; the demo's own edits change those.
-const LIVE = /^\/api\/(map\/measurements|areas\/[^/?]+\/stats|flow|cluster|workers|warnings|streams)\b/;
+const LIVE =
+  /^\/api\/(map\/measurements|areas\/[^/?]+\/stats|flow|cluster|workers|warnings|streams)\b/;
 const live = Object.keys(answers).filter((k) => LIVE.test(k));
 const api = await ctx.newPage();
 await api.goto(`${BASE}/#/map`, { waitUntil: 'networkidle' });
@@ -205,12 +210,13 @@ const capture = (group, what, branch) =>
   api.evaluate(
     async ([group, what, max, branch]) => {
       const { csrf } = await fetch('/api/auth/session').then((r) => r.json());
-      const post = (u, body) =>
+      const send = (method, u, body) =>
         fetch(u, {
-          method: 'POST',
+          method,
           headers: { 'Content-Type': 'application/json', 'x-smeltr-csrf': csrf },
           body: body && JSON.stringify(body),
         }).then((r) => r.json());
+      const post = (u, body) => send('POST', u, body);
       const started = await post('/api/captures', {
         group,
         ...what,
@@ -223,7 +229,7 @@ const capture = (group, what, branch) =>
         const { capture } = await fetch(`/api/captures/${started.session}`).then((r) => r.json());
         if (!capture.done) continue;
         if (capture.batches.every((b) => !b.rows.length)) {
-          await post(`/api/captures/${started.session}/discard`);
+          await send('DELETE', `/api/captures/${started.session}`);
           return { batches: capture.batches };
         }
         const id = `pool-${what.source?.id ?? what.destination}-${Date.now()}`;

@@ -2797,11 +2797,7 @@ export function saveCapture(
 }
 
 export function discardCapture(session: string): Promise<{ ok: boolean }> {
-  return apiJson(
-    `/api/captures/${encodeURIComponent(session)}/discard`,
-    { method: 'POST' },
-    'quiet',
-  );
+  return apiJson(`/api/captures/${encodeURIComponent(session)}`, { method: 'DELETE' }, 'quiet');
 }
 
 /** A pasted or uploaded file, as records. The whole text is tried as one
@@ -3340,11 +3336,7 @@ export function shutdownWorker(workerId: string): Promise<AdminActionResult> {
 /** Removes a worker that is not heartbeating, for good: revoked, and gone from
  * every list. Its id is never enrolled again. */
 export function removeWorker(workerId: string): Promise<AdminActionResult> {
-  return apiJson(
-    `/api/workers/${encodeURIComponent(workerId)}/remove`,
-    { method: 'POST' },
-    'quiet',
-  );
+  return apiJson(`/api/workers/${encodeURIComponent(workerId)}`, { method: 'DELETE' }, 'quiet');
 }
 
 /** Soft revocation: refuses the credential from its next request. Does not
@@ -4785,7 +4777,7 @@ export interface SystemInfoDto {
 }
 
 export function getSystemInfo(): Promise<SystemInfoDto> {
-  return apiJson('/api/system/info');
+  return apiJson('/api/system');
 }
 
 /** What a source's or destination's form picks from: the secret catalog, so a credential can be pointed at one

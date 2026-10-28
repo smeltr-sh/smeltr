@@ -1008,9 +1008,11 @@ async fn setup_leader(
         )
         .route("/api/preview/sql", post(sql_api::sql_statement))
         .route("/api/captures", post(capture_api::start_capture))
-        .route("/api/captures/:session", get(capture_api::capture_status))
+        .route(
+            "/api/captures/:session",
+            get(capture_api::capture_status).delete(capture_api::discard_capture),
+        )
         .route("/api/captures/:session/stop", post(capture_api::stop_capture))
-        .route("/api/captures/:session/discard", post(capture_api::discard_capture))
         // Not on `app` below with the rest of the worker-groups routes: both need `State<AppState>` -- the listing
         // for `shared`'s hue, the create for a new group's -- the same reason `get_map` is here. `deploy_change`
         // asks the store whether a remote owns `main`.

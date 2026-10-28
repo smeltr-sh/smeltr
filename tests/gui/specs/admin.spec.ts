@@ -214,7 +214,7 @@ test('System and Cluster show the build each machine runs', async ({
   api,
 }) => {
   // S7
-  const info = await api.get('/api/system/info');
+  const info = await api.get('/api/system');
   const shown: string = info.release ?? info.smeltrVersion;
   expect(shown).toBeTruthy();
 

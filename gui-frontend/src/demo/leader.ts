@@ -669,6 +669,8 @@ export class DemoLeader {
     }
     const named = path.match(/^\/api\/branches\/([^/]+)$/);
     if (named && method === 'DELETE') return this.deleteBranch(decodeURIComponent(named[1]));
+    const capture = path.match(/^\/api\/captures\/([^/]+)$/);
+    if (capture && method === 'DELETE') return this.discardCapture(decodeURIComponent(capture[1]));
     if (within === '/undo' && method === 'POST') return this.undo(name, scope, json());
 
     if (method === 'POST') {
@@ -688,12 +690,8 @@ export class DemoLeader {
       if (path === '/api/preview/format') return this.ask('/format', json());
       if (path === '/api/preview/onboard') return this.ask('/onboard/propose', json());
       if (path === '/api/captures') return this.startCapture(json());
-      const capture = path.match(/^\/api\/captures\/([^/]+)\/(stop|discard)$/);
-      if (capture) {
-        const session = decodeURIComponent(capture[1]);
-        if (capture[2] === 'stop') return this.stopCapture(session);
-        return this.discardCapture(session);
-      }
+      const stop = path.match(/^\/api\/captures\/([^/]+)\/stop$/);
+      if (stop) return this.stopCapture(decodeURIComponent(stop[1]));
       if (path === '/api/auth/activity') return ok();
     }
 

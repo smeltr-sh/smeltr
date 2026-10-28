@@ -68,8 +68,8 @@ pub fn need(method: &Method, path: &str) -> Need {
     match (method.clone(), segments.as_slice()) {
         // Production records a preview or a capture shows, in no one area.
         (Method::POST, ["captures"])
-        | (Method::GET | Method::HEAD, ["captures", _])
-        | (Method::POST, ["captures", _, "stop" | "discard"])
+        | (Method::GET | Method::HEAD | Method::DELETE, ["captures", _])
+        | (Method::POST, ["captures", _, "stop"])
         | (Method::POST, ["preview", _])
         // Names, versions and where each is used, never a value: what a secret picker offers whoever saves a form.
         | (Method::GET | Method::HEAD, ["secrets"])
@@ -102,7 +102,7 @@ pub fn need(method: &Method, path: &str) -> Need {
         | (Method::GET | Method::HEAD, ["map"])
         | (Method::GET | Method::HEAD, ["map", "measurements"])
         | (Method::GET | Method::HEAD, ["worker-groups"])
-        | (Method::GET | Method::HEAD, ["system", "info"]) => Need::Somewhere(Level::Viewer),
+        | (Method::GET | Method::HEAD, ["system"]) => Need::Somewhere(Level::Viewer),
 
         // What a person lets their own agent use.
         (Method::GET | Method::HEAD | Method::PUT, ["me", "agent-permissions"]) => Need::Anyone,
@@ -286,7 +286,7 @@ mod tests {
             (Method::POST, "/api/captures"),
             (Method::GET, "/api/captures/c1"),
             (Method::POST, "/api/captures/c1/stop"),
-            (Method::POST, "/api/captures/c1/discard"),
+            (Method::DELETE, "/api/captures/c1"),
             (Method::POST, "/api/preview/grok"),
             (Method::POST, "/api/preview/onboard"),
             (Method::POST, "/api/preview/line-breaker"),
@@ -393,7 +393,7 @@ mod tests {
             "/api/map",
             "/api/map/measurements",
             "/api/worker-groups",
-            "/api/system/info",
+            "/api/system",
         ] {
             assert_eq!(get(path), Need::Somewhere(Level::Viewer), "{path}");
         }
