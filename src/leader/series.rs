@@ -410,8 +410,7 @@ pub(crate) const STEPS: &[&str] = &[
      );
      CREATE INDEX fact_history_subject ON fact_history (subject, ended_ms);
      CREATE INDEX fact_history_ended ON fact_history (ended_ms);",
-    // 10 -- the window a beat is now numbers its points as well as its streams, so the table is named for the
-    // window.
+    // 10 -- the last window recorded from each worker, which numbers a beat's points and its streams.
     "ALTER TABLE stream_windows RENAME TO windows;",
 ];
 
@@ -3292,6 +3291,7 @@ mod tests {
             )
             .unwrap();
         }
+        assert!(!super::super::steps::is_additive(STEPS[9]), "a rename is breaking");
         let store = RegistryStore::open(&path).unwrap();
         let conn = store.conn.lock().unwrap();
         assert!(!claim_window(&conn, "w1", 7, 1).unwrap());

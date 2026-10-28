@@ -101,7 +101,7 @@ about to exit prints and goes, since a buffer has nothing to offer a process
 that will not outlive the handoff; an orderly exit empties the buffer first,
 bounded so that logs delay an exit no more than they may block a write.
 
-## Logs reach the leader
+## What a heartbeat carries
 
 A heartbeat is fresh state and one window. The state -- what each thread is
 doing, what the supervisor holds, the commit it runs -- is read again for every
@@ -211,8 +211,8 @@ named. A field name is data, not structure, and without the cap a source
 inventing names would grow a heartbeat without one.
 
 The worker keeps no baseline. It reports a window and forgets it once the
-leader has it: the heartbeat's window ([Logs reach the
-leader](#logs-reach-the-leader)), so a beat whose answer was lost counts
+leader has it: the heartbeat's window ([What a heartbeat
+carries](#what-a-heartbeat-carries)), so a beat whose answer was lost counts
 nothing twice. The leader sums every window from every worker
 of a group into one row per field and per key, each with when it was first
 and last seen. The same caps hold there, so the
