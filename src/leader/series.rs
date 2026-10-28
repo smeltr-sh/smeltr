@@ -145,10 +145,8 @@ pub struct HeartbeatRows<'a> {
     pub worker_id: &'a str,
     pub threads: &'a [LatestRow<'a>],
     pub points: &'a [SeriesPoint<'a>],
-    /// Which window of the worker's life `points` and `streams` are. None from a worker too old to number its
-    /// beats, whose every beat is recorded.
-    pub window: Option<Window>,
-    pub streams: Option<Streams<'a>>,
+    /// What the beat gathered beside `points`, and which window of the worker's life they are.
+    pub window: Window<'a>,
     /// The worker process's own settings, which ride beside each report rather than inside it.
     pub stop_after_unreachable_secs: Option<u64>,
     pub commit: Option<&'a str>,
@@ -874,8 +872,8 @@ impl RegistryStore {
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction()?;
         {
-            let unseen = match beat.window {
-                Some(window) => claim_window(&tx, beat.worker_id, window)?,
+            let unseen = match beat.window.seq {
+                Some(seq) => claim_window(&tx, beat.worker_id, beat.window.boot_id, seq)?,
                 None => true,
             };
             // Cached on the connection, not compiled per beat: the same three statements run for every heartbeat
@@ -919,7 +917,7 @@ impl RegistryStore {
                 for point in beat.points {
                     write_point(&tx, point, beat.now_ms)?;
                 }
-                if let Some(streams) = &beat.streams {
+                if let Some(streams) = &beat.window.streams {
                     write_streams(&tx, streams, beat.now_ms)?;
                 }
             }
@@ -1329,12 +1327,14 @@ pub struct StoredStreamKey {
     pub recent: bool,
 }
 
-/// Which window of one worker process's life a beat is ([`crate::heartbeat::HeartbeatRequest`]'s
-/// `streams_window`), so a window sent twice is recorded once.
-#[derive(Debug, Clone, Copy)]
-pub struct Window {
+/// What one beat gathered beyond its points, and which window of one worker process's life it is
+/// ([`crate::heartbeat::HeartbeatRequest`]'s `streams_window`), so a window sent twice is recorded once.
+#[derive(Default)]
+pub struct Window<'a> {
     pub boot_id: u64,
-    pub seq: u64,
+    /// None from a worker too old to number its beats, whose every beat is recorded.
+    pub seq: Option<u64>,
+    pub streams: Option<Streams<'a>>,
 }
 
 /// One beat's streams, and whose they are.
@@ -1345,21 +1345,21 @@ pub struct Streams<'a> {
     pub deployed: bool,
 }
 
-/// Whether `window` is one `worker_id` has not had recorded, and if so, records that it now has. A window is
-/// recorded when its boot is new or its number is past the last one recorded.
-fn claim_window(tx: &Connection, worker_id: &str, window: Window) -> rusqlite::Result<bool> {
+/// Whether window `seq` of `boot_id` is one `worker_id` has not had recorded, and if so, records that it now has. A
+/// window is recorded when its boot is new or its number is past the last one recorded.
+fn claim_window(tx: &Connection, worker_id: &str, boot_id: u64, seq: u64) -> rusqlite::Result<bool> {
     let last: Option<(i64, i64)> = tx
         .prepare_cached("SELECT boot_id, seq FROM windows WHERE worker_id = ?1")?
         .query_row(params![worker_id], |row| Ok((row.get(0)?, row.get(1)?)))
         .optional()?;
-    if last.is_some_and(|(boot, seq)| boot == window.boot_id as i64 && seq >= window.seq as i64) {
+    if last.is_some_and(|(last_boot, last_seq)| last_boot == boot_id as i64 && last_seq >= seq as i64) {
         return Ok(false);
     }
     tx.prepare_cached(
         "INSERT INTO windows (worker_id, boot_id, seq) VALUES (?1, ?2, ?3) \
          ON CONFLICT (worker_id) DO UPDATE SET boot_id = excluded.boot_id, seq = excluded.seq",
     )?
-    .execute(params![worker_id, window.boot_id as i64, window.seq as i64])?;
+    .execute(params![worker_id, boot_id as i64, seq as i64])?;
     Ok(true)
 }
 
@@ -2085,12 +2085,15 @@ mod tests {
                         report_json: report_json.to_string(),
                     }],
                     points: &points,
-                    window: Some(Window { boot_id, seq }),
-                    streams: Some(Streams {
-                        group_id: "prod",
-                        report: &report,
-                        deployed: true,
-                    }),
+                    window: Window {
+                        boot_id,
+                        seq: Some(seq),
+                        streams: Some(Streams {
+                            group_id: "prod",
+                            report: &report,
+                            deployed: true,
+                        }),
+                    },
                     stop_after_unreachable_secs: None,
                     commit: None,
                     smeltr_version: "",
@@ -2647,8 +2650,7 @@ mod tests {
             worker_id: "w1",
             threads: &threads,
             points: &points,
-            window: None,
-            streams: None,
+            window: Window::default(),
             stop_after_unreachable_secs: Some(300),
             commit: Some("c0ffee"),
             smeltr_version: "2026.9.20+main.c0ffee",
@@ -2705,8 +2707,7 @@ mod tests {
                     worker_id: "w1",
                     threads: &[],
                     points: &points,
-                    window: None,
-                    streams: None,
+                    window: Window::default(),
                     stop_after_unreachable_secs: None,
                     commit: None,
                     smeltr_version: "",
@@ -3053,8 +3054,7 @@ mod tests {
                     report_json: report_json.to_string(),
                 }],
                 points: &[],
-                window: None,
-                streams: None,
+                window: Window::default(),
                 stop_after_unreachable_secs,
                 commit,
                 smeltr_version: "",
@@ -3294,8 +3294,8 @@ mod tests {
         }
         let store = RegistryStore::open(&path).unwrap();
         let conn = store.conn.lock().unwrap();
-        assert!(!claim_window(&conn, "w1", Window { boot_id: 7, seq: 1 }).unwrap());
-        assert!(claim_window(&conn, "w1", Window { boot_id: 7, seq: 2 }).unwrap());
+        assert!(!claim_window(&conn, "w1", 7, 1).unwrap());
+        assert!(claim_window(&conn, "w1", 7, 2).unwrap());
         drop(conn);
         cleanup(&path);
     }
