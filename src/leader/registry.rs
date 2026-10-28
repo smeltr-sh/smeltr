@@ -270,21 +270,19 @@ impl Registry {
     /// the reports it carried about the worker itself: what its threads last said is history, and history owns no
     /// partition and blocks no source. What those threads counted still reaches the series.
     ///
-    /// `window` is which window of the worker's life the beat's samples and `streams` are, and a window already
-    /// recorded adds neither again (`RegistryStore::record_heartbeat`). The streams are the design doc's
-    /// Observability: Streams, from a worker that stated its group.
+    /// `window` is what the beat gathered beside its samples, and which window of the worker's life both are: a
+    /// window already recorded adds neither again (`RegistryStore::record_heartbeat`).
     pub fn record_heartbeat(
         &self,
         worker_id: &str,
         reports: Vec<ThreadHeartbeat>,
         worker: WorkerFacts,
-        window: Option<super::series::Window>,
-        streams: Option<super::series::Streams<'_>>,
+        window: super::series::Window<'_>,
         now_ms: i64,
     ) {
         let stopping = worker.stopped_at_ms.is_some();
         if let Some(store) = &self.store {
-            persist_heartbeat(store, worker_id, &reports, &worker, window, streams, now_ms);
+            persist_heartbeat(store, worker_id, &reports, &worker, window, now_ms);
         }
         let mut threads = self.threads.lock().unwrap();
         let last_seen = Instant::now();
@@ -590,8 +588,7 @@ fn persist_heartbeat(
     worker_id: &str,
     reports: &[ThreadHeartbeat],
     worker: &WorkerFacts,
-    window: Option<super::series::Window>,
-    streams: Option<super::series::Streams<'_>>,
+    window: super::series::Window<'_>,
     now_ms: i64,
 ) {
     let threads: Vec<LatestRow<'_>> = reports
@@ -624,7 +621,6 @@ fn persist_heartbeat(
         threads: &threads,
         points: &points,
         window,
-        streams,
         stop_after_unreachable_secs: worker.stop_after_unreachable_secs,
         commit: worker.commit.as_deref(),
         smeltr_version: &worker.smeltr_version,
@@ -712,8 +708,20 @@ mod tests {
     fn a_worker_expected_but_not_heard_from_holds_nothing() {
         let r = Registry::default();
         // Two workers the leader knows about, from threads the snapshot carries across a restart.
-        r.record_heartbeat("w1", vec![report("t1", "g")], WorkerFacts::default(), None, None, 0);
-        r.record_heartbeat("w2", vec![report("t2", "g")], WorkerFacts::default(), None, None, 0);
+        r.record_heartbeat(
+            "w1",
+            vec![report("t1", "g")],
+            WorkerFacts::default(),
+            crate::leader::series::Window::default(),
+            0,
+        );
+        r.record_heartbeat(
+            "w2",
+            vec![report("t2", "g")],
+            WorkerFacts::default(),
+            crate::leader::series::Window::default(),
+            0,
+        );
         // Only one of them has said what it holds this run.
         r.record_authority("w1", vec!["incoming".to_string()], true);
 
@@ -771,7 +779,13 @@ mod tests {
     #[test]
     fn a_worker_that_can_never_answer_is_not_waited_for() {
         let r = Registry::default();
-        r.record_heartbeat("gone", vec![report("t1", "g")], WorkerFacts::default(), None, None, 0);
+        r.record_heartbeat(
+            "gone",
+            vec![report("t1", "g")],
+            WorkerFacts::default(),
+            crate::leader::series::Window::default(),
+            0,
+        );
         r.record_authority("gone", vec!["outgoing".to_string()], true);
         // Expected is the caller's answer, and a revoked worker is not in it.
         assert!(r.authorities_held(&HashSet::new()).is_empty());
@@ -782,7 +796,13 @@ mod tests {
     #[test]
     fn a_worker_that_has_merely_gone_quiet_is_still_waited_for() {
         let r = Registry::default();
-        r.record_heartbeat("quiet", vec![report("t1", "g")], WorkerFacts::default(), None, None, 0);
+        r.record_heartbeat(
+            "quiet",
+            vec![report("t1", "g")],
+            WorkerFacts::default(),
+            crate::leader::series::Window::default(),
+            0,
+        );
         r.record_authority("quiet", vec!["outgoing".to_string()], true);
 
         // Nothing injects a clock here, so the moment it was last heard from is set back instead: a day, or as far
@@ -814,10 +834,34 @@ mod tests {
     #[test]
     fn snapshot_holds_one_entry_per_worker_thread_pair() {
         let r = Registry::default();
-        r.record_heartbeat("w1", vec![report("t0", "pool")], WorkerFacts::default(), None, None, 0);
-        r.record_heartbeat("w1", vec![report("t1", "pool")], WorkerFacts::default(), None, None, 0);
-        r.record_heartbeat("w2", vec![report("t0", "pool")], WorkerFacts::default(), None, None, 0);
-        r.record_heartbeat("w1", vec![report("t0", "prod")], WorkerFacts::default(), None, None, 0);
+        r.record_heartbeat(
+            "w1",
+            vec![report("t0", "pool")],
+            WorkerFacts::default(),
+            crate::leader::series::Window::default(),
+            0,
+        );
+        r.record_heartbeat(
+            "w1",
+            vec![report("t1", "pool")],
+            WorkerFacts::default(),
+            crate::leader::series::Window::default(),
+            0,
+        );
+        r.record_heartbeat(
+            "w2",
+            vec![report("t0", "pool")],
+            WorkerFacts::default(),
+            crate::leader::series::Window::default(),
+            0,
+        );
+        r.record_heartbeat(
+            "w1",
+            vec![report("t0", "prod")],
+            WorkerFacts::default(),
+            crate::leader::series::Window::default(),
+            0,
+        );
         let snapshot = r.snapshot();
         assert_eq!(snapshot.len(), 3);
         let w1t0 = snapshot
@@ -838,8 +882,7 @@ mod tests {
                 commit: Some("c0ffee".to_string()),
                 ..Default::default()
             },
-            None,
-            None,
+            crate::leader::series::Window::default(),
             0,
         );
         let json = serde_json::to_value(&r.snapshot()[0]).unwrap();
@@ -942,8 +985,7 @@ mod tests {
                     stopped_at_ms: stopping.then_some(at),
                     ..Default::default()
                 },
-                None,
-                None,
+                crate::leader::series::Window::default(),
                 at,
             );
         };
@@ -1028,8 +1070,7 @@ mod tests {
                 "w1",
                 vec![report("t0", "pool")],
                 WorkerFacts::default(),
-                None,
-                None,
+                crate::leader::series::Window::default(),
                 started_at,
             );
             r.observe_facts(&HashSet::from([key.clone()]), started_at);
@@ -1076,8 +1117,7 @@ mod tests {
                     supervising: Some(supervising.clone()),
                     ..Default::default()
                 },
-                None,
-                None,
+                crate::leader::series::Window::default(),
                 started_at,
             );
         }
@@ -1115,8 +1155,7 @@ mod tests {
                     commit: Some("c0ffee".to_string()),
                     ..Default::default()
                 },
-                None,
-                None,
+                crate::leader::series::Window::default(),
                 started_at,
             );
         }
@@ -1152,8 +1191,7 @@ mod tests {
                 authority_expires_millis: Some(started_at + 1000),
                 ..Default::default()
             },
-            None,
-            None,
+            crate::leader::series::Window::default(),
             started_at,
         );
 
@@ -1172,8 +1210,7 @@ mod tests {
                 authority_expires_millis: Some(started_at + 9000),
                 ..Default::default()
             },
-            None,
-            None,
+            crate::leader::series::Window::default(),
             started_at + 1,
         );
 
@@ -1212,8 +1249,7 @@ mod tests {
                     authority_expires_millis: Some(expires),
                     ..Default::default()
                 },
-                None,
-                None,
+                crate::leader::series::Window::default(),
                 started_at,
             );
         }
@@ -1262,7 +1298,13 @@ mod tests {
             value: MetricValueDto::Counter(4),
         }];
 
-        r.record_heartbeat("w1", vec![reader, egress], WorkerFacts::default(), None, None, 12_345);
+        r.record_heartbeat(
+            "w1",
+            vec![reader, egress],
+            WorkerFacts::default(),
+            crate::leader::series::Window::default(),
+            12_345,
+        );
 
         assert_eq!(r.snapshot().len(), 2, "both threads are live state");
         let series = r.series().unwrap();
@@ -1308,7 +1350,13 @@ mod tests {
             ],
             value: MetricValueDto::Counter(5),
         }];
-        r.record_heartbeat("w1", vec![with_metrics], WorkerFacts::default(), None, None, 12_345);
+        r.record_heartbeat(
+            "w1",
+            vec![with_metrics],
+            WorkerFacts::default(),
+            crate::leader::series::Window::default(),
+            12_345,
+        );
 
         let key = subject_key(
             "pool",
@@ -1359,7 +1407,13 @@ mod tests {
             ],
             value: MetricValueDto::Gauge(12.0),
         }];
-        r.record_heartbeat("w1", vec![with_lag], WorkerFacts::default(), None, None, 12_345);
+        r.record_heartbeat(
+            "w1",
+            vec![with_lag],
+            WorkerFacts::default(),
+            crate::leader::series::Window::default(),
+            12_345,
+        );
 
         let key = subject_key(
             "pool",

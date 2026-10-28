@@ -340,7 +340,7 @@ async fn heartbeat(
         let worker = worker_id.clone();
         let events = std::mem::take(&mut req.logs);
         let streams = req.streams.take();
-        let window = req.streams_window;
+        let seq = req.streams_window;
         let boot_id = req.boot_id;
         // Empty from a worker too old to state one, which is stored as no group rather than as a group named "".
         let group = Some(req.group_id.clone()).filter(|g| !g.is_empty());
@@ -367,8 +367,8 @@ async fn heartbeat(
                         _ => true,
                     },
                 });
-            let window = window.map(|seq| series::Window { boot_id, seq });
-            registry.record_heartbeat(&worker, threads, facts, window, streams, now_ms);
+            let window = series::Window { boot_id, seq, streams };
+            registry.record_heartbeat(&worker, threads, facts, window, now_ms);
         })
         .await;
         // Said rather than swallowed: this is what updates the live view as well as the durable one, so a worker
@@ -4605,8 +4605,7 @@ mod warnings_endpoint_tests {
                 smeltr_version: crate::version::VERSION.to_string(),
                 ..Default::default()
             },
-            None,
-            None,
+            series::Window::default(),
             0,
         );
         assert!(warnings_snapshot(&state).await.unwrap().is_empty());
@@ -4684,8 +4683,7 @@ mod warnings_endpoint_tests {
                 smeltr_version: crate::version::VERSION.to_string(),
                 ..Default::default()
             },
-            None,
-            None,
+            series::Window::default(),
             0,
         );
         run_store(state.store.clone(), |s| s.store_worker_credential("w2", "hash"))
@@ -4744,8 +4742,7 @@ mod warnings_endpoint_tests {
                 smeltr_version: crate::version::VERSION.to_string(),
                 ..Default::default()
             },
-            None,
-            None,
+            series::Window::default(),
             0,
         );
 
@@ -4753,7 +4750,7 @@ mod warnings_endpoint_tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
         state
             .registry
-            .record_heartbeat("w1", vec![held], WorkerFacts::default(), None, None, 0);
+            .record_heartbeat("w1", vec![held], WorkerFacts::default(), series::Window::default(), 0);
         let second = warnings_snapshot(&state).await.unwrap();
 
         assert_eq!(first.len(), 1);

@@ -172,8 +172,11 @@ fn a_beat_the_leader_recorded_and_sent_again_counts_once() {
             &req.worker_id,
             req.threads,
             smeltr::leader::registry::WorkerFacts::default(),
-            Some(Window { boot_id: 7, seq }),
-            None,
+            Window {
+                boot_id: 7,
+                seq: Some(seq),
+                streams: None,
+            },
             1_000,
         );
     };

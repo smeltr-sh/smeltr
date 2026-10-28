@@ -234,8 +234,7 @@ fn record_release() {
             release: heartbeat.release.clone(),
             ..Default::default()
         },
-        None,
-        None,
+        crate::leader::series::Window::default(),
         1,
     );
     drop(registry);
