@@ -1425,11 +1425,10 @@ fn is_local_host(host: &str) -> bool {
 /// session has to be able to reach them -- so each checks for itself what it needs.
 fn auth_router(auth: gate::Auth) -> Router {
     Router::new()
-        .route("/api/auth/session", get(auth_api::session))
+        .route("/api/auth/session", get(auth_api::session).delete(auth_api::logout))
         .route("/api/auth/login", post(auth_api::login))
-        .route("/api/auth/logout", post(auth_api::logout))
-        .route("/api/auth/activity", post(auth_api::activity))
-        .route("/api/auth/password", post(auth_api::password))
+        .route("/api/auth/session/activity", post(auth_api::activity))
+        .route("/api/auth/password", put(auth_api::password))
         .route("/api/auth/oidc", get(oidc_api::offered))
         .route(oidc_api::START_PATH, get(oidc_api::start))
         .route(oidc_api::CALLBACK_PATH, get(oidc_api::callback))
@@ -2075,7 +2074,7 @@ async fn run_leader() {
                 get(oidc_api::get_settings).put(oidc_api::put_settings),
             )
             .route(
-                "/api/settings/agents",
+                "/api/settings/agent",
                 get(agents_api::get_settings).put(agents_api::put_settings),
             )
             .route("/api/agent/models", get(chat_api::models))

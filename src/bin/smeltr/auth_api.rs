@@ -345,7 +345,7 @@ fn bounded_subject(canonical: &str) -> String {
 /// exactly what an attacker is asking.
 const GENERIC_REFUSAL: &str = "that username and password do not match an account that can sign in";
 
-/// `POST /api/auth/logout`: end this session.
+/// `DELETE /api/auth/session`: end this session.
 ///
 /// Gated by hand rather than by the middleware, because an account that must change its password must still be
 /// able to leave.
@@ -391,7 +391,7 @@ fn cleared(auth: &Auth, status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
-/// `POST /api/auth/activity`: the operator did something, so the idle clock starts again.
+/// `POST /api/auth/session/activity`: the operator did something, so the idle clock starts again.
 ///
 /// Sent after an interaction and never on a timer, which is the difference between a session that ends when
 /// somebody stops working and one that never ends because a tab is open. The manager bounds how often it counts.
@@ -424,7 +424,7 @@ pub struct PasswordRequest {
     pub new_password: String,
 }
 
-/// `POST /api/auth/password`: choose a new password.
+/// `PUT /api/auth/password`: choose a new password.
 ///
 /// Reachable by a session that must change its password, which is the whole point of it. It ends every session
 /// the account holds, including this one, so the operator signs in again with what they just chose -- and so a

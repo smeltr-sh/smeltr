@@ -604,7 +604,7 @@ mod tests {
             reply(
                 "",
                 &[
-                    ("c1", json!({"method": "POST", "path": "/api/auth/logout"})),
+                    ("c1", json!({"method": "DELETE", "path": "/api/auth/session"})),
                     (
                         "c2",
                         json!({"method": "PUT", "path": "/api/areas/shared/pipelines/../x"}),
@@ -638,7 +638,7 @@ mod tests {
         let refused = results(&kept[2]);
         assert_eq!(refused.len(), 4);
         assert!(refused.iter().all(|(_, _, error)| *error), "{refused:?}");
-        assert_eq!(refused[0].1, "POST /api/auth/logout is not a route you can call");
+        assert_eq!(refused[0].1, "DELETE /api/auth/session is not a route you can call");
     }
 
     #[tokio::test]

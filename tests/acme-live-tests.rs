@@ -124,7 +124,7 @@ fn serve(dir: &std::path::Path) -> Leader {
     leader.sign_in();
     let chosen = "a perfectly ordinary passphrase";
     let (status, said) = leader.call(
-        "POST",
+        "PUT",
         "/api/auth/password",
         Some(serde_json::json!({ "username": "admin", "newPassword": chosen })),
     );

@@ -141,12 +141,12 @@ async fn answer(auth: &Auth, error: Option<String>) -> Json<Envelope<AgentSettin
     })
 }
 
-/// `GET /api/settings/agents`.
+/// `GET /api/settings/agent`.
 pub async fn get_settings(State(auth): State<Auth>) -> Json<Envelope<AgentSettings>> {
     answer(&auth, None).await
 }
 
-/// `PUT /api/settings/agents`. Recorded with who set it and what changed, in the transaction that sets it; the API
+/// `PUT /api/settings/agent`. Recorded with who set it and what changed, in the transaction that sets it; the API
 /// key is sealed before it is stored.
 ///
 /// Turning AI agents on asks the endpoint for a short answer first, so a key, model or URL that cannot work is

@@ -95,8 +95,9 @@ pub fn need(method: &Method, path: &str) -> Need {
         }
 
         // What the Status and Map pages read, the area picker, and what a source or destination form asks of
-        // the build.
+        // the build. The streams are filtered by their handler to the groups the caller views.
         (Method::GET | Method::HEAD, ["cluster"])
+        | (Method::GET | Method::HEAD, ["streams"])
         | (Method::GET | Method::HEAD, ["warnings"])
         | (Method::GET | Method::HEAD, ["flow"])
         | (Method::GET | Method::HEAD, ["map"])
@@ -204,8 +205,8 @@ mod tests {
             (Method::GET, "/api/security-events"),
             (Method::GET, "/api/settings/sessions"),
             (Method::PUT, "/api/settings/oidc"),
-            (Method::GET, "/api/settings/agents"),
-            (Method::PUT, "/api/settings/agents"),
+            (Method::GET, "/api/settings/agent"),
+            (Method::PUT, "/api/settings/agent"),
             (Method::GET, "/api/settings/tls"),
             (Method::POST, "/api/secrets"),
             (Method::GET, "/api/secrets/s1/versions/1"),
@@ -389,6 +390,7 @@ mod tests {
         for path in [
             "/api/cluster",
             "/api/warnings",
+            "/api/streams",
             "/api/flow",
             "/api/map",
             "/api/map/measurements",

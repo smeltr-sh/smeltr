@@ -692,7 +692,7 @@ export class DemoLeader {
       if (path === '/api/captures') return this.startCapture(json());
       const stop = path.match(/^\/api\/captures\/([^/]+)\/stop$/);
       if (stop) return this.stopCapture(decodeURIComponent(stop[1]));
-      if (path === '/api/auth/activity') return ok();
+      if (path === '/api/auth/session/activity') return ok();
     }
 
     if (method === 'GET') return this.nearest(url);

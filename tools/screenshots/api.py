@@ -81,7 +81,7 @@ class Client:
         return s
 
     def change_password(self, username, new):
-        return self.call("POST", "/api/auth/password", {"username": username, "newPassword": new})
+        return self.call("PUT", "/api/auth/password", {"username": username, "newPassword": new})
 
     # -- config, on a branch and in an area -------------------------------------------------------------
 

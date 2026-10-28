@@ -131,7 +131,7 @@ fn operator_session(agent: &ureq::Agent, base: &str, console: &Arc<std::sync::Mu
     })
     .to_string();
     agent
-        .post(format!("{base}/api/auth/password"))
+        .put(format!("{base}/api/auth/password"))
         .header("origin", base)
         .header("cookie", &cookie)
         .header("x-smeltr-csrf", &csrf)

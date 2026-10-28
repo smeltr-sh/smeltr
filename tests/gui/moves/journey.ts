@@ -1962,7 +1962,7 @@ const turnOnAgents: Move = {
     await expect(page.getByRole('button', { name: 'replace the API key' })).toBeVisible();
     world.agentsOn = true;
     const truth = await j.truth();
-    expect((await truth.get('/api/settings/agents')).settings).toEqual({
+    expect((await truth.get('/api/settings/agent')).settings).toEqual({
       enabled: true,
       provider: 'anthropic',
       endpoint: model.base,

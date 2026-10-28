@@ -4876,7 +4876,7 @@ export type AgentSettingsResult = {
 };
 
 export function getAgentSettings(): Promise<AgentSettingsResult> {
-  return apiJson('/api/settings/agents');
+  return apiJson('/api/settings/agent');
 }
 
 /** `apiKey` undefined keeps the stored one, which the leader forgets on its own when the provider or endpoint
@@ -4890,7 +4890,7 @@ export function putAgentSettings(req: {
   keepDays?: number;
   contextTokens?: number;
 }): Promise<AgentSettingsResult | AccountRefusal> {
-  return accountCall('/api/settings/agents', { method: 'PUT', body: JSON.stringify(req) });
+  return accountCall('/api/settings/agent', { method: 'PUT', body: JSON.stringify(req) });
 }
 
 /** What one certificate says about itself. Epoch milliseconds, like every

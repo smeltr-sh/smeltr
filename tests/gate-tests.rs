@@ -378,7 +378,7 @@ fn choosing_a_password_opens_the_rest_of_the_api() {
     })
     .to_string();
     let status = status_of(
-        ureq::post(format!("{}/api/auth/password", leader.base))
+        ureq::put(format!("{}/api/auth/password", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &first.cookie)
             .header("x-smeltr-csrf", &first.csrf)
@@ -609,11 +609,11 @@ fn signing_out_ends_the_session() {
     let leader = start("logout");
     let session = signed_in_and_settled(&leader);
     let status = status_of(
-        ureq::post(format!("{}/api/auth/logout", leader.base))
+        ureq::delete(format!("{}/api/auth/session", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &session.cookie)
             .header("x-smeltr-csrf", &session.csrf)
-            .send_empty(),
+            .call(),
         "logout",
     );
     assert_eq!(status, 200);
@@ -638,7 +638,7 @@ fn signed_in_and_settled(leader: &Leader) -> Session {
         "newPassword": chosen,
     })
     .to_string();
-    ureq::post(format!("{}/api/auth/password", leader.base))
+    ureq::put(format!("{}/api/auth/password", leader.base))
         .header("origin", &leader.origin)
         .header("cookie", &first.cookie)
         .header("x-smeltr-csrf", &first.csrf)
@@ -1024,7 +1024,7 @@ impl FakeModel {
 fn agents_on(leader: &Leader, op: &Operator, model: &FakeModel) {
     let (status, body) = leader.put_as(
         op,
-        "/api/settings/agents",
+        "/api/settings/agent",
         serde_json::json!({
             "enabled": true, "provider": "anthropic", "endpoint": model.base, "model": "claude-opus-5-5",
             "apiKey": MODEL_KEY,
@@ -1062,7 +1062,7 @@ fn ai_agents_turn_on_only_with_an_endpoint_that_answers() {
     let leader = start("agents-settings");
     let op = operator(&leader);
     let model = FakeModel::start();
-    let put = |body: serde_json::Value| leader.put_as(&op, "/api/settings/agents", body).1;
+    let put = |body: serde_json::Value| leader.put_as(&op, "/api/settings/agent", body).1;
 
     let body = put(serde_json::json!({
         "enabled": true, "provider": "anthropic", "endpoint": model.base, "model": "claude-opus-5-5",
@@ -1086,7 +1086,7 @@ fn ai_agents_turn_on_only_with_an_endpoint_that_answers() {
     assert_eq!(body["settings"]["apiKeySet"], false);
 
     agents_on(&leader, &op, &model);
-    let (_, read) = leader.get_as(&op.session, "/api/settings/agents");
+    let (_, read) = leader.get_as(&op.session, "/api/settings/agent");
     assert_eq!(read["settings"]["apiKeySet"], true, "{read}");
     // Anthropic says how much its model holds.
     assert_eq!(read["settings"]["contextTokens"], MODEL_CONTEXT, "{read}");
@@ -1369,7 +1369,7 @@ fn disabling_an_account_ends_its_session_at_once() {
     // Get them a working session first, so what is being withdrawn is real access rather than a restricted one.
     let theirs = leader.sign_in("dana", &temporary);
     let chosen = "another perfectly ordinary passphrase";
-    leader.post_as(
+    leader.put_as(
         &Operator {
             session: Session {
                 cookie: theirs.cookie.clone(),
@@ -1632,7 +1632,7 @@ fn a_client_cannot_name_the_author() {
 #[test]
 fn an_unknown_session_cookie_is_cleared_when_activity_is_reported() {
     let leader = start("stale-cookie");
-    let response = ureq::post(format!("{}/api/auth/activity", leader.base))
+    let response = ureq::post(format!("{}/api/auth/session/activity", leader.base))
         .header("origin", &leader.origin)
         .header("cookie", "smeltr_session=not-a-token-this-leader-issued")
         .config()
@@ -1660,7 +1660,7 @@ fn only_a_required_change_skips_the_current_password() {
     let session = signed_in_and_settled(&leader);
     let body = serde_json::json!({ "username": "admin", "newPassword": "a perfectly fine replacement" }).to_string();
     let status = status_of(
-        ureq::post(format!("{}/api/auth/password", leader.base))
+        ureq::put(format!("{}/api/auth/password", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &session.cookie)
             .header("x-smeltr-csrf", &session.csrf)
@@ -1800,7 +1800,7 @@ fn second_operator(leader: &Leader, op: &Operator, username: &str, display_name:
         "newPassword": chosen,
     })
     .to_string();
-    ureq::post(format!("{}/api/auth/password", leader.base))
+    ureq::put(format!("{}/api/auth/password", leader.base))
         .header("origin", &leader.origin)
         .header("cookie", &first.cookie)
         .header("x-smeltr-csrf", &first.csrf)
@@ -1907,7 +1907,7 @@ fn a_throttled_caller_is_told_how_long_to_wait() {
 
     let mut seen = None;
     for _ in 0..14 {
-        let response = ureq::post(format!("{}/api/auth/password", leader.base))
+        let response = ureq::put(format!("{}/api/auth/password", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &session.cookie)
             .header("x-smeltr-csrf", &session.csrf)

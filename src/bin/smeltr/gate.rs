@@ -138,8 +138,9 @@ impl Origin {
 
 /// What a session whose account must change its password may reach. Everything else answers `403` until it has.
 ///
-/// Signing out is on the list: an operator who cannot finish must still be able to leave.
-const RESTRICTED: &[&str] = &["/api/auth/session", "/api/auth/password", "/api/auth/logout"];
+/// The session is on the list, and signing out is deleting it: an operator who cannot finish must still be able to
+/// leave.
+const RESTRICTED: &[&str] = &["/api/auth/session", "/api/auth/password"];
 
 /// A refusal, as the JSON body `{"ok":false,"error":message}`, so no route under the gate answers a browser's `fetch`
 /// with HTML it will try to parse. `error` reads back as exactly `message`, whatever characters it holds: the GUI

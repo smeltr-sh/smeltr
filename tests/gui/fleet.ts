@@ -351,7 +351,7 @@ export async function addAccount(
   const made = await api.post('/api/users', { username, displayName });
   const first = await signedIn(leader, username, made.temporaryPassword);
   const password = `${username}-chosen-password`;
-  await first.post('/api/auth/password', { username, newPassword: password });
+  await first.put('/api/auth/password', { username, newPassword: password });
   await first.ctx.dispose();
   return signedIn(leader, username, password);
 }
@@ -421,7 +421,7 @@ export async function settled(page: Page) {
  * `ADMIN_PASSWORD`; changing it ends that session. */
 export async function claimAdmin(leader: Leader): Promise<Api> {
   const first = await signedIn(leader, leader.username, leader.oneTimePassword);
-  await first.post('/api/auth/password', {
+  await first.put('/api/auth/password', {
     username: leader.username,
     newPassword: ADMIN_PASSWORD,
   });

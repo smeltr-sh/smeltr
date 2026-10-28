@@ -636,13 +636,13 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "GET",
-        path: "/api/settings/agents",
+        path: "/api/settings/agent",
         what: "AI agent settings (whether an API key is set). No query.",
         body: "",
     },
     Route {
         method: "PUT",
-        path: "/api/settings/agents",
+        path: "/api/settings/agent",
         what: "Set AI agent provider settings; turning on probes the endpoint. No query.",
         body: "{ enabled: boolean, provider: 'anthropic'|'openai'|'openai-compatible', endpoint: string, model: string, apiKey?: string (absent keeps, '' removes) }",
     },
@@ -836,9 +836,9 @@ mod tests {
     const UNGATED: &[(&str, &str)] = &[
         ("GET", "/api/auth/session"),
         ("POST", "/api/auth/login"),
-        ("POST", "/api/auth/logout"),
-        ("POST", "/api/auth/activity"),
-        ("POST", "/api/auth/password"),
+        ("DELETE", "/api/auth/session"),
+        ("POST", "/api/auth/session/activity"),
+        ("PUT", "/api/auth/password"),
         ("GET", "/api/auth/oidc"),
         ("GET", "/api/auth/oidc/start"),
         ("GET", "/api/auth/oidc/callback"),

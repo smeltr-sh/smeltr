@@ -508,7 +508,7 @@ test.fixme('System → License shows the bytes this leader read this year', asyn
 async function agentsOn(api: Api, model?: FakeModel) {
   const endpoint = model ?? (await FakeModel.start());
   try {
-    await api.put('/api/settings/agents', {
+    await api.put('/api/settings/agent', {
       enabled: true,
       provider: 'anthropic',
       endpoint: endpoint.base,
