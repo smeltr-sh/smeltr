@@ -305,6 +305,34 @@ pub async fn harden(req: axum::extract::Request, next: axum::middleware::Next) -
     response
 }
 
+/// What the framework answers before a handler runs -- a body that cannot be read, a query or path that does not
+/// parse, a wrong method -- in the envelope every operator and open route answers, its text the one error. A
+/// handler's own failure already is one. The worker family carries no envelope (`docs/architecture/api.md`), so it
+/// is left as it is.
+pub async fn shape(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let path = req.uri().path();
+    let enveloped = path.starts_with("/api/") && !path.starts_with("/api/worker/");
+    let response = next.run(req).await;
+    let json = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|t| t.as_bytes().starts_with(b"application/json"));
+    let status = response.status();
+    if !enveloped || json || !(status.is_client_error() || status.is_server_error()) {
+        return response;
+    }
+    // A rejection's text is a line. Anything longer is not one, and is answered by its status alone.
+    let text = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap_or_default();
+    let text = String::from_utf8_lossy(&text);
+    let message = match text.trim() {
+        "" => status.canonical_reason().unwrap_or("refused").to_lowercase(),
+        text => text.to_string(),
+    };
+    refuse(status, &message)
+}
+
 /// Whether `user` may hold a session at all. A local account must still be an administrator, which it always is;
 /// an OIDC account is let in whatever it holds, and what it may then do is the policy's to decide.
 pub fn admitted(user: &UserRecord) -> bool {

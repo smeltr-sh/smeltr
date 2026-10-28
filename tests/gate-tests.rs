@@ -737,6 +737,86 @@ impl Leader {
     }
 }
 
+/// What the framework refuses before a handler runs -- a body, query or path that cannot be read, a wrong method,
+/// a path nobody serves -- is answered in the envelope at its status, its own text the one error.
+#[test]
+fn a_refusal_the_framework_answers_wears_the_envelope() {
+    let leader = start("framework-refusals");
+    let op = operator(&leader);
+    let send = |method: &str, path: &str, content_type: &str, body: Vec<u8>| -> (u16, serde_json::Value) {
+        let url = format!("{}{path}", leader.base);
+        let request = ureq::http::Request::builder()
+            .method(method)
+            .uri(&url)
+            .header("origin", &leader.origin)
+            .header("cookie", &op.session.cookie)
+            .header("x-smeltr-csrf", &op.session.csrf)
+            .header("content-type", content_type)
+            .body(body)
+            .unwrap();
+        let response = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .allow_non_standard_methods(true)
+            .build()
+            .new_agent()
+            .run(request)
+            .expect("the call was answered");
+        let status = response.status().as_u16();
+        (
+            status,
+            response.into_body().read_json().unwrap_or(serde_json::Value::Null),
+        )
+    };
+    let json = "application/json";
+    let groups = "/api/worker-groups?branch=work";
+    let cases = [
+        ("a body that is not JSON", ("POST", groups, json, b"{".to_vec()), 400),
+        (
+            "a body of the wrong shape",
+            ("POST", groups, json, br#"{"id": 5}"#.to_vec()),
+            422,
+        ),
+        (
+            "a body that is not said to be JSON",
+            ("POST", groups, "text/plain", b"{}".to_vec()),
+            415,
+        ),
+        (
+            "a body past the limit",
+            ("POST", groups, json, vec![b' '; 3 << 20]),
+            413,
+        ),
+        (
+            "a query that does not parse",
+            ("GET", "/api/warnings?info=often", json, vec![]),
+            400,
+        ),
+        (
+            "a path that does not decode",
+            ("PATCH", "/api/users/%FF", json, br#"{"enabled": true}"#.to_vec()),
+            400,
+        ),
+        (
+            "a method the route does not answer",
+            ("DELETE", "/api/health", json, vec![]),
+            405,
+        ),
+    ];
+    for (what, (method, path, content_type, body), want) in cases {
+        let (status, answer) = send(method, path, content_type, body);
+        assert_eq!(status, want, "{what}: {answer}");
+        assert_eq!(answer["ok"], false, "{what}: {answer}");
+        let message = answer["errors"][0]["message"].as_str().unwrap_or_default();
+        assert!(!message.is_empty(), "{what} says why: {answer}");
+    }
+    let (status, answer) = send("GET", "/api/nothing-here", json, vec![]);
+    assert_eq!(
+        (status, &answer["ok"]),
+        (404, &serde_json::Value::Bool(false)),
+        "{answer}"
+    );
+}
+
 /// A self-signed certificate for `name` and its private key, in PEM.
 fn certificate_and_key(name: &str) -> (String, String) {
     let key = rcgen::KeyPair::generate().unwrap();
