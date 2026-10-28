@@ -39,6 +39,8 @@ const LIVE_SEEDS: u64 = 24;
 
 const KIB: usize = 1024;
 const MIB: usize = 1024 * KIB;
+/// An HTTP destination's `maxRequestBytes` unstated: one whole batch.
+const DEFAULT_REQUEST: usize = 4 * MIB;
 
 /// A worker-local credential no test sets, so a destination naming it cannot build.
 const UNSET_VARIABLE: &str = "SMELTR_FUZZ_NEVER_SET";
@@ -401,9 +403,9 @@ fn draw_limits(rng: &mut Rng, cov: &mut Reached, d: &mut Map<String, Value>) {
         cov.reach("maxRequestBytes");
         *rng.pick(&[4 * KIB, 4 * KIB, 16 * KIB, MIB, 8 * MIB, 100 * MIB])
     } else {
-        MIB
+        DEFAULT_REQUEST
     };
-    if request != MIB || rng.chance(3) {
+    if request != DEFAULT_REQUEST || rng.chance(3) {
         if rng.chance(3) {
             cov.reach("maxRequestBytes.text");
             d.insert("maxRequestBytes".into(), json!(size_text(request)));
@@ -574,7 +576,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
             "credentials"
         }
         "inFlight" => {
-            let request = d.get("maxRequestBytes").map_or(MIB, size_of);
+            let request = d.get("maxRequestBytes").map_or(DEFAULT_REQUEST, size_of);
             let buffer = d.get("bufferBytes").map_or((64 * MIB).max(request), size_of);
             let affords = (buffer / request).min(64);
             // One more than the buffer affords, unless that is the default, which starts at what it affords instead.
@@ -590,7 +592,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
             "maxRequestBytes"
         }
         "bufferBytes" => {
-            let request = d.get("maxRequestBytes").map_or(MIB, size_of);
+            let request = d.get("maxRequestBytes").map_or(DEFAULT_REQUEST, size_of);
             // Out of bounds, or in them and short of one whole request.
             let mut bad = vec![0, 4 * MIB - 1, 1024 * MIB + 1];
             if request > 4 * MIB {
@@ -782,7 +784,7 @@ fn check_loaded(draw: &Draw, c: &HttpDestinationConfig, named: &[SecretRef]) -> 
         format!("{:?}", draw.tls),
         format!("{:?}", c.tls.as_ref().map(|t| t.certificate.is_some())),
     );
-    let request = d.get("maxRequestBytes").map_or(MIB, size_of);
+    let request = d.get("maxRequestBytes").map_or(DEFAULT_REQUEST, size_of);
     expect("maxRequestBytes", request.to_string(), c.max_request_bytes.to_string());
     let buffer = d.get("bufferBytes").map_or((64 * MIB).max(request), size_of);
     expect("bufferBytes", buffer.to_string(), c.buffer_bytes.to_string());

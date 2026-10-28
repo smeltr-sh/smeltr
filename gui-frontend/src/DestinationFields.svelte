@@ -707,7 +707,7 @@
       {/if}
       <RequestDelivery
         value={h}
-        sizeDefault={LIMITS.maxRequestBytes.default}
+        sizeDefault={(h.type === 'http' ? LIMITS.httpRequestBytes : LIMITS.maxRequestBytes).default}
         concurrent={h.type === 'http'}
       >
         {#snippet sizeHelp()}

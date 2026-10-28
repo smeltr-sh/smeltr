@@ -2624,7 +2624,7 @@ fn a_minimal_http_destination_loads_with_the_defaults() {
     assert_eq!(h.payload, smeltr::plan::config::Payload::Record);
     assert_eq!(h.compression, Compression::None);
     assert!(h.headers.is_empty() && h.credentials.is_empty());
-    assert_eq!(h.max_request_bytes, 1024 * 1024);
+    assert_eq!(h.max_request_bytes, smeltr::worker::TICK_MAX_BYTES, "a batch is one request");
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     assert_eq!(
         system.topology.destinations[0].kind.placement(),
