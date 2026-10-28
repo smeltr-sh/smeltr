@@ -33,7 +33,7 @@ impl Encoding {
     /// `"auto"`, `"none"` or a WHATWG label (`"utf-8"`, `"utf-16le"`, `"shift_jis"`, `"latin1"`, …). `None` for a name
     /// encoding_rs does not know, so a config file can be rejected at load with the name in the message.
     ///
-    /// `_no_replacement` is the load-bearing half: WHATWG maps a handful of labels it will not implement
+    /// `for_label_no_replacement` is the load-bearing half: WHATWG maps a handful of labels it will not implement
     /// (`hz-gb-2312`, the ISO-2022 variants) to the `replacement` encoding, which decodes *any* input to one U+FFFD.
     /// Accepting one would load clean and then destroy every record.
     pub fn for_label(label: &str) -> Option<Encoding> {
