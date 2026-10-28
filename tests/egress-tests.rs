@@ -1038,6 +1038,20 @@ impl Link {
     }
 }
 
+/// What destination `id`'s queue may hold, as its egress stage last reported it.
+fn budget(registry: &Metrics, id: u32) -> Option<usize> {
+    let label = id.to_string();
+    registry.snapshot().into_iter().find_map(|s| match s.value {
+        smeltr::metrics::MetricValue::Gauge(v)
+            if s.key.name == "smeltr_destination_queue_budget_bytes"
+                && s.key.labels.iter().any(|(k, v)| *k == "destination" && *v == label) =>
+        {
+            Some(v as usize)
+        }
+        _ => None,
+    })
+}
+
 /// A paced queue starts at one batch and, while its source presses and the destination keeps up, grows its budget
 /// toward its share of the pool; it never passes that share.
 #[test]
@@ -1056,14 +1070,6 @@ fn a_paced_queue_grows_from_one_batch_while_its_source_presses() {
     )
     .borrowing(pool.clone(), row.len(), 1)
     .paced(row.len());
-    let budget = || {
-        registry.snapshot().into_iter().find_map(|s| match s.value {
-            smeltr::metrics::MetricValue::Gauge(v) if s.key.name == "smeltr_destination_queue_budget_bytes" => {
-                Some(v as usize)
-            }
-            _ => None,
-        })
-    };
     let mut h = egress.handle();
 
     // A source that always has more, over a link a few milliseconds away.
@@ -1077,7 +1083,7 @@ fn a_paced_queue_grows_from_one_batch_while_its_source_presses() {
         }
         std::thread::sleep(Duration::from_millis(1));
         link.answer(&dest);
-        most = most.max(budget().unwrap_or(0));
+        most = most.max(budget(&registry, 0).unwrap_or(0));
     }
     assert!(most >= 8 * row.len(), "the budget grew from one batch: {most}");
     assert!(most <= row.len() + pool.limit(), "never past the share: {most}");
@@ -1105,19 +1111,6 @@ fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neith
         .collect();
     let mut handles: Vec<_> = egresses.iter_mut().map(Egress::handle).collect();
     let mut next = [0u64; 2];
-    // Each queue's budget, in batches.
-    let budget = |i: usize| {
-        let label = i.to_string();
-        registry.snapshot().into_iter().find_map(|s| match s.value {
-            smeltr::metrics::MetricValue::Gauge(v)
-                if s.key.name == "smeltr_destination_queue_budget_bytes"
-                    && s.key.labels.iter().any(|(k, v)| *k == "destination" && *v == label) =>
-            {
-                Some(v as usize / row.len())
-            }
-            _ => None,
-        })
-    };
     let mut links: [Link; 2] = Default::default();
     // For `secs`, each of `pressing` sends while it has room and each of `answering` answers over its link.
     // Answers each queue's budget in batches, on average over the last second, and how many batches each delivered.
@@ -1137,7 +1130,7 @@ fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neith
                     delivered[i] += links[i].answer(d);
                 }
                 if last_second {
-                    held[i] += budget(i).unwrap_or(0);
+                    held[i] += budget(&registry, i as u32).unwrap_or(0) / row.len();
                 }
             }
             samples += usize::from(last_second);
