@@ -4114,6 +4114,7 @@ mod secrets_delivery_tests {
                 kind: Some(ThreadKind::Worker),
                 partitions_owned: vec![],
                 metrics: vec![],
+                metrics_held: false,
             }],
             accepts: Vec::new(),
             took: None,
@@ -4610,6 +4611,7 @@ mod warnings_endpoint_tests {
                     kind: Some(ThreadKind::Reader),
                     partitions_owned: vec![],
                     metrics: vec![],
+                    metrics_held: false,
                 }],
                 WorkerFacts {
                     smeltr_version: crate::version::VERSION.to_string(),
@@ -4691,6 +4693,7 @@ mod warnings_endpoint_tests {
                         labels: vec![("source".to_string(), "7".to_string())],
                         value: MetricValueDto::Text("held".to_string()),
                     }],
+                    metrics_held: false,
                 }],
                 WorkerFacts {
                     smeltr_version: crate::version::VERSION.to_string(),
@@ -4748,6 +4751,7 @@ mod warnings_endpoint_tests {
                 labels: vec![("source".to_string(), "7".to_string())],
                 value: MetricValueDto::Text("held".to_string()),
             }],
+            metrics_held: false,
         };
         state
             .registry

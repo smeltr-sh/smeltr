@@ -325,6 +325,7 @@ mod tests {
                 kind: Some(ThreadKind::Reader),
                 partitions_owned: vec![],
                 metrics: vec![],
+                metrics_held: false,
             },
         }
     }

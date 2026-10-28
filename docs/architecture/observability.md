@@ -126,6 +126,14 @@ sequenceDiagram
   W->>L: window 5, state
 ```
 
+Each part of a window has its share of the leader's limit. Logs and progress
+past theirs wait in order for the windows after. Metrics go by whole threads:
+past their share, a window takes threads in turn from where the last one
+stopped, and a thread left out is still reported, flagged, so the leader keeps
+what it last said of it. What it counts meanwhile stays owed and arrives summed
+on its turn, so a deployment with more series than fit is heard in full every
+few beats, and its counts land a few beats late.
+
 A beat past the leader's limit is refused, and its window is dropped rather
 than kept, since sent again it would be refused again; its progress goes back
 for the next window. A beat the leader cannot record is refused too, and its

@@ -1636,6 +1636,7 @@ fn thread_reports(
             kind: Some(*kind),
             partitions_owned: partitions_owned.clone(),
             metrics: by_thread.remove(thread_id).unwrap_or_default(),
+            metrics_held: false,
         })
         .collect();
     // Sorted: the request is compared in tests and read by a human, and a HashMap's order is neither stable nor
@@ -1648,6 +1649,7 @@ fn thread_reports(
         group_id: group_id.to_string(),
         partitions_owned: vec![],
         metrics,
+        metrics_held: false,
     }));
     out
 }
@@ -1684,15 +1686,20 @@ fn split_dtos_by_thread(
     let mut out: std::collections::HashMap<String, Vec<crate::heartbeat::MetricSampleDto>> =
         std::collections::HashMap::new();
     for sample in samples {
-        let thread = sample
-            .labels
-            .iter()
-            .find(|(k, _)| k == crate::metrics::THREAD_LABEL)
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default();
-        out.entry(thread).or_default().push(sample.clone());
+        out.entry(thread_of(sample).to_string())
+            .or_default()
+            .push(sample.clone());
     }
     out
+}
+
+/// The thread `sample` is reported under: its `thread` label, or none.
+fn thread_of(sample: &crate::heartbeat::MetricSampleDto) -> &str {
+    sample
+        .labels
+        .iter()
+        .find(|(k, _)| k == crate::metrics::THREAD_LABEL)
+        .map_or("", |(_, v)| v.as_str())
 }
 
 /// What a heartbeat says about the worker itself, rather than about the threads it is running.
@@ -1741,6 +1748,8 @@ struct Window {
     streams: Option<heartbeat::StreamReport>,
     /// The oldest [`heartbeat::LEDGER_PER_HEARTBEAT`] ledger entries' worth of the runtime's progress.
     progress: Vec<heartbeat::SourceProgress>,
+    /// The threads whose metrics wait for a later window, past [`METRICS_BYTES_PER_HEARTBEAT`].
+    metrics_held: std::collections::BTreeSet<String>,
 }
 
 /// The number of the last window this process took, and that window while the leader has not answered it.
@@ -1748,17 +1757,47 @@ struct Window {
 struct Owed {
     seq: u64,
     window: Option<Window>,
+    /// The last thread whose metrics a window took, when some had to wait: the next window starts after it.
+    metrics_after: Option<String>,
 }
 
 /// A new window: what this process's registry and log buffer hold that the leader has not had, and what `held`, the
 /// runtime's report, has gathered. The runtime's logs take whatever room this process's leave, and its progress
 /// the oldest ledger entries' worth; the rest of each waits in `held` for the windows that follow.
-fn take_window(registry: &Metrics, held: Option<&mut child::RuntimeReport>) -> Window {
+///
+/// Metrics go by whole threads, `metrics_bytes` of them, from the thread after `metrics_after` round to it again,
+/// which this moves to the last thread taken. A thread's metrics that wait stay owed: this process's in its
+/// registry's cursor, the runtime's in `held`.
+fn take_window(
+    registry: &Metrics,
+    mut held: Option<&mut child::RuntimeReport>,
+    metrics_bytes: usize,
+    metrics_after: &mut Option<String>,
+) -> Window {
     // The process's registry, read whether or not anything is deployed: what a capture recorded, and what a
     // deployment that has since stopped left owed, travel either way.
-    let own = heartbeat::peek_for_heartbeat(registry);
-    let mut samples: Vec<heartbeat::MetricSampleDto> =
-        own.iter().cloned().map(heartbeat::MetricSampleDto::from).collect();
+    let peeked = heartbeat::peek_for_heartbeat(registry);
+    let mut own_samples: Vec<heartbeat::MetricSampleDto> =
+        peeked.iter().cloned().map(heartbeat::MetricSampleDto::from).collect();
+    let mut runtime_samples = Vec::new();
+    if let Some(held) = held.as_deref_mut() {
+        // Subject identity, resolved once for the whole window (GOAL ONE): every sample the registry holds labels
+        // its source or destination by the positional id `Reader`/`egress` wrote, which does not survive a config
+        // edit that reorders or deletes an unrelated entry.
+        resolve_subject_labels(&mut own_samples, &held.subjects);
+        // What the runtime's own registry recorded, already resolved when it arrived (`absorb`). It reaches the
+        // leader through this process because the process that recorded it has no connection of its own.
+        runtime_samples = std::mem::take(&mut held.metrics);
+    }
+    let metrics_held = threads_held(own_samples.iter().chain(&runtime_samples), metrics_bytes, metrics_after);
+    let taken = |sample: &heartbeat::MetricSampleDto| !metrics_held.contains(thread_of(sample));
+    let (own, mut samples): (Vec<_>, Vec<_>) = peeked
+        .into_iter()
+        .zip(own_samples)
+        .filter(|(_, sample)| taken(sample))
+        .unzip();
+    let (runtime_taken, runtime_waiting): (Vec<_>, Vec<_>) = runtime_samples.into_iter().partition(taken);
+    samples.extend(runtime_taken);
     let mut logs = crate::logs::pending_map(heartbeat::LOGS_PER_HEARTBEAT, |event| heartbeat::LogDto::from(event));
     let own_logs = logs.len();
     let Some(held) = held else {
@@ -1767,16 +1806,11 @@ fn take_window(registry: &Metrics, held: Option<&mut child::RuntimeReport>) -> W
             samples,
             logs,
             own_logs,
+            metrics_held,
             ..Default::default()
         };
     };
-    // Subject identity, resolved once for the whole window (GOAL ONE): every sample the registry holds labels its
-    // source or destination by the positional id `Reader`/`egress` wrote, which does not survive a config edit that
-    // reorders or deletes an unrelated entry.
-    resolve_subject_labels(&mut samples, &held.subjects);
-    // What the runtime's own registry recorded, already resolved when it arrived (`absorb`). It reaches the leader
-    // through this process because the process that recorded it has no connection of its own.
-    samples.append(&mut held.metrics);
+    held.metrics = runtime_waiting;
     let room = heartbeat::LOGS_PER_HEARTBEAT
         .saturating_sub(own_logs)
         .min(held.logs.len());
@@ -1796,7 +1830,44 @@ fn take_window(registry: &Metrics, held: Option<&mut child::RuntimeReport>) -> W
             heartbeat::LEDGER_PER_HEARTBEAT,
             PROGRESS_BYTES_PER_HEARTBEAT,
         ),
+        metrics_held,
     }
+}
+
+/// The threads of `samples` whose metrics wait for a later window: none while all of them fit in `bytes` as JSON.
+/// Otherwise whole threads are taken in order from the one after `after`, round to it again, until the next would
+/// not fit, and `after` moves to the last taken, so each thread's turn comes. The first is taken whatever it
+/// weighs, so every window carries some.
+fn threads_held<'a>(
+    samples: impl Iterator<Item = &'a heartbeat::MetricSampleDto>,
+    bytes: usize,
+    after: &mut Option<String>,
+) -> std::collections::BTreeSet<String> {
+    let mut weight: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for sample in samples {
+        *weight.entry(thread_of(sample)).or_default() += serde_json::to_vec(sample).map_or(0, |json| json.len());
+    }
+    if weight.values().sum::<usize>() <= bytes {
+        *after = None;
+        return Default::default();
+    }
+    let threads: Vec<&str> = weight.keys().copied().collect();
+    let start = after
+        .as_deref()
+        .map_or(0, |after| threads.partition_point(|thread| *thread <= after));
+    let mut left = bytes;
+    let mut last = None;
+    for &thread in threads[start..].iter().chain(&threads[..start]) {
+        let w = weight[thread];
+        if w > left && last.is_some() {
+            break;
+        }
+        left = left.saturating_sub(w);
+        weight.remove(thread);
+        last = Some(thread);
+    }
+    *after = last.map(str::to_string);
+    weight.into_keys().map(str::to_string).collect()
 }
 
 /// What `held` says the deployment is doing now, without what it has gathered for a window.
@@ -1818,6 +1889,11 @@ fn runtime_state(held: &child::RuntimeReport) -> child::RuntimeReport {
 /// How much of a heartbeat's body its progress may take, as JSON: a quarter of what the leader accepts, so a beat
 /// carrying it and a full batch of logs stays inside the limit however its entries escape.
 const PROGRESS_BYTES_PER_HEARTBEAT: usize = heartbeat::HEARTBEAT_BODY_LIMIT / 4;
+
+/// How much of a heartbeat's body its metrics may take, as JSON: a quarter of what the leader accepts, beside the
+/// quarter progress takes, so a deployment with more series than fit spreads them over beats rather than outgrowing
+/// the limit on every one.
+const METRICS_BYTES_PER_HEARTBEAT: usize = heartbeat::HEARTBEAT_BODY_LIMIT / 4;
 
 /// What `process`'s log buffer has lost, and what each site has actually said, as counters in its `registry`,
 /// labeled with the process so the supervisor's and the runtime's stay two series. Called just before the read that
@@ -1877,6 +1953,10 @@ fn build_heartbeat_request(
         heartbeat_interval,
     } = about;
     let mut by_thread = split_dtos_by_thread(&window.samples);
+    // A thread whose metrics wait is still reported, so the leader hears from it and keeps what it said last.
+    for thread in &window.metrics_held {
+        by_thread.entry(thread.clone()).or_default();
+    }
     // Not a thread: a worker with nothing deployed reports so it learns a directive, and counts as zero. It is
     // what a worker says while it has no runtime, including while it still owes the leader what its last one
     // counted -- a report with no threads in it describes a worker running nothing just as an absent one does.
@@ -1886,8 +1966,9 @@ fn build_heartbeat_request(
         kind: Some(ThreadKind::Worker),
         partitions_owned: vec![],
         metrics: vec![],
+        metrics_held: false,
     };
-    let threads = match deployed {
+    let mut threads = match deployed {
         // What the registry holds rides beside it rather than waiting for a deployment to carry it -- there are
         // no source or destination names to resolve against, so those labels stay as they were written.
         None => {
@@ -1939,6 +2020,9 @@ fn build_heartbeat_request(
             out
         }
     };
+    for thread in &mut threads {
+        thread.metrics_held = window.metrics_held.contains(&thread.thread_id);
+    }
     HeartbeatRequest {
         heartbeat_interval_ms: heartbeat_interval.map(|i| i.as_millis() as u64),
         single_worker: deployed.map(|d| d.single_worker.clone()).unwrap_or_default(),
@@ -1979,8 +2063,9 @@ fn heartbeat_body_is_large(bytes: usize) -> bool {
 }
 
 /// Warns once a heartbeat's body has grown past [`heartbeat::HEARTBEAT_BODY_WARNING`] of what the leader will
-/// accept. Nothing bounds metrics the way [`heartbeat::LOGS_PER_HEARTBEAT`] bounds logs, so this is the operator's
-/// notice of a worker heading toward the limit, well before a beat is ever refused.
+/// accept. A window's parts each have their share of the limit; what the beat says of the threads running does not,
+/// so this is the operator's notice of a deployment whose state alone heads toward the limit, well before a beat
+/// is ever refused.
 fn warn_if_heartbeat_body_large(req: &HeartbeatRequest) {
     let Ok(bytes) = serde_json::to_vec(req) else {
         return;
@@ -3007,7 +3092,13 @@ impl Supervisor {
                 ));
             }
         } else {
-            owed.window = Some(take_window(&self.registry, runtime.as_mut()));
+            let window = take_window(
+                &self.registry,
+                runtime.as_mut(),
+                METRICS_BYTES_PER_HEARTBEAT,
+                &mut owed.metrics_after,
+            );
+            owed.window = Some(window);
             owed.seq += 1;
         }
         let deployed = runtime.as_ref().map(runtime_state);
@@ -5455,7 +5546,7 @@ mod tests {
         record_log_counts(registry, "supervisor");
         record_memory_gauge(registry, "supervisor");
         let mut held = deployed.cloned();
-        let window = take_window(registry, held.as_mut());
+        let window = take_window(registry, held.as_mut(), METRICS_BYTES_PER_HEARTBEAT, &mut None);
         let state = held.as_ref().map(runtime_state);
         let req = build_heartbeat_request(about, state.as_ref(), &window, 1, &Default::default());
         (req, window)
@@ -6938,6 +7029,135 @@ mod tests {
         );
     }
 
+    /// Past the budget, whole threads go in turn from where the last window stopped, so every thread's comes; the
+    /// first goes whatever it weighs, so no window is empty.
+    #[test]
+    fn metrics_past_the_budget_go_by_whole_threads_in_turn() {
+        let sample = |thread: &str| heartbeat::MetricSampleDto {
+            metric: "smeltr_rows_in_total".to_string(),
+            labels: vec![("thread".to_string(), thread.to_string())],
+            value: heartbeat::MetricValueDto::Counter(1),
+        };
+        let samples = [sample("a"), sample("b"), sample("c")];
+        let one = serde_json::to_vec(&samples[0]).unwrap().len();
+        let held = |bytes: usize, after: &mut Option<String>| {
+            threads_held(samples.iter(), bytes, after)
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+
+        let mut after = Some("b".to_string());
+        assert!(held(3 * one, &mut after).is_empty());
+        assert_eq!(after, None, "a window that took everything left a turn to resume");
+
+        assert_eq!(held(2 * one, &mut after), ["c"]);
+        assert_eq!(after.as_deref(), Some("b"));
+        assert_eq!(held(2 * one, &mut after), ["b"], "the turn did not go round");
+        assert_eq!(after.as_deref(), Some("a"));
+        assert_eq!(
+            held(1, &mut after),
+            ["a", "c"],
+            "a thread past the whole budget was never sent"
+        );
+        assert_eq!(after.as_deref(), Some("b"));
+    }
+
+    /// A thread whose metrics wait is still reported, flagged, and what it counted meanwhile goes on a later window:
+    /// this process's in its registry's cursor, the runtime's in its report.
+    #[test]
+    fn metrics_that_wait_are_owed_and_their_thread_still_reports() {
+        let registry = Arc::new(Metrics::new());
+        MetricsHandle::new(registry.clone(), "capture").incr("smeltr_capture_records_total", &[], 2);
+        let mut runtime = child::RuntimeReport {
+            pool_thread_ids: vec!["pool-0".to_string()],
+            metrics: vec![heartbeat::MetricSampleDto {
+                metric: "smeltr_rows_in_total".to_string(),
+                labels: vec![("thread".to_string(), "pool-0".to_string())],
+                value: heartbeat::MetricValueDto::Counter(5),
+            }],
+            ..Default::default()
+        };
+        let counted = |window: &Window, thread: &str| {
+            window
+                .samples
+                .iter()
+                .filter(|s| thread_of(s) == thread)
+                .map(|s| match s.value {
+                    heartbeat::MetricValueDto::Counter(n) => n,
+                    _ => 0,
+                })
+                .sum::<u64>()
+        };
+        let mut after = None;
+
+        // Room for one thread: "capture" goes first, and the runtime's waits in its report.
+        let first = take_window(&registry, Some(&mut runtime), 1, &mut after);
+        assert_eq!(counted(&first, "capture"), 2);
+        assert_eq!(first.metrics_held.iter().collect::<Vec<_>>(), ["pool-0"]);
+        assert_eq!(
+            runtime.metrics.len(),
+            1,
+            "the runtime's metrics that wait were not kept"
+        );
+        let state = runtime_state(&runtime);
+        let req = build_heartbeat_request(
+            Reporting {
+                worker_id: "w1",
+                group_id: "g",
+                commit: None,
+                supervising: None,
+                resources: None,
+                stop_after_unreachable_secs: None,
+                authority_expires_millis: None,
+                authority_fingerprints: Vec::new(),
+                takes_authority: true,
+                stopping: false,
+                accepts: Vec::new(),
+                took: None,
+                heartbeat_interval: None,
+            },
+            Some(&state),
+            &first,
+            1,
+            &Default::default(),
+        );
+        let pool = req
+            .threads
+            .iter()
+            .find(|t| t.thread_id == "pool-0")
+            .expect("a thread that waits reports");
+        assert!(pool.metrics_held && pool.metrics.is_empty());
+        assert!(
+            req.threads
+                .iter()
+                .filter(|t| t.thread_id != "pool-0")
+                .all(|t| !t.metrics_held)
+        );
+
+        // Answered; both count more. The next window takes "pool-0" with all it owed, and "capture" waits.
+        heartbeat::commit_for_heartbeat(&registry, &first.own);
+        MetricsHandle::new(registry.clone(), "capture").incr("smeltr_capture_records_total", &[], 3);
+        runtime = runtime.followed_by(child::RuntimeReport {
+            pool_thread_ids: vec!["pool-0".to_string()],
+            metrics: vec![heartbeat::MetricSampleDto {
+                metric: "smeltr_rows_in_total".to_string(),
+                labels: vec![("thread".to_string(), "pool-0".to_string())],
+                value: heartbeat::MetricValueDto::Counter(4),
+            }],
+            ..Default::default()
+        });
+        let second = take_window(&registry, Some(&mut runtime), 1, &mut after);
+        assert_eq!(counted(&second, "pool-0"), 9, "what waited was lost");
+        assert_eq!(second.metrics_held.iter().collect::<Vec<_>>(), ["capture"]);
+        assert!(second.own.is_empty());
+        let third = take_window(&registry, Some(&mut runtime), 1, &mut after);
+        assert_eq!(
+            counted(&third, "capture"),
+            3,
+            "this process's counts that waited were lost"
+        );
+    }
+
     /// A beat the leader refuses for its size drops the window it carried -- sent again it would be refused again,
     /// and the worker would never report again -- but keeps its progress, which goes back ahead of what came
     /// since. The next beat is a new window.
@@ -7562,8 +7782,8 @@ mod tests {
         assert!(e.too_large(), "a 413 was not a beat too large: {e}");
     }
 
-    /// The boundary `warn_if_heartbeat_body_large` acts on: nothing bounds metrics the way `LOGS_PER_HEARTBEAT`
-    /// bounds logs, so this share of the limit is the only thing standing between silence and an operator's notice.
+    /// The boundary `warn_if_heartbeat_body_large` acts on: nothing bounds what a beat says of the threads running,
+    /// so this share of the limit is the only thing standing between silence and an operator's notice.
     #[test]
     fn a_heartbeat_body_past_the_warning_share_is_flagged_and_the_share_itself_is_not() {
         let warn_at = (heartbeat::HEARTBEAT_BODY_LIMIT as f64 * heartbeat::HEARTBEAT_BODY_WARNING) as usize;

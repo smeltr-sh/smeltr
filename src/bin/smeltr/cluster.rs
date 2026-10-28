@@ -129,6 +129,7 @@ mod tests {
                 kind: None,
                 partitions_owned: vec![],
                 metrics: vec![],
+                metrics_held: false,
             },
         }
     }

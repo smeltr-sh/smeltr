@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::heartbeat::{MetricValueDto, ThreadHeartbeat, ThreadKind};
+use crate::heartbeat::{MetricSampleDto, MetricValueDto, ThreadHeartbeat, ThreadKind};
 
 use super::series::{HeartbeatRows, LatestRow, RegistryStore, SeriesPoint};
 use super::store::StoreError;
@@ -273,18 +273,23 @@ impl Registry {
     /// `window` is what the beat gathered beside its samples, and which window of the worker's life both are: a
     /// window already recorded adds neither again (`RegistryStore::record_heartbeat`).
     ///
+    /// A report whose metrics are held (`ThreadHeartbeat::metrics_held`) keeps what its thread last said of the
+    /// rest, in memory and durably; only what the beat carried reaches the series.
+    ///
     /// An error is the durable mirror unwritten, window and all; the live view is updated either way.
     pub fn record_heartbeat(
         &self,
         worker_id: &str,
-        reports: Vec<ThreadHeartbeat>,
+        mut reports: Vec<ThreadHeartbeat>,
         worker: WorkerFacts,
         window: super::series::Window<'_>,
         now_ms: i64,
     ) -> Result<(), StoreError> {
         let stopping = worker.stopped_at_ms.is_some();
+        let carried: Vec<usize> = reports.iter().map(|report| report.metrics.len()).collect();
+        self.keep_held_metrics(worker_id, &mut reports);
         let persisted = match &self.store {
-            Some(store) => persist_heartbeat(store, worker_id, &reports, &worker, window, now_ms),
+            Some(store) => persist_heartbeat(store, worker_id, &reports, &carried, &worker, window, now_ms),
             None => Ok(()),
         };
         let mut threads = self.threads.lock().unwrap();
@@ -315,6 +320,29 @@ impl Registry {
             );
         }
         persisted
+    }
+
+    /// After each report whose metrics are held, what its thread last reported of the samples it does not carry.
+    fn keep_held_metrics(&self, worker_id: &str, reports: &mut [ThreadHeartbeat]) {
+        let threads = self.threads.lock().unwrap();
+        for report in reports.iter_mut().filter(|report| report.metrics_held) {
+            let Some(last) = threads.get(&(worker_id.to_string(), report.thread_id.clone())) else {
+                continue;
+            };
+            let carried: HashSet<(&str, &[(String, String)])> = report
+                .metrics
+                .iter()
+                .map(|m| (m.metric.as_str(), m.labels.as_slice()))
+                .collect();
+            let kept: Vec<MetricSampleDto> = last
+                .report
+                .metrics
+                .iter()
+                .filter(|m| !carried.contains(&(m.metric.as_str(), m.labels.as_slice())))
+                .cloned()
+                .collect();
+            report.metrics.extend(kept);
+        }
     }
 
     /// Drops everything held about `worker_id`, in memory and durably: the leader has forgotten it.
@@ -591,6 +619,7 @@ fn persist_heartbeat(
     store: &RegistryStore,
     worker_id: &str,
     reports: &[ThreadHeartbeat],
+    carried: &[usize],
     worker: &WorkerFacts,
     window: super::series::Window<'_>,
     now_ms: i64,
@@ -618,7 +647,7 @@ fn persist_heartbeat(
         })
         .collect();
 
-    let points = series_points(worker_id, reports);
+    let points = series_points(worker_id, reports, carried);
 
     let recorded = store.record_heartbeat(&HeartbeatRows {
         worker_id,
@@ -655,12 +684,14 @@ fn persist_heartbeat(
     recorded
 }
 
-/// Each sample `reports` carries that is a series point. A sample naming no subject, a fact carried as text, and a
+/// Each sample the beat carried that is a series point: the first `carried` of each report, before any its thread
+/// reported earlier and the beat held back (`Registry::keep_held_metrics`). A sample naming no subject, a fact carried as text, and a
 /// kind from a newer build are not: `subject_key` says which names no subject.
-fn series_points<'a>(worker_id: &str, reports: &'a [ThreadHeartbeat]) -> Vec<SeriesPoint<'a>> {
+fn series_points<'a>(worker_id: &str, reports: &'a [ThreadHeartbeat], carried: &[usize]) -> Vec<SeriesPoint<'a>> {
     reports
         .iter()
-        .flat_map(|report| report.metrics.iter().map(move |s| (report, s)))
+        .zip(carried)
+        .flat_map(|(report, &carried)| report.metrics[..carried].iter().map(move |s| (report, s)))
         .filter_map(|(report, sample)| {
             let (value, counter) = match &sample.value {
                 MetricValueDto::Counter(v) => (*v as f64, true),
@@ -838,6 +869,7 @@ mod tests {
             kind: Some(ThreadKind::Reader),
             partitions_owned: vec![],
             metrics: vec![],
+            metrics_held: false,
         }
     }
 
@@ -1387,6 +1419,93 @@ mod tests {
             points("smeltr_source_blocked_reason", &[("source", "orders-west")]).is_empty(),
             "a text fact is no series point"
         );
+        cleanup_registry_db(&path);
+    }
+
+    /// A thread whose metrics a beat held back keeps what it last said of them, in memory and after a restart,
+    /// while the series takes only what each beat carried.
+    #[test]
+    fn a_thread_whose_metrics_are_held_keeps_what_it_last_said_of_them() {
+        let path = temp_registry_path("metrics-held");
+        let sample = |metric: &str, value| MetricSampleDto {
+            metric: metric.to_string(),
+            labels: vec![("source".to_string(), "orders".to_string())],
+            value,
+        };
+        let beat = |r: &Registry, metrics, metrics_held| {
+            let mut reader = report("reader-0", "pool");
+            reader.metrics = metrics;
+            reader.metrics_held = metrics_held;
+            r.record_heartbeat("w1", vec![reader], WorkerFacts::default(), Window::default(), 12_345)
+                .unwrap();
+        };
+        let shown = |r: &Registry| {
+            let mut metrics: Vec<String> = r
+                .snapshot()
+                .into_iter()
+                .flat_map(|t| t.report.metrics)
+                .map(|m| format!("{}={:?}", m.metric, m.value))
+                .collect();
+            metrics.sort();
+            metrics
+        };
+        {
+            let r = Registry::open(&path).unwrap();
+            beat(
+                &r,
+                vec![
+                    sample("smeltr_rows_polled_total", MetricValueDto::Counter(5)),
+                    sample("smeltr_source_lag_seconds", MetricValueDto::Gauge(2.0)),
+                ],
+                false,
+            );
+            beat(
+                &r,
+                vec![sample(
+                    "smeltr_source_blocked_reason",
+                    MetricValueDto::Text("held".to_string()),
+                )],
+                true,
+            );
+            let expected = [
+                r#"smeltr_rows_polled_total=Counter(5)"#,
+                r#"smeltr_source_blocked_reason=Text("held")"#,
+                r#"smeltr_source_lag_seconds=Gauge(2.0)"#,
+            ];
+            assert_eq!(shown(&r), expected, "a held thread lost what it last said");
+            drop(r);
+            let r = Registry::open(&path).unwrap();
+            assert_eq!(shown(&r), expected, "a restart lost what a held thread last said");
+
+            let key = subject_key(
+                "pool",
+                &[
+                    ("source".to_string(), "orders".to_string()),
+                    ("thread".to_string(), "reader-0".to_string()),
+                    ("worker".to_string(), "w1".to_string()),
+                ],
+            )
+            .unwrap();
+            assert_eq!(
+                r.series()
+                    .unwrap()
+                    .points("smeltr_rows_polled_total", &key, series::Tier::TenSeconds)
+                    .unwrap(),
+                vec![(series::Tier::TenSeconds.align(12_345), 5.0)],
+                "a counter the beat did not carry was counted again"
+            );
+
+            beat(
+                &r,
+                vec![sample("smeltr_rows_polled_total", MetricValueDto::Counter(1))],
+                false,
+            );
+            assert_eq!(
+                shown(&r),
+                [r#"smeltr_rows_polled_total=Counter(1)"#],
+                "a full report did not replace"
+            );
+        }
         cleanup_registry_db(&path);
     }
 

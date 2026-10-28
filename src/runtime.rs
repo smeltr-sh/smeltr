@@ -4379,6 +4379,7 @@ mod tests {
                 kind: Some(crate::heartbeat::ThreadKind::Reader),
                 partitions_owned: vec![],
                 metrics: vec![fact],
+                metrics_held: false,
             }],
             accepts: Vec::new(),
             took: None,
