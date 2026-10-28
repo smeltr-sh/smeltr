@@ -27,6 +27,7 @@ export type Noun =
   | 'route'
   | 'lookup table'
   | 'grok pattern'
+  | 'schema'
   | 'pipeline'
   | 'worker group'
   | 'sample'
@@ -59,7 +60,7 @@ export interface SectionSpec {
 }
 
 /** Every section a change can touch, in the order a change is told:
- * sources, destinations, routes, lookup tables, grok patterns, pipelines. */
+ * sources, destinations, routes, lookup tables, grok patterns, schemas, pipelines. */
 export const SECTIONS: SectionSpec[] = [
   { key: 'sources', noun: 'source', skip: ['id'] },
   { key: 'destinations', noun: 'destination', skip: ['id'] },
@@ -67,6 +68,7 @@ export const SECTIONS: SectionSpec[] = [
   { key: 'routes', noun: 'route', skip: ['id'], ordered: true },
   { key: 'lookupTables', noun: 'lookup table', skip: ['id'] },
   { key: 'grokPatterns', noun: 'grok pattern', skip: ['id'] },
+  { key: 'schemas', noun: 'schema', skip: ['id'] },
   { key: 'pipelines', noun: 'pipeline', skip: ['id', 'steps'] },
 ];
 
@@ -95,6 +97,7 @@ export function emptyConfig(): FileConfigDto {
     routes: [],
     lookupTables: [],
     grokPatterns: [],
+    schemas: [],
   };
 }
 
@@ -218,6 +221,7 @@ const SECTION_FILE: Record<ConfigSection, string> = {
   routes: 'routes.json',
   lookupTables: 'lookup-tables.json',
   grokPatterns: 'grok-patterns.json',
+  schemas: 'schemas.json',
   pipelines: '',
 };
 

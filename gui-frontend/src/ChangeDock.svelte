@@ -15,6 +15,7 @@
     testsLoading,
     behind,
     leftOut = 0,
+    schemaFindings,
     bringingCurrent,
     bringCurrentDisabled,
     onbringcurrent,
@@ -32,6 +33,8 @@
     behind: number;
     /** Samples no test names, which the deploy leaves out. */
     leftOut?: number;
+    /** Where the rows do not fit a schema their pipeline produces, absent while they are read. */
+    schemaFindings?: number;
     bringingCurrent: boolean;
     bringCurrentDisabled: boolean;
     onbringcurrent: () => void;
@@ -88,6 +91,14 @@
           <!-- Nothing to fix: what stays on the branch is said, not warned about. -->
           <span class="mark" aria-hidden="true"></span>
           <span>{count(leftOut, 'sample')} left out</span>
+        </span>
+      {/if}
+
+      {#if schemaFindings}
+        <span class="item">
+          <!-- Said, never blocking: a schema finding does not hold back the deploy. -->
+          <span class="mark warn" aria-hidden="true">!</span>
+          <span>{count(schemaFindings, 'schema finding')}</span>
         </span>
       {/if}
 
@@ -179,6 +190,10 @@
   .mark.ok {
     border-color: var(--added);
     background: var(--added);
+  }
+  .mark.warn {
+    border-color: var(--warn);
+    background: var(--warn);
   }
   .mark.req {
     border-color: var(--accent);

@@ -17,6 +17,7 @@
     retitleChange,
     leaveBranch,
     listTests,
+    branchSchemaFindings,
     runTests,
     errorText,
     scopedKey,
@@ -27,6 +28,7 @@
     type MergeConflicts,
     type MergeSide,
     type ChangeDto,
+    type SchemaFindingDto,
     type ScopedImpact,
     type TestResult,
     type TestSummary,
@@ -45,6 +47,7 @@
   import PushState from './PushState.svelte';
   import ChangeConversation from './ChangeConversation.svelte';
   import ChangeTests from './ChangeTests.svelte';
+  import ChangeSchemas from './ChangeSchemas.svelte';
   import ChangeDock from './ChangeDock.svelte';
   import ChangeObjects from './ChangeObjects.svelte';
   import { scopeOf, type ObjectChange } from './objectChanges';
@@ -84,7 +87,7 @@
   let deploying = $state(false);
 
   /** Which part of the change the left column shows. */
-  const TABS = ['conversation', 'saves', 'tests'] as const;
+  const TABS = ['conversation', 'saves', 'tests', 'schemas'] as const;
   let tab = $state<(typeof TABS)[number]>('conversation');
   let dockHeight = $state(0);
 
@@ -206,6 +209,24 @@
     return hit === undefined ? undefined : `pipeline ${hit[1]}`;
   }
 
+  let schemaFindings = $state<SchemaFindingDto[]>([]);
+  let schemasLoading = $state(true);
+  let schemasError = $state('');
+
+  async function loadSchemaFindings() {
+    schemasLoading = true;
+    schemasError = '';
+    try {
+      const res = await branchSchemaFindings(branch);
+      if (!res.ok) schemasError = errorText(res.errors);
+      else schemaFindings = res.findings;
+    } catch (e) {
+      schemasError = unreported(e);
+    } finally {
+      schemasLoading = false;
+    }
+  }
+
   async function loadTests() {
     testsLoading = true;
     testsError = '';
@@ -255,6 +276,7 @@
       loadTimeline();
       void loadNames(found.touches);
       loadTests();
+      loadSchemaFindings();
     } catch (e) {
       loadFailed = true;
       reported(e);
@@ -272,6 +294,7 @@
       if (!found?.change) return load();
       loaded = { branch: found, change: found.change };
       loadTests();
+      loadSchemaFindings();
     } catch (e) {
       loadFailed = true;
       reported(e);
@@ -483,8 +506,11 @@
                 {:else if t === 'saves'}Saves <span class="pill"
                     >{timelineLoading ? '…' : saves.length}</span
                   >
-                {:else}Tests <span class="pill"
+                {:else if t === 'tests'}Tests <span class="pill"
                     >{testsLoading ? '…' : `${tally.passed}/${tally.total}`}</span
+                  >
+                {:else}Schemas <span class="pill"
+                    >{schemasLoading ? '…' : schemaFindings.length}</span
                   >
                 {/if}
               {/snippet}
@@ -521,6 +547,13 @@
                   {/each}
                 </ul>
               {/if}
+            {:else if tab === 'schemas'}
+              <ChangeSchemas
+                findings={schemaFindings}
+                loading={schemasLoading}
+                error={schemasError}
+                {pipelineName}
+              />
             {:else}
               <ChangeTests
                 {branch}
@@ -578,6 +611,7 @@
         reviews={reviewState}
         tests={tally}
         {testsLoading}
+        schemaFindings={schemasLoading ? undefined : schemaFindings.length}
         behind={loaded.branch.behind}
         leftOut={loaded.branch.leftOut?.length ?? 0}
         {bringingCurrent}

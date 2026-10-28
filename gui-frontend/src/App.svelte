@@ -647,6 +647,11 @@
         {@const GrokPatternsPage = pages.grok}
         <GrokPatternsPage showJson={route.json} only={route.only} />
       {/if}
+    {:else if route.page === 'schemas'}
+      {#if pages.schemas}
+        {@const SchemasPage = pages.schemas}
+        <SchemasPage showJson={route.json} open={route.open} />
+      {/if}
     {:else if route.page === 'lookups'}
       {#if pages.lookups}
         {@const LookupTablesPage = pages.lookups}

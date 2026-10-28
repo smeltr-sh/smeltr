@@ -10,6 +10,7 @@ const SECTIONS: Record<string, string> = {
   'routes.json': 'Route',
   'lookup-tables.json': 'Lookup table',
   'grok-patterns.json': 'Grok pattern',
+  'schemas.json': 'Schema',
 };
 
 /** `west · Pipeline Enrich`, `shared · Route from kafka-1 to es`, `west · lookups/t.csv`. A file outside any bundle

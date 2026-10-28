@@ -14,6 +14,7 @@ const LOAD = {
   pipelines: () => import('./PipelinesListPage.svelte'),
   lookups: () => import('./LookupTablesPage.svelte'),
   grok: () => import('./GrokPatternsPage.svelte'),
+  schemas: () => import('./SchemasPage.svelte'),
   routes: () => import('./RoutesPage.svelte'),
   'route-preview': () => import('./RoutePreviewPage.svelte'),
   pipeline: () => import('./PipelineEditor.svelte'),

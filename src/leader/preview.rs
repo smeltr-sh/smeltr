@@ -134,6 +134,9 @@ pub struct Preview {
     /// What compiles but is likely a mistake (`Plan::warnings`), each placed at its step as an error is.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ApiError>,
+    /// How many of `warnings` are where the rows break the schemas the pipeline produces.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub schema_findings: u32,
     /// The answer to `PreviewRequest::after_dot`. Absent where the dot follows no value: it is in a string, a comment
     /// or a number.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -909,11 +912,8 @@ pub fn run_preview(
         }
     };
     if records.is_empty() {
-        warnings.extend(
-            schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first)
-                .iter()
-                .map(warn),
-        );
+        let found = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first);
+        warnings.extend(found.iter().map(warn));
         return Envelope::ok(Preview {
             stage: None,
             pipeline_names,
@@ -927,6 +927,7 @@ pub fn run_preview(
                 sampled: None,
             }),
             warnings,
+            schema_findings: found.len() as u32,
         });
     }
 
@@ -1034,11 +1035,8 @@ pub fn run_preview(
 
     // The dictionary is of every row: a filter chooses what is shown, not what the pipeline writes.
     let sampled = plan::dictionary::with_sample(&record, rows.iter().filter_map(|(r, _)| r.json.as_ref()));
-    warnings.extend(
-        schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first)
-            .iter()
-            .map(warn),
-    );
+    let found = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first);
+    warnings.extend(found.iter().map(warn));
     let unfiltered = filter.as_ref().map(|_| rows.len() as u32);
     let rows = rows
         .into_iter()
@@ -1058,6 +1056,7 @@ pub fn run_preview(
         unfiltered,
         parsers,
         warnings,
+        schema_findings: found.len() as u32,
     })
 }
 
