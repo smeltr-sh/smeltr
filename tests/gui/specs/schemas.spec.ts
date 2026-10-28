@@ -82,7 +82,9 @@ test("a pipeline's Produces is saved with it, and the editor says what its rows 
     .selectOption('ocsf/authentication');
   await expect(produces.getByRole('link', { name: 'ocsf/authentication' })).toBeVisible();
   await expect(produces.getByRole('status')).toHaveText('1 schema finding', { timeout: 15_000 });
-  await expect(admin.getByText(/^OCSF Authentication requires: `activity_id`/)).toBeVisible();
+  await expect(
+    admin.getByText(/^OCSF Authentication requires `activity_id`.*; the rows lack them\.$/),
+  ).toBeVisible();
   await admin.screenshot({ path: 'results/schemas-produces.png' });
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
@@ -147,7 +149,9 @@ test('review lists where the rows do not fit a schema, and the dock counts them 
   await admin.getByRole('tab', { name: /^Schemas/ }).click();
   const panel = admin.getByRole('tabpanel');
   await expect(panel.getByRole('link', { name: 'logins' })).toBeVisible();
-  await expect(panel.getByText(/^OCSF Authentication requires: `activity_id`/)).toBeVisible();
+  await expect(
+    panel.getByText(/^OCSF Authentication requires `activity_id`.*; the rows lack them\.$/),
+  ).toBeVisible();
   await expect(panel.getByText(/destination "search" accepts ECS/)).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Approve & deploy' })).toBeEnabled();
   await admin.screenshot({ path: 'results/schemas-review.png' });
@@ -198,6 +202,8 @@ test('a field the schema requires and the rows lack is a column of its own, with
     'true',
   );
   await expect(admin.getByText('Required by OCSF Authentication:')).toBeVisible();
-  await expect(admin.getByText(/^OCSF Authentication requires: `activity_id`/)).toBeVisible();
+  await expect(
+    admin.getByText(/^OCSF Authentication requires `activity_id`.*; the rows lack them\.$/),
+  ).toBeVisible();
   await admin.screenshot({ path: 'results/schemas-missing.png' });
 });

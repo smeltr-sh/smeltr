@@ -407,8 +407,11 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<(Option<Vec<St
     }
     for (schema, paths) in missing {
         let schema = title(schema);
-        // That they are missing is the finding's own news, so it names them and says no more.
-        out.push((None, format!("{schema} requires: {}.", paths.join(", "))));
+        let lack = if paths.len() == 1 { "it" } else { "them" };
+        out.push((
+            None,
+            format!("{schema} requires {}; the rows lack {lack}.", paths.join(", ")),
+        ));
     }
     out
 }
@@ -528,7 +531,7 @@ mod tests {
             )
         );
         assert_eq!(told.len(), 2, "{told:?}");
-        assert!(told[1].1.starts_with("OCSF Authentication requires: `activity_id`,"));
+        assert!(told[1].1.starts_with("OCSF Authentication requires `activity_id`,"));
     }
 
     #[test]

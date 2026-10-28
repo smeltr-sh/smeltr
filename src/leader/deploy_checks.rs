@@ -266,7 +266,7 @@ mod tests {
         assert!(
             found.schemas.iter().any(|(group, f)| group == "east"
                 && f.pipeline == "p"
-                && f.message.starts_with("OCSF Authentication requires: `activity_id`")),
+                && f.message.starts_with("OCSF Authentication requires `activity_id`")),
             "{found:?}"
         );
     }
