@@ -388,7 +388,11 @@ fn run_pipeline_callers(raw: config_file::RawBundle) -> Envelope<PipelineCallers
         .into_iter()
         .map(|(called, by)| (called, by.into_iter().collect()))
         .collect();
-    Envelope::with(PipelineCallers { callers }, config_api::read_status(&raw), errors)
+    Envelope::with(
+        PipelineCallers { callers },
+        config_api::read_status(&raw.unreadable),
+        errors,
+    )
 }
 
 /// The captures of a grok pattern, with no sample and no pipeline.

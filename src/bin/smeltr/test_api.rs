@@ -13,7 +13,6 @@ use std::path::Path;
 
 use axum::Json;
 use axum::extract::{Extension, Path as AxPath, Query};
-use axum::http::StatusCode;
 
 use smeltr::config_file::{self, Impact, TestDto, TestSummary, Verdict};
 use smeltr::leader::access::{Access, Level};
@@ -116,10 +115,10 @@ fn list_in(data_dir: &Path, branch: &str, covers: &Covers, access: &Access) -> E
         Ok::<_, Refusal>((tests, errors))
     };
     match read() {
-        // `ok` with errors beside it: the tests that could be read are listed, and each scope that could not says why.
+        // The tests that could be read are listed, and each file that could not says why.
         Ok((tests, errors)) => Envelope::with(
             Tests { tests },
-            StatusCode::OK,
+            config_api::read_status(&errors),
             errors.into_iter().map(ApiError::new).collect(),
         ),
         Err(e) => Envelope::refused(e),

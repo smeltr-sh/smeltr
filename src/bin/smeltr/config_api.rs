@@ -968,7 +968,7 @@ fn config_in(data_dir: &Path, area: &str, q: &ConfigQuery) -> Envelope<Config> {
     let raw = reading.raw();
     let mut errors = unreadable_errors(&raw);
     errors.extend(errors_of_read(&reading, &raw).iter().map(ApiError::from_validation));
-    let status = read_status(&raw);
+    let status = read_status(&raw.unreadable);
     Envelope::with(
         Config {
             config: Some(raw.file),
@@ -981,8 +981,8 @@ fn config_in(data_dir: &Path, area: &str, q: &ConfigQuery) -> Envelope<Config> {
 
 /// What a read answers at: a file it could not read is the leader's to fix, and the read still answers what it
 /// read beside it. Validation errors alone are warnings, since a branch may be broken while it is worked on.
-pub(crate) fn read_status(raw: &RawBundle) -> StatusCode {
-    match raw.unreadable.is_empty() {
+pub(crate) fn read_status<T>(unreadable: &[T]) -> StatusCode {
+    match unreadable.is_empty() {
         true => StatusCode::OK,
         false => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -1515,7 +1515,7 @@ pub async fn list_pipelines(AxPath(area): AxPath<String>, Query(q): Query<Branch
     let raw = reading.raw();
     let mut errors = unreadable_errors(&raw);
     errors.extend(errors_of_read(&reading, &raw).iter().map(ApiError::from_validation));
-    let status = read_status(&raw);
+    let status = read_status(&raw.unreadable);
     Envelope::with(
         Pipelines {
             pipelines: raw.file.pipelines,
@@ -1966,10 +1966,7 @@ pub async fn list_samples(AxPath(area): AxPath<String>, Query(q): Query<BranchQu
     .await;
     match read {
         Ok((samples, unreadable, commit)) => {
-            let status = match unreadable.is_empty() {
-                true => StatusCode::OK,
-                false => StatusCode::INTERNAL_SERVER_ERROR,
-            };
+            let status = read_status(&unreadable);
             let errors = (unreadable.into_iter())
                 .map(|(path, message)| ApiError::new(format!("{path}: {message}")))
                 .collect();
