@@ -103,9 +103,26 @@ fn produce_with(brokers: &str, topic: &str, n: usize, row: impl Fn(usize) -> Vec
     dest.flush().expect("flush");
 }
 
+/// The bundle a profile runs: Kafka at `brokers`, read from `inputs` in `group` as `encoding`, written to `output`.
+#[derive(Clone, Copy)]
+struct Bundle<'a> {
+    brokers: &'a str,
+    inputs: &'a [String],
+    output: &'a str,
+    group: &'a str,
+    encoding: &'a str,
+}
+
 /// A pipeline that parses and does a little work, so this measures more
 /// than serialization.
-fn bundle_json(brokers: &str, inputs: &[String], output: &str, group: &str, encoding: &str) -> String {
+fn bundle_json(bundle: &Bundle) -> String {
+    let Bundle {
+        brokers,
+        inputs,
+        output,
+        group,
+        encoding,
+    } = *bundle;
     serde_json::json!({
         "version": 1,
         "sources": [{
@@ -170,7 +187,14 @@ fn run_once(brokers: &str, inputs: &[String], output: &str, rows: usize, max_row
 /// `run_once` with the source declaring `encoding`.
 fn decoding(brokers: &str, inputs: &[String], output: &str, rows: usize, max_rows: usize, encoding: &str) -> Profile {
     let group = unique("profile-group");
-    run_in_group(brokers, inputs, output, rows, max_rows, &group, None, encoding)
+    let bundle = Bundle {
+        brokers,
+        inputs,
+        output,
+        group: &group,
+        encoding,
+    };
+    run_in_group(&bundle, rows, max_rows, None)
 }
 
 /// Where the members of one consumer group wait for each other between
@@ -206,21 +230,10 @@ impl Gate {
     }
 }
 
-/// `run_once` in a caller-chosen group, optionally behind a gate
+/// `run_once` on `bundle`, optionally behind a gate
 /// between warm-up and the timed run.
-#[allow(clippy::too_many_arguments)]
-fn run_in_group(
-    brokers: &str,
-    inputs: &[String],
-    output: &str,
-    rows: usize,
-    max_rows: usize,
-    group: &str,
-    gate: Option<&Gate>,
-    encoding: &str,
-) -> Profile {
-    let system =
-        smeltr::config_file::load_str(&bundle_json(brokers, inputs, output, group, encoding)).expect("bundle loads");
+fn run_in_group(bundle: &Bundle, rows: usize, max_rows: usize, gate: Option<&Gate>) -> Profile {
+    let system = smeltr::config_file::load_str(&bundle_json(bundle)).expect("bundle loads");
     let topology = system.compile_topology().expect("bundle compiles");
 
     let registry = Arc::new(Metrics::new());
@@ -481,7 +494,16 @@ fn thread_scaling() {
                     group.clone(),
                     gate.clone(),
                 );
-                std::thread::spawn(move || run_in_group(&b, &i, &o, ROWS, 4000, &g, Some(&gate), "auto"))
+                std::thread::spawn(move || {
+                    let bundle = Bundle {
+                        brokers: &b,
+                        inputs: &i,
+                        output: &o,
+                        group: &g,
+                        encoding: "auto",
+                    };
+                    run_in_group(&bundle, ROWS, 4000, Some(&gate))
+                })
             })
             .collect();
         let profiles: Vec<Profile> = handles.into_iter().map(|h| h.join().unwrap()).collect();
