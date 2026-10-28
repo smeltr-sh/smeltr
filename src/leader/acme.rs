@@ -227,6 +227,7 @@ pub fn incoming(rotation: &tls::Rotation) -> Source {
 fn source_of(entry: Option<&tls::Entry>) -> Source {
     match entry {
         None => Source::Own,
+        Some(entry) if entry.name == tls::OWN_ENTRY => Source::Own,
         Some(entry) if entry.name == ENTRY => Source::Acme,
         Some(_) => Source::Upload,
     }

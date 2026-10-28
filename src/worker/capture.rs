@@ -31,8 +31,8 @@ use crate::expr::eval::eval;
 use crate::expr::ir::{Ir, flatten};
 use crate::heartbeat::{CaptureBatch, CaptureColumn, CaptureEnd, CaptureInvitation, CaptureReport, CapturedRow};
 use crate::io::SourceRecord;
-use crate::plan::plan::parse;
-use crate::plan::plan::{compile_patterns, ingest_fields};
+use crate::plan::compile::parse;
+use crate::plan::compile::{compile_patterns, ingest_fields};
 use crate::plan::resolve::{ResourceBuilder, SymbolTable, resolve};
 use crate::plan::topology::SourceMeta;
 
@@ -997,7 +997,7 @@ pub fn written_columns(record: &DataType) -> Vec<CaptureColumn> {
 /// Every `__` field a pipeline's plan holds at its end, as a column with the slot that holds it: its `__source` fields
 /// and any `__destination` field it set. Not `__live`, which is true on every row a destination is sent, and not a name
 /// in `DESTINATION_COLUMNS`, which a destination capture fills with what the row was actually given.
-pub fn internal_columns(plan: &crate::plan::plan::Plan) -> Vec<(CaptureColumn, crate::core::id::SlotId)> {
+pub fn internal_columns(plan: &crate::plan::compile::Plan) -> Vec<(CaptureColumn, crate::core::id::SlotId)> {
     plan.tree
         .leaves()
         .into_iter()

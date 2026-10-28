@@ -13,9 +13,9 @@ use smeltr::core::column::{Column, DataType, StrBuilder, VarType};
 use smeltr::core::ctx::Ctx;
 use smeltr::core::error::ErrorSink;
 use smeltr::core::error::ExceptionKind;
+use smeltr::plan::compile::compile;
 use smeltr::plan::config::{Answer, Payload};
 use smeltr::plan::output::run_to_json;
-use smeltr::plan::plan::compile;
 use smeltr::plan::topology::{DocIdPolicy, route_masks};
 
 fn join_errors(e: &[smeltr::plan::config::CompileError]) -> String {

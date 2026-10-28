@@ -16,9 +16,9 @@ use crate::core::id::{FunctionId, SlotId};
 use crate::format::record::RecordView;
 use crate::leader::envelope::{ApiError, Empty, Envelope};
 use crate::plan;
+use crate::plan::compile::Plan;
 use crate::plan::config::CompileError;
 use crate::plan::output::{RowFilter, run_to_json_marked};
-use crate::plan::plan::Plan;
 use crate::plan::resolve::Origin;
 use crate::plan::topology::SourceMeta;
 use crate::plan::tree;
@@ -695,7 +695,7 @@ fn at_destination(
 fn route_plan(
     system: &config_file::LoadedSystem,
     r: &plan::topology::RouteConfig,
-) -> Result<(plan::plan::Plan, SourceMeta), String> {
+) -> Result<(plan::compile::Plan, SourceMeta), String> {
     let meta = (system.topology.sources.iter())
         .find(|s| s.id == r.source)
         .map(|s| s.kind.meta())
@@ -703,7 +703,7 @@ fn route_plan(
     let p = (system.pipelines.iter())
         .find(|p| p.id == r.pipeline)
         .ok_or_else(|| format!("this config has no pipeline {:?}", r.pipeline))?;
-    let plan = plan::plan::compile(p, &meta)
+    let plan = plan::compile::compile(p, &meta)
         .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))?;
     Ok((plan, meta))
 }
@@ -762,13 +762,13 @@ fn after_dot(
                 .ok_or_else(|| format!("this pipeline has no step {step:?}"))?;
             let meta = SourceMeta::of_columns(columns)?;
             let cut = plan::dot::cut_at(&asked.text, asked.dot);
-            expr.and_then(|e| plan::plan::type_at(p, &meta, step, &e, cut))
+            expr.and_then(|e| plan::compile::type_at(p, &meta, step, &e, cut))
         }
         DotAt::Source(id) => {
             let source = (system.topology.sources.iter())
                 .find(|s| s.name == *id)
                 .ok_or_else(|| format!("this config has no source {id:?}"))?;
-            let syms = SymbolTable::new(&plan::plan::ingest_fields(&source.kind.meta()));
+            let syms = SymbolTable::new(&plan::compile::ingest_fields(&source.kind.meta()));
             expr.and_then(|e| type_in(&e, &syms))
         }
         DotAt::When(route) => {
@@ -870,7 +870,7 @@ pub fn run_preview(
         Ok(read) => read,
         Err(e) => return Preview::failed("sample", vec![ApiError::new(e)], pipeline_names),
     };
-    let mut plan = match plan::plan::compile(pipeline_cfg, &meta) {
+    let mut plan = match plan::compile::compile(pipeline_cfg, &meta) {
         Ok(plan) => plan,
         Err(errs) => {
             // `compile` runs one pipeline in isolation and so never sets `CompileError::pipeline`; the pipeline
@@ -1625,7 +1625,7 @@ mod tests {
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
         };
-        let plan = plan::plan::compile(&p, &SourceMeta::NONE).unwrap();
+        let plan = plan::compile::compile(&p, &SourceMeta::NONE).unwrap();
         let keys = |k: &[&str]| k.iter().map(|k| k.to_string()).collect::<Vec<_>>();
         assert_eq!(writer(&plan, &keys(&["@timestamp"])), Some(0));
         assert_eq!(writer(&plan, &keys(&["x"])), Some(1));

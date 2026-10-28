@@ -14,9 +14,9 @@ use smeltr::expr::inline::PRELUDE_FUNCTIONS;
 use smeltr::ops::objectops::ObjectOp;
 use smeltr::ops::stdfuncs;
 use smeltr::ops::{BinOp, UnOp};
+use smeltr::plan::compile::compile;
 use smeltr::plan::config::PipelineConfig;
 use smeltr::plan::output::{run_to_json, run_to_json_marked};
-use smeltr::plan::plan::compile;
 use smeltr::plan::topology::{Placement, SourceMeta};
 
 use crate::harness;

@@ -1,8 +1,6 @@
 // Where the leader's certificate comes from, changed under a running fleet: a worker beside the leader and the
 // one inside its process both follow each switch, because the incoming authority reaches them before anything
 // is served under it.
-import fs from 'node:fs';
-import path from 'node:path';
 import type { Page } from '@playwright/test';
 import {
   test,
@@ -59,7 +57,7 @@ test('every worker follows the certificate from Leader issued to Uploaded and ba
   // S6
   test.setTimeout(300_000);
   const { api, heard } = await fleetOfTwo(fleet, page, 'w-follows');
-  const pki = await fleet.externalPki();
+  const pki = fleet.externalPki();
 
   await switchToUploaded(page, pki);
   await heard();
@@ -79,6 +77,48 @@ test('every worker follows the certificate from Leader issued to Uploaded and ba
   await api.ctx.dispose();
 });
 
+test('a certificate this leader issued is served at once, and so is the way back to its own', async ({
+  fleet,
+  page,
+}) => {
+  // S6
+  test.setTimeout(300_000);
+  const { api, heard } = await fleetOfTwo(fleet, page, 'w-same-root');
+  const own = await api.get('/api/settings/certificates');
+  const names = [...own.names, ...(own.workerName ? [own.workerName] : [])];
+  await api.post('/api/certificates/issued', {
+    name: 'same-root',
+    description: '',
+    names,
+    validityDays: 365,
+  });
+
+  // Under the root the fleet holds already, so nothing is published first.
+  let served = await openCertificates(page);
+  await source(served, 'Uploaded').click();
+  await served.getByRole('combobox', { name: 'Certificate' }).selectOption('same-root');
+  await served.getByRole('button', { name: 'Serve this certificate' }).click();
+  await inForce(served, 'Uploaded');
+  await heard();
+  const issued = await api.get('/api/settings/certificates');
+  expect(issued.entry).toBe('same-root');
+  expect(issued.rotation).toBeNull();
+
+  served = await openCertificates(page);
+  await source(served, 'Leader issued').click();
+  await served.getByRole('button', { name: 'Switch to Leader issued' }).click();
+  await inForce(served, 'Leader issued');
+  await expect(served.getByRole('heading', { name: /in progress/ })).toHaveCount(0);
+  await heard();
+  const back = await api.get('/api/settings/certificates');
+  expect(back.entry).toBe('leader');
+  expect(back.supplied).toBe(false);
+  expect(back.rotation).toBeNull();
+  // No version of its own was issued for the way back: the one it served before is served again.
+  expect(back.served.fingerprint).toBe(own.served.fingerprint);
+  await api.ctx.dispose();
+});
+
 test('a renewal is served while the switch back to Leader issued waits for a worker', async ({
   fleet,
   page,
@@ -87,24 +127,8 @@ test('a renewal is served while the switch back to Leader issued waits for a wor
   test.setTimeout(300_000);
   const { api } = await fleetOfTwo(fleet, page, 'w-away');
   // Two leaves under one authority that is somebody else's: the second is the first's renewal.
-  const other = await fleet.startLeader();
-  const otherApi = await claimAdmin(other);
-  const tls = path.join(other.proc.dir, 'smeltr-leader-data', 'tls');
-  const read = (name: string) => fs.readFileSync(path.join(tls, name), 'utf8');
-  const pki = {
-    certificate: read('cert.pem'),
-    privateKey: read('key.pem'),
-    authority: read('ca.pem'),
-  };
-  await otherApi.post('/api/settings/certificates/reissue', {});
-  const renewal = {
-    certificate: read('cert.pem'),
-    privateKey: read('key.pem'),
-    authority: pki.authority,
-  };
-  expect(renewal.certificate).not.toBe(pki.certificate);
-  await otherApi.ctx.dispose();
-  await other.proc.stop();
+  const pki = fleet.externalPki();
+  const renewal = fleet.externalPki(pki);
 
   await switchToUploaded(page, pki);
   const before = await api.get('/api/settings/certificates');
@@ -146,7 +170,7 @@ test('a renewal is served while the switch back to Leader issued waits for a wor
   ).toBeVisible();
   const renewed = await api.get('/api/settings/certificates');
   expect(renewed.supplied).toBe(true);
-  expect(renewed.rotation?.installs).toBe('own');
+  expect(renewed.rotation?.source).toBe('own');
   expect(renewed.served.fingerprint).not.toBe(before.served.fingerprint);
   expect(renewed.authority.fingerprint).toBe(before.authority.fingerprint);
 

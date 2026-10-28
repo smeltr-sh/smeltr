@@ -3,7 +3,7 @@
 //! in. Each system that wants a schema renders this type its own way (`io::elastic_mapping`).
 
 use crate::core::column::DataType;
-use crate::plan::plan::Plan;
+use crate::plan::compile::Plan;
 use crate::plan::tree::{self, Node, Object};
 
 /// The record `plan` writes: every field the serializer writes, so the engine's own `__` fields are left out and

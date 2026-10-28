@@ -14,9 +14,9 @@ use serde_json::Value;
 use smeltr::core::buffer::BufferPool;
 use smeltr::core::ctx::Ctx;
 use smeltr::core::error::ErrorSink;
+use smeltr::plan::compile::compile;
 use smeltr::plan::config::LookupSource;
 use smeltr::plan::output::run_to_json_marked;
-use smeltr::plan::plan::compile;
 use smeltr::plan::topology::SourceMeta;
 
 use crate::harness;

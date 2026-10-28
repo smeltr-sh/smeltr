@@ -1207,6 +1207,19 @@ impl Store for SqliteStore {
         Ok(out)
     }
 
+    fn set_issued(&self, name: &str, issued: &Issued) -> Result<(), StoreError> {
+        let names = serde_json::to_string(&issued.names).map_err(|e| StoreError(e.to_string()))?;
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE issued_certificates SET names = ?2, validity_days = ?3 WHERE name = ?1",
+            (name, names, issued.validity_days),
+        )?;
+        if updated == 0 {
+            return Err(StoreError(format!("this leader does not issue {name:?}")));
+        }
+        Ok(())
+    }
+
     fn add_secret_version(&self, name: &str, value: &str) -> Result<i64, StoreError> {
         self.add_version(name, value, None)
     }
@@ -2954,6 +2967,31 @@ mod tests {
         s.delete_secret("issued").unwrap();
         s.delete_secret("acme").unwrap();
         assert!(s.kept_certificates().unwrap().is_empty());
+    }
+
+    /// How an issued certificate is issued changes in place; one the leader does not issue has nothing to change.
+    #[test]
+    fn only_an_issued_certificate_changes_how_it_is_issued() {
+        let s = store();
+        let issued = |names: &[&str]| Issued {
+            names: names.iter().map(|n| n.to_string()).collect(),
+            validity_days: 90,
+        };
+        s.create_kept_certificate("issued", "", &Kept::Issued(issued(&["a.example.com"])), "chain", "key")
+            .unwrap();
+        s.create_kept_certificate("acme", "", &Kept::Acme, "chain", "key")
+            .unwrap();
+        s.create_certificate("uploaded", "", "chain", "key").unwrap();
+
+        s.set_issued("issued", &issued(&["b.example.com"])).unwrap();
+        assert_eq!(
+            s.kept_certificates().unwrap().get("issued"),
+            Some(&Kept::Issued(issued(&["b.example.com"])))
+        );
+        for name in ["acme", "uploaded", "absent"] {
+            assert!(s.set_issued(name, &issued(&["b.example.com"])).is_err(), "{name}");
+        }
+        assert_eq!(s.kept_certificates().unwrap().get("acme"), Some(&Kept::Acme));
     }
 
     /// A certificate is a stored secret the Secrets page leaves out, and its value is read only as a certificate.

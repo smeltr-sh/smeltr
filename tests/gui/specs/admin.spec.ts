@@ -178,7 +178,7 @@ test('the session deadlines are changed under System, and an impossible pair is 
   await expect(admin.getByLabel('Idle timeout')).toHaveValue('17');
 });
 
-test('the leader certificate is reissued under System', async ({ admin }) => {
+test('the leader certificate is the certificate leader in the list', async ({ admin }) => {
   // S6
   await openAdmin(admin, 'System');
   await admin
@@ -187,15 +187,24 @@ test('the leader certificate is reissued under System', async ({ admin }) => {
     .click();
   await expect(admin.getByRole('heading', { name: /Current authority/ })).toBeVisible();
   await expect(admin.getByRole('link', { name: 'Download ca.pem' })).toBeVisible();
-
   const served = admin.getByRole('region', { name: /^Leader certificate/ });
   // The page shortens a fingerprint to its two ends, which is what a person compares.
-  const fingerprint = served.getByText(/^[0-9a-f]{16}…[0-9a-f]{8}$/);
-  const before = await fingerprint.innerText();
-  await served.getByRole('button', { name: 'Issue a new one' }).click();
-  await admin.getByRole('dialog').getByRole('button', { name: 'Issue a new one' }).click();
-  await expect(served.getByRole('status')).toHaveText('a new certificate is in force');
-  await expect(fingerprint).not.toHaveText(before);
+  await expect(served.getByText(/^[0-9a-f]{16}…[0-9a-f]{8}$/)).toBeVisible();
+
+  await served.getByRole('button', { name: 'About Leader certificate' }).click();
+  await expect(served).toContainText(
+    'This leader issued it under the current authority and renews it on its own.',
+  );
+  await expect(served.getByRole('button', { name: /^Issue/ })).toHaveCount(0);
+
+  await openAdmin(admin, 'Certificates');
+  await expect(
+    admin.getByRole('cell', { name: /^leader in use by the leader issued$/ }),
+  ).toBeVisible();
+  const row = admin
+    .getByRole('row')
+    .filter({ has: admin.getByRole('cell', { name: /^leader in use by the leader/ }) });
+  await expect(row.getByRole('button', { name: 'Delete' })).toHaveCount(0);
 });
 
 test('System and Cluster show the build each machine runs', async ({
@@ -338,7 +347,7 @@ test('a receiver names a certificate from the list, and replacing the certificat
   fleet,
   leader,
 }) => {
-  const pki = await fleet.externalPki();
+  const pki = fleet.externalPki();
   await api.post('/api/certificates', {
     name: 'receiver-tls',
     description: '',

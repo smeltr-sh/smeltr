@@ -337,9 +337,12 @@ entries it issues and orders up to date. It issues an entry again two thirds of 
 soon as it signs under another root, which is what a rotation's cutover leaves
 it doing, and when a regenerated key cannot open its newest version, each time
 with the same names and lifetime; it orders again as the ACME paragraph above
-says. Where it serves the entry, it serves the new version, and so does every
-worker. The leader holds the key of an entry it issues or orders, so it is
-never replaced by an upload under its name.
+says. The leader's own certificate is the issued entry `leader`, for the names
+the leader is reached by: it is issued again when those names change, and the
+authority's next key issues it at a rotation's cutover. Where it serves the
+entry, it serves the new version, and so does every worker. The leader holds
+the key of an entry it issues or orders, so it is never replaced by an upload
+under its name.
 
 A worker is sent the credentials the configuration it is about to run names,
 and no others. That is minimization, not a wall: enrollment binds a worker to

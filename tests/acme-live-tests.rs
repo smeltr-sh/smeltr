@@ -404,6 +404,7 @@ fn pebble_issues_over_dns_01_and_every_record_is_removed() {
     let tls_dir = scratch("pebble-dns").join("tls");
     // A wildcard too: only DNS-01 can prove one, and it is proved at the name beneath it.
     let names = vec!["leader.example.test".to_string(), "*.example.test".to_string()];
+    crate::harness::leader_tls::listing(&tls_dir);
     tls::ensure(
         &tls_dir,
         names.clone(),

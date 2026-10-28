@@ -237,7 +237,7 @@ pub enum Region {
 pub type Catch = (Option<String>, Vec<usize>, Vec<Stmt>);
 
 /// A statement in a `Code` block. Structural restrictions (where `return`, `break` and `target[index] = v` may appear)
-/// are checked by `expr::inline` and `plan::plan`, not by the parser.
+/// are checked by `expr::inline` and `plan::compile`, not by the parser.
 #[derive(Clone, Debug)]
 pub enum Stmt {
     /// `typed` for `name: type = value`, the one write that changes a bound name's type.

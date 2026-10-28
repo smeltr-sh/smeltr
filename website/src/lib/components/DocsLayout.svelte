@@ -185,6 +185,9 @@
         )
           active = id;
       }
+      // A last section too short to scroll its heading that far up is the one in view once the page ends.
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 1)
+        active = sections.at(-1)?.id ?? active;
     }
     function schedule() {
       if (!frame) frame = requestAnimationFrame(update);

@@ -128,7 +128,7 @@ fn a_worker_around_a_metrics_source_ships_real_counters_as_ordinary_json_rows() 
 /// field is what keeps that expressible.
 #[test]
 fn a_route_can_select_metrics_rows_by_their_topic() {
-    use smeltr::plan::plan::compile;
+    use smeltr::plan::compile::compile;
     use smeltr::plan::topology::SourceMeta;
 
     let p = PipelineConfig {

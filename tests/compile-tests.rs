@@ -5,8 +5,8 @@
 
 use smeltr::core::column::DataType;
 use smeltr::core::id::FunctionId;
+use smeltr::plan::compile::{Op, Plan, compile};
 use smeltr::plan::config::{DeclaredField, FunctionKind, ParserKind, PipelineConfig, Step};
-use smeltr::plan::plan::{Op, Plan, compile};
 
 use crate::harness;
 use harness::*;

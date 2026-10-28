@@ -12,8 +12,8 @@ use smeltr::plan::topology::SourceMeta;
 
 use smeltr::core::column::{Column, DataType};
 use smeltr::core::id::FunctionId;
+use smeltr::plan::compile::compile;
 use smeltr::plan::config::{CompileError, PipelineConfig, Step};
-use smeltr::plan::plan::compile;
 
 use crate::harness;
 use harness::*;

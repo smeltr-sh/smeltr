@@ -146,17 +146,20 @@ fn start_leader_tls() -> (String, Vec<u8>) {
     let data_dir = scratch_dir("smeltr-leader-test-tls");
     std::fs::create_dir_all(&data_dir).unwrap();
 
-    // Twice, and the authority a worker is given is the one from the first call while the certificate served is
-    // the one from the second. Every TLS test below then stands on the property the authority exists for: a
-    // certificate minted after a worker was handed `ca.pem` is one that worker still accepts.
+    // Twice, the second reached at one more name, and the authority a worker is given is the one from the first
+    // call while the certificate served is the one from the second. Every TLS test below then stands on the property
+    // the authority exists for: a certificate minted after a worker was handed `ca.pem` is one that worker still
+    // accepts.
     let names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
     let tls_dir = data_dir.join("tls");
+    crate::harness::leader_tls::listing(&tls_dir);
     let validity = std::time::Duration::from_secs(60 * 60);
     let first = smeltr::leader::tls::ensure(&tls_dir, names.clone(), validity, &[]).expect("an authority, created");
     let ca_pem = first.ca_pem.clone();
     let issued_first = first.served.clone();
 
-    let materials = smeltr::leader::tls::ensure(&tls_dir, names, validity, &[]).expect("a certificate, reissued");
+    let more = [names, vec!["leader.test".to_string()]].concat();
+    let materials = smeltr::leader::tls::ensure(&tls_dir, more, validity, &[]).expect("a certificate, reissued");
     // What `main` says once it has built the socket from these files: it has what is on disk.
     smeltr::leader::tls::socket_took(&tls_dir, smeltr::leader::tls::disk_generation(&tls_dir));
     assert_eq!(materials.ca_pem, ca_pem, "the authority is kept across starts");
@@ -459,8 +462,10 @@ fn a_worker_trusting_the_authority_reaches_the_leader_it_signed_for() {
 fn a_worker_holding_two_authorities_reaches_a_leader_that_runs_either() {
     let (base, ca_pem) = start_leader_tls();
 
+    let elsewhere_dir = scratch_dir("smeltr-leader-test-other-ca").join("tls");
+    crate::harness::leader_tls::listing(&elsewhere_dir);
     let elsewhere = smeltr::leader::tls::ensure(
-        &scratch_dir("smeltr-leader-test-other-ca").join("tls"),
+        &elsewhere_dir,
         vec!["localhost".to_string()],
         std::time::Duration::from_secs(60 * 60),
         &[],
