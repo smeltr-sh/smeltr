@@ -1010,6 +1010,34 @@ fn a_capture_at_a_blocking_destination_sees_its_held_rows_once() {
     );
 }
 
+/// How far away [`Link`] is.
+const LINK_RTT: Duration = Duration::from_millis(20);
+
+/// A link [`LINK_RTT`] away, over which a destination answers each batch once it has been open that long. Answering
+/// on a tick instead would answer a batch sent just before it at once, and the model's least round trip, which keeps
+/// such a reading, would shrink what it holds.
+#[derive(Default)]
+struct Link(std::collections::HashMap<u64, std::time::Instant>);
+
+impl Link {
+    /// Acknowledge what `dest` has held for a round trip; how many batches that was.
+    fn answer(&mut self, dest: &AsyncDestination) -> usize {
+        // Read after `outstanding`, so a batch is never taken as open before it was.
+        let open = dest.outstanding();
+        let now = std::time::Instant::now();
+        let mut answered = 0;
+        for b in open {
+            let at = *self.0.entry(b).or_insert(now);
+            if now.duration_since(at) >= LINK_RTT {
+                self.0.remove(&b);
+                dest.complete(b);
+                answered += 1;
+            }
+        }
+        answered
+    }
+}
+
 /// A paced queue starts at one batch and, while its source presses and the destination keeps up, grows its budget
 /// toward its share of the pool; it never passes that share.
 #[test]
@@ -1038,7 +1066,8 @@ fn a_paced_queue_grows_from_one_batch_while_its_source_presses() {
     };
     let mut h = egress.handle();
 
-    // A source that always has more, over a destination that answers a few milliseconds after each send.
+    // A source that always has more, over a link a few milliseconds away.
+    let mut link = Link::default();
     let started = std::time::Instant::now();
     let mut batch = 0;
     let mut most = 0;
@@ -1046,10 +1075,8 @@ fn a_paced_queue_grows_from_one_batch_while_its_source_presses() {
         while let Dispatched::InFlight = hand(&mut h, batch, &[OutgoingRecord::new(&row)]) {
             batch += 1;
         }
-        std::thread::sleep(Duration::from_millis(5));
-        for b in dest.outstanding() {
-            dest.complete(b);
-        }
+        std::thread::sleep(Duration::from_millis(1));
+        link.answer(&dest);
         most = most.max(budget().unwrap_or(0));
     }
     assert!(most >= 8 * row.len(), "the budget grew from one batch: {most}");
@@ -1091,9 +1118,8 @@ fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neith
             _ => None,
         })
     };
-    // When each destination first had each batch open: a link 5 ms away answers it 5 ms later.
-    let mut opened: [std::collections::HashMap<u64, std::time::Instant>; 2] = Default::default();
-    // For `secs`, each of `pressing` sends while it has room and each of `answering` answers what has been open 5 ms.
+    let mut links: [Link; 2] = Default::default();
+    // For `secs`, each of `pressing` sends while it has room and each of `answering` answers over its link.
     // Answers each queue's budget in batches, on average over the last second, and how many batches each delivered.
     let mut run = |secs: u64, pressing: &[usize], answering: &[usize]| {
         let started = std::time::Instant::now();
@@ -1107,16 +1133,8 @@ fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neith
             std::thread::sleep(Duration::from_millis(1));
             let last_second = started.elapsed() + Duration::from_secs(1) >= Duration::from_secs(secs);
             for (i, d) in dests.iter().enumerate() {
-                // Read after `outstanding`, so a batch is never taken as open before it was.
-                let open = d.outstanding();
-                let now = std::time::Instant::now();
-                for b in open {
-                    let at = *opened[i].entry(b).or_insert(now);
-                    if answering.contains(&i) && now.duration_since(at) >= Duration::from_millis(5) {
-                        opened[i].remove(&b);
-                        d.complete(b);
-                        delivered[i] += 1;
-                    }
+                if answering.contains(&i) {
+                    delivered[i] += links[i].answer(d);
                 }
                 if last_second {
                     held[i] += budget(i).unwrap_or(0);
@@ -1147,6 +1165,13 @@ fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neith
         "each carries about as much: {delivered:?}"
     );
 
-    let (_, delivered) = run(1, &[0, 1], &[1]);
-    assert!(delivered[1] > 0, "the first stalled, the second still moves");
+    let (stalled, delivered_stalled) = run(1, &[0, 1], &[1]);
+    assert!(
+        stalled[1] + 1 >= both[1],
+        "the first stalled, the second keeps its share: {stalled:?} after {both:?}"
+    );
+    assert!(
+        6 * delivered_stalled[1] >= delivered[1],
+        "and carries at least half as much a second: {delivered_stalled:?} in one, {delivered:?} in three"
+    );
 }
