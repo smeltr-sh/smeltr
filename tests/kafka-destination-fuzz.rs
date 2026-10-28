@@ -32,7 +32,7 @@ use serde_json::{Map, Value, json};
 use smeltr::config_file::load_str;
 use smeltr::io::{Destination, Dispatched, IoError, OutgoingRecord, OwnedRecord, Rejection};
 use smeltr::plan::config::Payload;
-use smeltr::plan::topology::{DestinationKind, HeldSecrets, KafkaDestinationConfig, KafkaService, SecretRef};
+use smeltr::plan::topology::{Acks, DestinationKind, HeldSecrets, KafkaDestinationConfig, KafkaService, SecretRef};
 
 use crate::harness::destination::{self, Broken, ClientTls, Pki, Reached, set_tls, unknown_key_taken};
 use crate::harness::fuzz::{self, Coverage, Rng};
@@ -73,6 +73,9 @@ const OPTIONS: &[&str] = &[
     "compression.snappy",
     "compression.lz4",
     "compression.zstd",
+    "acks.all",
+    "acks.one",
+    "acks.none",
     "stallAfterSecs",
     "bufferBytes",
     "bufferBytes.text",
@@ -204,6 +207,13 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target) -> Draw {
     } else {
         cov.reach(format!("compression.{compression}"));
         d.insert("compression".into(), json!(compression));
+    }
+    let acks = *rng.pick(&["", "none", "one", "all"]);
+    if acks.is_empty() {
+        cov.reach("acks.all");
+    } else {
+        cov.reach(format!("acks.{acks}"));
+        d.insert("acks".into(), json!(acks));
     }
     if rng.chance(2) {
         cov.reach("stallAfterSecs");
@@ -399,9 +409,9 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
             let (k, v) = *rng.pick(&[
                 ("bootstrap.servers", "elsewhere:9092"),
                 ("compression.type", "gzip"),
-                ("linger.ms", "5"),
                 ("enable.idempotence", "false"),
-                ("message.max.bytes", "2000000"),
+                ("acks", "1"),
+                ("request.required.acks", "0"),
             ]);
             object(d, "properties").insert(k.into(), json!(v));
             "properties"
@@ -571,6 +581,8 @@ fn check_loaded(draw: &Draw, c: &KafkaDestinationConfig) -> Result<(), String> {
         compression,
         format!("{:?}", c.compression).to_lowercase(),
     );
+    let acks = s("acks").unwrap_or_else(|| "all".into());
+    expect("acks", acks, format!("{:?}", c.acks).to_lowercase());
     let stall = d.get("stallAfterSecs").map_or(30, |v| v.as_u64().unwrap());
     expect("stallAfterSecs", stall.to_string(), c.stall_after.as_secs().to_string());
     let buffer = d.get("bufferBytes").map_or(64 * MIB, |v| match v {
@@ -800,8 +812,10 @@ fn read_back(brokers: &str, topics: &[&str], marker: &str) -> Result<Vec<Read>, 
     Ok(seen)
 }
 
-/// Checks that the topics hold each row `sent` took, once, with its key, on its topic, and nothing else.
-fn check_held(sent: &[Vec<Sent>], read: &[Read]) -> Result<(), String> {
+/// Checks that the topics hold each row `sent` took, once, with its key, on its topic, and nothing else. A `lossy`
+/// delivery may hold a row no times: a producer that waits for no acknowledgement never learns a broker refused it. A
+/// `retried` one may hold a row more than once: without idempotence a retry can repeat what the broker already wrote.
+fn check_held(sent: &[Vec<Sent>], read: &[Read], lossy: bool, retried: bool) -> Result<(), String> {
     let mut want: BTreeMap<&[u8], (&str, Option<&[u8]>)> = BTreeMap::new();
     for s in sent.iter().flatten() {
         if let Some(topic) = &s.topic {
@@ -824,6 +838,8 @@ fn check_held(sent: &[Vec<Sent>], read: &[Read]) -> Result<(), String> {
     for v in want.keys() {
         match counts.get(v) {
             Some(1) => {}
+            None if lossy => {}
+            Some(_) if retried => {}
             n => {
                 return Err(format!(
                     "a row of {} bytes is on its topic {} times",
@@ -838,9 +854,9 @@ fn check_held(sent: &[Vec<Sent>], read: &[Read]) -> Result<(), String> {
 
 // -- the offline fuzzer -------------------------------------------------------------------------------------------
 
-/// Seeds checked at once. A seed that delivers builds a producer, whose `measure_link` asks the mock for its request
-/// ceiling and waits out `LINK_TIMEOUT` for an answer the mock never gives, so seeds one after another would take
-/// minutes.
+/// Seeds checked at once. A seed that delivers builds a producer, whose `message_ceiling` asks the mock for its message
+/// ceiling and waits out `MESSAGE_CEILING_TIMEOUT` for an answer the mock never gives, so seeds one after another
+/// would take minutes.
 const WORKERS: usize = 32;
 
 #[test]
@@ -998,7 +1014,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     drop(d);
     destination::check_refused(&sent, &refused, |s| s.topic.is_none()).map_err(fail)?;
     let read = read_back(&bootstrap, &[DEFAULT_TOPIC, OTHER_TOPIC], &marker).map_err(fail)?;
-    check_held(&sent, &read).map_err(fail)?;
+    check_held(&sent, &read, retried && c.acks == Acks::None, retried).map_err(fail)?;
     if retried {
         reached.reach("fault.produceRetried");
     }
@@ -1113,7 +1129,7 @@ fn live_seed(seed: u64, brokers: &str, reached: &mut Reached, pki: &Pki) -> Resu
         drop(d);
         destination::check_refused(&sent, &refused, |s| s.topic.is_none())?;
         let read = read_back(brokers, &[&default_topic, &other_topic], &marker)?;
-        check_held(&sent, &read)
+        check_held(&sent, &read, c.acks == Acks::None, false)
     })();
     checked.map_err(|e| format!("{e}\n{json}"))
 }
