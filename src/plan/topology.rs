@@ -1641,6 +1641,15 @@ impl DestinationKind {
         }
     }
 
+    /// Whether the destination writes files, and so acknowledges a batch only once the file holding it is
+    /// committed: when it holds most of its buffer, or its interval passes.
+    pub fn writes_files(&self) -> bool {
+        matches!(
+            self,
+            DestinationKind::Objects(_) | DestinationKind::Iceberg(_) | DestinationKind::Delta(_)
+        )
+    }
+
     /// The destination's `bufferBytes`: all it holds of what it has not yet delivered, egress's queue and, for Kafka,
     /// librdkafka's own queue together.
     pub fn buffer_bytes(&self) -> usize {
@@ -1725,13 +1734,13 @@ pub struct ElasticDestinationConfig {
     pub doc_id: DocIdPolicy,
     /// How many bulk requests this destination starts with outstanding, each on its own connection.
     ///
-    /// Where the loop begins, not where it stays: see `max_in_flight` for where it stops, and
-    /// `io::pipelined::Pool::note_outcome` for what moves it.
+    /// Where it begins, not where it stays: see `max_in_flight` for where it stops, and `egress::pacing` for what
+    /// moves it.
     ///
     /// Concurrency is what buys throughput here, because a bulk round trip costs about the same whatever the batch
     /// carries -- so a worker with one request outstanding cannot go faster than `1/round-trip` no matter what else is
     /// tuned. The ceiling is the cluster's own write capacity, past which it answers 429 and everything queues anyway,
-    /// which is the signal the loop reads rather than a figure anyone has to guess.
+    /// which is the signal pacing reads rather than a figure anyone has to guess.
     pub in_flight: usize,
     /// Bytes of documents one bulk request may carry before the destination sends early.
     pub max_bulk_bytes: usize,
@@ -2683,6 +2692,28 @@ impl Compression {
     }
 }
 
+/// How many brokers hold a Kafka batch before it counts as delivered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Acks {
+    /// Delivered once sent.
+    None,
+    /// Once the partition's leader has written it.
+    One,
+    /// Once every in-sync replica has written it.
+    All,
+}
+
+impl Acks {
+    /// librdkafka's `acks` value.
+    pub fn as_property(self) -> &'static str {
+        match self {
+            Acks::None => "0",
+            Acks::One => "1",
+            Acks::All => "all",
+        }
+    }
+}
+
 /// Which HEC endpoint a destination sends to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Endpoint {
@@ -2776,6 +2807,7 @@ pub struct KafkaDestinationConfig {
     /// What each message's value is.
     pub payload: Payload,
     pub compression: Compression,
+    pub acks: Acks,
     /// How long one batch may take to deliver before it is a stall.
     pub stall_after: std::time::Duration,
     pub brokers: String,
@@ -4773,6 +4805,7 @@ mod tests {
         let k = KafkaDestinationConfig {
             payload: crate::plan::config::Payload::Record,
             compression: Compression::None,
+            acks: Acks::All,
             stall_after: std::time::Duration::from_secs(30),
             brokers: "k:9092".into(),
             default_topic: "t".into(),

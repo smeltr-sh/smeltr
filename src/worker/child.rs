@@ -196,8 +196,8 @@ pub enum FromRuntime {
     Stopped { incarnation: u64 },
 }
 
-/// One reader's published facts, as they cross the boundary. In one process these were locks the heartbeat read
-/// directly; across two they are a snapshot, and its age is the report interval.
+/// One reader's published facts: what its thread keeps current behind a lock, and what crosses to the supervisor as
+/// a snapshot whose age is the report interval.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ReaderReport {
     pub thread_id: String,
@@ -713,16 +713,7 @@ fn collect_report(
 
     let report = RuntimeReport {
         state: RuntimeState {
-            readers: facts
-                .readers
-                .iter()
-                .map(|r| ReaderReport {
-                    thread_id: r.thread_id.clone(),
-                    partitions: r.partitions.lock().unwrap().clone(),
-                    held: r.held.lock().unwrap().clone(),
-                    connection_error: r.connection_error.lock().unwrap().clone(),
-                })
-                .collect(),
+            readers: facts.readers.iter().map(|r| r.lock().unwrap().clone()).collect(),
             pool_thread_ids: facts.pool_thread_ids.clone(),
             egress_ids: facts.egress_ids.clone(),
             egress_refusals: facts
