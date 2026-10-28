@@ -223,9 +223,6 @@ impl LoadedSystem {
             .cloned()
     }
 
-    /// What each destination that writes columns writes, route by route, and an error for each record it cannot hold.
-    /// An Iceberg or Delta destination writes Parquet, and a destination writing Avro or CSV writes Parquet's columns
-    /// as Avro (`io::avro`) or CSV (`io::csv`).
     /// Where a pipeline's rows break the schemas it produces, and where it delivers to a destination that accepts
     /// none of them, over every route `compiled` runs it on. A finding never refuses the system.
     pub fn schema_findings(&self, compiled: &CompiledTopology) -> Vec<SchemaFinding> {
@@ -281,6 +278,9 @@ impl LoadedSystem {
         out
     }
 
+    /// What each destination that writes columns writes, route by route, and an error for each record it cannot hold.
+    /// An Iceberg or Delta destination writes Parquet, and a destination writing Avro or CSV writes Parquet's columns
+    /// as Avro (`io::avro`) or CSV (`io::csv`).
     fn parquet_records(&self, compiled: &CompiledTopology) -> (HashMap<DestId, Records>, Vec<CompileError>) {
         let parquet: Vec<_> = self
             .topology
