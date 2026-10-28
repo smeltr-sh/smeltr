@@ -255,11 +255,16 @@ impl RuntimeReport {
             (earlier, later) => earlier.or(later),
         };
         let mut metrics = self.metrics;
+        // By series, so a report costs its own length rather than that times what is held: what waits for the
+        // leader can be every series a large deployment has.
+        let mut at: std::collections::HashMap<(String, Vec<(String, String)>), usize> = metrics
+            .iter()
+            .enumerate()
+            .map(|(i, held)| ((held.metric.clone(), held.labels.clone()), i))
+            .collect();
         for sample in next.metrics {
-            match metrics
-                .iter_mut()
-                .find(|held| held.metric == sample.metric && held.labels == sample.labels)
-            {
+            let series = (sample.metric.clone(), sample.labels.clone());
+            match at.get(&series).map(|&i| &mut metrics[i]) {
                 // A counter arrives as the increase since the runtime last reported, so two windows the leader
                 // has not seen are one increase. A gauge and a fact are whatever they last were.
                 Some(held) => match (&mut held.value, sample.value) {
@@ -267,7 +272,10 @@ impl RuntimeReport {
                     (MetricValueDto::FloatCounter(held), MetricValueDto::FloatCounter(added)) => *held += added,
                     (held, newer) => *held = newer,
                 },
-                None => metrics.push(sample),
+                None => {
+                    at.insert(series, metrics.len());
+                    metrics.push(sample);
+                }
             }
         }
         // Each log keeps the boot id of the process that numbered it. The leader dedupes on `(worker, boot, seq)`
