@@ -5,7 +5,7 @@
 //! `description`. A type JSON Schema leaves open -- no `type`, or `anyOf`, `oneOf` or `allOf` -- holds any value. A
 //! `"null"` beside another type is the other type, since any field may be null.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value, json};
 
@@ -22,6 +22,7 @@ pub fn read(id: &str, doc: &Value) -> Result<Schema, String> {
         doc,
         objects: Objects::default(),
         refs: BTreeMap::new(),
+        aliases: BTreeSet::new(),
     };
     let root = match reader.ty(doc, "")? {
         (Type::Object { at, .. }, _) => at,
@@ -42,6 +43,8 @@ struct Reader<'d> {
     objects: Objects,
     /// Each `$ref` already read, to the object it names, so a definition naming itself ends.
     refs: BTreeMap<String, usize>,
+    /// Each `$ref` to a definition that is no object, while it is read, so one that comes back to itself is refused.
+    aliases: BTreeSet<String>,
 }
 
 impl Reader<'_> {
@@ -101,7 +104,12 @@ impl Reader<'_> {
             .ok_or_else(|| format!("{}: no definition `{name}`", shown(at)))?;
         let is_object = def.get("type").and_then(Value::as_str) == Some("object") || def.get("properties").is_some();
         if !is_object {
-            return self.ty(def, at).map(|(ty, _)| (ty, name.to_string()));
+            if !self.aliases.insert(r.to_string()) {
+                return Err(format!("{}: `{r}` comes back to itself", shown(at)));
+            }
+            let read = self.ty(def, at).map(|(ty, _)| (ty, name.to_string()));
+            self.aliases.remove(r);
+            return read;
         }
         // Named before its fields are read, so a field under it may name it again.
         let object = self.objects.push(Object {
@@ -330,6 +338,12 @@ mod tests {
         assert!(refused(json!({ "properties": { "a": { "$ref": "other.json#/x" } } })).contains("`a`"));
         assert!(refused(json!({ "properties": { "a": { "$ref": "#/$defs/none" } } })).contains("no definition `none`"));
         assert!(refused(json!({ "properties": { "a": 1 } })).contains("`a`: a schema is an object"));
+        let looped = |defs: Value| refused(json!({ "properties": { "a": { "$ref": "#/$defs/x" } }, "$defs": defs }));
+        assert!(looped(json!({ "x": { "$ref": "#/$defs/x" } })).contains("comes back to itself"));
+        assert!(looped(json!({ "x": { "$ref": "#/$defs/y" }, "y": { "$ref": "#/$defs/x" } })).contains("comes back"));
+        let twice = json!({ "properties": { "a": { "$ref": "#/$defs/s" }, "b": { "$ref": "#/$defs/s" } },
+                            "$defs": { "s": { "type": "string" } } });
+        assert!(read("x", &twice).is_ok(), "an alias named twice is no loop");
     }
 
     #[test]
