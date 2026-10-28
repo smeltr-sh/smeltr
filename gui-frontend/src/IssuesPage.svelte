@@ -21,7 +21,8 @@
     type WarningSeverity,
   } from './api';
   import { ago } from './time';
-  import StateMark, { severityState } from './StateMark.svelte';
+  import StateMark from './StateMark.svelte';
+  import { severityState } from './stateGlyphs';
 
   const POLL_MS = 2000;
 

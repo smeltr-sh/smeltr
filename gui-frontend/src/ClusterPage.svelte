@@ -38,7 +38,8 @@
   import Panel from './Panel.svelte';
   import FlowChart from './FlowChart.svelte';
   import Sparkline from './Sparkline.svelte';
-  import StateMark, { severityState, type State } from './StateMark.svelte';
+  import StateMark from './StateMark.svelte';
+  import { severityState, type State } from './stateGlyphs';
   import { pipelineNamesAt, type PipelineNames } from './pipelineNames';
   import { bytes } from './bytes';
   import SortButton from './SortButton.svelte';

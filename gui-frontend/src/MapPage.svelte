@@ -92,7 +92,8 @@
     type Positioned,
   } from './map';
   import { ago, count } from './time';
-  import StateMark, { type State } from './StateMark.svelte';
+  import StateMark from './StateMark.svelte';
+  import type { State } from './stateGlyphs';
   import { canEdit, mayCapture } from './access';
   import { newRouteHash } from './nav';
 

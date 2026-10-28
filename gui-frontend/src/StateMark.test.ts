@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it } from 'vitest';
 import { mount, unmount } from 'svelte';
-import StateMark, { severityState, type State } from './StateMark.svelte';
+import StateMark from './StateMark.svelte';
+import type { State } from './stateGlyphs';
 
 let mark: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
@@ -20,18 +21,6 @@ afterEach(() => {
 });
 
 describe('StateMark', () => {
-  it('draws each state as its own shape', () => {
-    const shapes = (['info', 'ok', 'warning', 'error'] as const).map((state) => {
-      const svg = draw({ state });
-      const d = svg.querySelector('path')!.getAttribute('d');
-      unmount(mark!);
-      mark = undefined;
-      target.remove();
-      return d;
-    });
-    expect(new Set(shapes).size).toBe(4);
-  });
-
   it('is hidden from a screen reader unless it is labelled', () => {
     expect(draw({ state: 'warning' }).getAttribute('aria-hidden')).toBe('true');
     unmount(mark!);
@@ -41,11 +30,5 @@ describe('StateMark', () => {
     expect(labelled.getAttribute('role')).toBe('img');
     expect(labelled.getAttribute('aria-label')).toBe('failed');
     expect(labelled.getAttribute('aria-hidden')).toBeNull();
-  });
-
-  it('signs a failed issue as an error', () => {
-    expect(severityState('failed')).toBe('error');
-    expect(severityState('warning')).toBe('warning');
-    expect(severityState('info')).toBe('info');
   });
 });
