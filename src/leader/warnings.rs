@@ -451,7 +451,7 @@ pub struct DeployedCertificate {
 /// together. A presented chain is only as good as its soonest part. A trust store holds several roots on purpose --
 /// during a far end's own rollover the outgoing one expires sooner and matters to nobody -- so trust runs out when
 /// the last of them does, not the first.
-fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warning> {
+pub fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Warning> {
     // Commit is part of the key: two commits are two separate trust stores, one per worker generation, and merging
     // them would let a fresh root on one hide an exhausted one on the other. Kind is part of it because a source
     // and a destination may share an id.
@@ -610,7 +610,11 @@ pub enum Rotating {
 /// Silent while a rotation is under way, because the answer is already coming and a warning nobody can clear is
 /// one an operator learns to ignore. A rotation that cannot finish is not an answer coming, so it says so -- and
 /// says what to do about it, since starting another is refused while this one is open.
-fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &Rotating, now_ms: i64) -> Vec<Warning> {
+pub fn authority_aging(
+    signing: Option<&crate::leader::tls::Described>,
+    rotating: &Rotating,
+    now_ms: i64,
+) -> Vec<Warning> {
     let Some(authority) = signing.filter(|_| !matches!(rotating, Rotating::UnderWay)) else {
         return Vec::new();
     };
@@ -777,7 +781,7 @@ fn one_line(error: &str) -> String {
 /// means and the only state with a remedy. One naming a root already left behind brings nobody in now, and telling an
 /// operator it has until the cutover to spend it would be a window that does not exist; the Enrollment codes page says
 /// that one is replaced, off the same answer.
-fn enrollment_code_names_outgoing_authority(
+pub fn enrollment_code_names_outgoing_authority(
     codes: &[crate::leader::store::UsableEnrollmentCode],
     presenting: &crate::leader::enrollment_codes::Presenting,
 ) -> Vec<Warning> {
@@ -2430,48 +2434,21 @@ pub const NOT_DEPLOYING: &str = "workerNotDeployingItsTarget";
 /// worker gives a runtime, so a deployment that is merely slow is never reported as one that failed.
 const NOT_DEPLOYING_AFTER_MS: i64 = 5 * 60 * 1000;
 
-/// What the leader knows when it derives the warnings: the fleet's reports and what the leader holds itself.
-#[derive(Clone, Copy)]
-pub struct Known<'a> {
-    pub snapshot: &'a [ThreadHealth],
-    pub credentials: &'a [WorkerCredentialRecord],
-    pub starts: &'a HashMap<FactKey, i64>,
-    pub heartbeat_interval: Duration,
-    pub series_store: Option<&'a RegistryStore>,
-    pub deployed_groups: &'a HashSet<String>,
-    pub signing: Option<&'a crate::leader::tls::Described>,
-    pub rotating: &'a Rotating,
-    pub codes: &'a [crate::leader::store::UsableEnrollmentCode],
-    pub presenting: &'a crate::leader::enrollment_codes::Presenting,
-    pub deployed_certificates: &'a [DeployedCertificate],
-    pub held: Option<&'a crate::leader::git::Hold>,
-    pub remote: Option<&'a crate::leader::remote::Failure>,
-    pub newer: Option<&'a crate::leader::updates::Newer>,
-}
-
 /// The fixed catalog (design doc, Control plane), read fresh from `snapshot` and `credentials` on every call.
 /// `starts` is the fact clock's answer (`Registry::observe_facts`) for whichever facts need one; a warning with no
 /// entry there carries no start time. `series_store` is the durable registry's series half
 /// (`crate::leader::registry::Registry::series`), which only [`lag_climbing`] and
 /// [`recent_logs`] need; `deployed_groups` is every group the deployed commit holds a subtree for, which
 /// only [`group_not_deployed`] needs -- the rest read `snapshot` alone.
-pub fn derive(known: &Known, now_ms: i64) -> Vec<Warning> {
-    let Known {
-        snapshot,
-        credentials,
-        starts,
-        heartbeat_interval,
-        series_store,
-        deployed_groups,
-        signing,
-        rotating,
-        codes,
-        presenting,
-        deployed_certificates,
-        held,
-        remote,
-        newer,
-    } = *known;
+pub fn derive(
+    snapshot: &[ThreadHealth],
+    credentials: &[WorkerCredentialRecord],
+    starts: &HashMap<FactKey, i64>,
+    now_ms: i64,
+    heartbeat_interval: Duration,
+    series_store: Option<&RegistryStore>,
+    deployed_groups: &HashSet<String>,
+) -> Vec<Warning> {
     let mut out = worker_silent(snapshot, credentials, now_ms, heartbeat_interval);
     out.extend(enrolled_never_heartbeating(snapshot, credentials));
     out.extend(source_blocked(snapshot, starts));
@@ -2496,12 +2473,6 @@ pub fn derive(known: &Known, now_ms: i64) -> Vec<Warning> {
     ));
     out.extend(workers_memory_high(snapshot, heartbeat_interval));
     out.extend(authority_expiring(snapshot, credentials, now_ms));
-    out.extend(authority_aging(signing, rotating, now_ms));
-    out.extend(enrollment_code_names_outgoing_authority(codes, presenting));
-    out.extend(certificate_expiring(deployed_certificates, now_ms));
-    out.extend(held.map(deploy_held));
-    out.extend(remote.map(remote_not_followed));
-    out.extend(newer.zip(crate::version::RELEASE).map(|(n, own)| newer_release(n, own)));
     out.extend(declared_fields_drifted(series_store, now_ms));
     out.extend(streams_unrouted(series_store, now_ms));
     fold_logged_details(&mut out, &logged);
@@ -2510,7 +2481,7 @@ pub fn derive(known: &Known, now_ms: i64) -> Vec<Warning> {
 
 /// The fleet held behind `main`'s head by a rollback. Raised for as long as the hold lasts, because a fleet that does
 /// not take what is deployed after it looks, to anyone who did not do the rollback, like a deploy that failed.
-fn deploy_held(held: &crate::leader::git::Hold) -> Warning {
+pub fn deploy_held(held: &crate::leader::git::Hold) -> Warning {
     let short = super::git::short;
     Warning {
         scope: None,
@@ -2535,7 +2506,7 @@ fn deploy_held(held: &crate::leader::git::Hold) -> Warning {
 
 /// The fleet does not run the head of the remote the leader follows, and why. Raised until a sync succeeds: a remote
 /// commit the fleet does not run is one a person merged on the host and expects to be running.
-fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning {
+pub fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning {
     Warning {
         scope: None,
         condition: Condition::RemoteNotFollowed,
@@ -2550,7 +2521,7 @@ fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning {
 }
 
 /// A published release newer than this leader's own (`leader::updates`). Info: running an older release is no fault.
-fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
+pub fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
     Warning {
         scope: None,
         condition: Condition::NewerRelease,
@@ -3160,31 +3131,6 @@ mod tests {
 
     const INTERVAL: Duration = Duration::from_secs(2);
 
-    static DEPLOYED: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(deployed);
-    static SETTLED: std::sync::LazyLock<crate::leader::enrollment_codes::Presenting> =
-        std::sync::LazyLock::new(settled);
-
-    /// What the leader knows when the fleet says `snapshot` and the fact clock `starts`, and the leader itself holds
-    /// nothing worth a warning.
-    fn known<'a>(snapshot: &'a [ThreadHealth], starts: &'a HashMap<FactKey, i64>) -> Known<'a> {
-        Known {
-            snapshot,
-            credentials: &[],
-            starts,
-            heartbeat_interval: INTERVAL,
-            series_store: None,
-            deployed_groups: &DEPLOYED,
-            signing: None,
-            rotating: &Rotating::None,
-            codes: &[],
-            presenting: &SETTLED,
-            deployed_certificates: &[],
-            held: None,
-            remote: None,
-            newer: None,
-        }
-    }
-
     /// A worker reporting the commit it runs and the commit its supervisor has found.
     fn behind(worker_id: &str, running: Option<&str>, desired: &str, failure: Option<&str>) -> ThreadHealth {
         let mut health = thread_health(worker_id, "t0", 10, vec![]);
@@ -3209,7 +3155,7 @@ mod tests {
         );
 
         let just_now = HashMap::from([(not_deploying_key("w1", "newer"), NOW)]);
-        let warnings = derive(&known(&snapshot, &just_now), NOW);
+        let warnings = derive(&snapshot, &[], &just_now, NOW, INTERVAL, None, &deployed());
         assert!(
             !warnings
                 .iter()
@@ -3229,7 +3175,7 @@ mod tests {
             currently_active_facts(&snapshot, NOW, INTERVAL, &deployed()).contains(&not_deploying_key("w1", "newer"))
         );
         let stuck = HashMap::from([(not_deploying_key("w1", "newer"), NOW - 600_000)]);
-        let warnings = derive(&known(&snapshot, &stuck), NOW);
+        let warnings = derive(&snapshot, &[], &stuck, NOW, INTERVAL, None, &deployed());
         let raised = (warnings.iter())
             .find(|w| w.condition == Condition::WorkerNotDeployingItsTarget)
             .expect("a worker refusing to restart is a warning");
@@ -3257,7 +3203,7 @@ mod tests {
             Some("it names a credential this host lacks"),
         )];
         let stuck = HashMap::from([(not_deploying_key("w1", "newer"), NOW - 600_000)]);
-        let warnings = derive(&known(&snapshot, &stuck), NOW);
+        let warnings = derive(&snapshot, &[], &stuck, NOW, INTERVAL, None, &deployed());
         let raised = warnings
             .iter()
             .find(|w| w.condition == Condition::WorkerNotDeployingItsTarget)
@@ -3283,7 +3229,7 @@ mod tests {
         let stuck_on_first = vec![behind("w1", None, "first", Some("it will not compile"))];
         let long_ago = HashMap::from([(not_deploying_key("w1", "first"), NOW - 600_000)]);
         assert!(
-            derive(&known(&stuck_on_first, &long_ago), NOW)
+            derive(&stuck_on_first, &[], &long_ago, NOW, INTERVAL, None, &deployed())
                 .iter()
                 .any(|w| w.condition == Condition::WorkerNotDeployingItsTarget),
             "a worker past its grace on the commit it is stuck behind is a warning"
@@ -3292,7 +3238,7 @@ mod tests {
         // Discovery has since found another commit, and this worker is at the very start of deploying it.
         let now_on_second = vec![behind("w1", None, "second", None)];
         assert!(
-            derive(&known(&now_on_second, &long_ago), NOW)
+            derive(&now_on_second, &[], &long_ago, NOW, INTERVAL, None, &deployed())
                 .iter()
                 .all(|w| w.condition != Condition::WorkerNotDeployingItsTarget),
             "the replacement commit inherited the grace the one before it had already spent"
@@ -3310,7 +3256,7 @@ mod tests {
             Some("it names a credential this host lacks"),
         )];
         let stuck = HashMap::from([(not_deploying_key("w1", "first"), NOW - 600_000)]);
-        let warnings = derive(&known(&snapshot, &stuck), NOW);
+        let warnings = derive(&snapshot, &[], &stuck, NOW, INTERVAL, None, &deployed());
         let raised = warnings
             .iter()
             .find(|w| w.condition == Condition::WorkerNotDeployingItsTarget)
@@ -3332,7 +3278,7 @@ mod tests {
     fn a_worker_running_the_commit_it_found_is_not_a_warning() {
         let snapshot = vec![behind("w1", Some("same"), "same", None)];
         let long_ago = HashMap::from([(not_deploying_key("w1", "same"), NOW - 600_000)]);
-        let warnings = derive(&known(&snapshot, &long_ago), NOW);
+        let warnings = derive(&snapshot, &[], &long_ago, NOW, INTERVAL, None, &deployed());
         assert!(
             !warnings
                 .iter()
@@ -4468,12 +4414,13 @@ mod tests {
 
     fn log_warnings_with(store: &RegistryStore, credentials: &[WorkerCredentialRecord]) -> Vec<Warning> {
         derive(
-            &Known {
-                credentials,
-                series_store: Some(store),
-                ..known(&[], &HashMap::new())
-            },
+            &[],
+            credentials,
+            &HashMap::new(),
             NOW,
+            INTERVAL,
+            Some(store),
+            &deployed(),
         )
     }
 
@@ -4702,12 +4649,13 @@ mod tests {
         )]
         .into();
         let warnings = derive(
-            &Known {
-                credentials: &[credential("w1", false)],
-                series_store: Some(&store),
-                ..known(&snapshot, &starts)
-            },
+            &snapshot,
+            &[credential("w1", false)],
+            &starts,
             NOW,
+            INTERVAL,
+            Some(&store),
+            &deployed(),
         );
 
         assert!(
@@ -4979,11 +4927,13 @@ mod tests {
     fn nothing_wrong_is_an_empty_catalog() {
         let healthy = vec![thread_health("w1", "reader-1", 0, vec![])];
         let warnings = derive(
-            &Known {
-                credentials: &[credential("w1", false)],
-                ..known(&healthy, &HashMap::new())
-            },
+            &healthy,
+            &[credential("w1", false)],
+            &HashMap::new(),
             NOW,
+            INTERVAL,
+            None,
+            &deployed(),
         );
         assert!(warnings.is_empty());
     }
@@ -4991,7 +4941,7 @@ mod tests {
     #[test]
     fn worker_silent_raises_past_the_threshold_and_is_absent_within_it() {
         let quiet = vec![thread_health("w1", "t0", 10_000, vec![])];
-        let warnings = derive(&known(&quiet, &HashMap::new()), NOW);
+        let warnings = derive(&quiet, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Worker);
         assert_eq!(warnings[0].subject_id, "w1");
@@ -5001,7 +4951,7 @@ mod tests {
 
         let fresh = vec![thread_health("w1", "t0", 500, vec![])];
         assert!(
-            derive(&known(&fresh, &HashMap::new()), NOW).is_empty(),
+            derive(&fresh, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty(),
             "within the threshold, silence is absent -- this is the point of derived, never stored"
         );
     }
@@ -5010,11 +4960,13 @@ mod tests {
     fn worker_silent_excludes_a_revoked_worker() {
         let quiet = vec![thread_health("w1", "t0", 10_000, vec![])];
         let warnings = derive(
-            &Known {
-                credentials: &[credential("w1", true)],
-                ..known(&quiet, &HashMap::new())
-            },
+            &quiet,
+            &[credential("w1", true)],
+            &HashMap::new(),
             NOW,
+            INTERVAL,
+            None,
+            &deployed(),
         );
         assert!(warnings.is_empty(), "revocation is deliberate, not a failure");
     }
@@ -5190,11 +5142,13 @@ mod tests {
         let long_ago = HashMap::from([(not_deploying_key("w1", "newer"), NOW - 60 * 60 * 1000)]);
         let derived = |snapshot: &[ThreadHealth]| {
             derive(
-                &Known {
-                    credentials: &[credential("w1", false)],
-                    ..known(snapshot, &long_ago)
-                },
+                snapshot,
+                &[credential("w1", false)],
+                &long_ago,
                 NOW,
+                INTERVAL,
+                None,
+                &deployed(),
             )
         };
 
@@ -5220,13 +5174,7 @@ mod tests {
     #[test]
     fn enrolled_never_heartbeating_raises_and_clears_once_a_thread_appears() {
         let creds = vec![credential("w2", false)];
-        let warnings = derive(
-            &Known {
-                credentials: &creds,
-                ..known(&[], &HashMap::new())
-            },
-            NOW,
-        );
+        let warnings = derive(&[], &creds, &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Worker);
         assert_eq!(warnings[0].subject_id, "w2");
@@ -5239,11 +5187,13 @@ mod tests {
         let now_reporting = vec![thread_health("w2", "t0", 0, vec![])];
         assert!(
             derive(
-                &Known {
-                    credentials: &creds,
-                    ..known(&now_reporting, &HashMap::new())
-                },
-                NOW
+                &now_reporting,
+                &creds,
+                &HashMap::new(),
+                NOW,
+                INTERVAL,
+                None,
+                &deployed()
             )
             .is_empty(),
             "absent the moment a thread shows up, even an empty bootstrap one"
@@ -5253,11 +5203,13 @@ mod tests {
     #[test]
     fn enrolled_never_heartbeating_excludes_a_revoked_worker() {
         let warnings = derive(
-            &Known {
-                credentials: &[credential("w3", true)],
-                ..known(&[], &HashMap::new())
-            },
+            &[],
+            &[credential("w3", true)],
+            &HashMap::new(),
             NOW,
+            INTERVAL,
+            None,
+            &deployed(),
         );
         assert!(warnings.is_empty());
     }
@@ -5273,7 +5225,7 @@ mod tests {
                 "destination 2 refused a record and is set to block: bad schema. fix the schema, then it resumes.",
             )],
         )];
-        let warnings = derive(&known(&held, &HashMap::new()), NOW);
+        let warnings = derive(&held, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
         assert_eq!(w.subject_kind, SubjectKind::Source);
@@ -5284,7 +5236,7 @@ mod tests {
 
         let resumed = vec![thread_health("w1", "reader-3", 0, vec![])];
         assert!(
-            derive(&known(&resumed, &HashMap::new()), NOW).is_empty(),
+            derive(&resumed, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty(),
             "the fact clears the moment the reader stops reporting a reason"
         );
     }
@@ -5302,7 +5254,7 @@ mod tests {
             thread_health("w1", "reader-3", 0, vec![caused("waiting")]),
             thread_health("w2", "reader-3", 0, vec![caused("held")]),
         ];
-        let w = derive(&known(&health, &HashMap::new()), NOW);
+        let w = derive(&health, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         let got: Vec<_> = w.iter().map(|w| (w.condition, w.message.as_str())).collect();
         assert_eq!(got.len(), 2, "{w:?}");
         assert!(
@@ -5327,7 +5279,7 @@ mod tests {
                 m.labels.push(("cause".to_string(), cause.to_string()));
             }
             let health = vec![thread_health("w1", "reader-3", 0, vec![m])];
-            let w = derive(&known(&health, &HashMap::new()), NOW);
+            let w = derive(&health, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
             assert_eq!(w.len(), 1, "{w:?}");
             (w[0].condition, w[0].severity)
         };
@@ -5346,11 +5298,11 @@ mod tests {
         let held = vec![thread_health("w1", "reader-3", 0, vec![blocked_metric("7", "blocked")])];
         let mut starts = HashMap::new();
         starts.insert(FactKey::new(SOURCE_BLOCKED, scoped_subject("g", "7")), NOW - 240_000);
-        let warnings = derive(&known(&held, &starts), NOW);
+        let warnings = derive(&held, &[], &starts, NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings[0].since_millis, Some(NOW - 240_000));
 
         // No entry in the clock (as if this were the fact's first heartbeat) leaves it unknown rather than "now".
-        let warnings = derive(&known(&held, &HashMap::new()), NOW);
+        let warnings = derive(&held, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings[0].since_millis, None);
     }
 
@@ -5368,7 +5320,7 @@ mod tests {
                  'kafka-nowhere.invalid:9092': Name or service not known",
             )],
         )];
-        let warnings = derive(&known(&unreachable, &HashMap::new()), NOW);
+        let warnings = derive(&unreachable, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
         assert_eq!(w.condition, Condition::SourceUnreachable);
@@ -5382,7 +5334,7 @@ mod tests {
         // `SourceBlocked` clearing once a reader stops reporting a block reason.
         let recovered = vec![thread_health("w1", "reader-3", 0, vec![])];
         assert!(
-            derive(&known(&recovered, &HashMap::new()), NOW).is_empty(),
+            derive(&recovered, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty(),
             "the fact clears the moment the reader stops reporting a reason"
         );
     }
@@ -5458,7 +5410,7 @@ mod tests {
                 value: MetricValueDto::Counter(40),
             }],
         )];
-        assert!(derive(&known(&idle, &HashMap::new()), NOW).is_empty());
+        assert!(derive(&idle, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty());
     }
 
     #[test]
@@ -5471,10 +5423,10 @@ mod tests {
         )];
         let mut starts = HashMap::new();
         starts.insert(FactKey::new(SOURCE_UNREACHABLE, scoped_subject("g", "7")), NOW - 60_000);
-        let warnings = derive(&known(&unreachable, &starts), NOW);
+        let warnings = derive(&unreachable, &[], &starts, NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings[0].since_millis, Some(NOW - 60_000));
 
-        let warnings = derive(&known(&unreachable, &HashMap::new()), NOW);
+        let warnings = derive(&unreachable, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings[0].since_millis, None);
     }
 
@@ -5488,7 +5440,7 @@ mod tests {
             0,
             vec![blocked_metric("7", "blocked"), unreachable_metric("7", "down")],
         )];
-        let warnings = derive(&known(&both, &HashMap::new()), NOW);
+        let warnings = derive(&both, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 2);
         assert!(warnings.iter().any(|w| w.condition == Condition::SourceBlocked));
         assert!(warnings.iter().any(|w| w.condition == Condition::SourceUnreachable));
@@ -5504,7 +5456,7 @@ mod tests {
             0,
             vec![destination_healthy_metric("2", 0.0)],
         )];
-        let warnings = derive(&known(&down, &HashMap::new()), NOW);
+        let warnings = derive(&down, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
         assert_eq!(w.condition, Condition::DestinationUnreachable);
@@ -5522,7 +5474,7 @@ mod tests {
             vec![destination_healthy_metric("2", 1.0)],
         )];
         assert!(
-            derive(&known(&recovered, &HashMap::new()), NOW).is_empty(),
+            derive(&recovered, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty(),
             "the fact clears the moment the gauge reports healthy again"
         );
     }
@@ -5543,7 +5495,7 @@ mod tests {
         // The worker itself going silent is its own, correct warning (`WorkerSilent`); what must not also appear
         // is a `DestinationUnreachable` extrapolated from a row nothing has refreshed in just as long.
         assert!(
-            !derive(&known(&frozen, &HashMap::new()), NOW)
+            !derive(&frozen, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed())
                 .iter()
                 .any(|w| w.condition == Condition::DestinationUnreachable),
             "a frozen row from a thread that has gone silent is not a current fact"
@@ -5559,7 +5511,7 @@ mod tests {
         let mut orphan = thread_health("w1", "egress-2", 0, vec![destination_healthy_metric("2", 0.0)]);
         orphan.report.kind = None;
         assert!(
-            !derive(&known(&[orphan], &HashMap::new()), NOW)
+            !derive(&[orphan], &[], &HashMap::new(), NOW, INTERVAL, None, &deployed())
                 .iter()
                 .any(|w| w.condition == Condition::DestinationUnreachable),
             "a leftover carried under a thread id nothing runs is not this worker's current say"
@@ -5579,10 +5531,10 @@ mod tests {
             FactKey::new(DESTINATION_UNREACHABLE, scoped_subject("g", "2")),
             NOW - 90_000,
         );
-        let warnings = derive(&known(&down, &starts), NOW);
+        let warnings = derive(&down, &[], &starts, NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings[0].since_millis, Some(NOW - 90_000));
 
-        let warnings = derive(&known(&down, &HashMap::new()), NOW);
+        let warnings = derive(&down, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings[0].since_millis, None);
     }
 
@@ -5594,7 +5546,7 @@ mod tests {
             egress_thread_health("w1", "egress-2", 0, vec![destination_healthy_metric("2", 0.0)]),
             egress_thread_health("w2", "egress-2", 0, vec![destination_healthy_metric("2", 1.0)]),
         ];
-        let warnings = derive(&known(&snapshot, &HashMap::new()), NOW);
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         let w = warnings
             .iter()
             .find(|w| w.condition == Condition::DestinationUnreachable)
@@ -5612,7 +5564,7 @@ mod tests {
             egress_thread_health("w1", "egress-2", 0, vec![destination_healthy_metric("2", 0.0)]),
             egress_thread_health("w2", "egress-2", stale_ago, vec![destination_healthy_metric("2", 1.0)]),
         ];
-        let warnings = derive(&known(&snapshot, &HashMap::new()), NOW);
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         let w = warnings
             .iter()
             .find(|w| w.condition == Condition::DestinationUnreachable)
@@ -5633,7 +5585,7 @@ mod tests {
                 destination_healthy_metric("2", 0.0),
             ],
         )];
-        let warnings = derive(&known(&both, &HashMap::new()), NOW);
+        let warnings = derive(&both, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 2);
         assert!(warnings.iter().any(|w| w.condition == Condition::DestinationRefusing));
         assert!(
@@ -5651,7 +5603,7 @@ mod tests {
             0,
             vec![refusal_metric("2", NOW - 500, "429 es_rejected_execution_exception")],
         )];
-        let warnings = derive(&known(&fresh, &HashMap::new()), NOW);
+        let warnings = derive(&fresh, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Destination);
         assert_eq!(warnings[0].subject_id, "2");
@@ -5666,7 +5618,7 @@ mod tests {
             vec![refusal_metric("2", stale_at, "429 ...")],
         )];
         assert!(
-            derive(&known(&old, &HashMap::new()), NOW).is_empty(),
+            derive(&old, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty(),
             "the ring keeps history; a warning is not a log of what once happened"
         );
     }
@@ -5682,7 +5634,7 @@ mod tests {
             ),
             thread_health("w2", "egress-2", 0, vec![refusal_metric("2", NOW - 100, "new wording")]),
         ];
-        let warnings = derive(&known(&snapshot, &HashMap::new()), NOW);
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         assert_eq!(
             warnings.len(),
             1,
@@ -5943,13 +5895,7 @@ mod tests {
     #[test]
     fn derive_folds_lag_climbing_into_the_catalog() {
         let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0]);
-        let warnings = derive(
-            &Known {
-                series_store: Some(&store),
-                ..known(&[], &HashMap::new())
-            },
-            NOW,
-        );
+        let warnings = derive(&[], &[], &HashMap::new(), NOW, INTERVAL, Some(&store), &deployed());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].condition, Condition::LagClimbing);
     }
@@ -5958,11 +5904,13 @@ mod tests {
     fn group_not_deployed_raises_for_a_worker_whose_group_main_holds_no_subtree_for() {
         let heartbeating = vec![thread_health("w1", "t0", 0, vec![])];
         let warnings = derive(
-            &Known {
-                deployed_groups: &HashSet::new(),
-                ..known(&heartbeating, &HashMap::new())
-            },
+            &heartbeating,
+            &[],
+            &HashMap::new(),
             NOW,
+            INTERVAL,
+            None,
+            &HashSet::new(),
         );
         assert_eq!(warnings.len(), 1);
         let w = &warnings[0];
@@ -5982,7 +5930,7 @@ mod tests {
     fn group_not_deployed_is_absent_once_main_holds_the_groups_subtree() {
         let heartbeating = vec![thread_health("w1", "t0", 0, vec![])];
         assert!(
-            derive(&known(&heartbeating, &HashMap::new()), NOW).is_empty(),
+            derive(&heartbeating, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty(),
             "the worker is fine -- the group it reports is what main lacks"
         );
     }
@@ -5992,13 +5940,7 @@ mod tests {
         let heartbeating = vec![thread_health("w1", "t0", 0, vec![])];
         let mut starts = HashMap::new();
         starts.insert(FactKey::new(GROUP_NOT_DEPLOYED, "w1"), NOW - 60_000);
-        let warnings = derive(
-            &Known {
-                deployed_groups: &HashSet::new(),
-                ..known(&heartbeating, &starts)
-            },
-            NOW,
-        );
+        let warnings = derive(&heartbeating, &[], &starts, NOW, INTERVAL, None, &HashSet::new());
         assert_eq!(warnings[0].since_millis, Some(NOW - 60_000));
     }
 
@@ -6055,13 +5997,7 @@ mod tests {
             thread_health_in("g2", "w2", "reader-3", 0, vec![blocked_metric("7", "blocked in g2")]),
         ];
         let deployed = HashSet::from(["g1".to_string(), "g2".to_string()]);
-        let warnings = derive(
-            &Known {
-                deployed_groups: &deployed,
-                ..known(&snapshot, &HashMap::new())
-            },
-            NOW,
-        );
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed);
         let held: Vec<&Warning> = warnings
             .iter()
             .filter(|w| w.condition == Condition::SourceBlocked)
@@ -6087,13 +6023,7 @@ mod tests {
             thread_health_in("g2", "w2", "reader-3", 0, vec![]), // g2 runs it too, but it is fine there
         ];
         let deployed = HashSet::from(["g1".to_string(), "g2".to_string()]);
-        let warnings = derive(
-            &Known {
-                deployed_groups: &deployed,
-                ..known(&snapshot, &HashMap::new())
-            },
-            NOW,
-        );
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed);
         let held: Vec<&Warning> = warnings
             .iter()
             .filter(|w| w.condition == Condition::SourceBlocked)
@@ -6119,7 +6049,7 @@ mod tests {
             thread_health("w2", "reader-3", 0, vec![idle_poll("7")]),
             thread_health("w3", "reader-3", 0, vec![idle_poll("7")]),
         ];
-        let warnings = derive(&known(&snapshot, &HashMap::new()), NOW);
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         let w = warnings
             .iter()
             .find(|w| w.condition == Condition::SourceUnreachable)
@@ -6135,7 +6065,7 @@ mod tests {
             thread_health("w1", "egress-2", 0, vec![refusal_metric("2", NOW - 100, "429")]),
             thread_health("w2", "egress-2", 0, vec![refusal_metric("2", NOW - 100, "429")]),
         ];
-        let warnings = derive(&known(&snapshot, &HashMap::new()), NOW);
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         let w = warnings
             .iter()
             .find(|w| w.condition == Condition::DestinationRefusing)
@@ -6158,7 +6088,7 @@ mod tests {
         };
         let snapshot = vec![thread_health("w1", "capture", 0, vec![from_capture])];
 
-        let warnings = derive(&known(&snapshot, &HashMap::new()), NOW);
+        let warnings = derive(&snapshot, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
 
         assert!(
             warnings.is_empty(),
@@ -6174,7 +6104,7 @@ mod tests {
             vec![unreachable_metric("orders-west", "no brokers")],
         )];
         assert!(
-            !derive(&known(&as_a_fact, &HashMap::new()), NOW).is_empty(),
+            !derive(&as_a_fact, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed()).is_empty(),
             "the harness raises when the name is one the catalog reads"
         );
     }

@@ -1065,27 +1065,28 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let deploy_warnings = warnings::deploy_checked(&findings, &starts);
     let mut out = tokio::task::spawn_blocking(move || {
         warnings::derive(
-            &warnings::Known {
-                snapshot: &snapshot,
-                credentials: &credentials,
-                starts: &starts,
-                heartbeat_interval,
-                series_store: registry.series(),
-                deployed_groups: &deployed,
-                signing: signing.as_ref(),
-                rotating: &rotating,
-                codes: &codes,
-                presenting: &presenting,
-                deployed_certificates: &certificates,
-                held: held.as_ref(),
-                remote: remote_failure.as_ref(),
-                newer: newer_release.as_ref(),
-            },
+            &snapshot,
+            &credentials,
+            &starts,
             now_ms,
+            heartbeat_interval,
+            registry.series(),
+            &deployed,
         )
     })
     .await
     .unwrap_or_default();
+    out.extend(warnings::authority_aging(signing.as_ref(), &rotating, now_ms));
+    out.extend(warnings::enrollment_code_names_outgoing_authority(&codes, &presenting));
+    out.extend(warnings::certificate_expiring(&certificates, now_ms));
+    out.extend(held.as_ref().map(warnings::deploy_held));
+    out.extend(remote_failure.as_ref().map(warnings::remote_not_followed));
+    out.extend(
+        newer_release
+            .as_ref()
+            .zip(crate::version::RELEASE)
+            .map(|(n, own)| warnings::newer_release(n, own)),
+    );
     out.extend(deploy_warnings);
     out.extend(normal_warnings);
     out.extend(key_warnings);
