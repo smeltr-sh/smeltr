@@ -90,7 +90,7 @@ export class Api {
     const text = await res.text();
     expect(res.ok(), `${method} ${url} -> ${res.status()}: ${text}`).toBe(true);
     const body = text ? JSON.parse(text) : undefined;
-    // Many routes answer a refusal with 200 and `ok: false`; arranging never expects one.
+    // The status alone says a refusal (docs/architecture/api.md); this catches a route that answers one at 200.
     expect(body?.ok, `${method} ${url}: ${text}`).not.toBe(false);
     return body as T;
   }

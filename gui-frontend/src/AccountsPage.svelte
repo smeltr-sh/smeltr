@@ -355,7 +355,7 @@
     roleError = '';
     try {
       const res = await putRole(name, draft.administrator, draft.administrator ? {} : draftAreas);
-      if (res.ok === false) return void (roleError = res.error ?? 'that did not work');
+      if (res.ok === false) return void (roleError = res.errors[0]?.message ?? 'that did not work');
       if (unsaved === name) unsaved = null;
       openRole = null;
       await refreshRoles();
@@ -380,7 +380,7 @@
     roleError = '';
     try {
       const res = await deleteRole(name);
-      if (res.ok === false) return void (roleError = res.error ?? 'that did not work');
+      if (res.ok === false) return void (roleError = res.errors[0]?.message ?? 'that did not work');
       openRole = null;
       await refreshRoles();
     } catch (e) {

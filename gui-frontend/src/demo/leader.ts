@@ -36,6 +36,8 @@ const MOVING_EVERY_MS = 5000;
 /** How long an emulated capture takes to read its pool. */
 const POOL_SPAN_MS = 8000;
 const STORE = 'smeltr-demo';
+/** The leader's own words for a capture it no longer holds (`capture_api::NO_CAPTURE`). */
+const NO_CAPTURE = 'no capture by that id -- it may have been saved, or swept after finishing';
 
 /** `/api/x?b=2&a=1` as `/api/x?a=1&b=2`, the recording's key for it. */
 export function keyOf(url: URL): string {
@@ -140,7 +142,7 @@ const ok = (body: Record<string, unknown> = {}): Answer => ({
   status: 200,
   body: { ok: true, errors: [], ...body },
 });
-const refused = (errors: ApiError[], status = 200): Answer => ({
+const refused = (status: number, errors: ApiError[]): Answer => ({
   status,
   body: { ok: false, errors },
 });
@@ -154,12 +156,9 @@ const WAKE_RETRY_MS = 3_000;
 export const waking = { now: false };
 export const WAKING_EVENT = 'smeltr-demo:waking';
 
-/** The service failing to answer, as a refusal both of the GUI's readers show: one that reads `errors` and one that
- * reads `error` from a status that is not 200 (`api.ts`, `apiJson`). */
-const unreachable = (message: string, status: number): Answer => ({
-  status,
-  body: { ok: false, errors: [bareError(message)], error: message },
-});
+/** The service failing to answer, as the leader refuses. */
+const unreachable = (message: string, status: number): Answer =>
+  refused(status, [bareError(message)]);
 
 /** The sections a bundle stores as one file each, by the path within an area the GUI writes them at: the section's
  * key in a bundle, and its file. */
@@ -430,15 +429,13 @@ export class DemoLeader {
         body: JSON.stringify(body),
       });
       const text = await res.text();
-      let answer: { errors?: ApiError[] };
+      let answer: unknown;
       try {
         answer = JSON.parse(text);
       } catch {
         return unreachable(text || `HTTP ${res.status}`, res.ok ? 502 : res.status);
       }
-      if (res.ok) return { status: res.status, body: answer };
-      const said = (answer.errors ?? []).map((e) => e.message).join('; ');
-      return { status: res.status, body: { ...answer, error: said || `HTTP ${res.status}` } };
+      return { status: res.status, body: answer };
     } catch (e) {
       return unreachable(String(e), 502);
     }
@@ -505,7 +502,7 @@ export class DemoLeader {
         ...e,
         message: `worker group ${JSON.stringify(id)}: ${e.message}`,
       }));
-      return refused(named);
+      return refused(422, named);
     }
     return undefined;
   }
@@ -547,7 +544,7 @@ export class DemoLeader {
         const id = decodeURIComponent(pipeline[1]);
         const found = (own.pipelines ?? []).find((p) => p.id === id);
         if (found) return ok({ pipeline: found, commit: branch.commit });
-        const missing = refused([bareError(`no pipeline ${JSON.stringify(id)}`)], 404);
+        const missing = refused(404, [bareError(`no pipeline ${JSON.stringify(id)}`)]);
         return {
           ...missing,
           body: { ...(missing.body as object), pipeline: null, commit: branch.commit },
@@ -570,7 +567,7 @@ export class DemoLeader {
       if (sample && branch) {
         const found = branch.samples[scope]?.[decodeURIComponent(sample[1])];
         if (found) return ok({ sample: found, commit: branch.commit });
-        const missing = refused([bareError('there is no sample by that name on this branch')]);
+        const missing = refused(404, [bareError('there is no sample by that name on this branch')]);
         return {
           ...missing,
           body: { ...(missing.body as object), sample: null, commit: branch.commit },
@@ -586,7 +583,7 @@ export class DemoLeader {
       if (test && branch) {
         const found = branch.tests[scope]?.[decodeURIComponent(test[1])];
         if (found) return ok({ test: found });
-        return refused([bareError('there is no test by that name on this branch')]);
+        return refused(404, [bareError('there is no test by that name on this branch')]);
       }
       if (path === '/api/map' && branch) return this.map(branch);
       const connections = within?.match(/^\/([^/]+)\/([^/]+)\/connections$/);
@@ -697,7 +694,7 @@ export class DemoLeader {
 
     if (method === 'GET') return this.nearest(url);
     // `results` too: a test run's caller reads it whether or not the run was refused.
-    return { status: 200, body: { ok: false, errors: [bareError(DEMO_REFUSAL)], results: [] } };
+    return { status: 403, body: { ok: false, errors: [bareError(DEMO_REFUSAL)], results: [] } };
   }
 
   /** A live answer, as the fleet moved when it was recorded, round and round. The map's measurements on a branch the
@@ -750,12 +747,12 @@ export class DemoLeader {
   /** `name` started at `main`, as the leader starts a branch on purpose (`git::create_branch`). */
   private startBranch(name: string): Answer {
     const bad = badBranchName(name);
-    if (bad) return refused([bareError(bad)]);
+    if (bad) return refused(422, [bareError(bad)]);
     if (name === 'main') {
-      return refused([bareError('main is what deploys move -- it is not a branch to start')]);
+      return refused(422, [bareError('main is what deploys move -- it is not a branch to start')]);
     }
     if (this.state.branches[name]) {
-      return refused([bareError(`branch ${JSON.stringify(name)} is already there`)]);
+      return refused(409, [bareError(`branch ${JSON.stringify(name)} is already there`)]);
     }
     const started = this.branch(name, true)!;
     started.started = true;
@@ -766,9 +763,9 @@ export class DemoLeader {
   /** `name` gone, with the work it carries, as the leader deletes a branch. */
   private deleteBranch(name: string): Answer {
     if (name === 'main')
-      return refused([bareError('main is what deploys move and is not deleted')]);
+      return refused(422, [bareError('main is what deploys move and is not deleted')]);
     if (!this.state.branches[name]) {
-      return refused([bareError(`there is no branch ${JSON.stringify(name)}`)]);
+      return refused(404, [bareError(`there is no branch ${JSON.stringify(name)}`)]);
     }
     delete this.state.branches[name];
     this.save();
@@ -787,9 +784,9 @@ export class DemoLeader {
     const noun = UNDONE[section];
     const branch = name === 'main' ? undefined : this.state.branches[name];
     if (!noun)
-      return refused([bareError(`there is no section ${JSON.stringify(section)} to undo in`)]);
+      return refused(422, [bareError(`there is no section ${JSON.stringify(section)} to undo in`)]);
     if (!branch) {
-      return refused([
+      return refused(409, [
         bareError(`${JSON.stringify(name)} has no saves, so there is nothing to undo`),
       ]);
     }
@@ -797,14 +794,14 @@ export class DemoLeader {
     const was = listOf(this.state.branches.main.bundles[scope]);
     const back = putBack(was, listOf(branch.bundles[scope]), id);
     if (!back) {
-      return refused([
+      return refused(404, [
         bareError(
           `there is no ${noun} ${JSON.stringify(id)} on ${JSON.stringify(name)} or where it left main`,
         ),
       ]);
     }
     if (back.same) {
-      return refused([
+      return refused(409, [
         bareError(
           `${noun} ${JSON.stringify(back.name)} is as it was where ${JSON.stringify(name)} left main: there is nothing to undo`,
         ),
@@ -881,7 +878,7 @@ export class DemoLeader {
     const branch = this.branch(name) ?? this.state.branches.main;
     const sample = req.sample === null ? undefined : this.sampleOn(branch, scope, req.sample);
     if (req.sample !== null && !sample) {
-      return refused([
+      return refused(404, [
         bareError(`there is no sample ${JSON.stringify(req.sample)} on this branch`),
       ]);
     }
@@ -908,7 +905,7 @@ export class DemoLeader {
     const branch = this.branch(name) ?? this.state.branches.main;
     const sample = this.sampleOn(branch, scope, req.sample);
     if (!sample)
-      return refused([
+      return refused(404, [
         bareError(`there is no sample ${JSON.stringify(req.sample)} on this branch`),
       ]);
     return this.ask('/route-preview', {
@@ -1029,7 +1026,7 @@ export class DemoLeader {
   private captureStatus(session: string): Answer {
     const capture = this.state.captures[session];
     if (!capture)
-      return refused([bareError('no capture by that id -- it may already have been saved')]);
+      return refused(404, [bareError('no capture by that id -- it may already have been saved')]);
     const { batches, done, full } = this.held(capture);
     const workers = [
       ...new Set(batches.flatMap((b) => b.rows.map((r) => r.worker ?? '')).filter(Boolean)),
@@ -1064,7 +1061,7 @@ export class DemoLeader {
     const found = session in this.state.captures;
     delete this.state.captures[session];
     this.save();
-    return { status: 200, body: { ok: found } };
+    return found ? ok() : refused(404, [bareError(NO_CAPTURE)]);
   }
 
   private async saveCapture(
@@ -1075,16 +1072,16 @@ export class DemoLeader {
   ): Promise<Answer> {
     const capture = this.state.captures[session];
     if (!capture)
-      return refused([bareError('no capture by that id -- it may already have been saved')]);
+      return refused(404, [bareError('no capture by that id -- it may already have been saved')]);
     const { done } = this.held(capture);
     const pool = capture.pool ? this.recording.captures[capture.pool].sample : undefined;
     if (!done)
-      return refused([
+      return refused(409, [
         bareError('this capture is still running. Stop it first to save what it holds'),
       ]);
     const { batches } = this.held(capture);
     if (!pool || !batches.length) {
-      return refused([
+      return refused(409, [
         bareError(
           'this capture caught nothing, and a sample of no records would preview as an empty pipeline rather than as the problem it is',
         ),
@@ -1126,7 +1123,7 @@ export class DemoLeader {
   }
 }
 
-const NOT_RECORDED: Answer = refused([bareError('not found')], 404);
+const NOT_RECORDED: Answer = refused(404, [bareError('not found')]);
 
 /** What the demo says to a write it does not play. */
 export const DEMO_REFUSAL =

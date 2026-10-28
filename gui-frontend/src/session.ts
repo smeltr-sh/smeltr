@@ -138,11 +138,11 @@ export function recheck(): Promise<SessionDto> {
 }
 
 /** The sentence a refused call carries, or a fallback. Every handler answers
- * JSON with `ok` and `error`, on any status. */
+ * the envelope, its errors saying why, on any status. */
 async function errorOf(res: Response, fallback: string): Promise<string> {
   try {
-    const body = (await res.json()) as { error?: string };
-    return body.error || fallback;
+    const body = (await res.json()) as { errors?: { message?: string }[] };
+    return body.errors?.[0]?.message || fallback;
   } catch {
     return fallback;
   }

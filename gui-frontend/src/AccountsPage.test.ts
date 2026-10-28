@@ -64,8 +64,8 @@ function stubFetch() {
       if (method !== 'GET') {
         calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : null });
       }
-      if (url.startsWith('/api/roles/')) return json({ ok: true });
-      if (url === '/api/roles') return json(ROLES);
+      if (url.startsWith('/api/roles/')) return json({ ok: true, errors: [] });
+      if (url === '/api/roles') return json({ ok: true, errors: [], roles: ROLES });
       if (url.startsWith('/api/worker-groups')) {
         return json({
           ok: true,
@@ -76,12 +76,19 @@ function stubFetch() {
       }
       if (url.endsWith('/reset-password')) {
         resets += 1;
-        return json({ userId: 'u-ada', username: 'ada', temporaryPassword: `pw-${resets}` });
+        return json({
+          ok: true,
+          errors: [],
+          userId: 'u-ada',
+          username: 'ada',
+          temporaryPassword: `pw-${resets}`,
+        });
       }
-      if (url.startsWith('/api/users/') && method === 'PATCH') return json(USERS[0]);
-      if (url === '/api/agents') return json({ userId: 'u-new' });
-      if (url.startsWith('/api/agents/')) return json({ roles: [] });
-      if (url === '/api/users') return json(USERS);
+      if (url.startsWith('/api/users/') && method === 'PATCH')
+        return json({ ok: true, errors: [], ...USERS[0] });
+      if (url === '/api/agents') return json({ ok: true, errors: [], userId: 'u-new' });
+      if (url.startsWith('/api/agents/')) return json({ ok: true, errors: [], roles: [] });
+      if (url === '/api/users') return json({ ok: true, errors: [], users: USERS });
       throw new Error(`unexpected ${url}`);
     }),
   );

@@ -434,7 +434,9 @@ const enrollWorker: Move = {
     world.workers.set(name, { state: 'heartbeating', group: 'default' });
     const workers: { workerId: string; revoked: boolean }[] = await (
       await j.truth()
-    ).get('/api/workers');
+    )
+      .get('/api/workers')
+      .then((a) => a.workers);
     expect(workers.find((w) => w.workerId === name)?.revoked).toBe(false);
     return `enroll ${name}`;
   },
@@ -458,7 +460,9 @@ const revokeWorker: Move = {
     world.workers.set(name, { ...world.workers.get(name)!, state: 'revoked' });
     const workers: { workerId: string; revoked: boolean }[] = await (
       await j.truth()
-    ).get('/api/workers');
+    )
+      .get('/api/workers')
+      .then((a) => a.workers);
     expect(workers.find((w) => w.workerId === name)?.revoked).toBe(true);
     // A revoked worker keeps running what it has, a receiver's port with it, so the administrator shuts it down.
     await j.fleet.stopWorker(name);
@@ -472,7 +476,11 @@ const revokeWorker: Move = {
       .click();
     await expect(workerRowOf(page, name)).toHaveCount(0);
     world.workers.delete(name);
-    const after: { workerId: string }[] = await (await j.truth()).get('/api/workers');
+    const after: { workerId: string }[] = await (
+      await j.truth()
+    )
+      .get('/api/workers')
+      .then((a) => a.workers);
     expect(after.map((w) => w.workerId)).not.toContain(name);
     return `revoke ${name}, and remove it`;
   },
@@ -1132,7 +1140,7 @@ const addSecret: Move = {
       .filter({ has: page.getByRole('cell', { name, exact: true }) });
     await expect(row.getByRole('cell', { name: 'v1', exact: true })).toBeVisible();
     world.secrets.set(name, 1);
-    const secrets: Secret[] = await (await j.truth()).get('/api/secrets');
+    const secrets: Secret[] = await (await j.truth()).get('/api/secrets').then((a) => a.secrets);
     expect(secrets.find((s) => s.name === name)?.versions).toHaveLength(1);
     expect(JSON.stringify(secrets)).not.toContain(value);
     expect(await page.content()).not.toContain(value);
@@ -1161,7 +1169,7 @@ const rotateSecret: Move = {
     await expect(page.getByRole('dialog', { name: 'branch required' })).toHaveCount(0);
     await expect(row.getByRole('cell', { name: `v${version}`, exact: true })).toBeVisible();
     world.secrets.set(name, version);
-    const secrets: Secret[] = await (await j.truth()).get('/api/secrets');
+    const secrets: Secret[] = await (await j.truth()).get('/api/secrets').then((a) => a.secrets);
     expect(secrets.find((s) => s.name === name)?.versions).toHaveLength(version);
     expect(JSON.stringify(secrets)).not.toContain(value);
     return `rotate ${name} to v${version}`;
@@ -1818,7 +1826,9 @@ const enrollInGroup: Move = {
     world.workers.set(name, { state: 'heartbeating', group });
     const workers: { workerId: string; revoked: boolean }[] = await (
       await j.truth()
-    ).get('/api/workers');
+    )
+      .get('/api/workers')
+      .then((a) => a.workers);
     expect(workers.find((w) => w.workerId === name)?.revoked).toBe(false);
     return `enroll ${name} in ${group}`;
   },
@@ -1852,7 +1862,7 @@ const addAccount: Move = {
     await handover.getByRole('button', { name: 'Done' }).click();
     await expect(handover).toHaveCount(0);
     world.accounts.set(username, true);
-    const users: Account[] = await (await j.truth()).get('/api/users');
+    const users: Account[] = await (await j.truth()).get('/api/users').then((a) => a.users);
     expect(users.find((u) => u.username === username)).toMatchObject({
       enabled: true,
       authSource: 'local',
@@ -1897,7 +1907,7 @@ const disableAccount: Move = {
       .click();
     await expect(page.getByRole('status')).toHaveText('account disabled; its sessions are over');
     world.accounts.set(username, false);
-    const users: Account[] = await (await j.truth()).get('/api/users');
+    const users: Account[] = await (await j.truth()).get('/api/users').then((a) => a.users);
     expect(users.find((u) => u.username === username)?.enabled).toBe(false);
     return `disable ${username}`;
   },
@@ -1920,7 +1930,9 @@ async function saveRole(j: Journey, name: string): Promise<string> {
   world.roles.add(name);
   const roles: { name: string; administrator: boolean; areas: Record<string, string> }[] = await (
     await j.truth()
-  ).get('/api/roles');
+  )
+    .get('/api/roles')
+    .then((a) => a.roles);
   expect(roles.find((r) => r.name === name)).toMatchObject({
     administrator: false,
     areas: { shared: level },
@@ -1998,7 +2010,11 @@ const setAgentPermissions: Move = {
     }
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByRole('status')).toHaveText('agent permissions saved');
-    expect(await (await j.truth()).get('/api/me/agent-permissions')).toEqual(expected);
+    expect(await (await j.truth()).get('/api/me/agent-permissions')).toEqual({
+      ok: true,
+      errors: [],
+      ...expected,
+    });
     return `set my agent's permissions to ${JSON.stringify(expected)}`;
   },
 };
@@ -2180,7 +2196,7 @@ const ssoSignIn: Move = {
       await context.close();
     }
     world.ssoSignedIn = true;
-    const users: Account[] = await (await j.truth()).get('/api/users');
+    const users: Account[] = await (await j.truth()).get('/api/users').then((a) => a.users);
     const person = users.find((u) => u.authSource === 'oidc');
     expect(person).toMatchObject({
       displayName: provider.person.name,

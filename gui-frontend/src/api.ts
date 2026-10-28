@@ -1196,17 +1196,35 @@ async function send<T>(url: string, method: string, init?: RequestInit): Promise
   } catch {
     throw new Error(`HTTP ${res.status}: ${text.slice(0, 300) || res.statusText}`);
   }
-  // A refusal is JSON too, and parses into whatever shape the caller asked for.
-  // Returned, `{ok: false, error}` read as a certificates page says this leader
-  // holds no certificate, and read as a worker list says the fleet is empty. The
-  // status is what tells the two apart, so it is what decides here.
-  if (!res.ok) {
-    const said = (answer as { error?: unknown } | null)?.error;
-    throw new Error(
-      typeof said === 'string' && said !== '' ? said : `HTTP ${res.status}: ${res.statusText}`,
-    );
+  // A refusal is the envelope at its status, and goes to the caller like any answer: a save
+  // places its errors on the fields they name. An answer at a failing status that is not one
+  // came from something other than the leader.
+  if (!res.ok && !refusedAnswer(answer)) {
+    throw new Error(`HTTP ${res.status}: ${text.slice(0, 300) || res.statusText}`);
   }
   return answer as T;
+}
+
+/** An answer the leader refused: `ok` false, and its errors say why. */
+type RefusedAnswer = { ok: false; errors: ApiError[] };
+
+function refusedAnswer(answer: unknown): answer is RefusedAnswer {
+  const body = answer as Partial<RefusedAnswer> | null;
+  return body?.ok === false && Array.isArray(body.errors);
+}
+
+/** A read whose answer is the thing asked for. */
+async function readJson<T>(url: string, weight: Weight = 'bar'): Promise<T> {
+  return taken(await apiJson<T | RefusedAnswer>(url, undefined, weight), weight);
+}
+
+/** `answer`, where it is the thing asked for. A refusal is thrown rather than handed back as that
+ * thing: a worker list that came back refused is not an empty fleet. */
+function taken<T>(answer: T | RefusedAnswer, weight: Weight): T {
+  if (!refusedAnswer(answer)) return answer;
+  const why = answer.errors.map((e) => e.message).join('; ');
+  // `apiJson` reported it already, unless the caller shows it itself.
+  throw weight === 'quiet' ? new Error(why) : new Reported(why);
 }
 
 // -- the branch being edited ----------------------------------------------
@@ -1532,10 +1550,17 @@ export function putDestinations(
 /** What the leader reads out of a PEM: every certificate in it, or why it is
  * not one. Asked of the leader because `leader::tls` already reads PEM, and a
  * second reading in the browser would drift from the one a save is judged by. */
-export function describeCertificates(
+export async function describeCertificates(
   pem: string,
 ): Promise<{ certificates: DescribedCertificate[] } | { error: string }> {
-  return post('/api/preview/certificate', { pem }, 'quiet');
+  const answer = await post<{
+    ok: boolean;
+    errors: ApiError[];
+    certificates?: DescribedCertificate[];
+  }>('/api/preview/certificate', { pem }, 'quiet');
+  return answer.ok
+    ? { certificates: answer.certificates ?? [] }
+    : { error: answer.errors.map((e) => e.message).join('; ') };
 }
 
 export function putRoutes(routes: RouteDto[], base?: string | null): Promise<MutationResult> {
@@ -2090,7 +2115,10 @@ const PROPOSED_FROM = 200;
 // each one's `__source` goes too.
 export function proposeOnboard(records: SampleRecordDto[]): Promise<OnboardProposal> {
   const filed = records.map((r) => r.__source ?? null);
-  return post('/api/preview/onboard', { records: records.slice(0, PROPOSED_FROM), filed }, 'quiet');
+  const body = { records: records.slice(0, PROPOSED_FROM), filed };
+  return post<OnboardProposal | RefusedAnswer>('/api/preview/onboard', body, 'quiet').then((a) =>
+    taken(a, 'quiet'),
+  );
 }
 
 // -- tests --------------------------------------------------------------
@@ -2561,8 +2589,9 @@ export function conditionLabel(condition: WarningCondition): string {
 
 /** The catalog the caller sees. Info entries come only with `info`: every view that judges health reads without
  * it, so a notice can never make anything look unhealthy. */
-export function listWarnings(opts: { info?: boolean } = {}): Promise<WarningDto[]> {
-  return apiJson(opts.info ? '/api/warnings?info=true' : '/api/warnings');
+export async function listWarnings(opts: { info?: boolean } = {}): Promise<WarningDto[]> {
+  const url = opts.info ? '/api/warnings?info=true' : '/api/warnings';
+  return (await readJson<{ warnings: WarningDto[] }>(url)).warnings;
 }
 
 /** One column of a captured batch, as sent. A column with `value` is constant: every row
@@ -3002,7 +3031,7 @@ export type ClusterStatus = {
 };
 
 export function getClusterStatus(): Promise<ClusterStatus> {
-  return apiJson('/api/cluster');
+  return readJson('/api/cluster');
 }
 
 // -- fleet management (`src/leader/mod.rs`, worker groups via
@@ -3182,8 +3211,8 @@ export function withdrawEnrollmentCode(id: string, weight?: Weight): Promise<Adm
   return apiJson(`/api/enrollment-codes/${encodeURIComponent(id)}`, { method: 'DELETE' }, weight);
 }
 
-export function listWorkers(): Promise<WorkerCredentialDto[]> {
-  return apiJson('/api/workers');
+export async function listWorkers(): Promise<WorkerCredentialDto[]> {
+  return (await readJson<{ workers: WorkerCredentialDto[] }>('/api/workers')).workers;
 }
 
 /** How long an ephemeral worker may be silent before the leader forgets it.
@@ -3383,8 +3412,8 @@ export type SecretDto = {
 export const currentVersion = (s: { versions: SecretVersionDto[] }): SecretVersionDto | undefined =>
   s.versions.at(-1);
 
-export function listSecrets(): Promise<SecretDto[]> {
-  return apiJson('/api/secrets');
+export async function listSecrets(): Promise<SecretDto[]> {
+  return (await readJson<{ secrets: SecretDto[] }>('/api/secrets')).secrets;
 }
 
 /** `value` is required for leader-stored custody and refused for
@@ -3498,8 +3527,8 @@ export type CertificateDto = {
   kept?: 'issued' | 'acme';
 };
 
-export function listCertificates(): Promise<CertificateDto[]> {
-  return apiJson('/api/certificates');
+export async function listCertificates(): Promise<CertificateDto[]> {
+  return (await readJson<{ certificates: CertificateDto[] }>('/api/certificates')).certificates;
 }
 
 /** `certificate` is PEM, leaf first, ending with its root for a private authority; `privateKey` is its PEM key. */
@@ -3574,7 +3603,7 @@ export interface EncryptionKeyDto {
 }
 
 export function getEncryptionKey(): Promise<EncryptionKeyDto> {
-  return apiJson('/api/settings/encryption-key');
+  return readJson('/api/settings/encryption-key');
 }
 
 /** Writes a new key in place of a missing or mismatched one. */
@@ -3652,11 +3681,11 @@ export type LogsResponseDto = {
 
 /** `query` is `logs.ts`'s `toQuery` output: the filters plus a limit. */
 export function getLogs(query: string): Promise<LogsResponseDto> {
-  return apiJson(`/api/logs?${query}`);
+  return readJson(`/api/logs?${query}`);
 }
 
 export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
-  return apiJson(`/api/flow?windowMinutes=${windowMinutes}`);
+  return readJson(`/api/flow?windowMinutes=${windowMinutes}`);
 }
 
 // -- the topology map (design doc "The map", `src/leader/map.rs`) ---------
@@ -4615,20 +4644,12 @@ export interface TemporaryPasswordDto {
  * that something went wrong. */
 export type AccountRefusal = { status: number; error: string };
 
-/** The roster, which is a bare JSON array rather than an envelope with `ok`.
- *
- * `apiJson` hands back whatever parsed, which for a `503` is the error object:
- * it would be assigned as though it were the roster and then fail to iterate,
- * somewhere far from the call. A shape that is not an array is an error here,
- * where it can still say so. */
 export async function listUsers(): Promise<UserDto[]> {
-  const body = await apiJson<UserDto[] | { error?: string }>('/api/users');
-  if (Array.isArray(body)) return body;
-  throw new Error(body.error || 'the roster could not be read');
+  return (await readJson<{ users: UserDto[] }>('/api/users')).users;
 }
 
-/** `POST`, `PATCH` and the two actions all answer a body with `error` on a
- * refusal, which the form shows as it is. */
+/** `POST`, `PATCH` and the two actions all answer the envelope, whose first error the
+ * form shows as it is on a refusal. */
 async function accountCall<T>(
   url: string,
   init: RequestInit,
@@ -4651,9 +4672,9 @@ async function accountCall<T>(
     return { status: 401, error: 'your session ended -- sign in again' };
   }
   if (res.status === 403) void recheck();
-  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  const body = (await res.json().catch(() => ({}))) as { errors?: ApiError[] };
   if (!res.ok) {
-    const error = body.error || 'that did not work';
+    const error = body.errors?.[0]?.message || 'that did not work';
     errors.report(call, [bareError(error)]);
     return { status: res.status, error };
   }
@@ -4712,8 +4733,8 @@ export interface RoleDto {
 }
 
 /** Every role, sorted by name. */
-export function listRoles(): Promise<RoleDto[]> {
-  return apiJson('/api/roles');
+export async function listRoles(): Promise<RoleDto[]> {
+  return (await readJson<{ roles: RoleDto[] }>('/api/roles')).roles;
 }
 
 /** Creates the role or replaces what it gives. */
@@ -4721,7 +4742,7 @@ export function putRole(
   name: string,
   administrator: boolean,
   areas: Record<string, AccessLevel>,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; errors: ApiError[] }> {
   return apiJson(
     `/api/roles/${encodeURIComponent(name)}`,
     {
@@ -4732,7 +4753,7 @@ export function putRole(
   );
 }
 
-export function deleteRole(name: string): Promise<{ ok: boolean; error?: string }> {
+export function deleteRole(name: string): Promise<{ ok: boolean; errors: ApiError[] }> {
   return apiJson(`/api/roles/${encodeURIComponent(name)}`, { method: 'DELETE' }, 'quiet');
 }
 
@@ -4747,7 +4768,7 @@ export type AgentPermissionsDto =
   | { kind: 'upto'; default: AccessLevel; areas: Record<string, AccessLevel> };
 
 export function getAgentPermissions(): Promise<AgentPermissionsDto> {
-  return apiJson('/api/me/agent-permissions');
+  return readJson('/api/me/agent-permissions');
 }
 
 export function putAgentPermissions(
@@ -4777,7 +4798,7 @@ export interface SystemInfoDto {
 }
 
 export function getSystemInfo(): Promise<SystemInfoDto> {
-  return apiJson('/api/system');
+  return readJson('/api/system');
 }
 
 /** What a source's or destination's form picks from: the secret catalog, so a credential can be pointed at one
@@ -4804,7 +4825,7 @@ export interface SessionSettingsDto {
 }
 
 export function getSessionSettings(): Promise<SessionSettingsDto> {
-  return apiJson('/api/settings/sessions');
+  return readJson('/api/settings/sessions');
 }
 
 export function putSessionSettings(
@@ -4958,7 +4979,7 @@ export interface CertificatesDto {
 }
 
 export function getCertificates(): Promise<CertificatesDto> {
-  return apiJson('/api/settings/tls');
+  return readJson('/api/settings/tls');
 }
 
 /** The authority's own download URL. A plain link rather than a fetch: the
@@ -5075,7 +5096,7 @@ export const ACME_DIRECTORIES = [
 ] as const;
 
 export function getAcme(): Promise<AcmeDto> {
-  return apiJson('/api/settings/tls/acme');
+  return readJson('/api/settings/tls/acme');
 }
 
 export function putAcme(settings: AcmeSettings): Promise<AcmeDto | AccountRefusal> {

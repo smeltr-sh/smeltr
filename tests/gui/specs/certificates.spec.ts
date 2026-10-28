@@ -37,7 +37,7 @@ async function fleetOfTwo(fleet: Fleet, page: Page, name: string) {
   await page.goto(leader.url);
   await signInThroughGui(page, leader.username, ADMIN_PASSWORD);
   await expect(page.getByRole('button', { name: 'Sign in' })).toHaveCount(0);
-  const inside = (await api.get('/api/workers')).find(
+  const inside = (await api.get('/api/workers').then((a) => a.workers)).find(
     (w: { workerId: string }) => w.workerId !== name,
   );
   expect(inside, 'the worker inside the leader').toBeDefined();

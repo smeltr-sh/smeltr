@@ -262,7 +262,7 @@ test('a secret is set once, checked without being shown, and never read back', a
   await admin.reload();
   await expect(row).toBeVisible();
   expect(await admin.content()).not.toContain(value);
-  expect(JSON.stringify(await api.get('/api/secrets'))).not.toContain(value);
+  expect(JSON.stringify(await api.get('/api/secrets').then((a) => a.secrets))).not.toContain(value);
 });
 
 test('rotating a secret points what uses it at the new version, and deploying it runs that', async ({
@@ -391,8 +391,9 @@ test('a receiver names a certificate from the list, and replacing the certificat
   await replace.getByRole('button', { name: 'Replace', exact: true }).click();
   await expect(replace).toBeHidden();
   const versions = async () =>
-    (await api.get('/api/certificates')).find((c: { name: string }) => c.name === 'receiver-tls')
-      .versions.length;
+    (await api.get('/api/certificates').then((a) => a.certificates)).find(
+      (c: { name: string }) => c.name === 'receiver-tls',
+    ).versions.length;
   await expect.poll(versions).toBe(2);
   await admin.screenshot({ path: test.info().outputPath('certificate-replaced.png') });
   expect((await sources())[0].certificate).toBe('receiver-tls');
@@ -423,7 +424,7 @@ test('a new version without a purpose the newest has is refused', async ({ admin
     }),
   ).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('certificate-refused.png') });
-  const versions = (await api.get('/api/certificates')).find(
+  const versions = (await api.get('/api/certificates').then((a) => a.certificates)).find(
     (c: { name: string }) => c.name === 'events-tls',
   ).versions.length;
   expect(versions).toBe(1);
@@ -452,7 +453,7 @@ test('the leader issues a certificate for the names given, and a receiver presen
   await expect(row.getByRole('cell', { name: 'Server and client', exact: true })).toBeVisible();
   await expect(row.getByRole('button', { name: 'Replace' })).toHaveCount(0);
   await admin.screenshot({ path: test.info().outputPath('certificate-issued.png') });
-  const listed = (await api.get('/api/certificates')) as {
+  const listed = (await api.get('/api/certificates').then((a) => a.certificates)) as {
     name: string;
     kept?: string;
     chain: { notBeforeMillis: number; notAfterMillis: number }[];
@@ -564,6 +565,8 @@ test('a person sets what their agent may use from their name', async ({ admin, a
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByRole('status')).toHaveText('agent permissions saved');
   expect(await api.get('/api/me/agent-permissions')).toEqual({
+    ok: true,
+    errors: [],
     kind: 'upto',
     default: 'viewer',
     areas: { shared: 'editor' },
@@ -572,7 +575,11 @@ test('a person sets what their agent may use from their name', async ({ admin, a
   await admin.getByRole('button', { name: 'Everything you hold' }).click();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByRole('status')).toHaveText('agent permissions saved');
-  expect(await api.get('/api/me/agent-permissions')).toEqual({ kind: 'everything' });
+  expect(await api.get('/api/me/agent-permissions')).toEqual({
+    ok: true,
+    errors: [],
+    kind: 'everything',
+  });
 });
 
 test('a person asks their agent, sees what it asked the leader, and deletes the conversation', async ({
