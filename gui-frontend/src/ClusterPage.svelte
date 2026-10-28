@@ -38,6 +38,7 @@
   import Panel from './Panel.svelte';
   import FlowChart from './FlowChart.svelte';
   import Sparkline from './Sparkline.svelte';
+  import StateMark, { severityState, type State } from './StateMark.svelte';
   import { pipelineNamesAt, type PipelineNames } from './pipelineNames';
   import { bytes } from './bytes';
   import SortButton from './SortButton.svelte';
@@ -566,6 +567,20 @@
     () =>
       new Map<string, WorkerHealth>(workerRows.map((w) => [w.workerId, workerHealth(w, warnings)])),
   );
+  /** A worker's sign: the worst of its heartbeat and its issues, else online is ok and stopped is info. */
+  function workerState(w: WorkerRow): State {
+    const health = healthOf.get(w.workerId) ?? 'healthy';
+    if (health !== 'healthy') return severityState(health);
+    return w.status === 'online' ? 'ok' : 'info';
+  }
+
+  function workerStateLabel(w: WorkerRow): string {
+    const health = healthOf.get(w.workerId) ?? 'healthy';
+    return health === 'healthy' || health === 'info'
+      ? STATUS_LABEL[w.status]
+      : `${STATUS_LABEL[w.status]}, ${health === 'failed' ? 'failing' : 'warning'}`;
+  }
+
   let needsAttention = $derived(workerRows.filter((w) => healthOf.get(w.workerId) !== 'healthy'));
   let filteredWorkers = $derived.by(() =>
     workerStatusFilter === 'attention'
@@ -681,7 +696,10 @@
   {:else}
     {#if warnings.length > 0}
       <a class="issue-ribbon" href="#/status/issues" aria-label="Active fleet issues">
-        <strong>▲ {warnings.length} active {warnings.length === 1 ? 'issue' : 'issues'}</strong>
+        <strong
+          ><StateMark state={warnings.some((w) => w.severity === 'failed') ? 'error' : 'warning'} />
+          {warnings.length} active {warnings.length === 1 ? 'issue' : 'issues'}</strong
+        >
         <span class="issue-divider">|</span>
         <span class="issue-teaser">{warnings[0].subjectId}: {warnings[0].message}</span>
         <span class="issue-more">View all issues &rsaquo;</span>
@@ -705,15 +723,21 @@
         </p>
       </div>
       <div class="fleet-totals" aria-label="Fleet totals">
-        <span class="total online"><i></i><strong>{workerCounts.online}</strong> online</span>
-        <span class="total silent"><i></i><strong>{workerCounts.silent}</strong> silent</span>
+        <span class="total"
+          ><StateMark state="ok" /><strong>{workerCounts.online}</strong> online</span
+        >
+        <span class="total"
+          ><StateMark state="error" /><strong>{workerCounts.silent}</strong> silent</span
+        >
         {#if workerCounts.neverHeartbeated > 0}
-          <span class="total neverHeartbeated"
-            ><i></i><strong>{workerCounts.neverHeartbeated}</strong> never heartbeated</span
+          <span class="total"
+            ><StateMark state="error" /><strong>{workerCounts.neverHeartbeated}</strong> never heartbeated</span
           >
         {/if}
         {#if workerCounts.stopped > 0}
-          <span class="total stopped"><i></i><strong>{workerCounts.stopped}</strong> stopped</span>
+          <span class="total"
+            ><StateMark state="info" /><strong>{workerCounts.stopped}</strong> stopped</span
+          >
         {/if}
         <span class="total"><strong>{totalPartitions}</strong> partitions</span>
         <span class="total"><strong>{rateText(nowOutRate)}</strong> rows/s</span>
@@ -842,8 +866,8 @@
                   }}
                 >
                   <span class="worker-name"
-                    ><i class="state-dot {worker.status} {healthOf.get(worker.workerId)}"
-                    ></i><strong>{worker.workerId}</strong></span
+                    ><StateMark state={workerState(worker)} /><strong>{worker.workerId}</strong
+                    ></span
                   >
                   <span class="mono" class:behind={behind(worker)}
                     >{commitOrNone(worker.commit)}</span
@@ -878,8 +902,10 @@
           </p>
           <div class="health-callout {selectedWorker.status}">
             <strong
-              ><i class="state-dot {selectedWorker.status} {healthOf.get(selectedWorker.workerId)}"
-              ></i>{STATUS_LABEL[selectedWorker.status]}</strong
+              ><StateMark
+                state={workerState(selectedWorker)}
+                label={workerStateLabel(selectedWorker)}
+              />{STATUS_LABEL[selectedWorker.status]}</strong
             ><span
               >Last heartbeat<b
                 >{selectedWorker.lastSeenMillisAgo === null
@@ -1296,33 +1322,6 @@
   }
   .total:first-child {
     border-left: 0;
-  }
-  .total i,
-  .state-dot {
-    width: 0.65rem;
-    height: 0.65rem;
-    border-radius: 50%;
-    background: var(--dim);
-    display: inline-block;
-    flex: none;
-  }
-  .total.online i,
-  .state-dot.online {
-    background: var(--added);
-  }
-  .total.silent i,
-  .total.neverHeartbeated i,
-  .state-dot.silent,
-  .state-dot.neverHeartbeated,
-  .state-dot.revoked {
-    background: var(--error);
-  }
-  /* After the heartbeat colors, so an issue on what an online worker runs shows over its green. */
-  .state-dot.warning {
-    background: var(--warn);
-  }
-  .state-dot.failed {
-    background: var(--error);
   }
   .fleet-shell {
     display: grid;

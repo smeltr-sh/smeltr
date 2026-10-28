@@ -217,14 +217,13 @@ test('a worker whose source is blocked needs attention, though it heartbeats', a
   await admin.getByRole('button', { name: /^Needs attention\s*1$/ }).click({ timeout: 30_000 });
   const blocked = admin.getByRole('button', { name: /^west-1\b/ });
   await expect(blocked).toHaveClass(/\battention\b/);
-  await expect(blocked.locator('.state-dot')).toHaveClass(/\bfailed\b/);
+  await expect(blocked.locator('.state-mark')).toHaveClass(/\berror\b/);
   await expect(admin.getByRole('button', { name: /^east-1\b/ })).toHaveCount(0);
 
   await admin.getByRole('button', { name: /^All\s*\d/ }).click();
   const fine = admin.getByRole('button', { name: /^east-1\b/ });
   await expect(fine).not.toHaveClass(/\battention\b/);
-  await expect(fine.locator('.state-dot')).toHaveClass(/\bonline\b/);
-  await expect(fine.locator('.state-dot')).not.toHaveClass(/\b(failed|warning)\b/);
+  await expect(fine.locator('.state-mark')).toHaveClass(/\bok\b/);
 });
 
 test("the Issues page filters by severity, and tells a stalled destination's log on its failure", async ({

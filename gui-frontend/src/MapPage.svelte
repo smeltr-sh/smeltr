@@ -92,6 +92,7 @@
     type Positioned,
   } from './map';
   import { ago, count } from './time';
+  import StateMark, { type State } from './StateMark.svelte';
   import { canEdit, mayCapture } from './access';
   import { newRouteHash } from './nav';
 
@@ -351,6 +352,16 @@
    * readings, the layout's own flag before then. */
   function warned(n: MapNode): boolean {
     return measurements ? (readingOf(n)?.warnings.length ?? 0) > 0 : n.warning;
+  }
+
+  /** The sign of the worst warning that names a node, or null when none does. Before the first
+   * readings only the layout's flag is known, which does not say how bad. */
+  function nodeState(n: MapNode): State | null {
+    if (!measurements) return n.warning ? 'warning' : null;
+    const severities = (readingOf(n)?.warnings ?? []).map((w) => w.severity);
+    if (severities.includes('failed')) return 'error';
+    if (severities.includes('warning')) return 'warning';
+    return severities.length > 0 ? 'info' : null;
   }
 
   /** What arrives at each source that no route takes, by `nodeKey`. */
@@ -823,7 +834,9 @@
           >{@html shapeGlyph({ kind: 'source', system: 'logs' }, 16)} smeltr's own logs</span
         >
         <span class="legend-item">{@html shapeGlyph({ kind: 'pipeline' }, 16)} pipeline</span>
-        <span class="legend-item"><span class="swatch warn"></span> a warning names it</span>
+        <span class="legend-item"
+          ><StateMark state="warning" /><StateMark state="error" /> a warning names it</span
+        >
         <span class="legend-item"><span class="swatch unmatched"></span> no route matched it</span>
         <span class="legend-item"
           ><span class="swatch poison"></span> a batch nothing could process, or an exception</span
@@ -1031,13 +1044,13 @@
                     {#each band.diagram.positions as p (keyOf(p))}
                       {@const state = cardState(p)}
                       {@const line = cardLine(p.node, cardReading(p.node))}
+                      {@const mark = nodeState(p.node)}
                       <!-- The whole card is the link: the click a plain card gives you is its own
                        biggest target. Editing lives one step further, from the panel this opens
                        (`FocusView.svelte`), so there is no second control here. -->
                       <a
-                        class="node clickable"
+                        class="node clickable {mark ?? ''}"
                         class:terminal={p.node.kind !== 'pipeline'}
-                        class:warn={warned(p.node)}
                         class:selected={state.selected}
                         class:copy={state.copy}
                         class:matched={state.matched}
@@ -1052,6 +1065,7 @@
                         <span class="node-head">
                           <span class="node-shape">{@html shapeGlyph(p.node, 14)}</span>
                           <span class="node-label">{p.node.name}</span>
+                          {#if mark}<StateMark state={mark} />{/if}
                         </span>
                         <span class="node-meta">
                           {cardMeta(p.node)}
@@ -1242,13 +1256,6 @@
   .swatch {
     display: inline-block;
     width: 14px;
-  }
-
-  .swatch.warn {
-    width: 8px;
-    height: 8px;
-    border-radius: 999px;
-    border: 2px solid var(--error);
   }
 
   /* A fallback line is dashed, wherever it is drawn. */
@@ -1487,7 +1494,11 @@
     outline-offset: -2px;
   }
 
-  .node.warn {
+  .node.warning {
+    border-color: var(--warn);
+  }
+
+  .node.error {
     border-color: var(--error);
   }
 
@@ -1497,7 +1508,11 @@
     color: var(--dim);
   }
 
-  .node.warn .node-shape {
+  .node.warning .node-shape {
+    color: var(--warn);
+  }
+
+  .node.error .node-shape {
     color: var(--error);
   }
 
@@ -1564,7 +1579,11 @@
     text-overflow: ellipsis;
   }
 
-  .node.warn .node-label {
+  .node.warning .node-label {
+    color: var(--warn);
+  }
+
+  .node.error .node-label {
     color: var(--error);
   }
 

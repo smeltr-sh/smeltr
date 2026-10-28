@@ -59,12 +59,11 @@ it is in. `src/DisableIcon.svelte` is disable -- keep a step in its pipeline but
 out of play. Renaming is not its own sign: it is the editor a worker group happens to
 have, having nothing else to change in place.
 
-A state can have a sign too, when the page routes on it. `src/FailedIcon.svelte`
-is failed -- a row the pipeline could not process -- a triangle with a bar
-standing in it. It goes wherever those rows are named or wired: the
-pipeline's failure setting, and the routes page's account of how a path
-takes failed rows. The caller colors it:
-ink in a heading, `--warn` where the row's state is the point.
+A state has a sign, `src/StateMark.svelte`: a dot for info, a check for ok,
+a triangle for a warning, an octagon struck with an X for an error. Wherever
+the GUI shows a state, the sign goes with it, so the shape alone tells the
+four apart for a reader who cannot tell red from green; the state's color
+says it again. A dot, a stripe or a tint never carries a state by itself.
 
 `src/stepGlyphs.ts` holds the step badges' paths, one per `StepType`; the
 badge sets the glyph before its label at the label's own text size.
