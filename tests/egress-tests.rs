@@ -1055,3 +1055,98 @@ fn a_paced_queue_grows_from_one_batch_while_its_source_presses() {
     assert!(most >= 8 * row.len(), "the budget grew from one batch: {most}");
     assert!(most <= row.len() + pool.limit(), "never past the share: {most}");
 }
+
+/// Two paced queues on one pool smaller than either would hold alone. The first, alone, grows over most of it; once
+/// the second presses too, each settles near an equal share. Once the first stalls, holding what it has, the second
+/// still moves.
+#[test]
+fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neither() {
+    let registry = Arc::new(Metrics::new());
+    let row = vec![b'x'; 64 * 1024];
+    let pool = smeltr::egress::QueuePool::new(8 * 64 * 1024);
+    let batches = pool.limit() / row.len();
+    let dests = [AsyncDestination::new(), AsyncDestination::new()];
+    let mut egresses: Vec<Egress> = dests
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let metrics = MetricsHandle::new(registry.clone(), &format!("egress-{i}"));
+            Egress::start(i as u32, "d", Box::new(d.clone()), timeout(), pool.limit(), metrics)
+                .borrowing(pool.clone(), row.len(), 1)
+                .paced(row.len())
+        })
+        .collect();
+    let mut handles: Vec<_> = egresses.iter_mut().map(Egress::handle).collect();
+    let mut next = [0u64; 2];
+    // Each queue's budget, in batches.
+    let budget = |i: usize| {
+        let label = i.to_string();
+        registry.snapshot().into_iter().find_map(|s| match s.value {
+            smeltr::metrics::MetricValue::Gauge(v)
+                if s.key.name == "smeltr_destination_queue_budget_bytes"
+                    && s.key.labels.iter().any(|(k, v)| *k == "destination" && *v == label) =>
+            {
+                Some(v as usize / row.len())
+            }
+            _ => None,
+        })
+    };
+    // When each destination first had each batch open: a link 5 ms away answers it 5 ms later.
+    let mut opened: [std::collections::HashMap<u64, std::time::Instant>; 2] = Default::default();
+    // For `secs`, each of `pressing` sends while it has room and each of `answering` answers what has been open 5 ms.
+    // Answers each queue's budget in batches, on average over the last second, and how many batches each delivered.
+    let mut run = |secs: u64, pressing: &[usize], answering: &[usize]| {
+        let started = std::time::Instant::now();
+        let (mut held, mut samples, mut delivered) = ([0usize; 2], 0, [0usize; 2]);
+        while started.elapsed() < Duration::from_secs(secs) {
+            for &i in pressing {
+                while let Dispatched::InFlight = hand(&mut handles[i], next[i], &[OutgoingRecord::new(&row)]) {
+                    next[i] += 1;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(1));
+            let last_second = started.elapsed() + Duration::from_secs(1) >= Duration::from_secs(secs);
+            for (i, d) in dests.iter().enumerate() {
+                // Read after `outstanding`, so a batch is never taken as open before it was.
+                let open = d.outstanding();
+                let now = std::time::Instant::now();
+                for b in open {
+                    let at = *opened[i].entry(b).or_insert(now);
+                    if answering.contains(&i) && now.duration_since(at) >= Duration::from_millis(5) {
+                        opened[i].remove(&b);
+                        d.complete(b);
+                        delivered[i] += 1;
+                    }
+                }
+                if last_second {
+                    held[i] += budget(i).unwrap_or(0);
+                }
+            }
+            samples += usize::from(last_second);
+        }
+        (held.map(|h| h / samples.max(1)), delivered)
+    };
+
+    let (alone, _) = run(2, &[0], &[0]);
+    assert!(
+        alone[0] > batches / 2,
+        "alone, the first grows over most of the pool: {alone:?} of {batches}"
+    );
+
+    let (both, delivered) = run(3, &[0, 1], &[0, 1]);
+    assert!(
+        both[1] >= batches / 4,
+        "the second gets near its share: {both:?} of {batches}"
+    );
+    assert!(
+        both[0] <= 3 * batches / 4,
+        "the first gives back toward its share: {both:?} of {batches}"
+    );
+    assert!(
+        2 * delivered[1] >= delivered[0] && 2 * delivered[0] >= delivered[1],
+        "each carries about as much: {delivered:?}"
+    );
+
+    let (_, delivered) = run(1, &[0, 1], &[1]);
+    assert!(delivered[1] > 0, "the first stalled, the second still moves");
+}
