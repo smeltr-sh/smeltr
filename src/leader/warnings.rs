@@ -2434,12 +2434,11 @@ pub const NOT_DEPLOYING: &str = "workerNotDeployingItsTarget";
 /// worker gives a runtime, so a deployment that is merely slow is never reported as one that failed.
 const NOT_DEPLOYING_AFTER_MS: i64 = 5 * 60 * 1000;
 
-/// The fixed catalog (design doc, Control plane), read fresh from `snapshot` and `credentials` on every call.
-/// `starts` is the fact clock's answer (`Registry::observe_facts`) for whichever facts need one; a warning with no
-/// entry there carries no start time. `series_store` is the durable registry's series half
-/// (`crate::leader::registry::Registry::series`), which only [`lag_climbing`] and
-/// [`recent_logs`] need; `deployed_groups` is every group the deployed commit holds a subtree for, which
-/// only [`group_not_deployed`] needs -- the rest read `snapshot` alone.
+/// The fleet's part of the fixed catalog (design doc, Control plane), read fresh from `snapshot` and `credentials` on
+/// every call. `starts` is the fact clock's answer (`Registry::observe_facts`) for whichever facts need one; a warning
+/// with no entry there carries no start time. `series_store` is the durable registry's series half
+/// (`crate::leader::registry::Registry::series`), and `deployed_groups` is every group the deployed commit holds a
+/// subtree for.
 pub fn derive(
     snapshot: &[ThreadHealth],
     credentials: &[WorkerCredentialRecord],
