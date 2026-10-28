@@ -61,9 +61,9 @@ have, having nothing else to change in place.
 
 A state has a sign, `src/StateMark.svelte`: a dot for info, a check for ok,
 a triangle for a warning, an octagon struck with an X for an error. Wherever
-the GUI shows a state, the sign goes with it, so the shape alone tells the
+the GUI shows one of these four, the sign goes with it, so the shape alone tells the
 four apart for a reader who cannot tell red from green; the state's color
-says it again. A dot, a stripe or a tint never carries a state by itself.
+says it again. A dot, a stripe or a tint never carries one of them by itself.
 
 `src/stepGlyphs.ts` holds the step badges' paths, one per `StepType`; the
 badge sets the glyph before its label at the label's own text size.

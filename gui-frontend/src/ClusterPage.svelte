@@ -567,10 +567,10 @@
     () =>
       new Map<string, WorkerHealth>(workerRows.map((w) => [w.workerId, workerHealth(w, warnings)])),
   );
-  /** A worker's sign: the worst of its heartbeat and its issues, else online is ok and stopped is info. */
+  /** A worker's sign: a failed or warning health, else online is ok and stopped is info. */
   function workerState(w: WorkerRow): State {
     const health = healthOf.get(w.workerId) ?? 'healthy';
-    if (health !== 'healthy') return severityState(health);
+    if (health === 'failed' || health === 'warning') return severityState(health);
     return w.status === 'online' ? 'ok' : 'info';
   }
 

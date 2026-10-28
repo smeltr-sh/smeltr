@@ -355,7 +355,8 @@
   }
 
   /** The sign of the worst warning that names a node, or null when none does. Before the first
-   * readings only the layout's flag is known, which does not say how bad. */
+   * readings only the layout's flag is known, which does not say how bad. Info marks the card
+   * without coloring it. */
   function nodeState(n: MapNode): State | null {
     if (!measurements) return n.warning ? 'warning' : null;
     const severities = (readingOf(n)?.warnings ?? []).map((w) => w.severity);
