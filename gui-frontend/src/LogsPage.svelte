@@ -382,7 +382,8 @@
   .chip.on.warn {
     background: color-mix(in srgb, var(--warn) 18%, transparent);
     border-color: var(--warn);
-    color: var(--warn);
+    /* --warn text on its own tint reads poorly (app.css, .warn-bar). */
+    color: var(--ink);
   }
   .chip.on.info,
   .chip.on.debug,
