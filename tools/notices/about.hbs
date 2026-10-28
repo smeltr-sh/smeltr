@@ -248,6 +248,8 @@ Rules and lists the built-in functions read, compiled into the binary.
 | --- | --- | --- |
 | uap-core `regexes.yaml` (`src/ops/useragent/regexes.yaml`) | `parseUserAgent` | Apache-2.0 |
 | Public Suffix List, through the `psl` crate | `registeredDomain` | MPL-2.0 |
+| Elastic Common Schema `fields.csv` (`src/io/ecs_fields.rs`) | the ECS schema, the Elasticsearch mapping | Apache-2.0 |
+| OCSF schema 1.9.0 (`src/schema/ocsf_schema.rs`) | the OCSF schemas | Apache-2.0 |
 
 > Copyright 2009 Google Inc. (uap-core, https://github.com/ua-parser/uap-core)
 

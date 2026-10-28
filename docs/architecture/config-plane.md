@@ -3,7 +3,7 @@
 A system of the [design document](../smeltr-design.md).
 
 Configuration is a directory of files, the **bundle**: sources, destinations,
-routes, lookup tables, grok patterns, one file per pipeline, and the samples and
+routes, lookup tables, grok patterns, schemas, one file per pipeline, and the samples and
 tests an author works from. It is meant to be read by humans and reviewed like code,
 so it lives in git and a deploy points the fleet at a commit on `main`. Every
 object is keyed by a string id, unique in its scope.
@@ -45,6 +45,29 @@ group, so a step's own pattern may not take a shared one's name, and a shared
 one may not take a built-in's. A shared pattern resolves against shared ones
 and the built-ins alone, so it reads the same in every step, and it is checked
 at save whether or not a step names it yet.
+
+## Schemas
+
+A schema is what a pipeline's rows must hold: each field's type, and the
+fields they must have. ECS and each OCSF class are built in; a bundle declares
+its own as JSON Schema, by an id no built-in takes. A pipeline names the
+schemas it produces, and a destination may name the schemas it accepts. Both
+are checked at save to name a schema the group can see.
+
+```mermaid
+flowchart LR
+  S[schemas: built-in and the bundle's] --> P[pipeline produces]
+  S --> D[destination accepts]
+  P --> F{rows fit?}
+  D --> F
+  F -- no --> W[finding: editor, review, deployed commit]
+```
+
+A finding never refuses a save or a deploy: it says where the rows do not fit.
+A field several schemas name is a misfit only where every one of them says so,
+and a field one requires is missing only where every schema the pipeline
+produces requires it. A route delivering to a destination whose accepts names
+none of what its pipeline produces is a finding of the same kind.
 
 ## Groups and `shared/`
 
