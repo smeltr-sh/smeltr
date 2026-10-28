@@ -2797,8 +2797,13 @@ impl AcknowledgementDto {
 #[serde(transparent)]
 pub struct RequestBytes<const DEFAULT: usize = { 1024 * 1024 }>(#[serde(with = "super::bytes")] pub usize);
 
-/// An HTTP destination's request size: one whole batch by default, so a batch is one request.
-pub type HttpRequestBytes = RequestBytes<{ crate::worker::TICK_MAX_BYTES }>;
+/// An HTTP destination's request size: one whole batch by default, so a batch is one request. A literal, so a change
+/// to the batch size does not change what a stored destination means.
+pub type HttpRequestBytes = RequestBytes<{ 4 * 1024 * 1024 }>;
+const _: () = assert!(
+    HttpRequestBytes::DEFAULT >= crate::worker::TICK_MAX_BYTES,
+    "a batch is one request"
+);
 
 impl RequestBytes {
     pub const MIN: usize = 4 * 1024;
