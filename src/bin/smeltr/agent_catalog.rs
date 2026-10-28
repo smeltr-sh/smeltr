@@ -301,7 +301,7 @@ pub const CATALOG: &[Route] = &[
         method: "PUT",
         path: "/api/areas/:area/samples/:id",
         what: "Create or replace a sample on a branch; the path's id wins. Query: branch.",
-        body: "{ name, source?, columns?: CaptureColumn[], records: object[] }",
+        body: "{ id, name, source?, columns?: CaptureColumn[], records: object[] }",
     },
     Route {
         method: "GET",
@@ -339,7 +339,7 @@ pub const CATALOG: &[Route] = &[
         method: "PUT",
         path: "/api/areas/:area/tests/:id",
         what: "Lock (create or replace) a test on a branch; the path's id wins. Query: branch.",
-        body: "{ name, pipeline?: id (absent = end-to-end by sample source), sample: id, lockedAt: micros, rowsIn: number, expected: (object|null)[] }",
+        body: "{ id, name, pipeline?: id (absent = end-to-end by sample source), sample: id, lockedAt: micros, rowsIn: number, expected: (object|null)[] }",
     },
     Route {
         method: "GET",
