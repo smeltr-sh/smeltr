@@ -1,5 +1,6 @@
 <!--
-  The control that takes an item out of the list it is in: `CrossIcon`, dim until hovered.
+  The control that takes an item out of the list it is in: `CrossIcon`, dim until hovered. `RemovableChip` draws
+  its own, at the chip's smaller size.
 -->
 <script lang="ts">
   import CrossIcon from './CrossIcon.svelte';
