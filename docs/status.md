@@ -134,7 +134,7 @@ document's systems.
 ### API
 
 The API's contract (`api.md`) is ahead of its routes. Not built: the worker family under `/api/worker/` and the
-operator paths it names, an area in the path, one answer shape with no failure at 200 and its statuses,
+operator paths `api.md` names for it, an area in the path, one answer shape, with every failure at a 4xx or 5xx status,
 `Cache-Control: no-store`, the gate's need in the same row as the agent catalog's entry, integration accounts.
 
 ### Control plane
