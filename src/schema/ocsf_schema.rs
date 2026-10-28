@@ -1161,7 +1161,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: true,
         required: false,
-        description: "The human-readable email header Bcc Mailbox values. For example 'Example User &lt;example.user@usersdomain.com&gt;'.",
+        description: "The human-readable email header Bcc Mailbox values. For example 'Example User <example.user@usersdomain.com>'.",
     },
     Attr {
         name: "binary_data",
@@ -1473,7 +1473,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: true,
         required: false,
-        description: "The human-readable email header Cc Mailbox values. For example 'Example User &lt;example.user@usersdomain.com&gt;'.",
+        description: "The human-readable email header Cc Mailbox values. For example 'Example User <example.user@usersdomain.com>'.",
     },
     Attr {
         name: "cell_name",
@@ -4305,7 +4305,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "long",
         array: false,
         required: false,
-        description: "The elapsed time of the aggregation window in milliseconds, from start_time to end_time. Only populate for aggregate events (count &gt; 1). The value should equal end_time - start_time.",
+        description: "The elapsed time of the aggregation window in milliseconds, from start_time to end_time. Only populate for aggregate events (count > 1). The value should equal end_time - start_time.",
     },
     Attr {
         name: "duration",
@@ -4657,7 +4657,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "timestamp",
         array: false,
         required: false,
-        description: "The time of the most recent event in an aggregate (count &gt; 1). Do not populate for discrete, point-in-time events - use time alone. Subclasses such as findings may redefine this for their own time-range semantics.",
+        description: "The time of the most recent event in an aggregate (count > 1). Do not populate for discrete, point-in-time events - use time alone. Subclasses such as findings may redefine this for their own time-range semantics.",
     },
     Attr {
         name: "end_time",
@@ -4745,7 +4745,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "datetime",
         array: false,
         required: false,
-        description: "The time of the most recent event in an aggregate (count &gt; 1). Do not populate for discrete, point-in-time events - use time alone. Subclasses such as findings may redefine this for their own time-range semantics.",
+        description: "The time of the most recent event in an aggregate (count > 1). Do not populate for discrete, point-in-time events - use time alone. Subclasses such as findings may redefine this for their own time-range semantics.",
     },
     Attr {
         name: "end_time_dt",
@@ -5737,7 +5737,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The human-readable email header From Mailbox value. For example 'Example User &lt;example.user@usersdomain.com&gt;'.",
+        description: "The human-readable email header From Mailbox value. For example 'Example User <example.user@usersdomain.com>'.",
     },
     Attr {
         name: "from_mailboxes",
@@ -5745,7 +5745,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "email",
         array: true,
         required: false,
-        description: "The human-readable email header From Mailbox values. This array should contain the value in from_mailbox. For example 'Example User &lt;example.user@usersdomain.com&gt;'.",
+        description: "The human-readable email header From Mailbox values. This array should contain the value in from_mailbox. For example 'Example User <example.user@usersdomain.com>'.",
     },
     Attr {
         name: "full_name",
@@ -11721,7 +11721,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: true,
         required: false,
-        description: "The human-readable email header Reply To Mailbox values. For example 'Example User &lt;example.user@usersdomain.com&gt;'.",
+        description: "The human-readable email header Reply To Mailbox values. For example 'Example User <example.user@usersdomain.com>'.",
     },
     Attr {
         name: "reporter",
@@ -13529,7 +13529,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "timestamp",
         array: false,
         required: false,
-        description: "The time of the earliest event in an aggregate (count &gt; 1). Do not populate for discrete, point-in-time events - use time alone. Subclasses such as findings may redefine this for their own time-range semantics.",
+        description: "The time of the earliest event in an aggregate (count > 1). Do not populate for discrete, point-in-time events - use time alone. Subclasses such as findings may redefine this for their own time-range semantics.",
     },
     Attr {
         name: "start_time",
@@ -13617,7 +13617,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "datetime",
         array: false,
         required: false,
-        description: "The time of the earliest event in an aggregate (count &gt; 1). Do not populate for discrete, point-in-time events - use time alone. Subclasses such as findings may redefine this for their own time-range semantics.",
+        description: "The time of the earliest event in an aggregate (count > 1). Do not populate for discrete, point-in-time events - use time alone. Subclasses such as findings may redefine this for their own time-range semantics.",
     },
     Attr {
         name: "start_time_dt",
@@ -14505,7 +14505,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "timestamp",
         array: false,
         required: true,
-        description: "The primary timestamp of the event - when the activity actually occurred at the source. This does not capture when the event record was created or serialized by the source system; for event lifecycle timestamps such as ingestion and processing, use metadata.logged_time and metadata.processed_time respectively, or the equivalent attributes in the metadata.loggers array when recording pipeline stages. For aggregate events (count &gt; 1), set this to start_time (the earliest OCSF time in the aggregate) to preserve causal ordering and consistent timeline alignment. Note: finding classes redefine time as the finding creation time rather than the activity occurrence time. This must be a UTC epoch value in milliseconds (e.g., 1776881335332). Mappers should use the most precise and authoritative timestamp available from the source.",
+        description: "The primary timestamp of the event - when the activity actually occurred at the source. This does not capture when the event record was created or serialized by the source system; for event lifecycle timestamps such as ingestion and processing, use metadata.logged_time and metadata.processed_time respectively, or the equivalent attributes in the metadata.loggers array when recording pipeline stages. For aggregate events (count > 1), set this to start_time (the earliest OCSF time in the aggregate) to preserve causal ordering and consistent timeline alignment. Note: finding classes redefine time as the finding creation time rather than the activity occurrence time. This must be a UTC epoch value in milliseconds (e.g., 1776881335332). Mappers should use the most precise and authoritative timestamp available from the source.",
     },
     Attr {
         name: "time_dt",
@@ -14529,7 +14529,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "datetime",
         array: false,
         required: false,
-        description: "The primary timestamp of the event - when the activity actually occurred at the source. This does not capture when the event record was created or serialized by the source system; for event lifecycle timestamps such as ingestion and processing, use metadata.logged_time and metadata.processed_time respectively, or the equivalent attributes in the metadata.loggers array when recording pipeline stages. For aggregate events (count &gt; 1), set this to start_time (the earliest OCSF time in the aggregate) to preserve causal ordering and consistent timeline alignment. Note: finding classes redefine time as the finding creation time rather than the activity occurrence time. This must be a UTC epoch value in milliseconds (e.g., 1776881335332). Mappers should use the most precise and authoritative timestamp available from the source.",
+        description: "The primary timestamp of the event - when the activity actually occurred at the source. This does not capture when the event record was created or serialized by the source system; for event lifecycle timestamps such as ingestion and processing, use metadata.logged_time and metadata.processed_time respectively, or the equivalent attributes in the metadata.loggers array when recording pipeline stages. For aggregate events (count > 1), set this to start_time (the earliest OCSF time in the aggregate) to preserve causal ordering and consistent timeline alignment. Note: finding classes redefine time as the finding creation time rather than the activity occurrence time. This must be a UTC epoch value in milliseconds (e.g., 1776881335332). Mappers should use the most precise and authoritative timestamp available from the source.",
     },
     Attr {
         name: "time_dt",
@@ -14697,7 +14697,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: true,
         required: false,
-        description: "The human-readable email header To Mailbox values. For example 'Example User &lt;example.user@usersdomain.com&gt;'.",
+        description: "The human-readable email header To Mailbox values. For example 'Example User <example.user@usersdomain.com>'.",
     },
     Attr {
         name: "token",
@@ -17057,7 +17057,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "file_hash",
         array: false,
         required: true,
-        description: "The fingerprint value.Note: This uses type file_hash_t (&quot;Hash&quot;), which has been generalized for all fingerprints but retains the same name and caption for backwards compatibility.",
+        description: "The fingerprint value.Note: This uses type file_hash_t (\"Hash\"), which has been generalized for all fingerprints but retains the same name and caption for backwards compatibility.",
     },
     Attr {
         name: "value",

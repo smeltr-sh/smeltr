@@ -28,7 +28,7 @@
         problem = res.errors.map((e) => e.message).join(' ');
         return null;
       }
-      objects.set(res.at, res);
+      objects = new Map(objects).set(res.at, res);
       return res;
     } catch (e) {
       reported(e);

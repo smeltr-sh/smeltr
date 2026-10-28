@@ -32,7 +32,7 @@ rows="$(jq -n -r \
       else {"string_t": "Str", "integer_t": "Long", "long_t": "Long", "float_t": "Float", "boolean_t": "Bool",
             "datetime_t": "DateTime", "json_t": "Json"}[base($t)] // error("no kind for \($t)")
       end;
-    def text: gsub("<[^>]*>"; "") | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
+    def text: gsub("<[^>]*>"; "") | gsub("&lt;"; "<") | gsub("&gt;"; ">") | gsub("&quot;"; "\"") | gsub("&amp;"; "&") | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
     def own($e): ($e.attributes // {}) | del(."$include");
     def includes($e): [($e.attributes // {})."$include" // [] | if type == "array" then .[] else . end]
       | map($profs[.].attributes // {} | map_values(.requirement = "optional")) | add // {};
