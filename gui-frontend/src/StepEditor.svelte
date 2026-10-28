@@ -1532,7 +1532,7 @@
     --card-surface: var(--field);
     background: var(--card-surface);
     container: step / inline-size;
-    --control-width: 1.6rem;
+    --control-width: 1.3rem;
     --control-height: 1.4rem;
   }
 
@@ -1636,7 +1636,7 @@
     display: none;
   }
 
-  /* Five controls take 9.4rem and never shrink, and the summary needs room
+  /* Five controls take 7.1rem and never shrink, and the summary needs room
      beside them. At 18.75rem and under, ◎ stays out and the rest fold into
      the More menu, the badge shows its glyph and keeps its name only for a
      screen reader. In
@@ -1733,7 +1733,7 @@
 
   .controls {
     display: flex;
-    gap: 0.35rem;
+    gap: 0.15rem;
     flex-shrink: 0;
   }
 
@@ -1762,7 +1762,7 @@
     .card:not(.open, .if-card)
       > .card-head:is(:hover, :has(:focus-visible, [aria-expanded='true']))
       > .counts {
-      margin-right: 10.6rem;
+      margin-right: 8.3rem;
     }
 
     .card:not(.open, .if-card) > .card-head > .controls {
@@ -1773,9 +1773,10 @@
     }
   }
 
+  /* Bare glyphs, as `RemoveButton` beside them is. */
   .controls button {
     background: none;
-    border: 1px solid var(--border);
+    border: 1px solid transparent;
     border-radius: var(--radius);
     color: var(--dim);
     font-size: var(--text-note);
@@ -1793,9 +1794,12 @@
     padding: 0;
   }
 
+  .controls button:hover,
   .controls button.active {
-    border-color: var(--ink);
     color: var(--ink);
+  }
+
+  .controls button.active {
     font-weight: 600;
   }
 
