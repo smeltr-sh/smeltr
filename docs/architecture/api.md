@@ -1,7 +1,7 @@
 # API
 
-The leader answers three families of HTTP routes, all under `/api/`, told
-apart by the credential a caller holds. Workers call under `/api/worker/` with
+The leader answers three families of HTTP routes, all under `/api/` but the
+ACME challenge, told apart by the credential a caller holds. Workers call under `/api/worker/` with
 the token they enrolled for. People, through the GUI and their AI agent, and
 integrations call the rest of `/api/` as operators. A few routes are open,
 because they are how a caller gets a credential in the first place. The gate
@@ -32,7 +32,7 @@ Bearer token from enrollment. These messages cross builds, so they follow the
 control plane's rule for messages between builds
 ([control-plane.md](control-plane.md), Upgrades): they only grow, a field added
 is optional, and a field a reader does not know is ignored. They carry no
-envelope, and a failure is a status with a line of text.
+envelope: a failure is a status, with at most a line of text.
 
 **Operator.** Everything else under `/api/`, outside `/api/worker/`. A person
 calls with a session cookie, and an unsafe method also carries a matching
@@ -74,7 +74,7 @@ path answer the same shape.
 
 The routes that answer bytes are the exceptions: the authority's PEM (open),
 and a lookup file, the ledger stream and the git repository (worker). A failure
-there is a bare status.
+there is a status with no envelope.
 
 An operator request body refuses a field it does not know. An answer may add
 fields. Every answer under `/api/` is `Cache-Control: no-store`.
