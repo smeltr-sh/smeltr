@@ -25,6 +25,7 @@
   import type { Snippet } from 'svelte';
   import Help from './Help.svelte';
   import Locked from './Locked.svelte';
+  import StateMark from './StateMark.svelte';
   import { validationContext } from './validation.svelte';
 
   let {
@@ -125,9 +126,9 @@
     <Locked><label>{@render name()}{@render children()}</label></Locked>
   {/if}
   {#if message}
-    <span class="error" role="alert">{message}</span>
+    <span class="error" role="alert"><StateMark state="error" /> {message}</span>
   {:else if warning}
-    <span class="warning" role="status">{warning}</span>
+    <span class="warning" role="status"><StateMark state="warning" /> {warning}</span>
   {:else if note}
     <span class="note"
       >{#if typeof note === 'string'}{note}{:else}{@render note()}{/if}</span

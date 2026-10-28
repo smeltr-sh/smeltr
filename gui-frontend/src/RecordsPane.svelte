@@ -24,6 +24,7 @@
 
 <script lang="ts">
   import { untrack, type Snippet } from 'svelte';
+  import StateMark from './StateMark.svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { store, storedJson } from './stored';
   import { stepName, type Step } from './pipeline';
@@ -516,7 +517,7 @@
     if (c.kind === 'has') return `has ${c.path}`;
     if (c.kind === 'droppedBy' || c.kind === 'failedAt') {
       const number = stepNumbers.get(c.step)?.number ?? '?';
-      return c.kind === 'droppedBy' ? `⌫ Dropped by step ${number}` : `⚠ Failed at step ${number}`;
+      return c.kind === 'droppedBy' ? `⌫ Dropped by step ${number}` : `Failed at step ${number}`;
     }
     return CHIP_LABELS[c.kind];
   }
@@ -572,7 +573,7 @@
   let failingCount = $derived((gridRows ?? []).filter((r) => r.exceptions.length > 0).length);
 
   const CHIP_LABELS = {
-    failing: '⚠ Failing',
+    failing: 'Failing',
     dropped: '⌫ Dropped',
     changed: '~ Changed by a step',
   } as const;
@@ -714,10 +715,16 @@
             >{#each chips as c (chipKey(c))}<RemovableChip
                 removeLabel={`remove ${chipKey(c)}`}
                 onremove={() => toggleChip(c)}
-                ><span class="find-chip">{chipLabel(c)}</span></RemovableChip
+                ><span class="find-chip"
+                  >{#if c.kind === 'failing' || c.kind === 'failedAt'}<StateMark state="error" />
+                  {/if}{chipLabel(c)}</span
+                ></RemovableChip
               >{/each}{/snippet}
           {#snippet option(item)}
-            <span>{CHIP_LABELS[item.kind]}</span>
+            <span
+              >{#if item.kind === 'failing'}<StateMark state="error" />
+              {/if}{CHIP_LABELS[item.kind]}</span
+            >
             <span></span>
             <span class="dim">{item.count}</span>
           {/snippet}
@@ -736,7 +743,8 @@
             type="button"
             class="failing error-button"
             aria-pressed={chips.some((c) => c.kind === 'failing')}
-            onclick={() => toggleChip({ kind: 'failing' })}>⚠ {failingCount} failing</button
+            onclick={() => toggleChip({ kind: 'failing' })}
+            ><StateMark state="error" /> {failingCount} failing</button
           >
         {/if}
         <span class="grow"></span>
@@ -831,7 +839,7 @@
                       >
                     </td>
                     <td class="index-cell"
-                      >{#if failing}<span class="warn">⚠</span>{/if}{row.row}</td
+                      >{#if failing}<StateMark state="error" />{/if}{row.row}</td
                     >
                     {#each columns as path (path)}
                       {@const field = fieldAt(m.before, m.after, path)}
@@ -1160,12 +1168,11 @@
     background: color-mix(in srgb, var(--error) 10%, transparent);
   }
 
-  .grid-row.failing .index-cell,
-  .warn {
+  .grid-row.failing .index-cell {
     color: var(--error);
   }
 
-  .warn {
+  .index-cell :global(.state-mark) {
     margin-right: 0.4ch;
   }
 

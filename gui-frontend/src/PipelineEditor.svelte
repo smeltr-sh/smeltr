@@ -10,6 +10,7 @@
   the URL, else on the one this pipeline last ran over in this browser.
 -->
 <script lang="ts">
+  import StateMark from './StateMark.svelte';
   import InlineError from './InlineError.svelte';
   import { tick, untrack } from 'svelte';
   import { opening } from './StepEditor.svelte';
@@ -1246,7 +1247,8 @@
       {#if result && !result.ok}
         {@const failed = result}
         <ChipPicker kind="error" align="left" bind:open={errorsOpen}>
-          {#snippet face()}⚠ {stageName(failed.stage)} failed · {failed.errors.length} ▾{/snippet}
+          {#snippet face()}<StateMark state="error" />
+            {stageName(failed.stage)} failed · {failed.errors.length} ▾{/snippet}
           {#snippet children()}
             <div class="stage-errors">
               {#if unplacedErrors.length > 0}

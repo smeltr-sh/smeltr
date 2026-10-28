@@ -5,6 +5,7 @@
   this view does not show is listed at its top.
 -->
 <script lang="ts">
+  import StateMark from './StateMark.svelte';
   import InlineError from './InlineError.svelte';
   import { reported } from './errors.svelte';
   import {
@@ -497,7 +498,8 @@
           class="note"
           class:ok={tests.passed === tests.total}
           class:bad={tests.passed < tests.total}
-          >{tests.passed === tests.total ? '✓ ' : ''}{tests.passed}/{tests.total} tests</span
+          >{#if tests.passed === tests.total}<StateMark state="ok" />
+          {/if}{tests.passed}/{tests.total} tests</span
         >
       {/if}
       {#if csvSides(c)}

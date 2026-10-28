@@ -10,6 +10,7 @@
 <script lang="ts">
   import { bandPath, bandRect, maxOf, slotAt, sparklinePath, valueLabel, xAt } from './sparkline';
   import { clockTime, dateTime } from './time';
+  import StateMark from './StateMark.svelte';
 
   type Series = { label: string; color: string; points: (number | null)[] };
 
@@ -148,6 +149,7 @@
       {/if}
       {#each marksAt as m (m.from + m.label)}
         <span class="legend-item" class:failed={m.failed} class:warned={!m.failed}>
+          <StateMark state={m.failed ? 'error' : 'warning'} />
           {m.label}, {m.to === null ? `since ${when(m.from)}` : `${when(m.from)}–${when(m.to)}`}
         </span>
       {/each}
