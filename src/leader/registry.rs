@@ -700,6 +700,7 @@ mod tests {
     use super::*;
     use crate::heartbeat::{MetricSampleDto, ThreadKind};
     use crate::leader::series;
+    use crate::leader::series::Window;
 
     /// The question a rotation asks is about the fleet, not about whoever has spoken. A leader restarted
     /// mid-rotation knows its workers from the durable snapshot and has heard from none of them yet; cutting over
@@ -712,14 +713,14 @@ mod tests {
             "w1",
             vec![report("t1", "g")],
             WorkerFacts::default(),
-            crate::leader::series::Window::default(),
+            Window::default(),
             0,
         );
         r.record_heartbeat(
             "w2",
             vec![report("t2", "g")],
             WorkerFacts::default(),
-            crate::leader::series::Window::default(),
+            Window::default(),
             0,
         );
         // Only one of them has said what it holds this run.
@@ -783,7 +784,7 @@ mod tests {
             "gone",
             vec![report("t1", "g")],
             WorkerFacts::default(),
-            crate::leader::series::Window::default(),
+            Window::default(),
             0,
         );
         r.record_authority("gone", vec!["outgoing".to_string()], true);
@@ -800,7 +801,7 @@ mod tests {
             "quiet",
             vec![report("t1", "g")],
             WorkerFacts::default(),
-            crate::leader::series::Window::default(),
+            Window::default(),
             0,
         );
         r.record_authority("quiet", vec!["outgoing".to_string()], true);
@@ -838,28 +839,28 @@ mod tests {
             "w1",
             vec![report("t0", "pool")],
             WorkerFacts::default(),
-            crate::leader::series::Window::default(),
+            Window::default(),
             0,
         );
         r.record_heartbeat(
             "w1",
             vec![report("t1", "pool")],
             WorkerFacts::default(),
-            crate::leader::series::Window::default(),
+            Window::default(),
             0,
         );
         r.record_heartbeat(
             "w2",
             vec![report("t0", "pool")],
             WorkerFacts::default(),
-            crate::leader::series::Window::default(),
+            Window::default(),
             0,
         );
         r.record_heartbeat(
             "w1",
             vec![report("t0", "prod")],
             WorkerFacts::default(),
-            crate::leader::series::Window::default(),
+            Window::default(),
             0,
         );
         let snapshot = r.snapshot();
@@ -882,7 +883,7 @@ mod tests {
                 commit: Some("c0ffee".to_string()),
                 ..Default::default()
             },
-            crate::leader::series::Window::default(),
+            Window::default(),
             0,
         );
         let json = serde_json::to_value(&r.snapshot()[0]).unwrap();
@@ -985,7 +986,7 @@ mod tests {
                     stopped_at_ms: stopping.then_some(at),
                     ..Default::default()
                 },
-                crate::leader::series::Window::default(),
+                Window::default(),
                 at,
             );
         };
@@ -1070,7 +1071,7 @@ mod tests {
                 "w1",
                 vec![report("t0", "pool")],
                 WorkerFacts::default(),
-                crate::leader::series::Window::default(),
+                Window::default(),
                 started_at,
             );
             r.observe_facts(&HashSet::from([key.clone()]), started_at);
@@ -1117,7 +1118,7 @@ mod tests {
                     supervising: Some(supervising.clone()),
                     ..Default::default()
                 },
-                crate::leader::series::Window::default(),
+                Window::default(),
                 started_at,
             );
         }
@@ -1155,7 +1156,7 @@ mod tests {
                     commit: Some("c0ffee".to_string()),
                     ..Default::default()
                 },
-                crate::leader::series::Window::default(),
+                Window::default(),
                 started_at,
             );
         }
@@ -1191,7 +1192,7 @@ mod tests {
                 authority_expires_millis: Some(started_at + 1000),
                 ..Default::default()
             },
-            crate::leader::series::Window::default(),
+            Window::default(),
             started_at,
         );
 
@@ -1210,7 +1211,7 @@ mod tests {
                 authority_expires_millis: Some(started_at + 9000),
                 ..Default::default()
             },
-            crate::leader::series::Window::default(),
+            Window::default(),
             started_at + 1,
         );
 
@@ -1249,7 +1250,7 @@ mod tests {
                     authority_expires_millis: Some(expires),
                     ..Default::default()
                 },
-                crate::leader::series::Window::default(),
+                Window::default(),
                 started_at,
             );
         }
@@ -1302,7 +1303,7 @@ mod tests {
             "w1",
             vec![reader, egress],
             WorkerFacts::default(),
-            crate::leader::series::Window::default(),
+            Window::default(),
             12_345,
         );
 
@@ -1354,7 +1355,7 @@ mod tests {
             "w1",
             vec![with_metrics],
             WorkerFacts::default(),
-            crate::leader::series::Window::default(),
+            Window::default(),
             12_345,
         );
 
@@ -1407,13 +1408,7 @@ mod tests {
             ],
             value: MetricValueDto::Gauge(12.0),
         }];
-        r.record_heartbeat(
-            "w1",
-            vec![with_lag],
-            WorkerFacts::default(),
-            crate::leader::series::Window::default(),
-            12_345,
-        );
+        r.record_heartbeat("w1", vec![with_lag], WorkerFacts::default(), Window::default(), 12_345);
 
         let key = subject_key(
             "pool",
