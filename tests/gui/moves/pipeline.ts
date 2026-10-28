@@ -114,7 +114,7 @@ async function control(
 ) {
   const head = card.locator(':scope > .card-head');
   const own = head.locator(
-    `:scope > .controls > button${label === 'Disable' ? '.fold[aria-label$="this step"]' : `[aria-label="${label}"]`}`,
+    `:scope > .controls button${label === 'Disable' ? '.fold[aria-label$="this step"]' : `[aria-label="${label}"]`}`,
   );
   await head.hover({ position: { x: 4, y: 4 } });
   if (await own.isVisible()) {

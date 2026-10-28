@@ -613,7 +613,7 @@
       <button type="button" class="fold" onclick={moveDown} aria-label="Move down" title="Move down"
         >↓︎</button
       >
-      <RemoveButton label="Delete" onclick={remove} />
+      <span class="fold"><RemoveButton label="Delete" onclick={remove} /></span>
       {@render more()}
     {/if}
   </div>
