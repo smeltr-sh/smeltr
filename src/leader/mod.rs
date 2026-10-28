@@ -333,13 +333,14 @@ async fn heartbeat(
     // One blocking hop for both, and off the runtime's threads: each is a write transaction behind the registry's
     // one connection lock, and a fleet all beating at once would otherwise park every async thread the leader has.
     // Logs first and separately committed -- what a worker had to say about a deployment it is about to describe is
-    // worth having even if describing it fails.
+    // worth having even if describing it fails. The rest of the beat -- its state, and its window's points and
+    // streams -- is one transaction.
     {
         let registry = state.registry.clone();
         let worker = worker_id.clone();
         let events = std::mem::take(&mut req.logs);
         let streams = req.streams.take();
-        let streams_window = req.streams_window;
+        let window = req.streams_window;
         let boot_id = req.boot_id;
         // Empty from a worker too old to state one, which is stored as no group rather than as a group named "".
         let group = Some(req.group_id.clone()).filter(|g| !g.is_empty());
@@ -357,23 +358,25 @@ async fn heartbeat(
             .record_authority(&worker_id, req.authority_fingerprints.clone(), req.takes_authority);
         let recorded = tokio::task::spawn_blocking(move || {
             registry.record_logs(&worker, boot_id, group.as_deref(), &events);
-            if let Some(streams) = &streams {
-                let window = streams_window.map(|seq| series::StreamWindow {
-                    worker_id: &worker,
-                    boot_id,
-                    seq,
+            // A worker too old to state its group reports under none, and its streams go unrecorded.
+            let streams = streams
+                .as_ref()
+                .zip(group.as_deref())
+                .map(|(report, group_id)| series::Streams {
+                    group_id,
+                    report,
+                    // A worker that names no commit, or a leader with nothing deployed, cannot tell a rollout apart,
+                    // so the report counts as the deployed one.
+                    deployed: match (&commit, git::deployed(&git::repo_path(&data_dir))) {
+                        (Some(running), Some(deployed)) => *running == deployed,
+                        _ => true,
+                    },
                 });
-                // A worker that names no commit, or a leader with nothing deployed, cannot tell a rollout apart, so
-                // the report counts as the deployed one.
-                let deployed = match (&commit, git::deployed(&git::repo_path(&data_dir))) {
-                    (Some(running), Some(deployed)) => *running == deployed,
-                    _ => true,
-                };
-                registry.record_streams(group.as_deref(), streams, window, deployed, now_ms);
-            }
             registry.record_heartbeat(
                 &worker,
                 threads,
+                window.map(|seq| series::Window { boot_id, seq }),
+                streams,
                 stop_after,
                 commit,
                 smeltr_version,
@@ -4618,6 +4621,8 @@ mod warnings_endpoint_tests {
             }],
             None,
             None,
+            None,
+            None,
             crate::version::VERSION.to_string(),
             None,
             None,
@@ -4699,6 +4704,8 @@ mod warnings_endpoint_tests {
             }],
             None,
             None,
+            None,
+            None,
             crate::version::VERSION.to_string(),
             None,
             None,
@@ -4761,6 +4768,8 @@ mod warnings_endpoint_tests {
             vec![held.clone()],
             None,
             None,
+            None,
+            None,
             crate::version::VERSION.to_string(),
             None,
             None,
@@ -4775,6 +4784,8 @@ mod warnings_endpoint_tests {
         state.registry.record_heartbeat(
             "w1",
             vec![held],
+            None,
+            None,
             None,
             None,
             String::new(),

@@ -248,11 +248,17 @@ impl Registry {
     /// A stopping heartbeat is the worker's last word, sent once its threads have ended. Its rows become exactly
     /// the reports it carried about the worker itself: what its threads last said is history, and history owns no
     /// partition and blocks no source. What those threads counted still reaches the series.
+    ///
+    /// `window` is which window of the worker's life the beat's samples and `streams` are, and a window already
+    /// recorded adds neither again (`RegistryStore::record_heartbeat`). The streams are the design doc's
+    /// Observability: Streams, from a worker that stated its group.
     #[allow(clippy::too_many_arguments)]
     pub fn record_heartbeat(
         &self,
         worker_id: &str,
         reports: Vec<ThreadHeartbeat>,
+        window: Option<super::series::Window>,
+        streams: Option<super::series::Streams<'_>>,
         stop_after_unreachable_secs: Option<u64>,
         commit: Option<String>,
         smeltr_version: String,
@@ -269,6 +275,8 @@ impl Registry {
                 store,
                 worker_id,
                 &reports,
+                window,
+                streams,
                 stop_after_unreachable_secs,
                 commit.as_deref(),
                 &smeltr_version,
@@ -489,32 +497,6 @@ impl Registry {
         });
     }
 
-    /// One heartbeat's streams, added to what `group_id` has accumulated (design doc, Observability: Streams) unless
-    /// they are a `window` already added. `deployed` is whether the worker runs its group's deployed commit
-    /// ([`super::series::RegistryStore::record_streams`]). A
-    /// worker too old to state its group reports under none, and its streams go unrecorded. A store that will not
-    /// take a window says so: it is a window of counts, never data.
-    pub fn record_streams(
-        &self,
-        group_id: Option<&str>,
-        report: &crate::heartbeat::StreamReport,
-        window: Option<super::series::StreamWindow>,
-        deployed: bool,
-        now_ms: i64,
-    ) {
-        let (Some(store), Some(group)) = (&self.store, group_id) else {
-            return;
-        };
-        if let Err(e) = store.record_streams(group, report, window, deployed, now_ms) {
-            tracing::warn!(
-                target: "registry.streams_not_persisted",
-                subject = %group,
-                error = %e,
-                "a heartbeat's streams could not be persisted, so that window of what the fleet saw is missing"
-            );
-        }
-    }
-
     /// Every fact the clock holds for one catalog entry: what a caller that cannot yet say whether those facts still
     /// hold passes back to [`Registry::observe_facts`], so their start times are kept rather than forgotten.
     pub fn facts_of(&self, entry: &str) -> Vec<FactKey> {
@@ -625,6 +607,8 @@ fn persist_heartbeat(
     store: &RegistryStore,
     worker_id: &str,
     reports: &[ThreadHeartbeat],
+    window: Option<super::series::Window>,
+    streams: Option<super::series::Streams<'_>>,
     stop_after_unreachable_secs: Option<u64>,
     commit: Option<&str>,
     smeltr_version: &str,
@@ -689,6 +673,8 @@ fn persist_heartbeat(
         worker_id,
         threads: &threads,
         points: &points,
+        window,
+        streams,
         stop_after_unreachable_secs,
         commit,
         smeltr_version,
@@ -751,6 +737,8 @@ mod tests {
             vec![report("t1", "g")],
             None,
             None,
+            None,
+            None,
             String::new(),
             None,
             None,
@@ -762,6 +750,8 @@ mod tests {
         r.record_heartbeat(
             "w2",
             vec![report("t2", "g")],
+            None,
+            None,
             None,
             None,
             String::new(),
@@ -834,6 +824,8 @@ mod tests {
             vec![report("t1", "g")],
             None,
             None,
+            None,
+            None,
             String::new(),
             None,
             None,
@@ -855,6 +847,8 @@ mod tests {
         r.record_heartbeat(
             "quiet",
             vec![report("t1", "g")],
+            None,
+            None,
             None,
             None,
             String::new(),
@@ -901,6 +895,8 @@ mod tests {
             vec![report("t0", "pool")],
             None,
             None,
+            None,
+            None,
             String::new(),
             None,
             None,
@@ -912,6 +908,8 @@ mod tests {
         r.record_heartbeat(
             "w1",
             vec![report("t1", "pool")],
+            None,
+            None,
             None,
             None,
             String::new(),
@@ -927,6 +925,8 @@ mod tests {
             vec![report("t0", "pool")],
             None,
             None,
+            None,
+            None,
             String::new(),
             None,
             None,
@@ -938,6 +938,8 @@ mod tests {
         r.record_heartbeat(
             "w1",
             vec![report("t0", "prod")],
+            None,
+            None,
             None,
             None,
             String::new(),
@@ -963,6 +965,8 @@ mod tests {
         r.record_heartbeat(
             "w1",
             vec![report("t0", "pool")],
+            None,
+            None,
             Some(300),
             Some("c0ffee".to_string()),
             String::new(),
@@ -1071,6 +1075,8 @@ mod tests {
                 threads,
                 None,
                 None,
+                None,
+                None,
                 String::new(),
                 None,
                 None,
@@ -1162,6 +1168,8 @@ mod tests {
                 vec![report("t0", "pool")],
                 None,
                 None,
+                None,
+                None,
                 String::new(),
                 None,
                 None,
@@ -1210,6 +1218,8 @@ mod tests {
                 "w1",
                 vec![report("t0", "pool")],
                 None,
+                None,
+                None,
                 Some("c0ffee".to_string()),
                 String::new(),
                 None,
@@ -1249,6 +1259,8 @@ mod tests {
             r.record_heartbeat(
                 "w1",
                 vec![report("t0", "pool")],
+                None,
+                None,
                 Some(300),
                 Some("c0ffee".to_string()),
                 String::new(),
@@ -1288,6 +1300,8 @@ mod tests {
             "w1",
             vec![report("t0", "pool")],
             None,
+            None,
+            None,
             Some("c0ffee".to_string()),
             String::new(),
             None,
@@ -1308,6 +1322,8 @@ mod tests {
         r.record_heartbeat(
             "w1",
             vec![],
+            None,
+            None,
             None,
             None,
             String::new(),
@@ -1350,6 +1366,8 @@ mod tests {
             r.record_heartbeat(
                 "w1",
                 vec![report("t0", "pool")],
+                None,
+                None,
                 None,
                 None,
                 String::new(),
@@ -1411,6 +1429,8 @@ mod tests {
             vec![reader, egress],
             None,
             None,
+            None,
+            None,
             String::new(),
             None,
             None,
@@ -1467,6 +1487,8 @@ mod tests {
         r.record_heartbeat(
             "w1",
             vec![with_metrics],
+            None,
+            None,
             None,
             None,
             String::new(),
@@ -1530,6 +1552,8 @@ mod tests {
         r.record_heartbeat(
             "w1",
             vec![with_lag],
+            None,
+            None,
             None,
             None,
             String::new(),

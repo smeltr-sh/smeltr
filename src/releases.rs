@@ -227,6 +227,8 @@ fn record_release() {
     registry.record_heartbeat(
         &heartbeat.worker_id,
         heartbeat.threads.clone(),
+        None,
+        None,
         heartbeat.stop_after_unreachable_secs,
         heartbeat.commit.clone(),
         heartbeat.smeltr_version.clone(),
