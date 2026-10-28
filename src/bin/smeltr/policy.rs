@@ -12,6 +12,7 @@ use axum::http::Method;
 
 use smeltr::config_file::{GROUPS_DIR, SHARED_DIR, is_safe_group_id};
 use smeltr::leader::access::{Access, Level};
+use smeltr::leader::envelope::Refusal;
 
 /// What a request needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +47,13 @@ impl Need {
             Need::Anyone => String::new(),
             Need::Administrator => "this needs an administrator".to_string(),
         }
+    }
+}
+
+/// A need the caller does not meet, as the 403 a route answers.
+impl From<Need> for Refusal {
+    fn from(need: Need) -> Self {
+        Refusal::forbidden(need.refusal())
     }
 }
 

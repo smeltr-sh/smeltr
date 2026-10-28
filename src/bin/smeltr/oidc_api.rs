@@ -31,13 +31,13 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use smeltr::leader::access::Role;
-use smeltr::leader::envelope::{ApiError, Envelope};
-use smeltr::leader::oidc::{self, Jwks, Provider, RefreshFailure, Refusal};
+use smeltr::leader::envelope::{Envelope, Refusal};
+use smeltr::leader::oidc::{self, Jwks, Provider, RefreshFailure};
 use smeltr::leader::sessions::{Due, Grant};
 use smeltr::leader::store::{Actor, OidcSignIn, Store, StoreError};
 use smeltr::leader::{accounts, blocking};
 
-use crate::gate::{Auth, refuse};
+use crate::gate::{Auth, store_unavailable};
 
 pub const ENABLED_KEY: &str = "oidc.enabled";
 pub const ISSUER_KEY: &str = "oidc.issuer";
@@ -229,8 +229,8 @@ impl Oidc {
     ) -> Result<oidc::Claims, Unverified> {
         match oidc::verify_id_token(token, &known.jwks, expect, groups_claim) {
             Ok(claims) => return Ok(claims),
-            Err(Refusal::UnknownKey) => {}
-            Err(Refusal::Invalid(why)) => return Err(Unverified::Refused(why)),
+            Err(oidc::Refusal::UnknownKey) => {}
+            Err(oidc::Refusal::Invalid(why)) => return Err(Unverified::Refused(why)),
         }
         let jwks = oidc::fetch_jwks(&known.client, &known.provider.jwks_uri)
             .await
@@ -241,8 +241,10 @@ impl Oidc {
         }
         checked.map_err(|refusal| {
             Unverified::Refused(match refusal {
-                Refusal::UnknownKey => "the ID token was signed with a key the provider does not publish".to_string(),
-                Refusal::Invalid(why) => why,
+                oidc::Refusal::UnknownKey => {
+                    "the ID token was signed with a key the provider does not publish".to_string()
+                }
+                oidc::Refusal::Invalid(why) => why,
             })
         })
     }
@@ -396,14 +398,14 @@ pub async fn offered(State(auth): State<Auth>) -> Response {
     match usable(&auth).await {
         Ok(settings) => (
             [(header::CACHE_CONTROL, "no-store")],
-            Json(OfferedDto {
+            Envelope::ok(OfferedDto {
                 offered: settings.is_some(),
             }),
         )
             .into_response(),
         Err(e) => {
             tracing::error!(target: "leader.identity_unavailable", error = %e, "the OIDC settings could not be read");
-            refuse(StatusCode::SERVICE_UNAVAILABLE, "the account store is unavailable")
+            store_unavailable()
         }
     }
 }
@@ -870,12 +872,11 @@ pub struct PutSettings {
     groups_claim: String,
 }
 
-async fn answer(auth: &Auth, error: Option<String>) -> Json<Envelope<OidcSettings>> {
+/// The settings as stored, with `refused` beside them when a write was: the form shows what to correct.
+async fn answer(auth: &Auth, refused: Option<Refusal>) -> Envelope<OidcSettings> {
     let store = auth.store.clone();
-    let read = blocking(move || Settings::read(store.as_ref()))
-        .await
-        .map_err(|e| e.to_string());
-    Json(match read {
+    let read = blocking(move || Settings::read(store.as_ref())).await;
+    match read {
         Ok(settings) => Envelope::with(
             OidcSettings {
                 settings: Some(SettingsDto {
@@ -887,14 +888,15 @@ async fn answer(auth: &Auth, error: Option<String>) -> Json<Envelope<OidcSetting
                     redirect_uri: redirect_uri(auth),
                 }),
             },
-            error.into_iter().map(ApiError::new).collect(),
+            refused.as_ref().map_or(StatusCode::OK, |r| r.status),
+            refused.map(|r| r.errors).unwrap_or_default(),
         ),
-        Err(e) => Envelope::failed_one(e),
-    })
+        Err(e) => Envelope::refused(e),
+    }
 }
 
 /// `GET /api/settings/oidc`.
-pub async fn get_settings(State(auth): State<Auth>) -> Json<Envelope<OidcSettings>> {
+pub async fn get_settings(State(auth): State<Auth>) -> Envelope<OidcSettings> {
     answer(&auth, None).await
 }
 
@@ -914,27 +916,37 @@ pub async fn put_settings(
     write_settings(&auth, actor, request).await.into_response()
 }
 
-async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Json<Envelope<OidcSettings>> {
+async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Envelope<OidcSettings> {
     let issuer = request.issuer.trim().to_string();
     let client_id = request.client_id.trim().to_string();
     let groups_claim = request.groups_claim.trim().to_string();
     if !issuer.is_empty()
         && let Err(e) = oidc::check_issuer(&issuer)
     {
-        return answer(auth, Some(e)).await;
+        return answer(auth, Some(Refusal::invalid(e))).await;
     }
     if [&client_id, &groups_claim].iter().any(|text| text.len() > MOST_TEXT) {
-        return answer(auth, Some(format!("a client id or claim is at most {MOST_TEXT} bytes"))).await;
+        return answer(
+            auth,
+            Some(Refusal::invalid(format!(
+                "a client id or claim is at most {MOST_TEXT} bytes"
+            ))),
+        )
+        .await;
     }
     if request.client_secret.as_ref().is_some_and(|s| s.len() > 4096) {
-        return answer(auth, Some("a client secret is at most 4096 bytes".to_string())).await;
+        return answer(
+            auth,
+            Some(Refusal::invalid("a client secret is at most 4096 bytes".to_string())),
+        )
+        .await;
     }
 
     let one_at_a_time = auth.settings_writes.lock().await;
     let store = auth.store.clone();
     let was = match blocking(move || Settings::read(store.as_ref())).await {
         Ok(was) => was,
-        Err(e) => return answer(auth, Some(e.to_string())).await,
+        Err(e) => return answer(auth, Some(e.into())).await,
     };
     // A secret is for the client it was issued to: another issuer or client id forgets it unless a new one is given.
     let secret = match request.client_secret {
@@ -949,12 +961,20 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Json
         if issuer.is_empty() || client_id.is_empty() || !will_hold_secret {
             return answer(
                 auth,
-                Some("OIDC needs an issuer, a client id and a client secret".to_string()),
+                Some(Refusal::invalid(
+                    "OIDC needs an issuer, a client id and a client secret".to_string(),
+                )),
             )
             .await;
         }
         if let Err(e) = read_provider(&issuer).await {
-            return answer(auth, Some(format!("the provider at {issuer} could not be read: {e}"))).await;
+            return answer(
+                auth,
+                Some(Refusal::invalid(format!(
+                    "the provider at {issuer} could not be read: {e}"
+                ))),
+            )
+            .await;
         }
     }
 
@@ -1003,7 +1023,7 @@ async fn write_settings(auth: &Auth, actor: Actor, request: PutSettings) -> Json
     })
     .await;
     drop(one_at_a_time);
-    let error = written.err().map(|e| e.to_string());
+    let error = written.err().map(Refusal::from);
     auth.oidc.forget();
     answer(auth, error).await
 }

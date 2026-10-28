@@ -9,7 +9,7 @@ use std::time::Duration;
 use axum::Json;
 use axum::extract::State;
 
-use super::envelope::Envelope;
+use super::envelope::{Envelope, Refusal};
 use super::store::Actor;
 use super::{AppState, run_store};
 
@@ -212,19 +212,19 @@ pub struct UpdateSettings {
 }
 
 impl UpdateSettings {
-    fn answer(check: Result<bool, String>) -> Json<Envelope<UpdateSettings>> {
-        Json(match check {
+    fn answer(check: Result<bool, Refusal>) -> Envelope<UpdateSettings> {
+        match check {
             Ok(check) => Envelope::ok(UpdateSettings {
                 settings: Some(UpdateSettingsDto { check }),
             }),
-            Err(e) => Envelope::failed_one(e),
-        })
+            Err(refusal) => Envelope::refused(refusal),
+        }
     }
 }
 
 /// `GET /api/settings/updates`.
-pub async fn get_settings(State(state): State<AppState>) -> Json<Envelope<UpdateSettings>> {
-    UpdateSettings::answer(run_store(state.store, checking).await.map_err(|e| e.to_string()))
+pub async fn get_settings(State(state): State<AppState>) -> Envelope<UpdateSettings> {
+    UpdateSettings::answer(run_store(state.store, checking).await.map_err(Refusal::from))
 }
 
 /// `PUT /api/settings/updates`. Recorded with who set it, in the transaction that sets it; the timer looks at once
@@ -233,7 +233,7 @@ pub async fn put_settings(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Json(request): Json<UpdateSettingsDto>,
-) -> Json<Envelope<UpdateSettings>> {
+) -> Envelope<UpdateSettings> {
     let actor = actor.map(|a| a.0).unwrap_or_else(Actor::system);
     let check = request.check;
     let event = super::accounts::event_for(&actor, "update-settings-change", "", "ok");
@@ -242,7 +242,7 @@ pub async fn put_settings(
     })
     .await;
     state.updates.settings_changed.notify_one();
-    UpdateSettings::answer(written.map(|()| check).map_err(|e| e.to_string()))
+    UpdateSettings::answer(written.map(|()| check).map_err(Refusal::from))
 }
 
 #[cfg(test)]

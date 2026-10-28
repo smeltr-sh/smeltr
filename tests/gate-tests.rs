@@ -797,9 +797,12 @@ fn an_administrator_keeps_certificates_in_the_list() {
 
     let (status, listed) = leader.get_as(&op.session, "/api/certificates");
     assert_eq!(status, 200);
-    assert_eq!(listed[0]["name"], "receiver");
-    assert_eq!(listed[0]["chain"][0]["subject"], "rcgen self signed cert");
-    assert_eq!(listed[0]["served"], false);
+    assert_eq!(listed["certificates"][0]["name"], "receiver");
+    assert_eq!(
+        listed["certificates"][0]["chain"][0]["subject"],
+        "rcgen self signed cert"
+    );
+    assert_eq!(listed["certificates"][0]["served"], false);
     let (_, secrets) = leader.get_as(&op.session, "/api/secrets");
     assert!(
         !secrets.to_string().contains("receiver"),
@@ -819,11 +822,11 @@ fn an_administrator_keeps_certificates_in_the_list() {
     let (_, replaced) = leader.put_as(&op, "/api/certificates/receiver", body);
     assert_eq!(replaced["ok"], true, "{replaced}");
     let (_, listed) = leader.get_as(&op.session, "/api/certificates");
-    assert_eq!(listed[0]["versions"].as_array().map(Vec::len), Some(2));
+    assert_eq!(listed["certificates"][0]["versions"].as_array().map(Vec::len), Some(2));
 
     assert_eq!(leader.delete_as(&op, "/api/secrets/receiver"), 200);
     let (_, listed) = leader.get_as(&op.session, "/api/certificates");
-    assert_eq!(listed, serde_json::json!([]));
+    assert_eq!(listed["certificates"], serde_json::json!([]));
 }
 
 /// The whole account lifecycle, from an administrator creating one to the new person using it.
@@ -1046,7 +1049,7 @@ fn the_agent_apis_wait_until_ai_agents_are_turned_on() {
         serde_json::json!({ "kind": "everything" }),
     );
     assert_eq!(status, 409, "{body}");
-    assert_eq!(body["error"], "AI agents are not turned on");
+    assert_eq!(body["errors"][0]["message"], "AI agents are not turned on");
     let (status, _) = leader.get_as(&op.session, "/api/me/agent-permissions");
     assert_eq!(status, 200);
 
@@ -1136,7 +1139,7 @@ fn a_person_sets_what_their_agent_may_use() {
     assert_eq!(status, 200);
     assert_eq!(
         permissions,
-        serde_json::json!({ "kind": "upto", "default": "viewer", "areas": {} })
+        serde_json::json!({ "ok": true, "errors": [], "kind": "upto", "default": "viewer", "areas": {} })
     );
     let (status, _) = leader.put_as(
         &op,
@@ -1145,13 +1148,16 @@ fn a_person_sets_what_their_agent_may_use() {
     );
     assert_eq!(status, 200);
     let (_, permissions) = leader.get_as(&op.session, "/api/me/agent-permissions");
-    assert_eq!(permissions, serde_json::json!({ "kind": "everything" }));
+    assert_eq!(
+        permissions,
+        serde_json::json!({ "ok": true, "errors": [], "kind": "everything" })
+    );
     let (status, _) = leader.put_as(
         &op,
         "/api/me/agent-permissions",
         serde_json::json!({ "kind": "upto", "default": "viewer", "areas": { "../x": "editor" } }),
     );
-    assert_eq!(status, 400);
+    assert_eq!(status, 422);
 }
 
 /// The conversation `id` once its turn has ended.
@@ -1344,7 +1350,7 @@ fn the_last_administrator_cannot_disable_themselves() {
     let leader = start("last-admin");
     let op = operator(&leader);
     let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users[0]["id"].as_str().unwrap();
+    let id = users["users"][0]["id"].as_str().unwrap();
     let (status, body) = leader.patch_as(
         &op,
         &format!("/api/users/{id}"),
@@ -1409,7 +1415,7 @@ fn revoking_sessions_ends_them_and_leaves_the_password_alone() {
     let leader = start("revoke");
     let op = operator(&leader);
     let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users[0]["id"].as_str().unwrap().to_string();
+    let id = users["users"][0]["id"].as_str().unwrap().to_string();
 
     let (status, _) = leader.post_as(&op, &format!("/api/users/{id}/revoke-sessions"), serde_json::json!({}));
     assert_eq!(status, 200);
@@ -1493,7 +1499,7 @@ fn account_changes_are_audited_without_their_passwords() {
     let (status, events) = leader.get_as(&op.session, "/api/security-events");
     assert_eq!(status, 200);
     let rendered = events.to_string();
-    let actions: Vec<&str> = events
+    let actions: Vec<&str> = events["events"]
         .as_array()
         .unwrap()
         .iter()
@@ -1523,7 +1529,7 @@ fn a_display_name_with_a_newline_is_refused() {
             "displayName": "Dana\n<someone@else>",
         }),
     );
-    assert_eq!(status, 400);
+    assert_eq!(status, 422);
 }
 
 // -- attribution ------------------------------------------------------------
@@ -1558,7 +1564,7 @@ fn a_renamed_person_keeps_the_commits_they_wrote() {
     let leader = start("attribution-rename");
     let op = operator(&leader);
     let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users[0]["id"].as_str().unwrap().to_string();
+    let id = users["users"][0]["id"].as_str().unwrap().to_string();
 
     deploy_something(&leader, &op);
     leader.patch_as(
@@ -1649,7 +1655,7 @@ fn an_unknown_session_cookie_is_cleared_when_activity_is_reported() {
     assert!(cleared.contains("Max-Age=0"), "{cleared}");
     let body: serde_json::Value = response.into_body().read_json().expect("a JSON refusal");
     assert_eq!(body["ok"], serde_json::Value::Bool(false), "{body}");
-    assert!(body["error"].is_string(), "{body}");
+    assert!(body["errors"][0]["message"].is_string(), "{body}");
 }
 
 /// A required change is not asked for the password it replaces, and a settled session is: the first was issued
@@ -1668,7 +1674,7 @@ fn only_a_required_change_skips_the_current_password() {
             .send(&body),
         "password",
     );
-    assert_eq!(status, 400);
+    assert_eq!(status, 422);
     assert_eq!(
         leader.get_as(&session, "/api/health").0,
         200,
@@ -1716,7 +1722,7 @@ fn a_refused_sign_in_records_a_bounded_subject() {
     let (_, events) = leader.get_as(&op.session, "/api/security-events");
     let recorded = |sent: &str| {
         let head = &sent[..4];
-        events
+        events["events"]
             .as_array()
             .unwrap()
             .iter()
@@ -1741,18 +1747,18 @@ fn a_patch_changing_two_things_at_once_is_refused_before_anything_changes() {
     let leader = start("patch-atomic");
     let op = operator(&leader);
     let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users[0]["id"].as_str().unwrap().to_string();
-    let was = users[0]["displayName"].as_str().unwrap().to_string();
+    let id = users["users"][0]["id"].as_str().unwrap().to_string();
+    let was = users["users"][0]["displayName"].as_str().unwrap().to_string();
 
     let (status, _) = leader.patch_as(
         &op,
         &format!("/api/users/{id}"),
         serde_json::json!({ "displayName": "Renamed", "enabled": false }),
     );
-    assert_eq!(status, 400);
+    assert_eq!(status, 422);
 
     let (_, after) = leader.get_as(&op.session, "/api/users");
-    assert_eq!(after[0]["displayName"], was, "the rename landed anyway");
+    assert_eq!(after["users"][0]["displayName"], was, "the rename landed anyway");
 }
 
 /// An origin carrying a path or a query can never equal what a browser sends, so accepting it would leave every
@@ -1878,7 +1884,7 @@ fn a_display_name_git_cannot_hold_is_refused() {
         "/api/users",
         serde_json::json!({ "username": "dana", "displayName": "Dana <Ops>" }),
     );
-    assert_eq!(status, 400, "{body}");
+    assert_eq!(status, 422, "{body}");
 
     // And the same name cannot arrive by renaming afterward.
     let (status, created) = leader.post_as(
@@ -1893,7 +1899,7 @@ fn a_display_name_git_cannot_hold_is_refused() {
         &format!("/api/users/{id}"),
         serde_json::json!({ "displayName": "Dana <Ops>" }),
     );
-    assert_eq!(status, 400, "{renamed}");
+    assert_eq!(status, 422, "{renamed}");
 }
 
 /// Changing a password is throttled, and the caller is told how long to wait. A session is not a license to guess
@@ -1980,7 +1986,7 @@ fn an_idle_timeout_past_the_absolute_one_is_refused() {
         "/api/settings/sessions",
         serde_json::json!({ "idleSeconds": 86400, "absoluteSeconds": 3600 }),
     );
-    assert_eq!(status, 400, "{body}");
+    assert_eq!(status, 422, "{body}");
 
     let (_, settings) = leader.get_as(&op.session, "/api/settings/sessions");
     assert_eq!(
@@ -2354,7 +2360,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
     let (ended, _) = oidc_sign_in(&leader);
     assert_eq!(ended, "/");
     let (_, users) = leader.get_as(&op.session, "/api/users");
-    let oidc: Vec<_> = users
+    let oidc: Vec<_> = users["users"]
         .as_array()
         .expect("a roster")
         .iter()
@@ -2392,7 +2398,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
 
     // Every refusal is on the record, and so is what the settings change touched.
     let (_, events) = leader.get_as(&op.session, "/api/security-events");
-    let rows = events.as_array().unwrap();
+    let rows = events["events"].as_array().unwrap();
     let refused = rows
         .iter()
         .filter(|e| e["action"] == "login" && e["outcome"] == "refused")

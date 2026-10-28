@@ -77,12 +77,12 @@ fn pinned(repo: &Path, running: &HashSet<(String, String)>) -> Result<HashSet<St
     let mut named = HashSet::new();
     // What the fleet runs, which a rollback can leave behind every branch.
     let heads = git::list_branches(repo)
-        .map_err(|e| e.0)?
+        .map_err(|e| e.message)?
         .into_iter()
         .map(|branch| branch.head);
     for head in heads.chain(git::deployed(repo)) {
         let mut prefixes = vec![shared()];
-        for group in tree::groups_at(repo, &head).map_err(|e| e.0)? {
+        for group in tree::groups_at(repo, &head).map_err(|e| e.message)? {
             prefixes.extend(crate::config_file::group_subtree(&group));
         }
         named.extend(tree::lookup_pointers(repo, &head, &prefixes)?.into_keys());

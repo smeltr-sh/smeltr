@@ -93,7 +93,7 @@ pub fn hash_password(password: &str) -> Result<String, StoreError> {
     argon2()
         .hash_password_with_salt(password.as_bytes(), &salt)
         .map(|hash| hash.to_string())
-        .map_err(|e| StoreError(format!("hashing a password: {e}")))
+        .map_err(|e| StoreError::failed(format!("hashing a password: {e}")))
 }
 
 /// Whether `password` matches `stored`. `Ok(None)` is a clean mismatch; an error is a hash this build cannot read,
@@ -101,7 +101,8 @@ pub fn hash_password(password: &str) -> Result<String, StoreError> {
 ///
 /// As expensive as [`hash_password`], and under the same rule about where it may run.
 pub fn verify_password(password: &str, stored: &str) -> Result<Option<Verified>, StoreError> {
-    let parsed = PasswordHash::new(stored).map_err(|e| StoreError(format!("reading a stored password hash: {e}")))?;
+    let parsed =
+        PasswordHash::new(stored).map_err(|e| StoreError::failed(format!("reading a stored password hash: {e}")))?;
     match argon2().verify_password(password.as_bytes(), &parsed) {
         Ok(()) => Ok(Some(Verified {
             needs_rehash: weaker_than_current(&parsed),
@@ -110,7 +111,9 @@ pub fn verify_password(password: &str, stored: &str) -> Result<Option<Verified>,
         // parameter set this build cannot compute -- is the store being unreadable, not the password being wrong,
         // and reporting it as a mismatch would leave an operator locked out with nothing to act on.
         Err(argon2::password_hash::Error::PasswordInvalid) => Ok(None),
-        Err(e) => Err(StoreError(format!("verifying against a stored password hash: {e}"))),
+        Err(e) => Err(StoreError::failed(format!(
+            "verifying against a stored password hash: {e}"
+        ))),
     }
 }
 
@@ -383,7 +386,7 @@ fn written(result: Result<i64, AccountError>) -> Result<PasswordChange, StoreErr
     match result {
         Ok(_) => Ok(PasswordChange::Changed),
         Err(AccountError::Superseded | AccountError::NoSuchUser) => Ok(PasswordChange::Superseded),
-        Err(e) => Err(StoreError(e.to_string())),
+        Err(e) => Err(StoreError::failed(e.to_string())),
     }
 }
 

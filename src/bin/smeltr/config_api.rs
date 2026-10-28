@@ -26,10 +26,10 @@ use axum::http::{HeaderMap, StatusCode};
 use smeltr::config_file::{
     self, DestinationDto, FileConfig, LookupSourceDto, LookupTableDto, PipelineDto, RawBundle, RouteDto, SourceDto,
 };
-use smeltr::leader::envelope::{ApiError, Envelope};
+use smeltr::leader::envelope::{ApiError, Envelope, Refusal};
 use smeltr::leader::store::Actor;
 use smeltr::leader::tree::TreeFiles;
-use smeltr::leader::{blocking, git};
+use smeltr::leader::{blocking, blocking_answer, git};
 use smeltr::plan::config::LookupFile;
 use smeltr::startup_config::leader_data_dir;
 
@@ -61,11 +61,11 @@ struct Scope(String);
 impl Scope {
     /// `raw` as a request's path names the area: `"shared"`, or a group id. Refuses whatever `git::group_subtree`
     /// would, with the same message.
-    fn parse(raw: &str) -> Result<Scope, String> {
+    fn parse(raw: &str) -> Result<Scope, Refusal> {
         if raw == smeltr::config_file::SHARED_DIR {
             return Ok(Scope(smeltr::config_file::SHARED_DIR.to_string()));
         }
-        Ok(Scope(git::group_subtree(raw).map_err(|e| e.to_string())?))
+        Ok(Scope(git::group_subtree(raw)?))
     }
 
     /// Where this scope's bundle sits within the repository: `shared` or `groups/<id>`.
@@ -104,22 +104,23 @@ impl Reading {
         group_of(&self.prefix)
     }
 
-    pub fn open(branch: &str, scope: &str) -> Result<Reading, String> {
+    pub fn open(branch: &str, scope: &str) -> Result<Reading, Refusal> {
         Reading::open_in(&leader_data_dir(), branch, scope)
     }
 
     /// `data_dir` explicit rather than read from the environment -- what a test needs to run against a scratch
     /// repository.
-    pub(crate) fn open_in(data_dir: &Path, branch: &str, scope: &str) -> Result<Reading, String> {
+    pub(crate) fn open_in(data_dir: &Path, branch: &str, scope: &str) -> Result<Reading, Refusal> {
         let prefix = Scope::parse(scope)?.prefix().to_string();
         let repo = git::repo_path(data_dir);
         if !git::repo_ready(&repo) {
-            git::init_bare_repo(&repo).map_err(|e| e.to_string())?;
-            git::ensure_main_commit(&repo).map_err(|e| e.to_string())?;
+            git::init_bare_repo(&repo)?;
+            git::ensure_main_commit(&repo)?;
         }
-        let started = branch == git::MAIN_BRANCH || git::branch_exists(&repo, branch).map_err(|e| e.to_string())?;
+        let started = branch == git::MAIN_BRANCH || git::branch_exists(&repo, branch)?;
         let branch = if started { branch } else { git::MAIN_BRANCH };
-        let commit = git::branch_tip(&repo, branch).ok_or_else(|| format!("there is no branch {branch:?} to read"))?;
+        let commit = git::branch_tip(&repo, branch)
+            .ok_or_else(|| Refusal::not_found(format!("there is no branch {branch:?} to read")))?;
         Ok(Reading {
             repo,
             branch: branch.to_string(),
@@ -131,21 +132,21 @@ impl Reading {
     /// The scope as it was at `commit`, a full commit id in `branch`'s history or `main`'s: one save, or where the
     /// branch left `main`. A commit in neither is refused, so a reader sees only what was on the branch it names
     /// or what that branch could have started from. `data_dir` explicit, as for `open_in`.
-    pub(crate) fn open_commit_in(data_dir: &Path, branch: &str, scope: &str, commit: &str) -> Result<Reading, String> {
-        git::check_commit_id(commit).map_err(|e| e.to_string())?;
+    pub(crate) fn open_commit_in(data_dir: &Path, branch: &str, scope: &str, commit: &str) -> Result<Reading, Refusal> {
+        git::check_commit_id(commit)?;
         if commit.len() != 40 {
-            return Err(format!(
+            return Err(Refusal::invalid(format!(
                 "{commit:?} is not a whole commit id: 40 hexadecimal characters"
-            ));
+            )));
         }
         let reading = Reading::open_in(data_dir, branch, scope)?;
         let commit = commit.to_ascii_lowercase();
-        let in_history = |rev: &str| git::reachable_from(&reading.repo, &commit, rev).map_err(|e| e.to_string());
+        let in_history = |rev: &str| git::reachable_from(&reading.repo, &commit, rev);
         if !in_history(&reading.branch)? && !in_history(git::MAIN_BRANCH)? {
-            return Err(format!(
+            return Err(Refusal::not_found(format!(
                 "{commit} is not in the history of {branch:?} or of {}",
                 git::MAIN_BRANCH
-            ));
+            )));
         }
         Ok(Reading {
             branch: reading.branch,
@@ -155,7 +156,7 @@ impl Reading {
 
     /// The scope at `commit`, a whole commit id the leader itself names, such as the deployed one. Unlike
     /// [`Reading::open_commit_in`], which reads a commit a caller asked for, it is not checked against any history.
-    pub(crate) fn at_commit_in(data_dir: &Path, scope: &str, commit: &str) -> Result<Reading, String> {
+    pub(crate) fn at_commit_in(data_dir: &Path, scope: &str, commit: &str) -> Result<Reading, Refusal> {
         Ok(Reading {
             repo: git::repo_path(data_dir),
             branch: git::MAIN_BRANCH.to_string(),
@@ -171,7 +172,7 @@ impl Reading {
     /// A second scope at the exact commit this one already resolved to, not a fresh branch-tip lookup: a caller
     /// merging two scopes together (`load_group_from`'s merge, restated for a group's own read) must not have the
     /// branch move between the two reads and see a hybrid that never existed on either commit.
-    pub(crate) fn sibling(&self, scope: &str) -> Result<Reading, String> {
+    pub(crate) fn sibling(&self, scope: &str) -> Result<Reading, Refusal> {
         Ok(Reading {
             repo: self.repo.clone(),
             branch: self.branch.clone(),
@@ -224,73 +225,76 @@ pub struct Conflict {
     pub now: Option<String>,
 }
 
-/// A save that was not written. Every refusal carries a message; one caused by the branch moving carries the two
-/// commits as well.
+/// A save that was not written: why, at its status, and the two commits when the branch moving is why.
 #[derive(Debug)]
-pub struct Refusal {
-    pub message: String,
+pub struct NotWritten {
+    pub refusal: Refusal,
     pub conflict: Option<Conflict>,
 }
 
-impl From<String> for Refusal {
-    fn from(message: String) -> Self {
-        Refusal {
-            message,
+impl From<Refusal> for NotWritten {
+    fn from(refusal: Refusal) -> Self {
+        NotWritten {
+            refusal,
             conflict: None,
         }
     }
 }
 
-impl std::fmt::Display for Refusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
+impl From<smeltr::leader::Panicked> for NotWritten {
+    fn from(panicked: smeltr::leader::Panicked) -> Self {
+        Refusal::from(panicked).into()
     }
 }
 
-/// For a route that answers in an envelope with no `conflict` of its own: an upload, a capture being saved.
-impl From<Refusal> for ApiError {
-    fn from(refusal: Refusal) -> Self {
-        ApiError::new(refusal.message)
+impl From<git::GitError> for NotWritten {
+    fn from(e: git::GitError) -> Self {
+        Refusal::from(e).into()
     }
 }
 
-/// For a caller with nowhere to put the commits -- saving a capture is not an editor holding an unsaved change.
-impl From<Refusal> for String {
-    fn from(refusal: Refusal) -> String {
-        refusal.message
+/// For a route that answers with no `conflict` of its own: an upload, a capture being saved.
+impl From<NotWritten> for Refusal {
+    fn from(not_written: NotWritten) -> Self {
+        not_written.refusal
     }
 }
 
 impl Writing {
     /// `base` is the commit the editor read. It is checked here so the answer can name it, and again by the swap,
     /// which is what makes the answer true.
-    pub fn open(branch: &str, base: Option<&str>, scope: &str) -> Result<Writing, Refusal> {
+    pub fn open(branch: &str, base: Option<&str>, scope: &str) -> Result<Writing, NotWritten> {
         Writing::open_in(&leader_data_dir(), branch, base, scope)
     }
 
     /// `data_dir` explicit rather than read from the environment -- what a test needs to run against a scratch
     /// repository, and what `worker_groups_api` uses in production since it is handed `AppState`'s `data_dir`
     /// rather than reading the environment itself.
-    pub(crate) fn open_in(data_dir: &Path, branch: &str, base: Option<&str>, scope: &str) -> Result<Writing, Refusal> {
+    pub(crate) fn open_in(
+        data_dir: &Path,
+        branch: &str,
+        base: Option<&str>,
+        scope: &str,
+    ) -> Result<Writing, NotWritten> {
         // Before the branch: a write that names neither is answered for the scope it forgot.
         let prefix = Scope::parse(scope)?.prefix().to_string();
         if branch == git::MAIN_BRANCH {
-            return Err(format!(
+            return Err(Refusal::invalid(format!(
                 "{} is what deploys move and is not edited directly -- edit a branch and deploy it",
                 git::MAIN_BRANCH
-            )
+            ))
             .into());
         }
         let repo = git::repo_path(data_dir);
         if !git::repo_ready(&repo) {
-            git::init_bare_repo(&repo).map_err(|e| e.to_string())?;
-            git::ensure_main_commit(&repo).map_err(|e| e.to_string())?;
+            git::init_bare_repo(&repo)?;
+            git::ensure_main_commit(&repo)?;
         }
         let expected = git::branch_tip(&repo, branch);
         let parent = expected
             .clone()
             .or_else(|| git::main_head(&repo))
-            .ok_or_else(|| format!("{} has no commit to save onto", git::MAIN_BRANCH))?;
+            .ok_or_else(|| Refusal::internal(format!("{} has no commit to save onto", git::MAIN_BRANCH)))?;
         if let Some(base) = base
             && base != parent
         {
@@ -339,7 +343,7 @@ impl Writing {
     ///
     /// `author` is the account the gate resolved, which is what the commit records. Every caller takes it from an
     /// `Extension`, so no handler can name an author of its own.
-    pub fn commit(&self, edits: Vec<git::FileEdit>, message: &str, author: &Actor) -> Result<String, Refusal> {
+    pub fn commit(&self, edits: Vec<git::FileEdit>, message: &str, author: &Actor) -> Result<String, NotWritten> {
         let edits = self.in_repo(edits);
         match git::commit_edits(
             &self.repo,
@@ -353,15 +357,14 @@ impl Writing {
             Ok(git::Committed::At(commit)) => Ok(commit),
             Ok(git::Committed::Unchanged) => Ok(self.parent.clone()),
             Ok(git::Committed::Moved(now)) => Err(moved_since_you_loaded_it(&self.parent, now.as_deref())),
-            Err(e) => Err(e.to_string().into()),
+            Err(e) => Err(e.into()),
         }
     }
 
     /// Lookup files are read from the parent with `files` laid over it, a commit no branch names, so a table can
     /// be checked against a file this save adds.
-    fn stage(&mut self, files: &[git::FileEdit]) -> Result<(), String> {
-        self.seen =
-            git::stage_edits(&self.repo, &self.parent, &self.in_repo(files.to_vec())).map_err(|e| e.to_string())?;
+    fn stage(&mut self, files: &[git::FileEdit]) -> Result<(), Refusal> {
+        self.seen = git::stage_edits(&self.repo, &self.parent, &self.in_repo(files.to_vec()))?;
         Ok(())
     }
 
@@ -377,7 +380,7 @@ impl Writing {
 
     /// Removes this whole bundle in one commit -- every path under it, not named one by one. `git::commit_edits`
     /// removes a tree the same way it removes a blob: one path, gone, whatever it holds.
-    pub fn remove_scope(&self, message: &str, author: &Actor) -> Result<String, Refusal> {
+    pub fn remove_scope(&self, message: &str, author: &Actor) -> Result<String, NotWritten> {
         let edit = git::FileEdit {
             path: self.prefix.clone(),
             content: None,
@@ -394,7 +397,7 @@ impl Writing {
             Ok(git::Committed::At(commit)) => Ok(commit),
             Ok(git::Committed::Unchanged) => Ok(self.parent.clone()),
             Ok(git::Committed::Moved(now)) => Err(moved_since_you_loaded_it(&self.parent, now.as_deref())),
-            Err(e) => Err(e.to_string().into()),
+            Err(e) => Err(e.into()),
         }
     }
 }
@@ -530,14 +533,9 @@ impl Save {
     }
 
     /// A save that was not written, with the two commits when the branch moving is why.
-    pub(crate) fn refused(refusal: Refusal) -> Envelope<Save> {
-        Envelope::with(
-            Save {
-                commit: None,
-                conflict: refusal.conflict,
-            },
-            vec![ApiError::new(refusal.message)],
-        )
+    pub(crate) fn refused(not_written: NotWritten) -> Envelope<Save> {
+        let NotWritten { refusal, conflict } = not_written;
+        Envelope::with(Save { commit: None, conflict }, refusal.status, refusal.errors)
     }
 }
 
@@ -566,7 +564,7 @@ fn json_bytes<T: serde::Serialize>(value: &T) -> Vec<u8> {
 ///
 /// `Err` when two pipeline ids name one file. Every writer asks `slugged_pipelines` the same question, so a save
 /// that could not be read back is refused rather than keeping whichever pipeline was written last.
-fn edits_for(file: &FileConfig, old: &RawBundle, touches: Touches) -> Result<Vec<git::FileEdit>, String> {
+fn edits_for(file: &FileConfig, old: &RawBundle, touches: Touches) -> Result<Vec<git::FileEdit>, Refusal> {
     let section = |name: &str, bytes: Vec<u8>| {
         Ok(vec![git::FileEdit {
             path: name.to_string(),
@@ -596,7 +594,7 @@ fn edits_for(file: &FileConfig, old: &RawBundle, touches: Touches) -> Result<Vec
         Touches::OnlyPipelines => {}
     }
 
-    let pipelines = config_file::slugged_pipelines(file).map_err(|e| e.to_string())?;
+    let pipelines = config_file::slugged_pipelines(file).map_err(|e| Refusal::invalid(e.to_string()))?;
     // Compared as JSON values: `PipelineDto` has no `PartialEq`, and its serialized form is what the file holds.
     let before: HashMap<&str, serde_json::Value> = old
         .file
@@ -775,17 +773,11 @@ fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(),
         let after = errors_of(loaded_after);
 
         // Named, because on a `shared/` write the group that breaks is not the one being edited.
-        refuse_worse(after, before).map_err(|response| {
-            Envelope::failed(
-                response
-                    .errors
-                    .into_iter()
-                    .map(|e| ApiError {
-                        message: format!("worker group {group:?}: {}", e.message),
-                        ..e
-                    })
-                    .collect(),
-            )
+        refuse_worse(after, before).map_err(|mut response| {
+            for e in &mut response.errors {
+                e.message = format!("worker group {group:?}: {}", e.message);
+            }
+            response
         })?;
     }
 
@@ -837,7 +829,7 @@ fn save_on_branch_in(
     if !files.is_empty()
         && let Err(e) = writing.stage(&files)
     {
-        return Envelope::failed_one(e);
+        return Envelope::refused(e);
     }
     let at = writing.at();
     let old = writing.read();
@@ -866,7 +858,7 @@ fn save_on_branch_in(
 
     let mut edits = match edits_for(&file, &old, touches) {
         Ok(edits) => edits,
-        Err(e) => return Envelope::failed_one(e),
+        Err(e) => return Envelope::refused(e),
     };
     edits.extend(files);
     if let Err(response) = refuse_broken_merge(&writing, &edits) {
@@ -880,18 +872,18 @@ fn save_on_branch_in(
 
 /// What a writer is told when the branch is not where they read it. Their change is the one thing here that is *not*
 /// in git, so the message must not send them to reload before they have carried it over.
-fn moved_since_you_loaded_it(base: &str, now: Option<&str>) -> Refusal {
+fn moved_since_you_loaded_it(base: &str, now: Option<&str>) -> NotWritten {
     let where_now = match now {
         Some(now) => format!("it is now at {}", git::short(now)),
         None => "it is gone".to_string(),
     };
-    Refusal {
-        message: format!(
+    NotWritten {
+        refusal: Refusal::conflict(format!(
             "this branch moved since you loaded it: you have {}, {where_now}. This save was not written, so your \
              change is in this editor and nowhere else -- carry it over before reloading past it. Whoever moved \
              the branch has theirs in a commit.",
             git::short(base)
-        ),
+        )),
         conflict: Some(Conflict {
             base: base.to_string(),
             now: now.map(str::to_string),
@@ -917,9 +909,10 @@ fn refuse_worse(
     if introduced.is_empty() {
         return Ok(());
     }
-    Err(Envelope::failed(
+    Err(Envelope::refused(Refusal::all(
+        StatusCode::UNPROCESSABLE_ENTITY,
         introduced.into_iter().map(ApiError::from_validation).collect(),
-    ))
+    )))
 }
 
 // -- GET /api/areas/:area -------------------------------------------------
@@ -940,8 +933,8 @@ fn unreadable_errors(raw: &RawBundle) -> Vec<ApiError> {
         .collect()
 }
 
-fn open_for_read(branch: &str, scope: &str) -> Result<Reading, ApiError> {
-    Ok(Reading::open(branch, scope)?)
+fn open_for_read(branch: &str, scope: &str) -> Result<Reading, Refusal> {
+    Reading::open(branch, scope)
 }
 
 #[derive(serde::Deserialize)]
@@ -954,7 +947,7 @@ pub struct ConfigQuery {
 
 impl ConfigQuery {
     /// `area` at `at`, or at the branch's tip where none is named.
-    pub(crate) fn open_in(&self, data_dir: &Path, area: &str) -> Result<Reading, String> {
+    pub(crate) fn open_in(&self, data_dir: &Path, area: &str) -> Result<Reading, Refusal> {
         let branch = self.branch.name();
         match &self.at {
             Some(at) => Reading::open_commit_in(data_dir, branch, area, at),
@@ -963,32 +956,41 @@ impl ConfigQuery {
     }
 }
 
-pub async fn get_config(AxPath(area): AxPath<String>, Query(q): Query<ConfigQuery>) -> Json<Envelope<Config>> {
-    let read = blocking(move || Ok::<_, ApiError>(config_in(&leader_data_dir(), &area, &q))).await;
-    Json(read.unwrap_or_else(Envelope::failed_one))
+pub async fn get_config(AxPath(area): AxPath<String>, Query(q): Query<ConfigQuery>) -> Envelope<Config> {
+    blocking_answer(move || config_in(&leader_data_dir(), &area, &q)).await
 }
 
 fn config_in(data_dir: &Path, area: &str, q: &ConfigQuery) -> Envelope<Config> {
     let reading = match q.open_in(data_dir, area) {
         Ok(reading) => reading,
-        Err(e) => return Envelope::failed_one(e),
+        Err(e) => return Envelope::refused(e),
     };
     let raw = reading.raw();
     let mut errors = unreadable_errors(&raw);
     errors.extend(errors_of_read(&reading, &raw).iter().map(ApiError::from_validation));
+    let status = read_status(&raw);
     Envelope::with(
         Config {
             config: Some(raw.file),
             commit: Some(reading.commit),
         },
+        status,
         errors,
     )
 }
 
+/// What a read answers at: a file it could not read is the leader's to fix, and the read still answers what it
+/// read beside it. Validation errors alone are warnings, since a branch may be broken while it is worked on.
+pub(crate) fn read_status(raw: &RawBundle) -> StatusCode {
+    match raw.unreadable.is_empty() {
+        true => StatusCode::OK,
+        false => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
 /// Every save runs off the async executor: it spawns git, and it holds a lock while it does.
-pub(crate) async fn blocking_save(f: impl FnOnce() -> Envelope<Save> + Send + 'static) -> Json<Envelope<Save>> {
-    let saved = blocking(move || Ok::<_, String>(f())).await;
-    Json(saved.unwrap_or_else(Envelope::failed_one))
+pub(crate) async fn blocking_save(f: impl FnOnce() -> Envelope<Save> + Send + 'static) -> Envelope<Save> {
+    blocking_answer(f).await
 }
 
 // -- sources / destinations / routes ---------------------------------------
@@ -1000,7 +1002,7 @@ pub async fn put_sources(
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(sources): Json<Vec<SourceDto>>,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let named = (sources.iter())
         .filter_map(|s| Some((format!("source {:?}", s.id), s.tls()?.certificate?)))
         .collect();
@@ -1029,7 +1031,7 @@ pub async fn put_destinations(
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(destinations): Json<Vec<DestinationDto>>,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let named = (destinations.iter())
         .filter_map(|d| Some((format!("destination {:?}", d.id), d.tls()?.certificate?)))
         .collect();
@@ -1056,7 +1058,7 @@ pub async fn put_destinations(
 async fn refuse_unlisted_certificates(
     state: &smeltr::leader::AppState,
     named: Vec<(String, String)>,
-) -> Option<Json<Envelope<Save>>> {
+) -> Option<Envelope<Save>> {
     if named.is_empty() {
         return None;
     }
@@ -1074,7 +1076,7 @@ async fn refuse_unlisted_certificates(
     .await;
     let listed = match listed {
         Ok(listed) => listed,
-        Err(e) => return Some(Json(Envelope::failed_one(e))),
+        Err(e) => return Some(Envelope::refused(Refusal::internal(e))),
     };
     let unlisted: Vec<ApiError> = (named.into_iter())
         .filter(|(_, name)| !listed.contains(name))
@@ -1084,7 +1086,7 @@ async fn refuse_unlisted_certificates(
             ))
         })
         .collect();
-    (!unlisted.is_empty()).then(|| Json(Envelope::failed(unlisted)))
+    (!unlisted.is_empty()).then(|| Envelope::refused(Refusal::all(StatusCode::UNPROCESSABLE_ENTITY, unlisted)))
 }
 
 /// What a PEM says about itself, so the editor can show a subject and an expiry beside the field it was pasted
@@ -1095,27 +1097,17 @@ pub struct DescribeRequest {
     pub pem: String,
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(serde::Serialize, Default)]
 pub struct DescribeResponse {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub certificates: Option<Vec<smeltr::leader::tls::Described>>,
-    /// Why it could not be read, in the words the save would use.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub certificates: Vec<smeltr::leader::tls::Described>,
 }
 
-pub async fn describe_certificates(Json(req): Json<DescribeRequest>) -> Json<DescribeResponse> {
-    match smeltr::leader::tls::describe_each(req.pem.as_bytes(), "this") {
-        Ok(certificates) => Json(DescribeResponse {
-            certificates: Some(certificates),
-            error: None,
-        }),
-        Err(error) => Json(DescribeResponse {
-            certificates: None,
-            error: Some(error),
-        }),
-    }
+/// Refused with why the PEM could not be read, in the words the save would use.
+pub async fn describe_certificates(Json(req): Json<DescribeRequest>) -> Envelope<DescribeResponse> {
+    smeltr::leader::tls::describe_each(req.pem.as_bytes(), "this")
+        .map(|certificates| DescribeResponse { certificates })
+        .map_err(Refusal::invalid)
+        .into()
 }
 
 pub async fn put_routes(
@@ -1124,7 +1116,7 @@ pub async fn put_routes(
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(routes): Json<Vec<RouteDto>>,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         save_on_branch(
@@ -1146,7 +1138,7 @@ pub async fn put_grok_patterns(
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(patterns): Json<Vec<config_file::GrokPatternDto>>,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         save_on_branch(
@@ -1184,10 +1176,10 @@ pub async fn put_manifest(
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(body): Json<ManifestBody>,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let (branch, base) = (q.name().to_string(), base_commit(&headers));
     if area == config_file::SHARED_DIR {
-        return Json(Envelope::failed_one(
+        return Envelope::refused(Refusal::invalid(
             "shared/ has no manifest: each group answers for its own rows",
         ));
     }
@@ -1220,7 +1212,7 @@ pub async fn put_lookup_tables(
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(tables): Json<Vec<LookupTableEdit>>,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || save_lookup_tables_in(&leader_data_dir(), &branch, base, &area, tables, &actor)).await
 }
@@ -1236,7 +1228,7 @@ fn save_lookup_tables_in(
     let repo = git::repo_path(data_dir);
     let prefix = match Scope::parse(scope) {
         Ok(scope) => scope.prefix().to_string(),
-        Err(e) => return Envelope::failed_one(e),
+        Err(e) => return Envelope::refused(e),
     };
     let (mut tables, contents): (Vec<_>, Vec<_>) = edits.into_iter().map(|e| (e.table, e.contents)).unzip();
     let mut files = Vec::new();
@@ -1255,7 +1247,10 @@ fn save_lookup_tables_in(
         };
         match with_contents(&repo, &prefix, &mut tables[i], text, naming) {
             Ok(file) => files.push(file),
-            Err(e) => return Envelope::failed_one(format!("lookup table {:?}: {e}", tables[i].id)),
+            Err(e) => {
+                let message = format!("lookup table {:?}: {}", tables[i].id, e.message());
+                return Envelope::refused(Refusal::new(e.status, message));
+            }
         }
     }
     save_on_branch_in(
@@ -1286,17 +1281,17 @@ fn with_contents(
     table: &mut LookupTableDto,
     text: String,
     naming: Naming,
-) -> Result<git::FileEdit, String> {
+) -> Result<git::FileEdit, Refusal> {
     let LookupSourceDto::Csv {
         path,
         delimiter,
         headers,
     } = &mut table.source
     else {
-        return Err("only a csv table carries `contents`".to_string());
+        return Err(Refusal::invalid("only a csv table carries `contents`"));
     };
-    let delimiter = config_file::to_byte(delimiter, "delimiter")?;
-    let stored_error = |e: std::io::Error| format!("couldn't store the file: {e}");
+    let delimiter = config_file::to_byte(delimiter, "delimiter").map_err(Refusal::invalid)?;
+    let stored_error = |e: std::io::Error| Refusal::internal(format!("couldn't store the file: {e}"));
     let mut incoming = smeltr::lookup::store::Incoming::new(repo).map_err(stored_error)?;
     std::io::Write::write_all(&mut incoming, text.as_bytes()).map_err(stored_error)?;
     let stored = store_lookup_file(repo, prefix, &format!("{}.csv", table.id), incoming, delimiter, naming)?;
@@ -1332,12 +1327,12 @@ pub fn store_lookup_file(
     incoming: smeltr::lookup::store::Incoming,
     delimiter: u8,
     naming: Naming,
-) -> Result<StoredLookup, String> {
-    let pointer = incoming.finish(None).map_err(|e| e.to_string())?;
+) -> Result<StoredLookup, Refusal> {
+    let pointer = incoming.finish(None).map_err(|e| Refusal::internal(e.to_string()))?;
     // Recorded before anything can refuse it, so that a file this leaves in the store is one retention counts.
     let name = format!("{prefix}/{}", sanitize_filename(filename));
     smeltr::leader::lookups::record_upload(repo, &pointer.oid, &name)
-        .map_err(|e| format!("couldn't store the upload: {e}"))?;
+        .map_err(|e| Refusal::internal(format!("couldn't store the upload: {e}")))?;
     // An upload is named by content, not by a counter: a counter restarts at zero with the process, so the next
     // upload of a file called the same thing would silently overwrite a committed one that some other table still
     // names. Two uploads of the same bytes are the same file, which is the one collision worth having.
@@ -1353,7 +1348,7 @@ pub fn store_lookup_file(
         let read = smeltr::lookup::store::map(&stored)
             .map_err(|e| smeltr::lookup::LookupError(e.to_string()))
             .and_then(|map| smeltr::lookup::csv_headers(&unique_name, &map, delimiter));
-        Some(read.map_err(|e| format!("couldn't read it as a lookup table: {e}"))?)
+        Some(read.map_err(|e| Refusal::invalid(format!("couldn't read it as a lookup table: {e}")))?)
     };
 
     // Relative to the bundle that will name it: the same commit is checked out at a different absolute path on the
@@ -1396,40 +1391,47 @@ pub struct LookupFileQuery {
     at: Option<String>,
 }
 
-/// Runs `read` off the executor, since it spawns git, and answers `{ok: true, ...its fields}` or `{ok: false, error}`.
+/// Runs `read` off the executor, since it spawns git, and answers its fields or why not.
 async fn lookup_read(
     area: String,
     q: LookupFileQuery,
-    read: fn(&Path, &str, &LookupFileQuery) -> Result<serde_json::Value, String>,
-) -> Json<Envelope<serde_json::Value>> {
-    Json(blocking(move || read(&leader_data_dir(), &area, &q)).await.into())
+    read: fn(&Path, &str, &LookupFileQuery) -> Result<serde_json::Value, Refusal>,
+) -> Envelope<serde_json::Value> {
+    blocking_answer(move || read(&leader_data_dir(), &area, &q).into()).await
 }
 
 /// A CSV lookup file's text, for the editor to page, search and change, and the commit it was read at.
 pub async fn get_lookup_file(
     AxPath(area): AxPath<String>,
     Query(q): Query<LookupFileQuery>,
-) -> Json<Envelope<serde_json::Value>> {
+) -> Envelope<serde_json::Value> {
     lookup_read(area, q, lookup_text_in).await
 }
 
-fn lookup_text_in(data_dir: &Path, area: &str, q: &LookupFileQuery) -> Result<serde_json::Value, String> {
+fn lookup_text_in(data_dir: &Path, area: &str, q: &LookupFileQuery) -> Result<serde_json::Value, Refusal> {
     let (file, commit) = read_lookup_file_in(data_dir, area, q)?;
-    let text = String::from_utf8(file.map().map_err(|e| e.to_string())?.to_vec())
-        .map_err(|e| format!("`{}` is not UTF-8 text, so it cannot be edited as a table: {e}", q.path))?;
+    let text = String::from_utf8(file.map().map_err(|e| Refusal::internal(e.to_string()))?.to_vec()).map_err(|e| {
+        Refusal::invalid(format!(
+            "`{}` is not UTF-8 text, so it cannot be edited as a table: {e}",
+            q.path
+        ))
+    })?;
     Ok(serde_json::json!({ "text": text, "commit": commit }))
 }
 
 /// A lookup file at the branch's current commit or at `at`, and that commit. Only a path in `lookups/` is read.
-fn read_lookup_file_in(data_dir: &Path, area: &str, q: &LookupFileQuery) -> Result<(LookupFile, String), String> {
+fn read_lookup_file_in(data_dir: &Path, area: &str, q: &LookupFileQuery) -> Result<(LookupFile, String), Refusal> {
     let path = q.path.as_str();
-    config_file::refuse_outside_lookups(path)?;
+    config_file::refuse_outside_lookups(path).map_err(Refusal::invalid)?;
     let branch = q.branch.name();
     let reading = match &q.at {
         Some(at) => Reading::open_commit_in(data_dir, branch, area, at)?,
         None => Reading::open_in(data_dir, branch, area)?,
     };
-    let at = reading.at().lookup(path).map_err(|e| e.to_string())?;
+    let at = reading
+        .at()
+        .lookup(path)
+        .map_err(|e| Refusal::not_found(e.to_string()))?;
     Ok((
         LookupFile {
             text: path.to_string(),
@@ -1444,7 +1446,7 @@ fn read_lookup_file_in(data_dir: &Path, area: &str, q: &LookupFileQuery) -> Resu
 pub async fn get_lookup_mmdb(
     AxPath(area): AxPath<String>,
     Query(q): Query<LookupFileQuery>,
-) -> Json<Envelope<serde_json::Value>> {
+) -> Envelope<serde_json::Value> {
     lookup_read(area, q, mmdb_info_in).await
 }
 
@@ -1453,22 +1455,27 @@ pub async fn get_lookup_mmdb(
 static NETWORK_COUNTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
     std::sync::LazyLock::new(Default::default);
 
-fn mmdb_info_in(data_dir: &Path, area: &str, q: &LookupFileQuery) -> Result<serde_json::Value, String> {
+fn mmdb_info_in(data_dir: &Path, area: &str, q: &LookupFileQuery) -> Result<serde_json::Value, Refusal> {
     let ip: Option<std::net::IpAddr> = (q.ip.as_deref())
-        .map(|ip| ip.trim().parse().map_err(|_| format!("{ip:?} is not an IP address")))
+        .map(|ip| {
+            ip.trim()
+                .parse()
+                .map_err(|_| Refusal::invalid(format!("{ip:?} is not an IP address")))
+        })
         .transpose()?;
     let (file, _) = read_lookup_file_in(data_dir, area, q)?;
+    let internal = |e: String| Refusal::internal(e);
     let oid = file
         .pointer()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| internal(e.to_string()))?
         .map(|p| p.oid)
         .unwrap_or_default();
-    let map = file.map().map_err(|e| e.to_string())?;
-    let table = smeltr::lookup::mmdb::MmdbTable::from_map(&q.path, map).map_err(|e| e.to_string())?;
+    let map = file.map().map_err(|e| internal(e.to_string()))?;
+    let table = smeltr::lookup::mmdb::MmdbTable::from_map(&q.path, map).map_err(|e| Refusal::invalid(e.to_string()))?;
     let cached = NETWORK_COUNTS.lock().unwrap().get(&oid).copied();
     let networks = cached
         .map_or_else(|| table.count_networks(), Ok)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| internal(e.to_string()))?;
     NETWORK_COUNTS.lock().unwrap().insert(oid, networks);
     let meta = table.metadata();
     let mut info = serde_json::json!({
@@ -1499,22 +1506,24 @@ pub struct Pipelines {
     commit: Option<String>,
 }
 
-pub async fn list_pipelines(AxPath(area): AxPath<String>, Query(q): Query<BranchQuery>) -> Json<Envelope<Pipelines>> {
+pub async fn list_pipelines(AxPath(area): AxPath<String>, Query(q): Query<BranchQuery>) -> Envelope<Pipelines> {
     let branch = q.name().to_string();
     let reading = match blocking(move || open_for_read(&branch, &area)).await {
         Ok(reading) => reading,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(e),
     };
     let raw = reading.raw();
     let mut errors = unreadable_errors(&raw);
     errors.extend(errors_of_read(&reading, &raw).iter().map(ApiError::from_validation));
-    Json(Envelope::with(
+    let status = read_status(&raw);
+    Envelope::with(
         Pipelines {
             pipelines: raw.file.pipelines,
             commit: Some(reading.commit),
         },
+        status,
         errors,
-    ))
+    )
 }
 
 #[derive(Default, serde::Serialize)]
@@ -1527,36 +1536,26 @@ pub struct Pipeline {
 pub async fn get_pipeline(
     AxPath((area, id)): AxPath<(String, String)>,
     Query(q): Query<BranchQuery>,
-) -> (StatusCode, Json<Envelope<Pipeline>>) {
+) -> Envelope<Pipeline> {
     let branch = q.name().to_string();
     let reading = match blocking(move || open_for_read(&branch, &area)).await {
         Ok(reading) => reading,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(Envelope::failed_one(e)));
-        }
+        Err(e) => return Envelope::refused(e),
     };
     let raw = reading.raw();
     match raw.file.pipelines.iter().find(|p| p.id == id).cloned() {
-        Some(pipeline) => (
-            StatusCode::OK,
-            Json(Envelope::ok(Pipeline {
-                pipeline: Some(pipeline),
-                commit: Some(reading.commit),
-            })),
-        ),
+        Some(pipeline) => Envelope::ok(Pipeline {
+            pipeline: Some(pipeline),
+            commit: Some(reading.commit),
+        }),
         None => {
             let mut errors = vec![ApiError::new(format!("no pipeline {id:?}"))];
             errors.extend(unreadable_errors(&raw));
-            (
-                StatusCode::NOT_FOUND,
-                Json(Envelope::with(
-                    Pipeline {
-                        pipeline: None,
-                        commit: Some(reading.commit),
-                    },
-                    errors,
-                )),
-            )
+            let body = Pipeline {
+                pipeline: None,
+                commit: Some(reading.commit),
+            };
+            Envelope::with(body, StatusCode::NOT_FOUND, errors)
         }
     }
 }
@@ -1568,7 +1567,7 @@ pub async fn put_pipeline(
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(pipeline): Json<PipelineDto>,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         // The History page shows this; a person knows a pipeline by its name, not its id.
@@ -1594,7 +1593,7 @@ pub async fn delete_pipeline(
     AxPath((area, id)): AxPath<(String, String)>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         // The history names what was deleted, and a pipeline's id is not shown to its author.
@@ -1676,7 +1675,7 @@ pub async fn undo(
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(req): Json<UndoRequest>,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || undo_in(&leader_data_dir(), &branch, base, &area, req, &actor)).await
 }
@@ -1767,13 +1766,15 @@ fn undo_in(
     match git::branch_exists(&repo, branch) {
         Ok(true) => {}
         Ok(false) => {
-            return Envelope::failed_one(format!("{branch:?} has no saves, so there is nothing to undo"));
+            return Envelope::refused(Refusal::conflict(format!(
+                "{branch:?} has no saves, so there is nothing to undo"
+            )));
         }
-        Err(e) => return Envelope::failed_one(e.to_string()),
+        Err(e) => return Envelope::refused(e),
     }
     let left_at = match git::branch_base(&repo, branch) {
         Ok(left_at) => left_at,
-        Err(e) => return Envelope::failed_one(e.to_string()),
+        Err(e) => return Envelope::refused(e),
     };
     let (section, id) = match req {
         UndoRequest::Object { section, id } => (section, id),
@@ -1782,16 +1783,16 @@ fn undo_in(
     let id = id.as_str();
     let was = match Reading::open_commit_in(data_dir, branch, scope, &left_at) {
         Ok(reading) => reading.raw().file,
-        Err(e) => return Envelope::failed_one(e),
+        Err(e) => return Envelope::refused(e),
     };
     let mut file = writing.read().file;
 
     let missing = || {
-        Envelope::failed_one(format!(
+        Envelope::refused(Refusal::not_found(format!(
             "there is no {} {id:?} on {branch:?} or where it left {}",
             section.noun(),
             git::MAIN_BRANCH
-        ))
+        )))
     };
     let mut files = Vec::new();
     let found = match section {
@@ -1812,7 +1813,7 @@ fn undo_in(
                             content: Some(then),
                         }),
                         (Ok(_), Ok(_)) => {}
-                        (Err(e), _) | (_, Err(e)) => return Envelope::failed_one(e.to_string()),
+                        (Err(e), _) | (_, Err(e)) => return Envelope::refused(e),
                     }
                 }
                 file.lookup_tables = p.objects;
@@ -1825,11 +1826,11 @@ fn undo_in(
         return missing();
     };
     if same {
-        return Envelope::failed_one(format!(
+        return Envelope::refused(Refusal::conflict(format!(
             "{} {name:?} is as it was where {branch:?} left {}: there is nothing to undo",
             section.noun(),
             git::MAIN_BRANCH
-        ));
+        )));
     }
 
     // Pinned to the commit `file` was read from, so the save differs from it in this one section and in nothing a
@@ -1867,7 +1868,7 @@ fn undo_file_in(
         .split('/')
         .any(|part| part.is_empty() || part == "." || part == "..")
     {
-        return Envelope::failed_one(format!("{path:?} is not a path within the bundle"));
+        return Envelope::refused(Refusal::invalid(format!("{path:?} is not a path within the bundle")));
     }
     let unowned = [
         config_file::SAMPLES_DIR,
@@ -1879,29 +1880,29 @@ fn undo_file_in(
     if !unowned && !does_not_load(&mut writing.files(), within) {
         let did_not_load = match Reading::open_commit_in(data_dir, branch, scope, left_at) {
             Ok(reading) => does_not_load(&mut reading.files(), within),
-            Err(e) => return Envelope::failed_one(e),
+            Err(e) => return Envelope::refused(e),
         };
         if !did_not_load {
-            return Envelope::failed_one(format!(
+            return Envelope::refused(Refusal::invalid(format!(
                 "{path} reads as objects: undo the changes to each of them instead"
-            ));
+            )));
         }
     }
     let read = |commit: &str| blob_at(&writing.repo, commit, &path);
     let (then, now) = match (read(left_at), read(&writing.parent)) {
         (Ok(then), Ok(now)) => (then, now),
-        (Err(e), _) | (_, Err(e)) => return Envelope::failed_one(e.to_string()),
+        (Err(e), _) | (_, Err(e)) => return Envelope::refused(e),
     };
     if then == now {
-        return Envelope::failed_one(format!(
+        return Envelope::refused(Refusal::conflict(format!(
             "{path} is as it was where {branch:?} left {}: there is nothing to undo",
             git::MAIN_BRANCH
-        ));
+        )));
     }
     if then.is_none()
         && let Err(e) = refuse_removing_manifest(writing, within, &path)
     {
-        return Envelope::failed_one(e);
+        return Envelope::refused(e);
     }
     let edits = vec![git::FileEdit {
         path: within.to_string(),
@@ -1944,38 +1945,41 @@ pub struct Sample {
 }
 
 /// Fill in when each of `samples`, as `reading` listed them, was last written.
-fn fill_written(reading: &Reading, samples: &mut [config_file::SampleSummary]) -> Result<(), ApiError> {
+fn fill_written(reading: &Reading, samples: &mut [config_file::SampleSummary]) -> Result<(), Refusal> {
     let in_repo = |s: &config_file::SampleSummary| format!("{}/{}", reading.prefix, s.path);
     let paths: Vec<String> = samples.iter().map(in_repo).collect();
-    let written =
-        git::last_changed(&reading.repo, &reading.commit, &paths).map_err(|e| ApiError::new(e.to_string()))?;
+    let written = git::last_changed(&reading.repo, &reading.commit, &paths)?;
     for sample in samples {
         sample.written = written.get(&in_repo(sample)).copied();
     }
     Ok(())
 }
 
-pub async fn list_samples(AxPath(area): AxPath<String>, Query(q): Query<BranchQuery>) -> Json<Envelope<Samples>> {
+pub async fn list_samples(AxPath(area): AxPath<String>, Query(q): Query<BranchQuery>) -> Envelope<Samples> {
     let branch = q.name().to_string();
     let read = blocking(move || {
         let reading = open_for_read(&branch, &area)?;
         let (mut samples, unreadable) = config_file::list_samples(&mut reading.files());
         fill_written(&reading, &mut samples)?;
-        Ok::<_, ApiError>((samples, unreadable, reading.commit))
+        Ok::<_, Refusal>((samples, unreadable, reading.commit))
     })
     .await;
     match read {
-        Ok((samples, unreadable, commit)) => Json(Envelope::with(
-            Samples {
+        Ok((samples, unreadable, commit)) => {
+            let status = match unreadable.is_empty() {
+                true => StatusCode::OK,
+                false => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            let errors = (unreadable.into_iter())
+                .map(|(path, message)| ApiError::new(format!("{path}: {message}")))
+                .collect();
+            let body = Samples {
                 samples,
                 commit: Some(commit),
-            },
-            unreadable
-                .into_iter()
-                .map(|(path, message)| ApiError::new(format!("{path}: {message}")))
-                .collect(),
-        )),
-        Err(e) => Json(Envelope::failed_one(e)),
+            };
+            Envelope::with(body, status, errors)
+        }
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -1983,28 +1987,28 @@ pub async fn list_samples(AxPath(area): AxPath<String>, Query(q): Query<BranchQu
 pub async fn get_sample(
     AxPath((area, id)): AxPath<(String, String)>,
     Query(q): Query<ConfigQuery>,
-) -> Json<Envelope<Sample>> {
+) -> Envelope<Sample> {
     let read = blocking(move || {
         let reading = q.open_in(&leader_data_dir(), &area)?;
-        let sample = config_file::read_sample(&mut reading.files(), &id).map_err(|e| ApiError::new(e.to_string()))?;
-        Ok::<_, ApiError>((sample, reading.commit))
+        let sample =
+            config_file::read_sample(&mut reading.files(), &id).map_err(|e| Refusal::internal(e.to_string()))?;
+        Ok::<_, Refusal>((sample, reading.commit))
     })
     .await;
     match read {
-        Ok((sample, commit)) => {
-            let errors = match &sample {
-                Some(_) => vec![],
-                None => vec![ApiError::new("there is no sample by that name on this branch")],
+        Ok((Some(sample), commit)) => Envelope::ok(Sample {
+            sample: Some(sample),
+            commit: Some(commit),
+        }),
+        Ok((None, commit)) => {
+            let body = Sample {
+                sample: None,
+                commit: Some(commit),
             };
-            Json(Envelope::with(
-                Sample {
-                    sample,
-                    commit: Some(commit),
-                },
-                errors,
-            ))
+            let errors = vec![ApiError::new("there is no sample by that name on this branch")];
+            Envelope::with(body, StatusCode::NOT_FOUND, errors)
         }
-        Err(e) => Json(Envelope::failed_one(e)),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -2015,10 +2019,10 @@ pub async fn put_sample(
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(mut sample): Json<config_file::SampleDto>,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     sample.id = id;
     if let Err(message) = config_file::refuse_sample_size(sample.records.len()) {
-        return Json(Envelope::failed_one(message));
+        return Envelope::refused(Refusal::invalid(message));
     }
     let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
@@ -2042,7 +2046,7 @@ pub async fn delete_sample(
     AxPath((area, id)): AxPath<(String, String)>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         let message = format!("delete sample {id}");
@@ -2131,7 +2135,7 @@ fn write_sample_file(
     };
     match config_file::sample_path(id) {
         Ok(path) => write_one_file(writing, path, id, content, message, author, refuse_sample_collision),
-        Err(e) => Envelope::failed_one(e.to_string()),
+        Err(e) => Envelope::refused(Refusal::invalid(e.to_string())),
     }
 }
 
@@ -2151,7 +2155,7 @@ pub fn write_test_file(
     };
     match config_file::test_path(id) {
         Ok(path) => write_one_file(writing, path, id, content, message, author, refuse_test_collision),
-        Err(e) => Envelope::failed_one(e.to_string()),
+        Err(e) => Envelope::refused(Refusal::invalid(e.to_string())),
     }
 }
 
@@ -2167,7 +2171,7 @@ fn write_one_file(
     refuse: RefuseCollision,
 ) -> Envelope<Save> {
     if let Err(e) = refuse(&mut writing.files(), &path, id, &content) {
-        return Envelope::failed_one(e);
+        return Envelope::refused(Refusal::conflict(e));
     }
     match writing.commit(vec![git::FileEdit { path, content }], message, author) {
         Ok(commit) => Save::done(commit),
@@ -2231,12 +2235,12 @@ fn unreadable_files_of(prefix: &str, unreadable: &[(String, String)]) -> Vec<Unr
 /// What `scope` runs that does not load: its own files, and for a group `shared/`'s as well. With the commit they
 /// were read at.
 #[cfg(test)]
-fn unreadable_in(data_dir: &Path, branch: &str, scope: &str) -> Result<(Vec<UnreadableFile>, String), ApiError> {
+fn unreadable_in(data_dir: &Path, branch: &str, scope: &str) -> Result<(Vec<UnreadableFile>, String), Refusal> {
     unreadable_of(Reading::open_in(data_dir, branch, scope)?)
 }
 
 /// `unreadable_in`, of a scope already opened: at a branch's tip, or at a commit a review compares.
-fn unreadable_of(reading: Reading) -> Result<(Vec<UnreadableFile>, String), ApiError> {
+fn unreadable_of(reading: Reading) -> Result<(Vec<UnreadableFile>, String), Refusal> {
     let mut files = unreadable_files_of(&reading.prefix, &unreadable_in_bundle(&mut reading.files()));
     if reading.prefix != config_file::SHARED_DIR {
         let shared = reading.sibling(config_file::SHARED_DIR)?;
@@ -2249,15 +2253,15 @@ fn unreadable_of(reading: Reading) -> Result<(Vec<UnreadableFile>, String), ApiE
 }
 
 /// What does not load at the branch's tip, or at the commit `at` names.
-pub async fn get_unreadable(AxPath(area): AxPath<String>, Query(q): Query<ConfigQuery>) -> Json<Envelope<Unreadable>> {
+pub async fn get_unreadable(AxPath(area): AxPath<String>, Query(q): Query<ConfigQuery>) -> Envelope<Unreadable> {
     let read = move || {
         let (files, commit) = unreadable_of(q.open_in(&leader_data_dir(), &area)?)?;
-        Ok::<_, ApiError>(Unreadable {
+        Ok::<_, Refusal>(Unreadable {
             files,
             commit: Some(commit),
         })
     };
-    Json(blocking(read).await.into())
+    blocking(read).await.into()
 }
 
 #[derive(serde::Deserialize)]
@@ -2281,48 +2285,63 @@ fn does_not_load(files: &mut dyn config_file::FileSet, within: &str) -> bool {
 }
 
 /// `Err` when removing `within` would remove a group's manifest, which is what makes its directory a group.
-fn refuse_removing_manifest(writing: &Writing, within: &str, path: &str) -> Result<(), String> {
+fn refuse_removing_manifest(writing: &Writing, within: &str, path: &str) -> Result<(), Refusal> {
     if writing.prefix != config_file::SHARED_DIR && within == "system.json" {
-        return Err(format!(
+        return Err(Refusal::invalid(format!(
             "{path} is what makes its directory a group: deleting it breaks the group -- edit it instead"
-        ));
+        )));
     }
     Ok(())
 }
 
 /// Refuses `within` unless it is a file of `files` that does not load.
-fn refuse_unlisted(files: &mut dyn config_file::FileSet, within: &str, path: &str, branch: &str) -> Result<(), String> {
+fn refuse_unlisted(
+    files: &mut dyn config_file::FileSet,
+    within: &str,
+    path: &str,
+    branch: &str,
+) -> Result<(), Refusal> {
     if does_not_load(files, within) {
         return Ok(());
     }
-    Err(format!(
+    Err(Refusal::not_found(format!(
         "{path} is not a file that fails to load on {branch} -- only those are edited as text"
-    ))
+    )))
 }
 
 /// The text of `within`, a path in `area`'s bundle, and the commit it was read at.
-fn read_listed_file(data_dir: &Path, branch: &str, area: &str, within: &str) -> Result<(String, String), String> {
+fn read_listed_file(data_dir: &Path, branch: &str, area: &str, within: &str) -> Result<(String, String), Refusal> {
     let reading = Reading::open_in(data_dir, branch, area)?;
     let path = &format!("{}/{within}", reading.prefix);
     refuse_unlisted(&mut reading.files(), within, path, branch)?;
     match config_file::FileSet::read(&mut reading.files(), within) {
         Ok(Some(bytes)) => Ok((String::from_utf8_lossy(&bytes).into_owned(), reading.commit)),
-        Ok(None) => Err(format!("{path} is not on {branch}")),
-        Err(e) => Err(format!("{path}: {e}")),
+        Ok(None) => Err(Refusal::not_found(format!("{path} is not on {branch}"))),
+        Err(e) => Err(Refusal::internal(format!("{path}: {e}"))),
     }
 }
 
 pub async fn get_file(
     AxPath((area, within)): AxPath<(String, String)>,
     Query(q): Query<BranchQuery>,
-) -> Json<Envelope<File>> {
+) -> Envelope<File> {
     let path = within.clone();
     let read = blocking(move || read_listed_file(&leader_data_dir(), q.name(), &area, &within)).await;
-    let (errors, text, commit) = match read {
-        Ok((text, commit)) => (vec![], text, Some(commit)),
-        Err(e) => (vec![ApiError::new(e)], String::new(), None),
-    };
-    Json(Envelope::with(File { path, text, commit }, errors))
+    match read {
+        Ok((text, commit)) => Envelope::ok(File {
+            path,
+            text,
+            commit: Some(commit),
+        }),
+        Err(e) => {
+            let Refusal { status, errors } = e;
+            let body = File {
+                path,
+                ..File::default()
+            };
+            Envelope::with(body, status, errors)
+        }
+    }
 }
 
 pub async fn put_file(
@@ -2331,7 +2350,7 @@ pub async fn put_file(
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(body): Json<FileBody>,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let base = base_commit(&headers);
     blocking_save(move || {
         let content = Some(body.text.into_bytes());
@@ -2345,7 +2364,7 @@ pub async fn delete_file(
     AxPath((area, within)): AxPath<(String, String)>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
-) -> Json<Envelope<Save>> {
+) -> Envelope<Save> {
     let base = base_commit(&headers);
     blocking_save(move || write_listed_file(&leader_data_dir(), q.name(), base, &area, &within, None, &actor)).await
 }
@@ -2367,12 +2386,12 @@ fn write_listed_file(
     };
     let path = &format!("{}/{within}", writing.prefix);
     if let Err(e) = refuse_unlisted(&mut writing.files(), within, path, branch) {
-        return Envelope::failed_one(e);
+        return Envelope::refused(e);
     }
     if content.is_none()
         && let Err(e) = refuse_removing_manifest(&writing, within, path)
     {
-        return Envelope::failed_one(e);
+        return Envelope::refused(e);
     }
     let message = match content {
         Some(_) => format!("edit {path}"),
@@ -2451,17 +2470,11 @@ fn refuse_worse_read(writing: &Writing, edits: &[git::FileEdit]) -> Result<(), E
             continue;
         };
         // Named, because on a `shared/` write the group that breaks is not the one being edited.
-        refuse_worse(group(&prefix, true), group(&prefix, false)).map_err(|response| {
-            Envelope::failed(
-                response
-                    .errors
-                    .into_iter()
-                    .map(|e| ApiError {
-                        message: format!("worker group {id:?}: {}", e.message),
-                        ..e
-                    })
-                    .collect(),
-            )
+        refuse_worse(group(&prefix, true), group(&prefix, false)).map_err(|mut response| {
+            for e in &mut response.errors {
+                e.message = format!("worker group {id:?}: {}", e.message);
+            }
+            response
         })?;
     }
     Ok(())
@@ -2556,9 +2569,12 @@ mod tests {
         };
 
         let err = edits_for(&file, &old, Touches::OnlyPipelines).expect_err("one file, two pipelines");
-        assert!(err.contains("Orders") && err.contains("orders"), "it names both: {err}");
         assert!(
-            err.contains("pipelines/orders.json"),
+            err.message().contains("Orders") && err.message().contains("orders"),
+            "it names both: {err}"
+        );
+        assert!(
+            err.message().contains("pipelines/orders.json"),
             "and the file they collide on: {err}"
         );
     }
@@ -2700,7 +2716,10 @@ mod tests {
             Some(fixed.clone().into_bytes()),
             &Actor::system(),
         );
-        assert!(!response.ok, "a write against a commit the branch is not at is refused");
+        assert!(
+            !response.succeeded(),
+            "a write against a commit the branch is not at is refused"
+        );
         let response = write_listed_file(
             &data,
             "work",
@@ -2710,7 +2729,7 @@ mod tests {
             Some(fixed.into_bytes()),
             &Actor::system(),
         );
-        assert!(response.ok, "saved: {response:?}");
+        assert!(response.succeeded(), "saved: {response:?}");
 
         let still: Vec<String> = listed(&data, "west").into_iter().map(|(p, _)| p).collect();
         assert!(!still.iter().any(|p| p == path), "{still:?}");
@@ -2742,7 +2761,7 @@ mod tests {
                 .contains(r#"["x"]"#)
         );
         let response = write_listed_file(&data, "work", None, "west", within, None, &Actor::system());
-        assert!(response.ok, "deleted: {response:?}");
+        assert!(response.succeeded(), "deleted: {response:?}");
         assert!(!listed(&data, "west").iter().any(|(p, _)| p == path));
         std::fs::remove_dir_all(&data).ok();
     }
@@ -2753,7 +2772,7 @@ mod tests {
     fn a_listed_file_other_than_a_group_s_manifest_can_be_deleted() {
         let data = a_repo_with_files_that_do_not_load("unreadable-delete");
         let response = write_listed_file(&data, "work", None, "shared", "system.json", None, &Actor::system());
-        assert!(response.ok, "deleted: {response:?}");
+        assert!(response.succeeded(), "deleted: {response:?}");
         assert_eq!(
             listed(&data, "shared"),
             Vec::<(String, bool)>::new(),
@@ -2761,7 +2780,7 @@ mod tests {
         );
 
         let response = write_listed_file(&data, "work", None, "west", "system.json", None, &Actor::system());
-        assert!(!response.ok, "a group's manifest is what makes it a group");
+        assert!(!response.succeeded(), "a group's manifest is what makes it a group");
         assert!(
             listed(&data, "west")
                 .iter()
@@ -2783,7 +2802,7 @@ mod tests {
             assert!(read_listed_file(&data, "work", area, within).is_err(), "{within} read");
             for content in [Some(b"[]".to_vec()), None] {
                 let response = write_listed_file(&data, "work", None, area, within, content, &Actor::system());
-                assert!(!response.ok, "{within} written: {response:?}");
+                assert!(!response.succeeded(), "{within} written: {response:?}");
             }
         }
         let reading = Reading::open_in(&data, "work", "west").unwrap();
@@ -2816,7 +2835,7 @@ mod tests {
                 vec![],
                 |file| replace_pipeline(file, id, pipeline),
             );
-            assert!(response.ok, "{response:?}");
+            assert!(response.succeeded(), "{response:?}");
         };
         let steps = vec![config_file::StepDto::Comment {
             id: "keep-me".into(),
@@ -2868,7 +2887,7 @@ mod tests {
                 file.routes.push(route);
             },
         );
-        assert!(response.ok, "{response:?}");
+        assert!(response.succeeded(), "{response:?}");
         save("pipeline-a", pipeline("Renamed", steps));
         let raw = Reading::open_in(&data, "work", "west").unwrap().raw();
         assert_eq!(raw.file.pipelines.len(), 2);
@@ -2924,7 +2943,7 @@ mod tests {
                 }]
             },
         );
-        assert!(response.ok, "saved: {response:?}");
+        assert!(response.succeeded(), "saved: {response:?}");
 
         let saved = Reading::open_in(&data, "work", "west").unwrap().raw().file;
         assert_eq!(saved.sources.len(), 1, "the save landed");
@@ -2966,7 +2985,7 @@ mod tests {
                 }]
             },
         );
-        assert!(response.ok, "saved: {response:?}");
+        assert!(response.succeeded(), "saved: {response:?}");
 
         let reading = Reading::open_in(&data, "work", "west").unwrap();
         assert_eq!(reading.raw().file.sources.len(), 1, "the save landed");
@@ -3018,7 +3037,7 @@ mod tests {
                 vec![],
                 mutate,
             );
-            assert!(response.ok, "saved: {response:?}");
+            assert!(response.succeeded(), "saved: {response:?}");
         };
         save(Touches::Sources, &|file| {
             file.sources = vec![SourceDto {
@@ -3128,7 +3147,7 @@ mod tests {
             vec![],
             |file| body.apply(file),
         );
-        assert!(response.ok, "saved: {response:?}");
+        assert!(response.succeeded(), "saved: {response:?}");
 
         let raw = Reading::open_in(&data, "work", "west").unwrap().raw();
         assert!(raw.unreadable.is_empty(), "the key is gone: {:?}", raw.unreadable);
@@ -3704,12 +3723,12 @@ mod tests {
         assert_ne!(moved, read_at);
 
         let err = Writing::open_in(&data, "work", Some(&read_at), "shared").expect_err("the branch moved");
-        assert!(err.message.contains(&read_at[..8]), "{err}");
-        assert!(err.message.contains(&moved[..8]), "{err}");
+        assert!(err.refusal.message().contains(&read_at[..8]), "{err:?}");
+        assert!(err.refusal.message().contains(&moved[..8]), "{err:?}");
         // The refused change is the one thing here that is not in git, so the message must say so rather than
         // reassuring the reader that every save is a commit -- this one was not.
-        assert!(err.message.contains("was not written"), "{err}");
-        assert!(err.message.contains("nowhere else"), "{err}");
+        assert!(err.refusal.message().contains("was not written"), "{err:?}");
+        assert!(err.refusal.message().contains("nowhere else"), "{err:?}");
         // And both commits without reading the sentence, so the editor can offer to carry the change onto a
         // branch of its own rather than parse English for the one it would start from.
         let conflict = err.conflict.expect("a branch that moved says which commits");
@@ -3760,9 +3779,9 @@ mod tests {
     #[test]
     fn main_is_not_editable() {
         let err = Writing::open(git::MAIN_BRANCH, None, "shared").expect_err("main is refused");
-        assert!(err.message.contains("deploy"), "{err}");
+        assert!(err.refusal.message().contains("deploy"), "{err:?}");
         // Not a conflict: nothing moved, and there is nothing to carry anywhere.
-        assert!(err.conflict.is_none(), "{err}");
+        assert!(err.conflict.is_none(), "{err:?}");
     }
 
     // -- lookup files ----------------------------------------------------
@@ -3866,7 +3885,12 @@ mod tests {
         assert!(all["networks"].as_u64() > Some(0) && all["databaseType"].is_string() && all.get("record").is_none());
         assert!(info(Some("10.1.5.5")).unwrap()["record"].is_object(), "a hit");
         assert!(info(Some("8.8.8.8")).unwrap()["record"].is_null(), "a miss");
-        assert!(info(Some("10.1.5")).expect_err("not an IP").contains("10.1.5"));
+        assert!(
+            info(Some("10.1.5"))
+                .expect_err("not an IP")
+                .message()
+                .contains("10.1.5")
+        );
         std::fs::remove_dir_all(&data).ok();
     }
 
@@ -3897,7 +3921,7 @@ mod tests {
             ],
         );
         let saved = save_hosts(&data, "ip;host\n10.0.0.1;web\n");
-        assert!(saved.ok, "{saved:?}");
+        assert!(saved.succeeded(), "{saved:?}");
 
         let log = git::log(&git::repo_path(&data), "work", 10).unwrap();
         assert_eq!(log.len(), 3, "main's first commit, the seed, and this save");
@@ -3928,9 +3952,9 @@ mod tests {
     #[test]
     fn saving_a_table_again_rewrites_its_own_file() {
         let data = a_repo("lookup-contents-again");
-        assert!(save_hosts(&data, "ip;host\n10.0.0.1;web\n").ok);
+        assert!(save_hosts(&data, "ip;host\n10.0.0.1;web\n").succeeded());
         let saved = save_hosts(&data, "ip;host\n10.0.0.1;db\n");
-        assert!(saved.ok, "{saved:?}");
+        assert!(saved.succeeded(), "{saved:?}");
 
         let repo = git::repo_path(&data);
         let log = git::log(&repo, "work", 10).unwrap();
@@ -3955,10 +3979,10 @@ mod tests {
         let data = a_repo("lookup-contents-break");
         commit_to(&data, "work", &[("pipelines/p.json", pipeline.to_vec())]);
         let first = save_hosts(&data, "ip;host\n10.0.0.1;web\n");
-        assert!(first.ok, "{first:?}");
+        assert!(first.succeeded(), "{first:?}");
 
         let refused = save_hosts(&data, "ip;owner\n10.0.0.1;web\n");
-        assert!(!refused.ok, "the lookup reads a column the new rows dropped");
+        assert!(!refused.succeeded(), "the lookup reads a column the new rows dropped");
         std::fs::remove_dir_all(&data).ok();
     }
 
@@ -3990,7 +4014,7 @@ mod tests {
             table("b", Some("ip;host\n")),
         ];
         let saved = save_lookup_tables_in(&data, "work", None, "shared", edits, &Actor::system());
-        assert!(saved.ok, "{saved:?}");
+        assert!(saved.succeeded(), "{saved:?}");
 
         let raw = Reading::open_in(&data, "work", "shared").unwrap().raw();
         let paths: Vec<&str> = raw.file.lookup_tables.iter().filter_map(lookup_file_of).collect();
@@ -4021,7 +4045,7 @@ mod tests {
             serde_json::from_value(hosts).unwrap(),
         ];
         let saved = save_lookup_tables_in(&data, "work", None, "shared", edits, &Actor::system());
-        assert!(saved.ok, "{saved:?}");
+        assert!(saved.succeeded(), "{saved:?}");
 
         let raw = Reading::open_in(&data, "work", "shared").unwrap().raw();
         let paths: Vec<&str> = raw.file.lookup_tables.iter().filter_map(lookup_file_of).collect();
@@ -4035,7 +4059,7 @@ mod tests {
         let data = a_repo("lookup-contents-bad");
         let refused = save_hosts(&data, "");
         assert!(
-            !refused.ok && refused.errors[0].message.contains("\"hosts\""),
+            !refused.succeeded() && refused.errors[0].message.contains("\"hosts\""),
             "{refused:?}"
         );
         assert!(!git::branch_exists(&git::repo_path(&data), "work").unwrap());
@@ -4136,7 +4160,7 @@ mod tests {
             vec![],
             mutate,
         );
-        assert!(response.ok, "saved: {response:?}");
+        assert!(response.succeeded(), "saved: {response:?}");
     }
 
     fn undo_on_work(data: &Path, section: Section, id: &str) -> Envelope<Save> {
@@ -4164,7 +4188,7 @@ mod tests {
         let before = saves_on_work(&data).len();
 
         let undone = undo_on_work(&data, Section::Pipelines, "p");
-        assert!(undone.ok, "{undone:?}");
+        assert!(undone.succeeded(), "{undone:?}");
         let saves = saves_on_work(&data);
         assert_eq!(saves.len(), before + 1, "one new save");
         assert_eq!(saves[0].subject, "undo changes to pipeline p");
@@ -4179,7 +4203,7 @@ mod tests {
         save_work(&data, Touches::Sources, |file| file.sources.push(a_source("s2")));
 
         let undone = undo_on_work(&data, Section::Sources, "s2");
-        assert!(undone.ok, "{undone:?}");
+        assert!(undone.succeeded(), "{undone:?}");
         assert_eq!(as_json(&work(&data).sources), as_json(&vec![a_source("s1")]));
         assert_eq!(saves_on_work(&data)[0].subject, "undo changes to source s2");
         std::fs::remove_dir_all(&data).ok();
@@ -4191,7 +4215,7 @@ mod tests {
         save_work(&data, Touches::Routes, |file| file.routes.retain(|r| r.id != "r2"));
 
         let undone = undo_on_work(&data, Section::Routes, "r2");
-        assert!(undone.ok, "{undone:?}");
+        assert!(undone.succeeded(), "{undone:?}");
         let ids: Vec<String> = work(&data).routes.into_iter().map(|r| r.id).collect();
         assert_eq!(ids, ["r1", "r2", "r3"]);
         std::fs::remove_dir_all(&data).ok();
@@ -4207,7 +4231,7 @@ mod tests {
         });
 
         let undone = undo_on_work(&data, Section::Routes, "r1");
-        assert!(undone.ok, "{undone:?}");
+        assert!(undone.succeeded(), "{undone:?}");
         let routes = work(&data).routes;
         let ids: Vec<&str> = routes.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, ["r1", "r2", "r3"]);
@@ -4221,7 +4245,7 @@ mod tests {
         save_work(&data, Touches::Routes, |file| file.routes.rotate_left(1));
 
         let undone = undo_on_work(&data, Section::Routes, "r1");
-        assert!(undone.ok, "{undone:?}");
+        assert!(undone.succeeded(), "{undone:?}");
         let ids: Vec<String> = work(&data).routes.into_iter().map(|r| r.id).collect();
         assert_eq!(ids, ["r1", "r2", "r3"]);
         std::fs::remove_dir_all(&data).ok();
@@ -4235,12 +4259,12 @@ mod tests {
 
         let same = undo_on_work(&data, Section::Routes, "r1");
         assert!(
-            !same.ok && same.errors[0].message.contains("nothing to undo"),
+            !same.succeeded() && same.errors[0].message.contains("nothing to undo"),
             "{same:?}"
         );
         let neither = undo_on_work(&data, Section::Routes, "r9");
         assert!(
-            !neither.ok && neither.errors[0].message.contains("no route \"r9\""),
+            !neither.succeeded() && neither.errors[0].message.contains("no route \"r9\""),
             "{neither:?}"
         );
         assert_eq!(
@@ -4282,7 +4306,7 @@ mod tests {
         edit_work(&data, "samples/s.json", None);
 
         let undone = undo_file_on_work(&data, "samples/s.json");
-        assert!(undone.ok, "{undone:?}");
+        assert!(undone.succeeded(), "{undone:?}");
         assert_eq!(on_work(&data, "samples/s.json").as_deref(), Some(&sample[..]));
         let saves = saves_on_work(&data);
         assert_eq!(saves[0].subject, "undo changes to sample s");
@@ -4296,7 +4320,7 @@ mod tests {
         edit_work(&data, "tests/t.json", Some(b"{}"));
 
         let undone = undo_file_on_work(&data, "tests/t.json");
-        assert!(undone.ok, "{undone:?}");
+        assert!(undone.succeeded(), "{undone:?}");
         assert_eq!(on_work(&data, "tests/t.json"), None);
         std::fs::remove_dir_all(&data).ok();
     }
@@ -4309,7 +4333,7 @@ mod tests {
         edit_work(&data, "destinations.json", None);
 
         let undone = undo_file_on_work(&data, "destinations.json");
-        assert!(undone.ok, "{undone:?}");
+        assert!(undone.succeeded(), "{undone:?}");
         assert_eq!(on_work(&data, "destinations.json").as_deref(), Some(&b"{"[..]));
         std::fs::remove_dir_all(&data).ok();
     }
@@ -4323,17 +4347,17 @@ mod tests {
 
         let objects = undo_file_on_work(&data, "routes.json");
         assert!(
-            !objects.ok && objects.errors[0].message.contains("reads as objects"),
+            !objects.succeeded() && objects.errors[0].message.contains("reads as objects"),
             "{objects:?}"
         );
         let same = undo_file_on_work(&data, "samples/other.json");
         assert!(
-            !same.ok && same.errors[0].message.contains("nothing to undo"),
+            !same.succeeded() && same.errors[0].message.contains("nothing to undo"),
             "{same:?}"
         );
         let outside = undo_file_on_work(&data, "samples/../../groups/west/system.json");
         assert!(
-            !outside.ok && outside.errors[0].message.contains("not a path within the bundle"),
+            !outside.succeeded() && outside.errors[0].message.contains("not a path within the bundle"),
             "{outside:?}"
         );
         assert_eq!(
@@ -4359,7 +4383,7 @@ mod tests {
         );
 
         let undone = undo_on_work(&data, Section::Pipelines, "p");
-        assert!(undone.ok, "{undone:?}");
+        assert!(undone.succeeded(), "{undone:?}");
         assert_eq!(as_json(&work(&data).pipelines), as_json(&vec![pipeline_p(None)]));
         assert_eq!(git::branch_base(&git::repo_path(&data), "work").unwrap(), left_at);
         std::fs::remove_dir_all(&data).ok();
@@ -4390,7 +4414,7 @@ mod tests {
         );
 
         let undone = undo_on_work(&data, Section::LookupTables, "hosts");
-        assert!(undone.ok, "{undone:?}");
+        assert!(undone.succeeded(), "{undone:?}");
         let tip = git::branch_tip(&repo, "work").unwrap();
         let file = git::read_blobs(&repo, &tip, &["shared/lookups/hosts.csv".to_string()]).unwrap();
         assert_eq!(file[0].as_ref(), Some(&was));
@@ -4398,7 +4422,7 @@ mod tests {
 
         let again = undo_on_work(&data, Section::LookupTables, "hosts");
         assert!(
-            !again.ok && again.errors[0].message.contains("nothing to undo"),
+            !again.succeeded() && again.errors[0].message.contains("nothing to undo"),
             "{again:?}"
         );
         std::fs::remove_dir_all(&data).ok();
@@ -4420,7 +4444,7 @@ mod tests {
         );
 
         let undone = undo_on_work(&data, Section::LookupTables, "hosts");
-        assert!(undone.ok, "{undone:?}");
+        assert!(undone.succeeded(), "{undone:?}");
         let tip = git::branch_tip(&repo, "work").unwrap();
         let file = git::read_blobs(&repo, &tip, &["shared/lookups/hosts.csv".to_string()]).unwrap();
         assert_eq!(file[0], None);
@@ -4463,7 +4487,10 @@ mod tests {
 
         for refused in [elsewhere.as_str(), &left_at[..12], "main"] {
             let read = config_at(&data, "work", Some(refused));
-            assert!(!read.ok && read.config.is_none() && read.commit.is_none(), "{refused}");
+            assert!(
+                !read.succeeded() && read.config.is_none() && read.commit.is_none(),
+                "{refused}"
+            );
         }
         std::fs::remove_dir_all(&data).ok();
     }
@@ -4476,7 +4503,7 @@ mod tests {
     fn an_unsafe_group_id_is_refused_as_a_scope() {
         for unsafe_id in ["../../escaped", "a/b", ".hidden"] {
             let err = Scope::parse(unsafe_id).expect_err("not a safe path component");
-            assert!(err.contains(unsafe_id), "names what was wrong: {err}");
+            assert!(err.message().contains(unsafe_id), "names what was wrong: {err}");
         }
     }
 }

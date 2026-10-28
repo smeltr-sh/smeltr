@@ -24,6 +24,7 @@ use axum::response::{IntoResponse, Response};
 
 use smeltr::leader::access::{Access, AgentPermissions, ByAgent, Level};
 use smeltr::leader::blocking;
+use smeltr::leader::envelope::Refusal;
 use smeltr::leader::sessions::{Refused, Sessions};
 use smeltr::leader::store::{Actor, AuthSource, Store, StoreError, UserRecord};
 use smeltr::leader::throttle::LoginThrottle;
@@ -142,40 +143,16 @@ impl Origin {
 /// leave.
 const RESTRICTED: &[&str] = &["/api/auth/session", "/api/auth/password"];
 
-/// A refusal, as the JSON body `{"ok":false,"error":message}`, so no route under the gate answers a browser's `fetch`
-/// with HTML it will try to parse. `error` reads back as exactly `message`, whatever characters it holds: the GUI
-/// shows it as the reason.
+/// A refusal, as the envelope every route answers in, so no route under the gate answers a browser's `fetch` with
+/// HTML it will try to parse. The message is the one error, and the GUI shows it as the reason.
 pub fn refuse(status: StatusCode, message: &str) -> Response {
-    (
-        status,
-        [
-            (header::CONTENT_TYPE, "application/json"),
-            // A refusal is about this request and this moment; a cache holding one would sign somebody out later.
-            (header::CACHE_CONTROL, "no-store"),
-        ],
-        format!("{{\"ok\":false,\"error\":{}}}", json_string(message)),
-    )
-        .into_response()
+    Refusal::new(status, message).into_response()
 }
 
-/// `message` as a JSON string. Hand-rolled because the alternative is a `serde_json::json!` allocation on a path
-/// that runs for every refusal, and the escaping a refusal needs is this short.
-fn json_string(message: &str) -> String {
-    let mut out = String::with_capacity(message.len() + 2);
-    out.push('"');
-    for c in message.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+/// The account store could not answer. What it said is logged where it failed, not answered: it names the store's
+/// files.
+pub fn store_unavailable() -> Response {
+    refuse(StatusCode::SERVICE_UNAVAILABLE, "the account store is unavailable")
 }
 
 /// The session token this request carries, if any.
@@ -263,7 +240,7 @@ pub async fn require_principal(
         Ok(user) => user,
         Err(e) => {
             tracing::error!(target: "leader.identity_unavailable", error = %e, "the account store could not be read");
-            return refuse(StatusCode::SERVICE_UNAVAILABLE, "the account store is unavailable");
+            return store_unavailable();
         }
     };
 
@@ -292,7 +269,7 @@ pub async fn require_principal(
 
     let need = policy::need(&method, &path);
     if !need.met_by(&access) {
-        return refuse(StatusCode::FORBIDDEN, &need.refusal());
+        return Refusal::from(need).into_response();
     }
 
     // An `Actor`, which is what an audit row and a git author both take: who is asking is one fact, and a second
@@ -563,9 +540,12 @@ mod tests {
             "naïve \u{1d11e}",
         ] {
             let response = refuse(StatusCode::BAD_REQUEST, message);
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
             let body: serde_json::Value = serde_json::from_slice(&body).expect("a refusal is JSON");
-            assert_eq!(body, serde_json::json!({ "ok": false, "error": message }));
+            assert_eq!(body["ok"], false);
+            assert_eq!(body["errors"].as_array().map(Vec::len), Some(1), "{body}");
+            assert_eq!(body["errors"][0]["message"], message);
         }
     }
 

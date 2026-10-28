@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
+use smeltr::leader::envelope::Envelope;
 
 use smeltr::config_file::{SHARED_DIR, group_subtree};
 use smeltr::leader::access::{Level, Role};
@@ -56,7 +57,7 @@ pub struct PutRole {
 pub async fn list_roles(State(auth): State<Auth>) -> Response {
     let store = auth.store.clone();
     match store_call(move || store.list_roles()).await {
-        Ok(roles) => no_store(roles.into_iter().map(RoleDto::from).collect::<Vec<_>>()),
+        Ok(roles) => no_store(serde_json::json!({ "roles": roles.into_iter().map(RoleDto::from).collect::<Vec<_>>() })),
         Err(response) => *response,
     }
 }
@@ -70,7 +71,7 @@ pub async fn put_role(
 ) -> Response {
     let role = match role_of(name, request) {
         Ok(role) => role,
-        Err(why) => return refuse(StatusCode::BAD_REQUEST, &why),
+        Err(why) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, &why),
     };
     let event = accounts::event_for(&actor, "role-put", &role.name, "ok");
     let store = auth.store.clone();
@@ -92,7 +93,7 @@ pub async fn delete_role(
     let store = auth.store.clone();
     let target = name.clone();
     match store_call(move || store.delete_role(&target, &event)).await {
-        Ok(true) => no_store(serde_json::json!({ "ok": true })),
+        Ok(true) => Envelope::done().into_response(),
         Ok(false) => {
             accounts::record(auth.store.as_ref(), &actor, "role-delete", &name, "refused");
             refuse(StatusCode::NOT_FOUND, "there is no role by that name")

@@ -438,14 +438,16 @@ fn a_worker_that_says_it_is_stopping_is_not_reported_silent() {
 
         // Past what this leader counts as silent: three of its own heartbeat intervals, at the default.
         std::thread::sleep(Duration::from_secs(6));
-        let warnings: Vec<serde_json::Value> = agent
+        let listed: serde_json::Value = agent
             .get(format!("{base}/api/warnings"))
             .call()
             .map_err(|e| e.to_string())?
             .body_mut()
             .read_json()
             .map_err(|e| e.to_string())?;
-        let silent: Vec<&str> = warnings
+        let silent: Vec<&str> = listed["warnings"]
+            .as_array()
+            .ok_or("the warnings are listed")?
             .iter()
             .filter(|w| w["condition"] == "workerSilent")
             .filter_map(|w| w["subjectId"].as_str())
@@ -495,14 +497,16 @@ fn a_forgotten_ephemeral_worker_enrolls_again_as_a_new_one() {
     let state = temp_dir("pod-state");
     let id = || std::fs::read_to_string(state.join("worker_id")).ok();
     let roster = || -> Vec<String> {
-        let workers: Vec<serde_json::Value> = agent
+        let listed: serde_json::Value = agent
             .get(format!("{base}/api/workers"))
             .call()
             .unwrap()
             .body_mut()
             .read_json()
             .unwrap();
-        workers
+        listed["workers"]
+            .as_array()
+            .expect("the workers are listed")
             .iter()
             .map(|w| w["workerId"].as_str().unwrap().to_string())
             .collect()
@@ -594,13 +598,15 @@ fn an_enrollment_code_naming_an_undeployed_group_is_refused() {
     let _alone = alone();
     let (base, ca_pem) = start_leader_tls();
     let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
-    let response: serde_json::Value = agent
+    let mut response = agent
         .post(format!("{base}/api/enrollment-codes"))
+        .config()
+        .http_status_as_error(false)
+        .build()
         .send_json(serde_json::json!({ "groupId": "west" }))
-        .expect("ask to mint an enrollment code")
-        .body_mut()
-        .read_json()
-        .unwrap();
+        .expect("ask to mint an enrollment code");
+    assert_eq!(response.status(), 422);
+    let response: serde_json::Value = response.body_mut().read_json().unwrap();
     assert_eq!(response["ok"], false, "{response}");
     assert!(
         response["errors"][0]["message"]
