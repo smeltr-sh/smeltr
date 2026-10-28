@@ -1,7 +1,8 @@
 # API
 
 The leader answers three families of HTTP routes, told apart by the credential
-a caller holds. Workers call under `/worker/` with the token they enrolled for.
+a caller holds. Workers call under `/api/worker/` with the token they enrolled
+for.
 People, through the GUI and their AI agent, and integrations call under `/api/`
 as operators. A few routes are open, because they are how a caller gets a
 credential in the first place. An operator request is judged from its request
@@ -11,7 +12,7 @@ What the API answers never holds a secret's value.
 
 ```mermaid
 flowchart LR
-  worker[Worker] -- Bearer token --> wgate{the worker's token} --> w["/worker/"]
+  worker[Worker] -- Bearer token --> wgate{the worker's token} --> w["/api/worker/"]
   person[Person: GUI, agent] -- session cookie --> o["/api/"]
   integration[Integration] -- Bearer key --> o
   anyone[Anyone] --> open["open routes"]
@@ -21,21 +22,21 @@ flowchart LR
 
 ## Families
 
-**Worker.** Everything else under `/worker/`, judged by the worker's Bearer token
-from enrollment. These messages cross builds, so they follow the control
+**Worker.** Everything else under `/api/worker/`, judged by the worker's Bearer
+token from enrollment. These messages cross builds, so they follow the control
 plane's rule for messages between builds
 ([control-plane.md](control-plane.md), Upgrades): they only grow, a field added
 is optional, and a field a reader does not know is ignored. They carry no
 envelope.
 
-**Open.** `/worker/enroll`, `/worker/authority`, `/api/auth/login`,
+**Open.** `/api/worker/enroll`, `/api/worker/authority`, `/api/auth/login`,
 `/api/auth/oidc/*`, `/api/docs*` and the ACME challenge. Each is how a caller
 gets a credential or what it needs to trust one, and each holds nothing a
 stranger may not see.
 
-**Operator.** Everything else under `/api/`. A person calls with a session
-cookie, and an unsafe method also carries a matching Origin and the CSRF
-header. An integration calls with its Bearer key.
+**Operator.** Everything else under `/api/`, outside `/api/worker/`. A person
+calls with a session cookie, and an unsafe method also carries a matching
+Origin and the CSRF header. An integration calls with its Bearer key.
 
 ## Who may call what
 
