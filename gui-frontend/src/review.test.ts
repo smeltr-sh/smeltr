@@ -65,11 +65,11 @@ describe('reviews', () => {
 describe('testsTally', () => {
   const t = (passed: boolean | null): TestResult =>
     passed === null
-      ? { id: 'x', name: 'x', scope: 's', error: 'no sample' }
+      ? { id: 'x', name: 'x', area: 's', error: 'no sample' }
       : {
           id: 'x',
           name: 'x',
-          scope: 's',
+          area: 's',
           verdict: { passed, expectedRows: 1, actualRows: 1 },
         };
 

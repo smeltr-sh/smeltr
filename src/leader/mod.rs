@@ -1097,7 +1097,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
         .iter_mut()
         .filter(|w| w.subject_kind == warnings::SubjectKind::Pipeline)
     {
-        w.scope = match shared_pipelines.contains(&w.subject_id) {
+        w.area = match shared_pipelines.contains(&w.subject_id) {
             true => Some(crate::config_file::SHARED_DIR.to_string()),
             false => w.group.clone(),
         };

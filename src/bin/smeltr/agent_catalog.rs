@@ -222,7 +222,7 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/branches/:name/comments",
         what: "Comment on a change, optionally anchored or as a reply. No query.",
-        body: "{ body: string, anchor?: { kind:'object', scope, section, objectId, step? } | { kind:'line', path, line }, replyTo?: commentId }",
+        body: "{ body: string, anchor?: { kind:'object', area, section, objectId, step? } | { kind:'line', path, line }, replyTo?: commentId }",
     },
     Route {
         method: "POST",

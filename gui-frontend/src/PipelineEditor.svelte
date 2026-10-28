@@ -1024,8 +1024,8 @@
     return {
       kind: 'source' as const,
       id: c.id,
-      scope: c.scope,
-      group: c.scope === SHARED_SCOPE ? '' : c.scope,
+      scope: c.area,
+      group: c.area === SHARED_SCOPE ? '' : c.area,
     };
   }
 

@@ -78,14 +78,14 @@ impl From<String> for Refusal {
     }
 }
 
-/// A test's summary, tagged with the scope it is on: an id is unique only within a scope, the same
+/// A test's summary, tagged with the area it is in: an id is unique only within an area, the same
 /// collision a group-scoped `Warning::subject_id` or `MapNode::author_id` already carries a group to
 /// resolve (`src/leader/warnings.rs`, `src/leader/map.rs`) -- necessary here once a review can run more
-/// than one scope's tests in a single answer.
+/// than one area's tests in a single answer.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScopedTestSummary {
-    pub scope: String,
+pub struct AreaTestSummary {
+    pub area: String,
     #[serde(flatten)]
     pub summary: TestSummary,
 }
@@ -93,7 +93,7 @@ pub struct ScopedTestSummary {
 #[derive(Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tests {
-    tests: Vec<ScopedTestSummary>,
+    tests: Vec<AreaTestSummary>,
 }
 
 /// One area's tests.
@@ -125,8 +125,8 @@ fn list_in(data_dir: &Path, branch: &str, covers: &Covers, access: &Access) -> R
         for scope in scopes {
             let reading = config_api::Reading::open_in(data_dir, branch, &scope)?;
             let (listed, unreadable) = config_file::list_tests(&mut reading.files());
-            tests.extend(listed.into_iter().map(|summary| ScopedTestSummary {
-                scope: scope.clone(),
+            tests.extend(listed.into_iter().map(|summary| AreaTestSummary {
+                area: scope.clone(),
                 summary,
             }));
             errors.extend(
@@ -251,15 +251,15 @@ pub struct Run {
     /// reached and untested -- which is why the list is shown at all, not only the results. Empty --
     /// omitted entirely -- when `touched` was not asked for, or no scope run reached anything.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    touched: Vec<ScopedImpact>,
+    touched: Vec<AreaImpact>,
 }
 
-/// One scope's `Impact`, tagged with the scope: `Reached.id` is unique only within a scope, the same
-/// collision `ScopedTestSummary`'s doc names.
+/// One area's `Impact`, tagged with the area: `Reached.id` is unique only within an area, the same
+/// collision `AreaTestSummary`'s doc names.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScopedImpact {
-    pub scope: String,
+pub struct AreaImpact {
+    pub area: String,
     #[serde(flatten)]
     pub impact: Impact,
 }
@@ -328,15 +328,15 @@ fn run_scoped(
     scopes: &[String],
     ids: Vec<String>,
     touched_only: bool,
-) -> Result<(Vec<TestResult>, Vec<ScopedImpact>), String> {
+) -> Result<(Vec<TestResult>, Vec<AreaImpact>), String> {
     let mut results = Vec::new();
     let mut touched = Vec::new();
     for scope in scopes {
         let (scope_results, impact) = run_on_branch(data_dir, branch, scope, ids.clone(), touched_only)?;
         results.extend(scope_results);
         if !impact_is_empty(&impact) {
-            touched.push(ScopedImpact {
-                scope: scope.clone(),
+            touched.push(AreaImpact {
+                area: scope.clone(),
                 impact,
             });
         }
@@ -467,7 +467,7 @@ fn run_in(
                     id: id.clone(),
                     name: id,
                     pipeline: None,
-                    scope: scope.to_string(),
+                    area: scope.to_string(),
                     verdict: None,
                     error: Some("there is no test by that name on this branch".to_string()),
                 });
@@ -478,7 +478,7 @@ fn run_in(
                     id: id.clone(),
                     name: id,
                     pipeline: None,
-                    scope: scope.to_string(),
+                    area: scope.to_string(),
                     verdict: None,
                     error: Some(e.to_string()),
                 });
@@ -508,7 +508,7 @@ pub fn failing_at(data_dir: &Path, commit: &str) -> Vec<FailingTest> {
         out.extend(results.into_iter().filter_map(|r| {
             let verdict = r.verdict.filter(|v| !v.passed)?;
             Some(FailingTest {
-                scope: r.scope,
+                scope: r.area,
                 id: r.id,
                 name: r.name,
                 pipeline: r.pipeline,
@@ -623,12 +623,12 @@ mod tests {
         );
     }
 
-    /// A `ScopedTestSummary`/`ScopedImpact` flattens its scope alongside the wrapped shape, rather than
-    /// nesting it under a second key -- the GUI reads `t.scope` next to `t.id` like any other field.
+    /// An `AreaTestSummary`/`AreaImpact` flattens its area alongside the wrapped shape, rather than
+    /// nesting it under a second key -- the GUI reads `t.area` next to `t.id` like any other field.
     #[test]
-    fn a_scoped_test_summary_flattens_its_scope_beside_the_summary() {
-        let scoped = ScopedTestSummary {
-            scope: "west".to_string(),
+    fn an_area_test_summary_flattens_its_area_beside_the_summary() {
+        let scoped = AreaTestSummary {
+            area: "west".to_string(),
             summary: TestSummary {
                 id: "t1".to_string(),
                 name: "t1".to_string(),
@@ -643,7 +643,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&scoped).unwrap(),
             serde_json::json!({
-                "scope": "west",
+                "area": "west",
                 "id": "t1",
                 "name": "t1",
                 "pipeline": "orders",
@@ -748,7 +748,7 @@ mod tests {
         let verdict = passing.verdict.expect("the route preview runs cleanly");
         assert!(verdict.passed, "{:?}", verdict.first_difference);
         assert_eq!(passing.pipeline, None, "an end-to-end test names no pipeline");
-        assert_eq!(passing.scope, "west", "the scope it was run in travels with the result");
+        assert_eq!(passing.area, "west", "the area it was run in travels with the result");
 
         // The sample held two records at lock and holds one now: a changed input fails the test.
         let shrunk = TestDto {
@@ -925,7 +925,7 @@ mod tests {
         assert!(touched.is_empty(), "not asked for: {touched:?}");
         assert_eq!(results.len(), 2, "{results:?}");
         assert!(results.iter().all(|r| r.id == "dup-test"), "{results:?}");
-        let mut scopes: Vec<&str> = results.iter().map(|r| r.scope.as_str()).collect();
+        let mut scopes: Vec<&str> = results.iter().map(|r| r.area.as_str()).collect();
         scopes.sort();
         assert_eq!(scopes, vec!["east", "west"]);
     }
@@ -1395,7 +1395,7 @@ mod tests {
         let ran = body(ran);
         assert_eq!(ran["ok"], true, "{ran}");
         assert_eq!(ran["results"][0]["id"], "west-test", "{ran}");
-        assert_eq!(ran["results"][0]["scope"], "west", "{ran}");
+        assert_eq!(ran["results"][0]["area"], "west", "{ran}");
 
         let ran = run_as(
             &data,

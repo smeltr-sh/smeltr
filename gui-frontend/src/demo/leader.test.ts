@@ -210,7 +210,7 @@ describe('DemoLeader', () => {
           ok: true,
           errors: [],
           tests: [{ id: 't' }],
-          results: [{ id: 't', scope: 'network' }],
+          results: [{ id: 't', area: 'network' }],
         }),
       );
     });
@@ -231,11 +231,11 @@ describe('DemoLeader', () => {
       at('/api/areas/network/test-runs?branch=main'),
       JSON.stringify({ ids: [] }),
     );
-    expect(ran.body).toMatchObject({ ok: true, results: [{ id: 't', scope: 'network' }] });
+    expect(ran.body).toMatchObject({ ok: true, results: [{ id: 't', area: 'network' }] });
     expect(asked[0].url).toBe('http://service/tests');
     expect(asked[0].body).toMatchObject({ groupId: 'network', tests: [test], run: ['t'] });
     const listed = await leader.answer('GET', at('/api/areas/network/tests?branch=main'), null);
-    expect(listed.body).toMatchObject({ tests: [{ scope: 'network', id: 't' }] });
+    expect(listed.body).toMatchObject({ tests: [{ area: 'network', id: 't' }] });
   });
   it("draws the map's measurements on a branch it never watched from main's, under the branch's commit", async () => {
     const r = recording();

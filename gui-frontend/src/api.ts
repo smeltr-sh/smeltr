@@ -2106,9 +2106,9 @@ export type TestSummary = {
   name: string;
   /** Absent names an end-to-end test: the sample routed by its source, not one pipeline. */
   pipeline?: string;
-  /** Which scope this test is on. `id` is unique only within a scope, so a review running more than one
-   * scope's tests at once needs this to tell two groups' same-named tests apart. */
-  scope: string;
+  /** Which area this test is in. `id` is unique only within an area, so a review running more than one
+   * area's tests at once needs this to tell two groups' same-named tests apart. */
+  area: string;
   sample: string;
   rowsIn: number;
   /** Documents kept; fewer than `rowsIn` means rows were dropped, or (for an end-to-end test) matched no
@@ -2195,8 +2195,8 @@ export type TestResult = {
   name: string;
   /** Absent for an end-to-end test, which names no pipeline. */
   pipeline?: string;
-  /** Which scope this ran in, same reason `TestSummary.scope` carries one. */
-  scope: string;
+  /** Which area this ran in, same reason `TestSummary.area` carries one. */
+  area: string;
   /** Absent when the run could not happen at all. */
   verdict?: Verdict;
   /** Why there is no verdict: a missing sample, a pipeline that will not
@@ -2249,9 +2249,9 @@ export type Impact = {
   pipelineNames?: Record<string, string>;
 };
 
-/** One scope's `Impact`, tagged with the scope -- `Reached.id` is unique only within a scope, the same
- * reason `TestSummary.scope` carries one. */
-export type ScopedImpact = { scope: string } & Impact;
+/** One area's `Impact`, tagged with the area -- `Reached.id` is unique only within an area, the same
+ * reason `TestSummary.area` carries one. */
+export type ScopedImpact = { area: string } & Impact;
 
 export interface RunTestsResult {
   ok: boolean;
@@ -2478,9 +2478,9 @@ export interface WarningDto {
   /** The log site a `workerLoggedWarnings` is about: one worker raises it once per site.
    * Absent on every other condition. */
   site?: string;
-  /** The scope whose bundle declares a pipeline subject: `shared` or its group. Absent on every
+  /** The area whose bundle declares a pipeline subject: `shared` or its group. Absent on every
    * other subject, and where the deployed commit does not say. */
-  scope?: string;
+  area?: string;
 }
 
 /** What a reader scans before the sentence. */
@@ -4153,7 +4153,7 @@ export type Connected = {
   kind: ConnectionKind;
   id: string;
   /** The group that declares it, or `shared`. */
-  scope: string;
+  area: string;
 };
 
 export type ConnectionsResponse = {
@@ -4402,7 +4402,7 @@ export function retitleChange(
  * pipeline, one of its steps, by the step's id), or a line of a file as it
  * stood at the branch head the comment was written at. */
 export type CommentAnchor =
-  | { kind: 'object'; scope: string; section: ConfigSection; objectId: string; step?: string }
+  | { kind: 'object'; area: string; section: ConfigSection; objectId: string; step?: string }
   | { kind: 'line'; path: string; line: number };
 
 /** One thing that happened to a change. `opened`, `renamed` and `reopened`

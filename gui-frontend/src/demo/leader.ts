@@ -741,7 +741,7 @@ export class DemoLeader {
         results?: unknown[];
       };
       if (!a.ok) return { status: answer.status, body: { ...a, tests: [], results: [] } };
-      tests.push(...(a.tests ?? []).map((t) => ({ scope: s, ...t })));
+      tests.push(...(a.tests ?? []).map((t) => ({ area: s, ...t })));
       results.push(...(a.results ?? []));
     }
     return run ? ok({ results }) : ok({ tests });

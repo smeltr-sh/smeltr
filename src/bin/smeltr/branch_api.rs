@@ -580,7 +580,7 @@ pub struct CommentRequest {
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum AnchorJson {
     Object {
-        scope: String,
+        area: String,
         section: String,
         #[serde(rename = "objectId")]
         object_id: String,
@@ -597,12 +597,12 @@ impl From<AnchorJson> for git::Anchor {
     fn from(anchor: AnchorJson) -> Self {
         match anchor {
             AnchorJson::Object {
-                scope,
+                area,
                 section,
                 object_id,
                 step,
             } => git::Anchor::Object {
-                scope,
+                scope: area,
                 section,
                 id: object_id,
                 step,
@@ -621,7 +621,7 @@ impl From<git::Anchor> for AnchorJson {
                 id,
                 step,
             } => AnchorJson::Object {
-                scope,
+                area: scope,
                 section,
                 object_id: id,
                 step,
@@ -1326,7 +1326,7 @@ mod tests {
         git::open_change(&repo, "work", "Edit west", "", &ann).unwrap();
         let req: CommentRequest = serde_json::from_value(serde_json::json!({
             "body": "why this one?",
-            "anchor": {"kind": "object", "scope": "west", "section": "routes", "objectId": "r1"},
+            "anchor": {"kind": "object", "area": "west", "section": "routes", "objectId": "r1"},
         }))
         .unwrap();
         let anchor = req.anchor.map(git::Anchor::from);
@@ -1338,7 +1338,7 @@ mod tests {
         let root = event(2)["id"].as_str().unwrap().to_string();
         git::comment_on_change(&repo, "work", "because", None, Some(&root), &ann).unwrap();
         git::resolve_thread(&repo, "work", &root, true, &ann).unwrap();
-        let anchor = serde_json::json!({"kind": "object", "scope": "west", "section": "routes", "objectId": "r1"});
+        let anchor = serde_json::json!({"kind": "object", "area": "west", "section": "routes", "objectId": "r1"});
 
         let (root_event, reply, resolved) = (event(2), event(3), event(4));
         assert_eq!(
@@ -1363,7 +1363,7 @@ mod tests {
         .unwrap();
         assert!(matches!(line.anchor, Some(AnchorJson::Line { line: 2, .. })));
         let step: CommentRequest = serde_json::from_value(serde_json::json!({"body": "x", "replyTo": root,
-            "anchor": {"kind": "object", "scope": "shared", "section": "pipelines", "objectId": "p", "step": "e"}}))
+            "anchor": {"kind": "object", "area": "shared", "section": "pipelines", "objectId": "p", "step": "e"}}))
         .unwrap();
         assert_eq!(step.reply_to.as_deref(), Some(root.as_str()));
         assert!(matches!(step.anchor, Some(AnchorJson::Object { step: Some(_), .. })));
