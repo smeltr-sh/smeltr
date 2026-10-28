@@ -10,6 +10,7 @@
 <script lang="ts">
   import { reported } from './errors.svelte';
   import Field from './Field.svelte';
+  import RemoveButton from './RemoveButton.svelte';
   import Clamped from './Clamped.svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import FindBox, { type FindFilter } from './FindBox.svelte';
@@ -300,15 +301,13 @@
                   {/if}
                 {/each}
                 <td class="right pin end">
-                  <button
-                    type="button"
-                    class="compact"
-                    aria-label={`Remove record ${r.key + 1}`}
+                  <RemoveButton
+                    label={`Remove record ${r.key + 1}`}
                     onclick={(e) => {
                       e.stopPropagation();
                       remove(r.key);
-                    }}>×</button
-                  >
+                    }}
+                  />
                 </td>
               </tr>
             {/each}

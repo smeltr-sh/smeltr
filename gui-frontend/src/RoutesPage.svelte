@@ -53,6 +53,7 @@
     type ExceptionsDto,
   } from './exceptions';
   import Help from './Help.svelte';
+  import RemoveButton from './RemoveButton.svelte';
   import {
     sharedConfig,
     currentScope,
@@ -603,13 +604,7 @@
                   .length}
               />
               {#if !readOnly}
-                <button
-                  type="button"
-                  class="compact"
-                  aria-label="Remove"
-                  title="Remove"
-                  onclick={() => removeCard(card)}>&#10005;</button
-                >
+                <RemoveButton label="Remove" onclick={() => removeCard(card)} />
               {/if}
             {/snippet}
             <RouteFlow

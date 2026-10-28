@@ -1,9 +1,10 @@
 <!--
-  A value set in a field, with the ✕ that takes it out. A tag list's names and the find box's
+  A value set in a field, with the ✕ (`CrossIcon`) that takes it out. A tag list's names and the find box's
   filters are both one, and so is where the workspace's records stand, in the accent.
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import CrossIcon from './CrossIcon.svelte';
 
   let {
     removeLabel,
@@ -30,7 +31,7 @@
       class="chip-remove"
       aria-label={removeLabel}
       title={removeLabel}
-      onclick={onremove}>✕</button
+      onclick={onremove}><CrossIcon /></button
     >{/if}</span
 >
 
@@ -64,6 +65,7 @@
   }
 
   .chip-remove {
+    display: inline-grid;
     background: none;
     border: none;
     color: var(--dim);

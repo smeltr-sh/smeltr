@@ -25,6 +25,7 @@
 
 <script lang="ts" generics="K extends string">
   import Field from './Field.svelte';
+  import RemoveButton from './RemoveButton.svelte';
   import { untrack, type Snippet } from 'svelte';
   import SecretRefInput from './SecretRefInput.svelte';
   import { editable } from './access';
@@ -111,15 +112,13 @@
 {/snippet}
 
 {#snippet remove(drop: () => void)}
-  {#if !readOnly}<button
-      type="button"
-      class="compact"
-      title="remove"
+  {#if !readOnly}<RemoveButton
+      label="remove"
       onclick={() => {
         drop();
         sync();
-      }}>&#10005;</button
-    >{/if}
+      }}
+    />{/if}
 {/snippet}
 
 {#snippet refused(reason: string | undefined)}
