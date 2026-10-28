@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { Connected, ConnectionsResponse } from './api';
 import { listHash, mapHash, objectHash, rows, summary } from './connections';
 
-const at = (kind: Connected['kind'], id: string, scope = 'network'): Connected => ({
+const at = (kind: Connected['kind'], id: string, area = 'network'): Connected => ({
   kind,
   id,
-  scope,
+  area,
 });
 
 function answer(over: Partial<ConnectionsResponse>): ConnectionsResponse {

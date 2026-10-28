@@ -36,10 +36,8 @@ const test = base.extend<{ sink: (mode?: SinkMode) => Promise<FakeElasticsearch>
   },
 });
 
-function query(branch: string, scope?: string) {
-  const p = new URLSearchParams({ branch });
-  if (scope) p.set('scope', scope);
-  return p.toString();
+function query(branch: string) {
+  return new URLSearchParams({ branch }).toString();
 }
 
 /** Creates `newGroups` on `branch`, writes each scope's bundle there, then opens a change and deploys it. */
@@ -52,12 +50,12 @@ async function deploy(
   for (const id of newGroups)
     await api.post(`/api/worker-groups?${query(branch)}`, { id, name: id, hue: null });
   for (const [scope, b] of Object.entries(scopes)) {
-    const q = query(branch, scope);
-    if (b.destinations) await api.put(`/api/destinations?${q}`, b.destinations);
-    for (const p of b.pipelines ?? []) await api.put(`/api/pipelines/${p.id}?${q}`, p);
-    if (b.sources) await api.put(`/api/sources?${q}`, b.sources);
-    if (b.routes) await api.put(`/api/routes?${q}`, b.routes);
-    if (b.manifest) await api.put(`/api/manifest?${q}`, b.manifest);
+    const [at, q] = [`/api/areas/${scope}`, query(branch)];
+    if (b.destinations) await api.put(`${at}/destinations?${q}`, b.destinations);
+    for (const p of b.pipelines ?? []) await api.put(`${at}/pipelines/${p.id}?${q}`, p);
+    if (b.sources) await api.put(`${at}/sources?${q}`, b.sources);
+    if (b.routes) await api.put(`${at}/routes?${q}`, b.routes);
+    if (b.manifest) await api.put(`${at}/manifest?${q}`, b.manifest);
   }
   await api.openChange(branch, branch);
   await api.deploy(branch);
@@ -750,7 +748,7 @@ test('a capture at a destination shows each row its pipeline finished for it, an
   await branch.getByLabel('branch to edit on').fill('captured');
   await branch.getByRole('button', { name: 'Edit on this branch' }).click();
   await expect(saving).toBeHidden();
-  const { samples } = await api.get('/api/samples?branch=captured&scope=east');
+  const { samples } = await api.get('/api/areas/east/samples?branch=captured');
   const saved = samples.find((s: { name: string }) => s.name === 'outgoing rows');
   expect(saved).toMatchObject({ records: 3 });
   expect(saved.source).toBeUndefined();
@@ -831,11 +829,11 @@ test('a capture whose routes type one field two ways saves it as a variant', asy
   await expect(saving).toBeHidden();
   await admin.screenshot({ path: 'results/destination-capture-variant.png' });
 
-  const { samples } = await api.get('/api/samples?branch=overlap&scope=east');
+  const { samples } = await api.get('/api/areas/east/samples?branch=overlap');
   const saved = samples.find((s: { name: string }) => s.name === 'both routes');
   expect(saved).toBeDefined();
   const { sample } = await api.get(
-    `/api/samples/${encodeURIComponent(saved.id)}?branch=overlap&scope=east`,
+    `/api/areas/east/samples/${encodeURIComponent(saved.id)}?branch=overlap`,
   );
   // `a.b` makes `a` an object on one route and a number on the other.
   const a = sample.columns.find((c: { name: string }) => c.name === 'a');

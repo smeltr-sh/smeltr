@@ -32,8 +32,8 @@ pub fn router(auth: Auth, tls: Option<Arc<Tls>>) -> axum::Router {
         tls,
     };
     axum::Router::new()
-        .route("/api/settings/acme", get(show).put(put_settings))
-        .route("/api/settings/acme/order", post(order))
+        .route("/api/settings/tls/acme", get(show).put(put_settings))
+        .route("/api/settings/tls/acme/order", post(order))
         .route_layer(axum::middleware::from_fn_with_state(
             auth,
             crate::gate::require_principal,
@@ -105,7 +105,7 @@ async fn answer(state: &Acme) -> Response {
     }
 }
 
-/// `GET /api/settings/acme`.
+/// `GET /api/settings/tls/acme`.
 async fn show(State(state): State<Acme>) -> Response {
     answer(&state).await
 }
@@ -138,7 +138,7 @@ struct PutSettings {
 const MOST_TEXT: usize = 1024;
 const MOST_AUTHORITY: usize = 64 * 1024;
 
-/// `PUT /api/settings/acme`. Recorded with who set it and what changed, in the transaction that sets it.
+/// `PUT /api/settings/tls/acme`. Recorded with who set it and what changed, in the transaction that sets it.
 async fn put_settings(
     State(state): State<Acme>,
     actor: axum::Extension<Actor>,
@@ -286,7 +286,7 @@ async fn put_settings(
     answer(&state).await
 }
 
-/// `POST /api/settings/acme/order`: order a certificate now, and serve it.
+/// `POST /api/settings/tls/acme/order`: order a certificate now, and serve it.
 ///
 /// What a renewal does on its own, done while somebody watches: the failure an authority answers with is theirs
 /// to read.

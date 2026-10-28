@@ -549,7 +549,8 @@ pub struct RegistryStore {
     /// Every method here answers a `Result`, and this lock is the only way any of them could panic instead; a
     /// caller already has the error path. A panic under the lock is reported where it happened, and poisoning is
     /// only its aftermath: refusing to work afterward would turn one bug into a leader that has permanently
-    /// stopped answering `/api/health`, `/api/warnings`, `/api/flow` and `/api/stats`, none of which it touched.
+    /// stopped answering `/api/health`, `/api/warnings`, `/api/flow` and `/api/areas/:area/stats`, none of which it
+    /// touched.
     /// Recovery is sound because a `Transaction` rolls back as it drops, so what comes back is consistent.
     conn: Mutex<Connection>,
     /// When [`RegistryStore::maybe_maintain`] should next actually run `maintain` -- epoch milliseconds. Rollup and

@@ -298,6 +298,8 @@ impl Followed {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveCaptureRequest {
+    /// The capture whose records the sample holds.
+    pub capture: String,
     /// The sample's id, minted by the GUI so a rename keeps it. Absent from a client that predates it, which gets
     /// the name as the id.
     #[serde(default)]
@@ -478,11 +480,12 @@ pub async fn save_capture(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Extension(access): Extension<Access>,
-    AxPath(session): AxPath<String>,
+    AxPath(area): AxPath<String>,
     Query(q): Query<BranchQuery>,
     headers: HeaderMap,
     Json(request): Json<SaveCaptureRequest>,
 ) -> Json<Envelope<SavedCapture>> {
+    let session = request.capture.clone();
     let status = match savable(&state.captures, &access, &session) {
         Ok(status) => status,
         Err(e) => return Json(Envelope::failed_one(e)),
@@ -515,14 +518,10 @@ pub async fn save_capture(
     };
     let records = sample.records.len();
 
-    let (branch, base, scope) = (
-        q.name().to_string(),
-        config_api::base_commit(&headers),
-        q.scope().to_string(),
-    );
+    let (branch, base) = (q.name().to_string(), config_api::base_commit(&headers));
     let saved = blocking(move || {
         let path = config_file::sample_path(&sample.id).map_err(|e| e.to_string())?;
-        let writing = config_api::Writing::open(&branch, base.as_deref(), &scope)?;
+        let writing = config_api::Writing::open(&branch, base.as_deref(), &area)?;
         let content = Some(config_file::sample_bytes(&sample));
         config_api::refuse_sample_collision(&mut writing.files(), &path, &sample.id, &content)?;
         writing.commit(
@@ -625,13 +624,14 @@ mod tests {
     /// The id the GUI minted names the sample, so a rename keeps it; a client that sends none gets the name.
     #[test]
     fn a_save_takes_the_id_it_is_sent_and_falls_back_to_the_name() {
-        let minted: SaveCaptureRequest =
-            serde_json::from_str(r#"{"id":"sample-4k2p9x1a","name":"orders, ordinary hour","source":"orders"}"#)
-                .unwrap();
+        let minted: SaveCaptureRequest = serde_json::from_str(
+            r#"{"capture":"c1","id":"sample-4k2p9x1a","name":"orders, ordinary hour","source":"orders"}"#,
+        )
+        .unwrap();
         assert_eq!(minted.sample_id(), "sample-4k2p9x1a");
 
         let old: SaveCaptureRequest =
-            serde_json::from_str(r#"{"name":"orders, ordinary hour","source":"orders"}"#).unwrap();
+            serde_json::from_str(r#"{"capture":"c1","name":"orders, ordinary hour","source":"orders"}"#).unwrap();
         assert_eq!(old.sample_id(), "orders, ordinary hour");
     }
 

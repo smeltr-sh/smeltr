@@ -97,9 +97,9 @@ async function show(
       if (init?.method === 'POST') posts.push(url);
       if (init?.method === 'DELETE') deletes.push(url);
       if (init?.method === 'PUT') puts.push(JSON.parse(String(init.body)));
-      if (url.startsWith('/api/settings/certificates')) return json(certificates);
+      if (url.startsWith('/api/settings/tls/acme')) return json(acme);
+      if (url.startsWith('/api/settings/tls')) return json(certificates);
       if (url.startsWith('/api/certificates')) return json(LISTED);
-      if (url.startsWith('/api/settings/acme')) return json(acme);
       throw new Error(`unexpected ${url}`);
     }),
   );
@@ -152,7 +152,7 @@ describe('the certificate actions', () => {
 
     ask.mockResolvedValueOnce(true);
     button('Cut over now')!.click();
-    await vi.waitFor(() => expect(posts).toEqual(['/api/settings/certificates/rotation/cutover']));
+    await vi.waitFor(() => expect(posts).toEqual(['/api/settings/tls/rotation/cutover']));
   });
 });
 
@@ -268,9 +268,9 @@ describe('the source', () => {
             rotation: { ...CERTIFICATES.rotation, installs: 'supplied', source: 'upload' },
           };
         }
-        if (url.startsWith('/api/settings/certificates')) return json(answered);
+        if (url.startsWith('/api/settings/tls/acme')) return json(ACME);
+        if (url.startsWith('/api/settings/tls')) return json(answered);
         if (url.startsWith('/api/certificates')) return json(LISTED);
-        if (url.startsWith('/api/settings/acme')) return json(ACME);
         throw new Error(`unexpected ${url}`);
       }),
     );
@@ -397,7 +397,7 @@ describe('ACME', () => {
     target.querySelector<HTMLButtonElement>('button[aria-label="remove old.example"]')!.click();
     flushSync();
     button('Save')!.click();
-    await vi.waitFor(() => expect(posts).toEqual(['/api/settings/acme/order']));
+    await vi.waitFor(() => expect(posts).toEqual(['/api/settings/tls/acme/order']));
   });
 
   it('says what the last order failed with', async () => {

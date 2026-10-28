@@ -251,7 +251,7 @@ fn unresolved(e: &ureq::Error, leader_url: &str) -> Unresolved {
             Unresolved::Unreachable(format!("{leader_url} is not answering yet: {e}"))
         }
         ureq::Error::StatusCode(code) => Unresolved::Refused(format!(
-            "{leader_url} answered {code}. A leader answers a worker at /api/authority and /api/enroll, neither \
+            "{leader_url} answered {code}. A leader answers a worker at /api/worker/authority and /api/worker/enroll, neither \
              of them gated -- check the address, and anything routing to it."
         )),
         // The connection was made and the certificate was not accepted, which is a different thing from a leader
@@ -424,7 +424,7 @@ fn holds(pem: &[u8], fingerprint: &str) -> bool {
 fn fetch_pinned_authority(leader_url: &str, fingerprint: &str) -> Result<Vec<u8>, Unresolved> {
     let agent = heartbeat::agent_without_verification(crate::heartbeat::REQUEST_BUDGET);
     let mut response = agent
-        .get(format!("{}/api/authority", leader_url.trim_end_matches('/')))
+        .get(format!("{}/api/worker/authority", leader_url.trim_end_matches('/')))
         .call()
         .map_err(|e| unresolved(&e, leader_url))?;
     let pem = response
@@ -489,7 +489,7 @@ fn certificate_blocks(pem: &str) -> Vec<String> {
     blocks
 }
 
-/// `POST /api/enroll`: an enrollment code for a persistent Bearer token. Enrollment happens before a `HeartbeatClient`
+/// `POST /api/worker/enroll`: an enrollment code for a persistent Bearer token. Enrollment happens before a `HeartbeatClient`
 /// exists, so it builds its own agent over the same trust and the same budget.
 fn enroll(
     leader_url: &str,
@@ -501,13 +501,13 @@ fn enroll(
     let agent = heartbeat::agent_trusting(leader_ca_pem, trust_public, crate::heartbeat::REQUEST_BUDGET)
         .map_err(Unresolved::Refused)?;
     let mut response = agent
-        .post(format!("{}/api/enroll", leader_url.trim_end_matches('/')))
+        .post(format!("{}/api/worker/enroll", leader_url.trim_end_matches('/')))
         .send_json(serde_json::json!({ "code": code, "workerId": worker_id }))
         .map_err(|e| unresolved(&e, leader_url))?;
     let parsed: EnrollResponse = response.body_mut().read_json().map_err(|e| {
         Unresolved::Unreachable(format!(
             "{leader_url} answered something this worker could not read as an enrollment: {e}. A leader answers \
-                 /api/enroll with JSON, so anything else is something else at that address."
+                 /api/worker/enroll with JSON, so anything else is something else at that address."
         ))
     })?;
     if parsed.ok {
@@ -641,7 +641,7 @@ fn fetch_deployed_with_budget(
 
     // The url is built fresh on every call rather than kept in the repository's own remote config, so where the
     // leader keeps its repository is never something a worker remembers wrongly.
-    let url = format!("{}/repo", leader_url.trim_end_matches('/'));
+    let url = format!("{}/api/worker/repo", leader_url.trim_end_matches('/'));
     // Straight into `FETCHED_REF`: `refs/smeltr/` is local on a worker, and what it fetched is all it needs to name.
     let refspec = format!("+{DEPLOYED_REF}:{FETCHED_REF}");
     let remote = repo
@@ -4993,7 +4993,7 @@ mod tests {
         assert!(code["ok"].as_bool().unwrap_or(false), "{code}");
         let code = code["code"]["value"].as_str().expect("ok implies an enrollment code");
 
-        let enrolled: serde_json::Value = ureq::post(format!("{base}/api/enroll"))
+        let enrolled: serde_json::Value = ureq::post(format!("{base}/api/worker/enroll"))
             .send_json(serde_json::json!({ "code": code, "workerId": "w1" }))
             .expect("enroll request succeeds")
             .body_mut()
@@ -5046,7 +5046,7 @@ mod tests {
 
         // A worker built from another commit, or one that does not say, is handed nothing.
         for named in [Some("0000000"), None] {
-            let mut request = ureq::get(format!("{base}/repo/info/refs?service=git-upload-pack"))
+            let mut request = ureq::get(format!("{base}/api/worker/repo/info/refs?service=git-upload-pack"))
                 .header("Authorization", format!("Bearer {token}"));
             if let Some(commit) = named {
                 request = request.header(crate::leader::BUILD_HEADER, commit);
@@ -5164,7 +5164,7 @@ mod tests {
         let code = code["code"]["value"].as_str().expect("ok implies an enrollment code");
 
         let enrolled: serde_json::Value = agent
-            .post(format!("{base}/api/enroll"))
+            .post(format!("{base}/api/worker/enroll"))
             .send_json(serde_json::json!({ "code": code, "workerId": "w1" }))
             .expect("enroll request succeeds")
             .body_mut()
@@ -7293,7 +7293,7 @@ mod tests {
                     use std::io::{Read, Write};
                     let mut buf = vec![0u8; 1 << 16];
                     let n = stream.read(&mut buf).unwrap_or(0);
-                    if String::from_utf8_lossy(&buf[..n]).contains("/api/ledger") {
+                    if String::from_utf8_lossy(&buf[..n]).contains("/api/worker/ledger") {
                         fetches.fetch_add(1, Ordering::SeqCst);
                     }
                     let body = "{\"item\":\"a.log\",\"entry\":\"v1\"}\n";

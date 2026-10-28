@@ -1356,9 +1356,9 @@ pub struct TestResult {
     /// `None` for an end-to-end test, which names no pipeline.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pipeline: Option<String>,
-    /// Which scope this ran in -- ids are unique only within a scope, the same collision
-    /// `ScopedTestSummary`'s doc names.
-    pub scope: String,
+    /// Which area this ran in -- ids are unique only within an area, the same collision
+    /// `AreaTestSummary`'s doc names.
+    pub area: String,
     /// Absent when the run could not happen at all -- a sample that is gone, a pipeline that does not compile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verdict: Option<Verdict>,
@@ -1381,7 +1381,7 @@ pub fn run_test(
         id: test.id.clone(),
         name: test.name.clone(),
         pipeline: test.pipeline.clone(),
-        scope: scope.to_string(),
+        area: scope.to_string(),
         verdict: None,
         error: None,
     };

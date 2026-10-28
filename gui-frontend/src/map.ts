@@ -781,7 +781,7 @@ const UNSUPPORTED_FIELDS: Record<string, string> = {
 export type UnsupportedField = { field: string; note: string };
 
 /** Every callee a pipeline's `Call` steps name, mapped back to its direct callers
- * (`config_file::Links`, served by `/api/pipeline-callers`) -- a call is never drawn, so
+ * (`config_file::Links`, served by `/api/areas/:area/pipeline-callers`) -- a call is never drawn, so
  * `calls:` has nowhere else to read from. */
 export type CallersIndex = Record<string, string[]>;
 
@@ -817,7 +817,7 @@ function matchSupported(token: SearchToken, nodes: MapNode[], callers: CallersIn
         .map((n) => nodeKey(n.group, n.kind, n.authorId)),
     );
   }
-  // The last member of KNOWN_FIELDS. `callers` comes from `/api/pipeline-callers`, which
+  // The last member of KNOWN_FIELDS. `callers` comes from `/api/areas/:area/pipeline-callers`, which
   // answers for one editor scope rather than the whole fleet (`config_file::Links` reads a
   // single bundle) -- so a callee id here is not group-qualified, and a match is every pipeline
   // node of that author id in any group, not one group's alone.

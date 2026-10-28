@@ -119,7 +119,7 @@ pub fn tool() -> Tool {
 const OVERVIEW: &str = r#"How smeltr works:
 
 - **Two tiers.** Workers move data: each reads from its sources, runs every record through the routes that match it, and delivers to destinations. The leader holds the configuration, the people who change it and a picture of the fleet. A source's position moves on only once every destination a record went to has accepted it.
-- **Areas.** Configuration is JSON in git, one bundle per worker group (`scope=<group id>`) and one bundle `shared` that runs in every group. An id may be defined in `shared` or in a group, not both. Every object refuses fields it does not know.
+- **Areas.** Configuration is JSON in git, one bundle per worker group, which is an area named by the group's id, and one bundle `shared` that runs in every group. An id may be defined in `shared` or in a group, not both. Every object refuses fields it does not know.
 - **Routes.** `{ id, source, condition?, pipeline, deliver?: [{ when?, to: [destination ids] }], exceptions? }`. Every route whose condition matches runs, in no order, so overlapping routes deliver twice. A route condition runs before the pipeline and sees only `_raw` and the source's fields; to choose by a parsed field, use a delivery `when`. A null condition is false.
 - **Pipelines.** `{ id, name, steps }`; each step has an `id` unique in the pipeline and a `type`: `parser` (reads the text field `input` names, `_raw` for the raw text, into declared fields: `json`, `csv`, `keyValue` or `grok`), `eval` (assignments; assigning null removes a field), `code` (a program per record), `drop` (removes records where the condition is true), `rename`, `lookup` (against a lookup table), `unroll` (one record per array item), `call` (inlines another pipeline; changing it changes every caller), `if` and `comment`. Most steps take `filter`: where it is false or null, the record passes unchanged.
 - **The language** is a subset of TypeScript. A dotted name is a field (`source.ip`); odd names are `$["user-agent"]`; `$` is the record. Types are strict: conditions must be bool, and a field must be declared by a parser or written by a step before it is calculated with. A missing field is null, arithmetic on null is null, a comparison with null is false, and `!null` is true, so a negated test on a missing field is true. `??` gives a fallback and binds below `&&` and `||`. Examples: `includes(_raw, "ERROR")`, `status >= 500 ? "error" : "info"`, `source.ip.inCidr("10.0.0.0/8") && action == "deny"`, `message != null && !message.startsWith("debug")`.
@@ -150,10 +150,10 @@ pub fn system_prompt(catalog: &[Route]) -> String {
          - Configuration changes are made on a branch, never on main: a write takes `branch=<name>`, and a branch \
            that does not exist is created off main. Deploying a change is a separate, deliberate step: ask the \
            person before deploying anything.\n\
-         - `scope` is `shared` or a worker group's id, and every scoped call needs one.\n\
+         - `:area` is `shared` or a worker group's id.\n\
          - `at` reads at a commit instead of a branch's tip.\n\
          - Most answers are `{ ok, errors, ...fields }`.\n\
-         - Bodies are camelCase, except `/api/preview` and `/api/route-preview`, whose fields are snake_case.\n\n\
+         - Bodies are camelCase, except `/api/areas/:area/preview/pipeline` and `.../preview/routes`, whose fields are snake_case.\n\n\
          Routes (method, path, what it does, body):\n",
     );
     for route in catalog {
@@ -166,7 +166,8 @@ pub fn system_prompt(catalog: &[Route]) -> String {
     prompt
 }
 
-/// Whether `method` on `path` is a route in `catalog`.
+/// Whether `method` on `path` is a route in `catalog`. A `:parameter` stands for one segment, and a last `*parameter`
+/// for one or more.
 pub fn allowed(catalog: &[Route], method: &str, path: &str) -> bool {
     let Some(asked) = path.strip_prefix('/').map(|p| p.split('/').collect::<Vec<_>>()) else {
         return false;
@@ -176,9 +177,13 @@ pub fn allowed(catalog: &[Route], method: &str, path: &str) -> bool {
     }
     catalog.iter().any(|route| {
         let named: Vec<&str> = route.path.trim_start_matches('/').split('/').collect();
+        let rest = named.last().is_some_and(|n| n.starts_with('*'));
         route.method == method
-            && named.len() == asked.len()
-            && named.iter().zip(&asked).all(|(n, a)| n.starts_with(':') || n == a)
+            && (named.len() == asked.len() || rest && asked.len() > named.len())
+            && named
+                .iter()
+                .zip(&asked)
+                .all(|(n, a)| n.starts_with([':', '*']) || n == a)
     })
 }
 
@@ -426,15 +431,21 @@ mod tests {
     const CATALOG: &[Route] = &[
         Route {
             method: "GET",
-            path: "/api/pipelines",
+            path: "/api/areas/:area/pipelines",
             what: "The area's pipelines.",
             body: "",
         },
         Route {
             method: "PUT",
-            path: "/api/pipelines/:id",
+            path: "/api/areas/:area/pipelines/:id",
             what: "Create or replace a pipeline.",
             body: "{ id, name, steps }",
+        },
+        Route {
+            method: "GET",
+            path: "/api/areas/:area/files/*path",
+            what: "One file's raw text.",
+            body: "",
         },
     ];
 
@@ -550,7 +561,7 @@ mod tests {
                 "",
                 &[(
                     "c1",
-                    json!({"method": "get", "path": "/api/pipelines", "query": {"scope": "shared", "limit": 5}}),
+                    json!({"method": "get", "path": "/api/areas/shared/pipelines", "query": {"limit": 5}}),
                 )],
             ),
             reply("orders runs in shared.", &[]),
@@ -572,11 +583,8 @@ mod tests {
             sent[0],
             ApiCall {
                 method: "GET".to_string(),
-                path: "/api/pipelines".to_string(),
-                query: vec![
-                    ("limit".to_string(), "5".to_string()),
-                    ("scope".to_string(), "shared".to_string())
-                ],
+                path: "/api/areas/shared/pipelines".to_string(),
+                query: vec![("limit".to_string(), "5".to_string())],
                 body: None,
             }
         );
@@ -596,10 +604,19 @@ mod tests {
             reply(
                 "",
                 &[
-                    ("c1", json!({"method": "POST", "path": "/api/auth/logout"})),
-                    ("c2", json!({"method": "PUT", "path": "/api/pipelines/../x"})),
-                    ("c3", json!({"method": "GET", "path": "/api/pipelines?scope=shared"})),
-                    ("c4", json!({"method": "DELETE", "path": "/api/pipelines/orders"})),
+                    ("c1", json!({"method": "DELETE", "path": "/api/auth/session"})),
+                    (
+                        "c2",
+                        json!({"method": "PUT", "path": "/api/areas/shared/pipelines/../x"}),
+                    ),
+                    (
+                        "c3",
+                        json!({"method": "GET", "path": "/api/areas/shared/pipelines?branch=b"}),
+                    ),
+                    (
+                        "c4",
+                        json!({"method": "DELETE", "path": "/api/areas/shared/pipelines/orders"}),
+                    ),
                 ],
             ),
             reply("I cannot.", &[]),
@@ -621,13 +638,16 @@ mod tests {
         let refused = results(&kept[2]);
         assert_eq!(refused.len(), 4);
         assert!(refused.iter().all(|(_, _, error)| *error), "{refused:?}");
-        assert_eq!(refused[0].1, "POST /api/auth/logout is not a route you can call");
+        assert_eq!(refused[0].1, "DELETE /api/auth/session is not a route you can call");
     }
 
     #[tokio::test]
     async fn a_long_answer_is_cut_and_said_so() {
         let model = Scripted::new(vec![
-            reply("", &[("c1", json!({"method": "GET", "path": "/api/pipelines"}))]),
+            reply(
+                "",
+                &[("c1", json!({"method": "GET", "path": "/api/areas/shared/pipelines"}))],
+            ),
             reply("done", &[]),
         ]);
         let host = Fake::new(usize::MAX, &"é".repeat(MAX_RESULT));
@@ -652,7 +672,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_turn_ends_after_its_rounds_and_its_last_calls_are_answered_next_turn() {
-        let call = || reply("", &[("c", json!({"method": "GET", "path": "/api/pipelines"}))]);
+        let call = || {
+            reply(
+                "",
+                &[("c", json!({"method": "GET", "path": "/api/areas/shared/pipelines"}))],
+            )
+        };
         let model = Scripted::new((0..=MAX_ROUNDS).map(|_| call()).chain([reply("ok", &[])]).collect());
         let host = Fake::new(usize::MAX, "");
         let ended = run(
@@ -692,8 +717,8 @@ mod tests {
         let model = Scripted::new(vec![reply(
             "",
             &[
-                ("c1", json!({"method": "GET", "path": "/api/pipelines"})),
-                ("c2", json!({"method": "GET", "path": "/api/pipelines"})),
+                ("c1", json!({"method": "GET", "path": "/api/areas/shared/pipelines"})),
+                ("c2", json!({"method": "GET", "path": "/api/areas/shared/pipelines"})),
             ],
         )]);
         // Live for the ask and the first call only.
@@ -723,19 +748,30 @@ mod tests {
 
     #[test]
     fn a_parameter_stands_for_one_segment() {
-        assert!(allowed(CATALOG, "PUT", "/api/pipelines/orders"));
-        assert!(!allowed(CATALOG, "PUT", "/api/pipelines/orders/x"));
-        assert!(!allowed(CATALOG, "PUT", "/api/pipelines/"));
-        assert!(!allowed(CATALOG, "PUT", "/api/pipelines/.."));
-        assert!(!allowed(CATALOG, "GET", "/api/pipelines/orders"));
-        assert!(!allowed(CATALOG, "GET", "api/pipelines"));
+        assert!(allowed(CATALOG, "PUT", "/api/areas/shared/pipelines/orders"));
+        assert!(!allowed(CATALOG, "PUT", "/api/areas/shared/pipelines/orders/x"));
+        assert!(!allowed(CATALOG, "PUT", "/api/areas/shared/pipelines/"));
+        assert!(!allowed(CATALOG, "PUT", "/api/areas/shared/pipelines/.."));
+        assert!(!allowed(CATALOG, "GET", "/api/areas/shared/pipelines/orders"));
+        assert!(!allowed(CATALOG, "GET", "api/areas/shared/pipelines"));
+    }
+
+    #[test]
+    fn a_last_star_parameter_stands_for_one_segment_or_more() {
+        assert!(allowed(CATALOG, "GET", "/api/areas/west/files/system.json"));
+        assert!(allowed(CATALOG, "GET", "/api/areas/west/files/pipelines/x.json"));
+        assert!(!allowed(CATALOG, "GET", "/api/areas/west/files"));
+        assert!(!allowed(CATALOG, "GET", "/api/areas/west/files/"));
+        assert!(!allowed(CATALOG, "GET", "/api/areas/west/files/../../x"));
     }
 
     #[test]
     fn the_prompt_lists_every_route() {
         let prompt = system_prompt(CATALOG);
-        assert!(prompt.contains("- GET /api/pipelines: The area's pipelines.\n"));
-        assert!(prompt.contains("- PUT /api/pipelines/:id: Create or replace a pipeline. Body: { id, name, steps }\n"));
+        assert!(prompt.contains("- GET /api/areas/:area/pipelines: The area's pipelines.\n"));
+        assert!(prompt.contains(
+            "- PUT /api/areas/:area/pipelines/:id: Create or replace a pipeline. Body: { id, name, steps }\n"
+        ));
     }
 
     #[tokio::test]

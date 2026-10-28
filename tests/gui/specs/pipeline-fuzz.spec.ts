@@ -43,17 +43,21 @@ for (const seed of seeds(PIPELINE_SEEDS)) {
     await page.setViewportSize(VIEWPORTS[size]);
     await page.evaluate((t) => localStorage.setItem('smeltr-theme', t), theme);
     for (const id of CALLEES)
-      await api.put(`/api/pipelines/${id}${ON}`, {
+      await api.put(`/api/areas/shared/pipelines/${id}${ON}`, {
         id,
         name: id,
         steps: [{ type: 'eval', id: `${id}-set`, assignments: [{ target: id, expr: '1' }] }],
       });
-    await api.put(`/api/samples${ON}`, {
+    await api.put(`/api/areas/shared/samples/${encodeURIComponent(SAMPLE)}${ON}`, {
       id: SAMPLE,
       name: SAMPLE,
       records: RAWS.map((_raw) => ({ _raw })),
     });
-    await api.put(`/api/pipelines/${PIPELINE}${ON}`, { id: PIPELINE, name: PIPELINE, steps: [] });
+    await api.put(`/api/areas/shared/pipelines/${PIPELINE}${ON}`, {
+      id: PIPELINE,
+      name: PIPELINE,
+      steps: [],
+    });
     const problems: string[] = [];
     listen(page, leader, problems);
     const model = newModel();

@@ -5,8 +5,8 @@ const RECORDED = 1_790_000_000_000;
 
 describe('keyOf', () => {
   it('sorts the query, so one question asked two ways is one key', () => {
-    expect(keyOf(new URL('http://x/api/config?scope=apps&branch=main'))).toBe(
-      '/api/config?branch=main&scope=apps',
+    expect(keyOf(new URL('http://x/api/areas/apps/stats?kind=source&branch=main'))).toBe(
+      '/api/areas/apps/stats?branch=main&kind=source',
     );
   });
 });
@@ -88,8 +88,8 @@ function recording(): Recording {
   return {
     recordedAt: RECORDED,
     answers: {
-      '/api/config?branch=main&scope=shared': config({ config: { version: 1 } }),
-      '/api/config?branch=main&scope=network': config({
+      '/api/areas/shared?branch=main': config({ config: { version: 1 } }),
+      '/api/areas/network?branch=main': config({
         config: { version: 1, sources: [{ id: 'fw', type: 'kafka', topics: ['t'] }] },
       }),
       '/api/worker-groups?branch=main': config({ groups: [{ id: 'network' }] }),
@@ -128,16 +128,16 @@ describe('DemoLeader', () => {
     const sources = [{ id: 'syslog', type: 'syslogReceiver', port: 5514 }];
     const saved = await leader.answer(
       'PUT',
-      at('/api/sources?branch=mine&scope=network'),
+      at('/api/areas/network/sources?branch=mine'),
       JSON.stringify(sources),
     );
     expect(asked).toEqual(['http://service/validate']);
     const commit = (saved.body as { commit: string }).commit;
     expect(commit).not.toBe(COMMIT);
 
-    const mine = await leader.answer('GET', at('/api/config?branch=mine&scope=network'), null);
+    const mine = await leader.answer('GET', at('/api/areas/network?branch=mine'), null);
     expect(mine.body).toMatchObject({ commit, config: { sources } });
-    const main = await leader.answer('GET', at('/api/config?branch=main&scope=network'), null);
+    const main = await leader.answer('GET', at('/api/areas/network?branch=main'), null);
     expect(main.body).toMatchObject({ commit: COMMIT, config: { sources: [{ id: 'fw' }] } });
     const branches = await leader.answer('GET', at('/api/branches'), null);
     expect((branches.body as { branches: unknown[] }).branches).toMatchObject([
@@ -180,11 +180,11 @@ describe('DemoLeader', () => {
 
   it('answers what the recording read on another branch for one it never saw', async () => {
     const r = recording();
-    r.answers['/api/tests?branch=work&scope=network'] = config({ tests: [{ id: 't' }] });
+    r.answers['/api/areas/network/tests?branch=work'] = config({ tests: [{ id: 't' }] });
     const leader = new DemoLeader(r, 'http://service', null, () => RECORDED);
-    const tests = await leader.answer('GET', at('/api/tests?branch=mine&scope=network'), null);
+    const tests = await leader.answer('GET', at('/api/areas/network/tests?branch=mine'), null);
     expect((tests.body as { tests: unknown[] }).tests).toEqual([{ id: 't' }]);
-    const none = await leader.answer('GET', at('/api/tests?branch=mine&scope=apps'), null);
+    const none = await leader.answer('GET', at('/api/areas/apps/tests?branch=mine'), null);
     expect((none.body as { tests: unknown[] }).tests).toEqual([]);
   });
 
@@ -195,16 +195,8 @@ describe('DemoLeader', () => {
       return new Response(JSON.stringify({ ok: true, errors: [] }));
     });
     const leader = new DemoLeader(recording(), 'http://service', null, () => RECORDED);
-    await leader.answer(
-      'GET',
-      at('/api/connections?branch=main&scope=network&kind=source&id=fw'),
-      null,
-    );
-    await leader.answer(
-      'GET',
-      at('/api/connections?branch=main&scope=shared&kind=pipeline&id=p'),
-      null,
-    );
+    await leader.answer('GET', at('/api/areas/network/sources/fw/connections?branch=main'), null);
+    await leader.answer('GET', at('/api/areas/shared/pipelines/p/connections?branch=main'), null);
     expect(asked[0]).toMatchObject({ kind: 'source', id: 'fw', groups: [{ id: 'network' }] });
     expect(asked[1]).toMatchObject({ kind: 'pipeline', groups: [{ id: 'network' }] });
   });
@@ -218,7 +210,7 @@ describe('DemoLeader', () => {
           ok: true,
           errors: [],
           tests: [{ id: 't' }],
-          results: [{ id: 't', scope: 'network' }],
+          results: [{ id: 't', area: 'network' }],
         }),
       );
     });
@@ -232,25 +224,25 @@ describe('DemoLeader', () => {
       rowsIn: 1,
       expected: [],
     };
-    r.answers['/api/tests/t?branch=main&scope=network'] = config({ test });
+    r.answers['/api/areas/network/tests/t?branch=main'] = config({ test });
     const leader = new DemoLeader(r, 'http://service', null, () => RECORDED);
     const ran = await leader.answer(
       'POST',
-      at('/api/tests/run?branch=main&scope=network'),
+      at('/api/areas/network/test-runs?branch=main'),
       JSON.stringify({ ids: [] }),
     );
-    expect(ran.body).toMatchObject({ ok: true, results: [{ id: 't', scope: 'network' }] });
+    expect(ran.body).toMatchObject({ ok: true, results: [{ id: 't', area: 'network' }] });
     expect(asked[0].url).toBe('http://service/tests');
     expect(asked[0].body).toMatchObject({ groupId: 'network', tests: [test], run: ['t'] });
-    const listed = await leader.answer('GET', at('/api/tests?branch=main&scope=network'), null);
-    expect(listed.body).toMatchObject({ tests: [{ scope: 'network', id: 't' }] });
+    const listed = await leader.answer('GET', at('/api/areas/network/tests?branch=main'), null);
+    expect(listed.body).toMatchObject({ tests: [{ area: 'network', id: 't' }] });
   });
   it("draws the map's measurements on a branch it never watched from main's, under the branch's commit", async () => {
     const r = recording();
     r.moving['/api/map/measurements?branch=main'] = [{ commit: COMMIT, nodes: [{ id: 'fw' }] }];
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ok: true, errors: [] })));
     const leader = new DemoLeader(r, 'http://service', null, () => RECORDED);
-    await leader.answer('PUT', at('/api/sources?branch=mine&scope=network'), '[]');
+    await leader.answer('PUT', at('/api/areas/network/sources?branch=mine'), '[]');
     const m = await leader.answer('GET', at('/api/map/measurements?branch=mine'), null);
     const branches = await leader.answer('GET', at('/api/branches'), null);
     const head = (branches.body as { branches: { head: string }[] }).branches[0].head;
@@ -263,19 +255,15 @@ describe('DemoLeader', () => {
     const sources = [{ id: 'syslog', type: 'syslogReceiver', port: 5514 }];
     const saved = await leader.answer(
       'PUT',
-      at('/api/sources?branch=mine&scope=network'),
+      at('/api/areas/network/sources?branch=mine'),
       JSON.stringify(sources),
     );
     const commit = (saved.body as { commit: string }).commit;
-    const now = await leader.answer(
-      'GET',
-      at(`/api/config?branch=mine&scope=network&at=${commit}`),
-      null,
-    );
+    const now = await leader.answer('GET', at(`/api/areas/network?branch=mine&at=${commit}`), null);
     expect(now.body).toMatchObject({ config: { sources } });
     const base = await leader.answer(
       'GET',
-      at(`/api/config?branch=mine&scope=network&at=${COMMIT}`),
+      at(`/api/areas/network?branch=mine&at=${COMMIT}`),
       null,
     );
     expect(base.body).toMatchObject({ config: { sources: [{ id: 'fw' }] } });
@@ -283,15 +271,15 @@ describe('DemoLeader', () => {
 
   it('answers a pipeline deleted on a branch as gone, not as main has it', async () => {
     const r = recording();
-    r.answers['/api/config?branch=main&scope=network'] = config({
+    r.answers['/api/areas/network?branch=main'] = config({
       config: { version: 1, pipelines: [{ id: 'p', steps: [] }] },
     });
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ok: true, errors: [] })));
     const leader = new DemoLeader(r, 'http://service', null, () => RECORDED);
-    await leader.answer('DELETE', at('/api/pipelines/p?branch=mine&scope=network'), null);
-    const gone = await leader.answer('GET', at('/api/pipelines/p?branch=mine&scope=network'), null);
+    await leader.answer('DELETE', at('/api/areas/network/pipelines/p?branch=mine'), null);
+    const gone = await leader.answer('GET', at('/api/areas/network/pipelines/p?branch=mine'), null);
     expect(gone.status).toBe(404);
-    const kept = await leader.answer('GET', at('/api/pipelines/p?branch=main&scope=network'), null);
+    const kept = await leader.answer('GET', at('/api/areas/network/pipelines/p?branch=main'), null);
     expect(kept.status).toBe(200);
   });
 
@@ -307,7 +295,7 @@ describe('DemoLeader', () => {
     const leader = new DemoLeader(recording(), 'http://service', null, Date.now);
     const heard: boolean[] = [];
     leader.wake((waking) => heard.push(waking));
-    const proposed = leader.answer('POST', at('/api/onboard/propose'), '{}');
+    const proposed = leader.answer('POST', at('/api/preview/onboard'), '{}');
     await vi.advanceTimersByTimeAsync(3_000);
     expect(asked).toEqual(['http://service/wake', 'http://service/wake']);
     up = true;
@@ -321,7 +309,7 @@ describe('DemoLeader', () => {
   it("says what the service said when it refuses, or that it can't be reached", async () => {
     const leader = new DemoLeader(recording(), 'http://service', null, () => RECORDED);
     const propose = () =>
-      leader.answer('POST', at('/api/onboard/propose'), JSON.stringify({ records: [] }));
+      leader.answer('POST', at('/api/preview/onboard'), JSON.stringify({ records: [] }));
     vi.stubGlobal(
       'fetch',
       async () =>
@@ -345,7 +333,7 @@ describe('DemoLeader', () => {
       return new Response(JSON.stringify({ ok: !errors.length, errors }));
     });
     const leader = new DemoLeader(recording(), 'http://service', null, () => RECORDED);
-    const saved = await leader.answer('PUT', at('/api/sources?branch=mine&scope=shared'), '[]');
+    const saved = await leader.answer('PUT', at('/api/areas/shared/sources?branch=mine'), '[]');
     expect(saved.body).toMatchObject({
       ok: false,
       errors: [{ message: 'worker group "network": unknown source "fw"' }],
@@ -382,13 +370,13 @@ describe('DemoLeader', () => {
     await leader.answer('GET', at(`/api/captures/${started.body.session}`), null);
     const saved = await leader.answer(
       'POST',
-      at(`/api/captures/${started.body.session}/save?branch=mine&scope=network`),
-      JSON.stringify({ id: 'sent', name: 'sent' }),
+      at('/api/areas/network/samples?branch=mine'),
+      JSON.stringify({ capture: started.body.session, id: 'sent', name: 'sent' }),
     );
     expect(saved.body).toMatchObject({ ok: true, records: 2 });
     const sample = await leader.answer(
       'GET',
-      at('/api/samples/sent?branch=mine&scope=network'),
+      at('/api/areas/network/samples/sent?branch=mine'),
       null,
     );
     expect(sample.body).toMatchObject({ sample: { records: [{ event: 'a' }, { event: 'b' }] } });
@@ -430,17 +418,17 @@ describe('DemoLeader', () => {
     const edited = [{ id: 'fw', type: 'kafka', topics: ['other'] }];
     await leader.answer(
       'PUT',
-      at('/api/sources?branch=mine&scope=network'),
+      at('/api/areas/network/sources?branch=mine'),
       JSON.stringify(edited),
     );
     const undo = () =>
       leader.answer(
         'POST',
-        at('/api/undo?branch=mine&scope=network'),
+        at('/api/areas/network/undo?branch=mine'),
         JSON.stringify({ section: 'sources', id: 'fw' }),
       );
     expect((await undo()).body).toMatchObject({ ok: true });
-    const mine = await leader.answer('GET', at('/api/config?branch=mine&scope=network'), null);
+    const mine = await leader.answer('GET', at('/api/areas/network?branch=mine'), null);
     expect(mine.body).toMatchObject({ config: { sources: [{ id: 'fw', topics: ['t'] }] } });
     expect((await undo()).body).toMatchObject({
       ok: false,

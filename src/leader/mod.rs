@@ -69,7 +69,7 @@ use axum::Router;
 use axum::extract::{Extension, Json, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post};
 
 use crate::heartbeat::{HeartbeatRequest, HeartbeatResponse, ThreadKind};
 use envelope::Envelope;
@@ -939,7 +939,7 @@ pub fn health_snapshot(state: &AppState) -> HealthResponse {
     }
 }
 
-/// What `GET /api/system/info` serves: this leader process's own build, for Admin -> System -> General, and what
+/// What `GET /api/system` serves: this leader process's own build, for Admin -> System -> General, and what
 /// that build can do that another build of the same version might not.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1097,7 +1097,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
         .iter_mut()
         .filter(|w| w.subject_kind == warnings::SubjectKind::Pipeline)
     {
-        w.scope = match shared_pipelines.contains(&w.subject_id) {
+        w.area = match shared_pipelines.contains(&w.subject_id) {
             true => Some(crate::config_file::SHARED_DIR.to_string()),
             false => w.group.clone(),
         };
@@ -2499,7 +2499,7 @@ pub fn served_names(tls_dir: &std::path::Path) -> Result<Vec<String>, String> {
     Ok(served_entries(tls_dir)?.into_iter().map(|entry| entry.name).collect())
 }
 
-async fn list_certificates(
+pub async fn list_certificates(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<CertificateOut>>, (axum::http::StatusCode, String)> {
     let data_dir = state.data_dir.clone();
@@ -2545,7 +2545,22 @@ async fn list_certificates(
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
-async fn create_certificate(State(state): State<AppState>, Json(req): Json<CertificateRequest>) -> Json<Envelope> {
+/// What `POST /api/certificates` lists: a certificate supplied with its key, or one this leader's authority issues.
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum NewCertificate {
+    Supplied(CertificateRequest),
+    Issued(IssueRequest),
+}
+
+pub async fn create_certificate(State(state): State<AppState>, Json(req): Json<NewCertificate>) -> Json<Envelope> {
+    match req {
+        NewCertificate::Supplied(req) => add_supplied(state, req).await,
+        NewCertificate::Issued(req) => issue_certificate(state, req).await,
+    }
+}
+
+async fn add_supplied(state: AppState, req: CertificateRequest) -> Json<Envelope> {
     if let Err(e) = req.check() {
         return Json(Envelope::failed_one(e));
     }
@@ -2577,7 +2592,7 @@ fn a_year() -> i64 {
 }
 
 /// Lists a certificate this leader's own authority issues for the names asked.
-async fn issue_certificate(State(state): State<AppState>, Json(req): Json<IssueRequest>) -> Json<Envelope> {
+async fn issue_certificate(state: AppState, req: IssueRequest) -> Json<Envelope> {
     let names: Vec<String> = (req.names.iter().map(|n| n.trim().to_string()))
         .filter(|n| !n.is_empty())
         .collect();
@@ -3308,7 +3323,7 @@ async fn require_worker_auth(
 fn worker_router(state: AppState) -> Router<AppState> {
     Router::new()
         .route(
-            "/api/heartbeat",
+            "/api/worker/heartbeat",
             // Stated rather than inherited from axum's default; [`crate::heartbeat::HEARTBEAT_BODY_LIMIT`] says
             // what it is measured against.
             post(heartbeat).layer(axum::extract::DefaultBodyLimit::max(
@@ -3316,12 +3331,12 @@ fn worker_router(state: AppState) -> Router<AppState> {
             )),
         )
         .route(
-            "/api/capture-report",
+            "/api/worker/capture-report",
             post(capture_report).layer(axum::extract::DefaultBodyLimit::max(capture::REPORT_BODY_LIMIT)),
         )
-        .route("/repo/*path", get(git_http).post(git_http))
-        .route("/api/lookup-store/:oid", get(lookup_file))
-        .route("/api/ledger", get(ledger))
+        .route("/api/worker/repo/*path", get(git_http).post(git_http))
+        .route("/api/worker/lookup-store/:oid", get(lookup_file))
+        .route("/api/worker/ledger", get(ledger))
         .route_layer(axum::middleware::from_fn_with_state(state, require_worker_auth))
 }
 
@@ -3333,8 +3348,8 @@ fn worker_router(state: AppState) -> Router<AppState> {
 /// worth having is the fingerprint in its enrollment code, checked against these bytes, not the secrecy of this route.
 fn enroll_router() -> Router<AppState> {
     Router::new()
-        .route("/api/enroll", post(enroll))
-        .route("/api/authority", get(authority))
+        .route("/api/worker/enroll", post(enroll))
+        .route("/api/worker/authority", get(authority))
 }
 
 /// The trust store to hand this worker, when what it reports holding is not what this leader publishes.
@@ -3485,7 +3500,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
     }
 }
 
-/// `GET /api/authority`: `ca.pem`, for a worker to pin against and an operator to hand around.
+/// `GET /api/worker/authority`: `ca.pem`, for a worker to pin against and an operator to hand around.
 async fn authority(State(state): State<AppState>) -> Response {
     // This file's whole purpose is to be pinned. While the socket is still presenting the certificate before the
     // last one, the disk describes a leader no handshake reaches: a worker that fetched this would pin a root its
@@ -3522,7 +3537,7 @@ async fn authority(State(state): State<AppState>) -> Response {
 pub fn admin_router() -> Router<AppState> {
     Router::new()
         .route("/api/health", get(health))
-        .route("/api/system/info", get(system_info))
+        .route("/api/system", get(system_info))
         .route("/api/warnings", get(list_warnings))
         .route("/api/flow", get(get_flow))
         .route("/api/streams", get(get_streams))
@@ -3539,7 +3554,7 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/workers/:worker_id/revoke", post(revoke_worker))
         .route("/api/workers/:worker_id/restart", post(restart_worker))
         .route("/api/workers/:worker_id/shutdown", post(shutdown_worker))
-        .route("/api/workers/:worker_id/remove", post(remove_worker))
+        .route("/api/workers/:worker_id", delete(remove_worker))
         .route(
             "/api/settings/workers",
             get(forget::get_settings).put(forget::put_settings),
@@ -3559,17 +3574,19 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/settings/git-remote/sync", post(remote::post_sync))
         .route("/api/branches/:name/overwrite", post(remote::overwrite))
         .route("/api/secrets", get(list_secrets).post(create_secret))
-        .route("/api/secrets/:name", put(store_secret_value).delete(delete_secret))
-        .route("/api/certificates", get(list_certificates).post(create_certificate))
-        .route("/api/certificates/issued", post(issue_certificate))
+        .route("/api/secrets/:name", delete(delete_secret))
+        .route("/api/secrets/:name/versions", post(store_secret_value))
         .route(
             "/api/secrets/:name/versions/:version",
             axum::routing::delete(forget_secret_version),
         )
         .route("/api/secrets/:name/verify", post(verify_secret))
-        .route("/api/secrets/:name/references", put(point_secret))
-        .route("/api/encryption-key", get(encryption_key))
-        .route("/api/encryption-key/regenerate", post(regenerate_encryption_key))
+        .route("/api/secrets/:name/references", post(point_secret))
+        .route("/api/settings/encryption-key", get(encryption_key))
+        .route(
+            "/api/settings/encryption-key/regenerate",
+            post(regenerate_encryption_key),
+        )
 }
 
 /// Every leader route. `admin` is [`admin_router`], wrapped in the caller's operator gate and any routes that share it.
@@ -5863,13 +5880,13 @@ mod certificate_list_tests {
 
     async fn issue_lasting(state: &AppState, name: &str, names: &[&str], validity_days: i64) -> Envelope {
         issue_certificate(
-            State(state.clone()),
-            Json(IssueRequest {
+            state.clone(),
+            IssueRequest {
                 name: name.to_string(),
                 description: String::new(),
                 names: names.iter().map(|n| n.to_string()).collect(),
                 validity_days,
-            }),
+            },
         )
         .await
         .0
@@ -5959,6 +5976,19 @@ mod certificate_list_tests {
         }
     }
 
+    /// The kind says which fields a new certificate has, and a field the kind does not have is refused.
+    #[test]
+    fn a_new_certificate_is_supplied_or_issued() {
+        use serde_json::json;
+        let parse = |body: serde_json::Value| serde_json::from_value::<NewCertificate>(body);
+        let supplied = json!({"kind": "supplied", "name": "a", "certificate": "c", "privateKey": "k"});
+        assert!(matches!(parse(supplied), Ok(NewCertificate::Supplied(_))));
+        let issued = json!({"kind": "issued", "name": "a", "names": ["localhost"]});
+        assert!(matches!(parse(issued), Ok(NewCertificate::Issued(r)) if r.validity_days == 365));
+        assert!(parse(json!({"kind": "issued", "name": "a", "names": [], "privateKey": "k"})).is_err());
+        assert!(parse(json!({"name": "a", "certificate": "c", "privateKey": "k"})).is_err());
+    }
+
     /// A connector naming a certificate may present it from any side it is usable from, so a new version keeps every
     /// purpose the newest has, and may add one.
     #[tokio::test]
@@ -5966,9 +5996,12 @@ mod certificate_list_tests {
         use rcgen::ExtendedKeyUsagePurpose::{ClientAuth, ServerAuth};
         let state = issuing("replace-purpose");
         assert!(
-            create_certificate(State(state.clone()), Json(for_purposes(vec![ServerAuth])))
-                .await
-                .ok
+            create_certificate(
+                State(state.clone()),
+                Json(NewCertificate::Supplied(for_purposes(vec![ServerAuth])))
+            )
+            .await
+            .ok
         );
         let replace = |req| replace_certificate(State(state.clone()), Path("acme".to_string()), Json(req));
         let newest = || newest_chain(state.store.as_ref(), "acme").unwrap().unwrap().0;

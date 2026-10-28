@@ -12,7 +12,7 @@ import {
 
 const onStep: CommentAnchor = {
   kind: 'object',
-  scope: 'network',
+  area: 'network',
   section: 'pipelines',
   objectId: 'x7f3',
   step: 's4',

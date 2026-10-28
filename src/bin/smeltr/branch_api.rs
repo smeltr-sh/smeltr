@@ -473,12 +473,11 @@ pub async fn delete_branch(Extension(access): Extension<Access>, AxPath(name): A
     )
 }
 
-// -- POST /api/changes, POST /api/changes/:branch/close, PATCH /api/changes/:branch ---------------------
+// -- POST /api/branches/:name/open, POST /api/branches/:name/close, PATCH /api/branches/:name ------------
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenChangeRequest {
-    branch: String,
     /// What the change is called. It becomes the commit message the deploy carries onto `main`.
     title: String,
     #[serde(default)]
@@ -506,21 +505,21 @@ pub struct RetitleChangeRequest {
 pub async fn open_change(
     Extension(actor): Extension<Actor>,
     Extension(access): Extension<Access>,
+    AxPath(branch): AxPath<String>,
     Json(req): Json<OpenChangeRequest>,
 ) -> Response {
     answered(
         blocking(move || {
-            refused_to_change(&access, &leader_data_dir(), &req.branch, Level::Editor)?;
+            refused_to_change(&access, &leader_data_dir(), &branch, Level::Editor)?;
             // No write lock: a marker is a commit on `refs/smeltr/changes/<branch>`, which nothing checks out and no
             // other write touches, and it lands by compare-and-swap on that ref.
             let repo = repo()?;
-            if let (0, _) = git::ahead_behind(&repo, &req.branch)? {
+            if let (0, _) = git::ahead_behind(&repo, &branch)? {
                 return Err(Stop::Failed(format!(
-                    "{:?} changes nothing yet -- save something on it first",
-                    req.branch
+                    "{branch:?} changes nothing yet -- save something on it first"
                 )));
             }
-            git::open_change(&repo, &req.branch, &req.title, &req.description, &actor)?;
+            git::open_change(&repo, &branch, &req.title, &req.description, &actor)?;
             Ok(BranchMutation::done(None))
         })
         .await,
@@ -565,7 +564,7 @@ pub async fn retitle_change(
     )
 }
 
-// -- GET /api/changes/:branch/timeline, POST /api/changes/:branch/comments ----------------
+// -- GET /api/branches/:name/timeline, POST /api/branches/:name/comments ----------------
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -581,7 +580,7 @@ pub struct CommentRequest {
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum AnchorJson {
     Object {
-        scope: String,
+        area: String,
         section: String,
         #[serde(rename = "objectId")]
         object_id: String,
@@ -598,12 +597,12 @@ impl From<AnchorJson> for git::Anchor {
     fn from(anchor: AnchorJson) -> Self {
         match anchor {
             AnchorJson::Object {
-                scope,
+                area,
                 section,
                 object_id,
                 step,
             } => git::Anchor::Object {
-                scope,
+                scope: area,
                 section,
                 id: object_id,
                 step,
@@ -622,7 +621,7 @@ impl From<git::Anchor> for AnchorJson {
                 id,
                 step,
             } => AnchorJson::Object {
-                scope,
+                area: scope,
                 section,
                 object_id: id,
                 step,
@@ -773,7 +772,7 @@ pub async fn comment_on_change(
     Json(answered.unwrap_or_else(Envelope::failed_one))
 }
 
-// -- POST /api/changes/:branch/threads/:id --------------------------------
+// -- POST /api/branches/:name/threads/:id --------------------------------
 
 #[derive(serde::Deserialize)]
 pub struct ThreadRequest {
@@ -797,7 +796,7 @@ pub async fn resolve_thread(
     Json(answered.unwrap_or_else(Envelope::failed_one))
 }
 
-// -- POST /api/changes/:branch/reviews -----------------------------------
+// -- POST /api/branches/:name/reviews -----------------------------------
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -835,7 +834,7 @@ pub async fn review_change(
     )
 }
 
-// -- POST /api/changes/:branch/deploy, .../bring-current ------------------
+// -- POST /api/branches/:name/deploy, .../bring-current ------------------
 
 /// Approve and deploy: `main` takes the branch as one commit, the fleet is pointed at it and the branch goes. There
 /// is no separate deploy step -- workers pick it up on their next fetch (W5). A group losing its subtree this way is
@@ -938,7 +937,7 @@ fn brought_current(
     }
 }
 
-// -- GET /api/history, POST /api/deploy -----------------------------------
+// -- GET /api/main/history, POST /api/main/deploy -------------------------
 
 #[derive(serde::Deserialize)]
 pub struct HistoryQuery {
@@ -1117,7 +1116,7 @@ fn would_not_load(commit: &str, broken: Vec<(String, String)>) -> Envelope<Branc
     )
 }
 
-// -- GET /api/diff --------------------------------------------------------
+// -- GET /api/main/diff ---------------------------------------------------
 
 /// What landed between two commits. A save refused because the branch moved names both of them, and this is what
 /// the writer holding the only copy of their change reads before deciding which of the two to keep.
@@ -1327,7 +1326,7 @@ mod tests {
         git::open_change(&repo, "work", "Edit west", "", &ann).unwrap();
         let req: CommentRequest = serde_json::from_value(serde_json::json!({
             "body": "why this one?",
-            "anchor": {"kind": "object", "scope": "west", "section": "routes", "objectId": "r1"},
+            "anchor": {"kind": "object", "area": "west", "section": "routes", "objectId": "r1"},
         }))
         .unwrap();
         let anchor = req.anchor.map(git::Anchor::from);
@@ -1339,7 +1338,7 @@ mod tests {
         let root = event(2)["id"].as_str().unwrap().to_string();
         git::comment_on_change(&repo, "work", "because", None, Some(&root), &ann).unwrap();
         git::resolve_thread(&repo, "work", &root, true, &ann).unwrap();
-        let anchor = serde_json::json!({"kind": "object", "scope": "west", "section": "routes", "objectId": "r1"});
+        let anchor = serde_json::json!({"kind": "object", "area": "west", "section": "routes", "objectId": "r1"});
 
         let (root_event, reply, resolved) = (event(2), event(3), event(4));
         assert_eq!(
@@ -1364,7 +1363,7 @@ mod tests {
         .unwrap();
         assert!(matches!(line.anchor, Some(AnchorJson::Line { line: 2, .. })));
         let step: CommentRequest = serde_json::from_value(serde_json::json!({"body": "x", "replyTo": root,
-            "anchor": {"kind": "object", "scope": "shared", "section": "pipelines", "objectId": "p", "step": "e"}}))
+            "anchor": {"kind": "object", "area": "shared", "section": "pipelines", "objectId": "p", "step": "e"}}))
         .unwrap();
         assert_eq!(step.reply_to.as_deref(), Some(root.as_str()));
         assert!(matches!(step.anchor, Some(AnchorJson::Object { step: Some(_), .. })));
