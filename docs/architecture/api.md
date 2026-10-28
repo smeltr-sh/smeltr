@@ -11,17 +11,17 @@ What the API answers never holds a secret's value.
 
 ```mermaid
 flowchart LR
-  worker[Worker] -- Bearer token --> w["/worker/"]
+  worker[Worker] -- Bearer token --> wgate{the worker's token} --> w["/worker/"]
   person[Person: GUI, agent] -- session cookie --> o["/api/"]
   integration[Integration] -- Bearer key --> o
   anyone[Anyone] --> open["open routes"]
-  o --> gate{the gate: what the route needs}
+  o --> gate{the gate: what the operator route needs}
   gate --> handler[handler]
 ```
 
 ## Families
 
-**Worker.** Everything under `/worker/`, judged by the worker's Bearer token
+**Worker.** Everything else under `/worker/`, judged by the worker's Bearer token
 from enrollment. These messages cross builds, so they follow the control
 plane's rule for messages between builds
 ([control-plane.md](control-plane.md), Upgrades): they only grow, a field added
@@ -51,7 +51,8 @@ catalog's description of it, so the two cannot drift.
 
 ## The answer
 
-Every JSON route answers `{ok, errors[], ...fields}`. `ok` is the status: a
+Every JSON route of the operator and open families answers
+`{ok, errors[], ...fields}`. `ok` is the status: a
 2xx answers `true`, a 4xx or 5xx `false`, and no failure is answered at 200.
 `errors` on a 2xx is advisory. The gate, a body that cannot be parsed, a wrong
 method and an unknown path answer the same shape.
@@ -70,9 +71,9 @@ method and an unknown path answer the same shape.
 | 500 | the leader's fault |
 | 503 | try later |
 
-The routes that answer bytes are the named exceptions: the authority's PEM, a
-lookup file, the ledger stream and the git repository. A failure there is a
-bare status.
+The routes that answer bytes are the named exceptions: the authority's PEM
+(open), and a lookup file, the ledger stream and the git repository (worker).
+A failure there is a bare status.
 
 A request body refuses a field it does not know. An answer may add fields.
 Every answer under `/api/` is `Cache-Control: no-store`.
