@@ -168,6 +168,7 @@ const SECTIONS: Record<string, string> = {
   '/api/routes': 'routes',
   '/api/lookup-tables': 'lookupTables',
   '/api/grok-patterns': 'grokPatterns',
+  '/api/schemas': 'schemas',
 };
 
 /** Each pipeline that calls another, by the one it calls (`config_file::callers_of`). */
@@ -197,6 +198,7 @@ const UNDONE: Record<string, string> = {
   routes: 'route',
   lookupTables: 'lookup table',
   grokPatterns: 'grok pattern',
+  schemas: 'schema',
   pipelines: 'pipeline',
 };
 
@@ -492,6 +494,24 @@ export class DemoLeader {
     return undefined;
   }
 
+  /** What breaks a schema in each group `name`'s change touches, by group, as the leader's review reads it. A group
+   * whose bundle does not load is left out, as the leader leaves it out. */
+  private async schemaFindings(name: string): Promise<Answer> {
+    const branch = this.branch(name);
+    if (!branch) return refused([bareError(`no branch ${JSON.stringify(name)}`)], 404);
+    const groups = new Set(
+      branch.touches.flatMap((file) => /^groups\/([^/]+)\//.exec(file)?.[1] ?? []),
+    );
+    const findings: object[] = [];
+    for (const group of groups) {
+      const own = branch.bundles[group] ?? { version: 1 };
+      const answer = await this.ask('/schema-findings', this.bundleOf(branch, group, own));
+      const body = answer.body as { ok?: boolean; findings?: object[] };
+      if (body.ok) findings.push(...(body.findings ?? []).map((f) => ({ group, ...f })));
+    }
+    return ok({ findings });
+  }
+
   /** The leader's answer to `method url`, with `body` as sent. */
   async answer(method: string, url: URL, body: string | null): Promise<Answer> {
     const path = url.pathname;
@@ -577,6 +597,10 @@ export class DemoLeader {
           id: q.get('id'),
         });
       }
+      if (path === '/api/schemas/builtin') return this.ask('/schemas/builtin', {});
+      if (path === '/api/schemas/export') return this.ask('/schemas/export', { id: q.get('id') });
+      const findings = path.match(/^\/api\/branches\/([^/]+)\/schema-findings$/);
+      if (findings) return this.schemaFindings(decodeURIComponent(findings[1]));
       const capture = path.match(/^\/api\/captures\/([^/]+)$/);
       if (capture) return this.captureStatus(decodeURIComponent(capture[1]));
       const live = this.live(url, branch);
@@ -649,6 +673,8 @@ export class DemoLeader {
       if (path === '/api/line-breaker') return this.ask('/line-breaker', json());
       if (path === '/api/format') return this.ask('/format', json());
       if (path === '/api/onboard/propose') return this.ask('/onboard/propose', json());
+      if (path === '/api/schemas/object') return this.ask('/schemas/object', json());
+      if (path === '/api/schemas/search') return this.ask('/schemas/search', json());
       if (path === '/api/captures') return this.startCapture(json());
       const capture = path.match(/^\/api\/captures\/([^/]+)\/(stop|save|discard)$/);
       if (capture) {

@@ -159,3 +159,15 @@ test("the samples page runs the scope's locked tests in the service", async ({ p
   await expect(page.getByText('panos-traffic maps sessions to ECS')).toBeVisible();
   await expect(page.getByText('Passing')).toHaveCount(2);
 });
+
+test('the Schemas page reads the catalog from the service', async ({ page }) => {
+  await open(page, '#/build/schemas');
+  await page.getByRole('button', { name: /Identity & Access Management$/ }).click();
+  await page.getByRole('button', { name: /ocsf\/authentication$/ }).click();
+  await page.getByRole('button', { name: 'Open user', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Open user.account', exact: true })).toBeVisible();
+  await page.getByRole('searchbox', { name: 'Search schemas' }).fill('src_endpoint.port');
+  await expect(page.getByRole('row').filter({ hasText: 'ocsf/authentication' })).toContainText(
+    'src_endpoint.port',
+  );
+});

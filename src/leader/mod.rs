@@ -47,6 +47,7 @@ pub mod private_file;
 pub mod registry;
 pub mod remote;
 pub mod resolver;
+pub mod schema_catalog;
 pub mod secrets;
 pub mod series;
 pub mod sessions;
