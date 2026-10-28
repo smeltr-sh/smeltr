@@ -1157,12 +1157,13 @@ fn spawn_reader(
     let lane = Arc::new(Lane::new(
         source_id,
         Some(source_name.to_string()),
-        topology.meta_for(source_id),
-        kind.encoding(),
+        crate::runtime::Reading {
+            meta: topology.meta_for(source_id),
+            encoding: kind.encoding(),
+        },
+        crate::handoff::Handoff::watched(shared.ready.clone(), depth.lane * depth.batch_bytes),
         destinations.clone(),
         reports,
-        shared.ready.clone(),
-        depth.lane * depth.batch_bytes,
     ));
     let reader = Reader::new(
         source_id,
