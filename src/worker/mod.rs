@@ -1789,45 +1789,26 @@ fn take_window(registry: &Metrics, held: Option<&mut child::RuntimeReport>) -> W
     // Subject identity, resolved once for the whole window (GOAL ONE): every sample the registry holds labels its
     // source or destination by the positional id `Reader`/`egress` wrote, which does not survive a config edit that
     // reorders or deletes an unrelated entry.
-    resolve_subject_labels(&mut samples, &held.subjects);
+    resolve_subject_labels(&mut samples, &held.state.subjects);
+    let gathered = &mut held.gathered;
     // What the runtime's own registry recorded, already resolved when it arrived (`absorb`). It reaches the leader
     // through this process because the process that recorded it has no connection of its own.
-    samples.append(&mut held.metrics);
+    samples.append(&mut gathered.metrics);
     let room = heartbeat::LOGS_PER_HEARTBEAT
         .saturating_sub(own_logs)
-        .min(held.logs.len());
-    let boot_id = held.boot_id;
-    logs.extend(held.logs.drain(..room).map(|mut log| {
-        log.boot_id.get_or_insert(boot_id);
-        log
-    }));
+        .min(gathered.logs.len());
+    logs.extend(gathered.logs.drain(..room));
     Window {
         own,
         samples,
         logs,
         own_logs,
-        streams: held.streams.take(),
+        streams: gathered.streams.take(),
         progress: held::take_ledger(
-            &mut held.progress,
+            &mut gathered.progress,
             heartbeat::LEDGER_PER_HEARTBEAT,
             PROGRESS_BYTES_PER_HEARTBEAT,
         ),
-    }
-}
-
-/// What `held` says the deployment is doing now, without what it has gathered for a window.
-fn runtime_state(held: &child::RuntimeReport) -> child::RuntimeReport {
-    child::RuntimeReport {
-        readers: held.readers.clone(),
-        pool_thread_ids: held.pool_thread_ids.clone(),
-        egress_ids: held.egress_ids.clone(),
-        egress_refusals: held.egress_refusals.clone(),
-        subjects: held.subjects.clone(),
-        boot_id: held.boot_id,
-        single_worker: held.single_worker.clone(),
-        holding: held.holding.clone(),
-        holds_applied: held.holds_applied,
-        ..Default::default()
     }
 }
 
@@ -1872,7 +1853,7 @@ pub(crate) fn record_memory_gauge(registry: &Metrics, process: &str) {
 /// The request: `window`, numbered `seq`, with what `about` and `deployed` say of the worker and what it runs now.
 fn build_heartbeat_request(
     about: Reporting<'_>,
-    deployed: Option<&child::RuntimeReport>,
+    deployed: Option<&child::RuntimeState>,
     window: &Window,
     seq: u64,
     secrets: &crate::plan::topology::HeldSecrets,
@@ -2986,7 +2967,7 @@ impl Supervisor {
             owed.window = Some(take_window(&self.registry, runtime.as_mut()));
             owed.numbered += 1;
         }
-        let deployed = runtime.as_ref().map(runtime_state);
+        let deployed = runtime.as_ref().map(|held| held.state.clone());
         drop(runtime);
         let commit = self.commit.lock().unwrap();
         let supervising = self.supervising.lock().unwrap().clone();
@@ -3045,8 +3026,8 @@ impl Supervisor {
         heartbeat::commit_for_heartbeat(&self.registry, &window.own);
         crate::logs::delivered(window.own_logs);
         if let Some(held) = self.runtime.lock().unwrap().as_mut() {
-            let since = std::mem::replace(&mut held.progress, window.progress);
-            held.progress.extend(since);
+            let since = std::mem::replace(&mut held.gathered.progress, window.progress);
+            held.gathered.progress.extend(since);
         }
         tracing::warn!(
             target: "worker.heartbeat_too_large",
@@ -4027,10 +4008,11 @@ impl Supervisor {
         // Resolved here, against the names the runtime that wrote them sent alongside. A sample labels its source
         // by position, and a position is only meaningful against the topology it was written under: held until
         // the leader takes it, it may outlive that runtime and be read beside its replacement's names.
-        resolve_subject_labels(&mut arrived.metrics, &arrived.subjects);
+        resolve_subject_labels(&mut arrived.gathered.metrics, &arrived.state.subjects);
         // Totals for the metrics endpoint, which reads the whole worker from this process.
         self.registry.mirror(
             arrived
+                .gathered
                 .metrics
                 .iter()
                 .cloned()
@@ -4050,7 +4032,7 @@ impl Supervisor {
         let mut own = self.registry.snapshot();
         if let Some(held) = self.runtime.lock().unwrap().as_ref() {
             for sample in &mut own {
-                held.subjects.resolve(&mut sample.key.labels);
+                held.state.subjects.resolve(&mut sample.key.labels);
             }
         }
         crate::metrics::exposition::render(own.into_iter().chain(self.registry.snapshot_mirrored()))
@@ -4062,14 +4044,7 @@ impl Supervisor {
         if let Some(held) = self.runtime.lock().unwrap().as_mut() {
             // Its threads are gone, so nothing is reported about them. What it counted and said before it went is
             // still owed to the leader, and is carried by the beats that follow.
-            *held = child::RuntimeReport {
-                metrics: std::mem::take(&mut held.metrics),
-                logs: std::mem::take(&mut held.logs),
-                progress: std::mem::take(&mut held.progress),
-                streams: held.streams.take(),
-                boot_id: held.boot_id,
-                ..Default::default()
-            };
+            held.state = child::RuntimeState::default();
         }
         self.registry.forget_mirrored();
         *self.commit.lock().unwrap() = None;
@@ -4316,7 +4291,7 @@ impl Supervisor {
             .lock()
             .unwrap()
             .as_ref()
-            .map(|r| (r.holding.clone(), r.holds_applied))
+            .map(|r| (r.state.holding.clone(), r.state.holds_applied))
             .unwrap_or_default();
         let now = Instant::now();
         let (seq, frame) = {
@@ -4393,7 +4368,7 @@ impl Supervisor {
                 .lock()
                 .unwrap()
                 .as_ref()
-                .map_or(0, |r| held::backlog(&r.progress));
+                .map_or(0, |r| held::backlog(&r.gathered.progress));
         let full = {
             let mut holds = self.holds.lock().unwrap();
             let full = held::backlogged(holds.backlogged, weight);
@@ -5461,7 +5436,7 @@ mod tests {
     ) -> (HeartbeatRequest, Window) {
         let mut held = deployed.cloned();
         let window = take_window(registry, held.as_mut());
-        let state = held.as_ref().map(runtime_state);
+        let state = held.as_ref().map(|held| held.state.clone());
         let req = build_heartbeat_request(about, state.as_ref(), &window, 1, &Default::default());
         (req, window)
     }
@@ -5516,7 +5491,10 @@ mod tests {
     #[test]
     fn the_notice_always_carries_the_worker_s_own_report() {
         let running = child::RuntimeReport {
-            pool_thread_ids: vec!["1-0".to_string()],
+            state: child::RuntimeState {
+                pool_thread_ids: vec!["1-0".to_string()],
+                ..Default::default()
+            },
             ..Default::default()
         };
         let threads = |stopping: bool| -> Vec<String> {
@@ -5714,24 +5692,27 @@ mod tests {
     fn report_of(d: &Deployment) -> child::RuntimeReport {
         let facts = d.facts();
         child::RuntimeReport {
-            readers: facts
-                .readers
-                .iter()
-                .map(|r| child::ReaderReport {
-                    thread_id: r.thread_id.clone(),
-                    partitions: r.partitions.lock().unwrap().clone(),
-                    held: r.held.lock().unwrap().clone(),
-                    connection_error: r.connection_error.lock().unwrap().clone(),
-                })
-                .collect(),
-            pool_thread_ids: facts.pool_thread_ids.clone(),
-            egress_ids: facts.egress_ids.clone(),
-            egress_refusals: facts
-                .egress_ids
-                .iter()
-                .map(|id| (*id, facts.refusals.heartbeat_facts(*id)))
-                .collect(),
-            subjects: (*facts.subjects).clone(),
+            state: child::RuntimeState {
+                readers: facts
+                    .readers
+                    .iter()
+                    .map(|r| child::ReaderReport {
+                        thread_id: r.thread_id.clone(),
+                        partitions: r.partitions.lock().unwrap().clone(),
+                        held: r.held.lock().unwrap().clone(),
+                        connection_error: r.connection_error.lock().unwrap().clone(),
+                    })
+                    .collect(),
+                pool_thread_ids: facts.pool_thread_ids.clone(),
+                egress_ids: facts.egress_ids.clone(),
+                egress_refusals: facts
+                    .egress_ids
+                    .iter()
+                    .map(|id| (*id, facts.refusals.heartbeat_facts(*id)))
+                    .collect(),
+                subjects: (*facts.subjects).clone(),
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -6781,15 +6762,20 @@ mod tests {
             }],
         };
         let report = |rows, cursor| child::RuntimeReport {
-            pool_thread_ids: vec!["pool-0".to_string()],
-            metrics: vec![crate::heartbeat::MetricSampleDto {
-                metric: "smeltr_rows_in_total".to_string(),
-                labels: vec![("thread".to_string(), "pool-0".to_string())],
-                value: crate::heartbeat::MetricValueDto::Counter(rows),
-            }],
-            progress: vec![progress_of("a", 1, cursor)],
-            streams: Some(unmatched(rows)),
-            ..Default::default()
+            state: child::RuntimeState {
+                pool_thread_ids: vec!["pool-0".to_string()],
+                ..Default::default()
+            },
+            gathered: child::Gathered {
+                metrics: vec![crate::heartbeat::MetricSampleDto {
+                    metric: "smeltr_rows_in_total".to_string(),
+                    labels: vec![("thread".to_string(), "pool-0".to_string())],
+                    value: crate::heartbeat::MetricValueDto::Counter(rows),
+                }],
+                progress: vec![progress_of("a", 1, cursor)],
+                streams: Some(unmatched(rows)),
+                ..Default::default()
+            },
         };
         // What a beat says that accumulates: the part the leader records once.
         let window = |req: &HeartbeatRequest| {
@@ -6848,13 +6834,19 @@ mod tests {
             .incr("smeltr_capture_records_total", &[("thread", "capture")], 2);
         let inbox = child::RuntimeInbox::default();
         *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
-            progress: vec![progress_of("a", 1, "a1")],
+            gathered: child::Gathered {
+                progress: vec![progress_of("a", 1, "a1")],
+                ..Default::default()
+            },
             ..Default::default()
         });
         supervisor.absorb(&inbox);
         let refused = supervisor.next_beat(false);
         *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
-            progress: vec![progress_of("a", 1, "a2")],
+            gathered: child::Gathered {
+                progress: vec![progress_of("a", 1, "a2")],
+                ..Default::default()
+            },
             ..Default::default()
         });
         supervisor.absorb(&inbox);
@@ -6885,7 +6877,10 @@ mod tests {
         let supervisor = supervisor_for(temp_dir("window-keeps-threads"));
         let inbox = child::RuntimeInbox::default();
         *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
-            pool_thread_ids: vec!["pool-0".to_string()],
+            state: child::RuntimeState {
+                pool_thread_ids: vec!["pool-0".to_string()],
+                ..Default::default()
+            },
             ..Default::default()
         });
         supervisor.absorb(&inbox);
@@ -6909,13 +6904,18 @@ mod tests {
         let supervisor = supervisor_for(temp_dir("metrics-ride"));
         let inbox = child::RuntimeInbox::default();
         *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
-            pool_thread_ids: vec!["pool-0".to_string()],
-            metrics: vec![crate::heartbeat::MetricSampleDto {
-                metric: "smeltr_rows_in_total".to_string(),
-                labels: vec![("thread".to_string(), "pool-0".to_string())],
-                value: crate::heartbeat::MetricValueDto::Counter(9),
-            }],
-            ..Default::default()
+            state: child::RuntimeState {
+                pool_thread_ids: vec!["pool-0".to_string()],
+                ..Default::default()
+            },
+            gathered: child::Gathered {
+                metrics: vec![crate::heartbeat::MetricSampleDto {
+                    metric: "smeltr_rows_in_total".to_string(),
+                    labels: vec![("thread".to_string(), "pool-0".to_string())],
+                    value: crate::heartbeat::MetricValueDto::Counter(9),
+                }],
+                ..Default::default()
+            },
         });
         supervisor.absorb(&inbox);
 
@@ -6941,20 +6941,25 @@ mod tests {
             .registry
             .incr("smeltr_capture_records_total", &[("thread", "capture")], 2);
         let report = |rows: u64, depth: f64| child::RuntimeReport {
-            pool_thread_ids: vec!["pool-0".to_string()],
-            metrics: vec![
-                crate::heartbeat::MetricSampleDto {
-                    metric: "smeltr_rows_in_total".to_string(),
-                    labels: vec![("thread".to_string(), "pool-0".to_string())],
-                    value: crate::heartbeat::MetricValueDto::Counter(rows),
-                },
-                crate::heartbeat::MetricSampleDto {
-                    metric: "smeltr_queue_depth".to_string(),
-                    labels: vec![("thread".to_string(), "pool-0".to_string())],
-                    value: crate::heartbeat::MetricValueDto::Gauge(depth),
-                },
-            ],
-            ..Default::default()
+            state: child::RuntimeState {
+                pool_thread_ids: vec!["pool-0".to_string()],
+                ..Default::default()
+            },
+            gathered: child::Gathered {
+                metrics: vec![
+                    crate::heartbeat::MetricSampleDto {
+                        metric: "smeltr_rows_in_total".to_string(),
+                        labels: vec![("thread".to_string(), "pool-0".to_string())],
+                        value: crate::heartbeat::MetricValueDto::Counter(rows),
+                    },
+                    crate::heartbeat::MetricSampleDto {
+                        metric: "smeltr_queue_depth".to_string(),
+                        labels: vec![("thread".to_string(), "pool-0".to_string())],
+                        value: crate::heartbeat::MetricValueDto::Gauge(depth),
+                    },
+                ],
+                ..Default::default()
+            },
         };
         let inbox = child::RuntimeInbox::default();
         for (rows, depth) in [(9, 4.0), (5, 1.0)] {
@@ -7025,9 +7030,14 @@ mod tests {
         let cap = heartbeat::LEDGER_PER_HEARTBEAT;
         let inbox = child::RuntimeInbox::default();
         *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
-            single_worker: vec![source_key("a"), source_key("b")],
-            progress: vec![progress_of("a", cap - 1, "a1"), progress_of("a", 3, "a2")],
-            ..Default::default()
+            state: child::RuntimeState {
+                single_worker: vec![source_key("a"), source_key("b")],
+                ..Default::default()
+            },
+            gathered: child::Gathered {
+                progress: vec![progress_of("a", cap - 1, "a1"), progress_of("a", 3, "a2")],
+                ..Default::default()
+            },
         });
         supervisor.absorb(&inbox);
 
@@ -7041,7 +7051,10 @@ mod tests {
 
         // More arrives from the runtime, and the beat is not answered: the next carries the same again.
         *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
-            progress: vec![progress_of("a", 1, "a3")],
+            gathered: child::Gathered {
+                progress: vec![progress_of("a", 1, "a3")],
+                ..Default::default()
+            },
             ..Default::default()
         });
         supervisor.absorb(&inbox);
@@ -7089,16 +7102,21 @@ mod tests {
         let supervisor = supervisor_for(temp_dir("forget-progress"));
         let inbox = child::RuntimeInbox::default();
         *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
-            single_worker: vec![source_key("a")],
-            progress: vec![progress_of("a", 2, "a1")],
-            ..Default::default()
+            state: child::RuntimeState {
+                single_worker: vec![source_key("a")],
+                ..Default::default()
+            },
+            gathered: child::Gathered {
+                progress: vec![progress_of("a", 2, "a1")],
+                ..Default::default()
+            },
         });
         supervisor.absorb(&inbox);
         supervisor.forget_runtime();
         let held = supervisor.runtime.lock().unwrap().clone().unwrap();
-        assert_eq!(held.progress, vec![progress_of("a", 2, "a1")]);
+        assert_eq!(held.gathered.progress, vec![progress_of("a", 2, "a1")]);
         assert!(
-            held.single_worker.is_empty(),
+            held.state.single_worker.is_empty(),
             "a runtime that has gone still offered its sources"
         );
     }
@@ -7342,7 +7360,10 @@ mod tests {
         assert!(!supervisor.route_backlog(Some(&mut handle)));
 
         *supervisor.runtime.lock().unwrap() = Some(child::RuntimeReport {
-            progress: vec![progress_of("a", held::BACKLOG_FULL, "a1")],
+            gathered: child::Gathered {
+                progress: vec![progress_of("a", held::BACKLOG_FULL, "a1")],
+                ..Default::default()
+            },
             ..Default::default()
         });
         assert!(!supervisor.route_backlog(Some(&mut handle)));
@@ -7351,9 +7372,17 @@ mod tests {
 
         // Drained to between the marks: still full.
         let entries = held::BACKLOG_EASED + 1;
-        supervisor.runtime.lock().unwrap().as_mut().unwrap().progress = vec![progress_of("a", entries, "a1")];
+        supervisor.runtime.lock().unwrap().as_mut().unwrap().gathered.progress = vec![progress_of("a", entries, "a1")];
         assert!(!supervisor.route_backlog(Some(&mut handle)));
-        supervisor.runtime.lock().unwrap().as_mut().unwrap().progress.clear();
+        supervisor
+            .runtime
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .gathered
+            .progress
+            .clear();
         assert!(!supervisor.route_backlog(Some(&mut handle)));
         assert_eq!(frames(3)[2], r#"{"kind":"backlogged","full":false}"#);
 
@@ -7398,7 +7427,10 @@ mod tests {
         let supervisor = supervisor_for(temp_dir("progress-503"));
         let inbox = child::RuntimeInbox::default();
         *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
-            progress: vec![progress_of("a", 2, "a1")],
+            gathered: child::Gathered {
+                progress: vec![progress_of("a", 2, "a1")],
+                ..Default::default()
+            },
             ..Default::default()
         });
         supervisor.absorb(&inbox);
@@ -7409,7 +7441,10 @@ mod tests {
         assert!(client.send(&req).is_err(), "a 503 was taken for an answer");
 
         *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
-            progress: vec![progress_of("a", 1, "a2")],
+            gathered: child::Gathered {
+                progress: vec![progress_of("a", 1, "a2")],
+                ..Default::default()
+            },
             ..Default::default()
         });
         supervisor.absorb(&inbox);
@@ -7456,13 +7491,18 @@ mod tests {
         *supervisor.commit.lock().unwrap() = Some("c0ffee".to_string());
         let inbox = child::RuntimeInbox::default();
         *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
-            pool_thread_ids: vec!["pool-0".to_string()],
-            metrics: vec![crate::heartbeat::MetricSampleDto {
-                metric: "smeltr_rows_in_total".to_string(),
-                labels: vec![],
-                value: crate::heartbeat::MetricValueDto::Counter(5),
-            }],
-            ..Default::default()
+            state: child::RuntimeState {
+                pool_thread_ids: vec!["pool-0".to_string()],
+                ..Default::default()
+            },
+            gathered: child::Gathered {
+                metrics: vec![crate::heartbeat::MetricSampleDto {
+                    metric: "smeltr_rows_in_total".to_string(),
+                    labels: vec![],
+                    value: crate::heartbeat::MetricValueDto::Counter(5),
+                }],
+                ..Default::default()
+            },
         });
         supervisor.absorb(&inbox);
 
@@ -7508,7 +7548,7 @@ mod tests {
             "a worker running nothing still reports, or the leader hears nothing from it at all"
         );
         assert!(
-            runtime.as_ref().is_some_and(|r| !r.metrics.is_empty()),
+            runtime.as_ref().is_some_and(|r| !r.gathered.metrics.is_empty()),
             "what the runtime counted was thrown away with the threads that counted it"
         );
     }
