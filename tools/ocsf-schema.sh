@@ -32,7 +32,20 @@ rows="$(jq -n -r \
       else {"string_t": "Str", "integer_t": "Long", "long_t": "Long", "float_t": "Float", "boolean_t": "Bool",
             "datetime_t": "DateTime", "json_t": "Json"}[base($t)] // error("no kind for \($t)")
       end;
-    def text: gsub("<[^>]*>"; "") | gsub("&lt;"; "<") | gsub("&gt;"; ">") | gsub("&quot;"; "\"") | gsub("&amp;"; "&") | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
+    # HTML as plain text: a list's items joined by commas, a nested list in parentheses after its item.
+    def text: [scan("<[^>]*>|[^<]+")]
+      | reduce .[] as $t ({out: "", firsts: []};
+          if $t == "<ul>" or $t == "<ol>" then
+            .out += (if (.firsts | length) > 0 then " (" else " " end) | .firsts += [true]
+          elif $t == "</ul>" or $t == "</ol>" then
+            .firsts |= .[:-1] | .out += (if (.firsts | length) > 0 then ")" else " " end)
+          elif $t == "<li>" then
+            .out += (if .firsts[-1] then "" else ", " end) | .firsts[-1] = false
+          elif ($t | test("^<(br|/?p)\\b")) then .out += " "
+          elif ($t | startswith("<")) then .
+          else .out += $t end)
+      | .out | gsub("&lt;"; "<") | gsub("&gt;"; ">") | gsub("&quot;"; "\"") | gsub("&amp;"; "&")
+      | gsub("\\s+"; " ") | gsub(" ,"; ",") | gsub(" \\)"; ")") | sub("^ "; "") | sub(" $"; "");
     def own($e): ($e.attributes // {}) | del(."$include");
     def includes($e): [($e.attributes // {})."$include" // [] | if type == "array" then .[] else . end]
       | map($profs[.].attributes // {} | map_values(.requirement = "optional")) | add // {};

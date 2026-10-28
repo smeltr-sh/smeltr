@@ -28,7 +28,7 @@
       type: 'jsonSchema',
       label: 'JSON Schema',
       category: 'From a file',
-      help: 'Upload or paste one: the data office’s own, or one a catalog exported.',
+      help: 'Upload or paste a JSON Schema: your own, or one exported from here.',
       // A page with its corner folded.
       glyph: { d: 'M14 6 H40 L52 18 V58 H14 Z M40 6 V18 H52' },
     },

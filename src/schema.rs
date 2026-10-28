@@ -366,7 +366,7 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<(Option<Vec<St
                 let schema = title(&f.schema);
                 // A timestamp written as epoch milliseconds is the case a function answers.
                 let how = match (ty, written_as.as_str()) {
-                    (DataType::DateTime, "i64") => ", as `.epochMillis()` does",
+                    (DataType::DateTime, "i64") => ": `.epochMillis()` gives one",
                     _ => "",
                 };
                 out.push((
@@ -381,7 +381,11 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<(Option<Vec<St
         let schema = title(schema);
         let message = match paths.as_slice() {
             [one] => format!("{schema} requires {one}, and no step writes it."),
-            many => format!("{schema} requires {} fields no step writes: {}.", many.len(), many.join(", ")),
+            many => format!(
+                "{schema} requires {} fields no step writes: {}.",
+                many.len(),
+                many.join(", ")
+            ),
         };
         out.push((None, message));
     }
@@ -497,13 +501,17 @@ mod tests {
             told[0],
             (
                 Some(vec!["time".to_string()]),
-                "`time` is datetime, but OCSF Authentication maps it as timestamp. Write it as i64, as \
-                 `.epochMillis()` does."
+                "`time` is datetime, but OCSF Authentication maps it as timestamp. Write it as i64: \
+                 `.epochMillis()` gives one."
                     .to_string()
             )
         );
         assert_eq!(told.len(), 2, "{told:?}");
-        assert!(told[1].1.starts_with("OCSF Authentication requires 7 fields no step writes: `activity_id`,"));
+        assert!(
+            told[1]
+                .1
+                .starts_with("OCSF Authentication requires 7 fields no step writes: `activity_id`,")
+        );
     }
 
     #[test]

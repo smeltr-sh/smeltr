@@ -23,7 +23,7 @@ test('OCSF is browsed by category a page at a time, and a class opens an object 
 
   await admin.getByRole('button', { name: /Identity & Access Management$/ }).click();
   await admin.getByRole('button', { name: /ocsf\/authentication$/ }).click();
-  await expect(admin.getByText('Built in, read-only.')).toBeVisible();
+  await expect(admin.getByText('Built-in, read-only.')).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Close user' })).toHaveCount(0);
   await admin.getByRole('button', { name: 'Open user', exact: true }).click();
   await expect(admin.getByRole('button', { name: 'Close user', exact: true })).toBeVisible();
@@ -38,7 +38,7 @@ test('a search finds a schema by a field it holds', async ({ admin, leader }) =>
   await expect(auth).toContainText('src_endpoint.port');
   await expect(admin.getByRole('button', { name: 'Expand all' })).toHaveCount(0);
   await admin.getByRole('searchbox', { name: 'Search schemas' }).fill('no-field-is-called-this');
-  await expect(admin.getByText(/No schema has a field or a name holding/)).toBeVisible();
+  await expect(admin.getByText(/No schema or field matches/)).toBeVisible();
 });
 
 test("a JSON Schema added on the Schemas page is saved as the bundle's own", async ({

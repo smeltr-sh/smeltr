@@ -272,7 +272,7 @@ impl LoadedSystem {
                     pipeline: pipeline.clone(),
                     step: None,
                     message: format!(
-                        "destination {name:?} accepts {}, and pipeline {pipeline:?} produces none of them",
+                        "destination {name:?} accepts {}, but pipeline {pipeline:?} produces no schema it accepts",
                         titles.join(", ")
                     ),
                 });
@@ -544,7 +544,7 @@ mod tests {
                 (
                     "p".to_string(),
                     None,
-                    "destination \"out\" accepts OCSF Authentication, and pipeline \"p\" produces none of them"
+                    "destination \"out\" accepts OCSF Authentication, but pipeline \"p\" produces no schema it accepts"
                         .to_string()
                 ),
             ]

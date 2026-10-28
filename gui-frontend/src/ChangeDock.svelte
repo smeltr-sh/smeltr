@@ -96,7 +96,7 @@
 
       {#if schemaFindings}
         <span class="item">
-          <!-- Said, never blocking: a schema finding does not hold back the deploy. -->
+          <!-- Said, never blocking: a schema finding does not block the deploy. -->
           <span class="mark warn" aria-hidden="true">!</span>
           <span>{count(schemaFindings, 'schema finding')}</span>
         </span>

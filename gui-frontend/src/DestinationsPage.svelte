@@ -200,8 +200,8 @@
           <DestinationFields {destination} {secrets} {mechanisms} />
           <Field field="accepts" label="accepts">
             {#snippet help()}
-              The schemas a pipeline sending here must produce one of. Review says where one does
-              not; nothing refuses it. None accepts any.
+              A pipeline sending here should produce one of these schemas. Review says where one
+              does not; nothing blocks it. Left empty, any pipeline may send here.
             {/snippet}
             <div class="accepts">
               <SchemaChips

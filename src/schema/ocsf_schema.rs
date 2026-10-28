@@ -113,7 +113,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "account",
         array: false,
         required: false,
-        description: "The Account object containing details about the cloud account, subscription, or billing unit where the event or finding was created. This object includes properties such as the account name, unique identifier, type, labels, and tags.Examples:AWS: Account object with name, uid (Account ID), type, and other account propertiesAzure: Subscription object with name, uid (Subscription ID), type, and subscription metadataGCP: Project object with name, uid (Project ID), type, and project attributesOracle Cloud: Compartment object with name, uid (Tenancy OCID), type, and compartment details",
+        description: "The Account object containing details about the cloud account, subscription, or billing unit where the event or finding was created. This object includes properties such as the account name, unique identifier, type, labels, and tags. Examples: AWS: Account object with name, uid (Account ID), type, and other account properties, Azure: Subscription object with name, uid (Subscription ID), type, and subscription metadata, GCP: Project object with name, uid (Project ID), type, and project attributes, Oracle Cloud: Compartment object with name, uid (Tenancy OCID), type, and compartment details",
     },
     Attr {
         name: "account",
@@ -1793,7 +1793,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The logical grouping or isolated segment within a cloud provider's infrastructure where the event or finding was created, often used for compliance, governance, or regional separation.Examples:AWS: Partition where the event occurred (aws, aws-cn, aws-us-gov)Azure: Cloud environment where the event occurred (AzureCloud, AzureUSGovernment, AzureChinaCloud)",
+        description: "The logical grouping or isolated segment within a cloud provider's infrastructure where the event or finding was created, often used for compliance, governance, or regional separation. Examples: AWS: Partition where the event occurred (aws, aws-cn, aws-us-gov), Azure: Cloud environment where the event occurred (AzureCloud, AzureUSGovernment, AzureChinaCloud)",
     },
     Attr {
         name: "cloud_partition",
@@ -1825,7 +1825,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "When type_id is Execute (2), this describes the command line that is executed.When type_id is COM Handler (1), this may describe the DLL path stored in the COM component's InprocServer32 key or the command line stored in the COM component's LocalServer32 key.",
+        description: "When type_id is Execute (2), this describes the command line that is executed. When type_id is COM Handler (1), this may describe the DLL path stored in the COM component's InprocServer32 key or the command line stored in the COM component's LocalServer32 key.",
     },
     Attr {
         name: "code",
@@ -2449,7 +2449,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The ISO 3166-1 Alpha-2 country code.Note: The two letter country code should be capitalized. For example: US or CA.",
+        description: "The ISO 3166-1 Alpha-2 country code. Note: The two letter country code should be capitalized. For example: US or CA.",
     },
     Attr {
         name: "country",
@@ -2457,7 +2457,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The operating system country code, as defined by the ISO 3166-1 standard (Alpha-2 code).Note: The two letter country code should be capitalized. For example: US or CA.",
+        description: "The operating system country code, as defined by the ISO 3166-1 standard (Alpha-2 code). Note: The two letter country code should be capitalized. For example: US or CA.",
     },
     Attr {
         name: "cpe_name",
@@ -3033,7 +3033,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "Criticality or relative importance of this resource, normalized to the caption of criticality_id. In the case of Other, the value is defined by the event source.Note: For versions prior to 1.9, criticality_id was not available and this is a source specific value.",
+        description: "Criticality or relative importance of this resource, normalized to the caption of criticality_id. In the case of Other, the value is defined by the event source. Note: For versions prior to 1.9, criticality_id was not available and this is a source specific value.",
     },
     Attr {
         name: "criticality",
@@ -3777,7 +3777,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "device",
         array: false,
         required: false,
-        description: "Describes the affected device/host. It can be used in conjunction with resources or when there are multiple devices affected. E.g. The role of the device as target or actor, specific details about a cloud resource compute instance, etc.If a single device is the source of the finding, use the Host profile and populate device.",
+        description: "Describes the affected device/host. It can be used in conjunction with resources or when there are multiple devices affected. E.g. The role of the device as target or actor, specific details about a cloud resource compute instance, etc. If a single device is the source of the finding, use the Host profile and populate device.",
     },
     Attr {
         name: "device",
@@ -3913,7 +3913,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "integer",
         array: false,
         required: true,
-        description: "The direction of the email relative to the scanning host or organization.Email scanned at an internet gateway might be characterized as inbound to the organization from the Internet, outbound from the organization to the Internet, or internal within the organization. Email scanned at a workstation might be characterized as inbound to, or outbound from the workstation.",
+        description: "The direction of the email relative to the scanning host or organization. Email scanned at an internet gateway might be characterized as inbound to the organization from the Internet, outbound from the organization to the Internet, or internal within the organization. Email scanned at a workstation might be characterized as inbound to, or outbound from the workstation.",
     },
     Attr {
         name: "direction_id",
@@ -4785,7 +4785,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "enrichment",
         array: true,
         required: false,
-        description: "The additional information from an external data source, which is associated with the event or a finding. For example add location information for the IP address in the DNS answers:[{\"name\": \"answers.ip\", \"value\": \"92.24.47.250\", \"type\": \"location\", \"data\": {\"city\": \"Socotra\", \"continent\": \"Asia\", \"coordinates\": [-25.4153, 17.0743], \"country\": \"YE\", \"desc\": \"Yemen\"}}]",
+        description: "The additional information from an external data source, which is associated with the event or a finding. For example add location information for the IP address in the DNS answers: [{\"name\": \"answers.ip\", \"value\": \"92.24.47.250\", \"type\": \"location\", \"data\": {\"city\": \"Socotra\", \"continent\": \"Asia\", \"coordinates\": [-25.4153, 17.0743], \"country\": \"YE\", \"desc\": \"Yemen\"}}]",
     },
     Attr {
         name: "entity",
@@ -5489,14 +5489,6 @@ pub const ATTRS: &[Attr] = &[
         type_name: "timestamp",
         array: false,
         required: false,
-        description: "The time when the finding was first observed. e.g. The time when a vulnerability was first observed.It can differ from the created_time timestamp, which reflects the time this finding was created.",
-    },
-    Attr {
-        name: "first_seen_time",
-        ty: EpochMillis,
-        type_name: "timestamp",
-        array: false,
-        required: false,
         description: "The time when the finding was first observed.",
     },
     Attr {
@@ -5530,14 +5522,6 @@ pub const ATTRS: &[Attr] = &[
         array: false,
         required: false,
         description: "The time when the finding was first observed. e.g. The time when a vulnerability was first observed. It can differ from the created_time timestamp, which reflects the time this finding was created.",
-    },
-    Attr {
-        name: "first_seen_time_dt",
-        ty: DateTime,
-        type_name: "datetime",
-        array: false,
-        required: false,
-        description: "The time when the finding was first observed. e.g. The time when a vulnerability was first observed.It can differ from the created_time timestamp, which reflects the time this finding was created.",
     },
     Attr {
         name: "first_seen_time_dt",
@@ -5801,7 +5785,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "Geohash of the geo-coordinates (latitude and longitude).Geohashing is a geocoding system used to encode geographic coordinates in decimal degrees, to a single string.",
+        description: "Geohash of the geo-coordinates (latitude and longitude). Geohashing is a geocoding system used to encode geographic coordinates in decimal degrees, to a single string.",
     },
     Attr {
         name: "given_name",
@@ -6417,7 +6401,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The impact , normalized to the caption of the impact_id value. In the case of 'Other', it is defined by the event source.",
+        description: "The impact, normalized to the caption of the impact_id value. In the case of 'Other', it is defined by the event source.",
     },
     Attr {
         name: "impact_id",
@@ -6681,7 +6665,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "boolean",
         array: false,
         required: false,
-        description: "Indicates whether the credentials were passed in clear text.Note: True if the credentials were passed in a clear text protocol such as FTP or TELNET, or if Windows detected that a user's logon password was passed to the authentication package in clear text.",
+        description: "Indicates whether the credentials were passed in clear text. Note: True if the credentials were passed in a clear text protocol such as FTP or TELNET, or if Windows detected that a user's logon password was passed to the authentication package in clear text.",
     },
     Attr {
         name: "is_compliant",
@@ -7497,14 +7481,6 @@ pub const ATTRS: &[Attr] = &[
         type_name: "timestamp",
         array: false,
         required: false,
-        description: "The time when the finding was most recently observed. e.g. The time when a vulnerability was most recently observed.It can differ from the modified_time timestamp, which reflects the time this finding was last modified.",
-    },
-    Attr {
-        name: "last_seen_time",
-        ty: EpochMillis,
-        type_name: "timestamp",
-        array: false,
-        required: false,
         description: "The time when the finding was most recently observed.",
     },
     Attr {
@@ -7546,14 +7522,6 @@ pub const ATTRS: &[Attr] = &[
         array: false,
         required: false,
         description: "The time when the finding was most recently observed. e.g. The time when a vulnerability was most recently observed. It can differ from the modified_time timestamp, which reflects the time this finding was last modified.",
-    },
-    Attr {
-        name: "last_seen_time_dt",
-        ty: DateTime,
-        type_name: "datetime",
-        array: false,
-        required: false,
-        description: "The time when the finding was most recently observed. e.g. The time when a vulnerability was most recently observed.It can differ from the modified_time timestamp, which reflects the time this finding was last modified.",
     },
     Attr {
         name: "last_seen_time_dt",
@@ -7905,7 +7873,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The logging provider or logging service targeted by the activity.Example: Microsoft-Windows-Security-Auditing, Auditd, or Syslog.",
+        description: "The logging provider or logging service targeted by the activity. Example: Microsoft-Windows-Security-Auditing, Auditd, or Syslog.",
     },
     Attr {
         name: "log_provider",
@@ -8825,7 +8793,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The name of the account (e.g. GCP Project name , Linux Account name or AWS Account name).",
+        description: "The name of the account (e.g. GCP Project name, Linux Account name or AWS Account name).",
     },
     Attr {
         name: "name",
@@ -9393,7 +9361,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "network_interface",
         array: true,
         required: false,
-        description: "The physical or virtual network interfaces that are associated with the device, one for each unique MAC address/IP address/hostname/name combination.Note: The first element of the array is the network information that pertains to the event.",
+        description: "The physical or virtual network interfaces that are associated with the device, one for each unique MAC address/IP address/hostname/name combination. Note: The first element of the array is the network information that pertains to the event.",
     },
     Attr {
         name: "network_interfaces",
@@ -9401,7 +9369,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "network_interface",
         array: true,
         required: true,
-        description: "The physical or virtual network interfaces that are associated with the device, one for each unique MAC address/IP address/hostname/name combination.Note: The first element of the array is the network information that pertains to the event.",
+        description: "The physical or virtual network interfaces that are associated with the device, one for each unique MAC address/IP address/hostname/name combination. Note: The first element of the array is the network information that pertains to the event.",
     },
     Attr {
         name: "network_observation_point",
@@ -9793,7 +9761,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "organization",
         array: false,
         required: false,
-        description: "The Organization object containing details about the organizational unit or management structure that governs the account, subscription, or project where the event or finding was created. This object includes properties such as the organization name, unique identifier, type, and other organizational metadata.Examples:AWS: Organization object with name, uid (Organization ID), type, and other organizational propertiesAzure: Management Group object with name, uid (Management Group ID), type, and management group metadataGCP: Organization object with name, uid (Organization ID), type, and organizational attributesOracle Cloud: Tenancy object with name, uid (Tenancy OCID), type, and tenancy details",
+        description: "The Organization object containing details about the organizational unit or management structure that governs the account, subscription, or project where the event or finding was created. This object includes properties such as the organization name, unique identifier, type, and other organizational metadata. Examples: AWS: Organization object with name, uid (Organization ID), type, and other organizational properties, Azure: Management Group object with name, uid (Management Group ID), type, and management group metadata, GCP: Organization object with name, uid (Organization ID), type, and organizational attributes, Oracle Cloud: Tenancy object with name, uid (Tenancy OCID), type, and tenancy details",
     },
     Attr {
         name: "org",
@@ -9873,7 +9841,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The name of an organizational unit, Google Cloud Folder, or AWS Org Unit. For example, the GCP Project Name , or Dev_Prod_OU .",
+        description: "The name of an organizational unit, Google Cloud Folder, or AWS Org Unit. For example, the GCP Project Name, or Dev_Prod_OU .",
     },
     Attr {
         name: "ou_uid",
@@ -9881,7 +9849,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The unique identifier of an organizational unit, Google Cloud Folder, or AWS Org Unit. For example, an Oracle Cloud Tenancy ID , AWS OU ID , or GCP Folder ID .",
+        description: "The unique identifier of an organizational unit, Google Cloud Folder, or AWS Org Unit. For example, an Oracle Cloud Tenancy ID, AWS OU ID, or GCP Folder ID .",
     },
     Attr {
         name: "overall_score",
@@ -10905,7 +10873,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "key_value_object",
         array: true,
         required: false,
-        description: "The list of properties associated with the performed action.Can be populated with additional attributes of a program execution process, COM object attributes, fields of a message box or an email.",
+        description: "The list of properties associated with the performed action. Can be populated with additional attributes of a program execution process, COM object attributes, fields of a message box or an email.",
     },
     Attr {
         name: "properties",
@@ -10913,7 +10881,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "key_value_object",
         array: true,
         required: false,
-        description: "The list of properties associated with the trigger.Can be used to describe time boundaries of the job, amount of repetitions or when the job should be activated or expired.",
+        description: "The list of properties associated with the trigger. Can be used to describe time boundaries of the job, amount of repetitions or when the job should be activated or expired.",
     },
     Attr {
         name: "protocol_name",
@@ -11513,7 +11481,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The cloud region where the event or finding was created, as defined by the cloud provider.Examples:AWS: Region where the event occurred (us-east-1, eu-west-1)Azure: Region where the event occurred (East US, West Europe)GCP: Region where the event occurred (us-central1, europe-west1)Oracle Cloud: Region where the event occurred (us-ashburn-1, uk-london-1)",
+        description: "The cloud region where the event or finding was created, as defined by the cloud provider. Examples: AWS: Region where the event occurred (us-east-1, eu-west-1), Azure: Region where the event occurred (East US, West Europe), GCP: Region where the event occurred (us-central1, europe-west1), Oracle Cloud: Region where the event occurred (us-ashburn-1, uk-london-1)",
     },
     Attr {
         name: "region",
@@ -11633,7 +11601,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The type of relationship between nodes (e.g. is-attached-to , depends-on, etc).",
+        description: "The type of relationship between nodes (e.g. is-attached-to, depends-on, etc).",
     },
     Attr {
         name: "relationship",
@@ -12737,7 +12705,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The Common Vulnerability Scoring System (CVSS) Qualitative Severity Rating. A textual representation of the numeric score.CVSS v2.0Low (0.0 – 3.9)Medium (4.0 – 6.9)High (7.0 – 10.0)CVSS v3.0None (0.0)Low (0.1 - 3.9)Medium (4.0 - 6.9)High (7.0 - 8.9)Critical (9.0 - 10.0)",
+        description: "The Common Vulnerability Scoring System (CVSS) Qualitative Severity Rating. A textual representation of the numeric score. CVSS v2.0 Low (0.0 – 3.9), Medium (4.0 – 6.9), High (7.0 – 10.0) CVSS v3.0 None (0.0), Low (0.1 - 3.9), Medium (4.0 - 6.9), High (7.0 - 8.9), Critical (9.0 - 10.0)",
     },
     Attr {
         name: "severity",
@@ -12801,7 +12769,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "integer",
         array: false,
         required: false,
-        description: "The normalized identifier of the event/finding severity.The normalized severity is a measurement the effort and expense required to manage and resolve an event or incident. Smaller numerical values represent lower impact events, and larger numerical values represent higher impact events.",
+        description: "The normalized identifier of the event/finding severity. The normalized severity is a measurement the effort and expense required to manage and resolve an event or incident. Smaller numerical values represent lower impact events, and larger numerical values represent higher impact events.",
     },
     Attr {
         name: "severity_id",
@@ -12833,7 +12801,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "integer",
         array: false,
         required: true,
-        description: "The normalized identifier of the event/finding severity.The normalized severity is a measurement the effort and expense required to manage and resolve an event or incident. Smaller numerical values represent lower impact events, and larger numerical values represent higher impact events.",
+        description: "The normalized identifier of the event/finding severity. The normalized severity is a measurement the effort and expense required to manage and resolve an event or incident. Smaller numerical values represent lower impact events, and larger numerical values represent higher impact events.",
     },
     Attr {
         name: "share",
@@ -13913,7 +13881,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The event status code, as reported by the event source.Example: 0, 8, or 21 for Windows ClearEventLog.",
+        description: "The event status code, as reported by the event source. Example: 0, 8, or 21 for Windows ClearEventLog.",
     },
     Attr {
         name: "status_code",
@@ -13953,7 +13921,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The details about the authentication request. For example, possible details for Windows logon or logoff events are:SuccessLOGOFF_USER_INITIATEDLOGOFF_OTHERFailureUSER_DOES_NOT_EXISTINVALID_CREDENTIALSACCOUNT_DISABLEDACCOUNT_LOCKED_OUTPASSWORD_EXPIRED",
+        description: "The details about the authentication request. For example, possible details for Windows logon or logoff events are: Success (LOGOFF_USER_INITIATED, LOGOFF_OTHER), Failure (USER_DOES_NOT_EXIST, INVALID_CREDENTIALS, ACCOUNT_DISABLED, ACCOUNT_LOCKED_OUT, PASSWORD_EXPIRED)",
     },
     Attr {
         name: "status_detail",
@@ -13961,7 +13929,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The status detail contains additional information about the event outcome.Example: Success, Privilege Missing, or Invalid Parameter for Windows ClearEventLog.",
+        description: "The status detail contains additional information about the event outcome. Example: Success, Privilege Missing, or Invalid Parameter for Windows ClearEventLog.",
     },
     Attr {
         name: "status_detail",
@@ -15321,7 +15289,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The type of the related event/finding.Populate if the related event/finding is NOT in OCSF. If it is in OCSF, then utilize type_name, type_uid instead.",
+        description: "The type of the related event/finding. Populate if the related event/finding is NOT in OCSF. If it is in OCSF, then utilize type_name, type_uid instead.",
     },
     Attr {
         name: "type",
@@ -15377,7 +15345,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The vulnerability type as classified in the CVE catalog.Most frequently used vulnerability types are: DoS, Code Execution, Overflow, Memory Corruption, Sql Injection, XSS, Directory Traversal, Http Response Splitting, Bypass something, Gain Information, Gain Privileges, CSRF, File Inclusion. For more information see Vulnerabilities By Type distributions.",
+        description: "The vulnerability type as classified in the CVE catalog. Most frequently used vulnerability types are: DoS, Code Execution, Overflow, Memory Corruption, Sql Injection, XSS, Directory Traversal, Http Response Splitting, Bypass something, Gain Information, Gain Privileges, CSRF, File Inclusion. For more information see Vulnerabilities By Type distributions.",
     },
     Attr {
         name: "type",
@@ -15729,7 +15697,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The type of the related OCSF event, as defined by type_uid.For example: Process Activity: Launch.Populate if the related event/finding is in OCSF.",
+        description: "The type of the related OCSF event, as defined by type_uid. For example: Process Activity: Launch. Populate if the related event/finding is in OCSF.",
     },
     Attr {
         name: "type_uid",
@@ -15753,7 +15721,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "long",
         array: false,
         required: false,
-        description: "The unique identifier of the related OCSF event type. For example: 100701.Populate if the related event/finding is in OCSF.",
+        description: "The unique identifier of the related OCSF event type. For example: 100701. Populate if the related event/finding is in OCSF.",
     },
     Attr {
         name: "type_uid",
@@ -16025,7 +15993,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The unique identifier of the account (e.g. AWS Account ID , OCID , GCP Project ID , Azure Subscription ID , Google Workspace Customer ID , or M365 Tenant UID).",
+        description: "The unique identifier of the account (e.g. AWS Account ID, OCID, GCP Project ID, Azure Subscription ID, Google Workspace Customer ID, or M365 Tenant UID).",
     },
     Attr {
         name: "uid",
@@ -16577,7 +16545,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "long",
         array: false,
         required: false,
-        description: "The uid attribute in numeric form where applicable.Note: Producers may populate uid_numeric only in addition to uid and not as an alternative to it.",
+        description: "The uid attribute in numeric form where applicable. Note: Producers may populate uid_numeric only in addition to uid and not as an alternative to it.",
     },
     Attr {
         name: "unique_malware_count",
@@ -17057,7 +17025,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "file_hash",
         array: false,
         required: true,
-        description: "The fingerprint value.Note: This uses type file_hash_t (\"Hash\"), which has been generalized for all fingerprints but retains the same name and caption for backwards compatibility.",
+        description: "The fingerprint value. Note: This uses type file_hash_t (\"Hash\"), which has been generalized for all fingerprints but retains the same name and caption for backwards compatibility.",
     },
     Attr {
         name: "value",
@@ -17081,7 +17049,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The value associated with the observable attribute. The meaning of the value depends on the observable type.If the name refers to a scalar attribute, then the value is the value of the attribute.If the name refers to an object attribute, then the value is not populated.",
+        description: "The value associated with the observable attribute. The meaning of the value depends on the observable type. If the name refers to a scalar attribute, then the value is the value of the attribute. If the name refers to an object attribute, then the value is not populated.",
     },
     Attr {
         name: "value",
@@ -17193,7 +17161,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "vendor_attributes",
         array: false,
         required: false,
-        description: "The Vendor Attributes object can be used to represent values of attributes populated by the Vendor/Finding Provider. It can help distinguish between the vendor-provided values and consumer-updated values, of key attributes like severity_id.The original finding producer should not populate this object. It should be populated by consuming systems that support data mutability.",
+        description: "The Vendor Attributes object can be used to represent values of attributes populated by the Vendor/Finding Provider. It can help distinguish between the vendor-provided values and consumer-updated values, of key attributes like severity_id. The original finding producer should not populate this object. It should be populated by consuming systems that support data mutability.",
     },
     Attr {
         name: "vendor_id_list",
@@ -17777,7 +17745,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "object",
         array: false,
         required: false,
-        description: "An unordered collection of zero or more name/value pairs that represent a process extended attribute.For example: process security context attributes, process resource limits, container-specific attributes, or platform-specific process metadata not covered by standard OCSF attributes.",
+        description: "An unordered collection of zero or more name/value pairs that represent a process extended attribute. For example: process security context attributes, process resource limits, container-specific attributes, or platform-specific process metadata not covered by standard OCSF attributes.",
     },
     Attr {
         name: "xattributes",
@@ -17785,7 +17753,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "object",
         array: false,
         required: false,
-        description: "An unordered collection of zero or more name/value pairs where each pair represents a file or folder extended attribute.For example: Windows alternate data stream attributes (ADS stream name, ADS size, etc.), user-defined or application-defined attributes, ACL, owner, primary group, etc. Examples from DCS: ads_nameads_sizedaclownerprimary_grouplink_name - name of the link associated to the file.hard_link_count - the number of links that are associated to the file.",
+        description: "An unordered collection of zero or more name/value pairs where each pair represents a file or folder extended attribute. For example: Windows alternate data stream attributes (ADS stream name, ADS size, etc.), user-defined or application-defined attributes, ACL, owner, primary group, etc. Examples from DCS: ads_name, ads_size, dacl, owner, primary_group, link_name - name of the link associated to the file., hard_link_count - the number of links that are associated to the file.",
     },
     Attr {
         name: "zone",
@@ -17793,7 +17761,7 @@ pub const ATTRS: &[Attr] = &[
         type_name: "string",
         array: false,
         required: false,
-        description: "The availability zone in the cloud region where the event or finding was created, as defined by the cloud provider.Examples:AWS: Availability zone where the event occurred (us-east-1a, us-east-1b)Azure: Availability zone where the event occurred (1, 2, 3 within a region)GCP: Availability zone where the event occurred (us-central1-a, us-central1-b)Oracle Cloud: Availability zone where the event occurred (AD-1, AD-2, AD-3)",
+        description: "The availability zone in the cloud region where the event or finding was created, as defined by the cloud provider. Examples: AWS: Availability zone where the event occurred (us-east-1a, us-east-1b), Azure: Availability zone where the event occurred (1, 2, 3 within a region), GCP: Availability zone where the event occurred (us-central1-a, us-central1-b), Oracle Cloud: Availability zone where the event occurred (AD-1, AD-2, AD-3)",
     },
     Attr {
         name: "zone",
@@ -17835,91 +17803,91 @@ pub const OBJECTS: &[Object] = &[
         name: "access_analysis_result",
         caption: "Access Analysis Result",
         description: "The Access Analysis Result object describes access relationships and pathways between identities, resources, focusing on who can access what and through which mechanisms. This evaluates access levels (read/write/admin), access types (direct, cross-account, public, federated), and the conditions under which access is granted. Use this for resource-centric security assessments such as external access discovery, public exposure analysis, etc.",
-        attributes: &[1, 6, 10, 47, 259, 727],
+        attributes: &[1, 6, 10, 47, 259, 725],
     },
     Object {
         name: "account",
         caption: "Account",
         description: "The Account object contains details about the account that initiated or performed a specific activity within a system or application. Additionally, the Account object refers to logical Cloud and Software-as-a-Service (SaaS) based containers such as AWS Accounts, Azure Subscriptions, Oracle Cloud Compartments, Google Cloud Projects, and otherwise.",
-        attributes: &[837, 845, 851, 915, 1100, 1782, 1866, 1930, 2000, 2069],
+        attributes: &[835, 843, 849, 913, 1096, 1778, 1862, 1926, 1996, 2065],
     },
     Object {
         name: "actor",
         caption: "Actor",
         description: "The Actor object contains details about the user, role, application, service, or process that initiated or performed a specific activity. Note that Actor is not the threat actor of a campaign but may be part of a campaign. When the initiator of the activity is an autonomous AI agent, apply the ai_operation profile and populate ai_operation.ai_agent rather than describing the agent here.",
-        attributes: &[88, 91, 94, 129, 782, 793, 820, 1328, 1584, 2109],
+        attributes: &[88, 91, 94, 129, 780, 791, 818, 1324, 1580, 2105],
     },
     Object {
         name: "additional_restriction",
         caption: "Additional Restriction",
         description: "The Additional Restriction object describes supplementary access controls and guardrails that constrain or limit granted permissions beyond the primary policy. These restrictions are typically applied through hierarchical policy frameworks, organizational controls, or conditional access mechanisms. Examples include AWS Service Control Policies (SCPs), Resource Control Policies (RCPs), Azure Management Group policies, GCP Organization policies, conditional access policies, IP restrictions, time-based constraints, and MFA requirements.",
-        attributes: &[1300, 1723, 1750],
+        attributes: &[1296, 1719, 1746],
     },
     Object {
         name: "advisory",
         caption: "Advisory",
         description: "The Advisory object represents publicly disclosed cybersecurity vulnerabilities defined in a Security advisory. e.g. Microsoft KB Article, Apple Security Advisory, or a GitHub Security Advisory (GHSA)",
         attributes: &[
-            134, 155, 207, 321, 349, 429, 807, 809, 866, 1044, 1061, 1226, 1347, 1427, 1445, 1446, 1615, 1658, 1819,
-            2047,
+            134, 155, 207, 321, 349, 429, 805, 807, 864, 1040, 1057, 1222, 1343, 1423, 1441, 1442, 1611, 1654, 1815,
+            2043,
         ],
     },
     Object {
         name: "affected_code",
         caption: "Affected Code",
         description: "The Affected Code object describes details about a code block identified as vulnerable.",
-        attributes: &[570, 571, 661, 1234, 1456, 1512, 1679, 1680],
+        attributes: &[570, 571, 661, 1230, 1452, 1508, 1675, 1676],
     },
     Object {
         name: "affected_package",
         caption: "Affected Software Package",
         description: "The Affected Package object describes details about a software package identified as affected by a vulnerability/vulnerabilities.",
         attributes: &[
-            97, 305, 599, 696, 747, 965, 966, 1160, 1243, 1244, 1264, 1392, 1455, 1456, 1663, 1904, 1944, 1977, 2156,
-            2195,
+            97, 305, 599, 694, 745, 961, 962, 1156, 1239, 1240, 1260, 1388, 1451, 1452, 1659, 1900, 1940, 1973, 2152,
+            2191,
         ],
     },
     Object {
         name: "agent",
         caption: "Agent",
         description: "An Agent (also known as a Sensor) is typically installed on an Operating System (OS) and serves as a specialized software component that can be designed to monitor, detect, collect, archive, or take action. These activities and possible actions are defined by the upstream system controlling the Agent and its intended purpose. For instance, an Agent can include Endpoint Detection & Response (EDR) agents, backup/disaster recovery sensors, Application Performance Monitoring or profiling sensors, and similar software.",
-        attributes: &[1101, 1288, 1887, 1937, 1984, 2062, 2150, 2178],
+        attributes: &[1097, 1284, 1883, 1933, 1980, 2058, 2146, 2174],
     },
     Object {
         name: "ai_agent",
         caption: "AI Agent",
         description: "An autonomous AI agent that performs tasks under delegated authority. Distinguished from the OCSF agent object (which describes security sensors such as EDR and DLP tools) and from human principals. An AI agent has a stable logical identity across runs and a restart-sensitive instance identity. The agent owns its model; the ai_model attribute captures which model was backing the agent at the time of action.",
-        attributes: &[56, 189, 811, 1079, 1867, 1933, 1991, 2069, 2184],
+        attributes: &[56, 189, 809, 1075, 1863, 1929, 1987, 2065, 2180],
     },
     Object {
         name: "ai_model",
         caption: "AI Model",
         description: "The AI Model object describes the characteristics of an AI/ML model. Examples include language models like GPT-4, embedding models like text-embedding-ada-002, and computer vision models like CLIP.",
-        attributes: &[58, 1141, 1998, 2069, 2165],
+        attributes: &[58, 1137, 1994, 2065, 2161],
     },
     Object {
         name: "aircraft",
         caption: "Aircraft",
         description: "The Aircraft object represents any aircraft or otherwise airborne asset such as an unmanned system, airplane, balloon, spacecraft, or otherwise. The Aircraft object is intended to normalized data captured or otherwise logged from active radar, passive radar, multi-spectral systems, or the Automatic Dependant Broadcast - Surveillance (ADS-B), and/or Mode S systems.",
-        attributes: &[974, 1034, 1102, 1563, 1637, 1638, 1842, 1988, 2059, 2069, 2199],
+        attributes: &[970, 1030, 1098, 1559, 1633, 1634, 1838, 1984, 2055, 2065, 2195],
     },
     Object {
         name: "analysis_target",
         caption: "Analysis Target",
         description: "The analysis target defines the scope of monitored activities, specifying what entity, system or process is analyzed for activity patterns.",
-        attributes: &[1161, 1869],
+        attributes: &[1157, 1865],
     },
     Object {
         name: "analytic",
         caption: "Analytic",
         description: "The Analytic object contains details about the analytic technique used to analyze and derive insights from the data or information that led to the creation of a finding or conclusion.",
-        attributes: &[65, 169, 440, 1103, 1442, 1556, 1707, 1715, 1868, 1948, 2001, 2069, 2172],
+        attributes: &[65, 169, 440, 1099, 1438, 1552, 1703, 1711, 1864, 1944, 1997, 2065, 2168],
     },
     Object {
         name: "anomaly",
         caption: "Anomaly",
         description: "Describes an anomaly or deviation detected in a system. Anomalies are unexpected activity patterns that could indicate potential issues needing attention.",
-        attributes: &[1198, 1202, 1204, 1205],
+        attributes: &[1194, 1198, 1200, 1201],
     },
     Object {
         name: "anomaly_analysis",
@@ -17931,197 +17899,197 @@ pub const OBJECTS: &[Object] = &[
         name: "api",
         caption: "API",
         description: "The API, or Application Programming Interface, object represents information pertaining to an API request and response.",
-        attributes: &[731, 1215, 1467, 1493, 1574, 1835, 2181],
+        attributes: &[729, 1211, 1463, 1489, 1570, 1831, 2177],
     },
     Object {
         name: "application",
         caption: "Application",
         description: "An Application describes the details for an inventoried application as reported by an Application Security tool or other Developer-centric tooling. Applications can be defined as Kubernetes resources, Containerized resources, or application hosting-specific cloud sources such as AWS Elastic BeanStalk, AWS Lightsail, or Azure Logic Apps.",
         attributes: &[
-            377, 393, 432, 732, 758, 916, 1104, 1236, 1348, 1435, 1476, 1503, 1504, 1506, 1525, 1783, 1897, 1994, 2063,
-            2092, 2179,
+            377, 393, 432, 730, 756, 914, 1100, 1232, 1344, 1431, 1472, 1499, 1500, 1502, 1521, 1779, 1893, 1990, 2059,
+            2088, 2175,
         ],
     },
     Object {
         name: "assessment",
         caption: "Assessment",
         description: "The Assessment object describes a point-in-time assessment, check, or evaluation of a specific configuration or signal against an asset, entity, person, or otherwise. For example, this can encapsulate os_signals from CrowdStrike Falcon Zero Trust Assessments, or account for Datastore configurations from Cyera, or capture details of Microsoft Intune configuration policies.",
-        attributes: &[172, 441, 1014, 1109, 1297, 2008, 2069],
+        attributes: &[172, 441, 1010, 1105, 1293, 2004, 2065],
     },
     Object {
         name: "attack",
         caption: "Attack Tactics & Techniques",
         description: "The Attack object describes the tactic, technique, sub-technique & mitigation associated to an attack.",
-        attributes: &[1031, 1759, 1778, 1779, 1796, 2167],
+        attributes: &[1027, 1755, 1774, 1775, 1792, 2163],
     },
     Object {
         name: "attestation",
         caption: "Attestation",
         description: "A cryptographic attestation that an event has not been altered since it was produced and was produced by the holder of a verifiable identity, providing integrity, authenticity, and non-repudiation. The attestation is computed over a canonical serialization of the event: the entire event, including the attestation's own authority_uid, chain_uid, and prev_event attributes, and excluding only the attestation's fingerprint and signatures. Because prev_event is inside the serialized content, deleting or altering an event in a chain breaks the fingerprint and signatures of the event that references it. An attestation may carry more than one signature (for example, a co-signature, notary, or witness over the same event). The verifiable identity is a technical credential, such as a key or certificate, and is not an attribution of any person, organization, or state.",
-        attributes: &[128, 188, 676, 1311, 1612, 2043],
+        attributes: &[128, 188, 676, 1307, 1608, 2039],
     },
     Object {
         name: "auth_factor",
         caption: "Authentication Factor",
         description: "An Authentication Factor object describes a category of methods used for identity verification in an authentication attempt.",
-        attributes: &[471, 555, 642, 643, 843, 871, 1280, 1377, 1551],
+        attributes: &[471, 555, 642, 643, 841, 869, 1276, 1373, 1547],
     },
     Object {
         name: "authentication_token",
         caption: "Authentication Token",
         description: "The Authentication Token object extends the base token object and represents standardized authentication tokens, tickets, or assertions that conform to established authentication protocols such as Kerberos, OIDC, and SAML. This object inherits all attributes from token and adds protocol-specific attributes (e.g., kerberos_flags, encryption_details) for authentication events. Use this object in authentication events to represent protocol-specific tokens: Kerberos Ticket Granting Tickets (TGT) and Service Tickets (ST), OIDC Identity Tokens and Refresh Tokens, and SAML Assertions. These tokens are issued by authentication servers and identity providers and carry protocol-specific metadata, lifecycle information, and security attributes defined by their respective specifications. When to use this object: Use authentication_token when representing protocol-specific authentication tokens (type_id values 1-5: Kerberos TGT/ST, OIDC ID/Refresh tokens, SAML assertions) in authentication events. When NOT to use this object: Do NOT use authentication_token for API tokens or client tokens (type_id values 6-7) used in API activity events - use the base token object instead. Do NOT use authentication_token for generic API keys - use the base token object instead.",
         attributes: &[
-            319, 347, 567, 620, 627, 859, 898, 1038, 1055, 1091, 1798, 1906, 1931, 1992, 2224,
+            319, 347, 567, 620, 627, 857, 896, 1034, 1051, 1087, 1794, 1902, 1927, 1988, 2220,
         ],
     },
     Object {
         name: "authorization",
         caption: "Authorization Result",
         description: "The Authorization Result object provides details about the authorization outcome and associated policies related to activity.",
-        attributes: &[419, 1294],
+        attributes: &[419, 1290],
     },
     Object {
         name: "autonomous_system",
         caption: "Autonomous System",
         description: "An autonomous system (AS) is a collection of connected Internet Protocol (IP) routing prefixes under the control of one or more network operators on behalf of a single administrative entity or domain that presents a common, clearly defined routing policy to the internet.",
-        attributes: &[1080, 1195],
+        attributes: &[1076, 1191],
     },
     Object {
         name: "baseline",
         caption: "Baseline",
         description: "Describes the baseline or expected behavior of a system, service, or component based on historical observations and measurements. It establishes reference points for comparison to detect anomalies, trends, and deviations from typical patterns.",
-        attributes: &[1197, 1201, 1203, 1206],
+        attributes: &[1193, 1197, 1199, 1202],
     },
     Object {
         name: "campaign",
         caption: "Campaign",
         description: "Campaign represent organized efforts by threat actors to achieve malicious objectives over a period, often characterized by shared tactics, techniques, and procedures (TTPs).",
-        attributes: &[1147],
+        attributes: &[1143],
     },
     Object {
         name: "certificate",
         caption: "Digital Certificate",
         description: "The Digital Certificate, also known as a Public Key Certificate, object contains information about the ownership and usage of a public key. It serves as a means to establish trust in the authenticity and integrity of the public key and the associated entity.",
-        attributes: &[323, 351, 621, 628, 679, 863, 882, 1524, 1565, 1764, 2004, 2173],
+        attributes: &[323, 351, 621, 628, 679, 861, 880, 1520, 1561, 1760, 2000, 2169],
     },
     Object {
         name: "check",
         caption: "Check",
         description: "The check object defines a specific, testable compliance verification point that evaluates a target device against a standard, framework, or custom requirement. While checks are typically associated with formal standards (like CIS, NIST, or ISO), they can also represent custom or organizational requirements. When mapped to controls, checks can evaluate specific control_parameters to determine compliance status, but neither the control mapping nor control_parameters are required for a valid check.",
-        attributes: &[454, 1130, 1474, 1592, 1599, 1676, 1731, 1752, 2007, 2174],
+        attributes: &[454, 1126, 1470, 1588, 1595, 1672, 1727, 1748, 2003, 2170],
     },
     Object {
         name: "cis_benchmark",
         caption: "CIS Benchmark",
         description: "The CIS Benchmark object describes best practices for securely configuring IT systems, software, networks, and cloud infrastructure as defined by the Center for Internet Security. See also Getting to Know the CIS Benchmarks.",
-        attributes: &[198, 437, 1143],
+        attributes: &[198, 437, 1139],
     },
     Object {
         name: "cis_benchmark_result",
         caption: "CIS Benchmark Result",
         description: "The CIS Benchmark Result object contains information as defined by the Center for Internet Security (CIS) benchmark result. CIS Benchmarks are a collection of best practices for securely configuring IT systems, software, networks, and cloud infrastructure.",
-        attributes: &[439, 1145, 1456, 1513],
+        attributes: &[439, 1141, 1452, 1509],
     },
     Object {
         name: "cis_control",
         caption: "CIS Control",
         description: "The CIS Control (aka Critical Security Control) object describes a prioritized set of actions to protect your organization and data from cyber-attack vectors. The CIS Controls are defined by the Center for Internet Security.",
-        attributes: &[438, 1144, 2168],
+        attributes: &[438, 1140, 2164],
     },
     Object {
         name: "cis_csc",
         caption: "CIS CSC",
         description: "The CIS Critical Security Control (CSC) contains information as defined by the Center for Internet Security Critical Security Controls (CIS CSC). Prioritized set of actions to protect your organization and data from cyber-attack vectors.",
-        attributes: &[288, 2169],
+        attributes: &[288, 2165],
     },
     Object {
         name: "classifier_details",
         caption: "Classifier Details",
         description: "The Classifier Details object describes details about the classifier used for data classification.",
-        attributes: &[1107, 1921, 2006],
+        attributes: &[1103, 1917, 2002],
     },
     Object {
         name: "clipboard",
         caption: "Clipboard",
         description: "The Clipboard object represents an endpoint clipboard and its contents.",
-        attributes: &[285, 1108],
+        attributes: &[285, 1104],
     },
     Object {
         name: "clipboard_item",
         caption: "Clipboard Item",
         description: "A piece of data on the system clipboard.",
-        attributes: &[143, 217, 1030, 1758],
+        attributes: &[143, 217, 1026, 1754],
     },
     Object {
         name: "cloud",
         caption: "Cloud",
         description: "The Cloud object describes the cloud computing environment where an event or finding originated. It provides comprehensive context about the cloud infrastructure, including the cloud service provider, account or subscription details, organizational structure, geographic regions, availability zones, and logical partitions.",
-        attributes: &[11, 221, 1221, 1357, 1381, 1436, 2221],
+        attributes: &[11, 221, 1217, 1353, 1377, 1432, 2217],
     },
     Object {
         name: "compliance",
         caption: "Compliance",
         description: "The Compliance object contains information about Industry and Regulatory Framework standards, controls and requirements or details about custom assessments utilized in a compliance evaluation. Standards define broad security frameworks, controls represent specific security requirements within those frameworks, and checks are the testable verification points used to determine if controls are properly implemented.",
         attributes: &[
-            99, 170, 191, 255, 256, 287, 289, 453, 1471, 1677, 1732, 1737, 1740, 1744, 1752,
+            99, 170, 191, 255, 256, 287, 289, 453, 1467, 1673, 1728, 1733, 1736, 1740, 1748,
         ],
     },
     Object {
         name: "container",
         caption: "Container",
         description: "The Container object describes an instance of a specific container. A container is a prepackaged, portable system image that runs isolated on an existing system using a container runtime like containerd.",
-        attributes: &[746, 794, 917, 1085, 1168, 1217, 1287, 1521, 1619, 1781, 1784, 1986],
+        attributes: &[744, 792, 915, 1081, 1164, 1213, 1283, 1517, 1615, 1777, 1780, 1982],
     },
     Object {
         name: "cpu_info",
         caption: "CPU Information",
         description: "The CPU information object contains attributes describing a physical CPU package installed in the device.",
-        attributes: &[291, 307, 308, 310, 1032, 1639, 2152],
+        attributes: &[291, 307, 308, 310, 1028, 1635, 2148],
     },
     Object {
         name: "cve",
         caption: "CVE",
         description: "The Common Vulnerabilities and Exposures (CVE) object represents publicly disclosed cybersecurity vulnerabilities defined in CVE Program catalog (CVE). There is one CVE Record for each vulnerability in the catalog.",
         attributes: &[
-            317, 345, 383, 385, 386, 387, 430, 600, 1037, 1054, 1347, 1426, 1447, 1820, 1919, 2045,
+            317, 345, 383, 385, 386, 387, 430, 600, 1033, 1050, 1343, 1422, 1443, 1816, 1915, 2041,
         ],
     },
     Object {
         name: "cvss",
         caption: "CVSS Score",
         description: "The Common Vulnerability Scoring System (CVSS) object provides a way to capture the principal characteristics of a vulnerability and produce a numerical score reflecting its severity.",
-        attributes: &[138, 428, 1028, 1233, 1589, 1664, 2145, 2160, 2191],
+        attributes: &[138, 428, 1024, 1229, 1585, 1660, 2141, 2156, 2187],
     },
     Object {
         name: "cwe",
         caption: "CWE",
         description: "The CWE object represents a weakness in a software system that can be exploited by a threat actor to perform an attack. The CWE object is based on the Common Weakness Enumeration (CWE) catalog.",
-        attributes: &[166, 1674, 2046],
+        attributes: &[166, 1670, 2042],
     },
     Object {
         name: "d3f_tactic",
         caption: "Defensive Tactic",
         description: "The Defensive Tactic object describes the tactic ID and/or name that is associated to an attack.",
-        attributes: &[1139, 1672, 2012, 2069],
+        attributes: &[1135, 1668, 2008, 2065],
     },
     Object {
         name: "d3f_technique",
         caption: "Defensive Technique",
         description: "The Defensive Technique object describes the leaf defensive technique ID and/or name associated to a countermeasure.",
-        attributes: &[1111, 1673, 2013, 2069],
+        attributes: &[1107, 1669, 2009, 2065],
     },
     Object {
         name: "d3fend",
         caption: "Defensive Countermeasure",
         description: "The Defensive Countermeasure object describes the tactic & technique associated with a countermeasure.",
-        attributes: &[388, 389, 2170],
+        attributes: &[388, 389, 2166],
     },
     Object {
         name: "data_classification",
         caption: "Data Classification",
         description: "The Data Classification object includes information about data classification levels and data category types.",
         attributes: &[
-            174, 176, 212, 270, 271, 488, 1295, 1613, 1666, 1730, 1746, 1751, 1836, 2005,
+            174, 176, 212, 270, 271, 488, 1291, 1609, 1662, 1726, 1742, 1747, 1832, 2001,
         ],
     },
     Object {
@@ -18129,7 +18097,7 @@ pub const OBJECTS: &[Object] = &[
         caption: "Data Security",
         description: "The Data Security object describes the characteristics, techniques and content of a Data Loss Prevention (DLP), Data Loss Detection (DLD), Data Classification, or similar tools' finding, alert, or detection mechanism(s).",
         attributes: &[
-            174, 176, 212, 270, 271, 405, 406, 460, 464, 465, 488, 1269, 1296, 1613, 1666, 1730, 1746, 1751, 1836, 2005,
+            174, 176, 212, 270, 271, 405, 406, 460, 464, 465, 488, 1265, 1292, 1609, 1662, 1726, 1742, 1747, 1832, 2001,
         ],
     },
     Object {
@@ -18137,7 +18105,7 @@ pub const OBJECTS: &[Object] = &[
         caption: "Database",
         description: "The database object is used for databases which are typically datastore services that contain an organized collection of structured and unstructured data or a types of data.",
         attributes: &[
-            324, 352, 403, 404, 442, 561, 738, 1039, 1056, 1086, 1621, 1871, 1955, 2011, 2069,
+            324, 352, 403, 404, 442, 561, 736, 1035, 1052, 1082, 1617, 1867, 1951, 2007, 2065,
         ],
     },
     Object {
@@ -18145,31 +18113,31 @@ pub const OBJECTS: &[Object] = &[
         caption: "Databucket",
         description: "The databucket object is a basic container that holds data, typically organized through the use of data partitions.",
         attributes: &[
-            52, 220, 325, 353, 378, 394, 403, 404, 443, 568, 648, 733, 739, 757, 826, 831, 838, 853, 919, 1040, 1057,
-            1087, 1166, 1237, 1434, 1477, 1622, 1788, 1872, 1956, 1970, 2057, 2069, 2189, 2225,
+            52, 220, 325, 353, 378, 394, 403, 404, 443, 568, 648, 731, 737, 755, 824, 829, 836, 851, 917, 1036, 1053,
+            1083, 1162, 1233, 1430, 1473, 1618, 1784, 1868, 1952, 1966, 2053, 2065, 2185, 2221,
         ],
     },
     Object {
         name: "dce_rpc",
         caption: "DCE/RPC",
         description: "The DCE/RPC, or Distributed Computing Environment/Remote Procedure Call, object describes the remote procedure call system for distributed computing environments.",
-        attributes: &[238, 239, 705, 1216, 1510],
+        attributes: &[238, 239, 703, 1212, 1506],
     },
     Object {
         name: "delegation",
         caption: "Delegation",
         description: "A durable authorization context that a principal issues to a delegate (e.g., an application, automated process, service account, or AI agent), representing delegated authority to act on the principal's behalf. Persists independently of any single trace, session, or workflow instance, so the same delegation can be referenced across many events. The principal and delegate themselves are identified by the other objects on the event carrying this delegation, such as actor.user or actor.iam_role for the principal and ai_operation.ai_agent for an AI delegate. The delegation object itself only carries the durable identifiers used to correlate across those events. Delegations reference a parent via parent_uid, forming a directed acyclic graph (DAG) of re-delegations that supports lineage queries across the chain of authority. This authority graph is distinct from any agent instantiation or orchestration hierarchy, which may or may not coincide with it.",
-        attributes: &[326, 354, 883, 1256, 2056],
+        attributes: &[326, 354, 881, 1252, 2052],
     },
     Object {
         name: "device",
         caption: "Device",
         description: "The Device object represents an addressable computer system or host, which is typically connected to a computer network and participates in the transmission or processing of data within the computer network.",
         attributes: &[
-            52, 133, 149, 150, 151, 282, 327, 355, 444, 508, 549, 681, 687, 740, 756, 780, 781, 788, 795, 797, 798,
-            812, 815, 816, 827, 831, 833, 846, 848, 852, 864, 868, 874, 932, 939, 976, 1005, 1006, 1015, 1035, 1045,
-            1062, 1084, 1167, 1171, 1218, 1225, 1228, 1238, 1274, 1301, 1439, 1503, 1504, 1506, 1768, 1770, 1874, 1949,
-            1969, 2014, 2061, 2069, 2158, 2200, 2202, 2223,
+            52, 133, 149, 150, 151, 282, 327, 355, 444, 508, 549, 681, 686, 738, 754, 778, 779, 786, 793, 795, 796,
+            810, 813, 814, 825, 829, 831, 844, 846, 850, 862, 866, 872, 930, 936, 972, 1001, 1002, 1011, 1031, 1041,
+            1058, 1080, 1163, 1167, 1214, 1221, 1224, 1234, 1270, 1297, 1435, 1499, 1500, 1502, 1764, 1766, 1870, 1945,
+            1965, 2010, 2057, 2065, 2154, 2196, 2198, 2219,
         ],
     },
     Object {
@@ -18177,152 +18145,152 @@ pub const OBJECTS: &[Object] = &[
         caption: "Device Hardware Info",
         description: "The Device Hardware Information object contains details and specifications of the physical components that make up a device. This information provides an overview of the hardware capabilities, configuration, and characteristics of the device.",
         attributes: &[
-            144, 145, 146, 190, 292, 307, 308, 309, 311, 312, 313, 314, 315, 459, 724, 725, 907, 1413, 1561, 2126, 2151,
+            144, 145, 146, 190, 292, 307, 308, 309, 311, 312, 313, 314, 315, 459, 722, 723, 905, 1409, 1557, 2122, 2147,
         ],
     },
     Object {
         name: "digital_signature",
         caption: "Digital Signature",
         description: "The Digital Signature object contains information about the cryptographic mechanism used to verify the authenticity, integrity, and origin of the file or application.",
-        attributes: &[67, 71, 185, 328, 356, 466, 483, 1566, 1568, 1710, 1717],
+        attributes: &[67, 71, 185, 328, 356, 466, 483, 1562, 1564, 1706, 1713],
     },
     Object {
         name: "discovery_details",
         caption: "Discovery Details",
         description: "The Discovery Details object describes results of a discovery task/job. Each result may be due to the violation of a rule associated with a policy and have multiple occurrences.",
-        attributes: &[297, 1207, 1208, 1514, 1893, 2130],
+        attributes: &[297, 1203, 1204, 1510, 1889, 2126],
     },
     Object {
         name: "display",
         caption: "Display",
         description: "The Display object contains information about the physical or virtual display connected to a computer system.",
-        attributes: &[231, 1283, 1284, 1285, 1527],
+        attributes: &[231, 1279, 1280, 1281, 1523],
     },
     Object {
         name: "dns_answer",
         caption: "DNS Answer",
         description: "The DNS Answer object represents a specific response provided by the Domain Name System (DNS) when querying for information about a domain or performing a DNS operation. It encapsulates the relevant details and data returned by the DNS server in response to a query.",
-        attributes: &[201, 698, 703, 763, 1247, 1422, 1856, 1898],
+        attributes: &[201, 696, 701, 761, 1243, 1418, 1852, 1894],
     },
     Object {
         name: "dns_query",
         caption: "DNS Query",
         description: "The DNS Query object represents a specific request made to the Domain Name System (DNS) to retrieve information about a domain or perform a DNS operation.",
-        attributes: &[202, 764, 1210, 1211, 1247, 1901],
+        attributes: &[202, 762, 1206, 1207, 1243, 1897],
     },
     Object {
         name: "dns_resource_record",
         caption: "DNS Resource Record",
         description: "The DNS Resource Record object represents a single resource record as defined in RFC 1035. It is used in the Answer, Authority, and Additional sections of a DNS message.",
-        attributes: &[201, 763, 1422, 1856, 1898],
+        attributes: &[201, 761, 1418, 1852, 1894],
     },
     Object {
         name: "dns_section",
         caption: "DNS Section",
         description: "The DNS Section object represents a DNS message section that carries supplementary resource records alongside an optional TSIG record. It is used for both the client Additional section (query_additional) and the server Additional section (response_additional) of a DNS message. A DNS message has at most one TSIG record, which authenticates the entire message.",
-        attributes: &[1425, 1855],
+        attributes: &[1421, 1851],
     },
     Object {
         name: "domain_contact",
         caption: "Domain Contact",
         description: "The contact information related to a domain registration, e.g., registrant, administrator, abuse, billing, or technical contact.",
-        attributes: &[556, 973, 1094, 1278, 1861, 1954, 2010],
+        attributes: &[556, 969, 1090, 1274, 1857, 1950, 2006],
     },
     Object {
         name: "download_info",
         caption: "Download Info",
         description: "The Download Info object contains metadata pertaining to a downloaded file.",
-        attributes: &[1431, 1646, 1659, 1875, 1925],
+        attributes: &[1427, 1642, 1655, 1871, 1921],
     },
     Object {
         name: "edge",
         caption: "Edge",
         description: "Represents a connection or relationship between two nodes in a graph.",
-        attributes: &[390, 836, 1092, 1451, 1631, 1793, 2040, 2069],
+        attributes: &[390, 834, 1088, 1447, 1627, 1789, 2036, 2065],
     },
     Object {
         name: "email",
         caption: "Email",
         description: "The Email object describes the email metadata such as sender, recipients, and direction, and can include embedded URLs and files.",
         attributes: &[
-            141, 142, 180, 181, 403, 404, 424, 425, 669, 711, 713, 714, 715, 766, 855, 1024, 1419, 1460, 1461, 1462,
-            1500, 1553, 1554, 1617, 1624, 1626, 1765, 1832, 1834, 2015, 2101, 2218,
+            141, 142, 180, 181, 403, 404, 424, 425, 669, 709, 711, 712, 713, 764, 853, 1020, 1415, 1456, 1457, 1458,
+            1496, 1549, 1550, 1613, 1620, 1622, 1761, 1828, 1830, 2011, 2097, 2214,
         ],
     },
     Object {
         name: "email_auth",
         caption: "Email Authentication",
         description: "The Email Authentication object describes the Sender Policy Framework (SPF), DomainKeys Identified Mail (DKIM) and Domain-based Message Authentication, Reporting and Conformance (DMARC) attributes of an email.",
-        attributes: &[494, 495, 496, 497, 498, 499, 1640],
+        attributes: &[494, 495, 496, 497, 498, 499, 1636],
     },
     Object {
         name: "encryption_details",
         caption: "Encryption Details",
         description: "Details about the encryption methodology utilized.",
-        attributes: &[68, 69, 903, 906, 1907],
+        attributes: &[68, 69, 901, 904, 1903],
     },
     Object {
         name: "endpoint",
         caption: "Endpoint",
         description: "The Endpoint object describes a physical or virtual device that connects to and exchanges information with a computer network. Some examples of endpoints are mobile devices, desktop computers, virtual machines, embedded devices, and servers. Internet-of-Things devices—like cameras, lighting, refrigerators, security systems, smart speakers, and thermostats—are also endpoints.",
         attributes: &[
-            52, 282, 507, 759, 780, 812, 815, 816, 822, 977, 1005, 1006, 1137, 1167, 1225, 1238, 1301, 1770, 1876,
-            1926, 2016, 2069, 2200, 2202, 2223,
+            52, 282, 507, 757, 778, 810, 813, 814, 820, 973, 1001, 1002, 1133, 1163, 1221, 1234, 1297, 1766, 1872,
+            1922, 2012, 2065, 2196, 2198, 2219,
         ],
     },
     Object {
         name: "endpoint_connection",
         caption: "Endpoint Connection",
         description: "The Endpoint Connection object contains information detailing a connection attempt to an endpoint.",
-        attributes: &[226, 1169],
+        attributes: &[226, 1165],
     },
     Object {
         name: "enrichment",
         caption: "Enrichment",
         description: "The Enrichment object provides inline enrichment data for specific attributes of interest within an event. It serves as a mechanism to enhance or supplement the information associated with the event by adding additional relevant details or context.",
-        attributes: &[329, 357, 402, 435, 1149, 1376, 1466, 1608, 1660, 1877, 2140],
+        attributes: &[329, 357, 402, 435, 1145, 1372, 1462, 1604, 1656, 1873, 2136],
     },
     Object {
         name: "environment_variable",
         caption: "Environment Variable",
         description: "An environment variable.",
-        attributes: &[1150, 2141],
+        attributes: &[1146, 2137],
     },
     Object {
         name: "epss",
         caption: "EPSS",
         description: "The Exploit Prediction Scoring System (EPSS) object describes the estimated probability a vulnerability will be exploited. EPSS is a community-driven effort to combine descriptive information about vulnerabilities (CVEs) with evidence of actual exploitation in-the-wild.",
-        attributes: &[339, 367, 1270, 1537, 2182],
+        attributes: &[339, 367, 1266, 1533, 2178],
     },
     Object {
         name: "evidences",
         caption: "Evidence Artifacts",
         description: "A collection of evidence artifacts associated to the activity/activities that triggered a security detection.",
         attributes: &[
-            32, 53, 85, 272, 281, 395, 410, 414, 467, 516, 551, 647, 769, 774, 887, 888, 1131, 1326, 1394, 1483, 1540,
-            1641, 1828, 2019, 2069, 2090, 2103, 2161, 2163,
+            32, 53, 85, 272, 281, 395, 410, 414, 467, 516, 551, 647, 767, 772, 885, 886, 1127, 1322, 1390, 1479, 1536,
+            1637, 1824, 2015, 2065, 2086, 2099, 2157, 2159,
         ],
     },
     Object {
         name: "extension",
         caption: "Schema Extension",
         description: "The OCSF Schema Extension object provides detailed information about the schema extension used to construct the event. The schema extensions are registered in the extensions.md file.",
-        attributes: &[1136, 1990, 2069, 2193],
+        attributes: &[1132, 1986, 2065, 2189],
     },
     Object {
         name: "feature",
         caption: "Feature",
         description: "The Feature object provides information about the software product feature that generated a specific event. It encompasses details related to the capabilities, components, user interface (UI) design, and performance upgrades associated with the feature.",
-        attributes: &[1114, 2020, 2069, 2185],
+        attributes: &[1110, 2016, 2065, 2181],
     },
     Object {
         name: "file",
         caption: "File",
         description: "The File object represents the metadata associated with a file stored in a computer system. It encompasses information about the file itself, including its attributes, properties, and organizational details.",
         attributes: &[
-            7, 8, 9, 112, 250, 270, 271, 330, 358, 374, 403, 404, 445, 511, 512, 513, 569, 637, 749, 802, 818, 834,
-            839, 854, 856, 870, 1029, 1047, 1064, 1071, 1076, 1239, 1253, 1262, 1346, 1548, 1609, 1610, 1618, 1755,
-            1786, 1878, 1950, 2021, 2069, 2088, 2093, 2175, 2201, 2220,
+            7, 8, 9, 112, 250, 270, 271, 330, 358, 374, 403, 404, 445, 511, 512, 513, 569, 637, 747, 800, 816, 832,
+            837, 852, 854, 868, 1025, 1043, 1060, 1067, 1072, 1235, 1249, 1258, 1342, 1544, 1605, 1606, 1614, 1751,
+            1782, 1874, 1946, 2017, 2065, 2084, 2089, 2171, 2197, 2216,
         ],
     },
     Object {
@@ -18330,7 +18298,7 @@ pub const OBJECTS: &[Object] = &[
         caption: "Finding",
         description: "The Finding object describes metadata related to a security finding generated by a security tool or system.",
         attributes: &[
-            331, 359, 449, 684, 690, 935, 942, 1048, 1065, 1340, 1350, 1448, 1456, 1661, 1771, 1826, 1968, 2052,
+            331, 359, 449, 683, 688, 932, 938, 1044, 1061, 1336, 1346, 1444, 1452, 1657, 1767, 1822, 1964, 2048,
         ],
     },
     Object {
@@ -18338,45 +18306,45 @@ pub const OBJECTS: &[Object] = &[
         caption: "Finding Information",
         description: "The Finding Information object describes metadata related to a security finding generated by a security tool or system.",
         attributes: &[
-            76, 104, 108, 331, 359, 408, 449, 682, 688, 912, 933, 940, 1048, 1065, 1340, 1350, 1443, 1448, 1449, 1661,
-            1791, 1823, 1847, 1968, 2052, 2068,
+            76, 104, 108, 331, 359, 408, 449, 682, 687, 910, 931, 937, 1044, 1061, 1336, 1346, 1439, 1444, 1445, 1657,
+            1787, 1819, 1843, 1964, 2048, 2064,
         ],
     },
     Object {
         name: "fingerprint",
         caption: "Fingerprint",
         description: "The Fingerprint object provides detailed information about a fingerprint, which is a compact representation of data used to identify a longer piece of information, such as a public key, file content, or application implementation. It contains the algorithm or scheme and value of the fingerprint, enabling efficient and reliable identification of the associated data.",
-        attributes: &[64, 70, 563, 566, 1567, 1569, 2129],
+        attributes: &[64, 70, 563, 566, 1563, 1565, 2125],
     },
     Object {
         name: "firewall_rule",
         caption: "Firewall Rule",
         description: "The Firewall Rule object represents a specific rule within a firewall policy or event. It contains information about a rule's configuration, properties, and associated actions that define how network traffic is handled by the firewall.",
-        attributes: &[175, 258, 450, 536, 1012, 1013, 1123, 1415, 1555, 1891, 2032, 2069, 2177],
+        attributes: &[175, 258, 450, 536, 1008, 1009, 1119, 1411, 1551, 1887, 2028, 2065, 2173],
     },
     Object {
         name: "function_invocation",
         caption: "Function Invocation",
         description: "The Function Invocation object provides details regarding the invocation of a function.",
-        attributes: &[603, 1252, 1501],
+        attributes: &[603, 1248, 1497],
     },
     Object {
         name: "gpu_info",
         caption: "GPU Information",
         description: "The GPU information object contains attributes describing graphical processing hardware.",
-        attributes: &[157, 158, 291, 1033, 2153, 2203, 2204, 2205],
+        attributes: &[157, 158, 291, 1029, 2149, 2199, 2200, 2201],
     },
     Object {
         name: "graph",
         caption: "Graph",
         description: "A graph data structure representation with nodes and edges.",
-        attributes: &[455, 547, 835, 1089, 1179, 1400, 1401, 1879, 2041, 2069],
+        attributes: &[455, 547, 833, 1085, 1175, 1396, 1397, 1875, 2037, 2065],
     },
     Object {
         name: "group",
         caption: "Group",
         description: "The Group object represents a collection or association of entities, such as users, policies, or devices. It serves as a logical grouping mechanism to organize and manage entities with similar characteristics or permissions within a system or organization, including but not limited to purposes of access control.",
-        attributes: &[456, 505, 1090, 1324, 1909, 2022, 2065, 2069],
+        attributes: &[456, 505, 1086, 1320, 1905, 2018, 2061, 2065],
     },
     Object {
         name: "hassh",
@@ -18388,91 +18356,91 @@ pub const OBJECTS: &[Object] = &[
         name: "http_cookie",
         caption: "HTTP Cookie",
         description: "The HTTP Cookie object, also known as a web cookie or browser cookie, contains details and values pertaining to a small piece of data that a server sends to a user's web browser. This data is then stored by the browser and sent back to the server with subsequent requests, allowing the server to remember and track certain information about the user's browsing session or preferences.",
-        attributes: &[503, 619, 626, 768, 844, 862, 1146, 1267, 1522, 1547, 2133],
+        attributes: &[503, 619, 626, 766, 842, 860, 1142, 1263, 1518, 1543, 2129],
     },
     Object {
         name: "http_header",
         caption: "HTTP Header",
         description: "The HTTP Header object represents the headers sent in an HTTP request or response. HTTP headers are key-value pairs that convey additional information about the HTTP message, including details about the content, caching, authentication, encoding, and other aspects of the communication.",
-        attributes: &[1148, 2139],
+        attributes: &[1144, 2135],
     },
     Object {
         name: "http_request",
         caption: "HTTP Request",
         description: "The HTTP Request object represents the attributes of a request made to a web server. It encapsulates the details and metadata associated with an HTTP request, including the request method, headers, URL, query parameters, body content, and other relevant information.",
-        attributes: &[98, 147, 766, 767, 962, 1432, 2023, 2091, 2120, 2171, 2217],
+        attributes: &[98, 147, 764, 765, 958, 1428, 2019, 2087, 2116, 2167, 2213],
     },
     Object {
         name: "http_response",
         caption: "HTTP Response",
         description: "The HTTP Response object contains detailed information about the response sent from a web server to the requester. It encompasses attributes and metadata that describe the response status, headers, body content, and other relevant information.",
-        attributes: &[148, 229, 284, 766, 953, 963, 1017, 1729],
+        attributes: &[148, 229, 284, 764, 949, 959, 1013, 1725],
     },
     Object {
         name: "iam_role",
         caption: "IAM Role",
         description: "The IAM Role object describes permission characteristics (or privileges) associated with a user or group of users as security principals against one or more resources. In some cases only the name or ID of the role is known hence other attributes are optional. In some systems a user or group of users can have multiple roles, imparting the union of privileges to the principal. In some systems the role can serve as a temporary security principal without its own credentials on behalf of the actual security principal.",
-        attributes: &[12, 1135, 1290, 1321, 1356, 1491, 1583, 2038, 2066, 2069],
+        attributes: &[12, 1131, 1286, 1317, 1352, 1487, 1579, 2034, 2062, 2065],
     },
     Object {
         name: "identity_activity_metrics",
         caption: "Identity Activity Metrics",
         description: "The Identity Activity Metrics object captures usage patterns, authentication activity, credential usage and other metrics for identities across cloud and on-premises environments. Example identities include AWS IAM Users, Roles, Azure AD Principals, GCP Service Accounts, on-premises Active Directory accounts.",
-        attributes: &[686, 692, 924, 925, 937, 944, 1258, 1259, 1355],
+        attributes: &[685, 690, 922, 923, 934, 940, 1254, 1255, 1351],
     },
     Object {
         name: "idp",
         caption: "Identity Provider",
         description: "The Identity Provider object contains detailed information about a provider responsible for creating, maintaining, and managing identity information while offering authentication services to applications. An Identity Provider (IdP) serves as a trusted authority that verifies the identity of users and issues authentication tokens or assertions to enable secure access to applications or services.",
         attributes: &[
-            115, 509, 674, 744, 881, 1097, 1369, 1532, 1675, 1709, 1718, 1797, 1999, 2069, 2095,
+            115, 509, 674, 742, 879, 1093, 1365, 1528, 1671, 1705, 1714, 1793, 1995, 2065, 2091,
         ],
     },
     Object {
         name: "image",
         caption: "Image",
         description: "The Image object provides a description of a specific Virtual Machine (VM) or Container image.",
-        attributes: &[918, 1093, 1263, 1780, 1787, 2054, 2069],
+        attributes: &[916, 1089, 1259, 1776, 1783, 2050, 2065],
     },
     Object {
         name: "ja4_fingerprint",
         caption: "JA4+ Fingerprint",
         description: "The JA4+ fingerprint object provides detailed fingerprint information about various aspects of network traffic which is both machine and human readable.",
-        attributes: &[1543, 1544, 1545, 1546, 1862, 1951, 2134],
+        attributes: &[1539, 1540, 1541, 1542, 1858, 1947, 2130],
     },
     Object {
         name: "job",
         caption: "Job",
         description: "The Job object provides information about a scheduled job or task, including its name, command line, and state. It encompasses attributes that describe the properties and status of the scheduled job.",
         attributes: &[
-            224, 332, 360, 447, 657, 892, 894, 928, 930, 1115, 1176, 1177, 1517, 1519, 1882, 1927, 2037, 2108,
+            224, 332, 360, 447, 657, 890, 892, 926, 928, 1111, 1172, 1173, 1513, 1515, 1878, 1923, 2033, 2104,
         ],
     },
     Object {
         name: "job_action",
         caption: "Job Action",
         description: "The action that will be performed by the job when certain conditions are met.",
-        attributes: &[225, 234, 660, 1360, 1880, 1952, 2215],
+        attributes: &[225, 234, 660, 1356, 1876, 1948, 2211],
     },
     Object {
         name: "job_trigger",
         caption: "Job Trigger",
         description: "The condition or event that, when met, will initiate the job to perform specified actions.",
-        attributes: &[609, 928, 930, 989, 1176, 1177, 1361, 1881, 1953, 2112],
+        attributes: &[609, 926, 928, 985, 1172, 1173, 1357, 1877, 1949, 2108],
     },
     Object {
         name: "kb_article",
         caption: "KB Article",
         description: "The KB Article object contains metadata that describes the patch or update.",
         attributes: &[
-            134, 156, 208, 318, 346, 808, 810, 867, 1227, 1343, 1593, 1616, 1662, 1824, 1995,
+            134, 156, 208, 318, 346, 806, 808, 865, 1223, 1339, 1589, 1612, 1658, 1820, 1991,
         ],
     },
     Object {
         name: "kernel",
         caption: "Kernel Resource",
         description: "The Kernel Resource object provides information about a specific kernel resource, including its name and type. It describes essential attributes associated with a resource managed by the kernel of an operating system.",
-        attributes: &[870, 1151, 1261, 1774, 1910, 1961],
+        attributes: &[868, 1147, 1257, 1770, 1906, 1957],
     },
     Object {
         name: "kernel_driver",
@@ -18484,41 +18452,41 @@ pub const OBJECTS: &[Object] = &[
         name: "key_value_object",
         caption: "Key:Value object",
         description: "A generic object allowing to define a {key:value} pair.",
-        attributes: &[1152, 2131, 2143],
+        attributes: &[1148, 2127, 2139],
     },
     Object {
         name: "keyboard_info",
         caption: "Keyboard Information",
         description: "The Keyboard Information object contains details and attributes related to a computer or device keyboard. It encompasses information that describes the characteristics, capabilities, and configuration of the keyboard.",
-        attributes: &[718, 796, 908, 909, 910],
+        attributes: &[716, 794, 906, 907, 908],
     },
     Object {
         name: "kill_chain_phase",
         caption: "Kill Chain Phase",
         description: "The Kill Chain Phase object represents a single phase of a cyber attack, including the initial reconnaissance and planning stages up to the final objective of the attacker. It provides a detailed description of each phase and its associated activities within the broader context of a cyber attack.",
-        attributes: &[1276, 1277],
+        attributes: &[1272, 1273],
     },
     Object {
         name: "ldap_person",
         caption: "LDAP Person",
         description: "The additional LDAP attributes that describe a person.",
         attributes: &[
-            294, 341, 369, 422, 423, 426, 490, 557, 562, 723, 751, 752, 893, 914, 926, 927, 956, 957, 960, 961, 975,
-            1011, 1053, 1070, 1209, 1281, 1772, 1790,
+            294, 341, 369, 422, 423, 426, 490, 557, 562, 721, 749, 750, 891, 912, 924, 925, 952, 953, 956, 957, 971,
+            1007, 1049, 1066, 1205, 1277, 1768, 1786,
         ],
     },
     Object {
         name: "load_balancer",
         caption: "Load Balancer",
         description: "The load balancer object describes the load balancer entity and contains additional information regarding the distribution of traffic across a network.",
-        attributes: &[206, 228, 523, 594, 607, 824, 1019, 1027, 1116, 1743, 1996, 2069],
+        attributes: &[206, 228, 523, 594, 607, 822, 1015, 1023, 1112, 1739, 1992, 2065],
     },
     Object {
         name: "location",
         caption: "Geo Location",
         description: "The Geo Location object describes a geographical location, usually associated with an IP address.",
         attributes: &[
-            49, 200, 286, 290, 303, 446, 720, 721, 722, 753, 850, 878, 952, 1003, 1307, 1310, 1379, 1433,
+            49, 200, 286, 290, 303, 446, 718, 719, 720, 751, 848, 876, 948, 999, 1303, 1306, 1375, 1429,
         ],
     },
     Object {
@@ -18526,27 +18494,27 @@ pub const OBJECTS: &[Object] = &[
         caption: "Logger",
         description: "The Logger object represents the device and product where events are stored with times for receipt and transmission. This may be at the source device where the event occurred, a remote scanning device, intermediate hops, or the ultimate destination.",
         attributes: &[
-            475, 611, 873, 980, 981, 983, 987, 992, 993, 995, 1117, 1344, 1852, 1853, 2024, 2069, 2075, 2186,
+            475, 611, 871, 976, 977, 979, 983, 988, 989, 991, 1113, 1340, 1848, 1849, 2020, 2065, 2071, 2182,
         ],
     },
     Object {
         name: "long_string",
         caption: "Long String",
         description: "This object is a used to capture strings which may be truncated by a security product due to their length.",
-        attributes: &[872, 2076, 2138],
+        attributes: &[870, 2072, 2134],
     },
     Object {
         name: "malware",
         caption: "Malware",
         description: "The Malware object describes the classification of known malicious software, which is intentionally designed to cause damage to a computer, server, client, or computer network.",
-        attributes: &[210, 211, 382, 670, 1095, 1186, 1260, 1378, 1594, 1598, 1978, 2069],
+        attributes: &[210, 211, 382, 670, 1091, 1182, 1256, 1374, 1590, 1594, 1974, 2065],
     },
     Object {
         name: "malware_scan_info",
         caption: "Malware Scan Info",
         description: "The malware scan information object describes characteristics, metadata of a malware scanning job.",
         attributes: &[
-            582, 593, 1083, 1184, 1187, 1194, 1623, 1691, 1702, 1902, 1959, 1985, 2069, 2070,
+            582, 593, 1079, 1180, 1183, 1190, 1619, 1687, 1698, 1898, 1955, 1981, 2065, 2066,
         ],
     },
     Object {
@@ -18554,70 +18522,70 @@ pub const OBJECTS: &[Object] = &[
         caption: "Managed Entity",
         description: "The Managed Entity object describes the type and version of an entity, such as a user, device, or policy. For types in the type_id enum list, an associated attribute should be populated. If the type of entity is not in the type_id list, information can be put into the data attribute, type_id should be 'Other' and the type attribute should label the entity type.",
         attributes: &[
-            401, 468, 552, 730, 974, 1118, 1220, 1291, 1884, 1945, 1987, 2069, 2110, 2187,
+            401, 468, 552, 728, 970, 1114, 1216, 1287, 1880, 1941, 1983, 2065, 2106, 2183,
         ],
     },
     Object {
         name: "message_context",
         caption: "Message Context",
         description: "Communication context for AI system interactions including protocols, roles, clients, and session information for MCP and other AI communication systems.",
-        attributes: &[59, 60, 95, 251, 1129, 1358, 1359, 1497, 1575, 1840, 2026, 2069],
+        attributes: &[59, 60, 95, 251, 1125, 1354, 1355, 1493, 1571, 1836, 2022, 2065],
     },
     Object {
         name: "metadata",
         caption: "Metadata",
         description: "The Metadata object describes the metadata associated with the event.",
         attributes: &[
-            293, 403, 404, 418, 608, 638, 640, 873, 921, 979, 981, 982, 986, 988, 992, 994, 996, 997, 1046, 1063, 1223,
-            1224, 1337, 1338, 1349, 1352, 1463, 1559, 1630, 1785, 1799, 1839, 1851, 1852, 1853, 1908, 1973, 2075, 2198,
+            293, 403, 404, 418, 608, 638, 640, 871, 919, 975, 977, 978, 982, 984, 988, 990, 992, 993, 1042, 1059, 1219,
+            1220, 1333, 1334, 1345, 1348, 1459, 1555, 1626, 1781, 1795, 1835, 1847, 1848, 1849, 1904, 1969, 2071, 2194,
         ],
     },
     Object {
         name: "metric",
         caption: "Metric",
         description: "The Metric object defines a simple name/value pair entity for a metric.",
-        attributes: &[1153, 2142],
+        attributes: &[1149, 2138],
     },
     Object {
         name: "mitigation",
         caption: "MITRE Mitigation",
         description: "The MITRE Mitigation object describes the ATT&CK® or ATLAS™ Mitigation ID and/or name that is associated to an attack.",
-        attributes: &[301, 1081, 1668, 1982, 2069],
+        attributes: &[301, 1077, 1664, 1978, 2065],
     },
     Object {
         name: "module",
         caption: "Module",
         description: "The Module object describes the attributes of a module.",
-        attributes: &[137, 658, 717, 719, 969, 970, 1678, 1885],
+        attributes: &[137, 658, 715, 717, 965, 966, 1674, 1881],
     },
     Object {
         name: "network_connection_info",
         caption: "Network Connection Information",
         description: "The Network Connection Information object describes characteristics of an OSI Transport Layer communication, including TCP and UDP.",
-        attributes: &[152, 153, 249, 485, 487, 697, 1362, 1370, 1371, 1374, 1581, 1794, 2009],
+        attributes: &[152, 153, 249, 485, 487, 695, 1358, 1366, 1367, 1370, 1577, 1790, 2005],
     },
     Object {
         name: "network_endpoint",
         caption: "Network Endpoint",
         description: "The Network Endpoint object describes characteristics of a network endpoint. These can be a source or destination of a network connection.",
         attributes: &[
-            52, 131, 282, 507, 678, 759, 780, 812, 815, 816, 817, 822, 878, 879, 977, 1005, 1006, 1137, 1167, 1174,
-            1175, 1225, 1238, 1301, 1304, 1385, 1770, 1773, 1886, 1928, 2016, 2069, 2200, 2202, 2223,
+            52, 131, 282, 507, 678, 757, 778, 810, 813, 814, 815, 820, 876, 877, 973, 1001, 1002, 1133, 1163, 1170,
+            1171, 1221, 1234, 1297, 1300, 1381, 1766, 1769, 1882, 1924, 2012, 2065, 2196, 2198, 2219,
         ],
     },
     Object {
         name: "network_interface",
         caption: "Network Interface",
         description: "The Network Interface object describes the type and associated attributes of a physical or virtual network interface.",
-        attributes: &[761, 821, 1004, 1119, 1165, 1212, 1769, 1899, 1929, 1997, 2069],
+        attributes: &[759, 819, 1000, 1115, 1161, 1208, 1765, 1895, 1925, 1993, 2065],
     },
     Object {
         name: "network_proxy",
         caption: "Network Proxy Endpoint",
         description: "The network proxy endpoint object describes a proxy server, which acts as an intermediary between a client requesting a resource and the server providing that resource.",
         attributes: &[
-            52, 131, 282, 507, 678, 759, 780, 812, 815, 816, 817, 822, 878, 879, 977, 1005, 1006, 1137, 1167, 1174,
-            1175, 1225, 1238, 1301, 1304, 1385, 1770, 1773, 1886, 1928, 2016, 2069, 2200, 2202, 2223,
+            52, 131, 282, 507, 678, 757, 778, 810, 813, 814, 815, 820, 876, 877, 973, 1001, 1002, 1133, 1163, 1170,
+            1171, 1221, 1234, 1297, 1300, 1381, 1766, 1769, 1882, 1924, 2012, 2065, 2196, 2198, 2219,
         ],
     },
     Object {
@@ -18625,20 +18593,20 @@ pub const OBJECTS: &[Object] = &[
         caption: "Network Traffic",
         description: "The Network Traffic object describes characteristics of network traffic over a time period. The metrics represent network data transferred between source and destination during an observation window.",
         attributes: &[
-            160, 161, 162, 163, 192, 193, 194, 575, 585, 1248, 1249, 1250, 1684, 1694, 1815,
+            160, 161, 162, 163, 192, 193, 194, 575, 585, 1244, 1245, 1246, 1680, 1690, 1811,
         ],
     },
     Object {
         name: "node",
         caption: "Node",
         description: "Represents a node or a vertex in a graph structure.",
-        attributes: &[391, 434, 1078, 1860, 2044],
+        attributes: &[391, 434, 1074, 1856, 2040],
     },
     Object {
         name: "note",
         caption: "Note",
         description: "Represents a note or a comment in the system. Notes can be used to provide additional context, explanations, or observations related to an event, object, or any other entity in the system. They can be created and modified by users to capture important information that may not be directly represented in the structured data.",
-        attributes: &[248, 333, 361, 1049, 1066, 1240, 1818, 2027],
+        attributes: &[248, 333, 361, 1045, 1062, 1236, 1814, 2023],
     },
     Object {
         name: "object",
@@ -18650,31 +18618,31 @@ pub const OBJECTS: &[Object] = &[
         name: "observable",
         caption: "Observable",
         description: "The observable object is a pivot element that contains related information found in many places in the event.",
-        attributes: &[610, 1088, 1464, 1888, 1958, 1964, 2132],
+        attributes: &[610, 1084, 1460, 1884, 1954, 1960, 2128],
     },
     Object {
         name: "observation",
         caption: "Observation",
         description: "A record of an observed value or event that captures the timing and frequency of its occurrence. Used to track when values/events were first detected, last detected, and their total occurrence count.",
-        attributes: &[296, 1816, 2137],
+        attributes: &[296, 1812, 2133],
     },
     Object {
         name: "occurrence_details",
         caption: "Occurrence Details",
         description: "Details about where in the target entity, specified information was discovered. Only the attributes, relevant to the target entity type should be populated.",
-        attributes: &[182, 232, 233, 572, 895, 1251, 1424, 1509, 1681],
+        attributes: &[182, 232, 233, 572, 893, 1247, 1420, 1505, 1677],
     },
     Object {
         name: "organization",
         caption: "Organization",
         description: "The Organization object describes characteristics of an organization or company and its division if any. Additionally, it also describes cloud and Software-as-a-Service (SaaS) logical hierarchies such as AWS Organizations, Google Cloud Organizations, Oracle Cloud Tenancies, and similar constructs.",
-        attributes: &[1120, 1231, 1232, 2028, 2069],
+        attributes: &[1116, 1227, 1228, 2024, 2065],
     },
     Object {
         name: "os",
         caption: "Operating System (OS)",
         description: "The Operating System (OS) object describes characteristics of an OS, such as Linux or Windows.",
-        attributes: &[154, 304, 305, 309, 548, 902, 923, 1157, 1634, 1635, 1911, 1960, 2183],
+        attributes: &[154, 304, 305, 309, 548, 900, 921, 1153, 1630, 1631, 1907, 1956, 2179],
     },
     Object {
         name: "osint",
@@ -18682,8 +18650,8 @@ pub const OBJECTS: &[Object] = &[
         description: "The OSINT (Open Source Intelligence) object contains details related to an indicator such as the indicator itself, related indicators, geolocation, registrar information, subdomains, analyst commentary, and other contextual information. This information can be used to further enrich a detection or finding by providing decisioning support to other analysts and engineers.",
         attributes: &[
             82, 109, 130, 164, 168, 245, 261, 267, 340, 368, 373, 433, 461, 462, 463, 550, 558, 618, 625, 641, 645,
-            819, 911, 913, 972, 1007, 1052, 1069, 1096, 1430, 1441, 1465, 1505, 1539, 1588, 1600, 1611, 1665, 1762,
-            1766, 1803, 1827, 1863, 1946, 1993, 2086, 2087, 2135, 2159, 2206, 2213,
+            817, 909, 911, 968, 1003, 1048, 1065, 1092, 1426, 1437, 1461, 1501, 1535, 1584, 1596, 1607, 1661, 1758,
+            1762, 1799, 1823, 1859, 1942, 1989, 2082, 2083, 2131, 2155, 2202, 2209,
         ],
     },
     Object {
@@ -18691,347 +18659,347 @@ pub const OBJECTS: &[Object] = &[
         caption: "Software Package",
         description: "The Software Package object describes details about a software package.",
         attributes: &[
-            97, 305, 599, 747, 965, 966, 1160, 1243, 1244, 1392, 1455, 1663, 1904, 1944, 1977, 2156, 2195,
+            97, 305, 599, 745, 961, 962, 1156, 1239, 1240, 1388, 1451, 1659, 1900, 1940, 1973, 2152, 2191,
         ],
     },
     Object {
         name: "packet",
         caption: "Packet",
         description: "The Packet object represents a single captured network packet and its associated metadata. It describes where the packet came from, how it is stored or encoded, and how it can be located within a capture file or stream. This object does not interpret protocol content; it only represents the captured packet data and its positioning information.",
-        attributes: &[564, 565, 573, 708, 709, 1560, 1629, 1632, 1682, 2136],
+        attributes: &[564, 565, 573, 706, 707, 1556, 1625, 1628, 1678, 2132],
     },
     Object {
         name: "parameter",
         caption: "Parameter",
         description: "The Parameter object provides details regarding a parameter of a a function.",
-        attributes: &[1132, 1306, 1308],
+        attributes: &[1128, 1302, 1304],
     },
     Object {
         name: "peripheral_device",
         caption: "Peripheral Device",
         description: "The peripheral device object describes the properties of external, connectable, and detachable hardware.",
-        attributes: &[203, 1036, 1154, 1562, 1864, 1936, 2029, 2069, 2147, 2157],
+        attributes: &[203, 1032, 1150, 1558, 1860, 1932, 2025, 2065, 2143, 2153],
     },
     Object {
         name: "permission_analysis_result",
         caption: "Permission Analysis Result",
         description: "The Permission Analysis object describes analysis results of permissions, policies directly associated with an identity (user, role, or service account). This evaluates what permissions an identity has been granted through attached policies, which privileges are actively used versus unused, and identifies potential over-privileged access. Use this for identity-centric security assessments such as privilege audits, dormant permission discovery, and least-privilege compliance analysis.",
-        attributes: &[78, 260, 726, 1292, 1579, 1838, 2078, 2079],
+        attributes: &[78, 260, 724, 1288, 1575, 1834, 2074, 2075],
     },
     Object {
         name: "policy",
         caption: "Policy",
         description: "The Policy object describes the policies that are applicable. Policy attributes provide traceability to the operational state of the security product at the time that the event was captured, facilitating forensics, troubleshooting, and policy tuning/adjustments.",
-        attributes: &[392, 448, 734, 830, 1133, 1889, 1980, 2069, 2176],
+        attributes: &[392, 448, 732, 828, 1129, 1885, 1976, 2065, 2172],
     },
     Object {
         name: "port_info",
         caption: "Port Information",
         description: "The Port Information object describes a port and its associated protocol details.",
-        attributes: &[1305, 1362, 1370],
+        attributes: &[1301, 1358, 1366],
     },
     Object {
         name: "prev_event",
         caption: "Previous Event",
         description: "The Previous Event object references the previous event in a chain of events. Refer to specific usage.",
-        attributes: &[675, 1965, 2049],
+        attributes: &[675, 1961, 2045],
     },
     Object {
         name: "privilege_attack_info",
         caption: "Privilege Attack Info",
         description: "The Privilege Attack Info object groups privileges by the potential attack they could enable. It maps specific privileges to MITRE ATT&CK techniques, helping identify security risks associated with granted permissions.",
-        attributes: &[103, 1318],
+        attributes: &[103, 1314],
     },
     Object {
         name: "privilege_info",
         caption: "Privilege Info",
         description: "The Privilege Info object describes information about a specific privilege, action, or permission. It captures the privilege name, type, usage status, and when it was last used.",
-        attributes: &[875, 947, 950, 1155, 1918, 1939],
+        attributes: &[873, 943, 946, 1151, 1914, 1935],
     },
     Object {
         name: "process",
         caption: "Process",
         description: "The Process object describes a running instance of a launched program.",
         attributes: &[
-            55, 79, 223, 282, 306, 334, 362, 598, 659, 754, 813, 814, 967, 971, 1077, 1167, 1254, 1268, 1286, 1391,
-            1523, 1585, 1801, 1802, 1806, 1979, 2069, 2113, 2214, 2219,
+            55, 79, 223, 282, 306, 334, 362, 598, 659, 752, 811, 812, 963, 967, 1073, 1163, 1250, 1264, 1282, 1387,
+            1519, 1581, 1797, 1798, 1802, 1975, 2065, 2109, 2210, 2215,
         ],
     },
     Object {
         name: "process_entity",
         caption: "Process Entity",
         description: "The Process Entity object provides critical fields for referencing a process.",
-        attributes: &[223, 306, 334, 362, 1077, 1268, 1286, 1979, 2069],
+        attributes: &[223, 306, 334, 362, 1073, 1264, 1282, 1975, 2065],
     },
     Object {
         name: "product",
         caption: "Product",
         description: "The Product object describes characteristics of a software product.",
-        attributes: &[305, 403, 404, 644, 923, 1121, 1266, 2030, 2069, 2096, 2154, 2188],
+        attributes: &[305, 403, 404, 644, 921, 1117, 1262, 2026, 2065, 2092, 2150, 2184],
     },
     Object {
         name: "programmatic_credential",
         caption: "Programmatic Credential",
         description: "The Programmatic Credential object describes service-specific credentials used for direct API access and system integration. These credentials are typically issued by individual services or platforms for accessing their APIs and resources, focusing on credential lifecycle management and usage tracking. Examples include API keys, service account keys, client certificates, and vendor-specific access tokens.",
-        attributes: &[948, 951, 1917, 2050],
+        attributes: &[944, 947, 1913, 2046],
     },
     Object {
         name: "query_evidence",
         caption: "Query Evidence",
         description: "The specific resulting evidence information that was queried or discovered. When mapping raw telemetry data users should select the appropriate child object that best matches the evidence type as defined by query_type_id.",
         attributes: &[
-            273, 656, 706, 729, 889, 899, 1072, 1170, 1271, 1329, 1410, 1411, 1577, 1580, 1705, 1714, 1795, 2111, 2122,
+            273, 656, 704, 727, 887, 897, 1068, 1166, 1267, 1325, 1406, 1407, 1573, 1576, 1701, 1710, 1791, 2107, 2118,
         ],
     },
     Object {
         name: "query_info",
         caption: "Query Information",
         description: "The query info object holds information related to data access within a datastore. To access, manipulate, delete, or retrieve data from a datastore, a query must be written using a specific syntax.",
-        attributes: &[159, 400, 1134, 1405, 1407, 1409, 2031, 2069],
+        attributes: &[159, 400, 1130, 1401, 1403, 1405, 2027, 2065],
     },
     Object {
         name: "related_event",
         caption: "Related Event/Finding",
         description: "The Related Event object describes an event or another finding related to a finding. It may or may not be an OCSF event.",
         attributes: &[
-            105, 300, 335, 363, 431, 683, 689, 912, 934, 941, 1050, 1067, 1196, 1341, 1351, 1590, 1597, 1728, 1792,
-            1822, 1848, 1912, 1963, 1966, 2051,
+            105, 300, 335, 363, 431, 682, 687, 910, 931, 937, 1046, 1063, 1192, 1337, 1347, 1586, 1593, 1724, 1788,
+            1818, 1844, 1908, 1959, 1962, 2047,
         ],
     },
     Object {
         name: "remediation",
         caption: "Remediation",
         description: "The Remediation object describes the recommended remediation steps to address identified issue(s).",
-        attributes: &[197, 458, 896, 897, 1429],
+        attributes: &[197, 458, 894, 895, 1425],
     },
     Object {
         name: "reporter",
         caption: "Reporter",
         description: "The entity from which an event or finding was reported.",
-        attributes: &[762, 823, 1112, 1222, 2017, 2069],
+        attributes: &[760, 821, 1108, 1218, 2013, 2065],
     },
     Object {
         name: "reputation",
         caption: "Reputation",
         description: "The Reputation object describes the reputation/risk score of an entity (e.g. device, user, domain).",
-        attributes: &[139, 1380, 1536, 1538],
+        attributes: &[139, 1376, 1532, 1534],
     },
     Object {
         name: "request",
         caption: "Request Elements",
         description: "The Request Elements object describes characteristics of an API request.",
-        attributes: &[283, 397, 700, 2055],
+        attributes: &[283, 397, 698, 2051],
     },
     Object {
         name: "resource_details",
         caption: "Resource Details",
         description: "The Resource Details object describes details about a resource (including a user) affected by or related to the activity or finding. The name and/or uid should correspond to the resource for which the details pertain. Use role_id to characterize the role of the resource.",
         attributes: &[
-            52, 222, 336, 364, 376, 379, 394, 403, 404, 472, 733, 760, 825, 831, 919, 1051, 1068, 1122, 1166, 1235,
-            1375, 1437, 1478, 1507, 1508, 1788, 1890, 1971, 2057, 2069, 2107, 2189, 2222,
+            52, 222, 336, 364, 376, 379, 394, 403, 404, 472, 731, 758, 823, 829, 917, 1047, 1064, 1118, 1162, 1231,
+            1371, 1433, 1474, 1503, 1504, 1784, 1886, 1967, 2053, 2065, 2103, 2185, 2218,
         ],
     },
     Object {
         name: "response",
         caption: "Response Elements",
         description: "The Response Elements object describes characteristics of an API response.",
-        attributes: &[227, 283, 398, 601, 605, 701, 1021],
+        attributes: &[227, 283, 398, 601, 605, 699, 1017],
     },
     Object {
         name: "rpc_interface",
         caption: "RPC Interface",
         description: "The RPC Interface represents the remote procedure call interface used in the DCE/RPC session.",
-        attributes: &[16, 17, 2128, 2197],
+        attributes: &[16, 17, 2124, 2193],
     },
     Object {
         name: "rule",
         caption: "Rule",
         description: "The Rule object describes characteristics of a rule associated with a policy or an event.",
-        attributes: &[175, 450, 1123, 1891, 2032, 2069, 2177],
+        attributes: &[175, 450, 1119, 1887, 2028, 2065, 2173],
     },
     Object {
         name: "san",
         caption: "Subject Alternative Name",
         description: "The Subject Alternative name (SAN) object describes a SAN secured by a digital certificate",
-        attributes: &[1142, 1922],
+        attributes: &[1138, 1918],
     },
     Object {
         name: "sbom",
         caption: "Software Bill of Materials",
         description: "The Software Bill of Materials object describes characteristics of a generated SBOM.",
-        attributes: &[322, 350, 1242, 1342, 1628, 1896, 1942, 1976, 2180],
+        attributes: &[322, 350, 1238, 1338, 1624, 1892, 1938, 1972, 2176],
     },
     Object {
         name: "scan",
         caption: "Scan",
         description: "The Scan object describes characteristics of a proactive scan.",
-        attributes: &[1083, 1902, 1959, 1985, 2069],
+        attributes: &[1079, 1898, 1955, 1981, 2065],
     },
     Object {
         name: "scim",
         caption: "SCIM",
         description: "The System for Cross-domain Identity Management (SCIM) Configuration object provides a structured set of attributes related to SCIM protocols used for identity provisioning and management across cloud-based platforms. It standardizes user and group provisioning details, enabling identity synchronization and lifecycle management with compatible Identity Providers (IdPs) and applications. SCIM is defined in RFC 7634.",
         attributes: &[
-            118, 122, 342, 370, 606, 842, 876, 929, 931, 1042, 1059, 1098, 1367, 1414, 1533, 1534, 1712, 1719, 1974,
-            2058, 2100, 2148, 2166,
+            118, 122, 342, 370, 606, 840, 874, 927, 929, 1038, 1055, 1094, 1363, 1410, 1529, 1530, 1708, 1715, 1970,
+            2054, 2096, 2144, 2162,
         ],
     },
     Object {
         name: "script",
         caption: "Script",
         description: "The Script object describes a script or command that can be executed by a shell, script engine, or interpreter. Examples include Bash, JavsScript, PowerShell, Python, VBScript, etc. Note that the term script here denotes not only a script contained within a file but also a script or command typed interactively by a user, supplied on the command line, or provided by some other file-less mechanism.",
-        attributes: &[649, 750, 1140, 1257, 1542, 1892, 1957, 1981],
+        attributes: &[649, 748, 1136, 1253, 1538, 1888, 1953, 1977],
     },
     Object {
         name: "security_state",
         caption: "Security State",
         description: "The Security State object describes the security related state of a managed entity.",
-        attributes: &[1713, 1720],
+        attributes: &[1709, 1716],
     },
     Object {
         name: "sensor_info",
         caption: "Sensor Information",
         description: "The Sensor Information object describes a control point sensor that emits data, or originates detections. It can be part of an endpoint or agent running on an OS, a SaaS application, a network device, a Cyber Threat Intelligence (CTI) system, or other detection and enforcement technologies.",
-        attributes: &[1113, 1557, 1558, 2018, 2069],
+        attributes: &[1109, 1553, 1554, 2014, 2065],
     },
     Object {
         name: "service",
         caption: "Service",
         description: "The Service object describes characteristics of a service, e.g. AWS EC2.",
-        attributes: &[920, 1124, 1789, 2033, 2069, 2190],
+        attributes: &[918, 1120, 1785, 2029, 2065, 2186],
     },
     Object {
         name: "service_privilege_analysis",
         caption: "Service Privilege Analysis",
         description: "The Service Privilege Analysis object describes privilege analysis results for a single cloud service or resource namespace. It provides metrics on privilege usage, counts by type, and mappings to potential attack techniques.",
-        attributes: &[72, 77, 615, 946, 949, 1158, 1317, 1423, 2077, 2216],
+        attributes: &[72, 77, 615, 942, 945, 1154, 1313, 1419, 2073, 2212],
     },
     Object {
         name: "session",
         caption: "Session",
         description: "The Session object describes details about an authenticated session. e.g. Session Creation Time, Session Issuer.",
         attributes: &[
-            299, 337, 365, 375, 617, 623, 630, 847, 858, 877, 880, 1800, 2034, 2064, 2127,
+            299, 337, 365, 375, 617, 623, 630, 845, 856, 875, 878, 1796, 2030, 2060, 2123,
         ],
     },
     Object {
         name: "software_component",
         caption: "Software Component",
         description: "The Software Component object describes characteristics of a software component within a software package.",
-        attributes: &[126, 748, 964, 1159, 1393, 1444, 1452, 1453, 1903, 1943, 2194],
+        attributes: &[126, 746, 960, 1155, 1389, 1440, 1448, 1449, 1899, 1939, 2190],
     },
     Object {
         name: "span",
         caption: "Span",
         description: "Represents a single unit of work or operation within a distributed trace. A span typically tracks the execution of a request across a service, capturing important details such as the operation, timestamps, and status. Spans help break down the overall trace into smaller, manageable parts, enabling detailed analysis of the performance and behavior of specific operations within the system. They are crucial for understanding latency, dependencies, and bottlenecks in complex distributed systems.",
-        attributes: &[537, 583, 588, 1020, 1214, 1255, 1573, 1692, 1697, 1735, 2048],
+        attributes: &[537, 583, 588, 1016, 1210, 1251, 1569, 1688, 1693, 1731, 2044],
     },
     Object {
         name: "sso",
         caption: "SSO",
         description: "The Single Sign-On (SSO) object provides a structure for normalizing SSO attributes, configuration, and/or settings from Identity Providers.",
         attributes: &[
-            118, 119, 183, 343, 371, 541, 791, 998, 1002, 1026, 1043, 1060, 1099, 1368, 1535, 1975, 2149,
+            118, 119, 183, 343, 371, 541, 789, 994, 998, 1022, 1039, 1056, 1095, 1364, 1531, 1971, 2145,
         ],
     },
     Object {
         name: "startup_item",
         caption: "Startup Item",
         description: "The startup item object describes an application component that has associated startup criteria and configurations.",
-        attributes: &[514, 890, 1162, 1330, 1515, 1516, 1518, 1520, 1703, 1704, 1894, 1941],
+        attributes: &[514, 888, 1158, 1326, 1511, 1512, 1514, 1516, 1699, 1700, 1890, 1937],
     },
     Object {
         name: "sub_technique",
         caption: "MITRE Sub-technique",
         description: "The MITRE Sub-technique object describes the ATT&CK® or ATLAS™ Sub-technique ID and/or name associated to an attack.",
-        attributes: &[1105, 1670, 2002, 2069],
+        attributes: &[1101, 1666, 1998, 2065],
     },
     Object {
         name: "table",
         caption: "Table",
         description: "The table object represents a table within a structured relational database or datastore, which contains columns and rows of data that are able to be create, updated, deleted and queried.",
-        attributes: &[338, 366, 451, 741, 1041, 1058, 1138, 1620, 2035, 2069],
+        attributes: &[338, 366, 451, 739, 1037, 1054, 1134, 1616, 2031, 2065],
     },
     Object {
         name: "tactic",
         caption: "MITRE Tactic",
         description: "The MITRE Tactic object describes the ATT&CK® or ATLAS™ Tactic ID and/or name that is associated to an attack.",
-        attributes: &[1082, 1669, 1983, 2069],
+        attributes: &[1078, 1665, 1979, 2065],
     },
     Object {
         name: "technique",
         caption: "MITRE Technique",
         description: "The MITRE Technique object describes the ATT&CK® or ATLAS™ Technique ID and/or name associated to an attack.",
-        attributes: &[1106, 1671, 2003, 2069],
+        attributes: &[1102, 1667, 1999, 2065],
     },
     Object {
         name: "threat_actor",
         caption: "Threat Actor",
         description: "Threat actor is responsible for the observed malicious activity.",
-        attributes: &[1156, 1870, 1932],
+        attributes: &[1152, 1866, 1928],
     },
     Object {
         name: "ticket",
         caption: "Ticket",
         description: "The Ticket object represents ticket in the customer's IT Service Management (ITSM) systems like ServiceNow, Jira, etc.",
-        attributes: &[1667, 1734, 1745, 1749, 1825, 1883, 1934, 2042],
+        attributes: &[1663, 1730, 1741, 1745, 1821, 1879, 1930, 2038],
     },
     Object {
         name: "timespan",
         caption: "Time Span",
         description: "The Time Span object represents different time period durations. If a timespan is fractional, i.e. crosses one period, e.g. a week and 3 days, more than one may be populated since each member is of integral type. In that case type_id if present should be set to Other.A timespan may also be defined by its time interval boundaries, start_time and end_time.",
-        attributes: &[534, 539, 540, 542, 543, 544, 545, 546, 577, 587, 1686, 1696, 1916, 1935],
+        attributes: &[534, 539, 540, 542, 543, 544, 545, 546, 577, 587, 1682, 1692, 1912, 1931],
     },
     Object {
         name: "tls",
         caption: "Transport Layer Security (TLS)",
         description: "The Transport Layer Security (TLS) object describes the negotiated TLS protocol used for secure communications over an establish network connection.",
         attributes: &[
-            62, 185, 186, 195, 213, 639, 743, 884, 885, 904, 1524, 1570, 1627, 1831, 2192,
+            62, 185, 186, 195, 213, 639, 741, 882, 883, 902, 1520, 1566, 1623, 1827, 2188,
         ],
     },
     Object {
         name: "tls_extension",
         caption: "TLS Extension",
         description: "The TLS Extension object describes additional attributes that extend the base Transport Layer Security (TLS) object.",
-        attributes: &[399, 1865, 1947],
+        attributes: &[399, 1861, 1943],
     },
     Object {
         name: "token",
         caption: "Token",
         description: "The Token object is the base object for representing tokens, API keys, and authentication credentials used across different contexts. This object provides common attributes for all token types, including protocol-specific authentication tokens (Kerberos, OIDC, SAML) and API/client tokens used for service authentication. When to use this object: Use the base token object directly in API activity events to represent API tokens, client tokens, or API keys used to authenticate API requests. Examples include: Okta API tokens, Microsoft Entra ID Application Registration client secrets, Stripe API keys, AWS API keys. When NOT to use this object: Do NOT use the base token object for protocol-specific authentication tokens in authentication events - use authentication_token instead (which extends this object). Do NOT use token for tracking credential lifecycle and usage patterns - use programmatic_credential instead.",
-        attributes: &[320, 348, 622, 629, 860, 1038, 1055, 1091, 1798, 1913, 1938, 1992, 2224],
+        attributes: &[320, 348, 622, 629, 858, 1034, 1051, 1087, 1794, 1909, 1934, 1988, 2220],
     },
     Object {
         name: "trace",
         caption: "Trace",
         description: "The trace object contains information about a distributed trace, which is crucial for observability. Traces are made up of one or more spans, which are individual units of work in application activity. Traces track the journey of a request as it moves through various services in a system, capturing key details like timing, status, and dependencies at each step. Traces provide insights into system performance, helping to identify latency, bottlenecks, and issues in complex, distributed environments.",
-        attributes: &[538, 578, 589, 702, 1572, 1636, 1687, 1698, 2053],
+        attributes: &[538, 578, 589, 700, 1568, 1632, 1683, 1694, 2049],
     },
     Object {
         name: "trait",
         caption: "Trait",
         description: "Describes a characteristic or feature of an entity that was observed. For example, this object can be used to represent specific characteristics derived from events or findings that can be surfaced as distinguishing traits of the entity in question.",
-        attributes: &[173, 1125, 1914, 2036, 2069, 2144],
+        attributes: &[173, 1121, 1910, 2032, 2065, 2140],
     },
     Object {
         name: "transformation_info",
         caption: "Transformation Info",
         description: "The transformation_info object represents the mapping or transformation used.",
-        attributes: &[922, 1126, 1345, 1807, 1814, 2025, 2069, 2099],
+        attributes: &[920, 1122, 1341, 1803, 1810, 2021, 2065, 2095],
     },
     Object {
         name: "tsig",
         caption: "TSIG",
         description: "The TSIG (Transaction Signature) object represents a TSIG resource record as defined in RFC 2845. TSIG uses a shared secret key and one-way hash function to authenticate DNS messages. Per RFC 2845, at most one TSIG record is permitted per DNS message.",
-        attributes: &[63, 602, 604, 905],
+        attributes: &[63, 602, 604, 903],
     },
     Object {
         name: "unmanned_aerial_system",
         caption: "Unmanned Aerial System",
         description: "The Unmanned Aerial System object describes the characteristics, Position Location Information (PLI), and other metadata of Unmanned Aerial Systems (UAS) and other unmanned and drone systems used in Remote ID. Remote ID is defined in the Standard Specification for Remote ID and Tracking (ASTM Designation: F3411-22a).",
         attributes: &[
-            780, 974, 1034, 1127, 1564, 1637, 1638, 1842, 1905, 1923, 1989, 2060, 2069, 2125, 2199,
+            778, 970, 1030, 1123, 1560, 1633, 1634, 1838, 1901, 1919, 1985, 2056, 2065, 2121, 2195,
         ],
     },
     Object {
@@ -19039,38 +19007,38 @@ pub const OBJECTS: &[Object] = &[
         caption: "Unmanned System Operating Area",
         description: "The Unmanned System Operating Area object describes details about a precise area of operations for a UAS flight or mission.",
         attributes: &[
-            49, 73, 74, 200, 286, 290, 295, 303, 446, 574, 584, 720, 721, 722, 753, 850, 878, 952, 978, 1003, 1307,
-            1310, 1379, 1412, 1433, 1683, 1693, 1900, 1940,
+            49, 73, 74, 200, 286, 290, 295, 303, 446, 574, 584, 718, 719, 720, 751, 848, 876, 948, 974, 999, 1303,
+            1306, 1375, 1408, 1429, 1679, 1689, 1896, 1936,
         ],
     },
     Object {
         name: "url",
         caption: "Uniform Resource Locator",
         description: "The Uniform Resource Locator (URL) object describes the characteristics of a URL.",
-        attributes: &[167, 177, 504, 755, 1265, 1302, 1404, 1479, 1531, 1760, 2098],
+        attributes: &[167, 177, 504, 753, 1261, 1298, 1400, 1475, 1527, 1756, 2094],
     },
     Object {
         name: "user",
         caption: "User",
         description: "The User object describes the characteristics of a user/person or a security principal.",
         attributes: &[
-            13, 375, 491, 506, 556, 710, 716, 737, 745, 958, 1163, 1219, 1282, 1353, 1503, 1504, 1506, 1915, 1924,
-            2039, 2067, 2069,
+            13, 375, 491, 506, 556, 708, 714, 735, 743, 954, 1159, 1215, 1278, 1349, 1499, 1500, 1502, 1911, 1920,
+            2035, 2063, 2065,
         ],
     },
     Object {
         name: "vendor_attributes",
         caption: "Vendor Attributes",
-        description: "The Vendor Attributes object can be used to represent values of attributes populated by the Vendor/Finding Provider. It can help distinguish between the vendor-provided values and consumer-updated values, of key attributes like severity_id.The original finding producer should not populate this object. It should be populated by consuming systems that support data mutability.",
-        attributes: &[1591, 1596],
+        description: "The Vendor Attributes object can be used to represent values of attributes populated by the Vendor/Finding Provider. It can help distinguish between the vendor-provided values and consumer-updated values, of key attributes like severity_id. The original finding producer should not populate this object. It should be populated by consuming systems that support data mutability.",
+        attributes: &[1587, 1592],
     },
     Object {
         name: "vulnerability",
         caption: "Vulnerability Details",
         description: "The vulnerability is an unintended characteristic of a computing component or system configuration that multiplies the risk of an adverse event or a loss occurring either due to accidental exposure, deliberate attack, or conflict with new system components.",
         attributes: &[
-            48, 50, 51, 171, 381, 384, 427, 452, 632, 633, 634, 635, 636, 685, 691, 693, 694, 695, 840, 841, 896, 897,
-            936, 943, 1245, 1428, 1450, 1458, 1595, 1821, 2155,
+            48, 50, 51, 171, 381, 384, 427, 452, 632, 633, 634, 635, 636, 684, 689, 691, 692, 693, 838, 839, 894, 895,
+            933, 939, 1241, 1424, 1446, 1454, 1591, 1817, 2151,
         ],
     },
     Object {
@@ -19078,7 +19046,7 @@ pub const OBJECTS: &[Object] = &[
         caption: "Web Resource",
         description: "The Web Resource object describes characteristics of a web resource that was affected by the activity/event.",
         attributes: &[
-            336, 364, 396, 403, 404, 436, 919, 1051, 1068, 1128, 1788, 1920, 1972, 2057, 2069, 2097,
+            336, 364, 396, 403, 404, 436, 917, 1047, 1064, 1124, 1784, 1916, 1968, 2053, 2065, 2093,
         ],
     },
     Object {
@@ -19086,7 +19054,7 @@ pub const OBJECTS: &[Object] = &[
         caption: "WHOIS",
         description: "The resources of a WHOIS record for a given domain. This can include domain names, IP address blocks, autonomous system information, and/or contact and registration information for a domain.",
         attributes: &[
-            132, 344, 372, 500, 501, 502, 510, 554, 878, 879, 938, 945, 1164, 1279, 1440, 1733, 1761, 1767,
+            132, 344, 372, 500, 501, 502, 510, 554, 876, 877, 935, 941, 1160, 1275, 1436, 1729, 1757, 1763,
         ],
     },
 ];
@@ -19101,9 +19069,9 @@ pub const CLASSES: &[Class] = &[
         description: "File System Activity events report when a process performs an action on a file or folder.",
         attributes: &[
             3, 18, 19, 22, 28, 40, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 257, 263, 265, 268, 279, 298,
-            316, 421, 481, 492, 493, 535, 579, 590, 595, 664, 667, 668, 680, 829, 1007, 1010, 1016, 1022, 1025, 1196,
-            1229, 1299, 1416, 1417, 1418, 1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810,
-            1813, 1817, 1962, 1967, 2074,
+            316, 421, 481, 492, 493, 535, 579, 590, 595, 664, 667, 668, 680, 827, 1003, 1006, 1012, 1018, 1021, 1192,
+            1225, 1295, 1412, 1413, 1414, 1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806,
+            1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19114,8 +19082,8 @@ pub const CLASSES: &[Class] = &[
         description: "Kernel Extension events report when a driver/extension is loaded or unloaded into the kernel",
         attributes: &[
             18, 19, 22, 28, 39, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 481, 492,
-            493, 515, 535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1299, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            493, 515, 535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1295, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19126,8 +19094,8 @@ pub const CLASSES: &[Class] = &[
         description: "Kernel Activity events report when an process creates, reads, or deletes a kernel resource.",
         attributes: &[
             18, 19, 22, 28, 44, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 481, 492,
-            493, 535, 579, 590, 595, 680, 829, 901, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1299, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            493, 535, 579, 590, 595, 680, 827, 899, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1295, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19138,9 +19106,9 @@ pub const CLASSES: &[Class] = &[
         description: "Memory Activity events report when a process has memory allocated, read/modified, or other manipulation activities - such as a buffer overflow or turning off data execution protection (DEP).",
         attributes: &[
             18, 19, 22, 28, 44, 45, 54, 57, 84, 105, 111, 129, 136, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421,
-            481, 492, 493, 535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1299, 1332, 1416,
-            1417, 1418, 1470, 1502, 1503, 1504, 1506, 1590, 1601, 1614, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813,
-            1817, 1962, 1967, 2074,
+            481, 492, 493, 535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1295, 1328, 1412,
+            1413, 1414, 1466, 1498, 1499, 1500, 1502, 1586, 1597, 1610, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809,
+            1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19151,8 +19119,8 @@ pub const CLASSES: &[Class] = &[
         description: "Module Activity events report when an endpoint process acts on a module.",
         attributes: &[
             18, 19, 22, 28, 42, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 481, 492,
-            493, 535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1022, 1025, 1075, 1196, 1229, 1299, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            493, 535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1018, 1021, 1071, 1192, 1225, 1295, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19163,9 +19131,9 @@ pub const CLASSES: &[Class] = &[
         description: "Scheduled Job Activity events report activities related to scheduled jobs or tasks.",
         attributes: &[
             18, 19, 22, 28, 36, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 481, 492,
-            493, 535, 579, 590, 595, 680, 829, 891, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1299, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
-            2082,
+            493, 535, 579, 590, 595, 680, 827, 889, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1295, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
+            2078,
         ],
     },
     Class {
@@ -19176,9 +19144,9 @@ pub const CLASSES: &[Class] = &[
         description: "Process Activity events report when a process launches, injects, opens or terminates another process, successful or otherwise.",
         attributes: &[
             18, 19, 22, 28, 43, 46, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 481,
-            492, 493, 535, 579, 590, 595, 616, 680, 805, 806, 829, 954, 955, 1007, 1010, 1016, 1022, 1025, 1073, 1196,
-            1229, 1299, 1336, 1416, 1417, 1418, 1469, 1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739,
-            1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            492, 493, 535, 579, 590, 595, 616, 680, 803, 804, 827, 950, 951, 1003, 1006, 1012, 1018, 1021, 1069, 1192,
+            1225, 1295, 1332, 1412, 1413, 1414, 1465, 1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735,
+            1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19189,9 +19157,9 @@ pub const CLASSES: &[Class] = &[
         description: "Event Log Activity events report actions pertaining to the system's event logging service(s), such as disabling logging or clearing the log data.",
         attributes: &[
             18, 19, 22, 28, 37, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 474, 492,
-            493, 531, 535, 579, 590, 595, 650, 680, 829, 984, 985, 990, 991, 1007, 1010, 1016, 1022, 1025, 1196, 1229,
-            1299, 1416, 1417, 1418, 1502, 1503, 1504, 1506, 1590, 1601, 1651, 1688, 1699, 1724, 1736, 1742, 1753, 1810,
-            1813, 1817, 1962, 1967, 2074,
+            493, 531, 535, 579, 590, 595, 650, 680, 827, 980, 981, 986, 987, 1003, 1006, 1012, 1018, 1021, 1192, 1225,
+            1295, 1412, 1413, 1414, 1498, 1499, 1500, 1502, 1586, 1597, 1647, 1684, 1695, 1720, 1732, 1738, 1749, 1806,
+            1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19202,8 +19170,8 @@ pub const CLASSES: &[Class] = &[
         description: "Script Activity events report when a process executes a script.",
         attributes: &[
             18, 19, 22, 28, 44, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 481, 492,
-            493, 535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1299, 1416, 1417, 1418, 1502,
-            1503, 1504, 1506, 1541, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            493, 535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1295, 1412, 1413, 1414, 1498,
+            1499, 1500, 1502, 1537, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19214,8 +19182,8 @@ pub const CLASSES: &[Class] = &[
         description: "Peripheral Activity events log a system's interactions with external, connectable, and detachable hardware. These events provide visibility into the external devices connected to and used by a system.",
         attributes: &[
             18, 19, 22, 28, 44, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 481, 492,
-            493, 535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1272, 1299, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            493, 535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1268, 1295, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19226,8 +19194,8 @@ pub const CLASSES: &[Class] = &[
         description: "Device Power State Activity events report activities related to power state changes of a system.",
         attributes: &[
             18, 19, 22, 28, 35, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 480, 492,
-            493, 535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1299, 1416, 1417, 1418, 1502,
-            1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            493, 535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1295, 1412, 1413, 1414, 1498,
+            1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19238,9 +19206,9 @@ pub const CLASSES: &[Class] = &[
         description: "Clipboard Activity events report when a process performs an action on a clipboard.",
         attributes: &[
             18, 19, 22, 28, 44, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 216, 219, 263, 265, 268, 298, 421, 481,
-            492, 493, 535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1299, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1590, 1601, 1633, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967,
-            2074,
+            492, 493, 535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1295, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1586, 1597, 1629, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963,
+            2070,
         ],
     },
     Class {
@@ -19251,9 +19219,9 @@ pub const CLASSES: &[Class] = &[
         description: "Security Finding events describe findings, detections, anomalies, alerts and/or actions performed by security products",
         attributes: &[
             18, 19, 22, 28, 38, 76, 84, 106, 111, 129, 178, 179, 199, 204, 205, 219, 253, 263, 265, 268, 298, 408, 476,
-            492, 493, 535, 579, 590, 595, 612, 671, 680, 799, 800, 801, 829, 912, 1007, 1010, 1016, 1025, 1178, 1196,
-            1229, 1299, 1327, 1416, 1417, 1418, 1481, 1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1711, 1721, 1724,
-            1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074, 2208,
+            492, 493, 535, 579, 590, 595, 612, 671, 680, 797, 798, 799, 827, 910, 1003, 1006, 1012, 1021, 1174, 1192,
+            1225, 1295, 1323, 1412, 1413, 1414, 1477, 1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1707, 1717, 1720,
+            1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070, 2204,
         ],
     },
     Class {
@@ -19264,9 +19232,9 @@ pub const CLASSES: &[Class] = &[
         description: "The Vulnerability Finding event is a notification about weakness in an information system, system security procedures, internal controls, or implementation that could be exploited or triggered by a threat source. Note: if the event producer is a security control, the security_control profile should be applied and its attacks information, if present, should be duplicated into the finding_info object. Note: If the Finding is an incident, i.e. requires incident workflow, also apply the incident profile or aggregate this finding into an Incident Finding.",
         attributes: &[
             18, 19, 25, 29, 38, 84, 101, 102, 105, 111, 129, 178, 179, 204, 205, 219, 243, 262, 264, 268, 298, 469,
-            492, 493, 535, 580, 591, 595, 672, 680, 799, 800, 801, 829, 869, 1007, 1010, 1016, 1025, 1180, 1196, 1229,
-            1299, 1315, 1316, 1416, 1417, 1418, 1472, 1484, 1502, 1503, 1504, 1506, 1590, 1601, 1657, 1689, 1700, 1725,
-            1738, 1739, 1748, 1804, 1805, 1808, 1811, 1817, 1962, 1967, 2074, 2146, 2162, 2164, 2209,
+            492, 493, 535, 580, 591, 595, 672, 680, 797, 798, 799, 827, 867, 1003, 1006, 1012, 1021, 1176, 1192, 1225,
+            1295, 1311, 1312, 1412, 1413, 1414, 1468, 1480, 1498, 1499, 1500, 1502, 1586, 1597, 1653, 1685, 1696, 1721,
+            1734, 1735, 1744, 1800, 1801, 1804, 1807, 1813, 1958, 1963, 2070, 2142, 2158, 2160, 2205,
         ],
     },
     Class {
@@ -19277,9 +19245,9 @@ pub const CLASSES: &[Class] = &[
         description: "Compliance Finding events describe results of evaluations performed against resources, to check compliance with various Industry Frameworks or Security Standards such as NIST SP 800-53, CIS AWS Foundations Benchmark v1.4.0, ISO/IEC 27001 etc. Note: if the event producer is a security control, the security_control profile should be applied and its attacks information, if present, should be duplicated into the finding_info object. Note: If the Finding is an incident, i.e. requires incident workflow, also apply the incident profile or aggregate this finding into an Incident Finding.",
         attributes: &[
             18, 19, 25, 29, 38, 84, 101, 102, 105, 111, 129, 178, 179, 204, 205, 219, 243, 254, 262, 264, 268, 298,
-            469, 492, 493, 535, 580, 591, 595, 614, 672, 680, 799, 800, 801, 829, 869, 1007, 1010, 1016, 1025, 1180,
-            1196, 1229, 1299, 1315, 1316, 1416, 1417, 1418, 1456, 1473, 1485, 1502, 1503, 1504, 1506, 1590, 1601, 1657,
-            1689, 1700, 1725, 1738, 1739, 1748, 1804, 1805, 1808, 1811, 1817, 1962, 1967, 2074, 2146, 2162, 2164,
+            469, 492, 493, 535, 580, 591, 595, 614, 672, 680, 797, 798, 799, 827, 867, 1003, 1006, 1012, 1021, 1176,
+            1192, 1225, 1295, 1311, 1312, 1412, 1413, 1414, 1452, 1469, 1481, 1498, 1499, 1500, 1502, 1586, 1597, 1653,
+            1685, 1696, 1721, 1734, 1735, 1744, 1800, 1801, 1804, 1807, 1813, 1958, 1963, 2070, 2142, 2158, 2160,
         ],
     },
     Class {
@@ -19287,12 +19255,12 @@ pub const CLASSES: &[Class] = &[
         uid: 2004,
         category: 2,
         caption: "Detection Finding",
-        description: "A Detection Finding describes detections or alerts generated by security products using correlation engines, detection engines or other methodologies.Note: If the event producer is a security control, the Security Control profile should be applied and its attacks information, if present, should be duplicated into the finding_info object. Note: If the Finding is an incident, i.e. requires incident workflow, also apply the Incident profile or aggregate the finding into an Incident Finding.Note: Findings are mutable and as such have a lifecycle, via Update activities. When modeling atomic alerts, you are encouraged to consider using the Security Control profile with the activity event associated with the alert. See the referenced article below.",
+        description: "A Detection Finding describes detections or alerts generated by security products using correlation engines, detection engines or other methodologies. Note: If the event producer is a security control, the Security Control profile should be applied and its attacks information, if present, should be duplicated into the finding_info object. Note: If the Finding is an incident, i.e. requires incident workflow, also apply the Incident profile or aggregate the finding into an Incident Finding. Note: Findings are mutable and as such have a lifecycle, via Update activities. When modeling atomic alerts, you are encouraged to consider using the Security Control profile with the activity event associated with the alert. See the referenced article below.",
         attributes: &[
             18, 19, 25, 29, 38, 81, 84, 101, 102, 105, 111, 129, 178, 179, 204, 205, 219, 243, 262, 264, 268, 298, 469,
-            492, 493, 535, 580, 591, 595, 613, 672, 680, 799, 800, 801, 828, 869, 1008, 1009, 1016, 1025, 1180, 1196,
-            1229, 1299, 1315, 1316, 1416, 1417, 1418, 1456, 1482, 1502, 1503, 1504, 1506, 1590, 1601, 1657, 1689, 1700,
-            1725, 1738, 1739, 1748, 1804, 1805, 1808, 1811, 1817, 1962, 1967, 2074, 2146, 2162, 2164, 2207,
+            492, 493, 535, 580, 591, 595, 613, 672, 680, 797, 798, 799, 826, 867, 1004, 1005, 1012, 1021, 1176, 1192,
+            1225, 1295, 1311, 1312, 1412, 1413, 1414, 1452, 1478, 1498, 1499, 1500, 1502, 1586, 1597, 1653, 1685, 1696,
+            1721, 1734, 1735, 1744, 1800, 1801, 1804, 1807, 1813, 1958, 1963, 2070, 2142, 2158, 2160, 2203,
         ],
     },
     Class {
@@ -19303,9 +19271,9 @@ pub const CLASSES: &[Class] = &[
         description: "An Incident Finding reports the creation, update, or closure of security incidents as a result of detections and/or analytics. Note: Incident Finding implicitly includes the incident profile and it should be added to the metadata.profiles[] array.",
         attributes: &[
             18, 19, 26, 30, 38, 84, 101, 102, 107, 111, 129, 178, 179, 204, 205, 219, 244, 263, 266, 269, 298, 457,
-            476, 492, 493, 535, 581, 592, 595, 673, 680, 799, 800, 801, 829, 869, 1007, 1010, 1016, 1025, 1181, 1196,
-            1229, 1299, 1315, 1316, 1416, 1417, 1418, 1502, 1503, 1504, 1506, 1590, 1601, 1657, 1690, 1701, 1726, 1738,
-            1739, 1754, 1804, 1805, 1809, 1812, 1817, 1962, 1967, 2074, 2146, 2162, 2164,
+            476, 492, 493, 535, 581, 592, 595, 673, 680, 797, 798, 799, 827, 867, 1003, 1006, 1012, 1021, 1177, 1192,
+            1225, 1295, 1311, 1312, 1412, 1413, 1414, 1498, 1499, 1500, 1502, 1586, 1597, 1653, 1686, 1697, 1722, 1734,
+            1735, 1750, 1800, 1801, 1805, 1808, 1813, 1958, 1963, 2070, 2142, 2158, 2160,
         ],
     },
     Class {
@@ -19316,10 +19284,10 @@ pub const CLASSES: &[Class] = &[
         description: "A Data Security Finding describes detections or alerts generated by various data security products such as Data Loss Prevention (DLP), Data Classification, Secrets Management, Digital Rights Management (DRM), Data Security Posture Management (DSPM), and similar tools. These detections or alerts can be created using fingerprinting, statistical analysis, machine learning or other methodologies. The finding describes the actors and endpoints who accessed or own the sensitive data, as well as the resources which store the sensitive data. Note: if the event producer is a security control, the security_control profile should be applied and its attacks information, if present, should be duplicated into the finding_info object. Note: If the Finding is an incident, i.e. requires incident workflow, also apply the incident profile or aggregate this finding into an Incident Finding.",
         attributes: &[
             18, 19, 21, 27, 31, 84, 101, 102, 105, 111, 129, 178, 179, 204, 205, 219, 243, 262, 264, 268, 298, 407,
-            411, 415, 470, 492, 493, 517, 535, 580, 591, 595, 646, 672, 680, 799, 800, 801, 828, 869, 1007, 1010, 1016,
-            1025, 1180, 1196, 1229, 1299, 1315, 1316, 1416, 1417, 1418, 1480, 1502, 1503, 1504, 1506, 1590, 1601, 1644,
-            1657, 1689, 1700, 1725, 1738, 1739, 1748, 1776, 1804, 1805, 1808, 1811, 1817, 1962, 1967, 2074, 2146, 2162,
-            2164,
+            411, 415, 470, 492, 493, 517, 535, 580, 591, 595, 646, 672, 680, 797, 798, 799, 826, 867, 1003, 1006, 1012,
+            1021, 1176, 1192, 1225, 1295, 1311, 1312, 1412, 1413, 1414, 1476, 1498, 1499, 1500, 1502, 1586, 1597, 1640,
+            1653, 1685, 1696, 1721, 1734, 1735, 1744, 1772, 1800, 1801, 1804, 1807, 1813, 1958, 1963, 2070, 2142, 2158,
+            2160,
         ],
     },
     Class {
@@ -19330,9 +19298,9 @@ pub const CLASSES: &[Class] = &[
         description: "The Application Security Posture Finding event is a notification about any bug, defect, deficiency, exploit, vulnerability, weakness or any other issue with software and related systems. Application Security Posture Findings typically involve reporting on the greater context including compliance, impacted resources, remediation guidance, specific code defects, and/or vulnerability metadata. Application Security Posture Findings can be reported by Threat & Vulnerability Management (TVM) tools, Application Security Posture Management (ASPM) tools, or other similar tools. Note: if the event producer is a security control, the security_control profile should be applied and its attacks information, if present, should be duplicated into the finding_info object. Note: If the Finding is an incident, i.e. requires incident workflow, also apply the incident profile or aggregate this finding into an Incident Finding.",
         attributes: &[
             18, 19, 25, 29, 38, 84, 92, 101, 102, 105, 111, 129, 178, 179, 204, 205, 219, 243, 252, 262, 264, 268, 298,
-            469, 492, 493, 535, 580, 591, 595, 672, 680, 799, 800, 801, 829, 869, 1007, 1010, 1016, 1025, 1180, 1196,
-            1229, 1299, 1315, 1316, 1416, 1417, 1418, 1457, 1484, 1502, 1503, 1504, 1506, 1590, 1601, 1657, 1689, 1700,
-            1725, 1738, 1739, 1748, 1804, 1805, 1808, 1811, 1817, 1962, 1967, 2074, 2146, 2162, 2164, 2208,
+            469, 492, 493, 535, 580, 591, 595, 672, 680, 797, 798, 799, 827, 867, 1003, 1006, 1012, 1021, 1176, 1192,
+            1225, 1295, 1311, 1312, 1412, 1413, 1414, 1453, 1480, 1498, 1499, 1500, 1502, 1586, 1597, 1653, 1685, 1696,
+            1721, 1734, 1735, 1744, 1800, 1801, 1804, 1807, 1813, 1958, 1963, 2070, 2142, 2158, 2160, 2204,
         ],
     },
     Class {
@@ -19340,12 +19308,12 @@ pub const CLASSES: &[Class] = &[
         uid: 2008,
         category: 2,
         caption: "IAM Analysis Finding",
-        description: "This finding represents an IAM analysis result, which evaluates IAM policies, access patterns, and IAM configurations for potential security risks. The analysis can focus on either an identity (user, role, service account) or a resource to assess permissions, access patterns, and security posture within the IAM domain. Note: Use permission_analysis_results for identity-centric analysis (evaluating what an identity can do) and access_analysis_result for resource-centric analysis (evaluating who can access a resource). These complement each other for comprehensive IAM security assessment.Note: If the Finding is an incident, i.e. requires incident workflow, also apply the incident profile or aggregate this finding into an Incident Finding.",
+        description: "This finding represents an IAM analysis result, which evaluates IAM policies, access patterns, and IAM configurations for potential security risks. The analysis can focus on either an identity (user, role, service account) or a resource to assess permissions, access patterns, and security posture within the IAM domain. Note: Use permission_analysis_results for identity-centric analysis (evaluating what an identity can do) and access_analysis_result for resource-centric analysis (evaluating who can access a resource). These complement each other for comprehensive IAM security assessment. Note: If the Finding is an incident, i.e. requires incident workflow, also apply the incident profile or aggregate this finding into an Incident Finding.",
         attributes: &[
             0, 18, 19, 25, 29, 38, 84, 96, 101, 102, 105, 111, 129, 178, 179, 204, 205, 219, 243, 262, 264, 268, 298,
-            469, 492, 493, 535, 580, 591, 595, 672, 680, 790, 799, 800, 801, 829, 869, 1007, 1010, 1016, 1025, 1180,
-            1196, 1229, 1275, 1299, 1315, 1316, 1416, 1417, 1418, 1456, 1486, 1502, 1503, 1504, 1506, 1590, 1601, 1657,
-            1689, 1700, 1725, 1738, 1739, 1748, 1804, 1805, 1808, 1811, 1817, 1962, 1967, 2074, 2104, 2146, 2162, 2164,
+            469, 492, 493, 535, 580, 591, 595, 672, 680, 788, 797, 798, 799, 827, 867, 1003, 1006, 1012, 1021, 1176,
+            1192, 1225, 1271, 1295, 1311, 1312, 1412, 1413, 1414, 1452, 1482, 1498, 1499, 1500, 1502, 1586, 1597, 1653,
+            1685, 1696, 1721, 1734, 1735, 1744, 1800, 1801, 1804, 1807, 1813, 1958, 1963, 2070, 2100, 2142, 2158, 2160,
         ],
     },
     Class {
@@ -19356,9 +19324,9 @@ pub const CLASSES: &[Class] = &[
         description: "Account Change events report when specific user account management tasks are performed, such as a user/role being created or role assigned, changed, deleted, renamed, disabled, enabled, locked out or unlocked.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 105, 111, 114, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 476,
-            492, 493, 535, 579, 590, 595, 680, 770, 776, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1289, 1293,
-            1416, 1417, 1418, 1502, 1503, 1504, 1506, 1590, 1601, 1645, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813,
-            1817, 1962, 1967, 2074, 2117, 2121,
+            492, 493, 535, 579, 590, 595, 680, 768, 774, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1285, 1289,
+            1412, 1413, 1414, 1498, 1499, 1500, 1502, 1586, 1597, 1641, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809,
+            1813, 1958, 1963, 2070, 2113, 2117,
         ],
     },
     Class {
@@ -19369,9 +19337,9 @@ pub const CLASSES: &[Class] = &[
         description: "Authentication events report authentication session activities, including user attempts to log on or log off, regardless of success, as well as other key stages within the authentication process. These events are typically generated by authentication services, such as Kerberos, OIDC, or SAML, and may include information about the user, the authentication method used, and the status of the authentication attempt.",
         attributes: &[
             14, 15, 18, 19, 22, 28, 38, 54, 57, 84, 105, 111, 113, 116, 120, 125, 129, 178, 179, 184, 204, 205, 219,
-            263, 265, 268, 298, 421, 476, 492, 493, 525, 535, 579, 590, 595, 680, 770, 776, 829, 832, 847, 849, 857,
-            999, 1000, 1001, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1299, 1416, 1417, 1418, 1502, 1503, 1504, 1506,
-            1576, 1581, 1590, 1601, 1645, 1688, 1699, 1724, 1738, 1741, 1753, 1810, 1813, 1817, 1962, 1967, 2074, 2114,
+            263, 265, 268, 298, 421, 476, 492, 493, 525, 535, 579, 590, 595, 680, 768, 774, 827, 830, 845, 847, 855,
+            995, 996, 997, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1295, 1412, 1413, 1414, 1498, 1499, 1500, 1502,
+            1572, 1577, 1586, 1597, 1641, 1684, 1695, 1720, 1734, 1737, 1749, 1806, 1809, 1813, 1958, 1963, 2070, 2110,
         ],
     },
     Class {
@@ -19382,9 +19350,9 @@ pub const CLASSES: &[Class] = &[
         description: "Authorize Session events report privileges, groups or roles assigned to a new user session, usually at login time.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 476, 492,
-            493, 520, 535, 579, 590, 595, 680, 728, 742, 770, 776, 787, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229,
-            1299, 1325, 1416, 1417, 1418, 1502, 1503, 1504, 1506, 1586, 1590, 1601, 1645, 1688, 1699, 1724, 1738, 1739,
-            1753, 1810, 1813, 1817, 1962, 1967, 2074, 2118,
+            493, 520, 535, 579, 590, 595, 680, 726, 740, 768, 774, 785, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225,
+            1295, 1321, 1412, 1413, 1414, 1498, 1499, 1500, 1502, 1582, 1586, 1597, 1641, 1684, 1695, 1720, 1734, 1735,
+            1749, 1806, 1809, 1813, 1958, 1963, 2070, 2114,
         ],
     },
     Class {
@@ -19395,9 +19363,9 @@ pub const CLASSES: &[Class] = &[
         description: "Entity Management events report activity by a managed client, a micro service, or a user at a management console. The activity can be a create, read, update, and delete operation on a managed entity.",
         attributes: &[
             2, 3, 18, 19, 22, 28, 38, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 246, 263, 265, 268, 298, 421,
-            476, 492, 493, 535, 579, 590, 595, 596, 597, 680, 770, 776, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229,
-            1299, 1416, 1417, 1418, 1502, 1503, 1504, 1506, 1590, 1601, 1645, 1688, 1699, 1724, 1738, 1739, 1753, 1810,
-            1813, 1817, 1962, 1967, 2074, 2080,
+            476, 492, 493, 535, 579, 590, 595, 596, 597, 680, 768, 774, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225,
+            1295, 1412, 1413, 1414, 1498, 1499, 1500, 1502, 1586, 1597, 1641, 1684, 1695, 1720, 1734, 1735, 1749, 1806,
+            1809, 1813, 1958, 1963, 2070, 2076,
         ],
     },
     Class {
@@ -19408,9 +19376,9 @@ pub const CLASSES: &[Class] = &[
         description: "User Access Management events report management updates to a user's privileges.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 476, 492,
-            493, 535, 579, 590, 595, 680, 770, 776, 783, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1299, 1322,
-            1416, 1417, 1418, 1475, 1489, 1502, 1503, 1504, 1506, 1590, 1601, 1645, 1688, 1699, 1724, 1738, 1739, 1753,
-            1810, 1813, 1817, 1962, 1967, 2074, 2119,
+            493, 535, 579, 590, 595, 680, 768, 774, 781, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1295, 1318,
+            1412, 1413, 1414, 1471, 1485, 1498, 1499, 1500, 1502, 1586, 1597, 1641, 1684, 1695, 1720, 1734, 1735, 1749,
+            1806, 1809, 1813, 1958, 1963, 2070, 2115,
         ],
     },
     Class {
@@ -19421,9 +19389,9 @@ pub const CLASSES: &[Class] = &[
         description: "Group Management events report lifecycle management of a group, as well as privileges, roles, and resources associated with the group. There are two ways updates to the state of a group may be expressed: Using the Update activity, for example when updating multiple items at one time, the updated_group reflects the changes made to group. Using discrete activities, such as Assign Privileges the state change is expressed by the privileges attribute. Optionally, on success, the updated_group reflects the new state of the group.",
         attributes: &[
             18, 19, 23, 28, 38, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 476, 492,
-            493, 535, 579, 590, 595, 680, 735, 770, 776, 785, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1289,
-            1299, 1320, 1416, 1417, 1418, 1475, 1490, 1502, 1503, 1504, 1506, 1590, 1601, 1645, 1688, 1699, 1724, 1738,
-            1739, 1753, 1763, 1810, 1813, 1817, 1962, 1967, 2074, 2081, 2102, 2124,
+            493, 535, 579, 590, 595, 680, 733, 768, 774, 783, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1285,
+            1295, 1316, 1412, 1413, 1414, 1471, 1486, 1498, 1499, 1500, 1502, 1586, 1597, 1641, 1684, 1695, 1720, 1734,
+            1735, 1749, 1759, 1806, 1809, 1813, 1958, 1963, 2070, 2077, 2098, 2120,
         ],
     },
     Class {
@@ -19434,9 +19402,9 @@ pub const CLASSES: &[Class] = &[
         description: "User Management events report lifecycle management of a user and account management tasks that are performed, such as a password change or reset, a user being created, updated, deleted, disabled, enabled, locked out or unlocked. There are two ways updates to the state of a user may be expressed: Using the Update activity, for example when updating multiple items at one time, the updated_user reflects the changes made to user. Using discrete activities, such as Assign Privileges the state change is expressed by the privileges attribute. Optionally, on successful changes, the updated_user reflects the new state of the user.",
         attributes: &[
             18, 19, 24, 28, 38, 54, 57, 84, 105, 111, 114, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 476,
-            492, 493, 535, 579, 590, 595, 680, 770, 776, 786, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1289,
-            1299, 1323, 1416, 1417, 1418, 1490, 1502, 1503, 1504, 1506, 1590, 1601, 1645, 1688, 1699, 1724, 1738, 1739,
-            1753, 1810, 1813, 1817, 1962, 1967, 2074, 2084, 2117,
+            492, 493, 535, 579, 590, 595, 680, 768, 774, 784, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1285,
+            1295, 1319, 1412, 1413, 1414, 1486, 1498, 1499, 1500, 1502, 1586, 1597, 1641, 1684, 1695, 1720, 1734, 1735,
+            1749, 1806, 1809, 1813, 1958, 1963, 2070, 2080, 2113,
         ],
     },
     Class {
@@ -19447,9 +19415,9 @@ pub const CLASSES: &[Class] = &[
         description: "Role Management events report lifecycle management of a role, as well as privileges, policies, credentials, and resources associated with the role. There are two ways updates to the state of a role may be expressed: Using the Update activity, for example when updating multiple items at one time, the updated_role reflects the changes made to iam_role. Using discrete activities, such as Assign Privileges the state change is expressed by the privileges attribute. Optionally, on success, the updated_role reflects the new state of the role. Roles assigned or removed from users and groups are expressed by the User Management and Group Management classes.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 476, 492,
-            493, 535, 579, 590, 595, 680, 770, 776, 784, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1289, 1299,
-            1319, 1354, 1416, 1417, 1418, 1488, 1502, 1503, 1504, 1506, 1590, 1601, 1645, 1688, 1699, 1724, 1738, 1739,
-            1753, 1810, 1813, 1817, 1962, 1967, 2074, 2083,
+            493, 535, 579, 590, 595, 680, 768, 774, 782, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1285, 1295,
+            1315, 1350, 1412, 1413, 1414, 1484, 1498, 1499, 1500, 1502, 1586, 1597, 1641, 1684, 1695, 1720, 1734, 1735,
+            1749, 1806, 1809, 1813, 1958, 1963, 2070, 2079,
         ],
     },
     Class {
@@ -19460,10 +19428,10 @@ pub const CLASSES: &[Class] = &[
         description: "Network Activity events report network connection and traffic activity.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 89, 90, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 274, 298,
-            380, 421, 476, 492, 493, 521, 535, 579, 590, 595, 680, 803, 804, 829, 865, 886, 968, 1007, 1010, 1016,
-            1022, 1025, 1173, 1196, 1199, 1200, 1229, 1246, 1299, 1383, 1384, 1386, 1387, 1388, 1389, 1390, 1416, 1417,
-            1418, 1502, 1503, 1504, 1506, 1590, 1601, 1652, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1830,
-            1843, 1962, 1967, 2074, 2089,
+            380, 421, 476, 492, 493, 521, 535, 579, 590, 595, 680, 801, 802, 827, 863, 884, 964, 1003, 1006, 1012,
+            1018, 1021, 1169, 1192, 1195, 1196, 1225, 1242, 1295, 1379, 1380, 1382, 1383, 1384, 1385, 1386, 1412, 1413,
+            1414, 1498, 1499, 1500, 1502, 1586, 1597, 1648, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1826,
+            1839, 1958, 1963, 2070, 2085,
         ],
     },
     Class {
@@ -19474,10 +19442,10 @@ pub const CLASSES: &[Class] = &[
         description: "HTTP Activity events report HTTP connection and traffic information.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 89, 90, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 274, 298,
-            380, 421, 476, 492, 493, 527, 535, 579, 590, 595, 652, 680, 765, 772, 778, 779, 829, 886, 968, 1007, 1010,
-            1016, 1022, 1025, 1173, 1196, 1199, 1200, 1229, 1246, 1299, 1383, 1384, 1386, 1387, 1388, 1389, 1390, 1416,
-            1417, 1418, 1502, 1503, 1504, 1506, 1590, 1601, 1648, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817,
-            1830, 1841, 1843, 1962, 1967, 2074,
+            380, 421, 476, 492, 493, 527, 535, 579, 590, 595, 652, 680, 763, 770, 776, 777, 827, 884, 964, 1003, 1006,
+            1012, 1018, 1021, 1169, 1192, 1195, 1196, 1225, 1242, 1295, 1379, 1380, 1382, 1383, 1384, 1385, 1386, 1412,
+            1413, 1414, 1498, 1499, 1500, 1502, 1586, 1597, 1644, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813,
+            1826, 1837, 1839, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19488,10 +19456,10 @@ pub const CLASSES: &[Class] = &[
         description: "DNS Activity events report DNS queries and answers as seen on the network.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 83, 84, 89, 90, 105, 111, 127, 129, 178, 179, 204, 205, 219, 263, 265, 268,
-            274, 298, 380, 421, 476, 492, 493, 527, 535, 579, 590, 595, 680, 699, 704, 829, 886, 968, 1007, 1010, 1016,
-            1022, 1025, 1173, 1196, 1199, 1200, 1210, 1211, 1229, 1246, 1299, 1383, 1384, 1386, 1387, 1388, 1389, 1390,
-            1395, 1396, 1406, 1408, 1416, 1417, 1418, 1420, 1421, 1496, 1498, 1499, 1502, 1503, 1504, 1506, 1590, 1601,
-            1648, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1830, 1843, 1849, 1962, 1967, 2074,
+            274, 298, 380, 421, 476, 492, 493, 527, 535, 579, 590, 595, 680, 697, 702, 827, 884, 964, 1003, 1006, 1012,
+            1018, 1021, 1169, 1192, 1195, 1196, 1206, 1207, 1225, 1242, 1295, 1379, 1380, 1382, 1383, 1384, 1385, 1386,
+            1391, 1392, 1402, 1404, 1412, 1413, 1414, 1416, 1417, 1492, 1494, 1495, 1498, 1499, 1500, 1502, 1586, 1597,
+            1644, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1826, 1839, 1845, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19502,10 +19470,10 @@ pub const CLASSES: &[Class] = &[
         description: "DHCP Activity events report MAC to IP assignment via DHCP from a client or server.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 89, 90, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 274, 298,
-            380, 421, 476, 492, 493, 528, 535, 579, 590, 595, 680, 829, 861, 886, 959, 968, 1007, 1010, 1016, 1022,
-            1025, 1173, 1196, 1199, 1200, 1229, 1246, 1299, 1383, 1384, 1386, 1387, 1388, 1389, 1390, 1416, 1417, 1418,
-            1454, 1502, 1503, 1504, 1506, 1590, 1601, 1647, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1830,
-            1843, 1850, 1962, 1967, 2074,
+            380, 421, 476, 492, 493, 528, 535, 579, 590, 595, 680, 827, 859, 884, 955, 964, 1003, 1006, 1012, 1018,
+            1021, 1169, 1192, 1195, 1196, 1225, 1242, 1295, 1379, 1380, 1382, 1383, 1384, 1385, 1386, 1412, 1413, 1414,
+            1450, 1498, 1499, 1500, 1502, 1586, 1597, 1643, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1826,
+            1839, 1846, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19516,10 +19484,10 @@ pub const CLASSES: &[Class] = &[
         description: "Remote Desktop Protocol (RDP) Activity events report post-authentication remote client connections between clients and servers over the network.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 89, 90, 105, 111, 129, 165, 178, 179, 187, 204, 205, 219, 263, 265, 268,
-            275, 298, 380, 421, 473, 492, 493, 527, 535, 579, 590, 595, 653, 680, 789, 829, 886, 907, 968, 1007, 1010,
-            1016, 1022, 1025, 1173, 1196, 1199, 1200, 1229, 1246, 1299, 1372, 1383, 1384, 1386, 1387, 1388, 1389, 1390,
-            1416, 1417, 1418, 1459, 1468, 1494, 1502, 1503, 1504, 1506, 1590, 1601, 1648, 1688, 1699, 1724, 1738, 1739,
-            1753, 1810, 1813, 1817, 1830, 1843, 1962, 1967, 2074, 2105,
+            275, 298, 380, 421, 473, 492, 493, 527, 535, 579, 590, 595, 653, 680, 787, 827, 884, 905, 964, 1003, 1006,
+            1012, 1018, 1021, 1169, 1192, 1195, 1196, 1225, 1242, 1295, 1368, 1379, 1380, 1382, 1383, 1384, 1385, 1386,
+            1412, 1413, 1414, 1455, 1464, 1490, 1498, 1499, 1500, 1502, 1586, 1597, 1644, 1684, 1695, 1720, 1734, 1735,
+            1749, 1806, 1809, 1813, 1826, 1839, 1958, 1963, 2070, 2101,
         ],
     },
     Class {
@@ -19530,10 +19498,10 @@ pub const CLASSES: &[Class] = &[
         description: "Server Message Block (SMB) Protocol Activity events report client/server connections sharing resources within the network.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 89, 90, 105, 111, 129, 178, 179, 204, 205, 214, 219, 237, 263, 265, 268,
-            274, 298, 380, 417, 421, 476, 482, 492, 493, 527, 535, 579, 590, 595, 654, 680, 829, 886, 968, 1007, 1010,
-            1016, 1022, 1025, 1173, 1196, 1199, 1200, 1213, 1229, 1246, 1299, 1383, 1384, 1386, 1387, 1388, 1389, 1390,
-            1416, 1417, 1418, 1495, 1502, 1503, 1504, 1506, 1590, 1601, 1602, 1604, 1606, 1648, 1688, 1699, 1724, 1738,
-            1739, 1753, 1810, 1813, 1817, 1830, 1843, 1854, 1962, 1967, 2074,
+            274, 298, 380, 417, 421, 476, 482, 492, 493, 527, 535, 579, 590, 595, 654, 680, 827, 884, 964, 1003, 1006,
+            1012, 1018, 1021, 1169, 1192, 1195, 1196, 1209, 1225, 1242, 1295, 1379, 1380, 1382, 1383, 1384, 1385, 1386,
+            1412, 1413, 1414, 1491, 1498, 1499, 1500, 1502, 1586, 1597, 1598, 1600, 1602, 1644, 1684, 1695, 1720, 1734,
+            1735, 1749, 1806, 1809, 1813, 1826, 1839, 1850, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19544,10 +19512,10 @@ pub const CLASSES: &[Class] = &[
         description: "SSH Activity events report remote client connections to a server using the Secure Shell (SSH) Protocol.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 89, 90, 105, 111, 123, 124, 129, 178, 179, 204, 205, 215, 219, 263, 265,
-            268, 274, 298, 380, 421, 476, 492, 493, 527, 535, 579, 590, 595, 655, 680, 829, 886, 968, 1007, 1010, 1016,
-            1022, 1025, 1173, 1196, 1199, 1200, 1229, 1246, 1299, 1373, 1383, 1384, 1386, 1387, 1388, 1389, 1390, 1416,
-            1417, 1418, 1502, 1503, 1504, 1506, 1571, 1590, 1601, 1648, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813,
-            1817, 1830, 1843, 1962, 1967, 2074,
+            268, 274, 298, 380, 421, 476, 492, 493, 527, 535, 579, 590, 595, 655, 680, 827, 884, 964, 1003, 1006, 1012,
+            1018, 1021, 1169, 1192, 1195, 1196, 1225, 1242, 1295, 1369, 1379, 1380, 1382, 1383, 1384, 1385, 1386, 1412,
+            1413, 1414, 1498, 1499, 1500, 1502, 1567, 1586, 1597, 1644, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809,
+            1813, 1826, 1839, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19558,10 +19526,10 @@ pub const CLASSES: &[Class] = &[
         description: "File Transfer Protocol (FTP) Activity events report file transfers between a server and a client as seen on the network.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 89, 90, 105, 111, 129, 178, 179, 204, 205, 219, 230, 235, 240, 263, 265,
-            268, 274, 298, 380, 421, 476, 492, 493, 527, 535, 579, 590, 595, 651, 680, 829, 886, 968, 1007, 1010, 1016,
-            1022, 1025, 1110, 1173, 1196, 1199, 1200, 1229, 1246, 1299, 1303, 1383, 1384, 1386, 1387, 1388, 1389, 1390,
-            1416, 1417, 1418, 1502, 1503, 1504, 1506, 1590, 1601, 1648, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813,
-            1817, 1830, 1843, 1895, 1962, 1967, 2074,
+            268, 274, 298, 380, 421, 476, 492, 493, 527, 535, 579, 590, 595, 651, 680, 827, 884, 964, 1003, 1006, 1012,
+            1018, 1021, 1106, 1169, 1192, 1195, 1196, 1225, 1242, 1295, 1299, 1379, 1380, 1382, 1383, 1384, 1385, 1386,
+            1412, 1413, 1414, 1498, 1499, 1500, 1502, 1586, 1597, 1644, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809,
+            1813, 1826, 1839, 1891, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19572,9 +19540,9 @@ pub const CLASSES: &[Class] = &[
         description: "Email Activity events report SMTP protocol and email activities including those with embedded URLs and files. See the Email object for details.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 105, 110, 111, 129, 135, 178, 179, 204, 205, 219, 236, 263, 265, 268, 298,
-            421, 476, 484, 486, 492, 493, 529, 535, 553, 559, 579, 590, 595, 680, 712, 829, 1007, 1010, 1016, 1022,
-            1023, 1025, 1196, 1229, 1299, 1363, 1416, 1417, 1418, 1502, 1503, 1504, 1506, 1590, 1601, 1625, 1650, 1688,
-            1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1833, 1962, 1967, 2074,
+            421, 476, 484, 486, 492, 493, 529, 535, 553, 559, 579, 590, 595, 680, 710, 827, 1003, 1006, 1012, 1018,
+            1019, 1021, 1192, 1225, 1295, 1359, 1412, 1413, 1414, 1498, 1499, 1500, 1502, 1586, 1597, 1621, 1646, 1684,
+            1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1829, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19585,10 +19553,10 @@ pub const CLASSES: &[Class] = &[
         description: "Network File Activity events report file activities traversing the network, including file storage services such as Box, MS OneDrive, or Google Drive.",
         attributes: &[
             18, 19, 22, 28, 41, 54, 57, 84, 89, 90, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 274, 298,
-            380, 421, 476, 492, 493, 524, 535, 579, 590, 595, 624, 631, 664, 680, 829, 886, 968, 1007, 1010, 1016,
-            1022, 1025, 1173, 1196, 1199, 1200, 1229, 1246, 1299, 1383, 1384, 1386, 1387, 1388, 1389, 1390, 1416, 1417,
-            1418, 1502, 1503, 1504, 1506, 1590, 1601, 1656, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1830,
-            1843, 1962, 1967, 2074,
+            380, 421, 476, 492, 493, 524, 535, 579, 590, 595, 624, 631, 664, 680, 827, 884, 964, 1003, 1006, 1012,
+            1018, 1021, 1169, 1192, 1195, 1196, 1225, 1242, 1295, 1379, 1380, 1382, 1383, 1384, 1385, 1386, 1412, 1413,
+            1414, 1498, 1499, 1500, 1502, 1586, 1597, 1652, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1826,
+            1839, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19599,8 +19567,8 @@ pub const CLASSES: &[Class] = &[
         description: "Email File Activity events report files within emails.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            560, 579, 590, 595, 663, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1416, 1417, 1418, 1502, 1503,
-            1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            560, 579, 590, 595, 663, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1412, 1413, 1414, 1498, 1499,
+            1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19611,8 +19579,8 @@ pub const CLASSES: &[Class] = &[
         description: "Email URL Activity events report URLs within an email.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            560, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1416, 1417, 1418, 1502, 1503, 1504,
-            1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074, 2094,
+            560, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1412, 1413, 1414, 1498, 1499, 1500,
+            1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070, 2090,
         ],
     },
     Class {
@@ -19623,10 +19591,10 @@ pub const CLASSES: &[Class] = &[
         description: "The Network Time Protocol (NTP) Activity events report instances of remote clients synchronizing their clocks with an NTP server, as observed on the network.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 89, 90, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 274, 298,
-            380, 420, 421, 476, 489, 492, 493, 527, 535, 579, 590, 595, 680, 829, 886, 968, 1007, 1010, 1016, 1022,
-            1025, 1173, 1196, 1199, 1200, 1229, 1246, 1299, 1309, 1383, 1384, 1386, 1387, 1388, 1389, 1390, 1416, 1417,
-            1418, 1502, 1503, 1504, 1506, 1590, 1601, 1648, 1688, 1699, 1724, 1738, 1739, 1753, 1756, 1757, 1810, 1813,
-            1817, 1830, 1843, 1962, 1967, 2074, 2196,
+            380, 420, 421, 476, 489, 492, 493, 527, 535, 579, 590, 595, 680, 827, 884, 964, 1003, 1006, 1012, 1018,
+            1021, 1169, 1192, 1195, 1196, 1225, 1242, 1295, 1305, 1379, 1380, 1382, 1383, 1384, 1385, 1386, 1412, 1413,
+            1414, 1498, 1499, 1500, 1502, 1586, 1597, 1644, 1684, 1695, 1720, 1734, 1735, 1749, 1752, 1753, 1806, 1809,
+            1813, 1826, 1839, 1958, 1963, 2070, 2192,
         ],
     },
     Class {
@@ -19637,10 +19605,10 @@ pub const CLASSES: &[Class] = &[
         description: "Tunnel Activity events report secure tunnel establishment (such as VPN), teardowns, renewals, and other network tunnel specific actions.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 89, 90, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 276, 298,
-            380, 421, 474, 492, 493, 530, 535, 579, 590, 595, 680, 829, 886, 968, 1007, 1010, 1016, 1022, 1025, 1173,
-            1196, 1199, 1200, 1229, 1246, 1299, 1365, 1383, 1384, 1386, 1387, 1388, 1389, 1390, 1416, 1417, 1418, 1502,
-            1503, 1504, 1506, 1582, 1590, 1601, 1649, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1830, 1844,
-            1857, 1858, 1859, 1962, 1967, 2074, 2106,
+            380, 421, 474, 492, 493, 530, 535, 579, 590, 595, 680, 827, 884, 964, 1003, 1006, 1012, 1018, 1021, 1169,
+            1192, 1195, 1196, 1225, 1242, 1295, 1361, 1379, 1380, 1382, 1383, 1384, 1385, 1386, 1412, 1413, 1414, 1498,
+            1499, 1500, 1502, 1578, 1586, 1597, 1645, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1826, 1840,
+            1853, 1854, 1855, 1958, 1963, 2070, 2102,
         ],
     },
     Class {
@@ -19651,8 +19619,8 @@ pub const CLASSES: &[Class] = &[
         description: "Device Inventory Info events report device inventory data that is either logged or proactively collected. For example, when collecting device information from a CMDB or running a network sweep of connected devices.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 478, 492, 493, 535,
-            579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1416, 1417, 1418, 1502, 1503, 1504,
-            1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1412, 1413, 1414, 1498, 1499, 1500,
+            1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19663,8 +19631,8 @@ pub const CLASSES: &[Class] = &[
         description: "Device Config State events report device configuration data, device assessments, and/or CIS Benchmark results.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 100, 105, 111, 129, 178, 179, 196, 204, 205, 219, 263, 265, 268, 298, 478, 492,
-            493, 535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1416, 1417, 1418, 1502, 1503,
-            1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            493, 535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1412, 1413, 1414, 1498, 1499,
+            1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19675,8 +19643,8 @@ pub const CLASSES: &[Class] = &[
         description: "User Inventory Info events report user inventory data that is either logged or proactively collected. For example, when collecting user information from Active Directory entries.",
         attributes: &[
             18, 19, 22, 28, 34, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1416, 1417, 1418, 1502, 1503, 1504,
-            1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074, 2115,
+            579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1412, 1413, 1414, 1498, 1499, 1500,
+            1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070, 2111,
         ],
     },
     Class {
@@ -19687,8 +19655,8 @@ pub const CLASSES: &[Class] = &[
         description: "Operating System Patch State reports the installation of an OS patch to a device and any associated knowledgebase articles.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 481, 492, 493, 535,
-            579, 590, 595, 680, 829, 896, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1416, 1417, 1418, 1502, 1503, 1504,
-            1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            579, 590, 595, 680, 827, 894, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1412, 1413, 1414, 1498, 1499, 1500,
+            1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19699,8 +19667,8 @@ pub const CLASSES: &[Class] = &[
         description: "Kernel Object Query events report information about discovered kernel resources.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 680, 829, 900, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1399, 1402, 1403, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            579, 590, 595, 680, 827, 898, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1395, 1398, 1399, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19711,8 +19679,8 @@ pub const CLASSES: &[Class] = &[
         description: "File Query events report information about files that are present on the system.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 665, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1399, 1402, 1403, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            579, 590, 595, 665, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1395, 1398, 1399, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19723,8 +19691,8 @@ pub const CLASSES: &[Class] = &[
         description: "Folder Query events report information about folders that are present on the system.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 680, 707, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1399, 1402, 1403, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            579, 590, 595, 680, 705, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1395, 1398, 1399, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19735,9 +19703,9 @@ pub const CLASSES: &[Class] = &[
         description: "Admin Group Query events report information about administrative groups.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 680, 736, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1399, 1402, 1403, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
-            2123,
+            579, 590, 595, 680, 734, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1395, 1398, 1399, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
+            2119,
         ],
     },
     Class {
@@ -19748,8 +19716,8 @@ pub const CLASSES: &[Class] = &[
         description: "Job Query events report information about scheduled jobs.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 680, 829, 891, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1399, 1402, 1403, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            579, 590, 595, 680, 827, 889, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1395, 1398, 1399, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19760,9 +19728,9 @@ pub const CLASSES: &[Class] = &[
         description: "Module Query events report information about loaded modules.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1074, 1196, 1229, 1299, 1333, 1399, 1402, 1403, 1416,
-            1417, 1418, 1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962,
-            1967, 2074,
+            579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1070, 1192, 1225, 1295, 1329, 1395, 1398, 1399, 1412,
+            1413, 1414, 1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958,
+            1963, 2070,
         ],
     },
     Class {
@@ -19773,9 +19741,9 @@ pub const CLASSES: &[Class] = &[
         description: "Network Connection Query events report information about active network connections.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 277, 298, 476, 492, 493,
-            535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1334, 1399, 1402, 1403, 1416, 1417,
-            1418, 1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1714, 1722, 1724, 1738, 1739, 1753, 1810, 1813, 1817,
-            1962, 1967, 2074,
+            535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1330, 1395, 1398, 1399, 1412, 1413,
+            1414, 1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1710, 1718, 1720, 1734, 1735, 1749, 1806, 1809, 1813,
+            1958, 1963, 2070,
         ],
     },
     Class {
@@ -19786,9 +19754,9 @@ pub const CLASSES: &[Class] = &[
         description: "Networks Query events report information about network adapters.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1172, 1196, 1229, 1299, 1399, 1402, 1403, 1416, 1417,
-            1418, 1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967,
-            2074,
+            579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1168, 1192, 1225, 1295, 1395, 1398, 1399, 1412, 1413,
+            1414, 1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963,
+            2070,
         ],
     },
     Class {
@@ -19799,9 +19767,9 @@ pub const CLASSES: &[Class] = &[
         description: "Peripheral Device Query events report information about peripheral devices.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1273, 1299, 1399, 1402, 1403, 1416, 1417,
-            1418, 1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967,
-            2074,
+            579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1269, 1295, 1395, 1398, 1399, 1412, 1413,
+            1414, 1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963,
+            2070,
         ],
     },
     Class {
@@ -19812,9 +19780,9 @@ pub const CLASSES: &[Class] = &[
         description: "Process Query events report information about running processes.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1331, 1399, 1402, 1403, 1416, 1417,
-            1418, 1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967,
-            2074,
+            579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1327, 1395, 1398, 1399, 1412, 1413,
+            1414, 1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963,
+            2070,
         ],
     },
     Class {
@@ -19825,9 +19793,9 @@ pub const CLASSES: &[Class] = &[
         description: "Service Query events report information about running services.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1399, 1402, 1403, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1578, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967,
-            2074,
+            579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1395, 1398, 1399, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1574, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963,
+            2070,
         ],
     },
     Class {
@@ -19838,9 +19806,9 @@ pub const CLASSES: &[Class] = &[
         description: "User Session Query events report information about existing user sessions.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1399, 1402, 1403, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1587, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967,
-            2074,
+            579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1395, 1398, 1399, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1583, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963,
+            2070,
         ],
     },
     Class {
@@ -19851,9 +19819,9 @@ pub const CLASSES: &[Class] = &[
         description: "User Query events report user data that have been discovered, queried, polled or searched. This event differs from User Inventory as it describes the result of a targeted search by filtering a subset of user attributes.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1399, 1402, 1403, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
-            2116,
+            579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1395, 1398, 1399, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
+            2112,
         ],
     },
     Class {
@@ -19864,9 +19832,9 @@ pub const CLASSES: &[Class] = &[
         description: "Device Config State Change events report state changes that impact the security of the device.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 479, 492, 493, 535,
-            579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1312, 1313, 1314, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1549, 1550, 1552, 1590, 1601, 1688, 1699, 1708, 1716, 1724, 1738, 1739, 1753, 1810,
-            1813, 1817, 1962, 1967, 2074,
+            579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1308, 1309, 1310, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1545, 1546, 1548, 1586, 1597, 1684, 1695, 1704, 1712, 1720, 1734, 1735, 1749, 1806,
+            1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19877,8 +19845,8 @@ pub const CLASSES: &[Class] = &[
         description: "Software Inventory Info events report device software inventory data that is either logged or proactively collected. For example, when collecting device information from a CMDB or running a network sweep of connected devices.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 478, 492, 493, 535,
-            579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1241, 1299, 1339, 1416, 1417, 1418, 1502,
-            1503, 1504, 1506, 1526, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1237, 1295, 1335, 1412, 1413, 1414, 1498,
+            1499, 1500, 1502, 1522, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19889,8 +19857,8 @@ pub const CLASSES: &[Class] = &[
         description: "OSINT Inventory Info events report open source intelligence or threat intelligence inventory data that is either logged or proactively collected. For example, when collecting OSINT information from Threat Intelligence Platforms (TIPs) or Extended Detection and Response (XDR) platforms, or collecting data from OSINT or other generic threat intelligence and enrichment feeds such as APIs and datastores.",
         attributes: &[
             18, 19, 22, 28, 33, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1230, 1299, 1416, 1417, 1418, 1502, 1503, 1504,
-            1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1226, 1295, 1412, 1413, 1414, 1498, 1499, 1500,
+            1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19901,9 +19869,9 @@ pub const CLASSES: &[Class] = &[
         description: "Startup Item Query events report information about discovered items, e.g., application components that are generally configured to run automatically.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 476, 492, 493, 535,
-            579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1399, 1402, 1403, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1706, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967,
-            2074,
+            579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1395, 1398, 1399, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1702, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963,
+            2070,
         ],
     },
     Class {
@@ -19914,9 +19882,9 @@ pub const CLASSES: &[Class] = &[
         description: "Cloud Resources Inventory Info events report cloud asset inventory data. This data can be either logged or proactively collected. For example, use this event class when creating an inventory of cloud resource information from a Configuration Management Database (CMDB), Cyber Asset Attack Surface Management (CAASM), direct public cloud service provider APIs, Software-as-a-Service (SaaS) APIs, or otherwise.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 218, 263, 265, 268, 280, 298, 409, 413, 476,
-            492, 493, 535, 579, 590, 595, 680, 792, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1416, 1417, 1418,
-            1438, 1492, 1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1775, 1810, 1813, 1817,
-            1962, 1967, 2074,
+            492, 493, 535, 579, 590, 595, 680, 790, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1412, 1413, 1414,
+            1434, 1488, 1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1771, 1806, 1809, 1813,
+            1958, 1963, 2070,
         ],
     },
     Class {
@@ -19927,9 +19895,9 @@ pub const CLASSES: &[Class] = &[
         description: "Data collected directly from devices that represents forensic information pulled, queried, or discovered from devices that may indicate malicious activity. It contains a number of child objects, each representing a distinct evidence domain (network connections, file artifacts, registry entries, etc.). When mapping raw telemetry data users should select Query Evidence and then the appropriate child object that best matches the evidence type.",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 477, 492, 493, 535,
-            579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1397, 1399, 1402, 1403, 1416, 1417,
-            1418, 1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967,
-            2074,
+            579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1393, 1395, 1398, 1399, 1412, 1413,
+            1414, 1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963,
+            2070,
         ],
     },
     Class {
@@ -19940,9 +19908,9 @@ pub const CLASSES: &[Class] = &[
         description: "Web Resources Activity events describe actions executed on a set of Web Resources.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 476, 492,
-            493, 518, 535, 579, 590, 595, 680, 770, 775, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1299, 1384,
-            1386, 1387, 1388, 1389, 1390, 1416, 1417, 1418, 1502, 1503, 1504, 1506, 1590, 1601, 1642, 1688, 1699, 1724,
-            1738, 1739, 1753, 1810, 1813, 1817, 1829, 1962, 1967, 2074, 2085, 2210, 2212,
+            493, 518, 535, 579, 590, 595, 680, 768, 773, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1295, 1380,
+            1382, 1383, 1384, 1385, 1386, 1412, 1413, 1414, 1498, 1499, 1500, 1502, 1586, 1597, 1638, 1684, 1695, 1720,
+            1734, 1735, 1749, 1806, 1809, 1813, 1825, 1958, 1963, 2070, 2081, 2206, 2208,
         ],
     },
     Class {
@@ -19953,9 +19921,9 @@ pub const CLASSES: &[Class] = &[
         description: "Application Lifecycle events report installation, removal, start, stop of an application or service.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 87, 93, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421,
-            476, 492, 493, 535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1299, 1416, 1417,
-            1418, 1502, 1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967,
-            2074,
+            476, 492, 493, 535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1295, 1412, 1413,
+            1414, 1498, 1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963,
+            2070,
         ],
     },
     Class {
@@ -19966,9 +19934,9 @@ pub const CLASSES: &[Class] = &[
         description: "API events describe general CRUD (Create, Read, Update, Delete) API activities, e.g. (AWS Cloudtrail)",
         attributes: &[
             18, 19, 22, 28, 44, 54, 57, 86, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 476, 492,
-            493, 526, 535, 579, 590, 595, 680, 771, 777, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1299, 1416,
-            1417, 1418, 1487, 1502, 1503, 1504, 1506, 1590, 1601, 1655, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813,
-            1817, 1841, 1962, 1967, 2074,
+            493, 526, 535, 579, 590, 595, 680, 769, 775, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1295, 1412,
+            1413, 1414, 1483, 1498, 1499, 1500, 1502, 1586, 1597, 1651, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809,
+            1813, 1837, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -19979,9 +19947,9 @@ pub const CLASSES: &[Class] = &[
         description: "Web Resource Access Activity events describe successful/failed attempts to access a web resource over HTTP.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 476, 492,
-            493, 535, 579, 590, 595, 680, 773, 775, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1299, 1382, 1384,
-            1386, 1387, 1388, 1389, 1390, 1416, 1417, 1418, 1502, 1503, 1504, 1506, 1590, 1601, 1643, 1688, 1699, 1724,
-            1738, 1739, 1753, 1810, 1813, 1817, 1829, 1962, 1967, 2074, 2211,
+            493, 535, 579, 590, 595, 680, 771, 773, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1295, 1378, 1380,
+            1382, 1383, 1384, 1385, 1386, 1412, 1413, 1414, 1498, 1499, 1500, 1502, 1586, 1597, 1639, 1684, 1695, 1720,
+            1734, 1735, 1749, 1806, 1809, 1813, 1825, 1958, 1963, 2070, 2207,
         ],
     },
     Class {
@@ -19992,9 +19960,9 @@ pub const CLASSES: &[Class] = &[
         description: "Datastore events describe general activities (Read, Update, Query, Delete, etc.) which affect datastores or data within those datastores, e.g. (AWS RDS, AWS S3).",
         attributes: &[
             18, 19, 22, 28, 44, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 412, 416, 421,
-            476, 492, 493, 519, 535, 579, 590, 595, 680, 771, 777, 829, 1007, 1010, 1016, 1022, 1025, 1196, 1229, 1299,
-            1398, 1416, 1417, 1418, 1502, 1503, 1504, 1506, 1590, 1601, 1655, 1688, 1699, 1724, 1738, 1739, 1753, 1777,
-            1810, 1813, 1817, 1873, 1932, 1962, 1967, 2074,
+            476, 492, 493, 519, 535, 579, 590, 595, 680, 769, 775, 827, 1003, 1006, 1012, 1018, 1021, 1192, 1225, 1295,
+            1394, 1412, 1413, 1414, 1498, 1499, 1500, 1502, 1586, 1597, 1651, 1684, 1695, 1720, 1734, 1735, 1749, 1773,
+            1806, 1809, 1813, 1869, 1928, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -20005,9 +19973,9 @@ pub const CLASSES: &[Class] = &[
         description: "File Hosting Activity events report the actions taken by file management applications, including file sharing servers like Sharepoint and services such as Box, MS OneDrive, Google Drive, or network file share services.",
         attributes: &[
             2, 4, 5, 18, 19, 22, 28, 41, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 274, 298,
-            421, 476, 492, 493, 524, 535, 579, 590, 595, 624, 631, 664, 668, 680, 770, 775, 829, 1007, 1010, 1016,
-            1022, 1025, 1196, 1229, 1299, 1416, 1417, 1418, 1502, 1503, 1504, 1506, 1590, 1601, 1603, 1605, 1607, 1656,
-            1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            421, 476, 492, 493, 524, 535, 579, 590, 595, 624, 631, 664, 668, 680, 768, 773, 827, 1003, 1006, 1012,
+            1018, 1021, 1192, 1225, 1295, 1412, 1413, 1414, 1498, 1499, 1500, 1502, 1586, 1597, 1599, 1601, 1603, 1652,
+            1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -20018,9 +19986,9 @@ pub const CLASSES: &[Class] = &[
         description: "Scan events report the start, completion, and results of a scan job. The scan event includes the number of items that were scanned and the number of detections that were resolved.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 241, 263, 265, 268, 298, 421, 476,
-            492, 493, 533, 576, 586, 595, 680, 829, 1007, 1010, 1016, 1022, 1025, 1182, 1183, 1185, 1188, 1189, 1190,
-            1191, 1192, 1193, 1196, 1229, 1298, 1416, 1417, 1418, 1502, 1503, 1504, 1506, 1529, 1530, 1590, 1601, 1685,
-            1695, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1837, 1962, 1967, 2074,
+            492, 493, 533, 576, 586, 595, 680, 827, 1003, 1006, 1012, 1018, 1021, 1178, 1179, 1181, 1184, 1185, 1186,
+            1187, 1188, 1189, 1192, 1225, 1294, 1412, 1413, 1414, 1498, 1499, 1500, 1502, 1525, 1526, 1586, 1597, 1681,
+            1691, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1833, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -20031,8 +19999,8 @@ pub const CLASSES: &[Class] = &[
         description: "Application Error events describe issues with an applications. The error message should be put in the event's message attribute. The metadata.product attribute can be used to capture the originating application information. The host profile can used to include the generating device information. This class is helpful for applications that generate or handle OCSF events and can also be used for errors in upstream products and services.",
         attributes: &[
             18, 19, 22, 28, 38, 54, 57, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 298, 421, 476, 492,
-            493, 535, 579, 590, 595, 680, 829, 1007, 1010, 1018, 1022, 1025, 1196, 1229, 1299, 1416, 1417, 1418, 1502,
-            1503, 1504, 1506, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            493, 535, 579, 590, 595, 680, 827, 1003, 1006, 1014, 1018, 1021, 1192, 1225, 1295, 1412, 1413, 1414, 1498,
+            1499, 1500, 1502, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -20043,8 +20011,8 @@ pub const CLASSES: &[Class] = &[
         description: "Remediation Activity events report on attempts at remediating a compromised device or computer network.",
         attributes: &[
             18, 19, 20, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 242, 263, 265, 268, 298, 302, 476, 492,
-            493, 535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1416, 1417, 1418, 1456, 1502,
-            1503, 1504, 1506, 1528, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967, 2074,
+            493, 535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1412, 1413, 1414, 1452, 1498,
+            1499, 1500, 1502, 1524, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963, 2070,
         ],
     },
     Class {
@@ -20055,9 +20023,9 @@ pub const CLASSES: &[Class] = &[
         description: "File Remediation Activity events report on attempts at remediating files. Sub-techniques of countermeasures will include File, such as File Removal or Restore File.",
         attributes: &[
             18, 19, 20, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 242, 263, 265, 268, 298, 302, 476, 492,
-            493, 535, 579, 590, 595, 666, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1416, 1417, 1418, 1456,
-            1502, 1503, 1504, 1506, 1528, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967,
-            2074,
+            493, 535, 579, 590, 595, 666, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1412, 1413, 1414, 1452,
+            1498, 1499, 1500, 1502, 1524, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963,
+            2070,
         ],
     },
     Class {
@@ -20068,9 +20036,9 @@ pub const CLASSES: &[Class] = &[
         description: "Process Remediation Activity events report on attempts at remediating processes. Sub-techniques of countermeasures will include Process Eviction, such as Process Termination or Kernel-based Process Isolation.",
         attributes: &[
             18, 19, 20, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 242, 263, 265, 268, 298, 302, 476, 492,
-            493, 535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1335, 1416, 1417, 1418, 1456,
-            1502, 1503, 1504, 1506, 1528, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967,
-            2074,
+            493, 535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1331, 1412, 1413, 1414, 1452,
+            1498, 1499, 1500, 1502, 1524, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963,
+            2070,
         ],
     },
     Class {
@@ -20081,9 +20049,9 @@ pub const CLASSES: &[Class] = &[
         description: "Network Remediation Activity events report on attempts at remediating computer networks. Techniques and Sub-techniques of countermeasures will include Network, such as Network Isolation or Network Traffic Filtering.",
         attributes: &[
             18, 19, 20, 28, 38, 84, 105, 111, 129, 178, 179, 204, 205, 219, 242, 263, 265, 268, 278, 298, 302, 476,
-            492, 493, 535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1416, 1417, 1418, 1456,
-            1502, 1503, 1504, 1506, 1528, 1590, 1601, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1962, 1967,
-            2074,
+            492, 493, 535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1412, 1413, 1414, 1452,
+            1498, 1499, 1500, 1502, 1524, 1586, 1597, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1958, 1963,
+            2070,
         ],
     },
     Class {
@@ -20094,9 +20062,9 @@ pub const CLASSES: &[Class] = &[
         description: "Drone Flights Activity events report the activity of Unmanned Aerial Systems (UAS), their Operators, and mission-planning and authorization metadata as reported by the UAS platforms themselves, by Counter-UAS (CUAS) systems, or other remote monitoring or sensing infrastructure. Based on the Remote ID defined in Standard Specification for Remote ID and Tracking (ASTM Designation: F3411-22a).",
         attributes: &[
             18, 19, 22, 28, 38, 84, 105, 111, 117, 121, 129, 178, 179, 204, 205, 209, 219, 247, 263, 265, 268, 274,
-            298, 476, 492, 493, 532, 535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1364,
-            1386, 1416, 1417, 1418, 1502, 1503, 1504, 1506, 1590, 1601, 1654, 1688, 1699, 1727, 1738, 1739, 1747, 1810,
-            1813, 1817, 1830, 1846, 1962, 1967, 2071, 2072, 2073, 2074,
+            298, 476, 492, 493, 532, 535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1360,
+            1382, 1412, 1413, 1414, 1498, 1499, 1500, 1502, 1586, 1597, 1650, 1684, 1695, 1723, 1734, 1735, 1743, 1806,
+            1809, 1813, 1826, 1842, 1958, 1963, 2067, 2068, 2069, 2070,
         ],
     },
     Class {
@@ -20107,9 +20075,9 @@ pub const CLASSES: &[Class] = &[
         description: "Airborne Broadcast Activity events report the activity of any aircraft or unmanned system as reported and tracked by Automatic Dependent Surveillance - Broadcast (ADS-B) receivers. Based on the ADS-B standards described in Code of Federal Regulations (CFR) Title 14 Chapter I Subchapter F Part 91 and in other general Federal Aviation Administration (FAA) supplemental orders and guidance.",
         attributes: &[
             18, 19, 22, 28, 38, 61, 84, 105, 111, 129, 178, 179, 204, 205, 219, 263, 265, 268, 274, 298, 476, 492, 493,
-            522, 535, 579, 590, 595, 680, 829, 1007, 1010, 1016, 1025, 1196, 1229, 1299, 1366, 1386, 1416, 1417, 1418,
-            1502, 1503, 1504, 1506, 1511, 1590, 1601, 1653, 1688, 1699, 1724, 1738, 1739, 1753, 1810, 1813, 1817, 1830,
-            1845, 1962, 1967, 2071, 2072, 2073, 2074,
+            522, 535, 579, 590, 595, 680, 827, 1003, 1006, 1012, 1021, 1192, 1225, 1295, 1362, 1382, 1412, 1413, 1414,
+            1498, 1499, 1500, 1502, 1507, 1586, 1597, 1649, 1684, 1695, 1720, 1734, 1735, 1749, 1806, 1809, 1813, 1826,
+            1841, 1958, 1963, 2067, 2068, 2069, 2070,
         ],
     },
 ];

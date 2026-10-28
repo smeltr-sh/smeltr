@@ -207,9 +207,9 @@
   <SectionShell>
     <PageHeader title="Schemas">
       {#snippet help()}
-        A schema is what a pipeline's rows must hold: each field's type, and the fields they must
-        have. A pipeline names the schemas it produces, and the editor and review say where its rows
-        do not fit them. A destination can name the schemas it accepts.
+        A schema is what a pipeline's rows should hold: each field's type, and the fields they
+        should have. A pipeline names the schemas it produces, and the editor and review say where
+        its rows do not fit them. A destination can name the schemas it accepts.
       {/snippet}
     </PageHeader>
     <SecondaryTabs tabs={resourcesTabs()} active="#/build/schemas" ariaLabel="Resources" />
@@ -306,7 +306,7 @@
             </ValidationItem>
           {/each}
           {#if schemas.length === 0 && matches === null}
-            <tr><td colspan="4" class="dim">No schemas of this scope's own yet.</td></tr>
+            <tr><td colspan="4" class="dim">No schemas declared here yet.</td></tr>
           {/if}
 
           {#if sharedSchemas.length > 0}
@@ -408,7 +408,7 @@
         </tbody>
       </table>
       {#if matches !== null && matches.size === 0}
-        <p class="dim">No schema has a field or a name holding “{q.trim()}”.</p>
+        <p class="dim">No schema or field matches “{q.trim()}”.</p>
       {/if}
       <SaveBar
         dirty={editor.isDirty}
@@ -479,10 +479,10 @@
       <div class="actions">
         <span class="dim"
           >{'id' in of
-            ? 'Built in, read-only.'
+            ? 'Built-in, read-only.'
             : fromShared
               ? 'Declared in shared/.'
-              : 'Edited as JSON with Edit JSON.'}
+              : 'Edit it with Edit JSON.'}
           <span class="required">*</span> required.</span
         >
         <span class="grow"></span>

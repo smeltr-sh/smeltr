@@ -431,7 +431,7 @@ fn resolve_schemas(
         let errors = &mut ItemErrors::new(attributed, "schemas", &dto.id);
         if crate::schema::reserved(&dto.id) {
             errors.push(format!(
-                "{:?} is a built-in schema's id; give this schema another",
+                "{:?} is a built-in schema's id; give this schema another id",
                 dto.id
             ));
             continue;
@@ -447,27 +447,32 @@ fn resolve_schemas(
             Err(e) => errors.at("schema").push(e),
         }
     }
-    let mut resolve = |section: &'static str, id: &str, field: &'static str, ids: &[String]| -> Vec<Arc<Schema>> {
-        let mut errors = ItemErrors::new(attributed, section, id);
-        ids.iter()
-            .filter_map(|s| {
-                let found = declared.get(s.as_str()).cloned().or_else(|| crate::schema::builtin(s));
-                if found.is_none() {
-                    errors.at(field).push(format!("no schema has the id {s:?}"));
-                }
-                found
-            })
-            .collect()
-    };
+    // `names` is what the object does with a schema: "produces" or "accepts".
+    let mut resolve =
+        |section: &'static str, id: &str, field: &'static str, names: &str, ids: &[String]| -> Vec<Arc<Schema>> {
+            let mut errors = ItemErrors::new(attributed, section, id);
+            ids.iter()
+                .filter_map(|s| {
+                    let found = declared.get(s.as_str()).cloned().or_else(|| crate::schema::builtin(s));
+                    if found.is_none() {
+                        errors.at(field).push(format!(
+                            "{} {id:?} {names} schema {s:?}, which does not exist",
+                            &section[..section.len() - 1]
+                        ));
+                    }
+                    found
+                })
+                .collect()
+        };
     let produces = file
         .pipelines
         .iter()
-        .map(|p| resolve("pipelines", &p.id, "schemas", &p.schemas))
+        .map(|p| resolve("pipelines", &p.id, "schemas", "produces", &p.schemas))
         .collect();
     let accepts = file
         .destinations
         .iter()
-        .map(|d| resolve("destinations", &d.id, "accepts", &d.accepts))
+        .map(|d| resolve("destinations", &d.id, "accepts", "accepts", &d.accepts))
         .collect();
     (produces, accepts)
 }

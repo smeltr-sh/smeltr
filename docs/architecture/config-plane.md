@@ -48,8 +48,8 @@ at save whether or not a step names it yet.
 
 ## Schemas
 
-A schema is what a pipeline's rows must hold: each field's type, and the
-fields they must have. ECS and each OCSF class are built in; a bundle declares
+A schema is what a pipeline's rows should hold: each field's type, and the
+fields they should have. ECS and each OCSF class are built in; a bundle declares
 its own as JSON Schema, by an id no built-in takes. A pipeline names the
 schemas it produces, and a destination may name the schemas it accepts. Both
 are checked at save to name a schema the group can see.

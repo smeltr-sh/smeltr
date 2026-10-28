@@ -532,7 +532,7 @@ export const LIMITS = {
  * fields, so a Kafka field left on an Elasticsearch destination would stop
  * the bundle loading. */
 export type DestinationDto = {
-  /** The schemas a pipeline delivering here must produce one of, by id. Review checks it; nothing refuses. */
+  /** The schemas a pipeline delivering here should produce one of, by id. Review checks it; nothing refuses. */
   accepts?: string[];
 } & (
   | (TlsDto & {
@@ -2555,7 +2555,7 @@ export function conditionLabel(condition: WarningCondition): string {
     case 'deployFailsTests':
       return 'Test failing';
     case 'deployBreaksSchemas':
-      return 'Rows break a schema';
+      return 'Rows do not fit a schema';
     case 'declaredFieldFailing':
       return 'Field not its declared type';
     case 'declaredFieldGone':

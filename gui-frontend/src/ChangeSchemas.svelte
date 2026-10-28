@@ -38,7 +38,7 @@
   <p class="dim">The rows fit every schema their pipelines produce.</p>
 {:else}
   <p class="dim">
-    Where the rows do not fit a schema their pipeline produces. None of these hold back the deploy.
+    Where a pipeline's rows do not fit a schema it produces. None of these block the deploy.
   </p>
   {#each grouped as g (JSON.stringify([g.group, g.pipeline]))}
     <section class="pipeline">
