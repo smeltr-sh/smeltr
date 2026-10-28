@@ -6,7 +6,7 @@
 -->
 <script lang="ts" module>
   import { byteCount } from './bytes';
-  import { LIMITS } from './api';
+  import { LIMITS, BUFFER_HELP } from './api';
   import type { ByteCount } from './bytes';
 
   /** The settings the fields hold, as every request destination names them; a size is `maxRequestBytes` or
@@ -52,7 +52,6 @@
     sizeHelp,
     requests = 'Requests',
     concurrent = true,
-    bufferHelp,
     including = 'retries included',
   }: {
     value: RequestDelivery;
@@ -64,8 +63,6 @@
     requests?: string;
     /** Whether the destination sends more than one request at once; one that does not has no concurrency to set. */
     concurrent?: boolean;
-    /** The buffer's second sentence, in place of what dividing it by the size gives. */
-    bufferHelp?: Snippet;
     /** What one batch's delivery time counts besides the request, as "retries included". */
     including?: string;
   } = $props();
@@ -88,15 +85,14 @@
 <Field optional field={size} label={sizeLabel} help={sizeHelp}>
   <BytesInput value={d[size]} fallback={sizeDefault} onchange={(n) => (d[size] = n)} />
 </Field>
-<Field optional field="bufferBytes" label="delivery buffer">
+<Field optional field="bufferBytes" label="buffer">
   {#snippet help()}
-    The most one worker holds for this destination, queued or sent and not yet acknowledged.
-    {#if bufferHelp}{@render bufferHelp()}{:else}Divided by the {sizeLabel}, it is the most requests
-      in flight.{/if}
+    {BUFFER_HELP}
   {/snippet}
   <BytesInput
     value={d.bufferBytes}
     fallback={LIMITS.bufferBytes.default}
+    auto
     onchange={(n) => (d.bufferBytes = n)}
   />
 </Field>

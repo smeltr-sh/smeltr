@@ -41,14 +41,16 @@
     type Compression,
     type SchemaRegistry,
     type HttpCompression,
+    type Acks,
     COMPRESSIONS,
+    ACKS,
     STORAGE_CLASSES,
     SFTP_MIN_STALL_AFTER,
+    BUFFER_HELP,
   } from './api';
   import { numberOrUnset } from './page';
   import BytesInput from './BytesInput.svelte';
-  import LinkEstimate from './LinkEstimate.svelte';
-  import { byteCount, exactBytes, type ByteCount } from './bytes';
+  import { byteCount, exactBytes } from './bytes';
   import {
     httpModified,
     isCloud,
@@ -71,10 +73,6 @@
     mechanisms: string[];
   } = $props();
 
-  /** The buffer a Kafka card is showing, default filled in: what the derived block splits. */
-  const kafkaBuffer = (d: { bufferBytes?: ByteCount }) =>
-    byteCount(d.bufferBytes, LIMITS.bufferBytes.default);
-
   /** Properties set by hand: the security section's own are its business,
    * and Advanced's marker speaks only for what Advanced hides. */
   function hasProps(d: DestinationDto): boolean {
@@ -92,6 +90,7 @@
     return (
       hasProps(d) ||
       (d.compression ?? 'none') !== 'none' ||
+      (d.acks ?? 'all') !== 'all' ||
       (d.stallAfterSecs ?? LIMITS.stallAfterSecs.default) !== LIMITS.stallAfterSecs.default ||
       byteCount(d.bufferBytes, LIMITS.bufferBytes.default) !== LIMITS.bufferBytes.default
     );
@@ -146,10 +145,6 @@
   }
 </script>
 
-{#snippet inOrder()}
-  A Prometheus destination sends one request at a time, so each series lands in order.
-{/snippet}
-
 {#snippet zoneHelp()}
   A worker in one of these zones sends here instead of to <code>url</code>. Any other worker sends
   to <code>url</code>.
@@ -192,6 +187,26 @@
           {/each}
         </select>
       </Field>
+      <Field optional field="acks" label="acks">
+        {#snippet help()}
+          How many replicas must hold a batch before it counts as delivered. Choose all unless you
+          accept losing records: with none or one, a broker that fails can lose records Smeltr
+          already counted as delivered.
+        {/snippet}
+        <select
+          value={destination.acks ?? 'all'}
+          onchange={(e) => {
+            if (destination.type !== 'kafka') return;
+            const v = e.currentTarget.value as Acks;
+            if (v === 'all') delete destination.acks;
+            else destination.acks = v;
+          }}
+        >
+          {#each ACKS as acks (acks)}
+            <option value={acks}>{acks}</option>
+          {/each}
+        </select>
+      </Field>
       <Field optional field="stallAfterSecs" label="stall after (seconds)">
         {#snippet help()}
           How long one batch may take to deliver before this destination counts as stalled.
@@ -209,13 +224,12 @@
       </Field>
       <Field optional field="bufferBytes" label="buffer">
         {#snippet help()}
-          The most one worker holds for this destination, accepted but not yet acknowledged by the
-          brokers. Over a slow link it caps throughput.
+          {BUFFER_HELP}
         {/snippet}
-        {#snippet note()}<LinkEstimate bufferBytes={kafkaBuffer(destination)} />{/snippet}
         <BytesInput
           value={destination.bufferBytes}
           fallback={LIMITS.bufferBytes.default}
+          auto
           onchange={(n) => {
             if (destination.type === 'kafka') destination.bufferBytes = n;
           }}
@@ -281,13 +295,12 @@
       </Field>
       <Field optional field="bufferBytes" label="buffer">
         {#snippet help()}
-          The most one worker holds for this destination, accepted but not yet acknowledged by Event
-          Hubs. Over a slow link it caps throughput.
+          {BUFFER_HELP}
         {/snippet}
-        {#snippet note()}<LinkEstimate bufferBytes={kafkaBuffer(destination)} />{/snippet}
         <BytesInput
           value={destination.bufferBytes}
           fallback={LIMITS.bufferBytes.default}
+          auto
           onchange={(n) => {
             if (destination.type === 'eventHubs') destination.bufferBytes = n;
           }}
@@ -696,7 +709,6 @@
         value={h}
         sizeDefault={LIMITS.maxRequestBytes.default}
         concurrent={h.type === 'http'}
-        bufferHelp={h.type === 'prometheus' ? inOrder : undefined}
       >
         {#snippet sizeHelp()}
           A request is sent as soon as it reaches this size. Keep it under the largest body the
@@ -873,15 +885,14 @@
           onchange={(n) => (o.maxObjectBytes = n)}
         />
       </Field>
-      <Field optional field="bufferBytes" label="memory">
+      <Field optional field="bufferBytes" label="buffer">
         {#snippet help()}
-          Memory this destination may use on each worker for records not yet in the bucket. Files
-          are finished early when it fills, so files reach the largest size only when it holds that
-          many records before compression.
+          {BUFFER_HELP}
         {/snippet}
         <BytesInput
           value={o.bufferBytes}
           fallback={LIMITS.objectBufferBytes.default}
+          auto
           onchange={(n) => (o.bufferBytes = n)}
         />
       </Field>

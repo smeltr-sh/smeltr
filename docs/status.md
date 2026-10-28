@@ -24,7 +24,7 @@ document's systems.
 | CSV column table, `skip` (Config plane) | built |
 | Grok: `.` matches a newline (Runtime stages) | built |
 | Lookup: CSV, inline, MMDB; exact, CIDR, regex (Runtime stages) | built; files live in the leader's lookup store as Git LFS pointers |
-| Data dictionary: a pipeline's record as an Elasticsearch mapping (Compiler, Runtime stages) | built. A mapping is per pipeline; an index fed by several is merged by hand |
+| Data dictionary: a pipeline's record as an Elasticsearch mapping (Compiler, Runtime stages) | built. A field ECS names takes ECS's type where its own fits it; where not, the pipeline editor warns at the step that wrote it. A mapping is per pipeline; an index fed by several is merged by hand |
 | Non-JSON output: Avro, CSV (Scope) | built. Avro (`io::avro`): to Kafka and Event Hubs framed as Confluent frames it, each route's record registered under `<topic>-value`; to object stores and SFTP as container files holding their schema. CSV (`io::csv`): to object stores and SFTP, a column per leaf of the route's record under a header row. Not built: CSV to any other destination; Avro over HTTP or to Splunk; lz4 in a container file, which Avro has no codec for |
 
 ### Destinations
@@ -72,6 +72,7 @@ document's systems.
 | Delivery: routes, exception answers, `Unmatched`/`Unprocessable`/`Refused` (Runtime stages) | built |
 | Reader/transform split, `Lane`s (Runtime stages) | built |
 | Egress: one thread per destination behind a `bufferBytes` queue (Runtime stages) | built |
+| A destination paced to its link, `egress::pacing`, and the pool's equal shares while queues contend (Runtime stages) | built |
 | Commit tracker, `commit.rs` (Runtime stages) | built |
 | A worker sized to its memory, `worker::memory::fit` (Runtime stages) | built. Lookup tables are not counted: they are mapped files |
 | `MemoryBudget`, split on refusal (Runtime stages) | built; chunked materialization not built |
@@ -131,6 +132,12 @@ document's systems.
 
 ## Known gaps against the architecture
 
+### API
+
+The API's contract (`api.md`) is ahead of its routes. Not built: the worker family under `/api/worker/` and the
+operator paths `api.md` names for it, an area in the path, one answer shape, with every failure at a 4xx or 5xx status,
+`Cache-Control: no-store`, the gate's need in the same row as the agent catalog's entry, integration accounts.
+
 ### Control plane
 
 `main` is reconciled with, not owned (Runtime stages): a deployed commit
@@ -172,7 +179,7 @@ catalog's volume entry both wait on it.
 - **Some memory parts report no fill:** a Kafka client's queue, which only librdkafka's statistics measure, and a destination's senders, whose size is an estimate.
 - **Two steps are not yet code** (Compiler). An `if` step compiles from `Step::If` rather than lowering to a code `if`. There is no `delete` step.
 - **Unroll's output is not bounded at hand-over.** One poll's records can fan out without bound, and a turn's whole output for a destination is handed over in one call; only `MemoryBudget` bounds it.
-- **`overwrite` is not ordered across in-flight batches.** Two versions of one `_id` can land in either order.
+- **`overwrite` and `dedupe` are not ordered.** Two versions of one `_id`, in one batch or in two, can land in either order.
 - **Elasticsearch: not attempted.** Index templates and ILM, `update`/`upsert` actions, OpenSearch-specific behavior.
 - **The registry never evicts a retired thread** of a permanent worker, and `thread_id` is whatever the caller sends, so one credential can grow the map.
 - **A decode exception is not counted:** `GuessedEncoding` and `InvalidUtf8` mark the row, but no counter rates them per source.
