@@ -379,15 +379,8 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<(Option<Vec<St
     }
     for (schema, paths) in missing {
         let schema = title(schema);
-        let message = match paths.as_slice() {
-            [one] => format!("{schema} requires {one}, and no step writes it."),
-            many => format!(
-                "{schema} requires {} fields no step writes: {}.",
-                many.len(),
-                many.join(", ")
-            ),
-        };
-        out.push((None, message));
+        // That they are missing is the finding's own news, so it names them and says no more.
+        out.push((None, format!("{schema} requires: {}.", paths.join(", "))));
     }
     out
 }
@@ -507,11 +500,7 @@ mod tests {
             )
         );
         assert_eq!(told.len(), 2, "{told:?}");
-        assert!(
-            told[1]
-                .1
-                .starts_with("OCSF Authentication requires 7 fields no step writes: `activity_id`,")
-        );
+        assert!(told[1].1.starts_with("OCSF Authentication requires: `activity_id`,"));
     }
 
     #[test]

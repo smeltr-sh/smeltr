@@ -1586,7 +1586,7 @@ mod tests {
     #[test]
     fn a_field_the_schema_requires_and_no_step_writes_is_warned_at_no_step() {
         let warned = warnings_of(producing(r#"["ocsf/authentication"]"#), &[]);
-        assert_eq!(warned, [(None, "OCSF Authentication requires 8 fields no step writes: `activity_id`, `category_uid`, `class_uid`, `metadata`, `severity_id`, `time`, `type_uid`, `user`.".to_string())]);
+        assert_eq!(warned, [(None, "OCSF Authentication requires: `activity_id`, `category_uid`, `class_uid`, `metadata`, `severity_id`, `time`, `type_uid`, `user`.".to_string())]);
     }
 
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {

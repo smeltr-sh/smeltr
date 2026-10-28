@@ -3029,7 +3029,7 @@ mod tests {
                 crate::config_file::SchemaFinding {
                     pipeline: "orders".to_string(),
                     step: None,
-                    message: "ECS requires `x`, and no step writes it.".to_string(),
+                    message: "ECS requires: `x`.".to_string(),
                 },
             )],
         };
@@ -3090,7 +3090,7 @@ mod tests {
         );
         assert_eq!(
             warnings[4].message,
-            "a schema finding at the deployed commit 01234567: ECS requires `x`, and no step writes it."
+            "a schema finding at the deployed commit 01234567: ECS requires: `x`."
         );
         assert!(warnings[0].message.contains("01234567"), "{}", warnings[0].message);
         assert!(

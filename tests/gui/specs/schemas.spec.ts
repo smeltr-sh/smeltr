@@ -83,7 +83,7 @@ test("a pipeline's Produces is saved with it, and the editor says what its rows 
   await expect(produces.getByRole('link', { name: 'ocsf/authentication' })).toBeVisible();
   await expect(produces.getByRole('status')).toHaveText('1 schema finding', { timeout: 15_000 });
   await expect(
-    admin.getByText(/^OCSF Authentication requires \d+ fields no step writes/),
+    admin.getByText(/^OCSF Authentication requires: `activity_id`/),
   ).toBeVisible();
   await admin.screenshot({ path: 'results/schemas-produces.png' });
 
@@ -150,7 +150,7 @@ test('review lists where the rows do not fit a schema, and the dock counts them 
   const panel = admin.getByRole('tabpanel');
   await expect(panel.getByRole('link', { name: 'logins' })).toBeVisible();
   await expect(
-    panel.getByText(/^OCSF Authentication requires \d+ fields no step writes/),
+    panel.getByText(/^OCSF Authentication requires: `activity_id`/),
   ).toBeVisible();
   await expect(panel.getByText(/destination "search" accepts ECS/)).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Approve & deploy' })).toBeEnabled();
