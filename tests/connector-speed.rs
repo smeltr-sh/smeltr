@@ -1079,9 +1079,10 @@ impl Sink {
     }
 }
 
-/// Requests in flight to the receiver: enough to keep a destination's every request in flight across the link's
-/// round trip, since a receiver answers each only once its rows are delivered.
-const SENDERS: usize = 64;
+/// Requests in flight to the receiver. A receiver answers each only once its rows are delivered, so the rows they
+/// carry bound what reaches the destination in a round trip: 64 held a Kafka destination 200ms away to half of what
+/// it carries.
+const SENDERS: usize = 256;
 
 /// Records in one request.
 const PER_REQUEST: u64 = 2000;

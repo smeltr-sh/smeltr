@@ -82,6 +82,7 @@ fn produce_with(brokers: &str, topic: &str, n: usize, row: impl Fn(usize) -> Vec
         &KafkaDestinationConfig {
             payload: smeltr::plan::config::Payload::Record,
             compression: smeltr::plan::topology::Compression::None,
+            acks: smeltr::plan::topology::Acks::All,
             stall_after: std::time::Duration::from_secs(30),
             brokers: brokers.to_string(),
             default_topic: topic.to_string(),
