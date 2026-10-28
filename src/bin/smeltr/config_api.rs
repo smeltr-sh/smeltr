@@ -813,36 +813,38 @@ fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(),
     refuse_worse(starts(&afters), starts(&befores))
 }
 
+/// What one save writes, and where.
+struct Saving<'a> {
+    branch: &'a str,
+    /// The commit the editor read, which the save is checked against.
+    base: Option<String>,
+    scope: &'a str,
+    touches: Touches,
+    message: String,
+    author: &'a Actor,
+    /// Files that land in the same commit as the config. The config is validated against them.
+    files: Vec<git::FileEdit>,
+}
+
 /// One save: read the branch's commit, apply, validate, and swap the branch onto the result. The swap is a
 /// compare-and-swap on the commit that was read, so a writer who lost a race is refused rather than overwriting the
 /// winner, and no lock is held. It spawns git, which is why every caller runs it through `blocking`.
-fn save_on_branch(
-    branch: &str,
-    base: Option<String>,
-    scope: &str,
-    touches: Touches,
-    message: String,
-    author: &Actor,
-    mutate: impl FnOnce(&mut FileConfig),
-) -> Envelope<Save> {
-    let data_dir = leader_data_dir();
-    save_on_branch_in(&data_dir, branch, base, scope, touches, message, author, vec![], mutate)
+fn save_on_branch(saving: Saving, mutate: impl FnOnce(&mut FileConfig)) -> Envelope<Save> {
+    save_on_branch_in(&leader_data_dir(), saving, mutate)
 }
 
 /// `data_dir` explicit rather than read from the environment -- what a test needs to run against a scratch
-/// repository. `files` land in the same commit as the config, and the config is validated against them.
-#[allow(clippy::too_many_arguments)]
-fn save_on_branch_in(
-    data_dir: &Path,
-    branch: &str,
-    base: Option<String>,
-    scope: &str,
-    touches: Touches,
-    message: String,
-    author: &Actor,
-    files: Vec<git::FileEdit>,
-    mutate: impl FnOnce(&mut FileConfig),
-) -> Envelope<Save> {
+/// repository.
+fn save_on_branch_in(data_dir: &Path, saving: Saving, mutate: impl FnOnce(&mut FileConfig)) -> Envelope<Save> {
+    let Saving {
+        branch,
+        base,
+        scope,
+        touches,
+        message,
+        author,
+        files,
+    } = saving;
     let mut writing = match Writing::open_in(data_dir, branch, base.as_deref(), scope) {
         Ok(writing) => writing,
         Err(e) => return Save::refused(e),
@@ -999,6 +1001,32 @@ fn config_in(data_dir: &Path, q: &ConfigQuery) -> Envelope<Config> {
     )
 }
 
+/// A handler's save of one section, on the branch and scope its query names, checked against the commit its headers
+/// say the editor read.
+async fn save_section(
+    q: &BranchQuery,
+    headers: &HeaderMap,
+    author: Actor,
+    touches: Touches,
+    message: String,
+    mutate: impl FnOnce(&mut FileConfig) + Send + 'static,
+) -> Json<Envelope<Save>> {
+    let (branch, base, scope) = (q.name().to_string(), base_commit(headers), q.scope().to_string());
+    blocking_save(move || {
+        let saving = Saving {
+            branch: &branch,
+            base,
+            scope: &scope,
+            touches,
+            message,
+            author: &author,
+            files: vec![],
+        };
+        save_on_branch(saving, mutate)
+    })
+    .await
+}
+
 /// Every save runs off the async executor: it spawns git, and it holds a lock while it does.
 pub(crate) async fn blocking_save(f: impl FnOnce() -> Envelope<Save> + Send + 'static) -> Json<Envelope<Save>> {
     let saved = blocking(move || Ok::<_, String>(f())).await;
@@ -1020,17 +1048,8 @@ pub async fn put_sources(
     if let Some(refused) = refuse_unlisted_certificates(&state, named).await {
         return refused;
     }
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    blocking_save(move || {
-        save_on_branch(
-            &branch,
-            base,
-            &scope,
-            Touches::Sources,
-            "edit sources".into(),
-            &actor,
-            |file| file.sources = sources,
-        )
+    save_section(&q, &headers, actor, Touches::Sources, "edit sources".into(), |file| {
+        file.sources = sources
     })
     .await
 }
@@ -1048,18 +1067,14 @@ pub async fn put_destinations(
     if let Some(refused) = refuse_unlisted_certificates(&state, named).await {
         return refused;
     }
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    blocking_save(move || {
-        save_on_branch(
-            &branch,
-            base,
-            &scope,
-            Touches::Destinations,
-            "edit destinations".into(),
-            &actor,
-            |file| file.destinations = destinations,
-        )
-    })
+    save_section(
+        &q,
+        &headers,
+        actor,
+        Touches::Destinations,
+        "edit destinations".into(),
+        |file| file.destinations = destinations,
+    )
     .await
 }
 
@@ -1136,17 +1151,8 @@ pub async fn put_routes(
     headers: HeaderMap,
     Json(routes): Json<Vec<RouteDto>>,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    blocking_save(move || {
-        save_on_branch(
-            &branch,
-            base,
-            &scope,
-            Touches::Routes,
-            "edit routes".into(),
-            &actor,
-            |file| file.routes = routes,
-        )
+    save_section(&q, &headers, actor, Touches::Routes, "edit routes".into(), |file| {
+        file.routes = routes
     })
     .await
 }
@@ -1157,18 +1163,14 @@ pub async fn put_grok_patterns(
     headers: HeaderMap,
     Json(patterns): Json<Vec<config_file::GrokPatternDto>>,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    blocking_save(move || {
-        save_on_branch(
-            &branch,
-            base,
-            &scope,
-            Touches::GrokPatterns,
-            "edit grokPatterns".into(),
-            &actor,
-            |file| file.grok_patterns = patterns,
-        )
-    })
+    save_section(
+        &q,
+        &headers,
+        actor,
+        Touches::GrokPatterns,
+        "edit grokPatterns".into(),
+        |file| file.grok_patterns = patterns,
+    )
     .await
 }
 
@@ -1194,23 +1196,19 @@ pub async fn put_manifest(
     headers: HeaderMap,
     Json(body): Json<ManifestBody>,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    if scope == config_file::SHARED_DIR {
+    if q.scope() == config_file::SHARED_DIR {
         return Json(Envelope::failed_one(
             "shared/ has no manifest: each group answers for its own rows",
         ));
     }
-    blocking_save(move || {
-        save_on_branch(
-            &branch,
-            base,
-            &scope,
-            Touches::OnlyManifest,
-            "edit manifest".into(),
-            &actor,
-            |file| body.apply(file),
-        )
-    })
+    save_section(
+        &q,
+        &headers,
+        actor,
+        Touches::OnlyManifest,
+        "edit manifest".into(),
+        |file| body.apply(file),
+    )
     .await
 }
 
@@ -1268,13 +1266,15 @@ fn save_lookup_tables_in(
     }
     save_on_branch_in(
         data_dir,
-        branch,
-        base,
-        scope,
-        Touches::LookupTables,
-        "edit lookupTables".into(),
-        author,
-        files,
+        Saving {
+            branch,
+            base,
+            scope,
+            touches: Touches::LookupTables,
+            message: "edit lookupTables".into(),
+            author,
+            files,
+        },
         |file| file.lookup_tables = tables,
     )
 }
@@ -1570,13 +1570,10 @@ pub async fn put_pipeline(
     headers: HeaderMap,
     Json(pipeline): Json<PipelineDto>,
 ) -> Json<Envelope<Save>> {
-    let (branch, base, scope) = (q.name().to_string(), base_commit(&headers), q.scope().to_string());
-    blocking_save(move || {
-        // The History page shows this; a person knows a pipeline by its name, not its id.
-        let message = format!("edit pipeline {}", pipeline.name);
-        save_on_branch(&branch, base, &scope, Touches::OnlyPipelines, message, &actor, |file| {
-            replace_pipeline(file, &id, pipeline)
-        })
+    // The History page shows this; a person knows a pipeline by its name, not its id.
+    let message = format!("edit pipeline {}", pipeline.name);
+    save_section(&q, &headers, actor, Touches::OnlyPipelines, message, move |file| {
+        replace_pipeline(file, &id, pipeline)
     })
     .await
 }
@@ -1611,9 +1608,20 @@ pub async fn delete_pipeline(
             })
             .unwrap_or_else(|| id.clone());
         let message = format!("delete pipeline {name}");
-        save_on_branch(&branch, base, &scope, Touches::OnlyPipelines, message, &actor, |file| {
-            file.pipelines.retain(|p| p.id != id);
-        })
+        save_on_branch(
+            Saving {
+                branch: &branch,
+                base,
+                scope: &scope,
+                touches: Touches::OnlyPipelines,
+                message,
+                author: &actor,
+                files: vec![],
+            },
+            |file| {
+                file.pipelines.retain(|p| p.id != id);
+            },
+        )
     })
     .await
 }
@@ -1836,13 +1844,15 @@ fn undo_in(
     // save in between could have brought.
     save_on_branch_in(
         data_dir,
-        branch,
-        Some(writing.parent.clone()),
-        scope,
-        section.touches(),
-        format!("undo changes to {} {name}", section.noun()),
-        author,
-        files,
+        Saving {
+            branch,
+            base: Some(writing.parent.clone()),
+            scope,
+            touches: section.touches(),
+            message: format!("undo changes to {} {name}", section.noun()),
+            author,
+            files,
+        },
         |into| *into = file,
     )
 }
@@ -2816,13 +2826,15 @@ mod tests {
         let save = |id: &str, pipeline| {
             let response = save_on_branch_in(
                 &data,
-                "work",
-                None,
-                "west",
-                Touches::OnlyPipelines,
-                "save pipeline".into(),
-                &Actor::system(),
-                vec![],
+                Saving {
+                    branch: "work",
+                    base: None,
+                    scope: "west",
+                    touches: Touches::OnlyPipelines,
+                    message: "save pipeline".into(),
+                    author: &Actor::system(),
+                    files: vec![],
+                },
                 |file| replace_pipeline(file, id, pipeline),
             );
             assert!(response.ok, "{response:?}");
@@ -2862,13 +2874,15 @@ mod tests {
         };
         let response = save_on_branch_in(
             &data,
-            "work",
-            None,
-            "west",
-            Touches::Routes,
-            "add reference".into(),
-            &Actor::system(),
-            vec![],
+            Saving {
+                branch: "work",
+                base: None,
+                scope: "west",
+                touches: Touches::Routes,
+                message: "add reference".into(),
+                author: &Actor::system(),
+                files: vec![],
+            },
             |file| {
                 file.sources.push(SourceDto {
                     id: "source-a".into(),
@@ -2919,13 +2933,15 @@ mod tests {
 
         let response = save_on_branch_in(
             &data,
-            "work",
-            None,
-            "west",
-            Touches::Sources,
-            "a sources save".to_string(),
-            &Actor::system(),
-            vec![],
+            Saving {
+                branch: "work",
+                base: None,
+                scope: "west",
+                touches: Touches::Sources,
+                message: "a sources save".to_string(),
+                author: &Actor::system(),
+                files: vec![],
+            },
             |file| {
                 file.sources = vec![SourceDto {
                     id: "source-1".to_string(),
@@ -2961,13 +2977,15 @@ mod tests {
 
         let response = save_on_branch_in(
             &data,
-            "work",
-            None,
-            "west",
-            Touches::Sources,
-            "a sources save".to_string(),
-            &Actor::system(),
-            vec![],
+            Saving {
+                branch: "work",
+                base: None,
+                scope: "west",
+                touches: Touches::Sources,
+                message: "a sources save".to_string(),
+                author: &Actor::system(),
+                files: vec![],
+            },
             |file| {
                 file.sources = vec![SourceDto {
                     id: "source-1".to_string(),
@@ -3018,13 +3036,15 @@ mod tests {
         let save = |touches, mutate: &dyn Fn(&mut FileConfig)| {
             let response = save_on_branch_in(
                 &data,
-                "work",
-                None,
-                "west",
-                touches,
-                "a save".to_string(),
-                &Actor::system(),
-                vec![],
+                Saving {
+                    branch: "work",
+                    base: None,
+                    scope: "west",
+                    touches,
+                    message: "a save".to_string(),
+                    author: &Actor::system(),
+                    files: vec![],
+                },
                 mutate,
             );
             assert!(response.ok, "saved: {response:?}");
@@ -3128,13 +3148,15 @@ mod tests {
             serde_json::from_str(r#"{"exceptions":{"categories":{"math":"drop"}}}"#).expect("a manifest body");
         let response = save_on_branch_in(
             &data,
-            "work",
-            None,
-            "west",
-            Touches::OnlyManifest,
-            "edit manifest".to_string(),
-            &Actor::system(),
-            vec![],
+            Saving {
+                branch: "work",
+                base: None,
+                scope: "west",
+                touches: Touches::OnlyManifest,
+                message: "edit manifest".to_string(),
+                author: &Actor::system(),
+                files: vec![],
+            },
             |file| body.apply(file),
         );
         assert!(response.ok, "saved: {response:?}");
@@ -4159,13 +4181,15 @@ mod tests {
     fn save_work(data: &Path, touches: Touches, mutate: impl FnOnce(&mut FileConfig)) {
         let response = save_on_branch_in(
             data,
-            "work",
-            None,
-            "shared",
-            touches,
-            "an edit".to_string(),
-            &Actor::system(),
-            vec![],
+            Saving {
+                branch: "work",
+                base: None,
+                scope: "shared",
+                touches,
+                message: "an edit".to_string(),
+                author: &Actor::system(),
+                files: vec![],
+            },
             mutate,
         );
         assert!(response.ok, "saved: {response:?}");
