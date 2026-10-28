@@ -4,7 +4,7 @@
 
 use crate::core::column::DataType;
 use crate::core::id::FunctionId;
-use crate::plan::plan::Plan;
+use crate::plan::compile::Plan;
 use crate::plan::tree::{self, Node, Object};
 
 /// The record `plan` writes: every field the serializer writes, so the engine's own `__` fields are left out and
@@ -237,7 +237,7 @@ mod tests {
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
         };
-        let plan = crate::plan::plan::compile(&p, &crate::plan::topology::SourceMeta::NONE).unwrap();
+        let plan = crate::plan::compile::compile(&p, &crate::plan::topology::SourceMeta::NONE).unwrap();
         let keys = |k: &[&str]| k.iter().map(|k| k.to_string()).collect::<Vec<_>>();
         assert_eq!(writer(&plan, &keys(&["@timestamp"])), Some(0));
         assert_eq!(writer(&plan, &keys(&["x"])), Some(1));

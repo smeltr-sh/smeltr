@@ -162,6 +162,7 @@ fn start_leader_tls() -> (
 
     let data_dir = temp_dir("leader-data");
     let returned_data_dir = data_dir.clone();
+    crate::harness::leader_tls::listing(&data_dir.join("tls"));
     let materials = smeltr::leader::tls::ensure(
         &data_dir.join("tls"),
         vec!["localhost".to_string(), "127.0.0.1".to_string()],
@@ -1558,11 +1559,11 @@ fn a_receiver_answers_a_request_sent_while_its_runtime_was_being_replaced() {
     standalone.finish(outcome);
 }
 
-/// A new version of a certificate the deployment serves restarts it, but only once the commit is checked against
-/// that version: one the receiver could not serve leaves the running deployment running, and says why.
+/// A new version of a certificate a receiver serves, which the receiver could not serve, is refused by the leader, so
+/// the running deployment keeps serving the version it started with.
 #[cfg(unix)]
 #[test]
-fn a_certificate_version_the_deployment_would_refuse_leaves_it_running() {
+fn a_certificate_version_the_receiver_could_not_serve_is_refused_and_it_keeps_running() {
     let reach = Reach {
         receivers: Some("127.0.0.1"),
         ..Reach::LOOPBACK
@@ -1595,7 +1596,7 @@ fn a_certificate_version_the_deployment_would_refuse_leaves_it_running() {
             .to_string();
         let answer: serde_json::Value = signed_in.body_mut().read_json().map_err(|e| e.to_string())?;
         let csrf = answer["csrf"].as_str().ok_or("no csrf token")?.to_string();
-        let send = |method: &str, path: &str, body: serde_json::Value| -> Result<(), String> {
+        let send = |method: &str, path: &str, body: serde_json::Value| -> Result<serde_json::Value, String> {
             let url = format!("{}{path}", standalone.base);
             let request = match method {
                 "POST" => standalone.agent.post(&url),
@@ -1606,12 +1607,15 @@ fn a_certificate_version_the_deployment_would_refuse_leaves_it_running() {
                 .header("cookie", &cookie)
                 .header("x-smeltr-csrf", &csrf)
                 .send_json(body)
-                .map(drop)
+                .and_then(|mut answer| answer.body_mut().read_json::<serde_json::Value>())
                 .map_err(|e| format!("{method} {path}: {e}"))
         };
         let mut first = issued(rcgen::ExtendedKeyUsagePurpose::ServerAuth);
         first["name"] = "rx".into();
-        send("POST", "/api/certificates", first)?;
+        let added = send("POST", "/api/certificates", first)?;
+        if added["ok"] != true {
+            return Err(format!("the first version was refused: {added}"));
+        }
 
         let (intake, _) = collector("127.0.0.1");
         let at = std::net::TcpListener::bind("127.0.0.1:0")
@@ -1640,30 +1644,27 @@ fn a_certificate_version_the_deployment_would_refuse_leaves_it_running() {
             std::thread::sleep(Duration::from_millis(250));
         };
 
-        send(
+        let refused = send(
             "PUT",
             "/api/certificates/rx",
             issued(rcgen::ExtendedKeyUsagePurpose::ClientAuth),
         )?;
-        let deadline = Instant::now() + Duration::from_secs(60);
-        let refused = loop {
-            let worker = standalone.worker();
-            if let Some(w) = &worker
-                && w["supervising"]["failure"]
-                    .as_str()
-                    .is_some_and(|f| f.contains("Extended Key Usage"))
-            {
-                break w.clone();
-            }
-            if Instant::now() > deadline {
-                return Err(format!("the worker never said why it kept running: {worker:#?}"));
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        };
-        if refused["supervising"]["incarnation"].as_u64() != Some(serving)
-            || refused["supervising"]["phase"].as_str() != Some("running")
+        if refused["ok"] != false
+            || !refused
+                .to_string()
+                .contains("usable as a server certificate, and this version is not")
         {
-            return Err(format!("the deployment should still be the one that ran: {refused:#}"));
+            return Err(format!(
+                "a version the receiver could not serve should be refused: {refused}"
+            ));
+        }
+        // A few beats, for anything that would restart it.
+        std::thread::sleep(Duration::from_secs(5));
+        let worker = standalone.worker().ok_or("the worker stopped reporting")?;
+        if worker["supervising"]["incarnation"].as_u64() != Some(serving)
+            || worker["supervising"]["phase"].as_str() != Some("running")
+        {
+            return Err(format!("the deployment should still be the one that ran: {worker:#}"));
         }
         if std::net::TcpStream::connect(at).is_err() {
             return Err("the receiver stopped listening".to_string());

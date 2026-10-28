@@ -28,6 +28,7 @@ mod oidc_api;
 mod policy;
 mod roles_api;
 mod schema_api;
+mod service;
 mod sql_api;
 mod test_api;
 mod users_api;
@@ -706,7 +707,7 @@ async fn leader_tls_config(
             path = %tls_dir.join(smeltr::leader::tls::CA_CERT).display(),
             "created this leader's certificate authority: copy this file into every worker's bootstrap config, \
              and trust it in any browser that opens this leader. It is what says a leader really is this one; \
-             the certificate served under it is reissued at every start"
+             the certificate issued under it is the entry \"leader\" in the certificate list"
         );
     }
 
@@ -1593,6 +1594,7 @@ fn stop_on_signal() {
 fn exit_after_stopping() {
     smeltr::worker::stop_before_exit();
     smeltr::logs::stop();
+    service::stopped();
     std::process::exit(0)
 }
 
@@ -1611,6 +1613,10 @@ fn run_as_leader() -> ! {
 }
 
 fn main() {
+    service::run(start, stop_on_signal)
+}
+
+fn start() {
     // AWS-LC is the only backend this build carries, and installing it is still what makes it the one in use:
     // `ureq` and `axum-server` are both given rustls without a provider of their own, and curl's own rustls takes
     // an installed default over the one its features name, so each reaches for this when it opens its first

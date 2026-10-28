@@ -12,6 +12,7 @@ pub mod fuzz;
 pub mod destination;
 pub mod docker;
 pub mod http;
+pub mod leader_tls;
 pub mod receiver;
 pub mod registry;
 
@@ -21,9 +22,9 @@ use smeltr::core::column::{StrBuilder, VarType};
 use smeltr::core::ctx::Ctx;
 use smeltr::core::error::ErrorSink;
 use smeltr::core::id::{FunctionId, SlotId};
+use smeltr::plan::compile::{Plan, compile};
 use smeltr::plan::config::{CompileError, FunctionConfig, FunctionKind, PipelineConfig, Step};
 use smeltr::plan::output::run_to_json;
-use smeltr::plan::plan::{Plan, compile};
 use smeltr::plan::topology::SourceMeta;
 
 pub fn func(id: FunctionId, kind: FunctionKind) -> Step {

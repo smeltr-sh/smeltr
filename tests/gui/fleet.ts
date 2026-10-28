@@ -13,7 +13,7 @@ import {
   type Page,
   type Request,
 } from '@playwright/test';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -110,6 +110,14 @@ export class Api {
   }
 }
 
+/** A certificate and its key, and the authority that issued it with that authority's key. */
+export interface Pki {
+  certificate: string;
+  privateKey: string;
+  authority: string;
+  authorityKey: string;
+}
+
 /** Starts and stops the processes of one test. */
 export class Fleet {
   private procs: Proc[] = [];
@@ -154,8 +162,8 @@ export class Fleet {
     while (Date.now() < deadline) {
       const username = /username: (\S+)/.exec(proc.output)?.[1];
       const password = /one-time password: (\S+)/.exec(proc.output)?.[1];
-      // The password is printed before the certificate is written, and a test may read the certificate.
-      const served = fs.existsSync(path.join(proc.dir, 'smeltr-leader-data', 'tls', 'cert.pem'));
+      // The password is printed before the certificate is served, and a test may read what is served.
+      const served = fs.existsSync(path.join(proc.dir, 'smeltr-leader-data', 'tls', 'served.json'));
       if (username && password && served && (await listening(port)))
         return {
           url: `https://127.0.0.1:${port}`,
@@ -209,19 +217,77 @@ export class Fleet {
     });
   }
 
-  /** A certificate, key and authority from a PKI that is somebody else's: a leader of its own, started only to
-   * mint them and stopped at once. It carries the names every test leader answers to. */
-  async externalPki(): Promise<{ certificate: string; privateKey: string; authority: string }> {
-    const other = await this.startLeader();
-    const tls = path.join(other.proc.dir, 'smeltr-leader-data', 'tls');
-    const read = (name: string) => fs.readFileSync(path.join(tls, name), 'utf8');
-    const pki = {
-      certificate: read('cert.pem'),
-      privateKey: read('key.pem'),
+  /** A certificate, key and authority from a PKI that is somebody else's, minted with `openssl`. It carries the
+   * names every test leader answers to. With `under`, the certificate is another under that one's authority: its
+   * renewal. */
+  externalPki(under?: Pki): Pki {
+    const dir = this.tempDir('pki');
+    const openssl = (...args: string[]) =>
+      execFileSync('openssl', args, { cwd: dir, stdio: 'pipe' });
+    const key = ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes'];
+    if (under) {
+      fs.writeFileSync(path.join(dir, 'ca.pem'), under.authority);
+      fs.writeFileSync(path.join(dir, 'ca.key'), under.authorityKey);
+    } else {
+      openssl(
+        'req',
+        '-x509',
+        ...key,
+        '-keyout',
+        'ca.key',
+        '-out',
+        'ca.pem',
+        '-days',
+        '30',
+        '-subj',
+        '/CN=somebody else',
+        '-addext',
+        'basicConstraints=critical,CA:TRUE',
+        '-addext',
+        'keyUsage=critical,keyCertSign',
+      );
+    }
+    fs.writeFileSync(
+      path.join(dir, 'leaf.ext'),
+      'subjectAltName=DNS:localhost,IP:127.0.0.1\nkeyUsage=critical,digitalSignature\n' +
+        'extendedKeyUsage=serverAuth,clientAuth\n',
+    );
+    openssl(
+      'req',
+      '-new',
+      ...key,
+      '-keyout',
+      'leaf.key',
+      '-out',
+      'leaf.csr',
+      '-subj',
+      '/CN=localhost',
+    );
+    openssl(
+      'x509',
+      '-req',
+      '-in',
+      'leaf.csr',
+      '-CA',
+      'ca.pem',
+      '-CAkey',
+      'ca.key',
+      '-set_serial',
+      String(Date.now()),
+      '-days',
+      '7',
+      '-extfile',
+      'leaf.ext',
+      '-out',
+      'leaf.pem',
+    );
+    const read = (name: string) => fs.readFileSync(path.join(dir, name), 'utf8');
+    return {
+      certificate: read('leaf.pem'),
+      privateKey: read('leaf.key'),
       authority: read('ca.pem'),
+      authorityKey: read('ca.key'),
     };
-    await other.proc.stop();
-    return pki;
   }
 
   /** Stops the worker named `name`. */

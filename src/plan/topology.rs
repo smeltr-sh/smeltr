@@ -20,9 +20,9 @@ use crate::expr::ir::{Ir, IrKind, flatten};
 use crate::format::encoding::Encoding;
 use crate::metrics::{MetricsHandle, MetricsSourceConfig};
 use crate::ops::BinOp;
+use crate::plan::compile::parse;
+use crate::plan::compile::{Plan, compile, ingest_fields};
 use crate::plan::config::{Answer, CompileError, OnException, Payload, PipelineConfig};
-use crate::plan::plan::parse;
-use crate::plan::plan::{Plan, compile, ingest_fields};
 use crate::plan::resolve::{ResourceBuilder, SymbolTable, resolve};
 
 // -- what a record carries ---------------------------------------------------
@@ -3235,7 +3235,7 @@ pub(crate) fn condition(ir: Ir, src: &str, what: &str) -> Result<Ir, CompileErro
         ));
     }
     Ok(if ir.ty == DataType::Null {
-        flatten(crate::plan::plan::is_true(ir))
+        flatten(crate::plan::compile::is_true(ir))
     } else {
         ir
     })
@@ -3252,7 +3252,7 @@ fn compile_route(r: &RouteConfig, meta: &SourceMeta) -> Result<CompiledRoute, Co
             Some(condition(ir, src, "route condition")?)
         }
     };
-    let compiled_patterns = crate::plan::plan::compile_patterns(&res.patterns)?;
+    let compiled_patterns = crate::plan::compile::compile_patterns(&res.patterns)?;
     Ok(CompiledRoute {
         id: r.id.clone(),
         source: r.source,
@@ -3465,7 +3465,7 @@ pub fn compile_topology_with(
         let reads = rule_reads
             .entry(key)
             .or_insert_with(|| vec![false; meta.source_fields().len()]);
-        crate::plan::plan::walk_slots(ir, &mut |slot| {
+        crate::plan::compile::walk_slots(ir, &mut |slot| {
             if let Some(i) = meta.source_field_at(slot) {
                 reads[i] = true;
             }
@@ -3593,7 +3593,7 @@ pub(crate) fn output_condition(
     let ast = parse(src, None)?;
     let ir = flatten(resolve(&ast, &mut output_symbols(plan, tag_field, meta), &mut res)?);
     let ir = condition(ir, src, what)?;
-    Ok((ir, crate::plan::plan::compile_patterns(&res.patterns)?))
+    Ok((ir, crate::plan::compile::compile_patterns(&res.patterns)?))
 }
 
 /// Evaluate every route belonging to `source` against `batch` — which must have the source's `ingest_fields` layout,
@@ -3727,7 +3727,7 @@ mod tests {
         let cond = meta.stream_condition(key).expect("a condition");
         let routes = compile_routes(&[route(0, Some(&cond), 0)], &SourceMetas::from([(0, meta.clone())]))
             .unwrap_or_else(|e| panic!("`{cond}` compiles: {e:?}"));
-        let layout: Vec<DataType> = crate::plan::plan::ingest_fields(&meta)
+        let layout: Vec<DataType> = crate::plan::compile::ingest_fields(&meta)
             .into_iter()
             .map(|(_, t)| t)
             .collect();
@@ -3857,7 +3857,7 @@ mod tests {
             headers: None,
         }];
         let meta = SourceMeta::KAFKA;
-        let layout: Vec<DataType> = crate::plan::plan::ingest_fields(&meta)
+        let layout: Vec<DataType> = crate::plan::compile::ingest_fields(&meta)
             .into_iter()
             .map(|(_, t)| t)
             .collect();
@@ -3901,7 +3901,7 @@ mod tests {
         assert_eq!(meta.field_type(SOURCE_BYTES), Some(DataType::Bytes));
         assert_eq!(SourceMeta::KAFKA.with_encoding(Encoding::Auto), SourceMeta::KAFKA);
 
-        let layout: Vec<DataType> = crate::plan::plan::ingest_fields(&meta)
+        let layout: Vec<DataType> = crate::plan::compile::ingest_fields(&meta)
             .into_iter()
             .map(|(_, t)| t)
             .collect();

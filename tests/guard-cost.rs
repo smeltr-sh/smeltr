@@ -17,8 +17,8 @@ use smeltr::core::buffer::BufferPool;
 use smeltr::core::column::{Column, DataType};
 use smeltr::core::ctx::Ctx;
 use smeltr::core::error::ErrorSink;
+use smeltr::plan::compile::Plan;
 use smeltr::plan::exec::run_scoped;
-use smeltr::plan::plan::Plan;
 
 const ROWS: usize = 4_096;
 const BATCHES: usize = 64;

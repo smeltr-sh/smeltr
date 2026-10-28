@@ -738,18 +738,6 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "POST",
-        path: "/api/settings/certificates/reissue",
-        what: "Issue a new leader certificate from the leader's own authority. No query.",
-        body: "",
-    },
-    Route {
-        method: "DELETE",
-        path: "/api/settings/certificates/supplied",
-        what: "Drop the supplied certificate and go back to the leader's own authority. No query.",
-        body: "",
-    },
-    Route {
-        method: "POST",
         path: "/api/settings/certificates/rotation",
         what: "Start rotating the authority, waiting up to waitHours for workers to hold the new root. No query.",
         body: "{ waitHours: number (1..336), authorityValidityDays?: number }",

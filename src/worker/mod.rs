@@ -2282,6 +2282,9 @@ const EXIT_BUDGET: Duration = Duration::from_secs(
 /// the worker as silent.
 const NOTICE_BUDGET: Duration = Duration::from_secs(4 * heartbeat::REQUEST_BUDGET.as_secs());
 
+/// The longest [`stop_before_exit`] takes: its runtime's end, then its leader's notice, each given all it gets.
+pub const STOP_BUDGET: Duration = EXIT_BUDGET.saturating_add(NOTICE_BUDGET);
+
 /// How often a worker its leader no longer knows tries its enrollment code again.
 const ENROLL_AGAIN_EVERY: Duration = Duration::from_secs(60);
 
@@ -4792,6 +4795,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("smeltr-pin-blocks-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let authority = |name: &str| {
+            crate::leader::tls::tests::listing(&dir.join(name));
             let materials = crate::leader::tls::ensure(
                 &dir.join(name),
                 vec!["localhost".to_string()],
@@ -4936,13 +4940,12 @@ mod tests {
 
         let hex = blob.to_string();
         let loose = dir.join("objects").join(&hex[..2]).join(&hex[2..]);
-        let mut perms = std::fs::metadata(&loose).unwrap().permissions();
-        #[allow(clippy::permissions_set_readonly_false)]
-        perms.set_readonly(false);
-        std::fs::set_permissions(&loose, perms).unwrap();
-        // Another blob's object in its place: it decompresses, and only its hash says it is not this one.
+        // Another blob's object in its place: it decompresses, and only its hash says it is not this one. Removed
+        // and written anew rather than overwritten, because a loose object is written read-only.
         let other = repo.write_blob(b"pipelines: [x]\n").unwrap().detach().to_string();
-        std::fs::copy(dir.join("objects").join(&other[..2]).join(&other[2..]), &loose).unwrap();
+        let other = std::fs::read(dir.join("objects").join(&other[..2]).join(&other[2..])).unwrap();
+        std::fs::remove_file(&loose).unwrap();
+        std::fs::write(&loose, other).unwrap();
         let refused = fetched_reads(&dir).expect_err("a blob that reads back as another is found");
         assert!(refused.contains(&hex), "{refused}");
         std::fs::write(&loose, b"not an object").unwrap();
@@ -5103,6 +5106,7 @@ mod tests {
         // certificate this process is about to serve is the one now on disk -- minting an enrollment code checks that.
         let names = vec!["127.0.0.1".to_string()];
         let validity = Duration::from_secs(3600);
+        crate::leader::tls::tests::listing(&tls_dir);
         let first = crate::leader::tls::ensure(&tls_dir, names.clone(), validity, &[]).expect("an authority, created");
         let ca_pem = first.ca_pem.clone();
         crate::leader::tls::ensure(&tls_dir, names, validity, &[]).expect("a certificate, reissued");
@@ -5841,6 +5845,51 @@ mod tests {
             arrived_unchecked(&std::collections::HashMap::new(), &[delivered(1)]),
             "none was held when checked"
         );
+    }
+
+    /// A restart starts the same commit with the certificates held now, so the check it runs first refuses a new
+    /// version the commit's receiver could not serve, and what runs keeps running.
+    #[test]
+    fn a_restart_s_check_refuses_a_certificate_version_its_receiver_could_not_serve() {
+        let mut supervisor = supervisor_for(temp_dir("restart-check"));
+        let dir = repo("restart-check-repo");
+        write(&dir, "groups/g/system.json", r#"{"version":1}"#);
+        write(
+            &dir,
+            "groups/g/sources.json",
+            r#"[{"id":"syslog","type":"syslogReceiver","port":1514,"allowFrom":["10.0.0.0/8"],"certificate":"rx"}]"#,
+        );
+        let head = commit(&dir, "a receiver serving rx");
+        supervisor.repo_dir = dir;
+        let deliver = |version, purpose| {
+            let key = rcgen::KeyPair::generate().unwrap();
+            let mut params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()]).unwrap();
+            params.extended_key_usages = vec![purpose];
+            heartbeat::SecretDelivery {
+                name: "rx".to_string(),
+                version,
+                value: key.serialize_pem(),
+                chain: Some(params.self_signed(&key).unwrap().pem()),
+            }
+        };
+
+        supervisor
+            .secrets
+            .lock()
+            .unwrap()
+            .take([deliver(1, rcgen::ExtendedKeyUsagePurpose::ServerAuth)]);
+        let checked = supervisor.validate(&head).expect("a server certificate serves");
+        assert_eq!(checked.checked.get("rx"), Some(&1));
+
+        supervisor
+            .secrets
+            .lock()
+            .unwrap()
+            .take([deliver(2, rcgen::ExtendedKeyUsagePurpose::ClientAuth)]);
+        let Err(refused) = supervisor.validate(&head) else {
+            panic!("a client certificate cannot serve")
+        };
+        assert!(refused.contains("Extended Key Usage"), "{refused}");
     }
 
     /// The leader repeats a directive until a beat names it taken, so each id is acted on once however many

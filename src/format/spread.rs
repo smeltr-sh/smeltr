@@ -27,7 +27,7 @@ use crate::core::variant::{self, Value};
 use crate::format::json::MAX_NESTING;
 use crate::format::tag::{self, Suggestion, Tag};
 use crate::format::typed::{Cell, Slot, TypedBuilder};
-use crate::plan::plan::{Output, ParseObject};
+use crate::plan::compile::{Output, ParseObject};
 use crate::plan::tree;
 
 /// What a source does with the value of the key it entered.

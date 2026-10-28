@@ -4953,7 +4953,7 @@ export interface RotationDto {
   latestDeadlineMillis: number;
   /** What the cutover puts in force: another authority of the leader's own,
    * an uploaded certificate, or the leader's own again. */
-  installs: 'nextKey' | 'supplied' | 'own';
+  installs: 'nextKey' | 'supplied';
   /** Where that comes from. */
   source: CertificateSource;
   /** Workers that verify this leader by an authority their operator gave
@@ -5000,23 +5000,14 @@ export function getCertificates(): Promise<CertificatesDto> {
  * worker holding an enrollment code fetches the same bytes with no session. */
 export const AUTHORITY_URL = '/api/authority';
 
-/** Serves a copy of the certificate `name` from the list. */
+/** The certificate this leader issues itself and serves unless another is chosen (`tls::OWN_ENTRY`). */
+export const OWN_CERTIFICATE = 'leader';
+
+/** Serves the certificate `name` from the list. */
 export function putCertificate(name: string): Promise<CertificatesDto | AccountRefusal> {
   return accountCall('/api/settings/certificates', {
     method: 'PUT',
     body: JSON.stringify({ certificate: name }),
-  });
-}
-
-export function withdrawCertificate(): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/certificates/supplied', {
-    method: 'DELETE',
-  });
-}
-
-export function reissueCertificate(): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/certificates/reissue', {
-    method: 'POST',
   });
 }
 
