@@ -192,6 +192,13 @@ mod tests {
     }
 
     #[test]
+    fn an_unmet_need_is_refused_as_forbidden() {
+        let refused = Refusal::from(area("payments", Level::Editor));
+        assert_eq!(refused.status, axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(refused.message(), "this needs editor in payments");
+    }
+
+    #[test]
     fn a_route_nobody_listed_needs_an_administrator() {
         assert_eq!(get("/api/something-new"), Need::Administrator);
         assert_eq!(need(&Method::POST, "/api/areas/payments"), Need::Administrator);

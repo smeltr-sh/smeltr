@@ -106,8 +106,13 @@ struct Wire<'a, T> {
     body: &'a T,
 }
 
-impl<'a, T> Wire<'a, T> {
+impl<'a, T: serde::Serialize> Wire<'a, T> {
     fn of(envelope: &'a Envelope<T>) -> Self {
+        // A body's own `ok` or `errors` would be written a second time, and a reader keeps the last.
+        debug_assert!(
+            serde_json::to_value(&envelope.body).map_or(true, |b| b.get("ok").is_none() && b.get("errors").is_none()),
+            "an answer's body has a field of its own named ok or errors"
+        );
         Wire {
             ok: envelope.succeeded(),
             errors: &envelope.errors,
@@ -379,6 +384,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "named ok or errors")]
+    fn a_body_has_no_ok_of_its_own() {
+        Envelope::ok(serde_json::json!({"ok": false})).to_json();
+    }
+
+    #[test]
     fn a_failure_answers_its_status() {
         let response = Refusal::not_found("gone").into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -410,5 +422,21 @@ mod tests {
             status(GitError::of(ErrorKind::Forbidden, "your own").into()),
             StatusCode::FORBIDDEN
         );
+        use crate::leader::tls::Refused;
+        assert_eq!(
+            status(Refused::Conflict("rotating".into()).into()),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status(Refused::Unavailable("unreadable".into()).into()),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        let invalid = config_file::ValidationError {
+            field: Some("topic"),
+            ..config_file::ValidationError::from("no topic".to_string())
+        };
+        let refused = Refusal::from(&invalid);
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(refused.errors, vec![ApiError::from_validation(&invalid)]);
     }
 }
