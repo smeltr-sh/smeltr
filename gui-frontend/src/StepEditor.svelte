@@ -1794,6 +1794,11 @@
     padding: 0;
   }
 
+  /* A drawn glyph centers on its box; a text glyph's ink sits lower in its line. */
+  .controls :global(svg) {
+    transform: translateY(0.1em);
+  }
+
   .controls button:hover,
   .controls button.active {
     color: var(--ink);
