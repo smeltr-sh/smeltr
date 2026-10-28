@@ -453,6 +453,18 @@ describe('files that do not read', () => {
     expect(changes.map((c) => c.noun)).toEqual(['file']);
   });
 
+  it('finds a schema by the file the leader names it by', () => {
+    const changes = objectChanges([
+      {
+        scope: 'shared',
+        before: config({ schemas: [{ id: 'ECS 9', title: 'ECS', fields: [] }] }),
+        after: config({}),
+        unreadable: { before: new Map(), after: new Map([['schemas/ecs-9.json', 'bad']]) },
+      },
+    ]);
+    expect(changes.map((c) => c.noun)).toEqual(['file']);
+  });
+
   it('gives a group whose manifest broke only the file card', () => {
     const changes = objectChanges([
       {

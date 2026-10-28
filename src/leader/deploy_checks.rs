@@ -245,8 +245,8 @@ mod tests {
         let files: [(&str, &str); 5] = [
             ("system.json", r#"{"version":1}"#),
             (
-                "schemas.json",
-                r#"[{"id":"login","title":"Login","fields":[{"field":"user","type":"str","required":true}]}]"#,
+                "schemas/login.json",
+                r#"{"id":"login","title":"Login","fields":[{"field":"user","type":"str","required":true}]}"#,
             ),
             (
                 "sources.json",

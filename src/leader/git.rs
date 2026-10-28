@@ -929,15 +929,15 @@ const AT_TRAILER: &str = "Smeltr-At:";
 /// The comment that started the thread a reply, a resolve or an unresolve belongs to.
 const REPLY_TO_TRAILER: &str = "Smeltr-Reply-To:";
 
-/// The sections an object anchor may name, as the editor names them, and the file each lives in. A pipeline has a
-/// file of its own (`None`), named by its slugged id.
+/// The sections an object anchor may name, as the editor names them, and the file each lives in. A pipeline and a
+/// schema have a file of their own, named by the slugged id under their directory (`None`).
 const ANCHOR_SECTIONS: [(&str, Option<&str>); 7] = [
     ("sources", Some("sources.json")),
     ("destinations", Some("destinations.json")),
     ("routes", Some("routes.json")),
     ("lookupTables", Some(crate::config_file::LOOKUP_TABLES_FILE)),
     ("grokPatterns", Some(crate::config_file::GROK_PATTERNS_FILE)),
-    ("schemas", Some(crate::config_file::SCHEMAS_FILE)),
+    ("schemas", None),
     ("pipelines", None),
 ];
 
@@ -994,7 +994,7 @@ impl Anchor {
                 let prefix = scope_prefix(scope)?;
                 match ANCHOR_SECTIONS.iter().find(|(name, _)| name == section) {
                     Some((_, Some(file))) => Ok(format!("{prefix}/{file}")),
-                    Some((_, None)) => Ok(format!("{prefix}/pipelines/{}.json", crate::config_file::slugify(id))),
+                    Some((_, None)) => Ok(format!("{prefix}/{section}/{}.json", crate::config_file::slugify(id))),
                     None => Err(GitError(format!(
                         "{section:?} is not a section an object is anchored in"
                     ))),

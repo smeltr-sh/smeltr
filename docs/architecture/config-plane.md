@@ -3,7 +3,7 @@
 A system of the [design document](../smeltr-design.md).
 
 Configuration is a directory of files, the **bundle**: sources, destinations,
-routes, lookup tables, grok patterns, schemas, one file per pipeline, and the samples and
+routes, lookup tables, grok patterns, one file per pipeline and per schema, and the samples and
 tests an author works from. It is meant to be read by humans and reviewed like code,
 so it lives in git and a deploy points the fleet at a commit on `main`. Every
 object is keyed by a string id, unique in its scope.

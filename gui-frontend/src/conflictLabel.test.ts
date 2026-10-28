@@ -15,6 +15,11 @@ describe('conflictLabel', () => {
     expect(conflictLabel(c)).toBe('west · Pipeline Enrich');
   });
 
+  it('names a schema by its id', () => {
+    const c = conflict('shared/schemas/ecs.json', '{"id":"ecs","title":"ECS","fields":[]}');
+    expect(conflictLabel(c)).toBe('shared · Schema ecs');
+  });
+
   it('names a route by its source, never its id', () => {
     const c = conflict(
       'shared/routes.json',

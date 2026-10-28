@@ -780,7 +780,6 @@ const SECTION_PAGES: Record<string, string> = {
   'routes.json': 'routes',
   'lookup-tables.json': 'lookups',
   'grok-patterns.json': 'grok',
-  'schemas.json': 'schemas',
 };
 
 /** Where a bundle path is edited: the scope holding it, and the page holding
@@ -797,6 +796,7 @@ export function editorFor(path: string): { scope: string; hash: string } | null 
 
   const pipeline = /^pipelines\/(.+)\.json$/.exec(file);
   if (pipeline) return { scope, hash: `#/build/pipelines/${encodeURIComponent(pipeline[1])}` };
+  if (/^schemas\/.+\.json$/.test(file)) return { scope, hash: '#/build/schemas' };
 
   const page = SECTION_PAGES[file];
   return page ? { scope, hash: `#/build/${page}` } : null;

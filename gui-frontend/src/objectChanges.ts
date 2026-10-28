@@ -214,23 +214,26 @@ export interface ScopePair {
 }
 
 /** The file each section is read from. A section whose file does not read
- * is read as empty, so every object in it would read as removed or added. */
+ * is read as empty, so every object in it would read as removed or added. A
+ * pipeline and a schema each have a file of their own (`fileOfObject`). */
 const SECTION_FILE: Record<ConfigSection, string> = {
   sources: 'sources.json',
   destinations: 'destinations.json',
   routes: 'routes.json',
   lookupTables: 'lookup-tables.json',
   grokPatterns: 'grok-patterns.json',
-  schemas: 'schemas.json',
+  schemas: '',
   pipelines: '',
 };
 
 /** The file `spec`'s object `id` is read from. */
 function fileOfObject(spec: SectionSpec, id: string): string {
-  return spec.key === 'pipelines' ? `pipelines/${pipelineSlug(id)}.json` : SECTION_FILE[spec.key];
+  if (spec.key === 'pipelines' || spec.key === 'schemas')
+    return `${spec.key}/${pipelineSlug(id)}.json`;
+  return SECTION_FILE[spec.key];
 }
 
-/** A pipeline's filename, as the leader names it (`config_file::slugify`). */
+/** A pipeline's or schema's filename, as the leader names it (`config_file::slugify`). */
 export function pipelineSlug(id: string): string {
   // Only ASCII letters and digits survive, lowered after: lowering first would turn `K` (Kelvin) into `k`.
   const slug = id
