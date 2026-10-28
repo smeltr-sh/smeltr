@@ -1070,7 +1070,7 @@ fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neith
         .iter()
         .enumerate()
         .map(|(i, d)| {
-            let metrics = MetricsHandle::new(registry.clone(), &format!("egress-{i}"));
+            let metrics = MetricsHandle::new(registry.clone(), format!("egress-{i}"));
             Egress::start(i as u32, "d", Box::new(d.clone()), timeout(), pool.limit(), metrics)
                 .borrowing(pool.clone(), row.len(), 1)
                 .paced(row.len())
