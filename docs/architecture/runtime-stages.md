@@ -249,8 +249,9 @@ waiting, and reports completions and individual refusals as it learns of them.
 A Kafka source builds without reaching its broker. A Kafka destination asks
 its broker for its topic's message ceiling at build, within one bounded wait,
 and builds with librdkafka's sizes when there is no answer. So a deployment
-starts during a broker outage and reports it as a connection error. A Kafka source places each partition its group hands it: at the
-group's committed offset, or else at its start, a timestamp resolved then.
+starts during a broker outage and reports it as a connection error. A Kafka
+source places each partition its group hands it: at the group's committed
+offset, or else at its start, a timestamp resolved then.
 Its stop, when set, ends each partition before the first record at or past
 it. Each commit carries the start its offset descends from and the time of
 the deployed commit that placed it. A partition whose commit carries another
