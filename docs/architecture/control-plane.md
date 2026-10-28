@@ -20,7 +20,7 @@ model at the leader's ask where it cannot, while the conversation is kept whole.
 process is a leader or a worker; both roles compile into one binary, and
 setting a leader address is what makes a process a worker. Running both in
 one process spawns a worker that talks to its own leader over the same API an
-external one uses.
+external one uses ([api.md](api.md)).
 
 ```text
 worker                                                   leader
