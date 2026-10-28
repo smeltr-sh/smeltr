@@ -22,7 +22,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/areas/:area/files/*path",
-        what: "One file's raw text and commit, by its path in the area (unreadable lists shared/... or groups/<id>/...: the rest after the area). Query: branch.",
+        what: "One file's raw text and commit, by its path within the area. GET .../unreadable answers each file's full repository path: drop the leading shared/ or groups/<id>/. Query: branch.",
         body: "",
     },
     Route {
@@ -295,7 +295,7 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/areas/:area/samples",
         what: "Save a finished capture as a sample on a branch and forget the session. Query: branch.",
-        body: "{ capture: session, id?: string, name: string, source?: string (required for a source capture) }",
+        body: "{ capture: string (the capture's session id), id?: string, name: string, source?: string (required for a source capture) }",
     },
     Route {
         method: "PUT",
@@ -393,7 +393,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/areas/:area/stats",
-        what: "One node's counts in a group. Query: branch, kind (source|pipeline|destination), id, windowMinutes (default 10).",
+        what: "One node's counts in a group; the area is a worker group's id. Query: branch, kind (source|pipeline|destination), id, windowMinutes (default 10).",
         body: "",
     },
     Route {
@@ -801,7 +801,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/certificates",
-        what: "Add a certificate: supplied, with its private key; or issued, which this leader issues under its own authority for the DNS names and IP addresses given, valid for validityDays (365 if left out), and renews on its own. No query.",
+        what: "Add a certificate, either supplied with its private key, or issued by this leader under its own authority for the DNS names and IP addresses given, valid for validityDays (365 if left out) and renewed on its own. No query.",
         body: "{ kind: 'supplied', name: string, description?: string, certificate: pem, privateKey: pem } | { kind: 'issued', name: string, description?: string, names: string[], validityDays?: number }",
     },
     Route {

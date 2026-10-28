@@ -337,7 +337,10 @@ async fn get_connections(
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
 ) -> Json<Envelope<smeltr::leader::connections::ObjectConnections>> {
     let Some(kind) = kind_of_section(&section) else {
-        return Json(Envelope::failed_one(format!("an area holds no section {section:?}")));
+        return Json(Envelope::failed_one(format!(
+            "an area holds no section {section:?}; sections are sources, routes, pipelines, destinations, lookups, \
+             grok-patterns"
+        )));
     };
     let branch = q.name().to_string();
     let read = move || -> Result<_, String> {

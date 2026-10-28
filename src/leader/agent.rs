@@ -119,7 +119,7 @@ pub fn tool() -> Tool {
 const OVERVIEW: &str = r#"How smeltr works:
 
 - **Two tiers.** Workers move data: each reads from its sources, runs every record through the routes that match it, and delivers to destinations. The leader holds the configuration, the people who change it and a picture of the fleet. A source's position moves on only once every destination a record went to has accepted it.
-- **Areas.** Configuration is JSON in git, one bundle per worker group (its area, named by the group's id) and one bundle `shared` that runs in every group. An id may be defined in `shared` or in a group, not both. Every object refuses fields it does not know.
+- **Areas.** Configuration is JSON in git, one bundle per worker group, which is an area named by the group's id, and one bundle `shared` that runs in every group. An id may be defined in `shared` or in a group, not both. Every object refuses fields it does not know.
 - **Routes.** `{ id, source, condition?, pipeline, deliver?: [{ when?, to: [destination ids] }], exceptions? }`. Every route whose condition matches runs, in no order, so overlapping routes deliver twice. A route condition runs before the pipeline and sees only `_raw` and the source's fields; to choose by a parsed field, use a delivery `when`. A null condition is false.
 - **Pipelines.** `{ id, name, steps }`; each step has an `id` unique in the pipeline and a `type`: `parser` (reads the text field `input` names, `_raw` for the raw text, into declared fields: `json`, `csv`, `keyValue` or `grok`), `eval` (assignments; assigning null removes a field), `code` (a program per record), `drop` (removes records where the condition is true), `rename`, `lookup` (against a lookup table), `unroll` (one record per array item), `call` (inlines another pipeline; changing it changes every caller), `if` and `comment`. Most steps take `filter`: where it is false or null, the record passes unchanged.
 - **The language** is a subset of TypeScript. A dotted name is a field (`source.ip`); odd names are `$["user-agent"]`; `$` is the record. Types are strict: conditions must be bool, and a field must be declared by a parser or written by a step before it is calculated with. A missing field is null, arithmetic on null is null, a comparison with null is false, and `!null` is true, so a negated test on a missing field is true. `??` gives a fallback and binds below `&&` and `||`. Examples: `includes(_raw, "ERROR")`, `status >= 500 ? "error" : "info"`, `source.ip.inCidr("10.0.0.0/8") && action == "deny"`, `message != null && !message.startsWith("debug")`.
@@ -153,7 +153,7 @@ pub fn system_prompt(catalog: &[Route]) -> String {
          - `:area` is `shared` or a worker group's id.\n\
          - `at` reads at a commit instead of a branch's tip.\n\
          - Most answers are `{ ok, errors, ...fields }`.\n\
-         - Bodies are camelCase, except the area's `preview/pipeline` and `preview/routes`, whose fields are snake_case.\n\n\
+         - Bodies are camelCase, except `/api/areas/:area/preview/pipeline` and `.../preview/routes`, whose fields are snake_case.\n\n\
          Routes (method, path, what it does, body):\n",
     );
     for route in catalog {
