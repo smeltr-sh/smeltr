@@ -367,26 +367,24 @@ impl Handler {
     async fn stream<R: AsyncRead + Unpin>(
         &self,
         wire: &mut Wire<R>,
-        mut v4: V4,
+        v4: V4,
         inlet: &Inlet,
         forwarder: &str,
         answers: Option<Answering>,
     ) -> Result<std::convert::Infallible, End> {
-        let mut channels = Channels::new(&self.sourcetypes, self.max_request_bytes);
-        let mut acks = Acks::default();
-        let mut held = inlet.held();
-        let Err(end) = self
-            .events(
-                wire,
-                &mut v4,
-                inlet,
-                forwarder,
-                &answers,
-                &mut channels,
-                &mut acks,
-                &mut held,
-            )
-            .await;
+        let mut stream = Stream {
+            v4,
+            channels: Channels::new(&self.sourcetypes, self.max_request_bytes),
+            acks: Acks::default(),
+            held: inlet.held(),
+        };
+        let Err(end) = self.events(wire, inlet, forwarder, &answers, &mut stream).await;
+        let Stream {
+            mut channels,
+            acks,
+            mut held,
+            ..
+        } = stream;
         // However the connection ended, a forwarder sends again only what it waits on acks for: without them, or past
         // them, what the channels hold is all of it there will be.
         let ended = match (&answers, acks.next) {
@@ -399,18 +397,20 @@ impl Handler {
     }
 
     /// The events of the v4 stream, until it ends.
-    #[allow(clippy::too_many_arguments)]
     async fn events<R: AsyncRead + Unpin>(
         &self,
         wire: &mut Wire<R>,
-        v4: &mut V4,
         inlet: &Inlet,
         forwarder: &str,
         answers: &Option<Answering>,
-        channels: &mut Channels<'_>,
-        acks: &mut Acks,
-        held: &mut Held,
+        stream: &mut Stream<'_>,
     ) -> Result<std::convert::Infallible, End> {
+        let Stream {
+            v4,
+            channels,
+            acks,
+            held,
+        } = stream;
         let mut read = vec![0; READ_STEP];
         let mut last_beat: Option<Instant> = None;
         loop {
@@ -630,6 +630,15 @@ async fn write_acks<W: AsyncWrite + Unpin>(
         }
         unwritten.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+/// What one v4 stream holds while it is read: the decoder, the channels its events are cut into, the acks it owes
+/// the forwarder, and the memory it holds.
+struct Stream<'a> {
+    v4: V4,
+    channels: Channels<'a>,
+    acks: Acks,
+    held: Held,
 }
 
 /// The handshake's side of the socket: the bytes read and not yet taken.
