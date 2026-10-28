@@ -314,7 +314,7 @@ impl Reading {
     /// Decode every record's `__source.bytes` with the encoding into its `_raw`; a row, which has none, has no
     /// text. One pass per batch:
     /// `_raw` is rebuilt per route, but from this text, so nothing decodes twice and a note is recorded once.
-    fn decode<'a>(&self, records: &'a [SourceRecord]) -> RawText<'a> {
+    pub(crate) fn decode<'a>(&self, records: &'a [SourceRecord]) -> RawText<'a> {
         let mut text = Vec::with_capacity(records.len());
         let mut notes = Vec::new();
         for (row, read) in self.meta.read_bytes_each(records).enumerate() {
@@ -353,30 +353,27 @@ pub struct Lane {
     destinations: Mutex<Vec<DestId>>,
     /// Where a batch's outcome goes: this source's reader, and no other.
     pub reports: Reports,
-    /// Woken when this lane has work, so a thread watching several of them need not poll each.
-    ready: Arc<Ready>,
     parked: Mutex<Parked>,
 }
 
 impl Lane {
-    /// A lane whose arrivals are announced on `ready`. Every lane one transform thread drains shares one.
+    /// A lane fed through `batches`. Its parked batches are announced on the same `Ready` as its arrivals, which every
+    /// lane one transform thread drains shares.
     pub fn new(
         source_id: SourceId,
         source_name: Option<String>,
         reading: Reading,
+        batches: Handoff,
         destinations: Vec<DestId>,
         reports: Reports,
-        ready: Arc<Ready>,
-        capacity: usize,
     ) -> Lane {
         Lane {
             source_id,
             source_name,
             reading,
-            batches: Handoff::watched(ready.clone(), capacity),
+            batches,
             destinations: Mutex::new(destinations),
             reports,
-            ready,
             parked: Mutex::new(Parked::default()),
         }
     }
@@ -436,7 +433,7 @@ impl Lane {
             shown: HashSet::new(),
             _hold: None,
         });
-        self.ready.signal();
+        self.batches.ready().signal();
     }
 
     /// Show the records the held batch blocked on to each capture of `name` that has not been shown them. Under the
@@ -682,12 +679,11 @@ impl Worker {
                 meta: topology.meta_for(source_id),
                 encoding,
             },
+            Handoff::new(),
             destinations.iter().map(|d| d.id).collect(),
             reports,
-            Arc::new(Ready::new()),
-            crate::handoff::HANDOFF_BYTES,
         ));
-        let ready = lane.ready.clone();
+        let ready = lane.batches.ready().clone();
         Worker {
             reader: Reader::new(
                 source_id,
@@ -2783,8 +2779,8 @@ struct Ingest<'a> {
 }
 
 /// A batch's records as text, decoded once per attempt and rebuilt as a column for routing and for each route.
-struct RawText<'a> {
-    text: Vec<Cow<'a, str>>,
+pub(crate) struct RawText<'a> {
+    pub(crate) text: Vec<Cow<'a, str>>,
     /// What a decode had to do, per row. Replayed into every route's exception window, so a repaired or guessed-at
     /// row is marked wherever it is delivered.
     notes: Vec<(u32, ExceptionKind)>,

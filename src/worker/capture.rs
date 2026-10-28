@@ -1178,7 +1178,6 @@ pub fn run_cold_capture(
         // Admitted finished: `Session::new` said why.
         return;
     };
-    let source_id = source.id.clone();
     let dto = cold_source_config(source, &session, invitation.start);
     if dto.kind.sql().is_some() {
         return run_sql_capture(captures, admitted, dto, registry, secrets);
@@ -1247,7 +1246,6 @@ pub fn run_cold_capture(
         source.as_mut(),
         &crate::runtime::Reading { meta, encoding },
         &metrics,
-        &source_id,
         None,
     );
 }
@@ -1262,10 +1260,16 @@ fn drive<S: crate::io::Source + ?Sized>(
     source: &mut S,
     reading: &crate::runtime::Reading,
     metrics: &crate::metrics::MetricsHandle,
-    source_id: &str,
     run: Option<fn(&S) -> bool>,
 ) {
     let session = &admitted.invitation.session;
+    // Only a capture naming its source opens one to drive.
+    let source_id = &admitted
+        .invitation
+        .source
+        .as_ref()
+        .expect("a driven capture names its source")
+        .id;
     let itself = admitted.invitation.reads_source_itself();
     // A sample holds everything its source set, read or not.
     source.keep_headers(true);
@@ -1305,17 +1309,8 @@ fn drive<S: crate::io::Source + ?Sized>(
         }
         // The decode ingest would have done, with this source's own encoding: a captured record is text, however it
         // was captured.
-        let decoded: Vec<String> = records
-            .iter()
-            .map(|r| {
-                reading
-                    .meta
-                    .read_bytes(r)
-                    .map(|b| reading.encoding.decode(b).text.into_owned())
-                    .unwrap_or_default()
-            })
-            .collect();
-        let text: Vec<&str> = decoded.iter().map(String::as_str).collect();
+        let decoded = reading.decode(&records);
+        let text: Vec<&str> = decoded.text.iter().map(AsRef::as_ref).collect();
         // Labeled by the source's own name rather than a positional id, which `Subjects::resolve` leaves as it is:
         // the source may be in no deployment.
         metrics.incr(
@@ -1376,7 +1371,6 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
     use crate::io::sql::Poll;
     use crate::io::sql_source::{Mode, SqlSource, SqlSourceConfig};
     let invitation = &admitted.invitation;
-    let source_id = dto.id.clone();
     let encoding = dto.kind.encoding();
     let (kind, sql) = dto.kind.sql().expect("only an SQL source is run here");
     // Every mode reads what the capture wants a poll: Run shows the query's first rows, never its whole result.
@@ -1496,7 +1490,6 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
         &mut source,
         &crate::runtime::Reading { meta, encoding },
         &metrics,
-        &source_id,
         Some(SqlSource::read_once),
     );
 }

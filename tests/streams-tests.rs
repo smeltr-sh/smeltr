@@ -7,7 +7,7 @@ use std::time::Duration;
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::id::FunctionId;
 use smeltr::format::encoding::Encoding;
-use smeltr::handoff::{Handed, Ready, reports};
+use smeltr::handoff::{Handed, Handoff, Ready, reports};
 use smeltr::io::SourceRecord;
 use smeltr::io::fake::AsyncDestination;
 use smeltr::metrics::{Metrics, MetricsHandle};
@@ -59,10 +59,9 @@ fn transform_answering(streams: &Arc<Streams>, answer: Answer) -> (Transform, Ar
             meta: topology.meta_for(0),
             encoding: Encoding::Auto,
         },
+        Handoff::watched(ready.clone(), 8_000_000),
         vec![0],
         tx,
-        ready.clone(),
-        8_000_000,
     ));
     let dest = AsyncDestination::new();
     let target = DestinationTarget {

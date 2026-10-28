@@ -9,7 +9,7 @@ use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::id::{DestId, FunctionId};
 use smeltr::egress::Egress;
 use smeltr::format::encoding::Encoding;
-use smeltr::handoff::{Handed, Ready, Report, reports};
+use smeltr::handoff::{Handed, Handoff, Ready, Report, reports};
 use smeltr::io::fake::{AsyncDestination, FakeSource};
 use smeltr::io::{SourceRecord, TopicPartition};
 use smeltr::metrics::{Metrics, MetricsHandle};
@@ -123,10 +123,9 @@ fn two_lanes_to(
                 meta: topology.meta_for(source_id),
                 encoding: Encoding::Auto,
             },
+            Handoff::watched(ready.clone(), 8_000_000),
             to[source_id as usize].clone(),
             tx,
-            ready.clone(),
-            8_000_000,
         )));
         acks.push(rx);
     }
@@ -734,10 +733,9 @@ fn capturing_routes(
             meta: topology.meta_for(0),
             encoding: Encoding::Auto,
         },
+        Handoff::watched(ready.clone(), 8_000_000),
         vec![0],
         tx,
-        ready.clone(),
-        8_000_000,
     ));
     let transform = Transform::new(
         vec![lane.clone()],
