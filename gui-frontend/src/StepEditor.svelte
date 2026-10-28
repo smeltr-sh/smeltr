@@ -1525,8 +1525,8 @@
     --card-surface: var(--field);
     background: var(--card-surface);
     container: step / inline-size;
-    --control-width: 1.3rem;
-    --control-height: 1.4rem;
+    --control-width: 1.5rem;
+    --control-height: 1.5rem;
   }
 
   /* `:where` keeps this below an error's edge and a comment's border, which
@@ -1629,7 +1629,7 @@
     display: none;
   }
 
-  /* Five controls take 7.1rem and never shrink, and the summary needs room
+  /* Five controls take 7.5rem and never shrink, and the summary needs room
      beside them. At 18.75rem and under, ◎ stays out and the rest fold into
      the More menu, the badge shows its glyph and keeps its name only for a
      screen reader. In
@@ -1708,9 +1708,10 @@
     white-space: nowrap;
   }
 
+  /* Each control's box is the 24px target, so the boxes touch and the glyphs keep their spacing without a gap. */
   .controls {
     display: flex;
-    gap: 0.15rem;
+    gap: 0;
     flex-shrink: 0;
   }
 
@@ -1739,7 +1740,7 @@
     .card:not(.open, .if-card)
       > .card-head:is(:hover, :has(:focus-visible, [aria-expanded='true']))
       > .counts {
-      margin-right: 8.3rem;
+      margin-right: 8.7rem;
     }
 
     .card:not(.open, .if-card) > .card-head > .controls {
@@ -1781,7 +1782,9 @@
     color: var(--ink);
   }
 
+  /* Not the color alone: a backdrop marks it on. */
   .controls button.active {
+    background: color-mix(in srgb, var(--ink) 10%, transparent);
     font-weight: 600;
   }
 

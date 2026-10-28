@@ -24,6 +24,9 @@
     display: inline-grid;
     flex: none;
     place-items: center;
+    /* The 24px target a pointer needs (WCAG 2.5.8). */
+    min-width: 1.5rem;
+    min-height: 1.5rem;
     padding: 0.2rem;
     border-color: transparent;
     background: none;
