@@ -133,7 +133,7 @@
   let pipelineId = $derived(loadedId || newId);
   let pipelineName = $state('New pipeline');
   let steps: Step[] = $state([]);
-  /** The schemas its rows are held to, by id (`PipelineDto.schemas`). */
+  /** The schemas its rows are held to, by id (`PipelineDto.produces`). */
   let produces: string[] = $state([]);
   let loading = $state(true);
   let loadFailed = $state(false);
@@ -354,7 +354,7 @@
         if (res.ok && res.pipeline) {
           const loadedSteps = stepsFromDto(res.pipeline.steps);
           loadedId = res.pipeline.id;
-          const loadedProduces = res.pipeline.schemas ?? [];
+          const loadedProduces = res.pipeline.produces ?? [];
           pipelineName = res.pipeline.name;
           steps = loadedSteps;
           produces = loadedProduces;
@@ -557,7 +557,7 @@
         id: targetId,
         name: submittedName,
         steps: submittedSteps.map(stepToDto),
-        ...(submittedProduces.length > 0 ? { schemas: submittedProduces } : {}),
+        ...(submittedProduces.length > 0 ? { produces: submittedProduces } : {}),
       });
       if (res.ok) {
         loadedId = targetId;
@@ -619,7 +619,7 @@
       id: targetId,
       name: parsed.pipelineName,
       steps: parsed.steps.map(stepToDto),
-      ...(parsed.produces.length > 0 ? { schemas: parsed.produces } : {}),
+      ...(parsed.produces.length > 0 ? { produces: parsed.produces } : {}),
     });
     if (res.ok) {
       pipelineName = parsed.pipelineName;
@@ -648,7 +648,7 @@
         id: pipelineId,
         name: pipelineName,
         steps: steps.map(stepToDto),
-        ...(produces.length > 0 ? { schemas: produces } : {}),
+        ...(produces.length > 0 ? { produces } : {}),
       },
       null,
       2,

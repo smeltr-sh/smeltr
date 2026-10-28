@@ -1541,7 +1541,7 @@ mod tests {
             .replacen(r#"{"version":1,"#, &format!(r#"{{"version":1,{SCHEMAS}"#), 1)
             .replace(
                 r#""id":"p","name":"P","#,
-                &format!(r#""id":"p","name":"P","schemas":{schemas},"#),
+                &format!(r#""id":"p","name":"P","produces":{schemas},"#),
             )
     }
 

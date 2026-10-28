@@ -276,7 +276,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             steps,
-            schemas: vec![],
+            produces: vec![],
         }
     }
 

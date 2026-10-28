@@ -7,7 +7,7 @@ export type User = { kind: 'pipeline' | 'destination'; id: string };
 
 /** Each schema id the pipelines produce and the destinations accept, with what names it, pipelines first. */
 export function usersOf(
-  pipelines: Pick<PipelineDto, 'id' | 'schemas'>[],
+  pipelines: Pick<PipelineDto, 'id' | 'produces'>[],
   destinations: Pick<DestinationDto, 'id' | 'accepts'>[],
 ): Map<string, User[]> {
   const out = new Map<string, User[]>();
@@ -17,7 +17,7 @@ export function usersOf(
     else if (!list.some((u) => u.kind === user.kind && u.id === user.id)) list.push(user);
   };
   for (const p of pipelines)
-    for (const s of p.schemas ?? []) add(s, { kind: 'pipeline', id: p.id });
+    for (const s of p.produces ?? []) add(s, { kind: 'pipeline', id: p.id });
   for (const d of destinations)
     for (const s of d.accepts ?? []) add(s, { kind: 'destination', id: d.id });
   return out;

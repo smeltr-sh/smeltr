@@ -483,7 +483,7 @@ interface RawPipelineDto {
   id: string;
   name: string;
   steps: unknown[];
-  schemas?: string[];
+  produces?: string[];
 }
 
 /**
@@ -513,7 +513,7 @@ export function buildFileConfig(
       id: pipelineId,
       name: pipelineName,
       steps: callerSteps,
-      ...(produces.length > 0 ? { schemas: produces } : {}),
+      ...(produces.length > 0 ? { produces } : {}),
     },
   ];
   const visited = new Set([pipelineId]);
@@ -965,7 +965,7 @@ export function parsePipelineDtoJson(text: string): {
   return {
     pipelineName: str(root, 'name', '(root)'),
     steps: stepsFromDto(arr(root, 'steps', '(root)')),
-    produces: 'schemas' in root ? arr(root, 'schemas', '(root)').map(String) : [],
+    produces: 'produces' in root ? arr(root, 'produces', '(root)').map(String) : [],
   };
 }
 

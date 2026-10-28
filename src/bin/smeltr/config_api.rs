@@ -2582,7 +2582,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             steps: vec![],
-            schemas: vec![],
+            produces: vec![],
         };
         let file = FileConfig {
             version: 1,
@@ -2735,7 +2735,7 @@ mod tests {
             id: "x".to_string(),
             name: "x".to_string(),
             steps: vec![],
-            schemas: vec![],
+            produces: vec![],
         })
         .unwrap();
         let stale = Some("0".repeat(40));
@@ -2843,7 +2843,7 @@ mod tests {
             id: "New Pipeline".into(),
             name: name.into(),
             steps,
-            schemas: vec![],
+            produces: vec![],
         };
         let save = |id: &str, pipeline| {
             let response = save_on_branch_in(
@@ -3072,7 +3072,7 @@ mod tests {
                 id: "new".to_string(),
                 name: "new".to_string(),
                 steps: vec![],
-                schemas: vec![],
+                produces: vec![],
             })
         });
 
@@ -3102,7 +3102,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             steps: vec![],
-            schemas: vec![],
+            produces: vec![],
         };
         let file = FileConfig {
             version: 1,
@@ -3235,7 +3235,7 @@ mod tests {
                 id: "passthrough".to_string(),
                 name: "passthrough".to_string(),
                 steps: vec![],
-                schemas: vec![],
+                produces: vec![],
             })
             .unwrap(),
         );
@@ -3351,7 +3351,7 @@ mod tests {
                 id: "passthrough".to_string(),
                 name: "passthrough".to_string(),
                 steps: vec![],
-                schemas: vec![],
+                produces: vec![],
             })
             .unwrap(),
             "the group's own pipeline",

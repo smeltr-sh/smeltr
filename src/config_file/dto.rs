@@ -3133,9 +3133,9 @@ pub struct PipelineDto {
     pub name: String,
     #[serde(default)]
     pub steps: Vec<StepDto>,
-    /// The schemas its rows keep, by id: each row one of them.
+    /// The schemas it produces, by id: each row keeps one of them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub schemas: Vec<String>,
+    pub produces: Vec<String>,
 }
 
 /// `plan::config::OnException`, over the answers of the layer below: the built-in ones, then the group's. Each key

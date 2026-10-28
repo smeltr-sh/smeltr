@@ -709,7 +709,7 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             steps,
-            schemas: vec![],
+            produces: vec![],
         }
     }
 

@@ -2939,7 +2939,7 @@ mod tests {
                         }],
                     },
                 ],
-                schemas: vec![],
+                produces: vec![],
             }],
             ..empty_file()
         }
@@ -2990,7 +2990,7 @@ mod tests {
                 id: "enrich".to_string(),
                 name: "enrich".to_string(),
                 steps: vec![eval_step("mark", "enriched", "true")],
-                schemas: vec![],
+                produces: vec![],
             }],
             ..empty_file()
         };
@@ -3530,7 +3530,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             steps,
-            schemas: vec![],
+            produces: vec![],
         };
         let raw = RawBundle {
             file: FileConfig {

@@ -529,7 +529,7 @@ mod tests {
           ],
           "destinations": [{ "id": "out", "type": "kafka", "brokers": "b:9092", "defaultTopic": "t",
                              "accepts": ["login"] }],
-          "pipelines": [{ "id": "p", "name": "p", "schemas": ["stamped"],
+          "pipelines": [{ "id": "p", "name": "p", "produces": ["stamped"],
                           "steps": [{ "id": "s", "type": "code", "body": "$[\"@timestamp\"] = \"now\";" }] }],
           "routes": [{ "id": "r", "source": "k", "pipeline": "p", "deliver": [{ "to": ["out"] }] }]
         }"#;

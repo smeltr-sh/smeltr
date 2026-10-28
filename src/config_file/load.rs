@@ -460,7 +460,7 @@ fn resolve_schemas(file: &FileConfig, attributed: &mut Vec<ValidationError>) -> 
     let produces = file
         .pipelines
         .iter()
-        .map(|p| resolve("pipelines", &p.id, "schemas", "produces", &p.schemas))
+        .map(|p| resolve("pipelines", &p.id, "produces", "produces", &p.produces))
         .collect();
     let accepts = file
         .destinations
@@ -6422,7 +6422,7 @@ mod tests {
               "schemas": {schemas},
               "destinations": [{{ "id": "d", "type": "kafka", "brokers": "b:9092", "defaultTopic": "t",
                                   "accepts": {accepts} }}],
-              "pipelines": [{{ "id": "p", "name": "p", "schemas": {produces}, "steps": [] }}]
+              "pipelines": [{{ "id": "p", "name": "p", "produces": {produces}, "steps": [] }}]
             }}"#
         ))
         .unwrap()
@@ -6462,7 +6462,7 @@ mod tests {
         let (section, id, field, message) = the_error(with_schemas("[]", r#"["acme-login"]"#, "[]"));
         assert_eq!(
             (section.as_str(), id.as_str(), field),
-            ("pipelines", "p", Some("schemas"))
+            ("pipelines", "p", Some("produces"))
         );
         assert!(message.contains("\"acme-login\""), "{message}");
         let (section, _, field, _) = the_error(with_schemas("[]", "[]", r#"["nothing"]"#));

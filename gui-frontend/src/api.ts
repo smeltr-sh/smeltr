@@ -1040,7 +1040,7 @@ export interface PipelineDto {
   name: string;
   steps: unknown[];
   /** The schemas its rows are held to, by their ids in the bundle. */
-  schemas?: string[];
+  produces?: string[];
 }
 
 /** A shared lookup table, referenced by id from any `lookup` step. `headers`

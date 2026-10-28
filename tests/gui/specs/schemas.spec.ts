@@ -107,7 +107,7 @@ test("a pipeline's Produces is saved with it, and the editor says what its rows 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
   const saved = await api.get(`/api/pipelines/logins${ON}`);
-  expect(saved.pipeline.schemas).toEqual(['login']);
+  expect(saved.pipeline.produces).toEqual(['login']);
 });
 
 test("a destination's accepts is saved with it", async ({ admin, leader, api }) => {
@@ -142,7 +142,7 @@ async function arrangeMisfit(api: Api, branch: string) {
     id: 'logins',
     name: 'logins',
     steps: [],
-    schemas: ['login'],
+    produces: ['login'],
   });
   await api.put(`/api/destinations${on}`, [
     {
@@ -188,7 +188,7 @@ test('a field the schema requires and the rows lack is a column of its own, with
   await api.put(`/api/pipelines/logins${ON}`, {
     id: 'logins',
     name: 'logins',
-    schemas: ['login'],
+    produces: ['login'],
     steps: [
       {
         type: 'parser',

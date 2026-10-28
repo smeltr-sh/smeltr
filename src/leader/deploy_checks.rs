@@ -258,7 +258,7 @@ mod tests {
             ),
             (
                 "pipelines/p.json",
-                r#"{"id":"p","name":"p","schemas":["login"],"steps":[]}"#,
+                r#"{"id":"p","name":"p","produces":["login"],"steps":[]}"#,
             ),
         ];
         let edits: Vec<git::FileEdit> = (files.iter())
