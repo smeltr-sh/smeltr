@@ -11,6 +11,8 @@
     type: string | null;
     /** The records that hold it. */
     count: number;
+    /** The schema requiring it, for a field the rows lack. */
+    requiredBy?: string;
   }
 </script>
 
@@ -123,8 +125,14 @@
               onchange={(e) => onshow([f.path], e.currentTarget.checked)}
             />
             <!-- A field no record holds after the step and the pipeline does not write is one it took away. -->
-            <span class="mono path" class:dim={f.count === 0 && f.type === null}
-              >{before}<mark>{match}</mark>{after}</span
+            <span
+              class="mono path"
+              class:dim={f.count === 0 && f.type === null}
+              class:missing={f.requiredBy !== undefined}
+              title={f.requiredBy && `${f.requiredBy} requires it; the rows lack it`}
+              >{before}<mark>{match}</mark>{after}{#if f.requiredBy}<span class="required-by">
+                  required by {f.requiredBy}</span
+                >{/if}</span
             >
             <span class="mono dim type" title={f.type ?? undefined}>{f.type ?? ''}</span>
             {#if records !== null}<button
@@ -295,5 +303,15 @@
     font-size: var(--text-label);
     font-weight: 400;
     color: var(--dim);
+  }
+
+  /* A field a schema requires and the rows lack: listed so its column can be shown or hidden. */
+  .missing {
+    color: var(--warn);
+  }
+
+  .required-by {
+    font-family: var(--sans);
+    font-size: var(--text-micro);
   }
 </style>

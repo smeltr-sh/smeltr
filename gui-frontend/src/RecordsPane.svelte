@@ -236,6 +236,15 @@
     (result?.ok ? result.dictionary : undefined) ?? lastGoodResult?.dictionary,
   );
   let declaredTypes = $derived(new Map(dictionary?.compiled.fields ?? []));
+  /** The fields the schemas the pipeline produces require and its rows lack, by path. */
+  let missing = $derived(
+    new Map(
+      ((result?.ok ? result.missing : undefined) ?? lastGoodResult?.missing ?? []).map((m) => [
+        m.path,
+        m,
+      ]),
+    ),
+  );
 
   /** Every field the records hold, and every field the pipeline declares that none of them
    * do, which the Fields menu lists as held by none. A declared struct a record fills is its
@@ -247,10 +256,12 @@
       if (allColumns.some((c) => c.startsWith(path + '.') || c.startsWith(path + '['))) continue;
       paths.add(path);
     }
+    for (const path of missing.keys()) paths.add(path);
     return [...paths].sort().map((path) => ({
       path,
-      type: declaredTypes.get(path) ?? null,
+      type: declaredTypes.get(path) ?? missing.get(path)?.written_as ?? null,
       count: fieldCounts.get(path) ?? 0,
+      requiredBy: missing.get(path)?.schema,
     }));
   });
 
@@ -269,12 +280,20 @@
         .filter((f) => !startsHidden(f.path))
         .sort((x, y) => y.count - x.count || (x.path < y.path ? -1 : 1))
         .slice(0, DEFAULT_FIELDS)
-        .map((f) => f.path),
+        .map((f) => f.path)
+        // What a schema requires and the rows lack is what the reader needs to see.
+        .concat([...missing.keys()]),
     ),
   );
   let chosenFields = $state(new SvelteMap<string, boolean>());
   const isShown = (path: string) => chosenFields.get(path) ?? shownByDefault.has(path);
   let columns = $derived(allColumns.filter(isShown));
+  /** A column for each shown field the rows lack and a schema requires, after the rows' own. */
+  let missingColumns = $derived(
+    [...missing.values()].filter((m) => isShown(m.path) && !allColumns.includes(m.path)),
+  );
+  /** Every column the grid draws, with the fold and the row number. */
+  let spanned = $derived(columns.length + missingColumns.length + 2);
 
   const unfoldedPath = (path: string) => !startsHidden(path) || isShown(path);
 
@@ -455,10 +474,15 @@
       return Math.min(w, COLUMN_CH);
     });
   });
+  let missingWidths = $derived(
+    missingColumns.map((m) =>
+      Math.min(COLUMN_CH, m.path.length + (view.showTypes ? m.written_as.length + 2 : 0) + 4),
+    ),
+  );
   /** The row number, with room for a failing row's mark. */
   let indexWidth = $derived(String(gridRows?.length ?? 0).length + 2);
   let gridWidth = $derived(
-    `max(100%, calc(${columnWidths.reduce((a, b) => a + b, 2 + indexWidth)}ch + ${columns.length + 2}rem))`,
+    `max(100%, calc(${[...columnWidths, ...missingWidths].reduce((a, b) => a + b, 2 + indexWidth)}ch + ${spanned}rem))`,
   );
 
   // Keyed apart from the field paths: a record may carry a field named `row`, but
@@ -737,8 +761,8 @@
                 <col style:width="calc(2ch + 1rem)" />
                 <col style:width={`calc(${indexWidth}ch + 1rem)`} />
                 <!-- The last column takes what the pane has to spare. -->
-                {#each columnWidths as w, k (columns[k])}
-                  <col style:width={k < columns.length - 1 ? `calc(${w}ch + 1rem)` : undefined} />
+                {#each [...columnWidths, ...missingWidths] as w, k (k)}
+                  <col style:width={k < spanned - 3 ? `calc(${w}ch + 1rem)` : undefined} />
                 {/each}
               </colgroup>
               <thead>
@@ -761,12 +785,27 @@
                       ></th
                     >
                   {/each}
+                  {#each missingColumns as m (m.path)}
+                    {@const name = splitPath(m.path)}
+                    <th
+                      class="cell missing-head"
+                      title="{m.schema} requires {m.path}; the rows lack it"
+                      ><span class="missing-name"
+                        ><span class="head-name"
+                          ><span aria-hidden="true">⚠&nbsp;</span><span class="path-prefix"
+                            >{name.prefix}</span
+                          >{name.leaf}</span
+                        >{#if view.showTypes}<span class="head-type">{': '}{m.written_as}</span
+                          >{/if}</span
+                      ></th
+                    >
+                  {/each}
                 </tr>
               </thead>
               <tbody bind:this={tbody}>
                 {#if drawn.above > 0}
                   <tr class="spacer" aria-hidden="true" style:height={`${drawn.above}px`}
-                    ><td colspan={columns.length + 2}></td></tr
+                    ><td colspan={spanned}></td></tr
                   >
                 {/if}
                 {#each gridOrder.slice(drawn.start, drawn.end) as i (gridRows[i].row)}
@@ -803,6 +842,9 @@
                         {/if}
                       </td>
                     {/each}
+                    {#each missingColumns as m (m.path)}
+                      <td class="cell"><span class="missing">missing</span></td>
+                    {/each}
                   </tr>
 
                   {#if open}
@@ -816,7 +858,7 @@
                     >
                       <td
                         class="expanded-cell"
-                        colspan={columns.length + 2}
+                        colspan={spanned}
                         style:--pane-width={`${paneWidth}px`}
                       >
                         <div class="row-head-wrap">
@@ -860,6 +902,19 @@
                             touched={touchedOn(row.row)}
                             {onjump}
                           />
+                          {#if missing.size > 0}
+                            {@const bySchema = Map.groupBy(missing.values(), (m) => m.schema)}
+                            {#each bySchema as [schema, fields] (schema)}
+                              <div class="missing-fields">
+                                <p class="missing">{schema} requires, missing here:</p>
+                                {#each fields as m (m.path)}
+                                  <span class="mono missing">{m.path}</span>
+                                  <span class="mono missing">{m.written_as}</span>
+                                  <span class="missing"><i>missing</i></span>
+                                {/each}
+                              </div>
+                            {/each}
+                          {/if}
                         </div>
                       </td>
                     </tr>
@@ -867,7 +922,7 @@
                 {/each}
                 {#if drawn.below > 0}
                   <tr class="spacer" aria-hidden="true" style:height={`${drawn.below}px`}
-                    ><td colspan={columns.length + 2}></td></tr
+                    ><td colspan={spanned}></td></tr
                   >
                 {/if}
               </tbody>
@@ -1198,5 +1253,39 @@
 
   .mark.removed {
     color: var(--removed);
+  }
+
+  /* A field a schema requires and the rows lack: a column of its own, and a block in an opened row. */
+  .missing,
+  .missing-head {
+    color: var(--warn);
+  }
+
+  /* Laid out as a sortable column's head is, which a missing column, holding nothing to sort, is not. */
+  .missing-name {
+    display: inline-flex;
+    gap: 0.25rem;
+    max-width: 100%;
+  }
+
+  .missing-head {
+    border-bottom: 2px dashed var(--warn);
+  }
+
+  .cell > .missing {
+    font-style: italic;
+  }
+
+  .missing-fields {
+    display: grid;
+    grid-template-columns: max-content max-content 1fr;
+    gap: 0.1rem 1.5rem;
+    margin: 0.5rem 0 0 1.6rem;
+    font-size: var(--text-note);
+  }
+
+  .missing-fields p {
+    grid-column: 1 / -1;
+    margin: 0 0 0.2rem;
   }
 </style>

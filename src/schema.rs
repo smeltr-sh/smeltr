@@ -349,6 +349,34 @@ pub fn check(schemas: &[Arc<Schema>], record: &DataType) -> Vec<Finding> {
     out
 }
 
+/// A field a schema requires that the record lacks, as a pipeline's author is shown it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Missing {
+    /// The field's path, as the pipeline editor shows it.
+    pub path: String,
+    /// What a pipeline writes to keep it.
+    pub written_as: String,
+    /// The schema's title.
+    pub schema: String,
+}
+
+/// Each field `findings` say the record lacks, with what to write it as and the schema requiring it.
+pub fn missing(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Missing> {
+    findings
+        .iter()
+        .filter(|f| f.misfit == Misfit::Missing)
+        .filter_map(|f| {
+            let schema = schemas.iter().find(|s| s.id == f.schema)?;
+            let field = schema.field(&f.keys)?;
+            Some(Missing {
+                path: f.path(),
+                written_as: schema.written_as(field),
+                schema: schema.title.clone(),
+            })
+        })
+        .collect()
+}
+
 /// What a check's `findings` against `schemas` say to a pipeline's author: a sentence for each field whose type
 /// misfits, with the field's keys, and one for each schema's required fields the record lacks, with none.
 pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<(Option<Vec<String>>, String)> {

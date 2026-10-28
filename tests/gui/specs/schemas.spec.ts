@@ -82,9 +82,7 @@ test("a pipeline's Produces is saved with it, and the editor says what its rows 
     .selectOption('ocsf/authentication');
   await expect(produces.getByRole('link', { name: 'ocsf/authentication' })).toBeVisible();
   await expect(produces.getByRole('status')).toHaveText('1 schema finding', { timeout: 15_000 });
-  await expect(
-    admin.getByText(/^OCSF Authentication requires: `activity_id`/),
-  ).toBeVisible();
+  await expect(admin.getByText(/^OCSF Authentication requires: `activity_id`/)).toBeVisible();
   await admin.screenshot({ path: 'results/schemas-produces.png' });
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
@@ -149,10 +147,57 @@ test('review lists where the rows do not fit a schema, and the dock counts them 
   await admin.getByRole('tab', { name: /^Schemas/ }).click();
   const panel = admin.getByRole('tabpanel');
   await expect(panel.getByRole('link', { name: 'logins' })).toBeVisible();
-  await expect(
-    panel.getByText(/^OCSF Authentication requires: `activity_id`/),
-  ).toBeVisible();
+  await expect(panel.getByText(/^OCSF Authentication requires: `activity_id`/)).toBeVisible();
   await expect(panel.getByText(/destination "search" accepts ECS/)).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Approve & deploy' })).toBeEnabled();
   await admin.screenshot({ path: 'results/schemas-review.png' });
+});
+
+test('a field the schema requires and the rows lack is a column of its own, with its type', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/pipelines/logins${ON}`, {
+    id: 'logins',
+    name: 'logins',
+    schemas: ['ocsf/authentication'],
+    steps: [
+      {
+        type: 'parser',
+        id: 'login',
+        input: '_raw',
+        kind: { type: 'json' },
+        declared: [{ name: 'when', type: 'datetime' }],
+      },
+      {
+        type: 'code',
+        id: 'map',
+        disabled: false,
+        body: 'time = when.epochMillis();\ndelete(when, _raw);',
+      },
+    ],
+  });
+  await api.put(`/api/samples${ON}`, {
+    id: 'logins-sample',
+    name: 'logins',
+    records: [{ _raw: '{"when":"2026-10-27T10:00:00Z"}' }],
+  });
+  await goto(admin, leader, '#/build/pipelines/logins/for/logins-sample');
+
+  const grid = admin.locator('table.grid');
+  const head = grid.locator('thead th', { hasText: 'activity_id' });
+  await expect(head).toContainText('activity_id: i64', { timeout: 15_000 });
+  await expect(head).toHaveAttribute('title', /^OCSF Authentication requires activity_id/);
+  await expect(grid.locator('thead th.missing-head', { hasText: /^time/ })).toHaveCount(0);
+  await expect(grid.getByRole('row', { name: /^row 0 / })).toContainText('missing');
+
+  // A sample of one record opens on it.
+  await expect(admin.getByRole('button', { name: 'row 0' })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+  await expect(admin.getByText('OCSF Authentication requires, missing here:')).toBeVisible();
+  await expect(admin.getByText(/^OCSF Authentication requires: `activity_id`/)).toBeVisible();
+  await admin.screenshot({ path: 'results/schemas-missing.png' });
 });

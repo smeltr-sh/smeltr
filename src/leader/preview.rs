@@ -137,6 +137,9 @@ pub struct Preview {
     /// How many of `warnings` are where the rows break the schemas the pipeline produces.
     #[serde(skip_serializing_if = "is_zero")]
     pub schema_findings: u32,
+    /// The fields the schemas the pipeline produces require and its rows lack, which the editor shows as columns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<crate::schema::Missing>,
     /// The answer to `PreviewRequest::after_dot`. Absent where the dot follows no value: it is in a string, a comment
     /// or a number.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -912,7 +915,7 @@ pub fn run_preview(
         }
     };
     if records.is_empty() {
-        let found = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first);
+        let (found, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first);
         warnings.extend(found.iter().map(warn));
         return Envelope::ok(Preview {
             stage: None,
@@ -928,6 +931,7 @@ pub fn run_preview(
             }),
             warnings,
             schema_findings: found.len() as u32,
+            missing,
         });
     }
 
@@ -1035,7 +1039,7 @@ pub fn run_preview(
 
     // The dictionary is of every row: a filter chooses what is shown, not what the pipeline writes.
     let sampled = plan::dictionary::with_sample(&record, rows.iter().filter_map(|(r, _)| r.json.as_ref()));
-    let found = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first);
+    let (found, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first);
     warnings.extend(found.iter().map(warn));
     let unfiltered = filter.as_ref().map(|_| rows.len() as u32);
     let rows = rows
@@ -1057,6 +1061,7 @@ pub fn run_preview(
         parsers,
         warnings,
         schema_findings: found.len() as u32,
+        missing,
     })
 }
 
@@ -1068,15 +1073,16 @@ fn schema_warnings(
     plan: &Plan,
     record: &DataType,
     first: Option<FunctionId>,
-) -> Vec<CompileError> {
+) -> (Vec<CompileError>, Vec<crate::schema::Missing>) {
     let findings = crate::schema::check(produces, record);
-    crate::schema::told(produces, &findings)
+    let warned = crate::schema::told(produces, &findings)
         .into_iter()
         .map(|(keys, message)| {
             let at = keys.and_then(|keys| plan::dictionary::writer(plan, &keys).or(first));
             CompileError::new(at, message)
         })
-        .collect()
+        .collect();
+    (warned, crate::schema::missing(produces, &findings))
 }
 
 /// Clear every `reuse` that would hand away a binding of a name, so `touched` can read each binding after the run.
@@ -1530,7 +1536,13 @@ mod tests {
     }
 
     fn warnings_of(config: String, columns: &[crate::heartbeat::CaptureColumn]) -> Vec<(Option<String>, String)> {
-        let previewed = run_preview(
+        (previewed(config, columns).warnings.iter())
+            .map(|w| (w.step.clone(), w.message.clone()))
+            .collect()
+    }
+
+    fn previewed(config: String, columns: &[crate::heartbeat::CaptureColumn]) -> Preview {
+        run_preview(
             PreviewRequest {
                 config,
                 pipeline: Some("p".into()),
@@ -1545,10 +1557,20 @@ mod tests {
             Default::default(),
             columns,
             Vec::new(),
+        )
+        .body
+    }
+
+    #[test]
+    fn the_fields_a_schema_requires_and_the_rows_lack_are_listed_with_their_types() {
+        let missing = previewed(producing(r#"["ocsf/authentication"]"#), &[]).missing;
+        let time = missing.iter().find(|m| m.path == "time").unwrap();
+        assert_eq!(
+            (time.written_as.as_str(), time.schema.as_str()),
+            ("i64", "OCSF Authentication")
         );
-        (previewed.body.warnings.iter())
-            .map(|w| (w.step.clone(), w.message.clone()))
-            .collect()
+        assert_eq!(missing.iter().find(|m| m.path == "user").unwrap().written_as, "struct");
+        assert_eq!(missing.len(), 8, "{missing:?}");
     }
 
     #[test]

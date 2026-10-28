@@ -530,7 +530,9 @@ fields, an object at a time, and any schema exports as JSON Schema.
 
 A pipeline names what it produces in the editor's Produces row, and a
 destination what it accepts on its own form. Where the rows do not fit, the
-editor says so at the step that wrote the field, review lists it under its
+editor says so at the step that wrote the field, and gives each field a
+schema requires and the rows lack a column of its own, with the type to write
+it as, and lists it in the Fields menu. Review lists it under its
 Schemas tab and counts it in the dock, and none of it blocks a save or a
 deploy.
 

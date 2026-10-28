@@ -1974,6 +1974,17 @@ export interface PreviewResult {
   warnings?: ApiError[];
   /** How many of `warnings` are where the rows break the schemas the pipeline produces. */
   schema_findings?: number;
+  /** The fields the schemas the pipeline produces require and its rows lack. */
+  missing?: MissingField[];
+}
+
+/** A field a schema requires that a pipeline's rows lack (`schema::Missing`). */
+export interface MissingField {
+  path: string;
+  /** What a pipeline writes to keep it, as a declaration spells a type. */
+  written_as: string;
+  /** The schema's title. */
+  schema: string;
 }
 
 /** What a preview that did not run says went wrong. */
