@@ -5316,7 +5316,10 @@ export function importSchema(req: {
   title?: string;
   config: FileConfigDto;
   pipeline: string;
-  records: SampleRecordDto[];
+  /** The uploaded file, cut into records on the leader as a source cuts its bytes. */
+  text: string;
+  /** Where a record ends; absent, each line is one. */
+  lineBreaker?: string;
 }): Promise<ReadSchema> {
   return post(
     branched('/api/schemas/import'),
@@ -5325,7 +5328,8 @@ export function importSchema(req: {
       pipeline: req.pipeline,
       id: req.id,
       title: req.title ?? '',
-      records: req.records,
+      text: req.text,
+      lineBreaker: req.lineBreaker,
     },
     'quiet',
   );

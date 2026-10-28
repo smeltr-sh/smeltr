@@ -487,9 +487,10 @@ fn preview_on(
     }
 }
 
-/// A schema imported by a pipeline: `pipeline` of `config` run over `records`, an uploaded file's, on `branch` as a
-/// preview runs, and each row it writes a field of the schema `id` (`schema_catalog::from_rows`).
+/// A schema imported by a pipeline: `pipeline` of `config` run over the records of `text`, an uploaded file, on
+/// `branch` as a preview runs, and each row it writes a field of the schema `id` (`schema_catalog::from_rows`).
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ImportRequest {
     /// A single-file `config_file` JSON document: the bundle the importer is in.
     config: String,
@@ -498,7 +499,10 @@ struct ImportRequest {
     id: String,
     #[serde(default)]
     title: String,
-    records: Vec<smeltr::io::RecordObject>,
+    /// The uploaded file, cut into records by `line_breaker` (`schema_catalog::records_of`).
+    text: String,
+    #[serde(default)]
+    line_breaker: Option<String>,
 }
 
 async fn import_schema(
@@ -507,6 +511,10 @@ async fn import_schema(
 ) -> Json<Envelope<smeltr::leader::schema_catalog::ReadSchema>> {
     let (branch, scope) = (q.name().to_string(), q.scope().to_string());
     let run = move || {
+        let records = match smeltr::leader::schema_catalog::records_of(&req.text, req.line_breaker.as_deref()) {
+            Ok(records) => records,
+            Err(message) => return Ok::<_, String>(Envelope::failed_one(message)),
+        };
         let preview = preview_on(
             &smeltr::startup_config::leader_data_dir(),
             &branch,
@@ -522,10 +530,10 @@ async fn import_schema(
                 after_dot: None,
                 capture_filter: None,
             },
-            req.records,
+            records,
         );
         if !preview.ok {
-            return Ok::<_, String>(Envelope::failed(preview.errors));
+            return Ok(Envelope::failed(preview.errors));
         }
         Ok(
             smeltr::leader::schema_catalog::from_rows(&req.id, &req.title, &preview.body.rows)

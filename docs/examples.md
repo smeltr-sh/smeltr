@@ -398,8 +398,11 @@ A schema is a table of fields, and a pipeline makes rows, so a schema is
 imported by a pipeline: Add schema, Import, pick the pipeline and a file, and
 each row it writes is a field, with `field`, `type`, and `required` and
 `description` where it has them ([Config plane](architecture/config-plane.md#schemas)).
-ECS's `generated/csv/fields.csv` is one row per field; a Drop step takes out
-its header. In: `tests/gui/fixtures/ecs-fields-excerpt.csv`.
+The file is cut into records as a source cuts its bytes: a record per line,
+or where a line breaker breaks it. ECS's `generated/csv/fields.csv` is one row
+per field, and some of its quoted examples span lines, so its line breaker
+breaks where a row starts with its ECS version: `([\r\n]+)\d+\.\d+\.\d+`. A
+Drop step takes out its header. In: `tests/gui/fixtures/ecs-fields-excerpt.csv`.
 
 ```ts
 Object.assign($, csv(_raw, [null, null, null, "field", "ecs", null, "normalization", null, "description"]))

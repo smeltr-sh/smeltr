@@ -110,7 +110,8 @@
         id: draft.id,
         config: $state.snapshot(config),
         pipeline: draft.pipeline,
-        records: draft.records,
+        text: draft.file,
+        lineBreaker: draft.lineBreaker,
       });
       if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
       schema = read.schema;

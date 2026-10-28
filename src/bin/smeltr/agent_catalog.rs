@@ -70,8 +70,8 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/schemas/import",
-        what: "A schema imported by a pipeline: pipeline of config run over records, each row it writes a field. Query: scope, branch.",
-        body: "{ config: string, pipeline: string, id: string, title?: string, records: object[] }",
+        what: "A schema imported by a pipeline: pipeline of config run over the records of an uploaded file, cut where lineBreaker breaks it or a record per line, each row it writes a field. Query: scope, branch.",
+        body: "{ config: string, pipeline: string, id: string, title?: string, text: string, lineBreaker?: string }",
     },
     Route {
         method: "POST",

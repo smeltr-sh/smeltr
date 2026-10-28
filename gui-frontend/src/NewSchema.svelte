@@ -16,10 +16,10 @@
     text: string;
     /** The importer, by pipeline id, for `import`. */
     pipeline: string;
-    /** The uploaded file's records, for `import`. */
-    records: SampleRecordDto[];
-    /** The uploaded file's name, shown. */
-    fileName: string;
+    /** The uploaded file, for `import`, cut into records on the leader. */
+    file: string;
+    /** Where a record of the file ends, for `import`; absent, each line is one. */
+    lineBreaker: string | undefined;
   };
 
   const LABELS: Record<SchemaStart, string> = {
@@ -59,8 +59,7 @@
   import NewObject from './NewObject.svelte';
   import Field from './Field.svelte';
   import { suggestId } from './ids';
-  import { recordsFromText, type SampleRecordDto } from './api';
-  import { count } from './time';
+  import LineBreakerField from './LineBreakerField.svelte';
 
   let {
     open,
@@ -85,8 +84,8 @@
       type,
       text: '',
       pipeline: '',
-      records: [],
-      fileName: '',
+      file: '',
+      lineBreaker: undefined,
     };
   }
 
@@ -95,11 +94,10 @@
     if (file) draft.text = await file.text();
   }
 
-  async function uploadRecords(draft: SchemaDraft, input: HTMLInputElement) {
+  async function uploadFile(draft: SchemaDraft, input: HTMLInputElement) {
     const file = input.files?.[0];
     if (!file) return;
-    draft.records = recordsFromText(await file.text());
-    draft.fileName = file.name;
+    draft.file = await file.text();
   }
 
   function ready(d: SchemaDraft): boolean {
@@ -107,7 +105,7 @@
       case 'jsonSchema':
         return d.text.trim() !== '';
       case 'import':
-        return d.pipeline !== '' && d.records.length > 0;
+        return d.pipeline !== '' && d.file !== '';
       default:
         return true;
     }
@@ -139,12 +137,10 @@
           {/each}
         </select>
       </Field>
-      <Field required label="File" help="One record per line, as a sample is uploaded.">
-        <input type="file" onchange={(e) => uploadRecords(draft, e.currentTarget)} />
-        {#if draft.fileName}
-          <span class="dim">{draft.fileName}: {count(draft.records.length, 'record')}</span>
-        {/if}
+      <Field required label="File">
+        <input type="file" onchange={(e) => uploadFile(draft, e.currentTarget)} />
       </Field>
+      <LineBreakerField value={draft.lineBreaker} onchange={(p) => (draft.lineBreaker = p)} />
     {:else if draft.type === 'jsonSchema'}
       <Field required label="JSON Schema">
         <textarea
@@ -181,10 +177,5 @@
 
   .mono {
     font-family: var(--mono);
-  }
-
-  .dim {
-    color: var(--dim);
-    font-size: var(--text-note);
   }
 </style>

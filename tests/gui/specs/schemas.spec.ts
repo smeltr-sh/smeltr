@@ -142,7 +142,9 @@ test("a destination's accepts is saved with it", async ({ admin, leader, api }) 
 
 /** The ECS importer: one row per field of ECS's `generated/csv/fields.csv` (Elastic Common Schema, Apache 2.0). The
  * header row is dropped; each other row's column 4 is the field, 5 its ECS type, 7 whether it is an array, 9 its
- * description. `tests/gui/fixtures/ecs-fields-excerpt.csv` is that file's first rows. */
+ * description. Its quoted cells hold line ends, so a row is cut where the next starts, with its version.
+ * `tests/gui/fixtures/ecs-fields-excerpt.csv` is that file's first rows and one whose example spans lines. */
+const ECS_LINE_BREAKER = String.raw`([\r\n]+)\d+\.\d+\.\d+`;
 const ECS_IMPORTER = {
   id: 'ecs-importer',
   name: 'ECS importer',
@@ -184,7 +186,7 @@ test('a schema is imported by a pipeline of the bundle run over an uploaded file
   await dialog
     .getByLabel(/^File/)
     .setInputFiles(fileURLToPath(new URL('../fixtures/ecs-fields-excerpt.csv', import.meta.url)));
-  await expect(dialog.getByText('ecs-fields-excerpt.csv: 13 records')).toBeVisible();
+  await dialog.getByRole('textbox', { name: 'line breaker' }).fill(ECS_LINE_BREAKER);
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   await expect(admin.getByRole('cell', { name: '@timestamp*', exact: true })).toBeVisible();
@@ -201,7 +203,7 @@ test('a schema is imported by a pipeline of the bundle run over an uploaded file
   const saved = await api.get(`/api/config${ON}`);
   const fields = saved.config.schemas[0].fields;
   expect(saved.config.schemas[0].id).toBe('ecs');
-  expect(fields).toHaveLength(12);
+  expect(fields).toHaveLength(13);
   expect(fields[0]).toEqual({
     field: '@timestamp',
     type: 'datetime',
@@ -211,6 +213,9 @@ test('a schema is imported by a pipeline of the bundle run over an uploaded file
   expect(fields.find((f: { field: string }) => f.field === 'tags').type).toBe('array<str>');
   expect(fields.find((f: { field: string }) => f.field === 'labels').type).toBe('{...}');
   expect(fields.find((f: { field: string }) => f.field === 'client.as.number').type).toBe('i64');
+  expect(fields.find((f: { field: string }) => f.field === 'gen_ai.input.messages').type).toBe(
+    'variant',
+  );
 });
 
 /** On `branch`, in group `default`: a pipeline producing `login` that writes nothing, routed from a metrics source

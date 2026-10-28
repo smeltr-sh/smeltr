@@ -5,6 +5,8 @@
 use serde_json::Value;
 
 use crate::config_file::SchemaDto;
+use crate::io::line_breaker::{LineBreaker, PER_LINE};
+use crate::io::raw_object;
 use crate::schema::json_schema;
 
 /// A JSON Schema document to read as the schema `id`.
@@ -40,6 +42,22 @@ pub fn to_json_schema(schema: &SchemaDto) -> Result<WrittenSchema, String> {
     crate::schema::read(schema).map(|s| WrittenSchema {
         schema: json_schema::write(&s),
     })
+}
+
+/// An uploaded file as the records an importer runs over, cut as a source cuts its bytes: where `line_breaker` breaks
+/// them, or a record per line without one. A file such as ECS's `fields.csv`, whose quoted cells hold line ends, names
+/// how each of its records starts. `Err` names a pattern a source would refuse.
+pub fn records_of(text: &str, line_breaker: Option<&str>) -> Result<Vec<crate::io::RecordObject>, String> {
+    let pattern = line_breaker.unwrap_or(PER_LINE);
+    if let Some(refusal) = crate::config_file::line_breaker_refusal("the import", pattern) {
+        return Err(refusal);
+    }
+    let breaker = LineBreaker(regex::bytes::Regex::new(pattern).expect("line_breaker_refusal compiled it"));
+    let bytes = text.as_bytes();
+    Ok(breaker
+        .events(bytes, true)
+        .map(|event| raw_object(String::from_utf8_lossy(&bytes[event])))
+        .collect())
 }
 
 /// The schema `id` an importer pipeline produced: each row it wrote has a `field`, a `type`, and may have `required`
@@ -103,6 +121,28 @@ pub fn findings(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_uploaded_file_is_a_record_per_line_without_a_line_breaker() {
+        let records = records_of("a,1\r\n\nb,2\n", None).unwrap();
+        let raws: Vec<_> = records.iter().map(|r| r["_raw"].as_str().unwrap()).collect();
+        assert_eq!(raws, ["a,1", "b,2"]);
+    }
+
+    /// A quoted cell that spans lines stays in its row when the pattern names how a row starts.
+    #[test]
+    fn a_line_breaker_keeps_a_quoted_cell_s_line_ends_in_its_record() {
+        let text = "9.0.0,a,\"{\n  x\n}\",d\n9.0.0,b,,e\n";
+        let records = records_of(text, Some(r"([\r\n]+)\d+\.\d+\.\d+")).unwrap();
+        let raws: Vec<_> = records.iter().map(|r| r["_raw"].as_str().unwrap()).collect();
+        assert_eq!(raws, ["9.0.0,a,\"{\n  x\n}\",d", "9.0.0,b,,e"]);
+    }
+
+    #[test]
+    fn a_line_breaker_a_source_would_refuse_is_refused() {
+        let err = records_of("a", Some("no group")).unwrap_err();
+        assert!(err.contains("no capture group"), "{err}");
+    }
 
     #[test]
     fn a_json_schema_comes_in_as_rows_and_goes_out_as_one() {
