@@ -1,6 +1,6 @@
-// The schema catalog as the GUI shows it: who uses a schema, and a schema handed over as a file.
+// Schemas as the GUI shows them: who uses a schema, a search over their fields, and a schema handed over as a file.
 
-import type { DestinationDto, PipelineDto } from './api';
+import type { DestinationDto, PipelineDto, SchemaDto } from './api';
 
 /** One object naming a schema: a pipeline producing it, or a destination accepting it. */
 export type User = { kind: 'pipeline' | 'destination'; id: string };
@@ -28,6 +28,30 @@ export function userHash(user: User): string {
   return user.kind === 'pipeline'
     ? `#/build/pipelines/${encodeURIComponent(user.id)}`
     : `#/build/destinations/${encodeURIComponent(user.id)}`;
+}
+
+/** How many matching fields a match names. */
+const FIELDS_NAMED = 5;
+
+/** Every schema whose id, title or a field's path holds `q`, ignoring case, by id, each with the first fields whose
+ * path holds it: for someone who knows a field and not the schema it is in. Null while `q` is blank. */
+export function matchesOf(
+  schemas: Pick<SchemaDto, 'id' | 'title' | 'fields'>[],
+  q: string,
+): Map<string, string[]> | null {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return null;
+  const out = new Map<string, string[]>();
+  for (const s of schemas) {
+    const fields = s.fields
+      .map((f) => f.field)
+      .filter((path) => path.toLowerCase().includes(needle))
+      .slice(0, FIELDS_NAMED);
+    const named =
+      s.id.toLowerCase().includes(needle) || (s.title ?? '').toLowerCase().includes(needle);
+    if (named || fields.length > 0) out.set(s.id, fields);
+  }
+  return out;
 }
 
 /** A schema's file name: its id, with what a file name cannot hold made a dash. */

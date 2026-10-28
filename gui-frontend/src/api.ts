@@ -1071,10 +1071,25 @@ export interface GrokPatternDto {
   pattern: string;
 }
 
-/** A bundle's own schema: an id, and the JSON Schema it is (`src/schema/json_schema.rs`). */
+/** A bundle's own schema (`src/schema.rs`): a table of fields, named by id from the pipelines that produce it and
+ * the destinations that accept it. */
 export interface SchemaDto {
   id: string;
-  schema: Record<string, unknown>;
+  /** Shown for it. The id where absent. */
+  title?: string;
+  description?: string;
+  fields: SchemaFieldDto[];
+}
+
+/** One field of a schema: a row of its table. */
+export interface SchemaFieldDto {
+  /** Its keys from the record's root, dotted. */
+  field: string;
+  /** What it must hold, spelled as a declaration spells a type: `str`, `array<i64>`, `{...}` for an object. */
+  type: string;
+  /** Whether a row must hold it. */
+  required?: boolean;
+  description?: string;
 }
 
 export interface FileConfigDto {
@@ -5277,53 +5292,30 @@ export function deleteConversation(id: string): Promise<object | AccountRefusal>
 }
 
 // -- schemas ----------------------------------------------------------------
-//
-// The catalog (`src/bin/smeltr/schema_api.rs`): what a schema holds. A bundle's schemas are its config, saved with
-// `putSchemas`.
+// JSON Schema in and out (`src/bin/smeltr/schema_api.rs`). A bundle's schemas are its config, saved with `putSchemas`.
 
-/** One field of a schema's object. */
-export interface SchemaField {
-  name: string;
-  /** The schema's own name for its type. */
-  typeName: string;
-  /** What a pipeline writes to keep it, as the editor spells a type. */
-  writtenAs: string;
-  array: boolean;
-  required: boolean;
-  description: string;
-  /** The object it holds, to open with `schemaObject`. */
-  object?: number;
-}
-
-export interface SchemaObject {
+export interface ReadSchema {
   ok: boolean;
   errors: ApiError[];
-  /** Its index, which a field holding it names. */
-  at: number;
-  name: string;
-  description: string;
-  fields: SchemaField[];
+  /** The schema the JSON Schema declares. */
+  schema: SchemaDto;
 }
 
-/** One object of a schema written as JSON Schema, the root where `at` is absent. Not `ok`, with why, where the JSON
- * Schema does not read. */
-export function schemaObject(
-  of: { schema: Record<string, unknown> },
-  at?: number,
-): Promise<SchemaObject> {
-  return post('/api/schemas/object', { ...of, at }, 'quiet');
+/** `doc`, a JSON Schema document, read as the schema `id`. Not `ok`, with why, where it does not read. */
+export function fromJsonSchema(id: string, doc: Record<string, unknown>): Promise<ReadSchema> {
+  return post('/api/schemas/from-json-schema', { id, schema: doc }, 'quiet');
 }
 
-export interface SchemaMatches {
+export interface WrittenSchema {
   ok: boolean;
   errors: ApiError[];
-  /** Each schema whose id, title or a field's path holds the words, with the first such fields. */
-  matches: { id: string; fields: string[] }[];
+  /** The JSON Schema document. */
+  schema: Record<string, unknown>;
 }
 
-/** Those of `schemas` whose id, title or a field's path holds `q`. */
-export function searchSchemas(q: string, schemas: SchemaDto[]): Promise<SchemaMatches> {
-  return post('/api/schemas/search', { q, schemas }, 'quiet');
+/** `schema` as a JSON Schema document. */
+export function toJsonSchema(schema: SchemaDto): Promise<WrittenSchema> {
+  return post('/api/schemas/to-json-schema', schema, 'quiet');
 }
 
 /** One schema finding at a branch's tip (`LoadedSystem::schema_findings`). */

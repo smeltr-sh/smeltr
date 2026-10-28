@@ -529,26 +529,28 @@ async fn onboard_propose(State(service): State<Service>, Json(body): Json<Onboar
     }
 }
 
-async fn schemas_object(
+async fn schemas_from_json_schema(
     State(service): State<Service>,
-    Json(req): Json<catalog::ObjectRequest>,
-) -> Json<Envelope<catalog::ObjectOut>> {
+    Json(req): Json<catalog::FromJsonSchema>,
+) -> Json<Envelope<catalog::ReadSchema>> {
     Json(
         service
             .run(Envelope::failed_one, move || {
-                catalog::object(&req).map_or_else(Envelope::failed_one, Envelope::ok)
+                catalog::from_json_schema(&req).map_or_else(Envelope::failed_one, Envelope::ok)
             })
             .await,
     )
 }
 
-async fn schemas_search(
+async fn schemas_to_json_schema(
     State(service): State<Service>,
-    Json(req): Json<catalog::SearchRequest>,
-) -> Json<Envelope<catalog::Matches>> {
+    Json(schema): Json<smeltr::config_file::SchemaDto>,
+) -> Json<Envelope<catalog::WrittenSchema>> {
     Json(
         service
-            .run(Envelope::failed_one, move || Envelope::ok(catalog::search(&req)))
+            .run(Envelope::failed_one, move || {
+                catalog::to_json_schema(&schema).map_or_else(Envelope::failed_one, Envelope::ok)
+            })
             .await,
     )
 }
@@ -612,8 +614,8 @@ fn app(service: Service) -> Router {
         .route("/connections", post(connections))
         .route("/tests", post(tests))
         .route("/onboard/propose", post(onboard_propose))
-        .route("/schemas/object", post(schemas_object))
-        .route("/schemas/search", post(schemas_search))
+        .route("/schemas/from-json-schema", post(schemas_from_json_schema))
+        .route("/schemas/to-json-schema", post(schemas_to_json_schema))
         .route("/schema-findings", post(schema_findings))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
         .with_state(service)

@@ -176,8 +176,7 @@ test('the Schemas page reads a schema through the service', async ({ page }) => 
   await dialog.getByRole('textbox', { name: 'JSON Schema' }).fill(JSON.stringify(login));
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
-  await page.getByRole('button', { name: 'Open user', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Close user', exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'user.name', exact: true })).toBeVisible();
   await page.getByRole('searchbox', { name: 'Search schemas' }).fill('src_endpoint.port');
-  await expect(page.getByRole('cell').filter({ hasText: 'src_endpoint.port' })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'src_endpoint.port', exact: true })).toBeVisible();
 });

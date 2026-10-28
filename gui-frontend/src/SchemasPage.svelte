@@ -1,10 +1,10 @@
 <!--
   Schemas page: `schemas.json`, read through `GET /api/config` and written with `PUT /api/schemas`, plus the
-  raw-JSON page. A schema is a contract a pipeline's rows are held to: the pipeline names it under Produces, and a
-  destination may name it under accepts.
+  raw-JSON page. A schema is a contract a pipeline's rows are held to: a table of fields, each a dotted path and a
+  type. The pipeline names it under Produces, and a destination may name it under accepts.
 
-  One table, searched as one, by a schema's id, its title and its fields' paths: the group's own, editable, and
-  `shared/`'s, changed in `shared/`. A row opens to the schema's fields.
+  One list, searched as one, by a schema's id, its title and its fields' paths: the group's own, editable, and
+  `shared/`'s, changed in `shared/`. A row opens to the schema's fields, narrowed to the search.
 -->
 <script lang="ts">
   import EditInShared from './EditInShared.svelte';
@@ -25,15 +25,15 @@
   import TrashIcon from './TrashIcon.svelte';
   import { resourcesTabs } from './nav';
   import {
-    schemaObject,
-    searchSchemas,
+    fromJsonSchema,
+    toJsonSchema,
     sharedConfig,
     putSchemas,
     type DestinationDto,
     type PipelineDto,
     type SchemaDto,
   } from './api';
-  import { downloadJson, fileName, userHash, usersOf, type User } from './schemas';
+  import { downloadJson, fileName, matchesOf, userHash, usersOf, type User } from './schemas';
   import { idProblem } from './ids';
   import { count } from './time';
   import { editable } from './access';
@@ -86,25 +86,7 @@
 
   let q = $state('');
   /** What the search found, by schema id, with the fields that hold the words. Null while there is no search. */
-  let matches = $state<Map<string, string[]> | null>(null);
-  let searches = 0;
-  $effect(() => {
-    const needle = q.trim();
-    const mine = ++searches;
-    if (!needle) {
-      matches = null;
-      return;
-    }
-    const declared = [...sharedSchemas, ...$state.snapshot(schemas)];
-    const later = setTimeout(() => {
-      searchSchemas(needle, declared)
-        .then((res) => {
-          if (mine === searches) matches = new Map(res.matches.map((m) => [m.id, m.fields]));
-        })
-        .catch(reported);
-    }, 200);
-    return () => clearTimeout(later);
-  });
+  let matches = $derived(matchesOf([...sharedSchemas, ...schemas], q));
   function shown(id: string): boolean {
     return matches === null || matches.has(id);
   }
@@ -116,36 +98,38 @@
   let taken = $derived([...schemas, ...sharedSchemas].map((s) => s.id));
 
   async function add(draft: SchemaDraft) {
-    let schema: Record<string, unknown>;
+    let schema: SchemaDto = { id: draft.id, fields: [] };
     if (draft.type === 'jsonSchema') {
+      let doc: Record<string, unknown>;
       try {
-        schema = JSON.parse(draft.text);
+        doc = JSON.parse(draft.text);
       } catch (e) {
         throw new Error(`the JSON Schema is not JSON: ${e instanceof Error ? e.message : e}`);
       }
-      const read = await schemaObject({ schema });
+      const read = await fromJsonSchema(draft.id, doc);
       if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
-    } else {
-      schema = {
-        $schema: 'https://json-schema.org/draft/2020-12/schema',
-        type: 'object',
-        properties: {},
-      };
+      schema = read.schema;
     }
-    schemas.push({ id: draft.id, schema });
+    schemas.push(schema);
     opened = new Set(opened).add(draft.id);
     adding = false;
   }
 
-  function exported(id: string) {
+  async function exported(id: string) {
     const own = [...schemas, ...sharedSchemas].find((s) => s.id === id);
-    if (own) downloadJson(fileName(id), own.schema);
+    if (!own) return;
+    try {
+      const written = await toJsonSchema($state.snapshot(own));
+      if (written.ok) downloadJson(fileName(id), written.schema);
+      else reported(new Error(written.errors.map((e) => e.message).join(' ')));
+    } catch (e) {
+      reported(e);
+    }
   }
 
   /** A declared schema's description: its own, or its title. */
   function about(s: SchemaDto): string {
-    const { description, title } = s.schema as { description?: unknown; title?: unknown };
-    return typeof description === 'string' ? description : typeof title === 'string' ? title : '';
+    return s.description || s.title || '';
   }
 </script>
 
@@ -212,7 +196,7 @@
         <thead>
           <tr>
             <th class="name">Name</th>
-            <th class="kind">Kind</th>
+            <th class="kind">Fields</th>
             <th>Description</th>
             <th class="used">Used by</th>
           </tr>
@@ -235,7 +219,7 @@
                     <input type="text" class="mono" bind:value={s.id} disabled={readOnly} />
                   </Field>
                 </td>
-                <td class="kind">JSON Schema</td>
+                <td class="kind">{count(s.fields.length, 'field')}</td>
                 <td>
                   <button
                     type="button"
@@ -258,7 +242,7 @@
                 </td>
               </tr>
               {#if opened.has(s.id) && shown(s.id)}
-                {@render detail(s.id, { schema: s.schema })}
+                {@render detail(s.id, s)}
               {/if}
             </ValidationItem>
           {/each}
@@ -272,8 +256,8 @@
             >
             {#each sharedSchemas as s (s.id)}
               {#if shown(s.id)}
-                {@render row(s.id, 'JSON Schema · shared', about(s), true)}
-                {#if opened.has(s.id)}{@render detail(s.id, { schema: s.schema }, true)}{/if}
+                {@render row(s.id, `${count(s.fields.length, 'field')} · shared`, about(s), true)}
+                {#if opened.has(s.id)}{@render detail(s.id, s, true)}{/if}
               {/if}
             {/each}
           {/if}
@@ -335,7 +319,7 @@
   {/if}
 {/snippet}
 
-{#snippet detail(id: string, of: { schema: Record<string, unknown> }, fromShared = false)}
+{#snippet detail(id: string, of: SchemaDto, fromShared = false)}
   <tr class="detail" class:fromshared={fromShared}>
     <td colspan="4">
       <div class="actions">
@@ -344,9 +328,9 @@
           <span class="required">*</span> required.</span
         >
         <span class="grow"></span>
-        <button type="button" onclick={() => exported(id)}>Export JSON Schema</button>
+        <button type="button" onclick={() => void exported(id)}>Export JSON Schema</button>
       </div>
-      <SchemaFields {of} />
+      <SchemaFields {of} {q} />
     </td>
   </tr>
 {/snippet}

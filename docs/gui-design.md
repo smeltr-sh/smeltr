@@ -524,8 +524,8 @@ after a reload.
 
 The Schemas page lists the bundle's own schemas, then `shared/`'s. A search
 reaches into fields, so a field's path finds the schemas that name it. A schema
-folds open to its fields, an object at a time, and any schema exports as JSON
-Schema.
+folds open to its table of fields, narrowed to the search, and any schema
+exports as JSON Schema. A schema is added empty or from a JSON Schema.
 
 A pipeline names what it produces in the editor's Produces row, and a
 destination what it accepts on its own form. Where the rows do not fit, the

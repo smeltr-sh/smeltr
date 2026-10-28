@@ -246,7 +246,7 @@ mod tests {
             ("system.json", r#"{"version":1}"#),
             (
                 "schemas.json",
-                r#"[{"id":"login","schema":{"title":"Login","required":["user"],"properties":{"user":{"type":"string"}}}}]"#,
+                r#"[{"id":"login","title":"Login","fields":[{"field":"user","type":"str","required":true}]}]"#,
             ),
             (
                 "sources.json",

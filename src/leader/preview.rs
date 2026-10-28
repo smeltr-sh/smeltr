@@ -1529,11 +1529,11 @@ mod tests {
 
     /// The schemas `producing` declares: `stamped`, of a `@timestamp`, and `login`, which requires `time` and `user`.
     const SCHEMAS: &str = r#""schemas":[
-        {"id":"stamped","schema":{"title":"Stamped","type":"object",
-            "properties":{"@timestamp":{"type":"string","format":"date-time"}}}},
-        {"id":"login","schema":{"title":"Login","type":"object","required":["time","user"],
-            "properties":{"time":{"type":"integer","format":"epoch-millis"},
-                "user":{"type":"object","properties":{"name":{"type":"string"}}}}}}],"#;
+        {"id":"stamped","title":"Stamped","fields":[{"field":"@timestamp","type":"datetime"}]},
+        {"id":"login","title":"Login","fields":[
+            {"field":"time","type":"i64","required":true},
+            {"field":"user","type":"{...}","required":true},
+            {"field":"user.name","type":"str"}]}],"#;
 
     /// `compiling`, declaring `SCHEMAS`, its pipeline producing `schemas`.
     fn producing(schemas: &str) -> String {
@@ -1576,7 +1576,7 @@ mod tests {
         let missing = previewed(producing(r#"["login"]"#), &[]).missing;
         let time = missing.iter().find(|m| m.path == "time").unwrap();
         assert_eq!((time.written_as.as_str(), time.schema.as_str()), ("i64", "Login"));
-        assert_eq!(missing.iter().find(|m| m.path == "user").unwrap().written_as, "struct");
+        assert_eq!(missing.iter().find(|m| m.path == "user").unwrap().written_as, "{...}");
         assert_eq!(missing.len(), 2, "{missing:?}");
     }
 
@@ -1588,7 +1588,7 @@ mod tests {
             warnings_of(config, &[]),
             [(
                 Some("s".to_string()),
-                "`@timestamp` is str, but Stamped maps it as date-time. Write it as datetime.".to_string()
+                "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
             )]
         );
         // A pipeline that produces no schema is held to none.
@@ -1607,7 +1607,7 @@ mod tests {
             warnings_of(producing(r#"["stamped"]"#), &columns),
             [(
                 Some("u".to_string()),
-                "`@timestamp` is str, but Stamped maps it as date-time. Write it as datetime.".to_string()
+                "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
             )]
         );
     }

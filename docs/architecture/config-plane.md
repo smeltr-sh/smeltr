@@ -48,11 +48,14 @@ at save whether or not a step names it yet.
 
 ## Schemas
 
-A schema is what a pipeline's rows should hold: each field's type, and the
-fields they should have. A bundle declares its schemas as JSON Schema. A
-pipeline names the
-schemas it produces, and a destination may name the schemas it accepts. Both
-are checked at save to name a schema the group can see.
+A schema is what a pipeline's rows should hold: a table of fields, each a
+path from the record's root, the type it must hold, whether a row must hold it,
+and what it means. A path spells its keys with dots, and a type is spelled as
+a declaration spells one, so a schema, a parser's field table and a
+declaration read the same. A bundle declares its schemas as such tables, and
+JSON Schema is read in and written out (`schema::json_schema`). A pipeline
+names the schemas it produces, and a destination may name the schemas it
+accepts. Both are checked at save to name a schema the group can see.
 
 ```mermaid
 flowchart LR
@@ -64,7 +67,10 @@ flowchart LR
 ```
 
 A finding never refuses a save or a deploy: it says where the rows do not fit.
-A field several schemas name is a misfit only where every one of them says so,
+The record's type is held to the table path by path: a field whose type only
+the row knows keeps any, an object keeps any object type, and a required field
+is missing where the object it sits in is there and does not declare it. A
+field several schemas name is a misfit only where every one of them says so,
 and a field one requires is missing only where every schema the pipeline
 produces requires it. A route delivering to a destination whose accepts names
 none of what its pipeline produces is a finding of the same kind.

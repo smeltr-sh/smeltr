@@ -2016,8 +2016,8 @@ async fn run_leader() {
         .route("/api/routes", put(config_api::put_routes))
         .route("/api/grok-patterns", put(config_api::put_grok_patterns))
         .route("/api/schemas", put(config_api::put_schemas))
-        .route("/api/schemas/object", post(schema_api::object))
-        .route("/api/schemas/search", post(schema_api::search))
+        .route("/api/schemas/from-json-schema", post(schema_api::from_json_schema))
+        .route("/api/schemas/to-json-schema", post(schema_api::to_json_schema))
         // An edited CSV travels whole in this body, so it is as large as the file.
         .route(
             "/api/lookup-tables",

@@ -54,8 +54,8 @@ pub use dto::{
     AnswerDto, AssignmentDto, BufferBytes, CompoundTypeDto, CustomPatternDto, DataTypeDto, DeliverRuleDto,
     DestinationDto, DestinationKindDto, FetchBytes, FieldDto, FileConfig, GrokPatternDto, LeaderSecretDto,
     LookupOutputDto, LookupSourceDto, LookupTableDto, MatchKindDto, MultiplicityDto, OnExceptionDto, PUBSUB_ENDPOINT,
-    ParserKindDto, PipelineDto, RenamePairDto, RouteDto, SchemaDto, SecretRefDto, SourceDto, SourceKindDto, SqlKind,
-    SqlSourceDto, StartPositionDto, StepDto,
+    ParserKindDto, PipelineDto, RenamePairDto, RouteDto, SchemaDto, SchemaFieldDto, SecretRefDto, SourceDto,
+    SourceKindDto, SqlKind, SqlSourceDto, StartPositionDto, StepDto,
 };
 pub use impact::{Impact, Reached, Reason, pipeline_answers_differ, pipelines_touched};
 pub use links::{Connections, Kind, Links, Object};
@@ -523,9 +523,8 @@ mod tests {
           "version": 1,
           "sources": [{ "id": "k", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g" }],
           "schemas": [
-            { "id": "stamped", "schema": { "title": "Stamped", "type": "object",
-                                           "properties": { "@timestamp": { "type": "string", "format": "date-time" } } } },
-            { "id": "login", "schema": { "title": "Login", "type": "object" } }
+            { "id": "stamped", "title": "Stamped", "fields": [{ "field": "@timestamp", "type": "datetime" }] },
+            { "id": "login", "title": "Login" }
           ],
           "destinations": [{ "id": "out", "type": "kafka", "brokers": "b:9092", "defaultTopic": "t",
                              "accepts": ["login"] }],
@@ -544,7 +543,7 @@ mod tests {
                 (
                     "p".to_string(),
                     Some("s".to_string()),
-                    "`@timestamp` is str, but Stamped maps it as date-time. Write it as datetime.".to_string()
+                    "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
                 ),
                 (
                     "p".to_string(),

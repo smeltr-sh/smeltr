@@ -1,62 +1,107 @@
-//! A schema as JSON Schema: how a bundle declares its own (`read`), and how any schema is exported (`write`).
+//! A schema as JSON Schema: how one is read in (`read`), and how any schema is exported (`write`).
 //!
 //! `read` takes the part of JSON Schema that says what a field is: an object's `properties` and `required`, an
-//! array's `items`, a `type` and the `format` of a string or an integer, `$ref` to `$defs` or `definitions`, and each
-//! `description`. A type JSON Schema leaves open -- no `type`, or `anyOf`, `oneOf` or `allOf` -- holds any value. A
-//! `"null"` beside another type is the other type, since any field may be null.
-
-use std::collections::{BTreeMap, BTreeSet};
+//! array's `items`, a `type` and the `format` of a string, `$ref` to `$defs` or `definitions`, and each
+//! `description`. A type JSON Schema leaves open -- no `type`, or `anyOf`, `oneOf` or `allOf` -- is a `variant`,
+//! and so is an object named from within itself, or deeper than `NESTED`. A `"null"` beside another type is the other
+//! type, since any field may be null.
 
 use serde_json::{Map, Value, json};
 
-use super::{Field, Leaf, Object, Objects, Schema, Type};
+use super::{Field, Schema};
+use crate::core::column::DataType;
 
 const DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 
-/// The format `write` gives a field whose value is milliseconds since the Unix epoch, and `read` takes back.
-const EPOCH_MILLIS: &str = "epoch-millis";
+/// How deep `read` follows objects before it takes one whole, as a `variant`.
+const NESTED: usize = 64;
 
 /// The schema `id` that `doc` declares. Its root is an object.
 pub fn read(id: &str, doc: &Value) -> Result<Schema, String> {
+    let root = doc
+        .as_object()
+        .filter(|node| is_object(node))
+        .ok_or_else(|| "a schema's root is an object: `\"type\": \"object\"` with its `properties`".to_string())?;
     let mut reader = Reader {
         doc,
-        objects: Objects::default(),
-        refs: BTreeMap::new(),
-        aliases: BTreeSet::new(),
+        fields: Vec::new(),
+        within: Vec::new(),
     };
-    let root = match reader.ty(doc, "")? {
-        (Type::Object { at, .. }, _) => at,
-        _ => return Err("a schema's root is an object: `\"type\": \"object\"` with its `properties`".to_string()),
-    };
+    reader.fields_of(root, "")?;
     let text = |key: &str| doc.get(key).and_then(Value::as_str).map(str::to_string);
-    Ok(Schema::new(
-        id.to_string(),
-        text("title").unwrap_or_else(|| id.to_string()),
-        text("description").unwrap_or_default(),
-        reader.objects.into_shared(),
-        root,
-    ))
+    Ok(Schema {
+        id: id.to_string(),
+        title: text("title").unwrap_or_else(|| id.to_string()),
+        description: text("description").unwrap_or_default(),
+        fields: reader.fields,
+    })
 }
 
 struct Reader<'d> {
     doc: &'d Value,
-    objects: Objects,
-    /// Each `$ref` already read, to the object it names, so a definition naming itself ends.
-    refs: BTreeMap<String, usize>,
-    /// Each `$ref` to a definition that is no object, while it is read, so one that comes back to itself is refused.
-    aliases: BTreeSet<String>,
+    fields: Vec<Field>,
+    /// Each definition being read, outermost first, so one naming itself ends.
+    within: Vec<String>,
 }
 
-impl Reader<'_> {
-    /// The type `node` declares, and the name to show for it. `at` is where `node` is, for an error.
-    fn ty(&mut self, node: &Value, at: &str) -> Result<(Type, String), String> {
+/// What a node declares: its type, the object it holds where its fields are rows of their own (the node itself, or
+/// an array's items), and how many definitions reading it entered, which stay entered until its fields are read.
+struct Typed<'d> {
+    ty: DataType,
+    holds: Option<&'d Map<String, Value>>,
+    entered: usize,
+}
+
+impl<'d> Reader<'d> {
+    /// A row for each property of `node`, under `prefix`, and for what each holds.
+    fn fields_of(&mut self, node: &'d Map<String, Value>, prefix: &str) -> Result<(), String> {
+        let required: Vec<&str> = match node.get("required") {
+            Some(Value::Array(names)) => names.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
+        };
+        let Some(properties) = node.get("properties") else {
+            return Ok(());
+        };
+        let properties = properties
+            .as_object()
+            .ok_or_else(|| format!("{}: `properties` is an object", shown(prefix)))?;
+        for (name, property) in properties {
+            let path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}.{name}")
+            };
+            let typed = self.ty(property, &path)?;
+            self.fields.push(Field {
+                path: path.clone(),
+                ty: typed.ty,
+                required: required.contains(&name.as_str()),
+                description: text(property, "description"),
+            });
+            let read = match typed.holds {
+                Some(object) => self.fields_of(object, &path),
+                None => Ok(()),
+            };
+            self.within.truncate(self.within.len() - typed.entered);
+            read?;
+        }
+        Ok(())
+    }
+
+    /// The type `node` declares at `path`.
+    fn ty(&mut self, node: &'d Value, path: &str) -> Result<Typed<'d>, String> {
+        let leaf = |ty| Typed {
+            ty,
+            holds: None,
+            entered: 0,
+        };
         let node = match node {
-            Value::Bool(_) => return Ok((Type::Leaf(Leaf::Json), "any".to_string())),
+            Value::Bool(_) => return Ok(leaf(DataType::Variant)),
             Value::Object(node) => node,
-            _ => return Err(format!("{}: a schema is an object", shown(at))),
+            _ => return Err(format!("{}: a schema is an object", shown(path))),
         };
         if let Some(r) = node.get("$ref") {
-            return self.reference(r, at);
+            return self.reference(r, path);
         }
         let types: Vec<&str> = match node.get("type") {
             Some(Value::String(t)) => vec![t],
@@ -65,108 +110,72 @@ impl Reader<'_> {
             _ => Vec::new(),
         };
         let format = node.get("format").and_then(Value::as_str);
-        let leaf = |leaf: Leaf, name: &str| Ok((Type::Leaf(leaf), format.unwrap_or(name).to_string()));
-        match types.as_slice() {
-            ["string"] if format == Some("date-time") => leaf(Leaf::DateTime, "date-time"),
-            ["string"] => leaf(Leaf::Str, "string"),
-            ["integer"] if format == Some(EPOCH_MILLIS) => leaf(Leaf::EpochMillis, EPOCH_MILLIS),
-            ["integer"] => leaf(Leaf::Long, "integer"),
-            ["number"] => leaf(Leaf::Float, "number"),
-            ["boolean"] => leaf(Leaf::Bool, "boolean"),
-            ["object"] => {
-                let at = self.object(node, at)?;
-                Ok((Type::Object { at }, "object".to_string()))
+        Ok(match types.as_slice() {
+            ["string"] if format == Some("date-time") => leaf(DataType::DateTime),
+            ["string"] => leaf(DataType::Str),
+            ["integer"] => leaf(DataType::I64),
+            ["number"] => leaf(DataType::F64),
+            ["boolean"] => leaf(DataType::Bool),
+            ["object"] => Typed {
+                ty: DataType::Struct(Vec::new(), true),
+                holds: Some(node),
+                entered: 0,
+            },
+            ["array"] => {
+                let element = self.ty(node.get("items").unwrap_or(&Value::Bool(true)), path)?;
+                Typed {
+                    ty: DataType::Array(Box::new(element.ty)),
+                    ..element
+                }
             }
-            ["array"] => Err(format!("{}: an array is a field's, under `items`", shown(at))),
             // Two types at once, or none: JSON Schema leaves it open, and so does the check.
-            _ => Ok((Type::Leaf(Leaf::Json), "any".to_string())),
-        }
+            _ => leaf(DataType::Variant),
+        })
     }
 
-    fn reference(&mut self, r: &Value, at: &str) -> Result<(Type, String), String> {
-        let r = r.as_str().ok_or_else(|| format!("{}: `$ref` is a string", shown(at)))?;
+    fn reference(&mut self, r: &Value, path: &str) -> Result<Typed<'d>, String> {
+        let r = r
+            .as_str()
+            .ok_or_else(|| format!("{}: `$ref` is a string", shown(path)))?;
         let name = r
             .strip_prefix("#/$defs/")
             .or_else(|| r.strip_prefix("#/definitions/"))
             .ok_or_else(|| {
                 format!(
                     "{}: `$ref` names a definition in the same document, as `#/$defs/<name>`",
-                    shown(at)
+                    shown(path)
                 )
             })?;
-        if let Some(&object) = self.refs.get(r) {
-            return Ok((Type::Object { at: object }, name.to_string()));
-        }
-        let doc = self.doc;
         let def = ["$defs", "definitions"]
             .iter()
-            .find_map(|k| doc.get(k).and_then(|d| d.get(name)))
-            .ok_or_else(|| format!("{}: no definition `{name}`", shown(at)))?;
-        let is_object = def.get("type").and_then(Value::as_str) == Some("object") || def.get("properties").is_some();
-        if !is_object {
-            if !self.aliases.insert(r.to_string()) {
-                return Err(format!("{}: `{r}` comes back to itself", shown(at)));
-            }
-            let read = self.ty(def, at).map(|(ty, _)| (ty, name.to_string()));
-            self.aliases.remove(r);
-            return read;
-        }
-        // Named before its fields are read, so a field under it may name it again.
-        let object = self.objects.push(Object {
-            name: name.to_string(),
-            description: text(def, "description"),
-            fields: Vec::new(),
-        });
-        self.refs.insert(r.to_string(), object);
-        let fields = self.fields(def, at)?;
-        self.objects.get_mut(object).fields = fields;
-        Ok((Type::Object { at: object }, name.to_string()))
-    }
-
-    fn object(&mut self, node: &Map<String, Value>, at: &str) -> Result<usize, String> {
-        let node = Value::Object(node.clone());
-        let fields = self.fields(&node, at)?;
-        Ok(self.objects.push(Object {
-            name: String::new(),
-            description: text(&node, "description"),
-            fields,
-        }))
-    }
-
-    fn fields(&mut self, node: &Value, at: &str) -> Result<Vec<Field>, String> {
-        let required: Vec<&str> = match node.get("required") {
-            Some(Value::Array(names)) => names.iter().filter_map(Value::as_str).collect(),
-            _ => Vec::new(),
-        };
-        let Some(properties) = node.get("properties") else {
-            return Ok(Vec::new());
-        };
-        let properties = properties
-            .as_object()
-            .ok_or_else(|| format!("{}: `properties` is an object", shown(at)))?;
-        let mut fields = Vec::new();
-        for (name, property) in properties {
-            let path = if at.is_empty() {
-                name.clone()
-            } else {
-                format!("{at}.{name}")
-            };
-            let items = match property.get("type") {
-                Some(Value::String(t)) if t == "array" => Some(property.get("items").unwrap_or(&Value::Bool(true))),
-                _ => None,
-            };
-            let (ty, type_name) = self.ty(items.unwrap_or(property), &path)?;
-            fields.push(Field {
-                name: name.clone(),
-                ty,
-                type_name,
-                array: items.is_some(),
-                required: required.contains(&name.as_str()),
-                description: text(property, "description"),
+            .find_map(|k| self.doc.get(k).and_then(|d| d.get(name)))
+            .ok_or_else(|| format!("{}: no definition `{name}`", shown(path)))?;
+        // A definition within itself, or past `NESTED`, is one field whose shape only the row knows.
+        if self.within.iter().any(|w| w == r) || self.within.len() >= NESTED {
+            return Ok(Typed {
+                ty: DataType::Variant,
+                holds: None,
+                entered: 0,
             });
         }
-        Ok(fields)
+        self.within.push(r.to_string());
+        let typed = self.ty(def, path);
+        match typed {
+            Ok(typed) => Ok(Typed {
+                entered: typed.entered + 1,
+                ..typed
+            }),
+            Err(e) => {
+                self.within.pop();
+                Err(e)
+            }
+        }
     }
+}
+
+/// Whether `node` declares an object: by type, or by having properties.
+fn is_object(node: &Map<String, Value>) -> bool {
+    node.get("type").and_then(Value::as_str) == Some("object") || node.contains_key("properties")
 }
 
 fn text(node: &Value, key: &str) -> String {
@@ -180,93 +189,99 @@ fn shown(at: &str) -> String {
     }
 }
 
-/// `schema` as a JSON Schema document. Each object the schema names is a definition, and every other object is
-/// written where it is.
+/// `schema` as a JSON Schema document, each object written where it is.
 pub fn write(schema: &Schema) -> Value {
-    let mut defs = Map::new();
-    let mut root = object(schema, schema.root, &mut defs);
-    let root = root.as_object_mut().expect("an object is written as one");
+    let mut root = Node::default();
+    for f in &schema.fields {
+        root.insert(&f.keys(), f);
+    }
     let mut doc = Map::new();
     doc.insert("$schema".to_string(), json!(DIALECT));
     doc.insert("title".to_string(), json!(schema.title));
     if !schema.description.is_empty() {
         doc.insert("description".to_string(), json!(schema.description));
     }
-    doc.append(root);
-    if !defs.is_empty() {
-        doc.insert("$defs".to_string(), Value::Object(defs));
+    if let Value::Object(object) = root.object() {
+        doc.extend(object);
     }
     Value::Object(doc)
 }
 
-fn object(schema: &Schema, at: usize, defs: &mut Map<String, Value>) -> Value {
-    let o = schema.object(at);
-    let mut properties = Map::new();
-    for f in &o.fields {
-        let mut value = field(schema, f, defs);
-        if f.array {
-            value = json!({ "type": "array", "items": value });
-        }
-        if !f.description.is_empty() {
-            value["description"] = json!(f.description);
-        }
-        properties.insert(f.name.clone(), value);
-    }
-    let mut out = json!({ "type": "object", "properties": properties });
-    if !o.description.is_empty() {
-        out["description"] = json!(o.description);
-    }
-    let required: Vec<&str> = o
-        .fields
-        .iter()
-        .filter(|f| f.required)
-        .map(|f| f.name.as_str())
-        .collect();
-    if !required.is_empty() {
-        out["required"] = json!(required);
-    }
-    out
+/// The schema's fields as a tree, a node per key, in the schema's order.
+#[derive(Default)]
+struct Node<'s> {
+    field: Option<&'s Field>,
+    children: Vec<(String, Node<'s>)>,
 }
 
-fn field(schema: &Schema, f: &Field, defs: &mut Map<String, Value>) -> Value {
-    match f.ty {
-        Type::Leaf(leaf) => leaf_type(leaf),
-        // A named object is a definition.
-        Type::Object { at } if schema.object(at).name.is_empty() => object(schema, at, defs),
-        Type::Object { at } => {
-            let name = schema.object(at).name.clone();
-            if !defs.contains_key(&name) {
-                // Named before it is written, so an object under it naming it again is a reference.
-                defs.insert(name.clone(), Value::Null);
-                let written = object(schema, at, defs);
-                defs.insert(name.clone(), written);
+impl<'s> Node<'s> {
+    fn insert(&mut self, keys: &[String], field: &'s Field) {
+        let Some((key, rest)) = keys.split_first() else {
+            self.field = Some(field);
+            return;
+        };
+        let child = match self.children.iter().position(|(k, _)| k == key) {
+            Some(i) => &mut self.children[i].1,
+            None => {
+                self.children.push((key.clone(), Node::default()));
+                &mut self.children.last_mut().expect("just pushed").1
             }
-            json!({ "$ref": format!("#/$defs/{name}") })
+        };
+        child.insert(rest, field);
+    }
+
+    /// The node as the object its children are the properties of.
+    fn object(&self) -> Value {
+        let mut properties = Map::new();
+        let mut required = Vec::new();
+        for (key, child) in &self.children {
+            let mut value = child.value();
+            if let Some(f) = child.field {
+                if !f.description.is_empty() {
+                    value["description"] = json!(f.description);
+                }
+                if f.required {
+                    required.push(key.clone());
+                }
+            }
+            properties.insert(key.clone(), value);
+        }
+        let mut out = json!({ "type": "object", "properties": properties });
+        if !required.is_empty() {
+            out["required"] = json!(required);
+        }
+        out
+    }
+
+    /// The node's own value: its field's type, with its children as the object's properties where it holds one.
+    fn value(&self) -> Value {
+        match self.field.map(|f| &f.ty) {
+            // A key only children name is an object.
+            None => self.object(),
+            Some(ty) => self.typed(ty),
         }
     }
-}
 
-fn leaf_type(leaf: Leaf) -> Value {
-    match leaf {
-        Leaf::Str => json!({ "type": "string" }),
-        Leaf::Long => json!({ "type": "integer" }),
-        Leaf::Float => json!({ "type": "number" }),
-        Leaf::Bool => json!({ "type": "boolean" }),
-        Leaf::DateTime => json!({ "type": "string", "format": "date-time" }),
-        Leaf::EpochMillis => json!({ "type": "integer", "format": EPOCH_MILLIS }),
-        Leaf::Json => json!({}),
+    fn typed(&self, ty: &DataType) -> Value {
+        match ty {
+            DataType::Struct(..) => self.object(),
+            DataType::Array(element) => json!({ "type": "array", "items": self.typed(element) }),
+            DataType::Str => json!({ "type": "string" }),
+            DataType::DateTime => json!({ "type": "string", "format": "date-time" }),
+            DataType::I64 => json!({ "type": "integer" }),
+            DataType::Duration => json!({ "type": "integer", "description": "microseconds" }),
+            DataType::F64 => json!({ "type": "number" }),
+            DataType::Bool => json!({ "type": "boolean" }),
+            DataType::Bytes => json!({ "type": "string", "contentEncoding": "base64" }),
+            DataType::Variant | DataType::Null => json!({}),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::column::DataType;
-    use crate::schema::Misfit;
-
-    fn st(fields: &[(&str, DataType)]) -> DataType {
-        DataType::Struct(fields.iter().map(|(k, t)| (k.to_string(), t.clone())).collect(), false)
-    }
+    use crate::schema::to_dto;
 
     fn login() -> Value {
         json!({
@@ -281,6 +296,7 @@ mod tests {
                 "attempts": { "type": ["integer", "null"] },
                 "score": { "type": "number" },
                 "tags": { "type": "array", "items": { "type": "string" } },
+                "observables": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string" } } } },
                 "extra": {},
             },
             "$defs": {
@@ -297,38 +313,32 @@ mod tests {
     }
 
     #[test]
-    fn a_json_schema_reads_as_a_schema_and_checks_a_record() {
+    fn a_json_schema_reads_as_a_table_of_fields() {
         let schema = read("acme-login", &login()).unwrap();
         assert_eq!(schema.title, "Acme login");
-        let record = st(&[
-            ("at", DataType::Str),
-            ("user", st(&[("manager", st(&[("name", DataType::I64)]))])),
-            ("attempts", DataType::I64),
-            ("score", DataType::I64),
-            ("tags", DataType::Str),
-            ("extra", DataType::Bytes),
-        ]);
-        let shown: Vec<String> = schema
-            .check(&record)
-            .iter()
-            .map(|f| match &f.misfit {
-                Misfit::Type {
-                    ty,
-                    type_name,
-                    written_as,
-                } => format!("{}: {ty} not {type_name}, write {written_as}", f.path()),
-                Misfit::Missing => format!("{}: missing", f.path()),
-            })
+        let rows: Vec<String> = (to_dto(&schema).fields.iter())
+            .map(|r| format!("{} {}{}", r.field, r.ty, if r.required { " required" } else { "" }))
             .collect();
         assert_eq!(
-            shown,
+            rows,
             [
-                "at: str not date-time, write datetime",
-                "user.manager.name: i64 not string, write str",
-                "user.name: missing",
-                "tags: str not string, write array(str)",
-            ]
+                "at datetime required",
+                "attempts i64",
+                "extra variant",
+                "manager {...}",
+                "manager.manager variant",
+                "manager.name str required",
+                "observables array<{...}>",
+                "observables.name str",
+                "score f64",
+                "tags array<str>",
+                "user {...} required",
+                "user.manager variant",
+                "user.name str required",
+            ],
+            "properties come by key, and an object within itself is one variant field"
         );
+        assert_eq!(schema.fields[0].description, "When it happened.");
     }
 
     #[test]
@@ -338,19 +348,32 @@ mod tests {
         assert!(refused(json!({ "properties": { "a": { "$ref": "other.json#/x" } } })).contains("`a`"));
         assert!(refused(json!({ "properties": { "a": { "$ref": "#/$defs/none" } } })).contains("no definition `none`"));
         assert!(refused(json!({ "properties": { "a": 1 } })).contains("`a`: a schema is an object"));
-        let looped = |defs: Value| refused(json!({ "properties": { "a": { "$ref": "#/$defs/x" } }, "$defs": defs }));
-        assert!(looped(json!({ "x": { "$ref": "#/$defs/x" } })).contains("comes back to itself"));
-        assert!(looped(json!({ "x": { "$ref": "#/$defs/y" }, "y": { "$ref": "#/$defs/x" } })).contains("comes back"));
-        let twice = json!({ "properties": { "a": { "$ref": "#/$defs/s" }, "b": { "$ref": "#/$defs/s" } },
-                            "$defs": { "s": { "type": "string" } } });
-        assert!(read("x", &twice).is_ok(), "an alias named twice is no loop");
+        let looped = |defs: Value| {
+            read(
+                "x",
+                &json!({ "properties": { "a": { "$ref": "#/$defs/x" } }, "$defs": defs }),
+            )
+        };
+        let rows = |s: Schema| s.fields.iter().map(|f| f.ty.spell()).collect::<Vec<_>>();
+        assert_eq!(
+            rows(looped(json!({ "x": { "$ref": "#/$defs/x" } })).unwrap()),
+            ["variant"]
+        );
+        assert_eq!(
+            rows(looped(json!({ "x": { "$ref": "#/$defs/y" }, "y": { "$ref": "#/$defs/x" } })).unwrap()),
+            ["variant"],
+            "a definition that comes back to itself is a variant"
+        );
     }
 
     #[test]
     fn a_schema_written_and_read_back_is_the_same() {
         let login = read("acme-login", &login()).unwrap();
         let again = read("acme-login", &write(&login)).unwrap();
-        assert_eq!(write(&again), write(&login));
-        assert_eq!(again.title, login.title);
+        assert_eq!(to_dto(&again), to_dto(&login));
+        let doc = write(&login);
+        assert_eq!(doc["properties"]["user"]["required"], json!(["name"]));
+        assert_eq!(doc["properties"]["observables"]["items"]["type"], "object");
+        assert_eq!(doc["properties"]["at"]["description"], "When it happened.");
     }
 }

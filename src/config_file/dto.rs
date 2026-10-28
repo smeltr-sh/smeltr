@@ -3324,14 +3324,35 @@ pub struct CustomPatternDto {
     pub pattern: String,
 }
 
-/// A schema the bundle declares (`schema`), as JSON Schema, named by id from the pipelines that produce it and the
-/// destinations that accept it.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+/// A schema the bundle declares (`schema`): a table of fields, named by id from the pipelines that produce it and
+/// the destinations that accept it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SchemaDto {
     pub id: String,
-    /// The JSON Schema document, whole.
-    pub schema: serde_json::Value,
+    /// Shown for it. The id where empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default)]
+    pub fields: Vec<SchemaFieldDto>,
+}
+
+/// One field of a schema: a row of its table.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaFieldDto {
+    /// Its keys from the record's root, dotted.
+    pub field: String,
+    /// What it must hold, spelled as a declaration spells a type: `str`, `array<i64>`, `{...}` for an object.
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// Whether a row must hold it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 /// A named grok pattern, declared once for the bundle and named as `%{id}` from any grok in it.

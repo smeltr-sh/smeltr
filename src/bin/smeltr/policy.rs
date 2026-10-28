@@ -137,7 +137,7 @@ pub fn need(method: &Method, path: &str, query: Option<&str>) -> Need {
         | (Method::GET | Method::HEAD, ["system", "info"]) => Need::Somewhere(Level::Viewer),
 
         // The schema catalog: what a schema it is given holds, never config.
-        (Method::POST, ["schemas", "object" | "search"]) => Need::Somewhere(Level::Viewer),
+        (Method::POST, ["schemas", "from-json-schema" | "to-json-schema"]) => Need::Somewhere(Level::Viewer),
 
         // What a person lets their own agent use.
         (Method::GET | Method::HEAD | Method::PUT, ["me", "agent-permissions"]) => Need::Anyone,

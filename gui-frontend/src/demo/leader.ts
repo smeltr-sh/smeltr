@@ -671,8 +671,10 @@ export class DemoLeader {
       if (path === '/api/line-breaker') return this.ask('/line-breaker', json());
       if (path === '/api/format') return this.ask('/format', json());
       if (path === '/api/onboard/propose') return this.ask('/onboard/propose', json());
-      if (path === '/api/schemas/object') return this.ask('/schemas/object', json());
-      if (path === '/api/schemas/search') return this.ask('/schemas/search', json());
+      if (path === '/api/schemas/from-json-schema')
+        return this.ask('/schemas/from-json-schema', json());
+      if (path === '/api/schemas/to-json-schema')
+        return this.ask('/schemas/to-json-schema', json());
       if (path === '/api/captures') return this.startCapture(json());
       const capture = path.match(/^\/api\/captures\/([^/]+)\/(stop|save|discard)$/);
       if (capture) {

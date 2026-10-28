@@ -1,51 +1,51 @@
-// The schema catalog: a bundle's schemas opened and searched by field, one added from a JSON Schema, a pipeline's
-// Produces and a destination's accepts, and what review finds where rows do not fit.
+// Schemas: a bundle's schemas opened and searched by field, one added from a JSON Schema, a pipeline's Produces and
+// a destination's accepts, and what review finds where rows do not fit.
 import { test, expect, goto, type Api } from '../fleet';
 
 const ON = '?branch=work&scope=shared';
 
 /** A sign-in, as a bundle declares it: an id, a time in epoch milliseconds and a user are required. */
 const LOGIN = {
+  id: 'login',
   title: 'Login',
-  type: 'object',
-  required: ['activity_id', 'time', 'user'],
-  properties: {
-    activity_id: { type: 'integer' },
-    time: { type: 'integer', format: 'epoch-millis' },
-    user: { $ref: '#/$defs/user' },
-    src_endpoint: {
-      type: 'object',
-      properties: { ip: { type: 'string' }, port: { type: 'integer' } },
-    },
-  },
-  $defs: {
-    user: {
-      type: 'object',
-      properties: { name: { type: 'string' }, manager: { $ref: '#/$defs/user' } },
-    },
-  },
+  fields: [
+    { field: 'activity_id', type: 'i64', required: true },
+    { field: 'time', type: 'i64', required: true, description: 'Milliseconds since the epoch.' },
+    { field: 'user', type: '{...}', required: true },
+    { field: 'user.name', type: 'str' },
+    { field: 'user.manager', type: 'variant' },
+    { field: 'src_endpoint', type: '{...}' },
+    { field: 'src_endpoint.ip', type: 'str' },
+    { field: 'src_endpoint.port', type: 'i64' },
+  ],
 };
 
-const AUDIT = { title: 'Audit', type: 'object', properties: { action: { type: 'string' } } };
+const AUDIT = { id: 'audit', title: 'Audit', fields: [{ field: 'action', type: 'str' }] };
 
 /** `shared/` declaring `login` and `audit`. */
 async function declare(api: Api) {
-  await api.put(`/api/schemas${ON}`, [
-    { id: 'login', schema: LOGIN },
-    { id: 'audit', schema: AUDIT },
-  ]);
+  await api.put(`/api/schemas${ON}`, [LOGIN, AUDIT]);
 }
 
-test('a schema opens an object at a time', async ({ admin, leader, api }) => {
+test('a schema opens to its fields, and the search narrows them', async ({
+  admin,
+  leader,
+  api,
+}) => {
   await declare(api);
   await goto(admin, leader, '#/build/schemas');
   await expect(admin.getByRole('heading', { name: 'Schemas' })).toBeVisible();
   await admin.getByRole('button', { name: /Login$/ }).click();
   await expect(admin.getByText('Edit it with Edit JSON.')).toBeVisible();
-  await expect(admin.getByRole('button', { name: 'Close user' })).toHaveCount(0);
-  await admin.getByRole('button', { name: 'Open user', exact: true }).click();
-  await expect(admin.getByRole('button', { name: 'Close user', exact: true })).toBeVisible();
-  await expect(admin.getByRole('button', { name: 'Open user.manager', exact: true })).toBeVisible();
+  await expect(admin.getByRole('cell', { name: /^time\*$/ })).toBeVisible();
+  await expect(
+    admin.getByRole('cell', { name: 'Milliseconds since the epoch.', exact: true }),
+  ).toBeVisible();
+  await expect(admin.getByRole('cell', { name: 'user.manager', exact: true })).toBeVisible();
+  await admin.getByRole('searchbox', { name: 'Search schemas' }).fill('src_endpoint');
+  await expect(admin.getByRole('cell', { name: 'user.manager', exact: true })).toBeHidden();
+  await expect(admin.getByRole('cell', { name: 'src_endpoint.port', exact: true })).toBeVisible();
+  await expect(admin.getByText('3 fields of 8 hold “src_endpoint”.')).toBeVisible();
   await admin.screenshot({ path: 'results/schemas-fields.png' });
 });
 
@@ -84,7 +84,16 @@ test("a JSON Schema added on the Schemas page is saved as the bundle's own", asy
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
   const saved = await api.get(`/api/config${ON}`);
-  expect(saved.config.schemas).toEqual([{ id: 'orders', schema }]);
+  expect(saved.config.schemas).toEqual([
+    {
+      id: 'orders',
+      title: 'Orders',
+      fields: [
+        { field: 'id', type: 'i64', required: true },
+        { field: 'total', type: 'f64' },
+      ],
+    },
+  ]);
 });
 
 test("a pipeline's Produces is saved with it, and the editor says what its rows lack", async ({
@@ -133,10 +142,7 @@ test("a destination's accepts is saved with it", async ({ admin, leader, api }) 
  * to a destination that accepts only `audit`. */
 async function arrangeMisfit(api: Api, branch: string) {
   const on = `?branch=${branch}&scope=default`;
-  await api.put(`/api/schemas${on}`, [
-    { id: 'login', schema: LOGIN },
-    { id: 'audit', schema: AUDIT },
-  ]);
+  await api.put(`/api/schemas${on}`, [LOGIN, AUDIT]);
   await api.put(`/api/sources${on}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
   await api.put(`/api/pipelines/logins${on}`, {
     id: 'logins',

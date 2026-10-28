@@ -433,11 +433,11 @@ fn resolve_schemas(file: &FileConfig, attributed: &mut Vec<ValidationError>) -> 
             errors.push(format!("duplicate schema id {:?}", dto.id));
             continue;
         }
-        match crate::schema::json_schema::read(&dto.id, &dto.schema) {
+        match crate::schema::read(dto) {
             Ok(schema) => {
                 declared.insert(&dto.id, Arc::new(schema));
             }
-            Err(e) => errors.at("schema").push(e),
+            Err(e) => errors.at("fields").push(e),
         }
     }
     // `names` is what the object does with a schema: "produces" or "accepts".
@@ -6429,9 +6429,8 @@ mod tests {
     }
 
     const LOGIN: &str = r#"[
-        { "id": "acme-login", "schema": {
-            "type": "object", "properties": { "user": { "type": "string" } }, "required": ["user"] } },
-        { "id": "acme-audit", "schema": { "type": "object" } }
+        { "id": "acme-login", "fields": [{ "field": "user", "type": "str", "required": true }] },
+        { "id": "acme-audit" }
     ]"#;
 
     #[test]
@@ -6471,13 +6470,13 @@ mod tests {
 
     #[test]
     fn a_declared_schema_that_does_not_read_or_whose_id_is_taken_is_refused_on_its_item() {
-        let broken = r#"[{ "id": "mine", "schema": { "type": "string" } }]"#;
+        let broken = r#"[{ "id": "mine", "fields": [{ "field": "a", "type": "string" }] }]"#;
         let (section, id, field, _) = the_error(with_schemas(broken, "[]", "[]"));
         assert_eq!(
             (section.as_str(), id.as_str(), field),
-            ("schemas", "mine", Some("schema"))
+            ("schemas", "mine", Some("fields"))
         );
-        let twice = r#"[{ "id": "mine", "schema": { "type": "object" } }, { "id": "mine", "schema": {} }]"#;
+        let twice = r#"[{ "id": "mine" }, { "id": "mine" }]"#;
         let (_, _, _, message) = the_error(with_schemas(twice, "[]", "[]"));
         assert!(message.contains("duplicate schema id"), "{message}");
     }

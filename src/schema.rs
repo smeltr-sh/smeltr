@@ -1,13 +1,16 @@
-//! A schema is a contract on a pipeline's rows: the fields a row may have by name, the type each must be, which a row
-//! must have, and what each means. A bundle declares its schemas as JSON Schema (`json_schema`). A pipeline names the
-//! schemas it produces, and `check` holds the type of its record (`plan::dictionary`) to them.
+//! A schema is a contract on a pipeline's rows: a table of fields, each a path from the record's root, the type it
+//! must hold, whether a row must hold it, and what it means. A bundle declares its schemas as such tables
+//! (`SchemaDto`), and `json_schema` reads one from JSON Schema and writes one as it. A pipeline names the schemas it
+//! produces, and `check` holds the type of its record (`plan::dictionary`) to them.
 //!
-//! A schema is a root object and the objects under it, shared where a schema names one object from many places. A
-//! key is a name as it is, and a field is an array only where the schema says so.
+//! A field's path spells its keys with dots, as a parser declares a nested field and as `io::avro::fields_of` names
+//! one, so a key holding a dot is no schema's to name. A type is spelled as a declaration spells one, so a schema, a
+//! parser and a declaration read the same.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use crate::config_file::{SchemaDto, SchemaFieldDto};
 use crate::core::column::DataType;
 
 pub mod json_schema;
@@ -18,79 +21,112 @@ pub struct Schema {
     pub id: String,
     pub title: String,
     pub description: String,
-    objects: Arc<[Object]>,
-    root: usize,
-}
-
-#[derive(Clone, Debug)]
-pub struct Object {
-    /// The schema's own name for the object, where it has one: the `$defs` key that names it.
-    pub name: String,
-    pub description: String,
+    /// In the table's order.
     pub fields: Vec<Field>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Field {
-    pub name: String,
-    pub ty: Type,
-    /// The schema's own name for the type: `string`, `date-time`, `user`.
-    pub type_name: String,
-    pub array: bool,
+    /// Its keys from the record's root, dotted.
+    pub path: String,
+    /// What the field must hold. An object type holds any object: its fields are rows of their own, under its path.
+    pub ty: DataType,
     pub required: bool,
     pub description: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Type {
-    Leaf(Leaf),
-    /// The object at this index of the schema's objects.
-    Object {
-        at: usize,
-    },
+impl Field {
+    /// The field's keys from the record's root.
+    pub fn keys(&self) -> Vec<String> {
+        self.path.split('.').map(str::to_string).collect()
+    }
 }
 
-/// The value a field must have.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Leaf {
-    Str,
-    /// A whole number. A duration is one, as it is written: a count of microseconds.
-    Long,
-    Float,
-    Bool,
-    /// A date and time, as RFC 3339 text.
-    DateTime,
-    /// A date and time as milliseconds since the Unix epoch.
-    EpochMillis,
-    /// Any value at all.
-    Json,
-}
-
-impl Leaf {
-    /// Whether a value of type `ty` keeps this contract.
-    pub fn holds(self, ty: &DataType) -> bool {
-        use DataType as T;
-        match self {
-            Leaf::Str => *ty == T::Str,
-            Leaf::Long => matches!(ty, T::I64 | T::Duration),
-            Leaf::Float => matches!(ty, T::I64 | T::F64),
-            Leaf::Bool => *ty == T::Bool,
-            Leaf::DateTime => *ty == T::DateTime,
-            Leaf::EpochMillis => *ty == T::I64,
-            Leaf::Json => true,
+/// The schema `dto` declares. A path listed twice, a type that does not read, and a field under one that holds no
+/// object are refused.
+pub fn read(dto: &SchemaDto) -> Result<Schema, String> {
+    let mut fields: Vec<Field> = Vec::with_capacity(dto.fields.len());
+    for row in &dto.fields {
+        if row.field.is_empty() || row.field.split('.').any(str::is_empty) {
+            return Err(format!("`{}` is no field path: keys, dotted", row.field));
+        }
+        if fields.iter().any(|f| f.path == row.field) {
+            return Err(format!("`{}` is listed twice", row.field));
+        }
+        let ty = crate::expr::parse::parse_type(&row.ty)
+            .map_err(|e| format!("`{}`: `{}` is no type: {}", row.field, row.ty, e.message))?;
+        fields.push(Field {
+            path: row.field.clone(),
+            ty,
+            required: row.required,
+            description: row.description.clone(),
+        });
+    }
+    for f in &fields {
+        let mut keys = f.keys();
+        while keys.pop().is_some() && !keys.is_empty() {
+            let above = keys.join(".");
+            if let Some(parent) = fields.iter().find(|p| p.path == above)
+                && !holds_an_object(&parent.ty)
+            {
+                return Err(format!(
+                    "`{}` is under `{above}`, which is {}",
+                    f.path,
+                    parent.ty.spell()
+                ));
+            }
         }
     }
+    Ok(Schema {
+        id: dto.id.clone(),
+        title: if dto.title.is_empty() {
+            dto.id.clone()
+        } else {
+            dto.title.clone()
+        },
+        description: dto.description.clone(),
+        fields,
+    })
+}
 
-    /// The type a pipeline writes to keep this contract, as the pipeline editor spells it.
-    pub fn written_as(self) -> &'static str {
-        match self {
-            Leaf::Str => "str",
-            Leaf::Long | Leaf::EpochMillis => "i64",
-            Leaf::Float => "f64",
-            Leaf::Bool => "bool",
-            Leaf::DateTime => "datetime",
-            Leaf::Json => "any type",
-        }
+/// `schema` as a bundle declares it.
+pub fn to_dto(schema: &Schema) -> SchemaDto {
+    SchemaDto {
+        id: schema.id.clone(),
+        title: schema.title.clone(),
+        description: schema.description.clone(),
+        fields: schema
+            .fields
+            .iter()
+            .map(|f| SchemaFieldDto {
+                field: f.path.clone(),
+                ty: f.ty.spell(),
+                required: f.required,
+                description: f.description.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// Whether a value of `ty` is an object, or an array of them, so fields may sit under it.
+fn holds_an_object(ty: &DataType) -> bool {
+    match ty {
+        DataType::Struct(..) => true,
+        DataType::Array(e) => holds_an_object(e),
+        _ => false,
+    }
+}
+
+/// Whether a value of type `ty` keeps the contract `wants`. A value whose type only the row knows keeps any; an
+/// object keeps any object type, since its fields are contracts of their own; an `i64` keeps `f64`, as it widens.
+fn holds(wants: &DataType, ty: &DataType) -> bool {
+    use DataType as T;
+    match (wants, ty) {
+        (_, T::Null | T::Variant) | (T::Variant, _) => true,
+        (T::Struct(..), T::Struct(..)) => true,
+        (T::Array(w), T::Array(t)) => holds(w, t),
+        (T::F64, T::I64) => true,
+        _ => wants == ty,
     }
 }
 
@@ -109,10 +145,8 @@ pub enum Misfit {
     /// The field's type is not one the schema's holds.
     Type {
         ty: DataType,
-        /// The schema's name for its type.
-        type_name: String,
-        /// What to write instead, as the pipeline editor spells a type.
-        written_as: String,
+        /// What the schema has it as, spelled as a declaration is.
+        wants: String,
     },
     /// The schema requires the field, and the record does not have it.
     Missing,
@@ -125,137 +159,95 @@ impl Finding {
     }
 }
 
+/// What a record has at each path. An array's elements sit at the array's path, so a field under it is each
+/// element's.
+struct Shape<'r> {
+    root: &'r DataType,
+    at: HashMap<Vec<String>, &'r DataType>,
+}
+
+impl<'r> Shape<'r> {
+    fn of(record: &'r DataType) -> Shape<'r> {
+        let mut shape = Shape {
+            root: record,
+            at: HashMap::new(),
+        };
+        shape.walk(record, &mut Vec::new());
+        shape
+    }
+
+    fn walk(&mut self, ty: &'r DataType, keys: &mut Vec<String>) {
+        if !keys.is_empty() {
+            self.at.insert(keys.clone(), ty);
+        }
+        if let Some(fields) = fields_of(ty) {
+            for (key, inner) in fields {
+                keys.push(key.clone());
+                self.walk(inner, keys);
+                keys.pop();
+            }
+        }
+    }
+
+    /// The object at `keys`, where the record has one: the root, or a field holding an object or an array of them.
+    fn object_at(&self, keys: &[String]) -> Option<&'r DataType> {
+        if keys.is_empty() {
+            return Some(self.root);
+        }
+        self.at.get(keys).copied().filter(|ty| holds_an_object(ty))
+    }
+}
+
+/// The fields of an object, or of an array's element where that is one.
+fn fields_of(ty: &DataType) -> Option<&[(String, DataType)]> {
+    match ty {
+        DataType::Struct(fields, _) => Some(fields),
+        DataType::Array(element) => fields_of(element),
+        _ => None,
+    }
+}
+
 impl Schema {
-    pub fn root(&self) -> &Object {
-        &self.objects[self.root]
-    }
-
-    /// The root's index among the schema's objects, which a field holding an object names its own by.
-    pub fn root_at(&self) -> usize {
-        self.root
-    }
-
-    pub fn object(&self, at: usize) -> &Object {
-        &self.objects[at]
-    }
-
     /// Where a record may break the schema: each field whose type the schema's does not hold, and each field the
-    /// schema requires that the record lacks, in the record's order. A field the schema does not name keeps it, as
-    /// does one whose type only the row knows.
+    /// schema requires that the record lacks, in the schema's order. A field the schema does not name keeps it, as
+    /// does one whose type only the row knows. A required field is missing where the object it sits in is there and
+    /// does not declare it: an open object may carry the key, but the pipeline has not shown that it does.
     pub fn check(&self, record: &DataType) -> Vec<Finding> {
+        let shape = Shape::of(record);
         let mut out = Vec::new();
-        if let DataType::Struct(fields, _) = record {
-            self.walk(self.root, fields, &mut Vec::new(), &mut out);
+        for f in &self.fields {
+            let keys = f.keys();
+            match shape.at.get(&keys) {
+                Some(ty) => {
+                    if !holds(&f.ty, ty) {
+                        out.push(Finding {
+                            keys,
+                            schema: self.id.clone(),
+                            misfit: Misfit::Type {
+                                ty: (*ty).clone(),
+                                wants: f.ty.spell(),
+                            },
+                        });
+                    }
+                }
+                None => {
+                    if f.required && shape.object_at(&keys[..keys.len() - 1]).is_some() {
+                        out.push(Finding {
+                            keys,
+                            schema: self.id.clone(),
+                            misfit: Misfit::Missing,
+                        });
+                    }
+                }
+            }
         }
         out
     }
 
     /// The field at `keys`, a record's keys from its root, where the schema names one.
     pub fn field(&self, keys: &[String]) -> Option<&Field> {
-        let mut at = Some(self.root);
-        let mut found = None;
-        for key in keys {
-            let f = self.objects[at?].fields.iter().find(|f| f.name == *key)?;
-            at = match f.ty {
-                Type::Object { at } => Some(at),
-                Type::Leaf(_) => None,
-            };
-            found = Some(f);
-        }
-        found
-    }
-
-    fn walk(&self, at: usize, fields: &[(String, DataType)], keys: &mut Vec<String>, out: &mut Vec<Finding>) {
-        let object = &self.objects[at];
-        for (key, ty) in fields {
-            if let Some(f) = object.fields.iter().find(|f| f.name == *key) {
-                keys.push(key.clone());
-                self.value(f, ty, keys, out);
-                keys.pop();
-            }
-        }
-        for f in object.fields.iter().filter(|f| f.required) {
-            if !fields.iter().any(|(key, _)| *key == f.name) {
-                let mut keys = keys.clone();
-                keys.push(f.name.clone());
-                out.push(Finding {
-                    keys,
-                    schema: self.id.clone(),
-                    misfit: Misfit::Missing,
-                });
-            }
-        }
-    }
-
-    fn value(&self, f: &Field, ty: &DataType, keys: &mut Vec<String>, out: &mut Vec<Finding>) {
-        let ty = match (f.array, ty) {
-            // Only the row knows: no misfit can be seen here.
-            (_, DataType::Null | DataType::Variant) => return,
-            (true, DataType::Array(element)) => element,
-            (false, ty @ DataType::Array(_)) | (true, ty) => return self.misfit(f, ty, keys, out),
-            (false, ty) => ty,
-        };
-        if matches!(ty, DataType::Null | DataType::Variant) {
-            return;
-        }
-        match f.ty {
-            Type::Leaf(leaf) if !leaf.holds(ty) => self.misfit(f, ty, keys, out),
-            Type::Leaf(_) => {}
-            Type::Object { at } if let DataType::Struct(fields, _) = ty => self.walk(at, fields, keys, out),
-            Type::Object { .. } => self.misfit(f, ty, keys, out),
-        }
-    }
-
-    fn misfit(&self, f: &Field, ty: &DataType, keys: &[String], out: &mut Vec<Finding>) {
-        let written_as = self.written_as(f);
-        out.push(Finding {
-            keys: keys.to_vec(),
-            schema: self.id.clone(),
-            misfit: Misfit::Type {
-                ty: ty.clone(),
-                type_name: f.type_name.clone(),
-                written_as,
-            },
-        });
-    }
-
-    /// The type a pipeline writes to keep `f`, one of this schema's fields, as the pipeline editor spells it.
-    pub fn written_as(&self, f: &Field) -> String {
-        let element = match f.ty {
-            Type::Leaf(leaf) => leaf.written_as(),
-            Type::Object { .. } => "struct",
-        };
-        if f.array {
-            format!("array({element})")
-        } else {
-            element.to_string()
-        }
-    }
-
-    /// The object at `at`, where the schema has one.
-    pub fn object_at(&self, at: usize) -> Option<&Object> {
-        self.objects.get(at)
-    }
-
-    /// Every field of the schema by path from its root, each with the path's keys, to `depth` objects deep. An
-    /// object named from many places, or from within itself, is listed again under each path that reaches it.
-    pub fn fields(&self, depth: usize) -> Vec<(Vec<String>, &Field)> {
-        let mut out = Vec::new();
-        self.list(self.root, depth, &mut Vec::new(), &mut out);
-        out
-    }
-
-    fn list<'s>(&'s self, at: usize, depth: usize, keys: &mut Vec<String>, out: &mut Vec<(Vec<String>, &'s Field)>) {
-        for f in &self.objects[at].fields {
-            keys.push(f.name.clone());
-            out.push((keys.clone(), f));
-            if let Type::Object { at } = f.ty
-                && depth > 1
-            {
-                self.list(at, depth - 1, keys, out);
-            }
-            keys.pop();
-        }
+        let path = keys.join(".");
+        self.fields.iter().find(|f| f.path == path)
     }
 }
 
@@ -304,7 +296,7 @@ pub fn missing(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Missing> {
             let field = schema.field(&f.keys)?;
             Some(Missing {
                 path: f.path(),
-                written_as: schema.written_as(field),
+                written_as: field.ty.spell(),
                 schema: schema.title.clone(),
             })
         })
@@ -319,21 +311,20 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<(Option<Vec<St
     let mut missing: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for f in findings {
         match &f.misfit {
-            Misfit::Type {
-                ty,
-                type_name,
-                written_as,
-            } => {
+            Misfit::Type { ty, wants } => {
                 let path = f.path();
                 let schema = title(&f.schema);
                 // A timestamp written as epoch milliseconds is the case a function answers.
-                let how = match (ty, written_as.as_str()) {
+                let how = match (ty, wants.as_str()) {
                     (DataType::DateTime, "i64") => ": `.epochMillis()` gives one",
                     _ => "",
                 };
                 out.push((
                     Some(f.keys.clone()),
-                    format!("`{path}` is {ty}, but {schema} maps it as {type_name}. Write it as {written_as}{how}."),
+                    format!(
+                        "`{path}` is {}, but {schema} has it as {wants}. Write it as {wants}{how}.",
+                        ty.spell()
+                    ),
                 ));
             }
             Misfit::Missing => missing.entry(&f.schema).or_default().push(format!("`{}`", f.path())),
@@ -354,109 +345,122 @@ fn same_kind(a: &Misfit, b: &Misfit) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b)
 }
 
-/// Builds a schema's objects one at a time.
-#[derive(Default)]
-pub(crate) struct Objects {
-    objects: Vec<Object>,
-}
-
-impl Objects {
-    pub(crate) fn push(&mut self, object: Object) -> usize {
-        self.objects.push(object);
-        self.objects.len() - 1
-    }
-
-    pub(crate) fn get_mut(&mut self, at: usize) -> &mut Object {
-        &mut self.objects[at]
-    }
-
-    pub(crate) fn into_shared(self) -> Arc<[Object]> {
-        self.objects.into()
-    }
-}
-
-impl Schema {
-    pub(crate) fn new(id: String, title: String, description: String, objects: Arc<[Object]>, root: usize) -> Schema {
-        Schema {
-            id,
-            title,
-            description,
-            objects,
-            root,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn st(fields: &[(&str, DataType)]) -> DataType {
         DataType::Struct(fields.iter().map(|(k, t)| (k.to_string(), t.clone())).collect(), false)
+    }
+
+    fn open(fields: &[(&str, DataType)]) -> DataType {
+        DataType::Struct(fields.iter().map(|(k, t)| (k.to_string(), t.clone())).collect(), true)
     }
 
     fn shown(findings: &[Finding]) -> Vec<String> {
         findings
             .iter()
             .map(|f| match &f.misfit {
-                Misfit::Type {
-                    ty,
-                    type_name,
-                    written_as,
-                } => {
-                    format!("{} {}: {ty} not {type_name}, write {written_as}", f.schema, f.path())
-                }
+                Misfit::Type { ty, wants } => format!("{} {}: {} not {wants}", f.schema, f.path(), ty.spell()),
                 Misfit::Missing => format!("{} {}: missing", f.schema, f.path()),
             })
             .collect()
     }
 
-    /// A sign-in: a time in epoch milliseconds, objects named from many places, and
-    /// arrays of objects.
+    fn row(field: &str, ty: &str, required: bool) -> SchemaFieldDto {
+        SchemaFieldDto {
+            field: field.to_string(),
+            ty: ty.to_string(),
+            required,
+            description: String::new(),
+        }
+    }
+
+    fn declared(id: &str, title: &str, rows: Vec<SchemaFieldDto>) -> Arc<Schema> {
+        let dto = SchemaDto {
+            id: id.to_string(),
+            title: title.to_string(),
+            description: String::new(),
+            fields: rows,
+        };
+        Arc::new(read(&dto).unwrap())
+    }
+
+    /// A sign-in: a time in epoch milliseconds, objects, and an array of objects.
     fn login() -> Arc<Schema> {
-        let endpoint = json!({ "$ref": "#/$defs/endpoint" });
-        let doc = json!({
-            "title": "Login",
-            "type": "object",
-            "required": ["activity_id", "time", "user", "metadata"],
-            "properties": {
-                "activity_id": { "type": "integer" },
-                "time": { "type": "integer", "format": "epoch-millis" },
-                "time_dt": { "type": "string", "format": "date-time" },
-                "user": { "$ref": "#/$defs/user" },
-                "src_endpoint": endpoint,
-                "dst_endpoint": endpoint,
-                "status": { "type": "string" },
-                "metadata": {
-                    "type": "object",
-                    "required": ["product"],
-                    "properties": { "product": { "type": "string" }, "version": { "type": "string" } },
-                },
-                "observables": { "type": "array", "items": { "$ref": "#/$defs/observable" } },
-            },
-            "$defs": {
-                "user": { "type": "object", "properties": { "name": { "type": "string" }, "uid": { "type": "string" } } },
-                "endpoint": { "type": "object", "properties": { "ip": { "type": "string" }, "port": { "type": "integer" } } },
-                "observable": { "type": "object", "properties": { "name": { "type": "string" } } },
-            },
-        });
-        Arc::new(json_schema::read("login", &doc).unwrap())
+        declared(
+            "login",
+            "Login",
+            vec![
+                row("activity_id", "i64", true),
+                row("time", "i64", true),
+                row("time_dt", "datetime", false),
+                row("user", "{...}", true),
+                row("user.name", "str", false),
+                row("user.uid", "str", false),
+                row("src_endpoint.ip", "str", false),
+                row("src_endpoint.port", "i64", false),
+                row("dst_endpoint", "{...}", false),
+                row("status", "str", false),
+                row("metadata", "{...}", true),
+                row("metadata.product", "str", true),
+                row("metadata.version", "str", false),
+                row("observables", "array<{...}>", false),
+                row("observables.name", "str", false),
+                row("score", "f64", false),
+                row("extra", "variant", false),
+            ],
+        )
     }
 
     /// A network connection, which names `user` and `time` as `login` does and `connection` alone.
     fn connection() -> Arc<Schema> {
-        let doc = json!({
-            "title": "Connection",
-            "type": "object",
-            "required": ["time", "connection"],
-            "properties": {
-                "time": { "type": "integer", "format": "epoch-millis" },
-                "user": { "type": "object", "properties": { "name": { "type": "string" } } },
-                "connection": { "type": "object", "properties": { "uid": { "type": "string" } } },
-            },
-        });
-        Arc::new(json_schema::read("connection", &doc).unwrap())
+        declared(
+            "connection",
+            "Connection",
+            vec![
+                row("time", "i64", true),
+                row("user.name", "str", false),
+                row("connection", "{...}", true),
+                row("connection.uid", "str", false),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_table_that_does_not_read_is_refused_with_the_row() {
+        let refused = |rows: Vec<SchemaFieldDto>| {
+            read(&SchemaDto {
+                id: "x".to_string(),
+                title: String::new(),
+                description: String::new(),
+                fields: rows,
+            })
+            .unwrap_err()
+        };
+        assert_eq!(
+            refused(vec![row("a", "str", false), row("a", "i64", false)]),
+            "`a` is listed twice"
+        );
+        assert!(refused(vec![row("a", "string", false)]).starts_with("`a`: `string` is no type"));
+        assert_eq!(
+            refused(vec![row("a", "str", false), row("a.b", "i64", false)]),
+            "`a.b` is under `a`, which is str"
+        );
+        assert!(refused(vec![row("a..b", "str", false)]).contains("no field path"));
+        assert!(
+            read(&to_dto(&login())).is_ok(),
+            "a schema written and read back is the same"
+        );
+        assert_eq!(
+            read(&SchemaDto {
+                id: "t".to_string(),
+                ..Default::default()
+            })
+            .unwrap()
+            .title,
+            "t"
+        );
     }
 
     #[test]
@@ -469,13 +473,12 @@ mod tests {
             [
                 (
                     Some(vec!["time".to_string()]),
-                    "`time` is datetime, but Login maps it as epoch-millis. Write it as i64: `.epochMillis()` gives \
-                     one."
+                    "`time` is datetime, but Login has it as i64. Write it as i64: `.epochMillis()` gives one."
                         .to_string()
                 ),
                 (
                     None,
-                    "Login requires `activity_id`, `metadata`, `user`; the rows lack them.".to_string()
+                    "Login requires `activity_id`, `user`, `metadata`; the rows lack them.".to_string()
                 ),
             ]
         );
@@ -491,15 +494,18 @@ mod tests {
             ("status", DataType::Str),
             ("unmapped", st(&[("anything", DataType::Bytes)])),
             ("metadata", DataType::Variant),
+            ("score", DataType::I64),
+            ("extra", DataType::Bytes),
         ]);
         assert_eq!(
             shown(&login().check(&record)),
             [
-                "login time: datetime not epoch-millis, write i64",
-                "login user.uid: i64 not string, write str",
-                "login src_endpoint.port: str not integer, write i64",
                 "login activity_id: missing",
-            ]
+                "login time: datetime not i64",
+                "login user.uid: i64 not str",
+                "login src_endpoint.port: str not i64",
+            ],
+            "an i64 keeps f64, and a variant keeps anything"
         );
     }
 
@@ -515,28 +521,43 @@ mod tests {
         assert_eq!(
             shown(&findings),
             [
-                "login status: array(str) not string, write str",
-                "login observables: str not observable, write array(struct)",
-                "login dst_endpoint: array(struct) not endpoint, write struct",
+                "login dst_endpoint: array<{ip: str}> not {...}",
+                "login status: array<str> not str",
+                "login observables: str not array<{...}>",
             ]
         );
         let held = login().check(&st(&[(
             "observables",
-            DataType::Array(Box::new(st(&[("name", DataType::Str)]))),
+            DataType::Array(Box::new(st(&[("name", DataType::I64)]))),
         )]));
-        assert!(!held.iter().any(|f| f.path() == "observables"), "{held:?}");
+        assert_eq!(
+            shown(&held),
+            [
+                "login activity_id: missing",
+                "login time: missing",
+                "login user: missing",
+                "login metadata: missing",
+                "login observables.name: i64 not str",
+            ],
+            "a field under an array is each element's"
+        );
     }
 
     #[test]
     fn a_required_field_inside_an_object_is_missing_only_where_the_object_is_there() {
         let login = login();
         let without = login.check(&st(&[]));
-        assert!(!without.iter().any(|f| f.keys.len() > 1));
+        assert!(!without.iter().any(|f| f.keys.len() > 1), "{without:?}");
         let with = login.check(&st(&[("metadata", st(&[("version", DataType::Str)]))]));
         assert!(
             with.iter()
                 .any(|f| f.path() == "metadata.product" && f.misfit == Misfit::Missing),
             "{with:?}"
+        );
+        let opened = login.check(&st(&[("metadata", open(&[("version", DataType::Str)]))]));
+        assert!(
+            opened.iter().any(|f| f.path() == "metadata.product"),
+            "an open object has not shown it holds the field: {opened:?}"
         );
     }
 
@@ -551,9 +572,9 @@ mod tests {
         assert_eq!(
             shown,
             [
-                "login user: str not user, write struct",
-                "login time: datetime not epoch-millis, write i64",
-                "connection connection: i64 not object, write struct",
+                "login time: datetime not i64",
+                "login user: str not {...}",
+                "connection connection: i64 not {...}",
             ],
             "`user` and `time` break both; `connection` is named by one alone, and no field is required by both and \
              missing"
