@@ -6,6 +6,7 @@
   The branch bar unfolds into this, so it renders on the bar's tint.
 -->
 <script lang="ts">
+  import StateMark from './StateMark.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import Locked from './Locked.svelte';
@@ -214,7 +215,9 @@
         {#if tests.total === 0}
           <span class="dim">no tests reach this change</span>
         {:else if tests.passed === tests.total}
-          <span class="pass">&#10003; {tests.passed} of {count(tests.total, 'test')} pass</span>
+          <span class="pass"
+            ><StateMark state="ok" /> {tests.passed} of {count(tests.total, 'test')} pass</span
+          >
         {:else}
           {#if tests.failed}
             <span class="fail">{tests.failed} of {count(tests.total, 'test')} fail</span>

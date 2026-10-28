@@ -9,6 +9,7 @@
   listing two rows of hex and leaving it to be worked out.
 -->
 <script lang="ts">
+  import StateMark from './StateMark.svelte';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import InlineSaveBar from './InlineSaveBar.svelte';
@@ -443,7 +444,7 @@
         <li>
           <span class="mono">{worker.id}</span>
           {#if worker.holdsIncoming}
-            <span class="holds">✓ holds it</span>
+            <span class="holds"><StateMark state="ok" /> holds it</span>
           {:else}
             <span class="dim">waiting</span>
           {/if}

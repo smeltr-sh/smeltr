@@ -5,6 +5,7 @@
   whether it is current with main, and the button that deploys it.
 -->
 <script lang="ts">
+  import StateMark from './StateMark.svelte';
   import Locked from './Locked.svelte';
   import type { Reviews, TestsTally } from './review';
   import { count } from './time';
@@ -56,7 +57,7 @@
           <span class="mark req" aria-hidden="true">!</span>
           <span>{reviews.names.join(', ')} requested changes</span>
         {:else if reviews.state === 'approved'}
-          <span class="mark ok" aria-hidden="true">&#10003;</span>
+          <StateMark state="ok" size={17} />
           <span>Approved by {reviews.names.join(', ')}</span>
         {:else}
           <span class="mark" aria-hidden="true"></span>
@@ -78,7 +79,7 @@
           <span class="mark" aria-hidden="true"></span>
           <span>{tests.couldNotRun} of {count(tests.total, 'test')} could not run</span>
         {:else}
-          <span class="mark ok" aria-hidden="true">&#10003;</span>
+          <StateMark state="ok" size={17} />
           <span>{tests.passed} of {count(tests.total, 'test')}</span>
         {/if}
       </span>
@@ -104,7 +105,7 @@
             {bringingCurrent ? 'Bringing current…' : 'Bring current'}
           </button>
         {:else}
-          <span class="mark ok" aria-hidden="true">&#10003;</span>
+          <StateMark state="ok" size={17} />
           <span>Current with <span class="mono">main</span></span>
         {/if}
       </span>
@@ -175,10 +176,6 @@
     font-size: var(--text-micro);
     font-weight: 700;
     color: var(--on-accent);
-  }
-  .mark.ok {
-    border-color: var(--added);
-    background: var(--added);
   }
   .mark.req {
     border-color: var(--accent);
