@@ -35,11 +35,6 @@ const NOT_DEFINED_HERE: &[(&str, &str)] = &[
     ("RD_KAFKA_EVENT_ERROR", "librdkafka's event type"),
     ("WITH_SASL_CYRUS", "librdkafka build flag"),
     ("_WIN32", "the C preprocessor's, which librdkafka tests for SSPI"),
-    ("System32", "the Windows directory a service starts in"),
-    (
-        "inflight_hi",
-        "BBRv2's bound on what is in flight, which the pacer follows",
-    ),
     ("rd_kafka_new", "librdkafka's client constructor"),
     (
         "rd_avg_rollover",
@@ -52,6 +47,7 @@ const NOT_DEFINED_HERE: &[(&str, &str)] = &[
     ("Offset::Invalid", "the rdkafka crate's sentinel offset"),
     ("sasl_gssapi", "a librdkafka `builtin.features` value"),
     // The operating system's own calls.
+    ("System32", "the Windows directory a service starts in"),
     (
         "setsid",
         "the unix call a process leaves its session by, escaping a tree kill",
