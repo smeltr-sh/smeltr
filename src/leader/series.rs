@@ -29,7 +29,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 
 use super::store::StoreError;
 
@@ -926,6 +926,20 @@ impl RegistryStore {
             let apart = tx.savepoint()?;
             match write_streams(&apart, streams, beat.now_ms) {
                 Ok(()) => apart.commit()?,
+                // The store's own trouble, not the streams': the window goes again.
+                Err(e)
+                    if matches!(
+                        e.sqlite_error_code(),
+                        Some(
+                            ErrorCode::DatabaseBusy
+                                | ErrorCode::DatabaseLocked
+                                | ErrorCode::DiskFull
+                                | ErrorCode::SystemIoFailure
+                        )
+                    ) =>
+                {
+                    return Err(e.into());
+                }
                 // Dropped, the savepoint rolls back.
                 Err(e) => tracing::warn!(
                     target: "series.streams_not_recorded",

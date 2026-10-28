@@ -131,8 +131,9 @@ than kept, since sent again it would be refused again; its progress goes back
 for the next window. A beat the leader cannot record is refused too, and its
 window goes again; only streams that will not write are left out and the rest
 recorded, since they would fail the same way every time the window came. One
-loud worker can fill the leader's cap at the expense of the rest. The last heartbeat is the notice that the worker is stopping, and
-nothing is held past it: a notice that does not land costs what it carried.
+loud worker can fill the leader's cap at the expense of the rest. The last
+heartbeat is the notice that the worker is stopping, and nothing is held past
+it: a notice that does not land costs what it carried.
 
 A log raised while logs are being delivered reaches the console and stops
 there. Otherwise a delivery that fails reports that it failed, and that report
