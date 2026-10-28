@@ -13,6 +13,7 @@
   import { untrack } from 'svelte';
   import Help from './Help.svelte';
   import Locked from './Locked.svelte';
+  import RemovableChip from './RemovableChip.svelte';
   import {
     ANSWERS,
     KINDS,
@@ -149,16 +150,13 @@
         <div class="deliver">
           <span class="dim">to</span>
           {#each own.deliver as t (t)}
-            <span class="chip"
-              >{t}<button
-                type="button"
-                aria-label="Remove {t}"
-                onclick={() =>
-                  deliverTo(
-                    row,
-                    own.deliver.filter((x) => x !== t),
-                  )}>×</button
-              ></span
+            <RemovableChip
+              removeLabel="Remove {t}"
+              onremove={() =>
+                deliverTo(
+                  row,
+                  own.deliver.filter((x) => x !== t),
+                )}><span class="mono">{t}</span></RemovableChip
             >
           {/each}
           {#if left.length > 0}
@@ -256,7 +254,6 @@
     border-bottom: 1px solid var(--border);
     font-size: var(--text-note);
   }
-  .chip,
   .plus {
     font-family: var(--mono);
     font-size: var(--text-micro);
@@ -267,12 +264,9 @@
     padding: 0.1rem 0.4rem;
     height: auto;
   }
-  .chip button {
-    border: 0;
-    background: none;
-    color: var(--dim);
-    padding: 0 0 0 0.35rem;
-    font-size: inherit;
+  .mono {
+    font-family: var(--mono);
+    font-size: var(--text-micro);
   }
   /* A speck where the column is open, a hollow ring where the row inherits, a filled dot where it is set here, half
      of one where only some kinds take it, and a dash where it is not possible. */

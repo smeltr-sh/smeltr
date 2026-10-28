@@ -32,6 +32,7 @@
   import ChipPicker from './ChipPicker.svelte';
   import MoreIcon from './MoreIcon.svelte';
   import DisableIcon from './DisableIcon.svelte';
+  import RemoveButton from './RemoveButton.svelte';
   import { glideTo } from './glide';
   import FieldRow from './FieldRow.svelte';
   import TypePicker from './TypePicker.svelte';
@@ -612,9 +613,7 @@
       <button type="button" class="fold" onclick={moveDown} aria-label="Move down" title="Move down"
         >↓︎</button
       >
-      <button type="button" class="fold remove" onclick={remove} aria-label="Delete" title="Delete"
-        >✕︎</button
-      >
+      <RemoveButton label="Delete" onclick={remove} />
       {@render more()}
     {/if}
   </div>
@@ -804,13 +803,7 @@
                     />
                   </Locked>
                   {#if !readOnly}
-                    <button
-                      type="button"
-                      class="ctl remove"
-                      onclick={() => removeAssignment(i)}
-                      aria-label="Remove assignment"
-                      title="Remove assignment">✕︎</button
-                    >
+                    <RemoveButton label="Remove assignment" onclick={() => removeAssignment(i)} />
                   {/if}
                 </div>
               {/each}
@@ -873,13 +866,7 @@
                     />
                   </Locked>
                   {#if !readOnly}
-                    <button
-                      type="button"
-                      class="ctl remove"
-                      onclick={() => step.pairs.splice(i, 1)}
-                      aria-label="Remove pair"
-                      title="Remove pair">✕︎</button
-                    >
+                    <RemoveButton label="Remove pair" onclick={() => step.pairs.splice(i, 1)} />
                   {/if}
                 </div>
               {/each}
@@ -955,13 +942,10 @@
                         />
                       </Locked>
                       {#if !readOnly}
-                        <button
-                          type="button"
-                          class="ctl remove"
+                        <RemoveButton
+                          label="Remove pattern"
                           onclick={() => grokKind.patterns.splice(i, 1)}
-                          aria-label="Remove pattern"
-                          title="Remove pattern">✕︎</button
-                        >
+                        />
                       {/if}
                     </div>
                   {/each}
@@ -1198,13 +1182,10 @@
                             bind:value={grokKind.customPatterns[i].name}
                           />
                           {#if !readOnly}
-                            <button
-                              type="button"
-                              class="ctl remove"
+                            <RemoveButton
+                              label="Remove pattern definition"
                               onclick={() => grokKind.customPatterns.splice(i, 1)}
-                              aria-label="Remove pattern definition"
-                              title="Remove pattern definition">✕︎</button
-                            >
+                            />
                           {/if}
                         </div>
                         <Locked>
@@ -1473,13 +1454,10 @@
                       bind:value={step.outputs[i].default}
                     />
                     {#if !readOnly}
-                      <button
-                        type="button"
-                        class="ctl remove"
+                      <RemoveButton
+                        label="Remove output"
                         onclick={() => step.outputs.splice(i, 1)}
-                        aria-label="Remove output"
-                        title="Remove output">✕︎</button
-                      >
+                      />
                     {/if}
                   </div>
                   {#if o.ty.kind === 'datetime'}
@@ -1795,12 +1773,7 @@
     }
   }
 
-  /* Every control in a step looks like a control, wherever it sits: the
-     head's controls, and each row's delete, marked `.ctl`. Without this a row
-     delete fell through to the browser's own button chrome wearing an error
-     color. */
-  .controls button,
-  .ctl {
+  .controls button {
     background: none;
     border: 1px solid var(--border);
     border-radius: var(--radius);

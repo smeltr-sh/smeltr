@@ -114,7 +114,7 @@ async function control(
 ) {
   const head = card.locator(':scope > .card-head');
   const own = head.locator(
-    `:scope > .controls > button.fold${label === 'Disable' ? '[aria-label$="this step"]' : `[aria-label="${label}"]`}`,
+    `:scope > .controls > button${label === 'Disable' ? '.fold[aria-label$="this step"]' : `[aria-label="${label}"]`}`,
   );
   await head.hover({ position: { x: 4, y: 4 } });
   if (await own.isVisible()) {
@@ -542,9 +542,7 @@ export async function strayCards(page: Page): Promise<string[]> {
 /** What the Paused chip says, or null where there is none. */
 export async function pauseOnScreen(page: Page): Promise<string | null> {
   const chip = page.getByText(/^◉/);
-  return (await chip.count())
-    ? (await chip.first().textContent())!.replace(/[✕\uFE0E]/g, '').trim()
-    : null;
+  return (await chip.count()) ? (await chip.first().textContent())!.trim() : null;
 }
 
 /** The steps on screen, read from the editor's cards. */
