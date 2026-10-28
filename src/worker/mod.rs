@@ -4940,13 +4940,12 @@ mod tests {
 
         let hex = blob.to_string();
         let loose = dir.join("objects").join(&hex[..2]).join(&hex[2..]);
-        let mut perms = std::fs::metadata(&loose).unwrap().permissions();
-        #[allow(clippy::permissions_set_readonly_false)]
-        perms.set_readonly(false);
-        std::fs::set_permissions(&loose, perms).unwrap();
-        // Another blob's object in its place: it decompresses, and only its hash says it is not this one.
+        // Another blob's object in its place: it decompresses, and only its hash says it is not this one. Removed
+        // and written anew rather than overwritten, because a loose object is written read-only.
         let other = repo.write_blob(b"pipelines: [x]\n").unwrap().detach().to_string();
-        std::fs::copy(dir.join("objects").join(&other[..2]).join(&other[2..]), &loose).unwrap();
+        let other = std::fs::read(dir.join("objects").join(&other[..2]).join(&other[2..])).unwrap();
+        std::fs::remove_file(&loose).unwrap();
+        std::fs::write(&loose, other).unwrap();
         let refused = fetched_reads(&dir).expect_err("a blob that reads back as another is found");
         assert!(refused.contains(&hex), "{refused}");
         std::fs::write(&loose, b"not an object").unwrap();
