@@ -23,7 +23,7 @@ use crate::plan::plan::Plan;
 use crate::plan::resolve::Origin;
 use crate::plan::topology::SourceMeta;
 use crate::plan::tree;
-use crate::schema::{Misfit, Schema};
+use crate::schema::Schema;
 
 #[derive(serde::Deserialize)]
 pub struct PreviewRequest {
@@ -1070,14 +1070,12 @@ fn schema_warnings(
     record: &DataType,
     first: Option<FunctionId>,
 ) -> Vec<CompileError> {
-    crate::schema::check(produces, record)
+    let findings = crate::schema::check(produces, record);
+    crate::schema::told(produces, &findings)
         .into_iter()
-        .map(|f| {
-            let at = match f.misfit {
-                Misfit::Type { .. } => plan::dictionary::writer(plan, &f.keys).or(first),
-                Misfit::Missing => None,
-            };
-            CompileError::new(at, crate::schema::describe(produces, &f))
+        .map(|(keys, message)| {
+            let at = keys.and_then(|keys| plan::dictionary::writer(plan, &keys).or(first));
+            CompileError::new(at, message)
         })
         .collect()
 }
@@ -1589,13 +1587,7 @@ mod tests {
     #[test]
     fn a_field_the_schema_requires_and_no_step_writes_is_warned_at_no_step() {
         let warned = warnings_of(producing(r#"["ocsf/authentication"]"#), &[]);
-        assert!(
-            warned.contains(&(
-                None,
-                "OCSF Authentication requires `class_uid`, and no step writes it.".to_string()
-            )),
-            "{warned:?}"
-        );
+        assert_eq!(warned, [(None, "OCSF Authentication requires 8 fields no step writes: `activity_id`, `category_uid`, `class_uid`, `metadata`, `severity_id`, `time`, `type_uid`, `user`.".to_string())]);
     }
 
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {

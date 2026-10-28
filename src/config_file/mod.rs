@@ -249,15 +249,13 @@ impl LoadedSystem {
                         crate::plan::config::Step::Function(f) => f.id,
                         crate::plan::config::Step::If { id, .. } => *id,
                     });
-                for f in crate::schema::check(produces, &record) {
-                    let at = match f.misfit {
-                        crate::schema::Misfit::Type { .. } => crate::plan::dictionary::writer(plan, &f.keys).or(first),
-                        crate::schema::Misfit::Missing => None,
-                    };
+                let findings = crate::schema::check(produces, &record);
+                for (keys, message) in crate::schema::told(produces, &findings) {
+                    let at = keys.and_then(|keys| crate::plan::dictionary::writer(plan, &keys).or(first));
                     push(SchemaFinding {
                         pipeline: pipeline.clone(),
                         step: self.step_id_for(Some(route.pipeline), at),
-                        message: crate::schema::describe(produces, &f),
+                        message,
                     });
                 }
             }

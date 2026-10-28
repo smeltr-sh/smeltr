@@ -266,7 +266,7 @@ mod tests {
         assert!(
             found.schemas.iter().any(|(group, f)| group == "east"
                 && f.pipeline == "p"
-                && f.message == "OCSF Authentication requires `class_uid`, and no step writes it."),
+                && f.message.starts_with("OCSF Authentication requires 8 fields no step writes: `activity_id`")),
             "{found:?}"
         );
     }

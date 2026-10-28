@@ -349,18 +349,43 @@ pub fn check(schemas: &[Arc<Schema>], record: &DataType) -> Vec<Finding> {
     out
 }
 
-/// What `finding`, of a check against `schemas`, says to a pipeline's author.
-pub fn describe(schemas: &[Arc<Schema>], finding: &Finding) -> String {
-    let path = finding.path();
-    let title = (schemas.iter().find(|s| s.id == finding.schema)).map_or(&finding.schema, |s| &s.title);
-    match &finding.misfit {
-        Misfit::Type {
-            ty,
-            type_name,
-            written_as,
-        } => format!("`{path}` is {ty}, but {title} maps it as {type_name}. Write it as {written_as}."),
-        Misfit::Missing => format!("{title} requires `{path}`, and no step writes it."),
+/// What a check's `findings` against `schemas` say to a pipeline's author: a sentence for each field whose type
+/// misfits, with the field's keys, and one for each schema's required fields the record lacks, with none.
+pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<(Option<Vec<String>>, String)> {
+    let title = |id: &str| (schemas.iter().find(|s| s.id == id)).map_or(id.to_string(), |s| s.title.clone());
+    let mut out = Vec::new();
+    let mut missing: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for f in findings {
+        match &f.misfit {
+            Misfit::Type {
+                ty,
+                type_name,
+                written_as,
+            } => {
+                let path = f.path();
+                let schema = title(&f.schema);
+                // A timestamp written as epoch milliseconds is the case a function answers.
+                let how = match (ty, written_as.as_str()) {
+                    (DataType::DateTime, "i64") => ", as `.epochMillis()` does",
+                    _ => "",
+                };
+                out.push((
+                    Some(f.keys.clone()),
+                    format!("`{path}` is {ty}, but {schema} maps it as {type_name}. Write it as {written_as}{how}."),
+                ));
+            }
+            Misfit::Missing => missing.entry(&f.schema).or_default().push(format!("`{}`", f.path())),
+        }
     }
+    for (schema, paths) in missing {
+        let schema = title(schema);
+        let message = match paths.as_slice() {
+            [one] => format!("{schema} requires {one}, and no step writes it."),
+            many => format!("{schema} requires {} fields no step writes: {}.", many.len(), many.join(", ")),
+        };
+        out.push((None, message));
+    }
+    out
 }
 
 fn same_kind(a: &Misfit, b: &Misfit) -> bool {
@@ -461,6 +486,24 @@ mod tests {
                 Misfit::Missing => format!("{} {}: missing", f.schema, f.path()),
             })
             .collect()
+    }
+
+    #[test]
+    fn what_a_check_finds_is_told_a_sentence_a_field_and_one_for_what_a_schema_lacks() {
+        let auth = builtin("ocsf/authentication").unwrap();
+        let record = DataType::Struct(vec![("time".to_string(), DataType::DateTime)], false);
+        let told = told(&[auth.clone()], &auth.check(&record));
+        assert_eq!(
+            told[0],
+            (
+                Some(vec!["time".to_string()]),
+                "`time` is datetime, but OCSF Authentication maps it as timestamp. Write it as i64, as \
+                 `.epochMillis()` does."
+                    .to_string()
+            )
+        );
+        assert_eq!(told.len(), 2, "{told:?}");
+        assert!(told[1].1.starts_with("OCSF Authentication requires 7 fields no step writes: `activity_id`,"));
     }
 
     #[test]
