@@ -374,8 +374,8 @@ impl Writing {
         }
     }
 
-    /// Adds `files` to the commit the next `save` writes. Lookup files are read from the parent with them laid over
-    /// it, a commit no branch names, so a table is checked against a file this save adds.
+    /// Sets the files the next `save` commits beside the config. Lookup files are read from the parent with them laid
+    /// over it, a commit no branch names, so a table is checked against a file this save adds.
     fn stage(&mut self, files: Vec<git::FileEdit>) -> Result<(), String> {
         if files.is_empty() {
             return Ok(());
