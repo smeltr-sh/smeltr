@@ -3325,7 +3325,7 @@ pub struct CustomPatternDto {
 }
 
 /// A schema the bundle declares (`schema`), as JSON Schema, named by id from the pipelines that produce it and the
-/// destinations that accept it. No id is a built-in's (`schema::reserved`).
+/// destinations that accept it.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SchemaDto {

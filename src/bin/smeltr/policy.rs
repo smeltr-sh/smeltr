@@ -136,9 +136,8 @@ pub fn need(method: &Method, path: &str, query: Option<&str>) -> Need {
         | (Method::GET | Method::HEAD, ["worker-groups"])
         | (Method::GET | Method::HEAD, ["system", "info"]) => Need::Somewhere(Level::Viewer),
 
-        // The schema catalog: what is built in, and what any schema holds, never config.
-        (Method::GET | Method::HEAD, ["schemas", "builtin" | "export"])
-        | (Method::POST, ["schemas", "object" | "search"]) => Need::Somewhere(Level::Viewer),
+        // The schema catalog: what a schema it is given holds, never config.
+        (Method::POST, ["schemas", "object" | "search"]) => Need::Somewhere(Level::Viewer),
 
         // What a person lets their own agent use.
         (Method::GET | Method::HEAD | Method::PUT, ["me", "agent-permissions"]) => Need::Anyone,
