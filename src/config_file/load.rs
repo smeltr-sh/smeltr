@@ -6185,7 +6185,7 @@ mod tests {
     fn a_pipeline_with_a_call_step_compiles_end_to_end() {
         let json = two_pipeline_json(r#"{ "id": "c", "type": "call", "pipeline": "helper" }"#);
         let system = load_str(&json).unwrap();
-        crate::plan::plan::compile(&system.pipelines[0], &crate::plan::topology::SourceMeta::KAFKA)
+        crate::plan::compile::compile(&system.pipelines[0], &crate::plan::topology::SourceMeta::KAFKA)
             .unwrap_or_else(|e| panic!("expected the inlined pipeline to compile: {e:?}"));
     }
 

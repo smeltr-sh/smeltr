@@ -700,6 +700,9 @@ pub trait Store: Send + Sync {
     /// The certificates this leader keeps up to date, each with how.
     fn kept_certificates(&self) -> Result<std::collections::BTreeMap<String, Kept>, StoreError>;
 
+    /// Changes how this leader issues `name` from now on. Errors where it does not issue it.
+    fn set_issued(&self, name: &str, issued: &Issued) -> Result<(), StoreError>;
+
     /// [`Store::add_secret_version`] for a certificate: `key` sealed as the new version, `chain` beside it.
     fn add_certificate_version(&self, name: &str, chain: &str, key: &str) -> Result<i64, StoreError>;
 

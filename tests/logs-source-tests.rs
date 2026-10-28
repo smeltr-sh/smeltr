@@ -121,7 +121,7 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
 /// other source's. Declaring the field is what keeps that expressible.
 #[test]
 fn a_route_can_select_logs_rows_by_their_topic() {
-    use smeltr::plan::plan::compile;
+    use smeltr::plan::compile::compile;
 
     let p = PipelineConfig {
         id: 0,

@@ -24,6 +24,7 @@
     ISSUED_VALIDITY_DAYS,
     replaceCertificate,
     deleteSecret,
+    OWN_CERTIFICATE,
     currentVersion,
     type CertificateDto,
   } from './api';
@@ -280,7 +281,7 @@
               <td>
                 <span class="mono">{c.name}</span>
                 {#if c.served}<span class="badge" title="The certificate this leader serves."
-                    >leader</span
+                    >in use by the leader</span
                   >{/if}
                 {#if c.kept === 'issued'}<span
                     class="badge"
@@ -304,7 +305,9 @@
                 {#if !c.kept}
                   <button type="button" onclick={() => open(c.name)}>Replace</button>
                 {/if}
-                <button type="button" onclick={() => remove(c)}>Delete</button>
+                {#if c.name !== OWN_CERTIFICATE}
+                  <button type="button" onclick={() => remove(c)}>Delete</button>
+                {/if}
               </td>
             </tr>
           {/each}

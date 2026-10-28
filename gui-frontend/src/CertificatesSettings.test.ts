@@ -154,23 +154,16 @@ describe('the certificate actions', () => {
     button('Cut over now')!.click();
     await vi.waitFor(() => expect(posts).toEqual(['/api/settings/certificates/rotation/cutover']));
   });
-
-  it('issues a new certificate only once it is confirmed', async () => {
-    await show();
-    ask.mockResolvedValueOnce(false);
-    button('Issue a new one')!.click();
-    await settle();
-    expect(ask).toHaveBeenCalledTimes(1);
-    expect(posts).toEqual([]);
-
-    ask.mockResolvedValueOnce(true);
-    button('Issue a new one')!.click();
-    await vi.waitFor(() => expect(posts).toEqual(['/api/settings/certificates/reissue']));
-  });
 });
 
 describe('the source', () => {
-  const UPLOADED = { ...CERTIFICATES, supplied: true, source: 'upload', rotation: null };
+  const UPLOADED = {
+    ...CERTIFICATES,
+    supplied: true,
+    source: 'upload',
+    entry: 'theirs',
+    rotation: null,
+  };
 
   it('opens on the source in force and marks it', async () => {
     await show(UPLOADED, 'Serve this certificate');
@@ -185,14 +178,14 @@ describe('the source', () => {
     flushSync();
     expect(button('Switch to Leader issued')).toBeDefined();
     expect(button('Serve this certificate')).toBeUndefined();
-    expect(deletes).toEqual([]);
+    expect(puts).toEqual([]);
 
     button('Switch to Leader issued')!.click();
-    await vi.waitFor(() => expect(deletes).toEqual(['/api/settings/certificates/supplied']));
+    await vi.waitFor(() => expect(puts).toEqual([{ certificate: 'leader' }]));
   });
 
   it('offers rotation only under Leader issued', async () => {
-    await show({ ...CERTIFICATES, rotation: null }, 'Issue a new one');
+    await show({ ...CERTIFICATES, rotation: null }, '▸ Rotate authority');
     expect(target.textContent).toContain('Rotate authority');
     option('Uploaded')!.click();
     flushSync();
@@ -212,7 +205,6 @@ describe('the source', () => {
     await show(switching, 'Abandon switch');
     expect(target.textContent).toContain('Switch to Uploaded in progress');
     expect(button('Serve this certificate')).toBeUndefined();
-    expect(button('Issue a new one')).toBeUndefined();
     expect(option('Leader issued')!.getAttribute('aria-current')).toBe('true');
     option('Uploaded')!.click();
     flushSync();
@@ -226,9 +218,11 @@ describe('the source', () => {
       ...CERTIFICATES,
       supplied: true,
       source: 'upload',
+      entry: 'theirs',
       rotation: {
         ...CERTIFICATES.rotation,
-        installs: 'own',
+        installs: 'supplied',
+        source: 'own',
         workers: [
           { id: 'w-1', holdsIncoming: true },
           { id: 'w-2', holdsIncoming: false },
@@ -249,7 +243,13 @@ describe('the source', () => {
       ...CERTIFICATES,
       supplied: true,
       source: 'upload',
-      rotation: { ...CERTIFICATES.rotation, installs: 'own', notFollowing: ['ops-1', 'ops-2'] },
+      entry: 'theirs',
+      rotation: {
+        ...CERTIFICATES.rotation,
+        installs: 'supplied',
+        source: 'own',
+        notFollowing: ['ops-1', 'ops-2'],
+      },
     };
     await show(switching, 'Abandon switch');
     expect(target.textContent).toContain('Switch to Leader issued in progress');
@@ -275,7 +275,7 @@ describe('the source', () => {
       }),
     );
     page = mount(CertificatesSettings, { target });
-    await vi.waitFor(() => expect(button('Issue a new one')).toBeDefined());
+    await vi.waitFor(() => expect(button('▸ Rotate authority')).toBeDefined());
     option('Uploaded')!.click();
     flushSync();
     const chooser = target.querySelector('select')!;
@@ -294,7 +294,10 @@ describe('the source', () => {
   });
 
   it('keeps a rotation already open in reach while an uploaded certificate is in force', async () => {
-    await show({ ...CERTIFICATES, supplied: true, source: 'upload' }, 'Serve this certificate');
+    await show(
+      { ...CERTIFICATES, supplied: true, source: 'upload', entry: 'theirs' },
+      'Serve this certificate',
+    );
     option('Leader issued')!.click();
     flushSync();
     expect(button('Abandon rotation')).toBeDefined();
@@ -324,7 +327,7 @@ describe('a certificate a start could not serve', () => {
     await show(
       {
         ...CERTIFICATES,
-        supplied: true,
+        supplied: false,
         source: 'upload',
         entry: 'theirs',
         unserved: why,
@@ -334,6 +337,12 @@ describe('a certificate a start could not serve', () => {
     );
     expect(target.textContent).toContain(why);
     expect(target.textContent).not.toContain('Restart the leader');
+
+    option('Leader issued')!.click();
+    flushSync();
+    expect(button('▸ Rotate authority')).toBeUndefined();
+    button('Switch to Leader issued')!.click();
+    await vi.waitFor(() => expect(puts).toEqual([{ certificate: 'leader' }]));
   });
 });
 
@@ -347,10 +356,16 @@ describe('ACME', () => {
     notAfterMillis: Date.now() + YEAR,
     renewAfterMillis: Date.now() + YEAR / 2,
   };
-  const IN_FORCE = { ...CERTIFICATES, supplied: true, source: 'acme', rotation: null };
+  const IN_FORCE = {
+    ...CERTIFICATES,
+    supplied: true,
+    source: 'acme',
+    entry: 'acme',
+    rotation: null,
+  };
 
   it('orders only once the terms are agreed to, and fills the names from the certificate', async () => {
-    await show({ ...CERTIFICATES, rotation: null }, 'Issue a new one');
+    await show({ ...CERTIFICATES, rotation: null }, '▸ Rotate authority');
     option('ACME')!.click();
     flushSync();
     const get = button('Get certificate')!;

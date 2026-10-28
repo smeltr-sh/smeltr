@@ -2313,12 +2313,11 @@ async fn regenerate_encryption_key(
     axum::Extension(actor): axum::Extension<store::Actor>,
 ) -> Json<Envelope<EncryptionKeyOut>> {
     let event = accounts::event_for(&actor, "key-regenerate", "", "ok");
-    Json(
-        run_store(state.store, move |s| s.regenerate_key(&event))
-            .await
-            .map(EncryptionKeyOut::from)
-            .into(),
-    )
+    let regenerated = run_store(state.store, move |s| s.regenerate_key(&event)).await;
+    if regenerated.is_ok() {
+        RENEW_NOW.notify_one();
+    }
+    Json(regenerated.map(EncryptionKeyOut::from).into())
 }
 
 /// Stores a new value and forgets what retention no longer keeps.
@@ -2661,6 +2660,10 @@ async fn issued_certificates_not_renewed(state: &AppState, now_ms: i64) -> Resul
     .await
 }
 
+/// Asks the renewal pass to run now rather than at its next hour: a regenerated encryption key leaves every
+/// certificate this leader issued unopenable, its own among them, and the socket cannot reload until it is renewed.
+pub static RENEW_NOW: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
 /// Issues the next version of each certificate this leader issued that is due ([`warnings::issued_due`]), or whose
 /// newest version a regenerated encryption key cannot open, for the names and lifetime it was issued with. What the
 /// leader does on its own; moving what names one to the new version is an admin's. Answers each it tried, and how
@@ -2753,8 +2756,13 @@ pub async fn replace_certificate(
 /// Deleting a credential the fleet runs, or would run once released, would strand the groups that use it, with no way
 /// back: the value is gone. So the one case that cannot be undone is refused, and everything else deletes. The
 /// certificate the leader serves is refused too, whichever route asks: the leader would serve one the list no longer
-/// shows.
+/// shows. The leader's own entry is refused always: switching back to it must find it.
 async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) -> Json<Envelope> {
+    if name == tls::OWN_ENTRY {
+        return Json(Envelope::failed_one(format!(
+            "this leader renews the certificate {name:?} on its own, so it cannot be deleted"
+        )));
+    }
     match served_names(&tls::dir_of(&state.data_dir)) {
         Ok(served) if served.contains(&name) => {
             return Json(Envelope::failed_one(format!(
@@ -3114,6 +3122,20 @@ async fn forget_secret_version(
     State(state): State<AppState>,
     Path((name, version)): Path<(String, i64)>,
 ) -> Json<Envelope> {
+    if name == tls::OWN_ENTRY {
+        // Its newest is what a switch back serves, and what the socket presents when the chosen entry cannot be.
+        let store = state.store.clone();
+        match run_store(store, |s| certificate_versions(s).map_err(store::StoreError)).await {
+            Ok(newest) if newest.get(tls::OWN_ENTRY) == Some(&version) => {
+                return Json(Envelope::failed_one(format!(
+                    "this leader keeps the newest version of its own certificate {name:?}, so v{version} cannot be \
+                     forgotten"
+                )));
+            }
+            Ok(_) => {}
+            Err(e) => return Json(Envelope::failed_one(e.to_string())),
+        }
+    }
     match served_entries(&tls::dir_of(&state.data_dir)) {
         Ok(served)
             if served
@@ -5292,6 +5314,7 @@ mod authority_delivery_tests {
 
     fn a_leader_with_an_authority(label: &str) -> std::path::PathBuf {
         let data_dir = temp_dir(label);
+        tls::tests::listing(&tls::dir_of(&data_dir));
         tls::ensure(
             &tls::dir_of(&data_dir),
             vec!["localhost".to_string()],
@@ -5708,7 +5731,7 @@ mod certificate_list_tests {
         tls_dir
     }
 
-    /// The entry served is the one chosen, and none once the leader goes back to its own.
+    /// The entry served is the one chosen, and the leader's own once it goes back to it.
     #[test]
     fn the_leader_serves_the_entry_chosen_by_name() {
         let dir = own("chosen");
@@ -5719,8 +5742,45 @@ mod certificate_list_tests {
         tls::tests::install(&dir, &chain, &key, &theirs.ca_pem, &names(), &[]).unwrap();
         assert_eq!(served_names(&dir).unwrap(), ["supplied"]);
 
-        tls::uninstall(&dir).unwrap();
-        assert!(served_names(&dir).unwrap().is_empty());
+        tls::tests::give_back(&dir).unwrap();
+        assert_eq!(served_names(&dir).unwrap(), [tls::OWN_ENTRY]);
+    }
+
+    /// Regenerating the key asks the renewal pass to run now: everything this leader issued, its own among them, is
+    /// unopenable until it does.
+    #[tokio::test]
+    async fn regenerating_the_key_renews_at_once() {
+        let state = issuing("regenerate-renews");
+        std::fs::remove_file(state.data_dir.with_extension("key")).unwrap();
+        let regenerated =
+            regenerate_encryption_key(State(state.clone()), axum::Extension(store::Actor::system())).await;
+        assert!(regenerated.0.ok, "{:?}", regenerated.0.errors);
+        tokio::time::timeout(Duration::from_secs(1), RENEW_NOW.notified())
+            .await
+            .expect("the renewal pass was not asked to run");
+        let renewed: Vec<String> = renew_issued(&state, crate::leader::warnings::now_millis())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(renewed.contains(&tls::OWN_ENTRY.to_string()), "{renewed:?}");
+    }
+
+    /// The leader's own entry keeps its newest version, served or not: switching back serves it.
+    #[tokio::test]
+    async fn the_leaders_own_newest_version_is_not_forgotten() {
+        let state = issuing("own-newest");
+        let mut more = names();
+        more.push("leader.example.com".to_string());
+        tls::ensure(&tls::dir_of(&state.data_dir), more, A_YEAR, &[]).expect("a version for the new names");
+        let newest = certificate_versions(state.store.as_ref()).unwrap()[tls::OWN_ENTRY];
+        assert_eq!(newest, 2);
+
+        let refused = forget_secret_version(State(state.clone()), Path((tls::OWN_ENTRY.to_string(), 2))).await;
+        assert!(!refused.0.ok, "the newest version of the leader's own was forgotten");
+        let forgotten = forget_secret_version(State(state.clone()), Path((tls::OWN_ENTRY.to_string(), 1))).await;
+        assert!(forgotten.0.ok, "{:?}", forgotten.0.errors);
     }
 
     /// The version the leader serves stays in the list until another is served: not deleted, not forgotten, and
@@ -5733,29 +5793,34 @@ mod certificate_list_tests {
         let own = tls::ensure(&dir, names(), A_YEAR, &[]).unwrap();
         let (_, chain, key) = tls::to_serve(&dir).unwrap();
         let (chain, key) = (String::from_utf8(chain).unwrap(), String::from_utf8(key).unwrap());
-        state.store.create_certificate("leader", "", &chain, &key).unwrap();
+        state.store.create_certificate("chosen", "", &chain, &key).unwrap();
         let entry = tls::Entry {
-            name: "leader".to_string(),
+            name: "chosen".to_string(),
             version: 1,
             ca: String::from_utf8(own.ca_pem).unwrap(),
         };
         tls::serve(&dir, &entry, &names(), &[]).unwrap();
 
-        let refused = delete_secret(State(state.clone()), Path("leader".to_string())).await;
+        let refused = delete_secret(State(state.clone()), Path("chosen".to_string())).await;
         assert!(!refused.0.ok, "the served entry was deleted");
-        let refused = forget_secret_version(State(state.clone()), Path(("leader".to_string(), 1))).await;
+        let refused = forget_secret_version(State(state.clone()), Path(("chosen".to_string(), 1))).await;
         assert!(!refused.0.ok, "the served version was forgotten");
+        let refused = delete_secret(State(state.clone()), Path(tls::OWN_ENTRY.to_string())).await;
+        assert!(
+            !refused.0.ok,
+            "the leader's own entry was deleted while another was served"
+        );
 
         for _ in 0..crate::startup_config::leader_secret_versions() + 1 {
-            let stored = store_value(state.clone(), "leader".to_string(), key.clone(), Some(chain.clone())).await;
+            let stored = store_value(state.clone(), "chosen".to_string(), key.clone(), Some(chain.clone())).await;
             assert!(stored.0.ok, "{:?}", stored.0.errors);
         }
         assert!(
-            state.store.certificate_chain("leader", 1).unwrap().is_some(),
+            state.store.certificate_chain("chosen", 1).unwrap().is_some(),
             "the served version was pruned"
         );
         assert!(
-            state.store.certificate_chain("leader", 2).unwrap().is_none(),
+            state.store.certificate_chain("chosen", 2).unwrap().is_none(),
             "nothing was pruned"
         );
     }
@@ -5765,6 +5830,7 @@ mod certificate_list_tests {
     /// A leader with an authority and a bundle whose receiver presents the certificate `acme`.
     fn issuing(label: &str) -> AppState {
         let state = super::secrets_delivery_tests::state(label);
+        tls::read_list(&tls::dir_of(&state.data_dir), state.store.clone());
         tls::ensure(&tls::dir_of(&state.data_dir), names(), A_YEAR, &[]).expect("an authority");
         let repo = git::repo_path(&state.data_dir);
         let head = git::main_head(&repo).unwrap();
@@ -5844,7 +5910,7 @@ mod certificate_list_tests {
         let state = issuing("issue-no-names");
         assert!(!issue(&state, "acme", &[" "]).await.ok);
         assert!(!issue_lasting(&state, "acme", &["a.example.com"], 0).await.ok);
-        assert!(listed_names(&state).await.is_empty());
+        assert_eq!(listed_names(&state).await, [tls::OWN_ENTRY]);
     }
 
     async fn listed_names(state: &AppState) -> Vec<String> {
@@ -5986,7 +6052,11 @@ mod certificate_list_tests {
         let acme = store::Unopenable::Certificate("acme".to_string());
         assert!(state.store.regenerate_key(&event).unwrap().unopenable.contains(&acme));
 
-        assert_eq!(renewed(&state, leaf.not_before_millis + 1).await, ["acme"]);
+        // The leader's own too: its key was sealed by the same key.
+        assert_eq!(
+            renewed(&state, leaf.not_before_millis + 1).await,
+            ["acme", tls::OWN_ENTRY]
+        );
         assert!(!state.store.key_standing().unwrap().unopenable.contains(&acme));
         let (_, chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
         tls::is_pair(chain.as_bytes(), key.as_bytes()).expect("the new key is the new certificate's");
@@ -5999,7 +6069,7 @@ mod certificate_list_tests {
         let (chain, key) =
             tls::issue(&tls::dir_of(&state.data_dir), vec!["a.example.com".to_string()], A_YEAR).unwrap();
         state.store.create_certificate("uploaded", "", &chain, &key).unwrap();
-        assert!(renewed(&state, i64::MAX / 2).await.is_empty());
+        assert_eq!(renewed(&state, i64::MAX / 2).await, [tls::OWN_ENTRY]);
     }
 
     /// One issued under a root the leader no longer signs with is due at once, whatever its age, and so is one

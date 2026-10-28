@@ -12,10 +12,10 @@ use smeltr::core::ctx::Ctx;
 use smeltr::core::error::{ErrorSink, ExceptionKind};
 use smeltr::core::id::FunctionId;
 use smeltr::metrics::{MetricValue, Metrics, MetricsHandle};
+use smeltr::plan::compile::{Op, Plan, compile};
 use smeltr::plan::config::{DeclaredField, FunctionKind, ParserKind, PipelineConfig, Step, TimeSource};
 use smeltr::plan::exec::{DEFAULT_LOOP_BUDGET, run_scoped};
 use smeltr::plan::output::run_to_json_marked;
-use smeltr::plan::plan::{Op, Plan, compile};
 use std::time::Instant;
 
 use crate::harness;

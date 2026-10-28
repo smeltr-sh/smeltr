@@ -18,8 +18,8 @@ use smeltr::core::batch::Batch;
 use smeltr::core::column::DataType;
 use smeltr::core::id::FunctionId;
 use smeltr::format::json::scalar_text;
+use smeltr::plan::compile::Plan;
 use smeltr::plan::config::{FunctionKind, Step};
-use smeltr::plan::plan::Plan;
 
 use crate::harness;
 use harness::*;

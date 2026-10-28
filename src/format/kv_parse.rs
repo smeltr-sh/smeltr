@@ -87,8 +87,8 @@ mod tests {
     use crate::core::column::{DataType, StrBuilder, VarType};
     use crate::core::ctx::Ctx;
     use crate::core::error::ErrorSink;
+    use crate::plan::compile::{Call, Op, Output, ParseObject, Plan, compile};
     use crate::plan::config::{DeclaredField, FunctionConfig, FunctionKind, ParserKind, PipelineConfig, Step};
-    use crate::plan::plan::{Call, Op, Output, ParseObject, Plan, compile};
 
     fn compile_pipeline(config: KvConfig, declared: &[(&str, DataType)]) -> Plan {
         let p = PipelineConfig {

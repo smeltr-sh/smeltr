@@ -746,7 +746,7 @@ fn a_pipeline_maps_as_it_compiled_and_as_its_sample_shows() {
         0,
         "status: i64; url: {path: str}; Object.assign($, json(_raw)); took = 1.5;",
     )]);
-    let plan = smeltr::plan::plan::compile(&p, &smeltr::plan::topology::SourceMeta::NONE).unwrap();
+    let plan = smeltr::plan::compile::compile(&p, &smeltr::plan::topology::SourceMeta::NONE).unwrap();
     let record = record_type(&plan, "smeltr.exception");
     let compiled = json!({
         "_raw": { "type": "keyword", "ignore_above": 8191 },
