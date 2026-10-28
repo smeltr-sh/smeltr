@@ -412,7 +412,7 @@ mod tests {
             .collect()
     }
 
-    /// A sign-in, shaped as OCSF shapes one: a time in epoch milliseconds, objects named from many places, and
+    /// A sign-in: a time in epoch milliseconds, objects named from many places, and
     /// arrays of objects.
     fn login() -> Arc<Schema> {
         let endpoint = json!({ "$ref": "#/$defs/endpoint" });

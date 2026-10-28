@@ -164,7 +164,7 @@ test('review lists where the rows do not fit a schema, and the dock counts them 
   api,
 }) => {
   await arrangeMisfit(api, 'logins');
-  await api.openChange('logins', 'Logins as OCSF');
+  await api.openChange('logins', 'Logins as Login');
   await goto(admin, leader, '#/changes/review/logins');
 
   await expect(admin.getByText('2 schema findings')).toBeVisible({ timeout: 15_000 });
