@@ -72,7 +72,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 
 use crate::heartbeat::{HeartbeatRequest, HeartbeatResponse, ThreadKind};
-use envelope::Envelope;
+use envelope::{Empty, Envelope, Refusal};
 use registry::{Registry, ThreadHealth, WorkerFacts};
 use store::{Issued, Kept, Spend, Store, StoreError};
 
@@ -531,11 +531,41 @@ async fn capture_report(
 pub async fn blocking<T, E>(f: impl FnOnce() -> Result<T, E> + Send + 'static) -> Result<T, E>
 where
     T: Send + 'static,
-    E: From<String> + Send + 'static,
+    E: From<Panicked> + Send + 'static,
 {
     tokio::task::spawn_blocking(f)
         .await
-        .unwrap_or_else(|e| Err(E::from(format!("internal error: {e}"))))
+        .unwrap_or_else(|e| Err(E::from(Panicked(format!("internal error: {e}")))))
+}
+
+/// [`blocking`] for work that answers for itself.
+pub async fn blocking_answer<T: Default + Send + 'static>(
+    f: impl FnOnce() -> Envelope<T> + Send + 'static,
+) -> Envelope<T> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .unwrap_or_else(|e| Envelope::refused(Panicked(format!("internal error: {e}"))))
+}
+
+/// Work on the blocking pool that never finished, which is the leader's fault.
+pub struct Panicked(String);
+
+impl From<Panicked> for String {
+    fn from(panicked: Panicked) -> String {
+        panicked.0
+    }
+}
+
+impl From<Panicked> for StoreError {
+    fn from(panicked: Panicked) -> StoreError {
+        StoreError::failed(panicked.0)
+    }
+}
+
+impl From<Panicked> for Refusal {
+    fn from(panicked: Panicked) -> Refusal {
+        Refusal::internal(panicked.0)
+    }
 }
 
 /// A `Store` call on the pool.
@@ -959,13 +989,13 @@ pub struct SystemInfo {
     pub sasl_mechanisms: Vec<&'static str>,
 }
 
-async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+async fn health(State(state): State<AppState>) -> Envelope<HealthResponse> {
     forget::sweep(&state, warnings::now_millis()).await;
-    Json(health_snapshot(&state))
+    Envelope::ok(health_snapshot(&state))
 }
 
-async fn system_info(State(state): State<AppState>) -> Json<SystemInfo> {
-    Json(SystemInfo {
+async fn system_info(State(state): State<AppState>) -> Envelope<SystemInfo> {
+    Envelope::ok(SystemInfo {
         smeltr_version: crate::version::VERSION,
         release: crate::version::RELEASE,
         newer_release: state.updates.newer(),
@@ -1270,13 +1300,20 @@ async fn list_warnings(
     State(state): State<AppState>,
     axum::Extension(access): axum::Extension<access::Access>,
     Query(query): Query<WarningsQuery>,
-) -> Result<Json<Vec<warnings::Warning>>, (axum::http::StatusCode, String)> {
+) -> Result<Envelope<WarningList>, Refusal> {
     let all = match query.info {
         true => catalog(&state).await,
         false => warnings_snapshot(&state).await,
     };
-    all.map(|all| Json(all.into_iter().filter(|w| w.visible_to(&access)).collect()))
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    let all = all.map_err(|e| Refusal::internal(e.to_string()))?;
+    Ok(Envelope::ok(WarningList {
+        warnings: all.into_iter().filter(|w| w.visible_to(&access)).collect(),
+    }))
+}
+
+#[derive(serde::Serialize)]
+struct WarningList {
+    warnings: Vec<warnings::Warning>,
 }
 
 // -- flow (E2) ----------------------------------------------------------------
@@ -1460,11 +1497,11 @@ async fn get_flow(
     State(state): State<AppState>,
     axum::Extension(access): axum::Extension<access::Access>,
     Query(query): Query<FlowQuery>,
-) -> Result<Json<FlowResponse>, (axum::http::StatusCode, String)> {
+) -> Result<Envelope<FlowResponse>, Refusal> {
     let minutes = query.window_minutes.clamp(1, MAX_WINDOW_MINUTES);
     flow_snapshot(&state, Duration::from_secs((minutes * 60) as u64))
-        .map(|flow| Json(flow.visible_to(&access)))
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map(|flow| Envelope::ok(flow.visible_to(&access)))
+        .map_err(|e| Refusal::internal(e.to_string()))
 }
 
 // -- streams ------------------------------------------------------------------
@@ -1493,7 +1530,7 @@ impl StreamsResponse {
 async fn get_streams(
     State(state): State<AppState>,
     axum::Extension(access): axum::Extension<access::Access>,
-) -> Result<Json<StreamsResponse>, (axum::http::StatusCode, String)> {
+) -> Result<Envelope<StreamsResponse>, Refusal> {
     let registry = state.registry.clone();
     let data_dir = state.data_dir.clone();
     // Off the runtime's threads: a blocking read behind the lock every heartbeat's write takes, and the bundles read
@@ -1511,9 +1548,8 @@ async fn get_streams(
         Ok::<_, StoreError>(stored)
     })
     .await
-    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(
+    .map_err(|e| Refusal::internal(e.to_string()))??;
+    Ok(Envelope::ok(
         StreamsResponse {
             parsers: stored.parsers,
             unmatched: stored.unmatched,
@@ -1666,7 +1702,7 @@ mod logs_query_tests {
 async fn get_logs(
     State(state): State<AppState>,
     Query(query): Query<LogsQuery>,
-) -> Result<Json<LogsResponse>, (axum::http::StatusCode, String)> {
+) -> Result<Envelope<LogsResponse>, Refusal> {
     let limit = query.limit.unwrap_or(LOGS_PAGE).clamp(1, LOGS_PAGE_MAX);
     let levels: Vec<String> = query
         .level
@@ -1702,8 +1738,8 @@ async fn get_logs(
         )
     })
     .await
-    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map_err(|e: StoreError| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    .map_err(|e| Refusal::internal(e.to_string()))?
+    .map_err(|e: StoreError| Refusal::from(e))?;
 
     // One row past the page: whether it came back is what tells a page cut short by `limit` from one that
     // ended on the last row, since both are the same length. A cursor offered on length alone steps onto an
@@ -1733,7 +1769,7 @@ async fn get_logs(
         )
     };
 
-    Ok(Json(LogsResponse {
+    Ok(Envelope::ok(LogsResponse {
         rows: rows
             .into_iter()
             .map(|r| LogRow {
@@ -1968,16 +2004,16 @@ async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -
 }
 
 /// Asks a heartbeating worker to end its deployment and start it again, on its next heartbeat.
-async fn restart_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Json<Envelope> {
+async fn restart_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Envelope {
     ask_worker(&state, &worker_id, crate::heartbeat::DirectiveAction::Restart).await
 }
 
 /// Asks a heartbeating worker to end its deployment and exit, as a SIGTERM would, on its next heartbeat.
-async fn shutdown_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Json<Envelope> {
+async fn shutdown_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Envelope {
     ask_worker(&state, &worker_id, crate::heartbeat::DirectiveAction::Shutdown).await
 }
 
-async fn ask_worker(state: &AppState, worker_id: &str, action: crate::heartbeat::DirectiveAction) -> Json<Envelope> {
+async fn ask_worker(state: &AppState, worker_id: &str, action: crate::heartbeat::DirectiveAction) -> Envelope {
     let id = worker_id.to_string();
     let revoked = run_store(state.store.clone(), move |s| {
         Ok(s.list_worker_credentials()?
@@ -1988,20 +2024,20 @@ async fn ask_worker(state: &AppState, worker_id: &str, action: crate::heartbeat:
     .await;
     // A worker gone without a word would take the request whenever it came back.
     if !state.registry.heartbeating(worker_id, heartbeat_window()) {
-        return Json(Envelope::failed_one(
+        return Envelope::refused(Refusal::conflict(
             "this worker is not heartbeating, so it cannot be asked anything",
         ));
     }
     match revoked {
         Ok(Some(false)) => match state.directives.ask(worker_id, action) {
-            Ok(()) => Json(Envelope::done()),
-            Err(e) => Json(Envelope::failed_one(e)),
+            Ok(()) => Envelope::done(),
+            Err(e) => Envelope::refused(Refusal::conflict(e)),
         },
-        Ok(Some(true)) => Json(Envelope::failed_one(
+        Ok(Some(true)) => Envelope::refused(Refusal::conflict(
             "this worker is revoked, so it hears nothing from this leader",
         )),
-        Ok(None) => Json(Envelope::failed_one("no such worker has ever enrolled")),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(None) => Envelope::refused(Refusal::not_found("no such worker has ever enrolled")),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -2010,7 +2046,7 @@ async fn ask_worker(state: &AppState, worker_id: &str, action: crate::heartbeat:
 /// since removing it would leave a process nobody can see still moving data. A revoked one is not: this leader
 /// already refuses its heartbeats, so the beats still inside the window are from before the revocation, and it can
 /// no longer be asked to shut down.
-async fn remove_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Json<Envelope> {
+async fn remove_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Envelope {
     let id = worker_id.clone();
     let revoked = run_store(state.store.clone(), move |s| {
         Ok(s.list_worker_credentials()?
@@ -2021,10 +2057,10 @@ async fn remove_worker(State(state): State<AppState>, Path(worker_id): Path<Stri
     match revoked {
         Ok(true) => {}
         Ok(false) if state.registry.heartbeating(&worker_id, heartbeat_window()) => {
-            return Json(Envelope::failed_one("this worker is heartbeating; shut it down first"));
+            return Envelope::refused(Refusal::conflict("this worker is heartbeating; shut it down first"));
         }
         Ok(false) => {}
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(e),
     }
     let id = worker_id.clone();
     let now_ms = warnings::now_millis();
@@ -2033,10 +2069,10 @@ async fn remove_worker(State(state): State<AppState>, Path(worker_id): Path<Stri
             state.registry.forget_worker(&worker_id);
             state.directives.forget(&worker_id);
             forget::free_holds(&state, &worker_id).await;
-            Json(Envelope::done())
+            Envelope::done()
         }
-        Ok(false) => Json(Envelope::failed_one("no such worker has ever enrolled")),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(false) => Envelope::refused(Refusal::not_found("no such worker has ever enrolled")),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -2048,16 +2084,16 @@ fn heartbeat_window() -> Duration {
 
 /// Soft revocation: blocks the worker's future heartbeats and fetches. The single-worker sources it held go to
 /// another worker on that one's next beat, since this one will never report their progress again.
-async fn revoke_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Json<Envelope> {
+async fn revoke_worker(State(state): State<AppState>, Path(worker_id): Path<String>) -> Envelope {
     let id = worker_id.clone();
     let result = run_store(state.store.clone(), move |s| s.revoke_worker_credential(&id)).await;
     match result {
         Ok(true) => {
             forget::free_holds(&state, &worker_id).await;
-            Json(Envelope::done())
+            Envelope::done()
         }
-        Ok(false) => Json(Envelope::failed_one("no such worker has ever enrolled")),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(false) => Envelope::refused(Refusal::not_found("no such worker has ever enrolled")),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -2189,7 +2225,7 @@ impl VerifyLimiter {
     }
 }
 
-async fn list_secrets(State(state): State<AppState>) -> Result<Json<Vec<SecretOut>>, (axum::http::StatusCode, String)> {
+async fn list_secrets(State(state): State<AppState>) -> Result<Envelope<SecretList>, Refusal> {
     let data_dir = state.data_dir.clone();
     let entitlements = state.entitlements.clone();
     let running = running_deployments(&state).await;
@@ -2202,11 +2238,10 @@ async fn list_secrets(State(state): State<AppState>) -> Result<Json<Vec<SecretOu
     .ok()
     .and_then(Result::ok)
     .unwrap_or_default();
-    let rows = run_store(state.store, |s| s.list_secrets())
-        .await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(
-        rows.into_iter()
+    let rows = run_store(state.store, |s| s.list_secrets()).await?;
+    Ok(Envelope::ok(SecretList {
+        secrets: rows
+            .into_iter()
             // Listed on their own page, and changed only through it.
             .filter(|r| !r.certificate)
             .map(|r| {
@@ -2215,12 +2250,17 @@ async fn list_secrets(State(state): State<AppState>) -> Result<Json<Vec<SecretOu
                 out
             })
             .collect(),
-    ))
+    }))
 }
 
-async fn create_secret(State(state): State<AppState>, Json(req): Json<CreateSecretRequest>) -> Json<Envelope> {
+#[derive(serde::Serialize)]
+struct SecretList {
+    secrets: Vec<SecretOut>,
+}
+
+async fn create_secret(State(state): State<AppState>, Json(req): Json<CreateSecretRequest>) -> Envelope {
     let Some(custody) = store::Custody::parse(&req.custody) else {
-        return Json(Envelope::failed_one(format!(
+        return Envelope::refused(Refusal::invalid(format!(
             "custody {:?} is neither \"worker-local\" nor \"leader-stored\"",
             req.custody
         )));
@@ -2230,8 +2270,8 @@ async fn create_secret(State(state): State<AppState>, Json(req): Json<CreateSecr
     })
     .await;
     match result {
-        Ok(()) => Json(Envelope::done()),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(()) => Envelope::done(),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -2296,26 +2336,24 @@ impl From<store::KeyStanding> for EncryptionKeyOut {
     }
 }
 
-async fn encryption_key(
-    State(state): State<AppState>,
-) -> Result<Json<EncryptionKeyOut>, (axum::http::StatusCode, String)> {
+async fn encryption_key(State(state): State<AppState>) -> Envelope<EncryptionKeyOut> {
     run_store(state.store, |s| s.key_standing())
         .await
-        .map(|standing| Json(standing.into()))
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map(EncryptionKeyOut::from)
+        .into()
 }
 
 async fn regenerate_encryption_key(
     State(state): State<AppState>,
     // Inserted by the operator gate: who regenerated it is what the audit row says.
     axum::Extension(actor): axum::Extension<store::Actor>,
-) -> Json<Envelope<EncryptionKeyOut>> {
+) -> Envelope<EncryptionKeyOut> {
     let event = accounts::event_for(&actor, "key-regenerate", "", "ok");
     let regenerated = run_store(state.store, move |s| s.regenerate_key(&event)).await;
     if regenerated.is_ok() {
         RENEW_NOW.notify_one();
     }
-    Json(regenerated.map(EncryptionKeyOut::from).into())
+    regenerated.map(EncryptionKeyOut::from).into()
 }
 
 /// Stores a new value and forgets what retention no longer keeps.
@@ -2326,20 +2364,22 @@ async fn store_secret_value(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(req): Json<SecretValueRequest>,
-) -> Json<Envelope> {
+) -> Envelope {
     match not_a_certificate(&state, &name).await {
         Ok(()) => store_value(state, name, req.value, None).await,
-        Err(e) => Json(Envelope::failed_one(e)),
+        Err(e) => Envelope::refused(e),
     }
 }
 
 /// Refuses a secret route that means nothing for a certificate's key: its value is set with its chain, and nothing
 /// verifies it as a secret.
-async fn not_a_certificate(state: &AppState, name: &str) -> Result<(), String> {
+async fn not_a_certificate(state: &AppState, name: &str) -> Result<(), Refusal> {
     match is_certificate(state, name).await {
         Ok(false) => Ok(()),
-        Ok(true) => Err(format!("{name:?} is a certificate; change it on the Certificates page")),
-        Err(e) => Err(e.to_string()),
+        Ok(true) => Err(Refusal::conflict(format!(
+            "{name:?} is a certificate; change it on the Certificates page"
+        ))),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -2353,7 +2393,7 @@ async fn is_certificate(state: &AppState, name: &str) -> Result<bool, StoreError
 }
 
 /// [`store_secret_value`] for a value already checked, with its certificate chain where it is a certificate's key.
-async fn store_value(state: AppState, name: String, value: String, chain: Option<String>) -> Json<Envelope> {
+async fn store_value(state: AppState, name: String, value: String, chain: Option<String>) -> Envelope {
     let store = state.store.clone();
     let added = {
         let name = name.clone();
@@ -2364,7 +2404,7 @@ async fn store_value(state: AppState, name: String, value: String, chain: Option
         .await
     };
     if let Err(e) = added {
-        return Json(Envelope::failed_one(e));
+        return Envelope::refused(e);
     }
 
     let data_dir = state.data_dir.clone();
@@ -2392,7 +2432,7 @@ async fn store_value(state: AppState, name: String, value: String, chain: Option
     .and_then(|pinned| pinned);
     // Unknown pins forget nothing: the value is stored, and the next store prunes once the bundle reads again.
     let Ok(pinned) = pinned else {
-        return Json(Envelope::done());
+        return Envelope::done();
     };
 
     let keep = crate::startup_config::leader_secret_versions();
@@ -2411,8 +2451,8 @@ async fn store_value(state: AppState, name: String, value: String, chain: Option
     .await;
     match forgotten {
         // The value is stored either way; failing to forget an old one is not a failed rotation.
-        Ok(()) => Json(Envelope::done()),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(()) => Envelope::done(),
+        Err(e) => Envelope::with(Empty, StatusCode::OK, vec![e.message.into()]),
     }
 }
 
@@ -2499,9 +2539,7 @@ pub fn served_names(tls_dir: &std::path::Path) -> Result<Vec<String>, String> {
     Ok(served_entries(tls_dir)?.into_iter().map(|entry| entry.name).collect())
 }
 
-pub async fn list_certificates(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<CertificateOut>>, (axum::http::StatusCode, String)> {
+pub async fn list_certificates(State(state): State<AppState>) -> Result<Envelope<CertificateList>, Refusal> {
     let data_dir = state.data_dir.clone();
     run_store(state.store, move |s| {
         // Only a badge, so a TLS folder that cannot be read shows none rather than hiding the list. Deleting refuses.
@@ -2541,8 +2579,13 @@ pub async fn list_certificates(
         Ok(out)
     })
     .await
-    .map(Json)
-    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    .map(|certificates| Envelope::ok(CertificateList { certificates }))
+    .map_err(Refusal::from)
+}
+
+#[derive(serde::Serialize)]
+pub struct CertificateList {
+    pub certificates: Vec<CertificateOut>,
 }
 
 /// What `POST /api/certificates` lists: a certificate supplied with its key, or one this leader's authority issues.
@@ -2553,24 +2596,24 @@ pub enum NewCertificate {
     Issued(IssueRequest),
 }
 
-pub async fn create_certificate(State(state): State<AppState>, Json(req): Json<NewCertificate>) -> Json<Envelope> {
+pub async fn create_certificate(State(state): State<AppState>, Json(req): Json<NewCertificate>) -> Envelope {
     match req {
         NewCertificate::Supplied(req) => add_supplied(state, req).await,
         NewCertificate::Issued(req) => issue_certificate(state, req).await,
     }
 }
 
-async fn add_supplied(state: AppState, req: CertificateRequest) -> Json<Envelope> {
+async fn add_supplied(state: AppState, req: CertificateRequest) -> Envelope {
     if let Err(e) = req.check() {
-        return Json(Envelope::failed_one(e));
+        return Envelope::refused(Refusal::invalid(e));
     }
     match run_store(state.store, move |s| {
         s.create_certificate(&req.name, &req.description, &req.certificate, &req.private_key)
     })
     .await
     {
-        Ok(()) => Json(Envelope::done()),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(()) => Envelope::done(),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -2592,17 +2635,15 @@ fn a_year() -> i64 {
 }
 
 /// Lists a certificate this leader's own authority issues for the names asked.
-async fn issue_certificate(state: AppState, req: IssueRequest) -> Json<Envelope> {
+async fn issue_certificate(state: AppState, req: IssueRequest) -> Envelope {
     let names: Vec<String> = (req.names.iter().map(|n| n.trim().to_string()))
         .filter(|n| !n.is_empty())
         .collect();
     if names.is_empty() {
-        return Json(Envelope::failed_one(
-            "Issued for needs at least one DNS name or IP address",
-        ));
+        return Envelope::refused(Refusal::invalid("Issued for needs at least one DNS name or IP address"));
     }
     if req.validity_days < 1 {
-        return Json(Envelope::failed_one("a certificate must be valid for at least a day"));
+        return Envelope::refused(Refusal::invalid("a certificate must be valid for at least a day"));
     }
     let issued = Issued {
         names,
@@ -2610,27 +2651,26 @@ async fn issue_certificate(state: AppState, req: IssueRequest) -> Json<Envelope>
     };
     let (chain, key) = match sign_under_authority(&state, &issued).await {
         Ok(signed) => signed,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(e),
     };
     match run_store(state.store, move |s| {
         s.create_kept_certificate(&req.name, &req.description, &Kept::Issued(issued), &chain, &key)
     })
     .await
     {
-        Ok(()) => Json(Envelope::done()),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(()) => Envelope::done(),
+        Err(e) => Envelope::refused(e),
     }
 }
 
 /// A new version of a certificate this leader issues: a chain under its authority for `issued`, and the key.
-async fn sign_under_authority(state: &AppState, issued: &Issued) -> Result<(String, String), String> {
+async fn sign_under_authority(state: &AppState, issued: &Issued) -> Result<(String, String), Refusal> {
     let dir = tls::dir_of(&state.data_dir);
     if !crate::startup_config::leader_tls_enabled() || !dir.exists() {
-        return Err(
+        return Err(Refusal::conflict(
             "this leader serves plain HTTP, so it cannot issue certificates. Set leader.tls.enabled = true and \
-                    restart it first"
-                .to_string(),
-        );
+                    restart it first",
+        ));
     }
     let issued = issued.clone();
     blocking(move || {
@@ -2638,6 +2678,7 @@ async fn sign_under_authority(state: &AppState, issued: &Issued) -> Result<(Stri
         tls::issue(&dir, issued.names, validity)
     })
     .await
+    .map_err(Refusal::internal)
 }
 
 /// The signing root and each certificate this leader issued, with its newest chain described: empty where that
@@ -2710,7 +2751,7 @@ pub async fn renew_issued(state: &AppState, now_ms: i64) -> Result<Vec<(String, 
                 .map(|_| ())
                 .map_err(|e| e.to_string())
             }
-            Err(e) => Err(e),
+            Err(e) => Err(e.message()),
         };
         out.push((name, renewed));
     }
@@ -2729,18 +2770,18 @@ pub async fn replace_certificate(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(req): Json<CertificateRequest>,
-) -> Json<Envelope> {
+) -> Envelope {
     if let Err(e) = req.check() {
-        return Json(Envelope::failed_one(e));
+        return Envelope::refused(Refusal::invalid(e));
     }
     let how = match kept_as(&state, &name).await {
         Ok(Some(Kept::Issued(_))) => "issues",
         Ok(Some(Kept::Acme)) => "orders over ACME",
         Ok(None) => "",
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(e),
     };
     if !how.is_empty() {
-        return Json(Envelope::failed_one(format!(
+        return Envelope::refused(Refusal::conflict(format!(
             "this leader {how} {name:?} and renews it itself, so it cannot be replaced. To use your own \
              certificate, add one under another name and choose it where this one is used"
         )));
@@ -2750,10 +2791,10 @@ pub async fn replace_certificate(
             let (wanted, chain) = (name.clone(), req.certificate.clone());
             let lost = match run_store(state.store.clone(), move |s| purposes_lost(s, &wanted, &chain)).await {
                 Ok(lost) => lost,
-                Err(e) => return Json(Envelope::failed_one(e)),
+                Err(e) => return Envelope::refused(e),
             };
             if !lost.is_empty() {
-                return Json(Envelope::failed_one(format!(
+                return Envelope::refused(Refusal::conflict(format!(
                     "{name:?} is usable as a {} certificate, and this version is not. To use this certificate, \
                      add it under another name",
                     lost.join(" and ")
@@ -2761,8 +2802,8 @@ pub async fn replace_certificate(
             }
             store_value(state, name, req.private_key, Some(req.certificate)).await
         }
-        Ok(false) => Json(Envelope::failed_one(format!("no certificate named {name:?}"))),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(false) => Envelope::refused(Refusal::not_found(format!("no certificate named {name:?}"))),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -2770,21 +2811,21 @@ pub async fn replace_certificate(
 /// back: the value is gone. So the one case that cannot be undone is refused, and everything else deletes. The
 /// certificate the leader serves is refused too, whichever route asks: the leader would serve one the list no longer
 /// shows. The leader's own entry is refused always: switching back to it must find it.
-async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) -> Json<Envelope> {
+async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) -> Envelope {
     if name == tls::OWN_ENTRY {
-        return Json(Envelope::failed_one(format!(
+        return Envelope::refused(Refusal::conflict(format!(
             "this leader renews the certificate {name:?} on its own, so it cannot be deleted"
         )));
     }
     match served_names(&tls::dir_of(&state.data_dir)) {
         Ok(served) if served.contains(&name) => {
-            return Json(Envelope::failed_one(format!(
+            return Envelope::refused(Refusal::conflict(format!(
                 "the leader serves {name:?}; choose another certificate under Admin → System → Leader certificate \
                  first"
             )));
         }
         Ok(_) => {}
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(Refusal::internal(e)),
     }
     let data_dir = state.data_dir.clone();
     let entitlements = state.entitlements.clone();
@@ -2808,18 +2849,18 @@ async fn delete_secret(State(state): State<AppState>, Path(name): Path<String>) 
     .and_then(|users| users);
     let users = match users {
         Ok(users) => users,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(Refusal::internal(e)),
     };
     if !users.is_empty() {
-        return Json(Envelope::failed_one(format!(
+        return Envelope::refused(Refusal::conflict(format!(
             "{name:?} is named by the deployed bundle or by main's head; take the reference out first, or the \
              workers that run it lose a credential they cannot get back"
         )));
     }
     match run_store(state.store, move |s| s.delete_secret(&name)).await {
-        Ok(true) => Json(Envelope::done()),
-        Ok(false) => Json(Envelope::failed_one("no such secret")),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(true) => Envelope::done(),
+        Ok(false) => Envelope::refused(Refusal::not_found("no such secret")),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -2829,29 +2870,25 @@ async fn verify_secret(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(req): Json<VerifySecretRequest>,
-) -> Result<Json<VerifySecretResponse>, (axum::http::StatusCode, String)> {
+) -> Result<Envelope<VerifySecretResponse>, Refusal> {
     if !state.verify_limiter.allow(&name, std::time::Instant::now()) {
         tracing::warn!(
             target: "leader.secret_verify_refused",
             subject = %name,
             "refused a secret verification: too many attempts"
         );
-        return Err((
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
+        return Err(Refusal::new(
+            StatusCode::TOO_MANY_REQUESTS,
             format!(
                 "{name:?} has been asked about {VERIFY_ATTEMPTS} times in the last {} seconds",
                 VERIFY_WINDOW.as_secs()
             ),
         ));
     }
-    if let Err(e) = not_a_certificate(&state, &name).await {
-        return Err((axum::http::StatusCode::CONFLICT, e));
-    }
+    not_a_certificate(&state, &name).await?;
     let asked = name.clone();
     let version = req.version;
-    let matches = run_store(state.store, move |s| s.verify_secret(&name, version, &req.candidate))
-        .await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let matches = run_store(state.store, move |s| s.verify_secret(&name, version, &req.candidate)).await?;
     // Two sites, so an outcome is never folded into its opposite or lost among the other's count.
     if matches {
         tracing::info!(target: "leader.secret_verified", subject = %asked, version, "a secret verification matched");
@@ -2863,7 +2900,7 @@ async fn verify_secret(
             "a secret verification did not match"
         );
     }
-    Ok(Json(VerifySecretResponse { matches }))
+    Ok(Envelope::ok(VerifySecretResponse { matches }))
 }
 
 /// What one call to [`point_secret_references`] rewrote.
@@ -2891,17 +2928,17 @@ fn point_secret_references(
     name: &str,
     version: i64,
     actor: &store::Actor,
-) -> Result<Repointed, String> {
+) -> Result<Repointed, Refusal> {
     let repo = git::repo_path(data_dir);
     // The branch tip when there is one, so a bump lands on top of edits already there rather than reverting them.
     let expected = git::branch_tip(&repo, branch);
     let parent = expected
         .clone()
         .or_else(|| git::main_head(&repo))
-        .ok_or_else(|| format!("{} has no commit to build on", git::MAIN_BRANCH))?;
+        .ok_or_else(|| Refusal::internal(format!("{} has no commit to build on", git::MAIN_BRANCH)))?;
 
     let mut bundles: Vec<String> = tree::groups_at(&repo, &parent)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| Refusal::internal(e.to_string()))?
         .into_iter()
         .map(|g| format!("{}/{g}", crate::config_file::GROUPS_DIR))
         .collect();
@@ -2915,7 +2952,8 @@ fn point_secret_references(
     for prefix in bundles {
         let mut moved_here = 0;
         for (file, moved) in [
-            repoint_array::<crate::config_file::SourceDto>(&repo, &parent, &prefix, "sources.json", name, version)?,
+            repoint_array::<crate::config_file::SourceDto>(&repo, &parent, &prefix, "sources.json", name, version)
+                .map_err(Refusal::internal)?,
             repoint_array::<crate::config_file::DestinationDto>(
                 &repo,
                 &parent,
@@ -2923,7 +2961,8 @@ fn point_secret_references(
                 "destinations.json",
                 name,
                 version,
-            )?,
+            )
+            .map_err(Refusal::internal)?,
         ]
         .into_iter()
         .flatten()
@@ -2947,16 +2986,14 @@ fn point_secret_references(
         });
     }
     if branch == git::MAIN_BRANCH {
-        return Err(format!(
+        return Err(Refusal::invalid(format!(
             "{} is what deploys move and is not edited directly -- name a branch and deploy it",
             git::MAIN_BRANCH
-        ));
+        )));
     }
 
     let message = format!("Point {name} at version {version}");
-    match git::commit_edits(&repo, branch, &parent, expected.as_deref(), &edits, &message, actor)
-        .map_err(|e| e.to_string())?
-    {
+    match git::commit_edits(&repo, branch, &parent, expected.as_deref(), &edits, &message, actor)? {
         git::Committed::At(commit) => Ok(Repointed {
             commit: Some(commit),
             files,
@@ -2964,8 +3001,10 @@ fn point_secret_references(
             references,
         }),
         // The read said something to change, so an unchanged tree means the edits raced a save that made them.
-        git::Committed::Unchanged => Err(format!("{name:?} already names version {version} on {branch:?}")),
-        git::Committed::Moved(at) => Err(moved_since_read(&parent, at.as_deref())),
+        git::Committed::Unchanged => Err(Refusal::conflict(format!(
+            "{name:?} already names version {version} on {branch:?}"
+        ))),
+        git::Committed::Moved(at) => Err(Refusal::conflict(moved_since_read(&parent, at.as_deref()))),
     }
 }
 
@@ -3072,7 +3111,7 @@ async fn point_secret(
     axum::Extension(actor): axum::Extension<store::Actor>,
     Path(name): Path<String>,
     Json(req): Json<PointSecretRequest>,
-) -> Json<Envelope<PointedSecret>> {
+) -> Envelope<PointedSecret> {
     let held = {
         let wanted = name.clone();
         let version = req.version;
@@ -3086,21 +3125,19 @@ async fn point_secret(
     // Never write a reference to a value the leader cannot produce: that is a bundle the fleet would refuse.
     match held {
         Ok(true) => {}
-        Ok(false) => return Json(Envelope::failed_one(format!("{name:?} has no version {}", req.version))),
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Ok(false) => return Envelope::refused(Refusal::not_found(format!("{name:?} has no version {}", req.version))),
+        Err(e) => return Envelope::refused(e),
     }
 
     let data_dir = state.data_dir.clone();
-    let drafted = blocking(move || {
+    let drafted = tokio::task::spawn_blocking(move || {
         let done = point_secret_references(&data_dir, &req.branch, &name, req.version, &actor)?;
         // Nothing moved, so there is no change to open.
         if done.commit.is_none() {
             return Ok((done, false));
         }
         let repo = git::repo_path(&data_dir);
-        let already_open = git::read_change(&repo, &req.branch)
-            .map_err(|e| e.to_string())?
-            .is_some_and(|c| c.state == git::ChangeState::Open);
+        let already_open = git::read_change(&repo, &req.branch)?.is_some_and(|c| c.state == git::ChangeState::Open);
         if !already_open {
             let title = format!("Point {name} at version {}", req.version);
             let description = format!(
@@ -3109,21 +3146,22 @@ async fn point_secret(
                 if done.references == 1 { "" } else { "s" },
                 done.groups.join(", ")
             );
-            git::open_change(&repo, &req.branch, &title, &description, &actor).map_err(|e| e.to_string())?;
+            git::open_change(&repo, &req.branch, &title, &description, &actor)?;
         }
-        Ok::<_, String>((done, !already_open))
+        Ok::<_, Refusal>((done, !already_open))
     })
-    .await;
+    .await
+    .unwrap_or_else(|e| Err(Refusal::internal(format!("internal error: {e}"))));
 
     match drafted {
-        Ok((done, opened_change)) => Json(Envelope::ok(PointedSecret {
+        Ok((done, opened_change)) => Envelope::ok(PointedSecret {
             commit: done.commit,
             files: done.files,
             groups: done.groups,
             references: done.references,
             opened_change,
-        })),
-        Err(e) => Json(Envelope::failed_one(e)),
+        }),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -3131,22 +3169,19 @@ async fn point_secret(
 ///
 /// Refused while the deployed bundle or `main`'s head quotes that version, for the same reason deleting a whole
 /// secret is: the workers that run it would be left with a credential they cannot get back.
-async fn forget_secret_version(
-    State(state): State<AppState>,
-    Path((name, version)): Path<(String, i64)>,
-) -> Json<Envelope> {
+async fn forget_secret_version(State(state): State<AppState>, Path((name, version)): Path<(String, i64)>) -> Envelope {
     if name == tls::OWN_ENTRY {
         // Its newest is what a switch back serves, and what the socket presents when the chosen entry cannot be.
         let store = state.store.clone();
-        match run_store(store, |s| certificate_versions(s).map_err(store::StoreError)).await {
+        match run_store(store, |s| certificate_versions(s).map_err(store::StoreError::failed)).await {
             Ok(newest) if newest.get(tls::OWN_ENTRY) == Some(&version) => {
-                return Json(Envelope::failed_one(format!(
+                return Envelope::refused(Refusal::conflict(format!(
                     "this leader keeps the newest version of its own certificate {name:?}, so v{version} cannot be \
                      forgotten"
                 )));
             }
             Ok(_) => {}
-            Err(e) => return Json(Envelope::failed_one(e.to_string())),
+            Err(e) => return Envelope::refused(e),
         }
     }
     match served_entries(&tls::dir_of(&state.data_dir)) {
@@ -3155,13 +3190,13 @@ async fn forget_secret_version(
                 .iter()
                 .any(|entry| entry.name == name && entry.version == version) =>
         {
-            return Json(Envelope::failed_one(format!(
+            return Envelope::refused(Refusal::conflict(format!(
                 "the leader serves {name:?} v{version}; choose another certificate under Admin → System → Leader \
                  certificate first"
             )));
         }
         Ok(_) => {}
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(Refusal::internal(e)),
     }
     let data_dir = state.data_dir.clone();
     let entitlements = state.entitlements.clone();
@@ -3184,17 +3219,17 @@ async fn forget_secret_version(
     .and_then(|users| users);
     let users = match users {
         Ok(users) => users,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(Refusal::internal(e)),
     };
     if !users.is_empty() {
-        return Json(Envelope::failed_one(format!(
+        return Envelope::refused(Refusal::conflict(format!(
             "{name:?} v{version} is named by the deployed bundle or by main's head; point it at another version first"
         )));
     }
     match run_store(state.store, move |s| s.delete_secret_version(&name, version)).await {
-        Ok(true) => Json(Envelope::done()),
-        Ok(false) => Json(Envelope::failed_one("no such version")),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(true) => Envelope::done(),
+        Ok(false) => Envelope::refused(Refusal::not_found("no such version")),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -3251,11 +3286,16 @@ pub async fn worker_credentials_snapshot(state: &AppState) -> Result<Vec<WorkerO
         .collect())
 }
 
-async fn list_workers(State(state): State<AppState>) -> Result<Json<Vec<WorkerOut>>, (axum::http::StatusCode, String)> {
+async fn list_workers(State(state): State<AppState>) -> Result<Envelope<WorkerList>, Refusal> {
     worker_credentials_snapshot(&state)
         .await
-        .map(Json)
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map(|workers| Envelope::ok(WorkerList { workers }))
+        .map_err(|e| Refusal::internal(e.to_string()))
+}
+
+#[derive(serde::Serialize)]
+struct WorkerList {
+    workers: Vec<WorkerOut>,
 }
 
 /// The worker a presented token was issued to, put on the request by [`require_worker_auth`].
@@ -3510,18 +3550,12 @@ async fn authority(State(state): State<AppState>) -> Response {
     let materials = match tls::current_if_agreed(&tls::dir_of(&state.data_dir)) {
         Ok(materials) => materials,
         Err(e) => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                [(header::CACHE_CONTROL, "no-store")],
-                e.message().to_string(),
-            )
-                .into_response();
+            return (StatusCode::SERVICE_UNAVAILABLE, e.message().to_string()).into_response();
         }
     };
     (
         [
             (header::CONTENT_TYPE, "application/x-pem-file"),
-            (header::CACHE_CONTROL, "no-store"),
             (
                 header::CONTENT_DISPOSITION,
                 "attachment; filename=\"smeltr-leader-ca.pem\"",
@@ -4232,7 +4266,6 @@ mod secrets_delivery_tests {
             }),
         )
         .await
-        .0
     }
 
     /// What the branch says `es`'s auth is, read back out of the commit rather than out of the response.
@@ -4257,7 +4290,7 @@ mod secrets_delivery_tests {
         state.store.add_secret_version("es-auth", "ApiKey def").unwrap();
 
         let out = point(&state, "es-auth", 2, "rotate-es").await;
-        assert!(out.ok, "{:?}", out.errors);
+        assert!(out.succeeded(), "{:?}", out.errors);
         assert_eq!(out.references, 1);
         assert_eq!(out.files, vec!["groups/g/destinations.json".to_string()]);
         assert_eq!(out.groups, vec!["g".to_string()]);
@@ -4285,7 +4318,7 @@ mod secrets_delivery_tests {
         state.store.add_secret_version("es-auth", "ApiKey def").unwrap();
 
         let out = point(&state, "es-auth", 2, git::MAIN_BRANCH).await;
-        assert!(!out.ok);
+        assert!(!out.succeeded());
         assert!(out.errors[0].message.contains(git::MAIN_BRANCH));
         assert_eq!(
             auth_on(&state, git::MAIN_BRANCH),
@@ -4302,7 +4335,7 @@ mod secrets_delivery_tests {
     async fn pointing_at_a_version_that_is_not_held_is_refused() {
         let state = state("point-absent");
         let out = point(&state, "es-auth", 9, "rotate-es").await;
-        assert!(!out.ok);
+        assert!(!out.succeeded());
         assert!(out.errors[0].message.contains("version 9"));
         assert!(git::branch_tip(&git::repo_path(&state.data_dir), "rotate-es").is_none());
     }
@@ -4312,7 +4345,7 @@ mod secrets_delivery_tests {
     async fn pointing_at_what_is_already_named_writes_nothing() {
         let state = state("point-noop");
         let out = point(&state, "es-auth", 1, "rotate-es").await;
-        assert!(out.ok, "{:?}", out.errors);
+        assert!(out.succeeded(), "{:?}", out.errors);
         assert_eq!(
             (out.references, out.commit.as_deref(), out.opened_change),
             (0, None, false)
@@ -4331,7 +4364,7 @@ mod secrets_delivery_tests {
 
         let main = git::main_head(&git::repo_path(&state.data_dir));
         let out = point(&state, "unused", 1, git::MAIN_BRANCH).await;
-        assert!(out.ok, "{:?}", out.errors);
+        assert!(out.succeeded(), "{:?}", out.errors);
         assert_eq!((out.references, out.commit.as_deref()), (0, None));
         assert_eq!(
             git::main_head(&git::repo_path(&state.data_dir)),
@@ -4351,7 +4384,7 @@ mod secrets_delivery_tests {
             .unwrap();
 
         let out = point(&state, "ES2_AUTH", 2, "rotate-es2").await;
-        assert!(out.ok, "{:?}", out.errors);
+        assert!(out.succeeded(), "{:?}", out.errors);
         assert_eq!(out.references, 0, "nothing names it at a version");
         assert!(git::branch_tip(&git::repo_path(&state.data_dir), "rotate-es2").is_none());
     }
@@ -4361,11 +4394,11 @@ mod secrets_delivery_tests {
     async fn pointing_joins_a_change_already_open() {
         let state = state("point-join");
         state.store.add_secret_version("es-auth", "ApiKey def").unwrap();
-        assert!(point(&state, "es-auth", 2, "wip").await.ok);
+        assert!(point(&state, "es-auth", 2, "wip").await.succeeded());
 
         state.store.add_secret_version("es-auth", "ApiKey ghi").unwrap();
         let out = point(&state, "es-auth", 3, "wip").await;
-        assert!(out.ok, "{:?}", out.errors);
+        assert!(out.succeeded(), "{:?}", out.errors);
         assert!(!out.opened_change, "the change was already open");
 
         let change = git::read_change(&git::repo_path(&state.data_dir), "wip")
@@ -4445,15 +4478,15 @@ mod secrets_delivery_tests {
         let state = state("delete-in-use");
 
         let refused = delete_secret(State(state.clone()), Path("es-auth".to_string())).await;
-        assert!(!refused.0.ok, "a deployed group names it");
-        assert!(refused.0.errors[0].message.contains("es-auth"));
+        assert!(!refused.succeeded(), "a deployed group names it");
+        assert!(refused.errors[0].message.contains("es-auth"));
         assert!(
             state.store.verify_secret("es-auth", 1, "ApiKey abc").unwrap(),
             "still there"
         );
 
         let gone = delete_secret(State(state.clone()), Path("unrelated".to_string())).await;
-        assert!(gone.0.ok, "nothing names it: {:?}", gone.0.errors);
+        assert!(gone.succeeded(), "nothing names it: {:?}", gone.errors);
         assert!(!state.store.verify_secret("unrelated", 1, "swordfish").unwrap());
     }
 
@@ -4469,7 +4502,7 @@ mod secrets_delivery_tests {
         git::deploy_commit(&state.data_dir, &first, &store::Actor::system()).unwrap();
 
         let refused = forget_secret_version(State(state.clone()), Path(("es-auth".to_string(), 2))).await;
-        assert!(!refused.0.ok, "main's head names v2");
+        assert!(!refused.succeeded(), "main's head names v2");
         assert!(
             state.store.verify_secret("es-auth", 2, "ApiKey def").unwrap(),
             "still there"
@@ -4718,7 +4751,8 @@ mod warnings_endpoint_tests {
                 )
                 .await
                 .unwrap()
-                .0
+                .body
+                .warnings
                 .into_iter()
                 .map(|w| w.subject_id)
                 .collect::<Vec<_>>()
@@ -4816,7 +4850,7 @@ mod logs_endpoint_tests {
     }
 
     async fn get(state: &AppState, query: LogsQuery) -> LogsResponse {
-        get_logs(State(state.clone()), Query(query)).await.unwrap().0
+        get_logs(State(state.clone()), Query(query)).await.unwrap().body
     }
 
     #[tokio::test]
@@ -5453,7 +5487,11 @@ mod worker_lifecycle_tests {
         let state = state("lifecycle-restart");
         heard(&state);
         assert!(answer(&state, accepting(None)).await.directive.is_none());
-        assert!(restart_worker(State(state.clone()), Path("w1".to_string())).await.0.ok);
+        assert!(
+            restart_worker(State(state.clone()), Path("w1".to_string()))
+                .await
+                .succeeded()
+        );
         let sent = answer(&state, accepting(None)).await.directive.expect("asked");
         assert_eq!(sent.action, DirectiveAction::Restart);
         assert_eq!(answer(&state, accepting(None)).await.directive, Some(sent.clone()));
@@ -5465,7 +5503,11 @@ mod worker_lifecycle_tests {
         let state = state("lifecycle-older");
         heard(&state);
         answer(&state, beat("g", Vec::new())).await;
-        assert!(!shutdown_worker(State(state.clone()), Path("w1".to_string())).await.0.ok);
+        assert!(
+            !shutdown_worker(State(state.clone()), Path("w1".to_string()))
+                .await
+                .succeeded()
+        );
     }
 
     #[tokio::test]
@@ -5473,12 +5515,20 @@ mod worker_lifecycle_tests {
         let state = state("lifecycle-remove-revoked");
         heard(&state);
         answer(&state, accepting(None)).await;
-        assert!(revoke_worker(State(state.clone()), Path("w1".to_string())).await.0.ok);
+        assert!(
+            revoke_worker(State(state.clone()), Path("w1".to_string()))
+                .await
+                .succeeded()
+        );
         assert!(
             state.registry.heartbeating("w1", heartbeat_window()),
             "its last beat is still recent"
         );
-        assert!(remove_worker(State(state.clone()), Path("w1".to_string())).await.0.ok);
+        assert!(
+            remove_worker(State(state.clone()), Path("w1".to_string()))
+                .await
+                .succeeded()
+        );
         assert!(state.store.list_worker_credentials().unwrap().is_empty());
     }
 
@@ -5488,7 +5538,9 @@ mod worker_lifecycle_tests {
         heard(&state);
         answer(&state, accepting(None)).await;
         assert!(
-            !remove_worker(State(state.clone()), Path("w1".to_string())).await.0.ok,
+            !remove_worker(State(state.clone()), Path("w1".to_string()))
+                .await
+                .succeeded(),
             "a heartbeating worker is not removed"
         );
         answer(
@@ -5499,7 +5551,11 @@ mod worker_lifecycle_tests {
             },
         )
         .await;
-        assert!(remove_worker(State(state.clone()), Path("w1".to_string())).await.0.ok);
+        assert!(
+            remove_worker(State(state.clone()), Path("w1".to_string()))
+                .await
+                .succeeded()
+        );
         assert!(state.store.list_worker_credentials().unwrap().is_empty());
         assert!(state.registry.snapshot().is_empty());
         assert!(
@@ -5723,7 +5779,11 @@ mod single_worker_tests {
         };
         assert_eq!(answer_as(&state, "w1", runs()).await.holds.len(), 1);
         assert!(answer_as(&state, "w2", runs()).await.holds.is_empty());
-        assert!(revoke_worker(State(state.clone()), Path("w1".to_string())).await.0.ok);
+        assert!(
+            revoke_worker(State(state.clone()), Path("w1".to_string()))
+                .await
+                .succeeded()
+        );
         assert_eq!(answer_as(&state, "w2", runs()).await.holds.len(), 1);
         assert_eq!(fetch(&state, "w1").await.0, StatusCode::NOT_FOUND);
     }
@@ -5769,7 +5829,7 @@ mod certificate_list_tests {
         std::fs::remove_file(state.data_dir.with_extension("key")).unwrap();
         let regenerated =
             regenerate_encryption_key(State(state.clone()), axum::Extension(store::Actor::system())).await;
-        assert!(regenerated.0.ok, "{:?}", regenerated.0.errors);
+        assert!(regenerated.succeeded(), "{:?}", regenerated.errors);
         tokio::time::timeout(Duration::from_secs(1), RENEW_NOW.notified())
             .await
             .expect("the renewal pass was not asked to run");
@@ -5793,9 +5853,12 @@ mod certificate_list_tests {
         assert_eq!(newest, 2);
 
         let refused = forget_secret_version(State(state.clone()), Path((tls::OWN_ENTRY.to_string(), 2))).await;
-        assert!(!refused.0.ok, "the newest version of the leader's own was forgotten");
+        assert!(
+            !refused.succeeded(),
+            "the newest version of the leader's own was forgotten"
+        );
         let forgotten = forget_secret_version(State(state.clone()), Path((tls::OWN_ENTRY.to_string(), 1))).await;
-        assert!(forgotten.0.ok, "{:?}", forgotten.0.errors);
+        assert!(forgotten.succeeded(), "{:?}", forgotten.errors);
     }
 
     /// The version the leader serves stays in the list until another is served: not deleted, not forgotten, and
@@ -5817,18 +5880,18 @@ mod certificate_list_tests {
         tls::serve(&dir, &entry, &names(), &[]).unwrap();
 
         let refused = delete_secret(State(state.clone()), Path("chosen".to_string())).await;
-        assert!(!refused.0.ok, "the served entry was deleted");
+        assert!(!refused.succeeded(), "the served entry was deleted");
         let refused = forget_secret_version(State(state.clone()), Path(("chosen".to_string(), 1))).await;
-        assert!(!refused.0.ok, "the served version was forgotten");
+        assert!(!refused.succeeded(), "the served version was forgotten");
         let refused = delete_secret(State(state.clone()), Path(tls::OWN_ENTRY.to_string())).await;
         assert!(
-            !refused.0.ok,
+            !refused.succeeded(),
             "the leader's own entry was deleted while another was served"
         );
 
         for _ in 0..crate::startup_config::leader_secret_versions() + 1 {
             let stored = store_value(state.clone(), "chosen".to_string(), key.clone(), Some(chain.clone())).await;
-            assert!(stored.0.ok, "{:?}", stored.0.errors);
+            assert!(stored.succeeded(), "{:?}", stored.errors);
         }
         assert!(
             state.store.certificate_chain("chosen", 1).unwrap().is_some(),
@@ -5889,15 +5952,16 @@ mod certificate_list_tests {
             },
         )
         .await
-        .0
     }
 
     /// What the list says of `name`.
     async fn listed(state: &AppState, name: &str) -> CertificateOut {
-        let Ok(Json(all)) = list_certificates(State(state.clone())).await else {
-            panic!("the list did not read");
-        };
-        all.into_iter().find(|c| c.name == name).expect("listed")
+        let all = list_certificates(State(state.clone())).await.expect("the list reads");
+        all.body
+            .certificates
+            .into_iter()
+            .find(|c| c.name == name)
+            .expect("listed")
     }
 
     /// An issued certificate is an entry like an upload: its chain carries the names asked, ends at the leader's
@@ -5906,7 +5970,7 @@ mod certificate_list_tests {
     async fn the_leader_issues_a_certificate_for_the_names_asked() {
         let state = issuing("issue");
         let out = issue(&state, "acme", &["receiver.example.com", "10.0.0.7"]).await;
-        assert!(out.ok, "{:?}", out.errors);
+        assert!(out.succeeded(), "{:?}", out.errors);
 
         let entry = listed(&state, "acme").await;
         assert_eq!(entry.kept, Some("issued"));
@@ -5923,23 +5987,21 @@ mod certificate_list_tests {
     #[tokio::test]
     async fn issuing_for_no_names_or_no_time_is_refused() {
         let state = issuing("issue-no-names");
-        assert!(!issue(&state, "acme", &[" "]).await.ok);
-        assert!(!issue_lasting(&state, "acme", &["a.example.com"], 0).await.ok);
+        assert!(!issue(&state, "acme", &[" "]).await.succeeded());
+        assert!(!issue_lasting(&state, "acme", &["a.example.com"], 0).await.succeeded());
         assert_eq!(listed_names(&state).await, [tls::OWN_ENTRY]);
     }
 
     async fn listed_names(state: &AppState) -> Vec<String> {
-        let Ok(Json(all)) = list_certificates(State(state.clone())).await else {
-            panic!("the list did not read");
-        };
-        all.into_iter().map(|c| c.name).collect()
+        let all = list_certificates(State(state.clone())).await.expect("the list reads");
+        all.body.certificates.into_iter().map(|c| c.name).collect()
     }
 
     /// The leader holds its key and issues each version, so nobody else's certificate takes its place under its name.
     #[tokio::test]
     async fn an_issued_certificate_is_not_replaced() {
         let state = issuing("issue-replace");
-        assert!(issue(&state, "acme", &["receiver.example.com"]).await.ok);
+        assert!(issue(&state, "acme", &["receiver.example.com"]).await.succeeded());
         let (_, chain, key) = newest_certificate(state.store.as_ref(), "acme").unwrap().unwrap();
         let out = replace_certificate(
             State(state.clone()),
@@ -5951,9 +6013,8 @@ mod certificate_list_tests {
                 private_key: key,
             }),
         )
-        .await
-        .0;
-        assert!(!out.ok);
+        .await;
+        assert!(!out.succeeded());
         assert!(
             out.errors[0]
                 .message
@@ -6001,13 +6062,13 @@ mod certificate_list_tests {
                 Json(NewCertificate::Supplied(for_purposes(vec![ServerAuth])))
             )
             .await
-            .ok
+            .succeeded()
         );
         let replace = |req| replace_certificate(State(state.clone()), Path("acme".to_string()), Json(req));
         let newest = || newest_chain(state.store.as_ref(), "acme").unwrap().unwrap().0;
 
-        let refused = replace(for_purposes(vec![ClientAuth])).await.0;
-        assert!(!refused.ok);
+        let refused = replace(for_purposes(vec![ClientAuth])).await;
+        assert!(!refused.succeeded());
         assert!(
             refused.errors[0].message.contains("usable as a server certificate"),
             "{refused:?}"
@@ -6015,16 +6076,16 @@ mod certificate_list_tests {
         assert_eq!(newest(), 1, "nothing was stored");
 
         assert!(
-            replace(for_purposes(Vec::new())).await.0.ok,
+            replace(for_purposes(Vec::new())).await.succeeded(),
             "no Extended Key Usage permits both"
         );
         assert_eq!(newest(), 2);
-        let refused = replace(for_purposes(vec![ServerAuth])).await.0;
+        let refused = replace(for_purposes(vec![ServerAuth])).await;
         assert!(
             refused.errors[0].message.contains("usable as a client certificate"),
             "{refused:?}"
         );
-        assert!(replace(for_purposes(vec![ServerAuth, ClientAuth])).await.0.ok);
+        assert!(replace(for_purposes(vec![ServerAuth, ClientAuth])).await.succeeded());
     }
 
     async fn renewed(state: &AppState, now_ms: i64) -> Vec<String> {
@@ -6040,7 +6101,11 @@ mod certificate_list_tests {
     #[tokio::test]
     async fn a_due_certificate_is_renewed_unattended() {
         let state = issuing("renew");
-        assert!(issue_lasting(&state, "acme", &["receiver.example.com"], 90).await.ok);
+        assert!(
+            issue_lasting(&state, "acme", &["receiver.example.com"], 90)
+                .await
+                .succeeded()
+        );
         let leaf = listed(&state, "acme").await.chain[0].clone();
         let lifetime = |c: &tls::Described| (c.not_after_millis - c.not_before_millis) / (24 * 60 * 60 * 1000);
         assert_eq!(lifetime(&leaf), 90);
@@ -6076,7 +6141,7 @@ mod certificate_list_tests {
     #[tokio::test]
     async fn a_certificate_a_regenerated_key_cannot_open_is_renewed() {
         let state = issuing("renew-regenerated");
-        assert!(issue(&state, "acme", &["receiver.example.com"]).await.ok);
+        assert!(issue(&state, "acme", &["receiver.example.com"]).await.succeeded());
         let leaf = listed(&state, "acme").await.chain[0].clone();
         std::fs::remove_file(state.data_dir.with_extension("key")).unwrap();
         let event = crate::leader::accounts::event_for(&store::Actor::system(), "key-regenerate", "", "ok");

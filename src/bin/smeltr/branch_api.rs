@@ -19,59 +19,28 @@ use smeltr::leader::store::Actor;
 use smeltr::leader::{blocking, git, tree};
 use smeltr::startup_config::leader_data_dir;
 
-use crate::gate::refuse;
-use smeltr::leader::envelope::Envelope;
+use smeltr::leader::envelope::{Envelope, Refusal};
 
 /// The repository, created if nobody has opened the GUI yet. `main` needs a commit before a branch can be measured
 /// against it, and both calls are idempotent.
-fn repo() -> Result<PathBuf, String> {
+fn repo() -> Result<PathBuf, Refusal> {
     repo_at(&leader_data_dir())
 }
 
-fn repo_at(data_dir: &Path) -> Result<PathBuf, String> {
+fn repo_at(data_dir: &Path) -> Result<PathBuf, Refusal> {
     let repo = git::repo_path(data_dir);
     git::init_bare_repo(&repo)?;
     git::ensure_main_commit(&repo)?;
     Ok(repo)
 }
 
-/// Why a handler stopped short of what it set out to do: with an answer already made, a refusal carrying its
-/// status, or with the message its failed mutation answers with.
-#[derive(Debug)]
-enum Stop {
-    Answered(Box<Response>),
-    Failed(String),
-}
-
-impl From<String> for Stop {
-    fn from(message: String) -> Self {
-        Stop::Failed(message)
-    }
-}
-
-impl From<git::GitError> for Stop {
-    fn from(e: git::GitError) -> Self {
-        Stop::Failed(e.into())
-    }
-}
-
-impl From<smeltr::leader::store::StoreError> for Stop {
-    fn from(e: smeltr::leader::store::StoreError) -> Self {
-        Stop::Failed(e.into())
-    }
-}
-
-fn forbidden(why: &str) -> Stop {
-    Stop::Answered(Box::new(refuse(StatusCode::FORBIDDEN, why)))
+fn forbidden(why: &str) -> Refusal {
+    Refusal::forbidden(why)
 }
 
 /// What a mutation answers with: what it did, or why it stopped.
-fn answered(result: Result<Envelope<BranchMutation>, Stop>) -> Response {
-    match result {
-        Ok(done) => Json(done).into_response(),
-        Err(Stop::Answered(response)) => *response,
-        Err(Stop::Failed(message)) => Json(Envelope::<BranchMutation>::failed_one(message)).into_response(),
-    }
+fn answered(result: Result<Envelope<BranchMutation>, Refusal>) -> Response {
+    result.into_response()
 }
 
 /// Every scope this branch's change reaches: the id of every group whose own subtree (`groups/<id>/`) it
@@ -79,7 +48,7 @@ fn answered(result: Result<Envelope<BranchMutation>, Stop>) -> Response {
 /// currently exists on the branch, and `shared` itself, when `shared/` changes. What `test_api`'s review
 /// path runs a change's tests against, in place of the reviewer's own editing scope: the branch under
 /// review is not the reviewer's chip.
-pub(crate) fn scopes_touched(data_dir: &Path, branch: &str) -> Result<Vec<String>, String> {
+pub(crate) fn scopes_touched(data_dir: &Path, branch: &str) -> Result<Vec<String>, Refusal> {
     let repo = repo_at(data_dir)?;
     let changed = git::changed_files(&repo, branch)?;
     let shared_prefix = format!("{}/", config_file::SHARED_DIR);
@@ -114,7 +83,7 @@ pub(crate) fn lacking_in_change(
     data_dir: &Path,
     branch: &str,
     level: Level,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, Refusal> {
     if access.is_administrator() {
         return Ok(None);
     }
@@ -152,8 +121,8 @@ fn sees_all<'a>(access: &Access, mut paths: impl Iterator<Item = &'a str>) -> bo
 /// its change. Both answer the same sentence, so a change the person cannot see is one they cannot tell from a
 /// branch that is not there. Existence is asked first: git resolves names a branch is not -- `HEAD` -- and a change
 /// read from one would look empty, and seen.
-fn seen(access: &Access, data_dir: &Path, branch: &str) -> Result<(), String> {
-    let missing = || format!("there is no branch {branch:?}");
+fn seen(access: &Access, data_dir: &Path, branch: &str) -> Result<(), Refusal> {
+    let missing = || Refusal::not_found(format!("there is no branch {branch:?}"));
     let repo = repo_at(data_dir)?;
     if !git::branch_exists(&repo, branch)? {
         return Err(missing());
@@ -166,7 +135,7 @@ fn seen(access: &Access, data_dir: &Path, branch: &str) -> Result<(), String> {
 
 /// [`lacking_in_change`], answered: a refusal when something is lacking, a failed mutation when the change could
 /// not be read.
-fn refused_in_change(access: &Access, data_dir: &Path, branch: &str, level: Level) -> Result<(), Stop> {
+fn refused_in_change(access: &Access, data_dir: &Path, branch: &str, level: Level) -> Result<(), Refusal> {
     match lacking_in_change(access, data_dir, branch, level)? {
         None => Ok(()),
         Some(why) => Err(forbidden(&why)),
@@ -175,7 +144,7 @@ fn refused_in_change(access: &Access, data_dir: &Path, branch: &str, level: Leve
 
 /// What stops `access` changing `branch`'s change at `level`: [`seen`] first, answered as a branch that is not
 /// there, then [`refused_in_change`]. Changing a change needs `level` in all of it, as approving one does.
-fn refused_to_change(access: &Access, data_dir: &Path, branch: &str, level: Level) -> Result<(), Stop> {
+fn refused_to_change(access: &Access, data_dir: &Path, branch: &str, level: Level) -> Result<(), Refusal> {
     seen(access, data_dir, branch)?;
     refused_in_change(access, data_dir, branch, level)
 }
@@ -277,7 +246,7 @@ pub struct Branches {
 pub async fn list_branches(
     axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
     Extension(access): Extension<Access>,
-) -> Json<Envelope<Branches>> {
+) -> Envelope<Branches> {
     let failures = state.remote.push_failures();
     let listed = blocking(move || {
         let repo = repo()?;
@@ -337,14 +306,14 @@ pub async fn list_branches(
             });
         }
         branches.sort_by_key(|b| std::cmp::Reverse(b.last_save));
-        Ok::<_, String>(Branches {
+        Ok::<_, Refusal>(Branches {
             branches,
             remote,
             approve_pushes,
         })
     })
     .await;
-    Json(listed.into())
+    listed.into()
 }
 
 // -- GET /api/branches/:name/diff -----------------------------------------
@@ -384,7 +353,7 @@ pub async fn branch_diff(
     Extension(access): Extension<Access>,
     AxPath(name): AxPath<String>,
     Query(q): Query<PathQuery>,
-) -> Json<Envelope<Diff>> {
+) -> Envelope<Diff> {
     let answered = blocking(move || {
         seen(&access, &leader_data_dir(), &name)?;
         let repo = repo()?;
@@ -399,10 +368,10 @@ pub async fn branch_diff(
             })
             .collect();
         let diff = git::diff_unified(&repo, &name, q.path.as_deref())?;
-        Ok::<_, String>(Diff { files, diff })
+        Ok::<_, Refusal>(Diff { files, diff })
     })
     .await;
-    Json(answered.into())
+    answered.into()
 }
 
 // -- POST /api/branches, DELETE /api/branches/:name -----------------------
@@ -455,9 +424,9 @@ impl BranchMutation {
 /// comes to exist (design doc, Config plane); this is the one the GUI offers when an author parks one piece of work
 /// and picks
 /// up another.
-pub async fn create_branch(Json(req): Json<CreateBranchRequest>) -> Json<Envelope<BranchMutation>> {
-    let created = blocking(move || git::create_branch(&leader_data_dir(), &req.name).map_err(String::from)).await;
-    Json(created.map_or_else(Envelope::failed_one, |head| BranchMutation::done(Some(head))))
+pub async fn create_branch(Json(req): Json<CreateBranchRequest>) -> Envelope<BranchMutation> {
+    let created = blocking(move || git::create_branch(&leader_data_dir(), &req.name).map_err(Refusal::from)).await;
+    created.map_or_else(Envelope::refused, |head| BranchMutation::done(Some(head)))
 }
 
 /// Delete a branch. Work it carries goes with it: a branch is how nothing is lost
@@ -515,7 +484,7 @@ pub async fn open_change(
             // other write touches, and it lands by compare-and-swap on that ref.
             let repo = repo()?;
             if let (0, _) = git::ahead_behind(&repo, &branch)? {
-                return Err(Stop::Failed(format!(
+                return Err(Refusal::conflict(format!(
                     "{branch:?} changes nothing yet -- save something on it first"
                 )));
             }
@@ -742,16 +711,16 @@ pub struct Timeline {
 pub async fn change_timeline(
     Extension(access): Extension<Access>,
     AxPath(branch): AxPath<String>,
-) -> Json<Envelope<Timeline>> {
+) -> Envelope<Timeline> {
     let answered = blocking(move || {
         seen(&access, &leader_data_dir(), &branch)?;
         let events = git::change_timeline(&repo()?, &branch)?;
-        Ok::<_, String>(Timeline {
+        Ok::<_, Refusal>(Timeline {
             events: events.into_iter().map(TimelineEventOut::from).collect(),
         })
     })
     .await;
-    Json(answered.into())
+    answered.into()
 }
 
 /// Comment on a change, open or closed.
@@ -760,16 +729,16 @@ pub async fn comment_on_change(
     Extension(access): Extension<Access>,
     AxPath(branch): AxPath<String>,
     Json(req): Json<CommentRequest>,
-) -> Json<Envelope<BranchMutation>> {
+) -> Envelope<BranchMutation> {
     let answered = blocking(move || {
         seen(&access, &leader_data_dir(), &branch)?;
         // No write lock, for the reason `open_change` gives.
         let anchor = req.anchor.map(git::Anchor::from);
         git::comment_on_change(&repo()?, &branch, &req.body, anchor, req.reply_to.as_deref(), &actor)?;
-        Ok::<_, String>(BranchMutation::done(None))
+        Ok::<_, Refusal>(BranchMutation::done(None))
     })
     .await;
-    Json(answered.unwrap_or_else(Envelope::failed_one))
+    answered.unwrap_or_else(Envelope::refused)
 }
 
 // -- POST /api/branches/:name/threads/:id --------------------------------
@@ -785,15 +754,15 @@ pub async fn resolve_thread(
     Extension(access): Extension<Access>,
     AxPath((branch, root)): AxPath<(String, String)>,
     Json(req): Json<ThreadRequest>,
-) -> Json<Envelope<BranchMutation>> {
+) -> Envelope<BranchMutation> {
     let answered = blocking(move || {
         seen(&access, &leader_data_dir(), &branch)?;
         // No write lock, for the reason `open_change` gives.
         git::resolve_thread(&repo()?, &branch, &root, req.resolved, &actor)?;
-        Ok::<_, String>(BranchMutation::done(None))
+        Ok::<_, Refusal>(BranchMutation::done(None))
     })
     .await;
-    Json(answered.unwrap_or_else(Envelope::failed_one))
+    answered.unwrap_or_else(Envelope::refused)
 }
 
 // -- POST /api/branches/:name/reviews -----------------------------------
@@ -873,11 +842,12 @@ pub async fn deploy_change(
 
 /// The tip `branch` is at, once `access` is judged to hold deployer in all of the change it carries there: what a
 /// deploy then squashes, and nothing a save lands meanwhile.
-fn judged_tip(access: &Access, data_dir: &Path, branch: &str) -> Result<String, Stop> {
+fn judged_tip(access: &Access, data_dir: &Path, branch: &str) -> Result<String, Refusal> {
     seen(access, data_dir, branch)?;
     let repo = repo_at(data_dir)?;
     // `seen` found it, so a branch gone by here went in between, and answers as it would have then.
-    let tip = git::branch_tip(&repo, branch).ok_or_else(|| format!("there is no branch {branch:?}"))?;
+    let tip =
+        git::branch_tip(&repo, branch).ok_or_else(|| Refusal::not_found(format!("there is no branch {branch:?}")))?;
     let changed = git::changed_files_at(&repo, &tip)?;
     match lacking_in(access, &changed, Level::Deployer) {
         Some(why) => Err(forbidden(&why)),
@@ -924,16 +894,15 @@ fn brought_current(
 ) -> Envelope<BranchMutation> {
     match git::bring_current(data_dir, branch, actor, choices) {
         Ok(git::BringCurrent::Done(brought)) => BranchMutation::done_with(brought.commit, brought.does_not_load),
-        // Not `ok`, and the conflicts are the whole answer: there is no message to put beside them.
-        Ok(git::BringCurrent::Conflicts(conflicts)) => Envelope {
-            ok: false,
-            errors: vec![],
-            body: BranchMutation {
+        // The conflicts are the whole answer: there is no message to put beside them.
+        Ok(git::BringCurrent::Conflicts(conflicts)) => {
+            let body = BranchMutation {
                 conflicts: Some(conflicts),
                 ..Default::default()
-            },
-        },
-        Err(e) => Envelope::failed_one(e.to_string()),
+            };
+            Envelope::with(body, StatusCode::CONFLICT, vec![])
+        }
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -997,7 +966,7 @@ pub struct HeldOut {
 }
 
 /// `main`'s history, newest first, with the commit the fleet runs and the hold it is under, if any.
-pub async fn history(Extension(access): Extension<Access>, Query(q): Query<HistoryQuery>) -> Json<Envelope<History>> {
+pub async fn history(Extension(access): Extension<Access>, Query(q): Query<HistoryQuery>) -> Envelope<History> {
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
     let answered = blocking(move || {
         let repo = repo()?;
@@ -1010,7 +979,7 @@ pub async fn history(Extension(access): Extension<Access>, Query(q): Query<Histo
             since: h.since,
             rolled_back: h.rolled_back,
         });
-        Ok::<_, String>(History {
+        Ok::<_, Refusal>(History {
             deployed: git::deployed(&repo),
             held,
             commits: commits
@@ -1030,7 +999,7 @@ pub async fn history(Extension(access): Extension<Access>, Query(q): Query<Histo
         })
     })
     .await;
-    Json(answered.into())
+    answered.into()
 }
 
 /// The newest `limit` commits on `main` that `access` sees all of, however far back they are.
@@ -1080,7 +1049,7 @@ pub async fn deploy_commit(
 /// What `access` lacks to deploy `commit` of `main`'s history, as a refusal's sentence. Moving the fleet to
 /// another commit moves every group at once, whatever that commit changed, so it needs deployer in shared and in
 /// every group on `main` or at `commit`: a group only `commit` has is one it starts again.
-fn lacking_for_fleet(access: &Access, data_dir: &Path, commit: &str) -> Result<Option<String>, String> {
+fn lacking_for_fleet(access: &Access, data_dir: &Path, commit: &str) -> Result<Option<String>, Refusal> {
     if access.is_administrator() {
         return Ok(None);
     }
@@ -1112,6 +1081,7 @@ fn would_not_load(commit: &str, broken: Vec<(String, String)>) -> Envelope<Branc
                 .collect(),
             ..Default::default()
         },
+        StatusCode::CONFLICT,
         vec![message.into()],
     )
 }
@@ -1120,12 +1090,12 @@ fn would_not_load(commit: &str, broken: Vec<(String, String)>) -> Envelope<Branc
 
 /// What landed between two commits. A save refused because the branch moved names both of them, and this is what
 /// the writer holding the only copy of their change reads before deciding which of the two to keep.
-pub async fn commit_diff(Extension(access): Extension<Access>, Query(q): Query<RangeQuery>) -> Json<Envelope<Diff>> {
+pub async fn commit_diff(Extension(access): Extension<Access>, Query(q): Query<RangeQuery>) -> Envelope<Diff> {
     let answered = blocking(move || {
         let repo = repo()?;
         let files = git::changed_between(&repo, &q.from, &q.to)?;
         if !sees_all(&access, files.iter().map(|f| f.path.as_str())) {
-            return Err("this range touches an area you cannot see".to_string());
+            return Err(forbidden("this range touches an area you cannot see"));
         }
         let diff = git::diff_between(&repo, &q.from, &q.to, q.path.as_deref())?;
         Ok(Diff {
@@ -1142,7 +1112,7 @@ pub async fn commit_diff(Extension(access): Extension<Access>, Query(q): Query<R
         })
     })
     .await;
-    Json(answered.into())
+    answered.into()
 }
 
 #[cfg(test)]
@@ -1150,7 +1120,7 @@ mod tests {
     use super::*;
 
     /// The status a stopped mutation answers with.
-    fn status_of<T>(stopped: Result<T, Stop>) -> StatusCode {
+    fn status_of<T>(stopped: Result<T, Refusal>) -> StatusCode {
         answered(stopped.map(|_| BranchMutation::done(None))).status()
     }
 
@@ -1227,7 +1197,11 @@ mod tests {
         let main = git::main_head(&repo);
 
         let response = brought_current(&data, "work", &Actor::system(), None);
-        assert!(response.ok && response.warning.is_none(), "{:?}", response.errors);
+        assert!(
+            response.succeeded() && response.warning.is_none(),
+            "{:?}",
+            response.errors
+        );
         assert_eq!(git::main_head(&repo), main, "main moves only on deploy");
         assert_eq!(
             tree::load_group_at(&repo, "work", "west")
@@ -1264,7 +1238,7 @@ mod tests {
         let repo = repo_at(&data).unwrap();
 
         let response = brought_current(&data, "work", &Actor::system(), None);
-        assert!(!response.ok && response.errors.is_empty());
+        assert!(!response.succeeded() && response.errors.is_empty());
         let conflicts = response.body.conflicts.expect("the conflicts");
         assert_eq!(git::branch_tip(&repo, "work"), Some(work), "nothing was written");
 
@@ -1275,7 +1249,7 @@ mod tests {
         });
         let choices: git::Choices = serde_json::from_value(body).unwrap();
         let response = brought_current(&data, "work", &Actor::system(), Some(&choices));
-        assert!(response.ok, "{:?}", response.errors);
+        assert!(response.succeeded(), "{:?}", response.errors);
         assert_eq!(git::ahead_behind(&repo, "work").unwrap().1, 0);
     }
 
@@ -1617,17 +1591,20 @@ mod tests {
 
         let west_only = holding(&[("west", Level::Editor)]);
         let hidden = refused_to_change(&west_only, &data, "work", Level::Editor);
-        assert_eq!(status_of(hidden), StatusCode::OK);
+        assert_eq!(status_of(hidden), StatusCode::NOT_FOUND);
         let missing = refused_to_change(&Access::Administrator, &data, "gone", Level::Editor);
-        assert_eq!(status_of(missing), StatusCode::OK);
+        assert_eq!(status_of(missing), StatusCode::NOT_FOUND);
         assert_eq!(
             seen(&west_only, &data, "work").unwrap_err(),
-            "there is no branch \"work\""
+            Refusal::not_found("there is no branch \"work\"")
         );
-        assert_eq!(seen(&editor, &data, "gone").unwrap_err(), "there is no branch \"gone\"");
+        assert_eq!(
+            seen(&editor, &data, "gone").unwrap_err(),
+            Refusal::not_found("there is no branch \"gone\"")
+        );
         assert_eq!(
             git::delete_branch(&data, "gone", None).unwrap_err().to_string(),
-            seen(&editor, &data, "gone").unwrap_err(),
+            seen(&editor, &data, "gone").unwrap_err().message(),
             "a missing branch reads the same at every step"
         );
     }

@@ -134,8 +134,8 @@ document's systems.
 
 ### API
 
-The API's contract (`api.md`) is ahead of its routes. Not built: one answer shape, with every failure at a 4xx or 5xx
-status, `Cache-Control: no-store`, the gate's need in the same row as the agent catalog's entry, integration accounts.
+The API's contract (`api.md`) is ahead of its routes. Not built: `/api/worker/enroll` answering the envelope at its
+status, the gate's need in the same row as the agent catalog's entry, integration accounts.
 
 ### Control plane
 

@@ -317,13 +317,16 @@ describe('DemoLeader', () => {
           status: 413,
         }),
     );
-    expect(await propose()).toMatchObject({ status: 413, body: { error: 'too big' } });
+    expect(await propose()).toMatchObject({
+      status: 413,
+      body: { ok: false, errors: [{ message: 'too big' }] },
+    });
     vi.stubGlobal('fetch', async () => {
       throw new TypeError('Failed to fetch');
     });
     expect(await propose()).toMatchObject({
       status: 502,
-      body: { error: 'TypeError: Failed to fetch' },
+      body: { ok: false, errors: [{ message: 'TypeError: Failed to fetch' }] },
     });
   });
   it('refuses a shared save that breaks a group running it, naming the group', async () => {

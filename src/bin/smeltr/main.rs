@@ -34,30 +34,22 @@ mod users_api;
 mod worker_groups_api;
 
 use smeltr::config_file;
-use smeltr::leader::blocking;
-use smeltr::leader::envelope::{ApiError, Envelope};
+use smeltr::leader::envelope::{ApiError, Envelope, Refusal};
 use smeltr::leader::preview::{
     FormatRequest, Formatted, GrokCaptures, GrokCapturesRequest, LineBreakerRequest, Preview, PreviewRequest,
     RoutePreview, RoutePreviewRequest, captures_of, format_code, line_breaker_verdict, run_preview, run_route_preview,
     single_origin_declared_at,
 };
 use smeltr::leader::sessions;
+use smeltr::leader::{blocking, blocking_answer};
 
 async fn route_preview(
     axum::extract::Path(area): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
     Json(req): Json<RoutePreviewRequest>,
-) -> Json<Envelope<RoutePreview>> {
+) -> Envelope<RoutePreview> {
     let branch = q.name().to_string();
-    let read = move || {
-        Ok::<_, String>(route_preview_on(
-            &smeltr::startup_config::leader_data_dir(),
-            &branch,
-            &area,
-            req,
-        ))
-    };
-    Json(blocking(read).await.unwrap_or_else(Envelope::failed_one))
+    blocking_answer(move || route_preview_on(&smeltr::startup_config::leader_data_dir(), &branch, &area, req)).await
 }
 
 /// The route preview of `req.config` on `branch`, its sample read from that branch. A group's routes run with
@@ -72,7 +64,7 @@ fn route_preview_on(
 ) -> Envelope<RoutePreview> {
     let reading = match config_api::Reading::open_in(data_dir, branch, scope) {
         Ok(reading) => reading,
-        Err(e) => return Envelope::failed_one(e),
+        Err(e) => return Envelope::refused(e),
     };
     match config_file::read_sample(&mut reading.files(), &req.sample) {
         Ok(Some(sample)) => {
@@ -89,8 +81,11 @@ fn route_preview_on(
                 }
             }
         }
-        Ok(None) => Envelope::failed_one(format!("there is no sample {:?} on this branch", req.sample)),
-        Err(e) => Envelope::failed_one(e.to_string()),
+        Ok(None) => Envelope::refused(Refusal::not_found(format!(
+            "there is no sample {:?} on this branch",
+            req.sample
+        ))),
+        Err(e) => Envelope::refused(Refusal::internal(e.to_string())),
     }
 }
 
@@ -108,7 +103,7 @@ async fn get_map(
     axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
     axum::Extension(access): axum::Extension<smeltr::leader::access::Access>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
-) -> Json<Envelope<smeltr::leader::map::Map>> {
+) -> Envelope<smeltr::leader::map::Map> {
     let branch = q.name().to_string();
     let read = move || -> Result<
         (
@@ -117,7 +112,7 @@ async fn get_map(
             Vec<smeltr::leader::map::GroupBundle>,
             String,
         ),
-        String,
+        Refusal,
     > {
         let shared = config_api::Reading::open(&branch, config_file::SHARED_DIR)?;
         let groups = group_bundles(&shared, visible_groups(&shared, &access)?)?;
@@ -125,16 +120,16 @@ async fn get_map(
     };
     let (shared_raw, shared_at, groups, commit) = match blocking(read).await {
         Ok(read) => read,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(e),
     };
     let warnings = match smeltr::leader::warnings_snapshot(&state).await {
         Ok(w) => w,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(e),
     };
     // Compiling is the expensive part -- `run_route_preview` above pays the same cost the same way -- so it runs
     // off the async executor too.
     let build = move || {
-        Ok::<_, String>(smeltr::leader::map::build(
+        Ok::<_, Refusal>(smeltr::leader::map::build(
             shared_raw,
             &shared_at,
             groups,
@@ -142,15 +137,13 @@ async fn get_map(
             state.registry.series(),
         ))
     };
-    Json(
-        blocking(build)
-            .await
-            .map(|map| smeltr::leader::map::Map {
-                commit: Some(commit),
-                ..map
-            })
-            .into(),
-    )
+    blocking(build)
+        .await
+        .map(|map| smeltr::leader::map::Map {
+            commit: Some(commit),
+            ..map
+        })
+        .into()
 }
 
 // -- map measurements ---------------------------------------------------------
@@ -163,12 +156,12 @@ async fn get_map_measurements(
     axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
     axum::Extension(access): axum::Extension<smeltr::leader::access::Access>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
-) -> Json<Envelope<smeltr::leader::measurements::Measurements>> {
+) -> Envelope<smeltr::leader::measurements::Measurements> {
     use smeltr::leader::measurements::Measurements;
     let branch = q.name().to_string();
     let warnings = match smeltr::leader::warnings_snapshot(&state).await {
         Ok(w) => w,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(e),
     };
     let readings = smeltr::leader::throughput::readings(
         &state,
@@ -177,7 +170,7 @@ async fn get_map_measurements(
         true,
     )
     .await;
-    let answer = move || -> Result<Measurements, String> {
+    let answer = move || -> Result<Measurements, Refusal> {
         let commit = config_api::Reading::open(&branch, config_file::SHARED_DIR)?.commit;
         let held = state.store.held_sources().unwrap_or_else(|e| {
             tracing::warn!(
@@ -217,7 +210,7 @@ async fn get_map_measurements(
             .visible_to(&access)
         })
     };
-    Json(blocking(answer).await.into())
+    blocking(answer).await.into()
 }
 
 // -- object stats ------------------------------------------------------------
@@ -246,7 +239,7 @@ async fn get_stats(
     axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
     axum::extract::Path(group): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<StatsQuery>,
-) -> Json<Envelope<smeltr::leader::stats::Stats>> {
+) -> Envelope<smeltr::leader::stats::Stats> {
     let branch = q.branch.name().to_string();
     let (kind, id) = (q.kind, q.id.clone());
     let window =
@@ -257,10 +250,11 @@ async fn get_stats(
     // touching the registry back on the executor.
     let answer = {
         let (group, id) = (group.clone(), id.clone());
-        move || -> Result<Envelope<smeltr::leader::stats::Stats>, String> {
+        move || -> Result<Envelope<smeltr::leader::stats::Stats>, Refusal> {
             let loaded = config_api::Reading::open(&branch, &group).and_then(|reading| {
                 let repo = smeltr::leader::git::repo_path(&smeltr::startup_config::leader_data_dir());
-                smeltr::leader::tree::load_group_at(&repo, &reading.commit, &group).map_err(|e| e.to_string())
+                smeltr::leader::tree::load_group_at(&repo, &reading.commit, &group)
+                    .map_err(|e| Refusal::internal(e.to_string()))
             });
             Ok(match loaded {
                 Err(e) => smeltr::leader::stats::Stats::failed(&group, kind, &id, e),
@@ -281,7 +275,7 @@ async fn get_stats(
         }
     };
     let answered = blocking(answer).await;
-    Json(answered.unwrap_or_else(|e| smeltr::leader::stats::Stats::failed(&group, kind, &id, e)))
+    answered.unwrap_or_else(|e| smeltr::leader::stats::Stats::failed(&group, kind, &id, e))
 }
 
 /// Every group `shared`'s branch holds that `access` may see, by the same enumerator `worker_groups_api` lists them
@@ -289,9 +283,9 @@ async fn get_stats(
 fn visible_groups(
     shared: &config_api::Reading,
     access: &smeltr::leader::access::Access,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, Refusal> {
     let repo = smeltr::leader::git::repo_path(&smeltr::startup_config::leader_data_dir());
-    let all = smeltr::leader::tree::groups_at(&repo, &shared.commit).map_err(|e| e.to_string())?;
+    let all = smeltr::leader::tree::groups_at(&repo, &shared.commit).map_err(|e| Refusal::internal(e.to_string()))?;
     Ok(smeltr::leader::map::visible_groups(all, access))
 }
 
@@ -299,7 +293,7 @@ fn visible_groups(
 fn group_bundles(
     shared: &config_api::Reading,
     ids: Vec<String>,
-) -> Result<Vec<smeltr::leader::map::GroupBundle>, String> {
+) -> Result<Vec<smeltr::leader::map::GroupBundle>, Refusal> {
     ids.into_iter()
         .map(|id| {
             let reading = shared.sibling(&id)?;
@@ -335,15 +329,15 @@ async fn get_connections(
     axum::Extension(access): axum::Extension<smeltr::leader::access::Access>,
     axum::extract::Path((area, section, id)): axum::extract::Path<(String, String, String)>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
-) -> Json<Envelope<smeltr::leader::connections::ObjectConnections>> {
+) -> Envelope<smeltr::leader::connections::ObjectConnections> {
     let Some(kind) = kind_of_section(&section) else {
-        return Json(Envelope::failed_one(format!(
+        return Envelope::refused(Refusal::not_found(format!(
             "an area holds no section {section:?}; sections are sources, routes, pipelines, destinations, lookups, \
              grok-patterns"
         )));
     };
     let branch = q.name().to_string();
-    let read = move || -> Result<_, String> {
+    let read = move || -> Result<_, Refusal> {
         let shared = config_api::Reading::open(&branch, config_file::SHARED_DIR)?;
         // A group's own object runs in that group alone; one `shared/` declares, in every group the caller may see.
         let groups = if area == config_file::SHARED_DIR {
@@ -355,7 +349,7 @@ async fn get_connections(
         let object = config_file::Object::new(kind, &id);
         Ok(smeltr::leader::connections::of(&shared.raw(), &groups, &object))
     };
-    Json(blocking(read).await.into())
+    blocking(read).await.into()
 }
 
 // -- pipeline callers -------------------------------------------------------
@@ -374,10 +368,13 @@ struct PipelineCallers {
 async fn pipeline_callers(
     axum::extract::Path(area): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
-) -> Json<Envelope<PipelineCallers>> {
+) -> Envelope<PipelineCallers> {
     let branch = q.name().to_string();
-    let read = move || Ok::<_, String>(run_pipeline_callers(config_api::Reading::open(&branch, &area)?.raw()));
-    Json(blocking(read).await.unwrap_or_else(Envelope::failed_one))
+    blocking_answer(move || match config_api::Reading::open(&branch, &area) {
+        Ok(reading) => run_pipeline_callers(reading.raw()),
+        Err(e) => Envelope::refused(e),
+    })
+    .await
 }
 
 fn run_pipeline_callers(raw: config_file::RawBundle) -> Envelope<PipelineCallers> {
@@ -391,7 +388,11 @@ fn run_pipeline_callers(raw: config_file::RawBundle) -> Envelope<PipelineCallers
         .into_iter()
         .map(|(called, by)| (called, by.into_iter().collect()))
         .collect();
-    Envelope::with(PipelineCallers { callers }, errors)
+    Envelope::with(
+        PipelineCallers { callers },
+        config_api::read_status(&raw.unreadable),
+        errors,
+    )
 }
 
 /// The captures of a grok pattern, with no sample and no pipeline.
@@ -399,8 +400,8 @@ fn run_pipeline_callers(raw: config_file::RawBundle) -> Envelope<PipelineCallers
 /// Deliberately not part of an area's `preview/pipeline`: that needs a chosen sample and answers nothing once
 /// compilation fails, and both are exactly when an editor most needs the names -- a step whose pattern just gained a
 /// capture nothing declares does not compile, and it is this list that says what to declare.
-async fn grok_captures(Json(req): Json<GrokCapturesRequest>) -> Json<Envelope<GrokCaptures>> {
-    Json(captures_of(req))
+async fn grok_captures(Json(req): Json<GrokCapturesRequest>) -> Envelope<GrokCaptures> {
+    captures_of(req)
 }
 
 /// The records of a captured sample, for `/api/preview/onboard`.
@@ -415,40 +416,28 @@ pub struct OnboardRequest {
 
 /// What a captured sample reads as, and the first steps and route condition a pipeline for it would start from
 /// (`leader::onboard`). The records are the caller's own, so nothing here reads a branch.
-async fn onboard_propose(Json(req): Json<OnboardRequest>) -> Json<smeltr::leader::onboard::Proposal> {
-    Json(smeltr::leader::onboard::propose(&req.records, req.filed.as_deref()))
+async fn onboard_propose(Json(req): Json<OnboardRequest>) -> Envelope<smeltr::leader::onboard::Proposal> {
+    Envelope::ok(smeltr::leader::onboard::propose(&req.records, req.filed.as_deref()))
 }
 
 /// Pipeline code laid out in the style, asked when the editor leaves a code field.
-async fn format(Json(req): Json<FormatRequest>) -> Json<Envelope<Formatted>> {
-    Json(format_code(req))
+async fn format(Json(req): Json<FormatRequest>) -> Envelope<Formatted> {
+    format_code(req)
 }
 
 /// Whether a save would take a line breaker, asked as it is typed: the save's own check, with no bundle around it.
-async fn line_breaker(Json(req): Json<LineBreakerRequest>) -> Json<Envelope> {
-    Json(line_breaker_verdict(req))
+async fn line_breaker(Json(req): Json<LineBreakerRequest>) -> Envelope {
+    line_breaker_verdict(req)
 }
 
 async fn preview(
     axum::extract::Path(area): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
     Json(req): Json<PreviewRequest>,
-) -> Json<Envelope<Preview>> {
+) -> Envelope<Preview> {
     // Reading the branch spawns git, so it goes off the async executor.
     let branch = q.name().to_string();
-    let read = move || {
-        Ok::<_, String>(preview_on(
-            &smeltr::startup_config::leader_data_dir(),
-            &branch,
-            &area,
-            req,
-        ))
-    };
-    Json(
-        blocking(read)
-            .await
-            .unwrap_or_else(|e| Preview::failed("load", vec![ApiError::new(e)], vec![])),
-    )
+    blocking_answer(move || preview_on(&smeltr::startup_config::leader_data_dir(), &branch, &area, req)).await
 }
 
 /// A preview of what the editor is looking at on `branch`: its sample and any lookup path in it resolve the same way
@@ -458,7 +447,7 @@ async fn preview(
 fn preview_on(data_dir: &std::path::Path, branch: &str, scope: &str, mut req: PreviewRequest) -> Envelope<Preview> {
     let reading = match config_api::Reading::open_in(data_dir, branch, scope) {
         Ok(reading) => reading,
-        Err(e) => return Preview::failed("load", vec![ApiError::new(e)], vec![]),
+        Err(e) => return Envelope::refused(e),
     };
     let sample = match &req.sample {
         None => Ok((Vec::new(), Vec::new())),
@@ -555,24 +544,24 @@ async fn upload_lookup(
     axum::extract::Query(upload): axum::extract::Query<UploadQuery>,
     headers: axum::http::HeaderMap,
     mut multipart: Multipart,
-) -> Json<Envelope<Upload>> {
+) -> Envelope<Upload> {
     let branch = q.name().to_string();
     let base = config_api::base_commit(&headers);
     let delimiter = match config_file::to_byte(upload.delimiter.as_deref().unwrap_or(","), "delimiter") {
         Ok(delimiter) => delimiter,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(Refusal::invalid(e)),
     };
     // Opened before anything is stored: the store sits inside the repository, which a first save creates.
     let writing = match blocking(move || config_api::Writing::open(&branch, base.as_deref(), &area)).await {
         Ok(writing) => writing,
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Err(e) => return Envelope::refused(e),
     };
     let mut upload: Option<(String, smeltr::lookup::store::Incoming)> = None;
     loop {
         let mut field = match multipart.next_field().await {
             Ok(Some(f)) => f,
             Ok(None) => break,
-            Err(e) => return Json(Envelope::failed_one(format!("malformed upload: {e}"))),
+            Err(e) => return Envelope::refused(Refusal::bad_request(format!("malformed upload: {e}"))),
         };
         let (Some("file"), Some(filename)) = (field.name(), field.file_name().map(str::to_string)) else {
             continue;
@@ -580,32 +569,31 @@ async fn upload_lookup(
         // Streamed into the store as it arrives: a lookup file can be gigabytes, and this process holds a chunk.
         let mut incoming = match smeltr::lookup::store::Incoming::new(writing.repo()) {
             Ok(incoming) => incoming,
-            Err(e) => return Json(Envelope::failed_one(format!("couldn't store the upload: {e}"))),
+            Err(e) => return Envelope::refused(Refusal::internal(format!("couldn't store the upload: {e}"))),
         };
         loop {
             match field.chunk().await {
                 Ok(Some(chunk)) => {
                     if let Err(e) = tokio::task::block_in_place(|| std::io::Write::write_all(&mut incoming, &chunk)) {
-                        return Json(Envelope::failed_one(format!("couldn't store the upload: {e}")));
+                        return Envelope::refused(Refusal::internal(format!("couldn't store the upload: {e}")));
                     }
                 }
                 Ok(None) => break,
-                Err(e) => return Json(Envelope::failed_one(format!("couldn't read upload: {e}"))),
+                Err(e) => return Envelope::refused(Refusal::bad_request(format!("couldn't read upload: {e}"))),
             }
         }
         upload = Some((filename, incoming));
     }
     let Some((filename, incoming)) = upload else {
-        return Json(Envelope::failed_one("no `file` field in this upload"));
+        return Envelope::refused(Refusal::bad_request("no `file` field in this upload"));
     };
 
     // A lookup file is configuration the pipeline's behavior depends on, so its pointer belongs in the tree with the
     // config that names it: a rollback restores the table the previous deploy ran with, and the change is in the
     // review. Which makes it a save like any other -- one commit, refused if the branch has moved.
-    let saved =
-        blocking(move || Ok::<_, String>(save_lookup_file(&writing, &filename, incoming, delimiter, &actor))).await;
+    let saved = blocking_answer(move || save_lookup_file(&writing, &filename, incoming, delimiter, &actor)).await;
     smeltr::leader::prune_lookups(&state).await;
-    Json(saved.unwrap_or_else(Envelope::failed_one))
+    saved
 }
 
 /// Name an upload in the store and commit its pointer into the lookup directory `writing` names. A CSV's headers are
@@ -626,7 +614,7 @@ fn save_lookup_file(
         config_api::Naming::ByContent,
     ) {
         Ok(stored) => stored,
-        Err(e) => return Envelope::failed_one(e),
+        Err(e) => return Envelope::refused(e),
     };
     match writing.commit(
         vec![stored.edit],
@@ -638,7 +626,11 @@ fn save_lookup_file(
             headers: stored.headers,
             commit: Some(commit),
         }),
-        Err(e) => Envelope::failed_one(format!("could not commit the upload: {e}")),
+        Err(e) => {
+            let refusal = Refusal::from(e);
+            let message = format!("could not commit the upload: {}", refusal.message());
+            Envelope::refused(Refusal::new(refusal.status, message))
+        }
     }
 }
 
@@ -1964,7 +1956,7 @@ async fn run_leader() {
         Err(e) => tracing::warn!(
             target: "leader.main_unreadable",
             subject = smeltr::leader::git::MAIN_BRANCH,
-            error = %e,
+            error = %e.message(),
             "could not read the branch the fleet runs, so nothing was validated at startup"
         ),
     }
@@ -2162,6 +2154,8 @@ async fn run_leader() {
         // returns `index.html` with a `200`, and a caller parses a login page as its data.
         .route("/api/*rest", axum::routing::any(unknown_api))
         .fallback(assets::serve)
+        .layer(axum::middleware::from_fn(gate::shape))
+        .layer(axum::middleware::from_fn(gate::uncached))
         // Outermost, so every answer carries the browser hardening headers, the assets and the fallback included.
         .layer(axum::middleware::from_fn(gate::harden));
     // What an agent's calls go through: this router, gate and all.
@@ -2453,7 +2447,7 @@ mod tests {
             records,
         );
         assert!(
-            previewed.ok,
+            previewed.succeeded(),
             "{:?}",
             previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -2491,7 +2485,7 @@ mod tests {
             serde_json::from_value(serde_json::json!([{"n": 2}, {"n": 1}])).unwrap(),
         );
         assert!(
-            previewed.ok,
+            previewed.succeeded(),
             "{:?}",
             previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -2530,7 +2524,7 @@ mod tests {
             serde_json::from_value(serde_json::json!([{"n": 2}])).unwrap(),
         );
         assert!(
-            previewed.ok,
+            previewed.succeeded(),
             "{:?}",
             previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -2621,7 +2615,7 @@ mod tests {
     fn a_preview_filter_keeps_the_rows_it_is_true_for() {
         let records = r#"[{"_raw":"a"},{"_raw":"b"},{"_raw":"c"}]"#;
         let previewed = filtered(r#"x = _raw; if (_raw == "a") { y = 1; }"#, records, r#"x != "b""#);
-        assert!(previewed.ok, "{:?}", previewed.errors);
+        assert!(previewed.succeeded(), "{:?}", previewed.errors);
         let kept: Vec<u32> = previewed.rows.iter().map(|r| r.row).collect();
         assert_eq!(kept, [0, 2]);
         assert_eq!(previewed.unfiltered, Some(3));
@@ -2634,7 +2628,7 @@ mod tests {
     fn a_preview_filter_reads_the_exception_tag() {
         let records = r#"[{"_raw":"1"},{"_raw":"x"}]"#;
         let previewed = filtered("n: i64 = _raw as i64;", records, "smeltr.exception != null");
-        assert!(previewed.ok, "{:?}", previewed.errors);
+        assert!(previewed.succeeded(), "{:?}", previewed.errors);
         let kept: Vec<u32> = previewed.rows.iter().map(|r| r.row).collect();
         assert_eq!(kept, [1]);
     }
@@ -2644,7 +2638,7 @@ mod tests {
     fn a_preview_filter_that_does_not_compile_fails_at_its_own_stage() {
         for filter in ["x ==", "x"] {
             let previewed = filtered("x = _raw;", r#"[{"_raw":"a"}]"#, filter);
-            assert!(!previewed.ok, "{filter}");
+            assert!(!previewed.succeeded(), "{filter}");
             assert_eq!(previewed.stage, Some("filter"), "{filter}: {:?}", previewed.errors);
         }
     }
@@ -2672,7 +2666,7 @@ mod tests {
             serde_json::from_str(r#"[{"_raw":"{}"}]"#).unwrap(),
         );
         assert!(
-            previewed.ok,
+            previewed.succeeded(),
             "{:?}",
             previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -2702,7 +2696,7 @@ mod tests {
             "a = __source.name + \"/\" + (__source.headers.trace as str) + \"/\" + toString(__source.offset);",
         );
         assert!(
-            previewed.ok,
+            previewed.succeeded(),
             "{:?}",
             previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -2714,7 +2708,7 @@ mod tests {
     #[test]
     fn a_pasted_record_declares_no_source_fields() {
         let previewed = preview_of(r#"[{"_raw":"{}"}]"#, "a = __source.topic;");
-        assert!(!previewed.ok);
+        assert!(!previewed.succeeded());
         assert!(
             previewed.errors[0].message.contains("__source.topic"),
             "{}",
@@ -2777,7 +2771,7 @@ mod tests {
     #[test]
     fn a_patterns_captures_need_no_records() {
         let r = captures(&["%{WORD:action} %{INT:status}"]);
-        assert!(r.ok);
+        assert!(r.succeeded());
         assert_eq!(r.captures, vec!["action", "status"]);
         assert!(r.errors.is_empty());
     }
@@ -2837,7 +2831,7 @@ mod tests {
     #[test]
     fn a_pattern_that_does_not_compile_says_so() {
         let r = captures(&["%{NOT_A_PATTERN:x}"]);
-        assert!(!r.ok);
+        assert!(!r.succeeded());
         assert!(r.captures.is_empty());
         assert!(r.errors[0].message.contains("NOT_A_PATTERN"), "names the pattern");
     }
@@ -3067,7 +3061,7 @@ mod tests {
         );
 
         assert!(
-            response.ok,
+            response.succeeded(),
             "{:?}",
             response.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -3100,7 +3094,7 @@ mod tests {
                 capture_filter: None,
             },
         );
-        assert!(!response.ok, "{} rows", response.rows.len());
+        assert!(!response.succeeded(), "{} rows", response.rows.len());
         std::fs::remove_dir_all(&data).ok();
     }
 
@@ -3145,7 +3139,7 @@ mod tests {
         );
 
         assert!(
-            response.ok,
+            response.succeeded(),
             "{:?}",
             response.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -3512,7 +3506,7 @@ mod tests {
         let response = super::run_route_preview(config, sample, declared_at, None);
 
         assert!(
-            response.ok,
+            response.succeeded(),
             "{:?}",
             response.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -3561,7 +3555,7 @@ mod tests {
 
         let response = super::run_pipeline_callers(raw);
 
-        assert!(response.ok, "{:?}", response.errors);
+        assert!(response.succeeded(), "{:?}", response.errors);
         assert_eq!(
             response.callers.get("enrich-geo"),
             Some(&vec!["audit".to_string(), "clicks".to_string(), "orders".to_string()])

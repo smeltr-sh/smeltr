@@ -10,15 +10,15 @@ use std::time::Duration;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 
+use smeltr::leader::envelope::Envelope;
 use smeltr::leader::store::Actor;
 use smeltr::leader::{accounts, acme, acme_dns, blocking, tls};
 
 use crate::certificates_api::{self, Tls};
 use crate::gate::{Auth, refuse};
-use crate::users_api::no_store;
 
 #[derive(Clone)]
 pub struct Acme {
@@ -100,7 +100,7 @@ async fn read(state: &Acme) -> Result<AcmeDto, String> {
 
 async fn answer(state: &Acme) -> Response {
     match read(state).await {
-        Ok(dto) => no_store(dto),
+        Ok(dto) => Envelope::ok(dto).into_response(),
         Err(e) => refuse(StatusCode::SERVICE_UNAVAILABLE, &e),
     }
 }
@@ -161,48 +161,51 @@ async fn put_settings(
         .any(|text| text.len() > MOST_TEXT)
     {
         return refuse(
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNPROCESSABLE_ENTITY,
             &format!("a directory URL, contact, name or key id is at most {MOST_TEXT} bytes"),
         );
     }
     if authority.len() > MOST_AUTHORITY {
         return refuse(
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNPROCESSABLE_ENTITY,
             &format!("the authority is at most {} KiB", MOST_AUTHORITY / 1024),
         );
     }
     if request.eab_hmac.as_ref().is_some_and(|k| k.len() > MOST_TEXT) {
-        return refuse(StatusCode::BAD_REQUEST, "an external account key is at most 1024 bytes");
+        return refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "an external account key is at most 1024 bytes",
+        );
     }
     if request.cloudflare_token.as_ref().is_some_and(|k| k.len() > MOST_TEXT) {
-        return refuse(StatusCode::BAD_REQUEST, "an API token is at most 1024 bytes");
+        return refuse(StatusCode::UNPROCESSABLE_ENTITY, "an API token is at most 1024 bytes");
     }
     if request.challenge == acme::Challenge::Dns01
         && let Some(ip) = names.iter().find(|name| name.parse::<std::net::IpAddr>().is_ok())
     {
         return refuse(
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNPROCESSABLE_ENTITY,
             &format!("DNS-01 cannot prove an IP address: {ip}"),
         );
     }
     if !directory.is_empty() && !directory.starts_with("https://") {
-        return refuse(StatusCode::BAD_REQUEST, "the directory is an https:// URL");
+        return refuse(StatusCode::UNPROCESSABLE_ENTITY, "the directory is an https:// URL");
     }
     if names
         .iter()
         .any(|name| name.contains(',') || name.contains(char::is_whitespace))
     {
-        return refuse(StatusCode::BAD_REQUEST, "a name carries no comma or space");
+        return refuse(StatusCode::UNPROCESSABLE_ENTITY, "a name carries no comma or space");
     }
     if request.enabled
         && let Err(e) = acme::orderable(&directory, &names)
     {
-        return refuse(StatusCode::BAD_REQUEST, &e);
+        return refuse(StatusCode::UNPROCESSABLE_ENTITY, &e);
     }
     if !authority.is_empty()
         && let Err(e) = tls::describe_each(authority.as_bytes(), "the authority")
     {
-        return refuse(StatusCode::BAD_REQUEST, &e);
+        return refuse(StatusCode::UNPROCESSABLE_ENTITY, &e);
     }
 
     let _ordered = state.auth.settings_writes.lock().await;
@@ -227,7 +230,10 @@ async fn put_settings(
         && dns_provider == acme_dns::Kind::Cloudflare
         && !token_held
     {
-        return refuse(StatusCode::BAD_REQUEST, "DNS-01 through Cloudflare needs an API token");
+        return refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "DNS-01 through Cloudflare needs an API token",
+        );
     }
     let changed: Vec<&str> = [
         (request.enabled && !was.enabled, "turned on"),
@@ -304,12 +310,12 @@ async fn order(State(state): State<Acme>, actor: axum::Extension<Actor>, headers
         return refuse(StatusCode::CONFLICT, "ACME is turned off. Turn it on before ordering.");
     }
     if let Err(e) = acme::orderable(&settings.directory, &settings.names) {
-        return refuse(StatusCode::BAD_REQUEST, &e);
+        return refuse(StatusCode::UNPROCESSABLE_ENTITY, &e);
     }
     let required = certificates_api::must_serve(&serving, &headers);
     match run(&state.auth, &serving, &settings, &actor, &required, true).await {
         Ok(()) => certificates_api::answer_in_force(&serving).await,
-        Err(e) => refuse(StatusCode::BAD_REQUEST, &e),
+        Err(e) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
     }
 }
 

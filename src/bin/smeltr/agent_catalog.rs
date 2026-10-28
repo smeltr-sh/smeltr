@@ -282,7 +282,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "DELETE",
         path: "/api/captures/:session",
-        what: "Give up on a capture without saving; answers { ok }. No query.",
+        what: "Give up on a capture without saving. No query.",
         body: "",
     },
     Route {
@@ -411,7 +411,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/warnings",
-        what: "The warning catalog, filtered to what the caller sees. `info=true` adds its info entries: facts that \
+        what: "The warning catalog as `warnings`, filtered to what the caller sees. `info=true` adds its info entries: facts that \
                ask nothing of anyone.",
         body: "",
     },
@@ -467,7 +467,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/workers",
-        what: "The worker roster and credentials. No query.",
+        what: "The worker roster and credentials, as `workers`. No query.",
         body: "",
     },
     Route {
@@ -516,7 +516,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/users",
-        what: "Every account with its roles. No query.",
+        what: "Every account with its roles, as `users`. No query.",
         body: "",
     },
     Route {
@@ -540,19 +540,19 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/users/:id/revoke-sessions",
-        what: "End every session an account holds; answers { ok, ended }. No query.",
+        what: "End every session an account holds; answers { ended }. No query.",
         body: "",
     },
     Route {
         method: "GET",
         path: "/api/security-events",
-        what: "Account security events, newest first (up to 500). No query.",
+        what: "Account security events as `events`, newest first (up to 500). No query.",
         body: "",
     },
     Route {
         method: "GET",
         path: "/api/docs",
-        what: "Every page of the user docs with its headings, or with q the sections holding every word of q, each with a snippet. Query: q.",
+        what: "Every page of the user docs with its headings, as `pages`, or with q the sections holding every word of q, each with a snippet, as `hits`. Query: q.",
         body: "",
     },
     Route {
@@ -570,7 +570,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/roles",
-        what: "Every role by name. No query.",
+        what: "Every role by name, as `roles`. No query.",
         body: "",
     },
     Route {
@@ -740,7 +740,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/secrets",
-        what: "Secret names, custody, versions and where each version is deployed; never values. No query.",
+        what: "Secret names, custody, versions and where each version is deployed, as `secrets`; never values. No query.",
         body: "",
     },
     Route {
@@ -795,7 +795,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/certificates",
-        what: "Certificates: name, description, versions, the newest version's chain described, and kept (issued or acme) where this leader renews it; never a key. No query.",
+        what: "Certificates as `certificates`: name, description, versions, the newest version's chain described, and kept (issued or acme) where this leader renews it; never a key. No query.",
         body: "",
     },
     Route {

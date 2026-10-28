@@ -68,6 +68,7 @@ test('a failed deploy opens a popup, which stays in the error bar once dismissed
   await api.openChange('ship-it', 'Add the colors table');
   await admin.route('**/api/branches/ship-it/deploy', (r) =>
     r.fulfill({
+      status: 500,
       json: {
         ok: false,
         errors: [

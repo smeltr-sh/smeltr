@@ -6,6 +6,7 @@
 //! Password verifiers live here too, so this file is the reason `leader.db` needs the filesystem protection the
 //! secrets encryption key already has: a copy of it can be attacked offline.
 
+use super::envelope::ErrorKind;
 use crate::heartbeat::{LedgerEntry, SourceKey};
 use crate::io::Progress;
 
@@ -436,12 +437,42 @@ pub struct ConversationRecord {
     pub updated_at: i64,
 }
 
+/// A store call that did not do what it was asked. `kind` says whether the store failed or refused, which is what
+/// a route answers it at (`envelope::Refusal`).
 #[derive(Debug)]
-pub struct StoreError(pub String);
+pub struct StoreError {
+    pub kind: ErrorKind,
+    pub message: String,
+}
+
+impl StoreError {
+    pub fn failed(message: impl Into<String>) -> Self {
+        StoreError::of(ErrorKind::Failed, message)
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        StoreError::of(ErrorKind::Conflict, message)
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        StoreError::of(ErrorKind::NotFound, message)
+    }
+
+    pub fn invalid(message: impl Into<String>) -> Self {
+        StoreError::of(ErrorKind::Invalid, message)
+    }
+
+    pub fn of(kind: ErrorKind, message: impl Into<String>) -> Self {
+        StoreError {
+            kind,
+            message: message.into(),
+        }
+    }
+}
 
 impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.message)
     }
 }
 
@@ -449,13 +480,13 @@ impl std::error::Error for StoreError {}
 
 impl From<String> for StoreError {
     fn from(message: String) -> Self {
-        StoreError(message)
+        StoreError::failed(message)
     }
 }
 
 impl From<StoreError> for String {
     fn from(e: StoreError) -> String {
-        e.0
+        e.message
     }
 }
 

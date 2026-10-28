@@ -99,7 +99,8 @@ async function show(
       if (init?.method === 'PUT') puts.push(JSON.parse(String(init.body)));
       if (url.startsWith('/api/settings/tls/acme')) return json(acme);
       if (url.startsWith('/api/settings/tls')) return json(certificates);
-      if (url.startsWith('/api/certificates')) return json(LISTED);
+      if (url.startsWith('/api/certificates'))
+        return json({ ok: true, errors: [], certificates: LISTED });
       throw new Error(`unexpected ${url}`);
     }),
   );
@@ -270,7 +271,8 @@ describe('the source', () => {
         }
         if (url.startsWith('/api/settings/tls/acme')) return json(ACME);
         if (url.startsWith('/api/settings/tls')) return json(answered);
-        if (url.startsWith('/api/certificates')) return json(LISTED);
+        if (url.startsWith('/api/certificates'))
+          return json({ ok: true, errors: [], certificates: LISTED });
         throw new Error(`unexpected ${url}`);
       }),
     );

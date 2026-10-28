@@ -254,8 +254,14 @@ fn enroll_worker(base: &str, worker_id: &str) -> String {
     r.token.expect("ok implies a token")
 }
 
+/// An agent that reads the answer at any status: a refusal carries its errors in the body, as a success does.
+fn lenient() -> ureq::Agent {
+    ureq::Agent::config_builder().http_status_as_error(false).build().into()
+}
+
 fn revoke_worker(base: &str, worker_id: &str) -> MutationResult {
-    ureq::post(format!("{base}/api/workers/{worker_id}/revoke"))
+    lenient()
+        .post(format!("{base}/api/workers/{worker_id}/revoke"))
         .send_json(serde_json::json!({}))
         .expect("request succeeds")
         .body_mut()
@@ -859,7 +865,8 @@ fn enrolling_an_existing_worker_id_is_refused_and_the_original_keeps_its_token()
 
 /// What `POST /api/enrollment-codes` answers `body` with.
 fn mint_answer(base: &str, body: serde_json::Value) -> serde_json::Value {
-    ureq::post(format!("{base}/api/enrollment-codes"))
+    lenient()
+        .post(format!("{base}/api/enrollment-codes"))
         .send_json(body)
         .expect("request succeeds")
         .body_mut()
@@ -885,12 +892,7 @@ fn an_ephemeral_enrollment_code_has_no_cap_and_no_expiry() {
     for n in 0..60 {
         assert!(try_enroll(&base, code, &format!("pod-{n}")).ok, "pod-{n}");
     }
-    let workers: Vec<smeltr::leader::WorkerOut> = ureq::get(format!("{base}/api/workers"))
-        .call()
-        .unwrap()
-        .body_mut()
-        .read_json()
-        .unwrap();
+    let workers = roster(&base);
     assert_eq!(workers.len(), 60);
     assert!(workers.iter().all(|w| w.kind == "ephemeral"));
 }
@@ -911,12 +913,13 @@ fn beat_status(base: &str, token: &str, worker_id: &str, stopping: bool) -> u16 
 }
 
 fn roster(base: &str) -> Vec<smeltr::leader::WorkerOut> {
-    ureq::get(format!("{base}/api/workers"))
+    let mut listed: serde_json::Value = ureq::get(format!("{base}/api/workers"))
         .call()
         .unwrap()
         .body_mut()
         .read_json()
-        .unwrap()
+        .unwrap();
+    serde_json::from_value(listed["workers"].take()).expect("the workers are listed")
 }
 
 fn health_threads(base: &str) -> Vec<serde_json::Value> {
@@ -979,7 +982,8 @@ fn how_long_an_ephemeral_worker_may_be_silent_is_a_setting_with_bounds() {
             .unwrap()
     };
     let put = |seconds: u64| -> serde_json::Value {
-        ureq::put(format!("{base}/api/settings/workers"))
+        lenient()
+            .put(format!("{base}/api/settings/workers"))
             .send_json(serde_json::json!({ "ephemeralForgetAfterSeconds": seconds }))
             .unwrap()
             .body_mut()
@@ -1079,12 +1083,7 @@ fn a_revoked_worker_id_cannot_re_enroll() {
     assert!(again.token.is_none());
     assert_eq!(heartbeat_status(&base, &token, "w1"), 403);
 
-    let workers: Vec<smeltr::leader::WorkerOut> = ureq::get(format!("{base}/api/workers"))
-        .call()
-        .unwrap()
-        .body_mut()
-        .read_json()
-        .unwrap();
+    let workers = roster(&base);
     assert_eq!(workers.len(), 1);
     assert!(workers[0].revoked);
 }
@@ -1094,12 +1093,7 @@ fn list_workers_shows_a_worker_that_enrolled_but_never_heartbeated() {
     let base = start_leader();
     enroll_worker(&base, "w1");
 
-    let workers: Vec<smeltr::leader::WorkerOut> = ureq::get(format!("{base}/api/workers"))
-        .call()
-        .expect("request succeeds")
-        .body_mut()
-        .read_json()
-        .expect("valid JSON response");
+    let workers = roster(&base);
     assert_eq!(workers.len(), 1);
     assert_eq!(workers[0].worker_id, "w1");
     assert!(!workers[0].revoked);
