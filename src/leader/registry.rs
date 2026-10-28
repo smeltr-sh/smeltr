@@ -272,6 +272,8 @@ impl Registry {
     ///
     /// `window` is what the beat gathered beside its samples, and which window of the worker's life both are: a
     /// window already recorded adds neither again (`RegistryStore::record_heartbeat`).
+    ///
+    /// An error is the durable mirror unwritten, window and all; the live view is updated either way.
     pub fn record_heartbeat(
         &self,
         worker_id: &str,
@@ -279,11 +281,12 @@ impl Registry {
         worker: WorkerFacts,
         window: super::series::Window<'_>,
         now_ms: i64,
-    ) {
+    ) -> Result<(), StoreError> {
         let stopping = worker.stopped_at_ms.is_some();
-        if let Some(store) = &self.store {
-            persist_heartbeat(store, worker_id, &reports, &worker, window, now_ms);
-        }
+        let persisted = match &self.store {
+            Some(store) => persist_heartbeat(store, worker_id, &reports, &worker, window, now_ms),
+            None => Ok(()),
+        };
         let mut threads = self.threads.lock().unwrap();
         let last_seen = Instant::now();
         if stopping {
@@ -311,6 +314,7 @@ impl Registry {
                 },
             );
         }
+        persisted
     }
 
     /// Drops everything held about `worker_id`, in memory and durably: the leader has forgotten it.
@@ -590,7 +594,7 @@ fn persist_heartbeat(
     worker: &WorkerFacts,
     window: super::series::Window<'_>,
     now_ms: i64,
-) {
+) -> Result<(), StoreError> {
     let threads: Vec<LatestRow<'_>> = reports
         .iter()
         .filter(|report| worker.stopped_at_ms.is_none() || about_the_worker(report))
@@ -616,7 +620,7 @@ fn persist_heartbeat(
 
     let points = series_points(worker_id, reports);
 
-    if let Err(e) = store.record_heartbeat(&HeartbeatRows {
+    let recorded = store.record_heartbeat(&HeartbeatRows {
         worker_id,
         threads: &threads,
         points: &points,
@@ -629,7 +633,8 @@ fn persist_heartbeat(
         authority_expires_millis: worker.authority_expires_millis,
         stopped_at_ms: worker.stopped_at_ms,
         now_ms,
-    }) {
+    });
+    if let Err(e) = &recorded {
         // One transaction, so this is the whole heartbeat's mirror rather than a count of the rows that failed. An
         // example row rides along: a store that refuses the same point every beat is diagnosable only by what it
         // refused, and the counts alone cannot name it.
@@ -641,13 +646,13 @@ fn persist_heartbeat(
             metric = points.first().map(|p| p.metric).unwrap_or_default(),
             subject_key = points.first().map(|p| p.subject_key.as_str()).unwrap_or_default(),
             error = %e,
-            "a heartbeat's durable mirror could not be written, so that window of history is missing and every \
-             thread it reported is stale until the next one lands. `metric` and `subject_key` are the first point \
-             it carried, as an example of the shape"
+            "a heartbeat's durable mirror could not be written, so the worker is refused and sends its window \
+             again. `metric` and `subject_key` are the first point it carried, as an example of the shape"
         );
     }
 
     store.maybe_maintain(now_ms);
+    recorded
 }
 
 /// Each sample `reports` carries that is a series point. A sample naming no subject, a fact carried as text, and a
@@ -715,14 +720,16 @@ mod tests {
             WorkerFacts::default(),
             Window::default(),
             0,
-        );
+        )
+        .unwrap();
         r.record_heartbeat(
             "w2",
             vec![report("t2", "g")],
             WorkerFacts::default(),
             Window::default(),
             0,
-        );
+        )
+        .unwrap();
         // Only one of them has said what it holds this run.
         r.record_authority("w1", vec!["incoming".to_string()], true);
 
@@ -786,7 +793,8 @@ mod tests {
             WorkerFacts::default(),
             Window::default(),
             0,
-        );
+        )
+        .unwrap();
         r.record_authority("gone", vec!["outgoing".to_string()], true);
         // Expected is the caller's answer, and a revoked worker is not in it.
         assert!(r.authorities_held(&HashSet::new()).is_empty());
@@ -803,7 +811,8 @@ mod tests {
             WorkerFacts::default(),
             Window::default(),
             0,
-        );
+        )
+        .unwrap();
         r.record_authority("quiet", vec!["outgoing".to_string()], true);
 
         // Nothing injects a clock here, so the moment it was last heard from is set back instead: a day, or as far
@@ -841,28 +850,32 @@ mod tests {
             WorkerFacts::default(),
             Window::default(),
             0,
-        );
+        )
+        .unwrap();
         r.record_heartbeat(
             "w1",
             vec![report("t1", "pool")],
             WorkerFacts::default(),
             Window::default(),
             0,
-        );
+        )
+        .unwrap();
         r.record_heartbeat(
             "w2",
             vec![report("t0", "pool")],
             WorkerFacts::default(),
             Window::default(),
             0,
-        );
+        )
+        .unwrap();
         r.record_heartbeat(
             "w1",
             vec![report("t0", "prod")],
             WorkerFacts::default(),
             Window::default(),
             0,
-        );
+        )
+        .unwrap();
         let snapshot = r.snapshot();
         assert_eq!(snapshot.len(), 3);
         let w1t0 = snapshot
@@ -885,7 +898,8 @@ mod tests {
             },
             Window::default(),
             0,
-        );
+        )
+        .unwrap();
         let json = serde_json::to_value(&r.snapshot()[0]).unwrap();
         // Flattened, so the report's fields sit beside the leader's rather than under a key of their own.
         for key in [
@@ -988,7 +1002,8 @@ mod tests {
                 },
                 Window::default(),
                 at,
-            );
+            )
+            .unwrap();
         };
         let itself = ThreadHeartbeat {
             kind: Some(ThreadKind::Worker),
@@ -1056,6 +1071,37 @@ mod tests {
         cleanup_registry_db(&path);
     }
 
+    /// A beat the store will not take is an error, so the leader refuses it and the worker sends its window again;
+    /// what it said of its threads still reaches the live view.
+    #[test]
+    fn a_beat_the_store_will_not_take_is_an_error_and_still_seen() {
+        let path = temp_registry_path("not-taken");
+        let r = Registry::open(&path).unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TRIGGER refused BEFORE INSERT ON windows BEGIN SELECT RAISE(ABORT, 'refused'); END")
+            .unwrap();
+        let window = Window {
+            boot_id: 7,
+            seq: Some(1),
+            streams: None,
+        };
+        assert!(
+            r.record_heartbeat(
+                "w1",
+                vec![report("reader-0", "pool")],
+                WorkerFacts::default(),
+                window,
+                0
+            )
+            .is_err(),
+            "a beat that was not recorded was answered as recorded"
+        );
+        assert!(r.snapshot().iter().any(|t| t.report.thread_id == "reader-0"));
+        drop(r);
+        cleanup_registry_db(&path);
+    }
+
     /// The two defects the durable registry closes: a restart used to reset a warning's start time, and could not
     /// tell a worker that had never heartbeated from one that was heartbeating right up until the leader restarted.
     #[test]
@@ -1073,7 +1119,8 @@ mod tests {
                 WorkerFacts::default(),
                 Window::default(),
                 started_at,
-            );
+            )
+            .unwrap();
             r.observe_facts(&HashSet::from([key.clone()]), started_at);
         }
 
@@ -1120,7 +1167,8 @@ mod tests {
                 },
                 Window::default(),
                 started_at,
-            );
+            )
+            .unwrap();
         }
 
         let r = Registry::open(&path).unwrap();
@@ -1158,7 +1206,8 @@ mod tests {
                 },
                 Window::default(),
                 started_at,
-            );
+            )
+            .unwrap();
         }
 
         // The worker never heartbeats again: this is the restart during which it was already gone.
@@ -1194,7 +1243,8 @@ mod tests {
             },
             Window::default(),
             started_at,
-        );
+        )
+        .unwrap();
 
         // Its deployment stopped, and it took a new authority. Its supervisor is meanwhile trying to deploy a
         // commit it has not got running -- which is the state the worker has no thread left to report through.
@@ -1213,7 +1263,8 @@ mod tests {
             },
             Window::default(),
             started_at + 1,
-        );
+        )
+        .unwrap();
 
         let snapshot = r.snapshot();
         assert_eq!(snapshot.len(), 1, "the thread's row is still there to carry it");
@@ -1252,7 +1303,8 @@ mod tests {
                 },
                 Window::default(),
                 started_at,
-            );
+            )
+            .unwrap();
         }
 
         let r = Registry::open(&path).unwrap();
@@ -1305,7 +1357,8 @@ mod tests {
             WorkerFacts::default(),
             Window::default(),
             12_345,
-        );
+        )
+        .unwrap();
 
         assert_eq!(r.snapshot().len(), 2, "both threads are live state");
         let series = r.series().unwrap();
@@ -1357,7 +1410,8 @@ mod tests {
             WorkerFacts::default(),
             Window::default(),
             12_345,
-        );
+        )
+        .unwrap();
 
         let key = subject_key(
             "pool",
@@ -1408,7 +1462,8 @@ mod tests {
             ],
             value: MetricValueDto::Gauge(12.0),
         }];
-        r.record_heartbeat("w1", vec![with_lag], WorkerFacts::default(), Window::default(), 12_345);
+        r.record_heartbeat("w1", vec![with_lag], WorkerFacts::default(), Window::default(), 12_345)
+            .unwrap();
 
         let key = subject_key(
             "pool",

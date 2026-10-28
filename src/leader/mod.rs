@@ -368,18 +368,26 @@ async fn heartbeat(
                     },
                 });
             let window = series::Window { boot_id, seq, streams };
-            registry.record_heartbeat(&worker, threads, facts, window, now_ms);
+            registry.record_heartbeat(&worker, threads, facts, window, now_ms)
         })
         .await;
         // Said rather than swallowed: this is what updates the live view as well as the durable one, so a worker
         // whose report never landed reads as silent on `/api/health` while still being answered here.
-        if let Err(e) = recorded {
-            tracing::warn!(
+        match recorded {
+            Err(e) => tracing::warn!(
                 target: "leader.heartbeat_not_recorded",
                 subject = %worker_id,
                 error = %e,
                 "a heartbeat could not be recorded, so this worker's threads stay as they were until the next one"
-            );
+            ),
+            // Refused, so the worker sends the window again rather than count it as recorded.
+            Ok(Err(e)) => {
+                return Err((
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    format!("could not record this heartbeat: {e}"),
+                ));
+            }
+            Ok(Ok(())) => {}
         }
     }
     // Before the forgetting below, so a stopping ephemeral worker's last progress lands and the worker is not
@@ -4592,22 +4600,25 @@ mod warnings_endpoint_tests {
     #[tokio::test]
     async fn a_healthy_registry_and_roster_serve_no_warnings() {
         let state = state("healthy");
-        state.registry.record_heartbeat(
-            "w1",
-            vec![ThreadHeartbeat {
-                thread_id: "reader-1".to_string(),
-                group_id: "g".to_string(),
-                kind: Some(ThreadKind::Reader),
-                partitions_owned: vec![],
-                metrics: vec![],
-            }],
-            WorkerFacts {
-                smeltr_version: crate::version::VERSION.to_string(),
-                ..Default::default()
-            },
-            series::Window::default(),
-            0,
-        );
+        state
+            .registry
+            .record_heartbeat(
+                "w1",
+                vec![ThreadHeartbeat {
+                    thread_id: "reader-1".to_string(),
+                    group_id: "g".to_string(),
+                    kind: Some(ThreadKind::Reader),
+                    partitions_owned: vec![],
+                    metrics: vec![],
+                }],
+                WorkerFacts {
+                    smeltr_version: crate::version::VERSION.to_string(),
+                    ..Default::default()
+                },
+                series::Window::default(),
+                0,
+            )
+            .unwrap();
         assert!(warnings_snapshot(&state).await.unwrap().is_empty());
     }
 
@@ -4666,26 +4677,29 @@ mod warnings_endpoint_tests {
     #[tokio::test]
     async fn a_viewer_is_served_only_the_warnings_of_their_groups() {
         let state = state("visible-to");
-        state.registry.record_heartbeat(
-            "w1",
-            vec![ThreadHeartbeat {
-                thread_id: "reader-1".to_string(),
-                group_id: "g".to_string(),
-                kind: Some(ThreadKind::Reader),
-                partitions_owned: vec![],
-                metrics: vec![MetricSampleDto {
-                    metric: "smeltr_source_blocked_reason".to_string(),
-                    labels: vec![("source".to_string(), "7".to_string())],
-                    value: MetricValueDto::Text("held".to_string()),
+        state
+            .registry
+            .record_heartbeat(
+                "w1",
+                vec![ThreadHeartbeat {
+                    thread_id: "reader-1".to_string(),
+                    group_id: "g".to_string(),
+                    kind: Some(ThreadKind::Reader),
+                    partitions_owned: vec![],
+                    metrics: vec![MetricSampleDto {
+                        metric: "smeltr_source_blocked_reason".to_string(),
+                        labels: vec![("source".to_string(), "7".to_string())],
+                        value: MetricValueDto::Text("held".to_string()),
+                    }],
                 }],
-            }],
-            WorkerFacts {
-                smeltr_version: crate::version::VERSION.to_string(),
-                ..Default::default()
-            },
-            series::Window::default(),
-            0,
-        );
+                WorkerFacts {
+                    smeltr_version: crate::version::VERSION.to_string(),
+                    ..Default::default()
+                },
+                series::Window::default(),
+                0,
+            )
+            .unwrap();
         run_store(state.store.clone(), |s| s.store_worker_credential("w2", "hash"))
             .await
             .unwrap();
@@ -4735,22 +4749,26 @@ mod warnings_endpoint_tests {
                 value: MetricValueDto::Text("held".to_string()),
             }],
         };
-        state.registry.record_heartbeat(
-            "w1",
-            vec![held.clone()],
-            WorkerFacts {
-                smeltr_version: crate::version::VERSION.to_string(),
-                ..Default::default()
-            },
-            series::Window::default(),
-            0,
-        );
+        state
+            .registry
+            .record_heartbeat(
+                "w1",
+                vec![held.clone()],
+                WorkerFacts {
+                    smeltr_version: crate::version::VERSION.to_string(),
+                    ..Default::default()
+                },
+                series::Window::default(),
+                0,
+            )
+            .unwrap();
 
         let first = warnings_snapshot(&state).await.unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         state
             .registry
-            .record_heartbeat("w1", vec![held], WorkerFacts::default(), series::Window::default(), 0);
+            .record_heartbeat("w1", vec![held], WorkerFacts::default(), series::Window::default(), 0)
+            .unwrap();
         let second = warnings_snapshot(&state).await.unwrap();
 
         assert_eq!(first.len(), 1);
