@@ -556,7 +556,7 @@ fn rows_for(
     rng: &mut Rng,
     cov: &mut Reached,
     c: &ObjectsDestinationConfig,
-    plan: Option<&smeltr::plan::plan::Plan>,
+    plan: Option<&smeltr::plan::compile::Plan>,
     first: usize,
     rows: usize,
 ) -> Vec<Sent> {
@@ -925,7 +925,7 @@ fn check_written(
 }
 
 /// The plan a Parquet destination's rows come from, and the records it writes.
-fn parquet_plan() -> (smeltr::plan::plan::Plan, Records) {
+fn parquet_plan() -> (smeltr::plan::compile::Plan, Records) {
     let plan = harness::compile_ok(vec![harness::code(0, PARQUET_PIPELINE)]);
     let records = Records::from([(None, harness::record(&plan))]);
     (plan, records)
@@ -936,7 +936,7 @@ fn batches_for(
     rng: &mut Rng,
     cov: &mut Reached,
     c: &ObjectsDestinationConfig,
-    plan: Option<&smeltr::plan::plan::Plan>,
+    plan: Option<&smeltr::plan::compile::Plan>,
 ) -> Vec<Vec<Sent>> {
     let count = 1 + rng.below(3);
     if count > 1 {
@@ -980,7 +980,7 @@ fn object_destinations_fuzz() {
 fn offline_seed(
     seed: u64,
     reached: &mut Reached,
-    plan: &smeltr::plan::plan::Plan,
+    plan: &smeltr::plan::compile::Plan,
     records: &Records,
     runtime: &Arc<tokio::runtime::Runtime>,
 ) -> Result<(), String> {

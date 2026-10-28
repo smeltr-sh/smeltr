@@ -574,7 +574,7 @@ fn id_of(row: &BTreeMap<String, Val>) -> i64 {
 }
 
 /// The plan reading a row of `columns` from its JSON.
-fn plan(columns: &[(&str, &str)]) -> smeltr::plan::plan::Plan {
+fn plan(columns: &[(&str, &str)]) -> smeltr::plan::compile::Plan {
     let declarations: String = columns.iter().map(|(n, t)| format!("{n}: {t}; ")).collect();
     harness::compile_ok(vec![harness::code(
         0,
@@ -608,7 +608,7 @@ fn row_json(row: &BTreeMap<String, Val>, tags: bool) -> String {
 }
 
 /// Hands `batches` over as egress would, and waits until every one has landed.
-fn drive(d: &mut dyn Destination, plan: &smeltr::plan::plan::Plan, tags: bool, batches: &[Batch]) {
+fn drive(d: &mut dyn Destination, plan: &smeltr::plan::compile::Plan, tags: bool, batches: &[Batch]) {
     let mut waiting = HashSet::new();
     let take = |d: &mut dyn Destination, waiting: &mut HashSet<u64>| {
         for c in d.poll_completions().expect("landed") {

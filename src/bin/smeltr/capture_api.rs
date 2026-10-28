@@ -106,7 +106,7 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Json<Envelope
     // its syntax can be checked here.
     if let Some(filter) = request.filter.as_deref() {
         let compiled = if source.kind.undeclared() {
-            smeltr::plan::plan::parse(filter, None)
+            smeltr::plan::compile::parse(filter, None)
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         } else {
@@ -167,7 +167,7 @@ fn start_destination_capture(
     // Only its syntax can be checked here: what it reads is each route's output, which the workers' deployment
     // compiles. A filter a route's output does not resolve ends the capture there, saying which route.
     if let Some(filter) = request.filter.as_deref()
-        && let Err(e) = smeltr::plan::plan::parse(filter, None)
+        && let Err(e) = smeltr::plan::compile::parse(filter, None)
     {
         return Envelope::failed_one(e.to_string());
     }

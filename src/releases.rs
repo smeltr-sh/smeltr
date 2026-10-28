@@ -227,16 +227,15 @@ fn record_release() {
     registry.record_heartbeat(
         &heartbeat.worker_id,
         heartbeat.threads.clone(),
+        crate::leader::registry::WorkerFacts {
+            stop_after_unreachable_secs: heartbeat.stop_after_unreachable_secs,
+            commit: heartbeat.commit.clone(),
+            smeltr_version: heartbeat.smeltr_version.clone(),
+            release: heartbeat.release.clone(),
+            ..Default::default()
+        },
         None,
         None,
-        heartbeat.stop_after_unreachable_secs,
-        heartbeat.commit.clone(),
-        heartbeat.smeltr_version.clone(),
-        heartbeat.release.clone(),
-        None,
-        None,
-        None,
-        false,
         1,
     );
     drop(registry);
