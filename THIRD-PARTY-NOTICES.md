@@ -253,6 +253,10 @@ Rules and lists the built-in functions read, compiled into the binary.
 
 > Copyright 2009 Google Inc. (uap-core, https://github.com/ua-parser/uap-core)
 
+> Elastic Common Schema. Copyright 2018-2021 Elasticsearch B.V. (https://github.com/elastic/ecs)
+
+> Open Cybersecurity Schema Framework. Copyright © OCSF a Series of LF Projects, LLC (https://github.com/ocsf/ocsf-schema)
+
 The Apache-2.0 text is reproduced with the crates below. The Public Suffix
 List is available in source form at https://publicsuffix.org/list/; its
 license is https://mozilla.org/MPL/2.0/.
