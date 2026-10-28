@@ -54,29 +54,29 @@
     <div class="dock-row">
       <span class="item">
         {#if reviews.state === 'changes-requested'}
-          <span class="mark req" aria-hidden="true">!</span>
+          <StateMark state="warning" size={17} />
           <span>{reviews.names.join(', ')} requested changes</span>
         {:else if reviews.state === 'approved'}
           <StateMark state="ok" size={17} />
           <span>Approved by {reviews.names.join(', ')}</span>
         {:else}
-          <span class="mark" aria-hidden="true"></span>
+          <StateMark state="info" size={17} />
           <span class="dim">No reviews yet</span>
         {/if}
       </span>
 
       <span class="item">
         {#if testsLoading}
-          <span class="mark" aria-hidden="true"></span>
+          <StateMark state="info" size={17} />
           <span class="dim">Running tests&hellip;</span>
         {:else if tests.total === 0}
-          <span class="mark" aria-hidden="true"></span>
+          <StateMark state="info" size={17} />
           <span class="dim">No tests</span>
         {:else if tests.failed > 0}
-          <span class="mark req" aria-hidden="true">!</span>
+          <StateMark state="error" size={17} />
           <span>{tests.failed} of {count(tests.total, 'test')} fail</span>
         {:else if tests.couldNotRun > 0}
-          <span class="mark" aria-hidden="true"></span>
+          <StateMark state="warning" size={17} />
           <span>{tests.couldNotRun} of {count(tests.total, 'test')} could not run</span>
         {:else}
           <StateMark state="ok" size={17} />
@@ -87,14 +87,14 @@
       {#if leftOut > 0}
         <span class="item">
           <!-- Nothing to fix: what stays on the branch is said, not warned about. -->
-          <span class="mark" aria-hidden="true"></span>
+          <StateMark state="info" size={17} />
           <span>{count(leftOut, 'sample')} left out</span>
         </span>
       {/if}
 
       <span class="item">
         {#if behind > 0}
-          <span class="mark req" aria-hidden="true">!</span>
+          <StateMark state="warning" size={17} />
           <span>Behind <span class="mono">main</span> by {count(behind, 'commit')}</span>
           <button
             type="button"
@@ -162,24 +162,6 @@
     display: inline-flex;
     align-items: center;
     gap: 0.45rem;
-  }
-
-  .mark {
-    flex-shrink: 0;
-    width: 1.1rem;
-    height: 1.1rem;
-    border-radius: 50%;
-    display: inline-grid;
-    place-items: center;
-    box-sizing: border-box;
-    border: 1px solid var(--border);
-    font-size: var(--text-micro);
-    font-weight: 700;
-    color: var(--on-accent);
-  }
-  .mark.req {
-    border-color: var(--accent);
-    background: var(--accent);
   }
 
   .act {
