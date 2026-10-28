@@ -384,7 +384,7 @@ async fn serve_newest(
 
     if rotates {
         let now_ms = smeltr::leader::warnings::now_millis();
-        // The socket is untouched: what is served has not moved, and the intent that did is what `/api/authority`
+        // The socket is untouched: what is served has not moved, and the intent that did is what `/api/worker/authority`
         // and the heartbeat read afresh. A fleet with nobody in it to wait for cuts over on the next read.
         tls::begin_supplied_rotation(&serving.dir, &entry, &serving.names, &required, now_ms)
             .map_err(|e| (StatusCode::CONFLICT, e))?;
@@ -581,7 +581,7 @@ async fn begin_rotation(
         .map(|days| std::time::Duration::from_secs(days as u64 * 24 * 60 * 60))
         .unwrap_or(serving.validity);
     match tls::begin_rotation(&serving.dir, authority_validity, deadline, now_ms) {
-        // The socket is untouched: what is served has not moved, and the file that did is the one `/api/authority`
+        // The socket is untouched: what is served has not moved, and the file that did is the one `/api/worker/authority`
         // and the heartbeat read afresh.
         Ok(_) => answer(&state).await,
         Err(e) => refuse(StatusCode::CONFLICT, &e),

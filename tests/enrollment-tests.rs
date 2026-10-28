@@ -877,7 +877,7 @@ fn the_authority_is_served_to_a_caller_with_no_credential() {
     let (base, ca_pem) = start_leader_tls();
     let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let served = agent
-        .get(format!("{base}/api/authority"))
+        .get(format!("{base}/api/worker/authority"))
         .call()
         .expect("no credential needed")
         .body_mut()
@@ -901,7 +901,7 @@ fn the_authority_is_withheld_while_the_socket_has_not_taken_what_is_on_disk() {
         &["localhost".to_string(), "127.0.0.1".to_string()],
     );
     let refused = agent
-        .get(format!("{base}/api/authority"))
+        .get(format!("{base}/api/worker/authority"))
         .call()
         .expect_err("a file that vouches for nothing this leader presents");
     // Put back before asserting: these are two numbers for the whole process, shared with every test here.
@@ -909,7 +909,7 @@ fn the_authority_is_withheld_while_the_socket_has_not_taken_what_is_on_disk() {
     assert!(matches!(refused, ureq::Error::StatusCode(503)), "{refused}");
 
     agent
-        .get(format!("{base}/api/authority"))
+        .get(format!("{base}/api/worker/authority"))
         .call()
         .expect("served again once the two agree");
 }
@@ -953,7 +953,7 @@ fn an_enrollment_code_says_it_names_an_authority_that_was_replaced_under_it() {
     // Refused at the point of use, not only described on a page. Spent, it would buy a credential for a leader
     // this worker pins a retired root for: an enrollment that reports success and a worker that never beats.
     let answered: serde_json::Value = agent
-        .post(format!("{base}/api/enroll"))
+        .post(format!("{base}/api/worker/enroll"))
         .send_json(serde_json::json!({ "code": pinned["value"], "workerId": "w-after-the-replacement" }))
         .expect("the enrollment was answered")
         .body_mut()
@@ -1071,7 +1071,7 @@ fn an_enrollment_code_naming_the_platforms_roots_puts_aside_a_kept_private_autho
 }
 
 /// A rotation is the leader promising its fleet a new root before signing under it, and the promise travels on the
-/// heartbeat. While the socket serves a certificate the disk does not describe, `/api/authority` is withheld and no
+/// heartbeat. While the socket serves a certificate the disk does not describe, `/api/worker/authority` is withheld and no
 /// worker can be handed anything -- so a deadline reached in that state would sign under a root the fleet has never
 /// been offered, stranding every worker at once. Neither end of a rotation runs there.
 #[test]

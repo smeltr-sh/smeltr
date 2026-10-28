@@ -3810,7 +3810,7 @@ mod tests {
         assert_ne!(served.status, 200, "a push must not be served");
     }
 
-    /// The leader hands every path under `/repo/` to this and keeps no list of its own, so this is the whole guard
+    /// The leader hands every path under `/api/worker/repo/` to this and keeps no list of its own, so this is the whole guard
     /// on that route. A path a worker picks must never read a file git does not serve: not the repository's own
     /// config, and not what sits beside the repository in the data directory.
     #[test]

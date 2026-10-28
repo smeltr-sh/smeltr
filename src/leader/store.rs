@@ -9,7 +9,7 @@
 use crate::heartbeat::{LedgerEntry, SourceKey};
 use crate::io::Progress;
 
-/// A worker's Bearer credential, as its hash. The raw token exists only in the response to the `POST /api/enroll` call
+/// A worker's Bearer credential, as its hash. The raw token exists only in the response to the `POST /api/worker/enroll` call
 /// that issued it.
 pub struct WorkerCredentialRecord {
     pub worker_id: String,

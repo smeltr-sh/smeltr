@@ -31,7 +31,7 @@ test('a rotation the fleet finishes leaves the leader presenting what is on disk
   expect(after.restartRequired).toBe(false);
   // What a worker pins and an operator downloads: refused while the socket presents a certificate other than
   // the one on disk, which a cutover must not leave behind.
-  const handed = await api.ctx.get('/api/authority');
+  const handed = await api.ctx.get('/api/worker/authority');
   expect(handed.status(), await handed.text()).toBe(200);
   expect(roots(await handed.text())).toBe(1);
   // The outgoing root leaves the worker's trust by its absence from the bundle handed whole on the next beat.

@@ -566,7 +566,7 @@ fn a_human_cookie_does_not_open_a_worker_route() {
     let leader = start("worker-boundary");
     let session = signed_in_and_settled(&leader);
     let status = status_of(
-        ureq::post(format!("{}/api/heartbeat", leader.base))
+        ureq::post(format!("{}/api/worker/heartbeat", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &session.cookie)
             .header("x-smeltr-csrf", &session.csrf)

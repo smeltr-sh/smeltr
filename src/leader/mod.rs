@@ -3308,7 +3308,7 @@ async fn require_worker_auth(
 fn worker_router(state: AppState) -> Router<AppState> {
     Router::new()
         .route(
-            "/api/heartbeat",
+            "/api/worker/heartbeat",
             // Stated rather than inherited from axum's default; [`crate::heartbeat::HEARTBEAT_BODY_LIMIT`] says
             // what it is measured against.
             post(heartbeat).layer(axum::extract::DefaultBodyLimit::max(
@@ -3316,12 +3316,12 @@ fn worker_router(state: AppState) -> Router<AppState> {
             )),
         )
         .route(
-            "/api/capture-report",
+            "/api/worker/capture-report",
             post(capture_report).layer(axum::extract::DefaultBodyLimit::max(capture::REPORT_BODY_LIMIT)),
         )
-        .route("/repo/*path", get(git_http).post(git_http))
-        .route("/api/lookup-store/:oid", get(lookup_file))
-        .route("/api/ledger", get(ledger))
+        .route("/api/worker/repo/*path", get(git_http).post(git_http))
+        .route("/api/worker/lookup-store/:oid", get(lookup_file))
+        .route("/api/worker/ledger", get(ledger))
         .route_layer(axum::middleware::from_fn_with_state(state, require_worker_auth))
 }
 
@@ -3333,8 +3333,8 @@ fn worker_router(state: AppState) -> Router<AppState> {
 /// worth having is the fingerprint in its enrollment code, checked against these bytes, not the secrecy of this route.
 fn enroll_router() -> Router<AppState> {
     Router::new()
-        .route("/api/enroll", post(enroll))
-        .route("/api/authority", get(authority))
+        .route("/api/worker/enroll", post(enroll))
+        .route("/api/worker/authority", get(authority))
 }
 
 /// The trust store to hand this worker, when what it reports holding is not what this leader publishes.
@@ -3485,7 +3485,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
     }
 }
 
-/// `GET /api/authority`: `ca.pem`, for a worker to pin against and an operator to hand around.
+/// `GET /api/worker/authority`: `ca.pem`, for a worker to pin against and an operator to hand around.
 async fn authority(State(state): State<AppState>) -> Response {
     // This file's whole purpose is to be pinned. While the socket is still presenting the certificate before the
     // last one, the disk describes a leader no handshake reaches: a worker that fetched this would pin a root its

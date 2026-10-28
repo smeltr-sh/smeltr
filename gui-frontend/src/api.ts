@@ -4989,7 +4989,7 @@ export function getCertificates(): Promise<CertificatesDto> {
 /** The authority's own download URL. A plain link rather than a fetch: the
  * browser names the file and puts it where downloads go. Ungated, because a
  * worker holding an enrollment code fetches the same bytes with no session. */
-export const AUTHORITY_URL = '/api/authority';
+export const AUTHORITY_URL = '/api/worker/authority';
 
 /** The certificate this leader issues itself and serves unless another is chosen (`tls::OWN_ENTRY`). */
 export const OWN_CERTIFICATE = 'leader';

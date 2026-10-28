@@ -836,12 +836,12 @@ mod tests {
         ("GET", "/api/auth/oidc"),
         ("GET", "/api/auth/oidc/start"),
         ("GET", "/api/auth/oidc/callback"),
-        ("POST", "/api/heartbeat"),
-        ("POST", "/api/capture-report"),
-        ("GET", "/api/lookup-store/:oid"),
-        ("GET", "/api/ledger"),
-        ("POST", "/api/enroll"),
-        ("GET", "/api/authority"),
+        ("POST", "/api/worker/heartbeat"),
+        ("POST", "/api/worker/capture-report"),
+        ("GET", "/api/worker/lookup-store/:oid"),
+        ("GET", "/api/worker/ledger"),
+        ("POST", "/api/worker/enroll"),
+        ("GET", "/api/worker/authority"),
     ];
 
     /// Every `(method, path)` the leader's sources register under `/api/`, read from the sources: axum lists no
