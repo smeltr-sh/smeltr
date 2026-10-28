@@ -15,7 +15,7 @@ use axum::routing::{get, post, put};
 
 use smeltr::leader::resolver::Resolver;
 use smeltr::leader::store::Actor;
-use smeltr::leader::{CertificateRequest, accounts, acme, blocking, tls};
+use smeltr::leader::{CertificateRequest, NewCertificate, accounts, acme, blocking, tls};
 
 use crate::gate::{Auth, refuse};
 use crate::users_api::no_store;
@@ -58,14 +58,15 @@ pub fn router(auth: Auth, tls: Option<Arc<Tls>>, leader: smeltr::leader::AppStat
         leader,
     };
     axum::Router::new()
-        .route("/api/settings/certificates", get(show).put(install))
+        .route("/api/settings/tls", get(show).put(install))
+        .route("/api/certificates", get(list).post(create))
         .route("/api/certificates/:name", put(replace))
         .route(
-            "/api/settings/certificates/rotation",
+            "/api/settings/tls/rotation",
             post(begin_rotation).delete(abandon_rotation),
         )
-        .route("/api/settings/certificates/rotation/cutover", post(cut_over))
-        .route("/api/settings/certificates/rotation/deadline", put(move_deadline))
+        .route("/api/settings/tls/rotation/cutover", post(cut_over))
+        .route("/api/settings/tls/rotation/deadline", put(move_deadline))
         .route_layer(axum::middleware::from_fn_with_state(
             auth,
             crate::gate::require_principal,
@@ -209,7 +210,7 @@ pub(crate) fn serving_tls(tls: Option<&Arc<Tls>>) -> Result<Arc<Tls>, Box<Respon
     })
 }
 
-/// `GET /api/settings/certificates`: what is in force, read off the files rather than remembered.
+/// `GET /api/settings/tls`: what is in force, read off the files rather than remembered.
 async fn show(State(state): State<Certificates>) -> Response {
     // Before reading, so a rotation whose deadline has passed is over by the time this answers rather than one
     // refresh later. Cheap where nothing is rotating, which is almost always.
@@ -263,7 +264,7 @@ struct InstallRequest {
     certificate: String,
 }
 
-/// `PUT /api/settings/certificates`: serve a certificate from the list.
+/// `PUT /api/settings/tls`: serve a certificate from the list.
 async fn install(
     State(state): State<Certificates>,
     actor: axum::Extension<Actor>,
@@ -448,6 +449,20 @@ async fn renew_issued(state: &Certificates, serving: &Arc<Tls>) {
     }
 }
 
+/// `GET /api/certificates`: the certificates in the list.
+async fn list(State(state): State<Certificates>) -> Response {
+    smeltr::leader::list_certificates(State(state.leader))
+        .await
+        .into_response()
+}
+
+/// `POST /api/certificates`: a certificate supplied with its key, or one this leader issues.
+async fn create(State(state): State<Certificates>, request: Json<NewCertificate>) -> Response {
+    smeltr::leader::create_certificate(State(state.leader), request)
+        .await
+        .into_response()
+}
+
 /// `PUT /api/certificates/:name`: a new version of a certificate in the list. Where the leader serves it, the new
 /// version has to be one it can serve, and it is served once stored.
 async fn replace(
@@ -516,7 +531,7 @@ const MOST_WAIT_HOURS: i64 = 14 * 24;
 const MIN_AUTHORITY_VALIDITY_DAYS: i64 = 1;
 const MAX_AUTHORITY_VALIDITY_DAYS: i64 = 100 * 365;
 
-/// `POST /api/settings/certificates/rotation`: mint the incoming authority and start the overlap.
+/// `POST /api/settings/tls/rotation`: mint the incoming authority and start the overlap.
 ///
 /// Nothing a client sees changes here. The certificate this leader serves keeps its authority until the fleet has
 /// had the new one long enough, which is what the wait is.
@@ -588,7 +603,7 @@ async fn begin_rotation(
     }
 }
 
-/// `POST /api/settings/certificates/rotation/cutover`: sign under the incoming authority now.
+/// `POST /api/settings/tls/rotation/cutover`: sign under the incoming authority now.
 ///
 /// The operator's answer to a worker that is not coming back. Every worker without the incoming root stops
 /// verifying this leader at this moment, which is why it is a button and not a timer.
@@ -632,7 +647,7 @@ struct DeadlineRequest {
     deadline_millis: i64,
 }
 
-/// `PUT /api/settings/certificates/rotation/deadline`: move when the open rotation cuts over without the fleet.
+/// `PUT /api/settings/tls/rotation/deadline`: move when the open rotation cuts over without the fleet.
 async fn move_deadline(
     State(state): State<Certificates>,
     actor: axum::Extension<Actor>,
@@ -657,7 +672,7 @@ async fn move_deadline(
     answer(&state).await
 }
 
-/// `DELETE /api/settings/certificates/rotation`: drop the incoming authority and keep serving what is served.
+/// `DELETE /api/settings/tls/rotation`: drop the incoming authority and keep serving what is served.
 async fn abandon_rotation(State(state): State<Certificates>, actor: axum::Extension<Actor>) -> Response {
     let serving = match serving(&state) {
         Ok(serving) => serving,

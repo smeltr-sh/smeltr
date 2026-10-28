@@ -1614,6 +1614,7 @@ fn a_certificate_version_the_receiver_could_not_serve_is_refused_and_it_keeps_ru
                 .map_err(|e| format!("{method} {path}: {e}"))
         };
         let mut first = issued(rcgen::ExtendedKeyUsagePurpose::ServerAuth);
+        first["kind"] = "supplied".into();
         first["name"] = "rx".into();
         let added = send("POST", "/api/certificates", first)?;
         if added["ok"] != true {

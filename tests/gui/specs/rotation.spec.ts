@@ -17,16 +17,16 @@ test('a rotation the fleet finishes leaves the leader presenting what is on disk
   const worker = await fleet.startWorker(leader, api, 'default', 'w-rotates');
   const pinned = path.join(worker.dir, 'smeltr-worker-data', 'pinned-ca.pem');
   await expect.poll(() => fs.existsSync(pinned), { timeout: 30_000 }).toBe(true);
-  const before = await api.get('/api/settings/certificates');
+  const before = await api.get('/api/settings/tls');
 
-  const begun = await api.post('/api/settings/certificates/rotation', { waitHours: 1 });
+  const begun = await api.post('/api/settings/tls/rotation', { waitHours: 1 });
   expect(begun.rotation).not.toBeNull();
   // The worker takes the overlap bundle on a beat, and the beat after cuts the rotation over.
   await expect
-    .poll(async () => (await api.get('/api/settings/certificates')).rotation, { timeout: 60_000 })
+    .poll(async () => (await api.get('/api/settings/tls')).rotation, { timeout: 60_000 })
     .toBeNull();
 
-  const after = await api.get('/api/settings/certificates');
+  const after = await api.get('/api/settings/tls');
   expect(after.authority.fingerprint).not.toBe(before.authority.fingerprint);
   expect(after.restartRequired).toBe(false);
   // What a worker pins and an operator downloads: refused while the socket presents a certificate other than

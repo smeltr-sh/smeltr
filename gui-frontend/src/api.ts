@@ -3405,8 +3405,8 @@ export function createSecret(
 /** Stores a value as a new version, keeping the ones still in use. It is
  * staged, not live: what deploys it is a bundle quoting that version. */
 export function storeSecretValue(name: string, value: string): Promise<AdminActionResult> {
-  return apiJson(`/api/secrets/${encodeURIComponent(name)}`, {
-    method: 'PUT',
+  return apiJson(`/api/secrets/${encodeURIComponent(name)}/versions`, {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ value }),
   });
@@ -3433,7 +3433,7 @@ export async function pointSecretAt(
   const result = await apiJson<PointSecretResult>(
     `/api/secrets/${encodeURIComponent(name)}/references`,
     {
-      method: 'PUT',
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ version, branch }),
     },
@@ -3512,7 +3512,7 @@ export function createCertificate(
   return apiJson('/api/certificates', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, certificate, privateKey }),
+    body: JSON.stringify({ kind: 'supplied', name, description, certificate, privateKey }),
   });
 }
 
@@ -3523,10 +3523,10 @@ export function issueCertificate(
   names: string[],
   validityDays: number,
 ): Promise<AdminActionResult> {
-  return apiJson('/api/certificates/issued', {
+  return apiJson('/api/certificates', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description, names, validityDays }),
+    body: JSON.stringify({ kind: 'issued', name, description, names, validityDays }),
   });
 }
 
@@ -3574,14 +3574,14 @@ export interface EncryptionKeyDto {
 }
 
 export function getEncryptionKey(): Promise<EncryptionKeyDto> {
-  return apiJson('/api/encryption-key');
+  return apiJson('/api/settings/encryption-key');
 }
 
 /** Writes a new key in place of a missing or mismatched one. */
 export function regenerateEncryptionKey(): Promise<
   { ok: boolean; errors: ApiError[] } & Partial<EncryptionKeyDto>
 > {
-  return apiJson('/api/encryption-key/regenerate', { method: 'POST' });
+  return apiJson('/api/settings/encryption-key/regenerate', { method: 'POST' });
 }
 
 // -- flow (E2), `src/leader/mod.rs` ----------------------------------------
@@ -4958,7 +4958,7 @@ export interface CertificatesDto {
 }
 
 export function getCertificates(): Promise<CertificatesDto> {
-  return apiJson('/api/settings/certificates');
+  return apiJson('/api/settings/tls');
 }
 
 /** The authority's own download URL. A plain link rather than a fetch: the
@@ -4971,7 +4971,7 @@ export const OWN_CERTIFICATE = 'leader';
 
 /** Serves the certificate `name` from the list. */
 export function putCertificate(name: string): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/certificates', {
+  return accountCall('/api/settings/tls', {
     method: 'PUT',
     body: JSON.stringify({ certificate: name }),
   });
@@ -4991,7 +4991,7 @@ export function beginRotation(
   waitHours: number,
   authorityValidityDays: number,
 ): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/certificates/rotation', {
+  return accountCall('/api/settings/tls/rotation', {
     method: 'POST',
     body: JSON.stringify({ waitHours, authorityValidityDays }),
   });
@@ -5000,7 +5000,7 @@ export function beginRotation(
 /** Signs under the incoming authority now. A worker that has not yet taken it
  * stops being able to verify this leader. */
 export function cutOverRotation(): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/certificates/rotation/cutover', {
+  return accountCall('/api/settings/tls/rotation/cutover', {
     method: 'POST',
   });
 }
@@ -5009,7 +5009,7 @@ export function cutOverRotation(): Promise<CertificatesDto | AccountRefusal> {
 export function setRotationDeadline(
   deadlineMillis: number,
 ): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/certificates/rotation/deadline', {
+  return accountCall('/api/settings/tls/rotation/deadline', {
     method: 'PUT',
     body: JSON.stringify({ deadlineMillis }),
   });
@@ -5017,7 +5017,7 @@ export function setRotationDeadline(
 
 /** Drops the incoming authority. This leader keeps serving what it serves today. */
 export function abandonRotation(): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/certificates/rotation', {
+  return accountCall('/api/settings/tls/rotation', {
     method: 'DELETE',
   });
 }
@@ -5075,11 +5075,11 @@ export const ACME_DIRECTORIES = [
 ] as const;
 
 export function getAcme(): Promise<AcmeDto> {
-  return apiJson('/api/settings/acme');
+  return apiJson('/api/settings/tls/acme');
 }
 
 export function putAcme(settings: AcmeSettings): Promise<AcmeDto | AccountRefusal> {
-  return accountCall('/api/settings/acme', {
+  return accountCall('/api/settings/tls/acme', {
     method: 'PUT',
     body: JSON.stringify(settings),
   });
@@ -5088,7 +5088,7 @@ export function putAcme(settings: AcmeSettings): Promise<AcmeDto | AccountRefusa
 /** Orders a certificate from the authority the settings name, and serves it: at once under the root in force,
  * else as the switch an upload under another root begins. */
 export function orderAcme(): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/acme/order', {
+  return accountCall('/api/settings/tls/acme/order', {
     method: 'POST',
   });
 }

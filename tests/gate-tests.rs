@@ -773,7 +773,7 @@ fn a_connector_names_only_a_certificate_the_list_holds() {
     );
 
     let (certificate, private_key) = certificate_and_key("receiver.example.com");
-    let upload = serde_json::json!({"name": "receiver", "certificate": certificate, "privateKey": private_key});
+    let upload = serde_json::json!({"kind": "supplied", "name": "receiver", "certificate": certificate, "privateKey": private_key});
     let (_, listed) = leader.post_as(&op, "/api/certificates", upload);
     assert_eq!(listed["ok"], true, "{listed}");
     let (_, saved) = leader.put_as(&op, "/api/areas/west/sources?branch=work", receiver);
@@ -789,7 +789,7 @@ fn an_administrator_keeps_certificates_in_the_list() {
     let (certificate, private_key) = certificate_and_key("receiver.example.com");
     let (_, other_key) = certificate_and_key("other.example.com");
 
-    let upload = |key: &str| serde_json::json!({"name": "receiver", "certificate": certificate, "privateKey": key});
+    let upload = |key: &str| serde_json::json!({"kind": "supplied", "name": "receiver", "certificate": certificate, "privateKey": key});
     let (_, refused) = leader.post_as(&op, "/api/certificates", upload(&other_key));
     assert_eq!(refused["ok"], false, "a key that is not the certificate's: {refused}");
     let (_, created) = leader.post_as(&op, "/api/certificates", upload(&private_key));
@@ -805,7 +805,7 @@ fn an_administrator_keeps_certificates_in_the_list() {
         !secrets.to_string().contains("receiver"),
         "a certificate is not listed with the secrets: {secrets}"
     );
-    let (_, value) = leader.put_as(&op, "/api/secrets/receiver", serde_json::json!({"value": "x"}));
+    let (_, value) = leader.post_as(&op, "/api/secrets/receiver/versions", serde_json::json!({"value": "x"}));
     assert_eq!(
         value["ok"], false,
         "a certificate's value is not set as a secret's: {value}"

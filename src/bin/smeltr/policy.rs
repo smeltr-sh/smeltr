@@ -206,7 +206,7 @@ mod tests {
             (Method::PUT, "/api/settings/oidc"),
             (Method::GET, "/api/settings/agents"),
             (Method::PUT, "/api/settings/agents"),
-            (Method::GET, "/api/settings/certificates"),
+            (Method::GET, "/api/settings/tls"),
             (Method::POST, "/api/secrets"),
             (Method::GET, "/api/secrets/s1/versions/1"),
             (Method::POST, "/api/certificates"),

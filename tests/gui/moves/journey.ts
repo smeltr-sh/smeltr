@@ -1223,7 +1223,7 @@ const regenerateKey: Move = {
     const unopenable = async () => {
       const key: { state: string; unopenable: { name: string }[] } = await (
         await j.truth()
-      ).get('/api/encryption-key');
+      ).get('/api/settings/encryption-key');
       expect(key.state).toBe('held');
       // One in force may be ordered again at once, so it may be sealed or not.
       return key.unopenable
@@ -2298,7 +2298,7 @@ const uploadCertificate: Move = {
     const pki = j.fleet.externalPki();
     j.world.certificates.set(await switchToUploaded(j.page, pki), pki);
     j.world.supplied = true;
-    const { supplied, rotation } = await (await j.truth()).get('/api/settings/certificates');
+    const { supplied, rotation } = await (await j.truth()).get('/api/settings/tls');
     expect({ supplied, rotation }).toEqual({ supplied: true, rotation: null });
     await fleetStillHeard(j);
     return `switch to an uploaded certificate, with ${heartbeating(j.world).length} workers following`;
@@ -2312,7 +2312,7 @@ const withdrawCertificate: Move = {
     await switchToLeaderIssued(j.page);
     j.world.supplied = false;
     j.world.acme = false;
-    const { supplied, rotation } = await (await j.truth()).get('/api/settings/certificates');
+    const { supplied, rotation } = await (await j.truth()).get('/api/settings/tls');
     expect({ supplied, rotation }).toEqual({ supplied: false, rotation: null });
     await fleetStillHeard(j);
     return `switch back to the leader's own certificate, with ${heartbeating(j.world).length} workers following`;
@@ -2331,7 +2331,7 @@ const orderAcme: Move = {
     j.world.supplied = true;
     j.world.acme = true;
     j.world.ordered = true;
-    const { source, rotation, served } = await (await j.truth()).get('/api/settings/certificates');
+    const { source, rotation, served } = await (await j.truth()).get('/api/settings/tls');
     expect({ source, rotation }).toEqual({ source: 'acme', rotation: null });
     expect(served.names).toContain(LEADER_NAME);
     await fleetStillHeard(j);
@@ -2344,9 +2344,9 @@ const renewAcmeCertificate: Move = {
   weight: (w) => (w.acme ? 1 : 0),
   run: async (j) => {
     const challenge = j.rng.pick(['TLS-ALPN-01', 'HTTP-01'] as const);
-    const before = await (await j.truth()).get('/api/settings/certificates');
+    const before = await (await j.truth()).get('/api/settings/tls');
     await renewAcme(j.page, challenge);
-    const after = await (await j.truth()).get('/api/settings/certificates');
+    const after = await (await j.truth()).get('/api/settings/tls');
     expect(after.source).toBe('acme');
     expect(after.served.fingerprint).not.toBe(before.served.fingerprint);
     expect(after.authority.fingerprint).toBe(before.authority.fingerprint);
@@ -2359,10 +2359,10 @@ const acmeDns01Refused: Move = {
   name: 'acme-dns-01-refused',
   weight: (w) => (w.acme ? 1 : 0),
   run: async (j) => {
-    const before = await (await j.truth()).get('/api/settings/acme');
+    const before = await (await j.truth()).get('/api/settings/tls/acme');
     await refuseDns01(j.page, `cf-${j.rng.below(1_000_000)}`, LEADER_NAME);
     // Refused whole: neither the challenge nor the token was stored.
-    expect(await (await j.truth()).get('/api/settings/acme')).toEqual(before);
+    expect(await (await j.truth()).get('/api/settings/tls/acme')).toEqual(before);
     return `DNS-01 refused for ${LEADER_NAME}, an IP address`;
   },
 };
@@ -2371,9 +2371,9 @@ const acmeUnderNewRoot: Move = {
   name: 'acme-new-root',
   weight: (w) => (w.acme ? 1 : 0),
   run: async (j) => {
-    const before = await (await j.truth()).get('/api/settings/certificates');
+    const before = await (await j.truth()).get('/api/settings/tls');
     await acmeNewRoot(j.page, j.authority);
-    const after = await (await j.truth()).get('/api/settings/certificates');
+    const after = await (await j.truth()).get('/api/settings/tls');
     expect({ source: after.source, rotation: after.rotation }).toEqual({
       source: 'acme',
       rotation: null,

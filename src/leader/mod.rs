@@ -69,7 +69,7 @@ use axum::Router;
 use axum::extract::{Extension, Json, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, post};
 
 use crate::heartbeat::{HeartbeatRequest, HeartbeatResponse, ThreadKind};
 use envelope::Envelope;
@@ -2499,7 +2499,7 @@ pub fn served_names(tls_dir: &std::path::Path) -> Result<Vec<String>, String> {
     Ok(served_entries(tls_dir)?.into_iter().map(|entry| entry.name).collect())
 }
 
-async fn list_certificates(
+pub async fn list_certificates(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<CertificateOut>>, (axum::http::StatusCode, String)> {
     let data_dir = state.data_dir.clone();
@@ -2545,7 +2545,22 @@ async fn list_certificates(
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
-async fn create_certificate(State(state): State<AppState>, Json(req): Json<CertificateRequest>) -> Json<Envelope> {
+/// What `POST /api/certificates` lists: a certificate supplied with its key, or one this leader's authority issues.
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum NewCertificate {
+    Supplied(CertificateRequest),
+    Issued(IssueRequest),
+}
+
+pub async fn create_certificate(State(state): State<AppState>, Json(req): Json<NewCertificate>) -> Json<Envelope> {
+    match req {
+        NewCertificate::Supplied(req) => add_supplied(state, req).await,
+        NewCertificate::Issued(req) => issue_certificate(state, req).await,
+    }
+}
+
+async fn add_supplied(state: AppState, req: CertificateRequest) -> Json<Envelope> {
     if let Err(e) = req.check() {
         return Json(Envelope::failed_one(e));
     }
@@ -2577,7 +2592,7 @@ fn a_year() -> i64 {
 }
 
 /// Lists a certificate this leader's own authority issues for the names asked.
-async fn issue_certificate(State(state): State<AppState>, Json(req): Json<IssueRequest>) -> Json<Envelope> {
+async fn issue_certificate(state: AppState, req: IssueRequest) -> Json<Envelope> {
     let names: Vec<String> = (req.names.iter().map(|n| n.trim().to_string()))
         .filter(|n| !n.is_empty())
         .collect();
@@ -3559,17 +3574,19 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/settings/git-remote/sync", post(remote::post_sync))
         .route("/api/branches/:name/overwrite", post(remote::overwrite))
         .route("/api/secrets", get(list_secrets).post(create_secret))
-        .route("/api/secrets/:name", put(store_secret_value).delete(delete_secret))
-        .route("/api/certificates", get(list_certificates).post(create_certificate))
-        .route("/api/certificates/issued", post(issue_certificate))
+        .route("/api/secrets/:name", delete(delete_secret))
+        .route("/api/secrets/:name/versions", post(store_secret_value))
         .route(
             "/api/secrets/:name/versions/:version",
             axum::routing::delete(forget_secret_version),
         )
         .route("/api/secrets/:name/verify", post(verify_secret))
-        .route("/api/secrets/:name/references", put(point_secret))
-        .route("/api/encryption-key", get(encryption_key))
-        .route("/api/encryption-key/regenerate", post(regenerate_encryption_key))
+        .route("/api/secrets/:name/references", post(point_secret))
+        .route("/api/settings/encryption-key", get(encryption_key))
+        .route(
+            "/api/settings/encryption-key/regenerate",
+            post(regenerate_encryption_key),
+        )
 }
 
 /// Every leader route. `admin` is [`admin_router`], wrapped in the caller's operator gate and any routes that share it.
@@ -5863,13 +5880,13 @@ mod certificate_list_tests {
 
     async fn issue_lasting(state: &AppState, name: &str, names: &[&str], validity_days: i64) -> Envelope {
         issue_certificate(
-            State(state.clone()),
-            Json(IssueRequest {
+            state.clone(),
+            IssueRequest {
                 name: name.to_string(),
                 description: String::new(),
                 names: names.iter().map(|n| n.to_string()).collect(),
                 validity_days,
-            }),
+            },
         )
         .await
         .0
@@ -5959,6 +5976,19 @@ mod certificate_list_tests {
         }
     }
 
+    /// The kind says which fields a new certificate has, and a field the kind does not have is refused.
+    #[test]
+    fn a_new_certificate_is_supplied_or_issued() {
+        use serde_json::json;
+        let parse = |body: serde_json::Value| serde_json::from_value::<NewCertificate>(body);
+        let supplied = json!({"kind": "supplied", "name": "a", "certificate": "c", "privateKey": "k"});
+        assert!(matches!(parse(supplied), Ok(NewCertificate::Supplied(_))));
+        let issued = json!({"kind": "issued", "name": "a", "names": ["localhost"]});
+        assert!(matches!(parse(issued), Ok(NewCertificate::Issued(r)) if r.validity_days == 365));
+        assert!(parse(json!({"kind": "issued", "name": "a", "names": [], "privateKey": "k"})).is_err());
+        assert!(parse(json!({"name": "a", "certificate": "c", "privateKey": "k"})).is_err());
+    }
+
     /// A connector naming a certificate may present it from any side it is usable from, so a new version keeps every
     /// purpose the newest has, and may add one.
     #[tokio::test]
@@ -5966,9 +5996,12 @@ mod certificate_list_tests {
         use rcgen::ExtendedKeyUsagePurpose::{ClientAuth, ServerAuth};
         let state = issuing("replace-purpose");
         assert!(
-            create_certificate(State(state.clone()), Json(for_purposes(vec![ServerAuth])))
-                .await
-                .ok
+            create_certificate(
+                State(state.clone()),
+                Json(NewCertificate::Supplied(for_purposes(vec![ServerAuth])))
+            )
+            .await
+            .ok
         );
         let replace = |req| replace_certificate(State(state.clone()), Path("acme".to_string()), Json(req));
         let newest = || newest_chain(state.store.as_ref(), "acme").unwrap().unwrap().0;

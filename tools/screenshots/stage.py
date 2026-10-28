@@ -372,8 +372,8 @@ def rotate():
     log("change: rotate key")
     admin = as_("admin")
     b = "rotate-es-ingest-key"
-    admin.ok(admin.call("PUT", "/api/secrets/es-ingest-api-key", {"value": "ApiKey c21lbHRyLWluZ2VzdDpkZW1vLWtleS12Mg=="}))
-    r = admin.ok(admin.call("PUT", "/api/secrets/es-ingest-api-key/references", {"version": 2, "branch": b}))
+    admin.ok(admin.call("POST", "/api/secrets/es-ingest-api-key/versions", {"value": "ApiKey c21lbHRyLWluZ2VzdDpkZW1vLWtleS12Mg=="}))
+    r = admin.ok(admin.call("POST", "/api/secrets/es-ingest-api-key/references", {"version": 2, "branch": b}))
     if not r.get("openedChange"):
         admin.open_change(b, "Rotate the Elasticsearch ingest key")
     admin.ok(admin.call("PATCH", f"/api/branches/{b}", {

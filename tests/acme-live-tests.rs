@@ -231,7 +231,7 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
             "eabHmac": null,
         })
     };
-    let (status, saved) = leader.call("PUT", "/api/settings/acme", Some(settings("tls-alpn-01")));
+    let (status, saved) = leader.call("PUT", "/api/settings/tls/acme", Some(settings("tls-alpn-01")));
     assert_eq!(status, 200, "{saved}");
     assert_eq!(saved["challenge"], "tls-alpn-01");
     assert_eq!(saved["httpPort"], HTTP_PORT);
@@ -239,14 +239,14 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
 
     // The first order is under another root than the leader's own, so it begins a rotation rather than serving at
     // once. Nobody is enrolled to wait for, and the next read of the certificates finishes it.
-    let (status, ordered) = leader.call("POST", "/api/settings/acme/order", None);
+    let (status, ordered) = leader.call("POST", "/api/settings/tls/acme/order", None);
     assert_eq!(status, 200, "{ordered}");
     assert_eq!(
         ordered["source"], "own",
         "nothing served before the fleet holds the root"
     );
     assert_eq!(ordered["rotation"]["installs"], "supplied", "{ordered}");
-    let (status, certificates) = leader.call("GET", "/api/settings/certificates", None);
+    let (status, certificates) = leader.call("GET", "/api/settings/tls", None);
     assert_eq!(status, 200, "{certificates}");
     assert_eq!(certificates["source"], "acme", "{certificates}");
     assert!(certificates["rotation"].is_null(), "{certificates}");
@@ -260,16 +260,16 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
     assert_eq!(certificates["restartRequired"], false);
     let issuing = certificates["authority"]["fingerprint"].as_str().unwrap().to_string();
     let first = certificates["served"]["fingerprint"].as_str().unwrap().to_string();
-    let (_, acme) = leader.call("GET", "/api/settings/acme", None);
+    let (_, acme) = leader.call("GET", "/api/settings/tls/acme", None);
     assert_eq!(acme["issued"], first);
     assert!(acme["lastError"].is_null(), "{acme}");
     assert!(acme["renewAfterMillis"].as_i64().unwrap() < acme["notAfterMillis"].as_i64().unwrap());
 
     // A renewal over the other challenge: the same root, so it is served at once.
-    let (status, saved) = leader.call("PUT", "/api/settings/acme", Some(settings("http-01")));
+    let (status, saved) = leader.call("PUT", "/api/settings/tls/acme", Some(settings("http-01")));
     assert_eq!(status, 200, "{saved}");
     assert_eq!(saved["issued"], first, "changing the challenge forgets nothing");
-    let (status, renewed) = leader.call("POST", "/api/settings/acme/order", None);
+    let (status, renewed) = leader.call("POST", "/api/settings/tls/acme/order", None);
     assert_eq!(status, 200, "{renewed}");
     assert_eq!(renewed["source"], "acme", "{renewed}");
     assert!(renewed["rotation"].is_null(), "{renewed}");
@@ -281,11 +281,11 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
     // A name this host does not hold: Pebble cannot reach it, and the page is told so.
     let mut elsewhere = settings("tls-alpn-01");
     elsewhere["names"] = serde_json::json!([NAME, "elsewhere.invalid"]);
-    let (status, _) = leader.call("PUT", "/api/settings/acme", Some(elsewhere));
+    let (status, _) = leader.call("PUT", "/api/settings/tls/acme", Some(elsewhere));
     assert_eq!(status, 200);
-    let (status, refused) = leader.call("POST", "/api/settings/acme/order", None);
+    let (status, refused) = leader.call("POST", "/api/settings/tls/acme/order", None);
     assert_eq!(status, 400, "{refused}");
-    let (_, acme) = leader.call("GET", "/api/settings/acme", None);
+    let (_, acme) = leader.call("GET", "/api/settings/tls/acme", None);
     assert!(acme["lastError"].as_str().is_some_and(|e| !e.is_empty()), "{acme}");
     assert_eq!(
         acme["issued"], renewed["served"]["fingerprint"],
@@ -295,7 +295,7 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
         acme["renewAfterMillis"].is_i64(),
         "saving other names leaves the renewal where it was: the page orders them itself"
     );
-    let (_, certificates) = leader.call("GET", "/api/settings/certificates", None);
+    let (_, certificates) = leader.call("GET", "/api/settings/tls", None);
     assert_eq!(
         certificates["served"]["fingerprint"], renewed["served"]["fingerprint"],
         "still serving the renewal"

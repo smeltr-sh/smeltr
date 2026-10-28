@@ -349,6 +349,7 @@ test('a receiver names a certificate from the list, and replacing the certificat
 }) => {
   const pki = fleet.externalPki();
   await api.post('/api/certificates', {
+    kind: 'supplied',
     name: 'receiver-tls',
     description: '',
     certificate: fullChain(pki),
@@ -400,6 +401,7 @@ test('a receiver names a certificate from the list, and replacing the certificat
 test('a new version without a purpose the newest has is refused', async ({ admin, api }) => {
   const server = issuedFor(['events.example.com'], 'server');
   await api.post('/api/certificates', {
+    kind: 'supplied',
     name: 'events-tls',
     description: '',
     certificate: fullChain(server),
