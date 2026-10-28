@@ -73,7 +73,7 @@ use axum::routing::{get, post, put};
 
 use crate::heartbeat::{HeartbeatRequest, HeartbeatResponse, ThreadKind};
 use envelope::Envelope;
-use registry::{Registry, ThreadHealth};
+use registry::{Registry, ThreadHealth, WorkerFacts};
 use store::{Issued, Kept, Spend, Store, StoreError};
 
 #[derive(Clone)]
@@ -343,13 +343,8 @@ async fn heartbeat(
         let boot_id = req.boot_id;
         // Empty from a worker too old to state one, which is stored as no group rather than as a group named "".
         let group = Some(req.group_id.clone()).filter(|g| !g.is_empty());
-        let (stop_after, commit) = (req.stop_after_unreachable_secs, req.commit.clone());
-        let smeltr_version = req.smeltr_version.clone();
-        let release = req.release.clone();
-        let supervising = req.supervising.clone();
-        let resources = req.resources;
+        let facts = WorkerFacts::of(&req, now_ms);
         let data_dir = state.data_dir.clone();
-        let authority_expires = req.authority_expires_millis;
         // Kept by worker rather than by thread, so a worker running nothing still counts toward a rotation. Set
         // before the blocking hop, because the answer below is built from it.
         state
@@ -365,25 +360,13 @@ async fn heartbeat(
                 });
                 // A worker that names no commit, or a leader with nothing deployed, cannot tell a rollout apart, so
                 // the report counts as the deployed one.
-                let deployed = match (&commit, git::deployed(&git::repo_path(&data_dir))) {
+                let deployed = match (&facts.commit, git::deployed(&git::repo_path(&data_dir))) {
                     (Some(running), Some(deployed)) => *running == deployed,
                     _ => true,
                 };
                 registry.record_streams(group.as_deref(), streams, window, deployed, now_ms);
             }
-            registry.record_heartbeat(
-                &worker,
-                threads,
-                stop_after,
-                commit,
-                smeltr_version,
-                release,
-                supervising,
-                resources,
-                authority_expires,
-                stopping,
-                now_ms,
-            );
+            registry.record_heartbeat(&worker, threads, facts, now_ms);
         })
         .await;
         // Said rather than swallowed: this is what updates the live view as well as the durable one, so a worker
@@ -4616,14 +4599,10 @@ mod warnings_endpoint_tests {
                 partitions_owned: vec![],
                 metrics: vec![],
             }],
-            None,
-            None,
-            crate::version::VERSION.to_string(),
-            None,
-            None,
-            None,
-            None,
-            false,
+            WorkerFacts {
+                smeltr_version: crate::version::VERSION.to_string(),
+                ..Default::default()
+            },
             0,
         );
         assert!(warnings_snapshot(&state).await.unwrap().is_empty());
@@ -4697,14 +4676,10 @@ mod warnings_endpoint_tests {
                     value: MetricValueDto::Text("held".to_string()),
                 }],
             }],
-            None,
-            None,
-            crate::version::VERSION.to_string(),
-            None,
-            None,
-            None,
-            None,
-            false,
+            WorkerFacts {
+                smeltr_version: crate::version::VERSION.to_string(),
+                ..Default::default()
+            },
             0,
         );
         run_store(state.store.clone(), |s| s.store_worker_credential("w2", "hash"))
@@ -4759,32 +4734,18 @@ mod warnings_endpoint_tests {
         state.registry.record_heartbeat(
             "w1",
             vec![held.clone()],
-            None,
-            None,
-            crate::version::VERSION.to_string(),
-            None,
-            None,
-            None,
-            None,
-            false,
+            WorkerFacts {
+                smeltr_version: crate::version::VERSION.to_string(),
+                ..Default::default()
+            },
             0,
         );
 
         let first = warnings_snapshot(&state).await.unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        state.registry.record_heartbeat(
-            "w1",
-            vec![held],
-            None,
-            None,
-            String::new(),
-            None,
-            None,
-            None,
-            None,
-            false,
-            0,
-        );
+        state
+            .registry
+            .record_heartbeat("w1", vec![held], WorkerFacts::default(), 0);
         let second = warnings_snapshot(&state).await.unwrap();
 
         assert_eq!(first.len(), 1);
