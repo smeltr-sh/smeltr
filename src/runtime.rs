@@ -984,7 +984,14 @@ impl Transform {
             Ok(Ok(())) => {
                 let t = std::time::Instant::now();
                 let dests = lane.destinations();
-                match self.hand_off(lane_idx, batch, records, waiting_since, false, &dests, out.rows) {
+                let turn = Turn {
+                    lane: lane_idx,
+                    batch,
+                    records,
+                    unprocessable: false,
+                    waiting_since,
+                };
+                match self.hand_off(turn, &dests, out.rows) {
                     Err(e) => {
                         reports.send(Report::Block(BlockCause::Waiting, undeliverable(&e)));
                         return Err(e);
@@ -1052,17 +1059,19 @@ impl Transform {
     /// having ended clean. A routed batch asks every destination its lane reaches, including ones it has nothing for:
     /// `track` put all of them on the batch's waiting list at poll time, and one handed nothing completes at once. An
     /// unprocessable one asks only where its answer sends it: the reader has stopped waiting on the rest.
-    #[allow(clippy::too_many_arguments)]
     fn hand_off(
         &mut self,
-        lane: usize,
-        id: BatchId,
-        records: Vec<SourceRecord>,
-        waiting_since: Option<std::time::Instant>,
-        unprocessable: bool,
+        turn: Turn,
         dests: &[DestId],
         mut rows: HashMap<DestId, Vec<OwnedRecord>>,
     ) -> Result<HandOff, IoError> {
+        let Turn {
+            lane,
+            batch: id,
+            records,
+            unprocessable,
+            waiting_since,
+        } = turn;
         for &dest_id in dests {
             let Some(i) = self.destinations.iter().position(|d| d.id == dest_id) else {
                 // `deploy` gives every thread a handle for every destination, so this is a worker built by hand with a
@@ -2017,7 +2026,14 @@ impl Transform {
                 let these: Vec<_> = records.iter().enumerate().collect();
                 self.place_delivered(&mut out, &targets, &these, &lane, None, DROPPED_UNPROCESSABLE);
                 drop(these);
-                match self.hand_off(lane_idx, batch, records, waiting_since, true, &to, out.rows) {
+                let turn = Turn {
+                    lane: lane_idx,
+                    batch,
+                    records,
+                    unprocessable: true,
+                    waiting_since,
+                };
+                match self.hand_off(turn, &to, out.rows) {
                     Err(e) => {
                         lane.reports.send(Report::Block(BlockCause::Waiting, undeliverable(&e)));
                         return Err(e);
