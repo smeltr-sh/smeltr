@@ -1563,7 +1563,7 @@ fn a_receiver_answers_a_request_sent_while_its_runtime_was_being_replaced() {
 /// the running deployment keeps serving the version it started with.
 #[cfg(unix)]
 #[test]
-fn a_certificate_version_the_deployment_would_refuse_leaves_it_running() {
+fn a_certificate_version_the_receiver_could_not_serve_is_refused_and_it_keeps_running() {
     let reach = Reach {
         receivers: Some("127.0.0.1"),
         ..Reach::LOOPBACK
