@@ -1092,9 +1092,14 @@ async fn setup_leader(
         // Not on `app` below with the rest of the samples routes: the capture a sample is made from is held in
         // `State<AppState>`.
         .route("/api/areas/:area/samples", post(capture_api::save_capture))
-        // Not on `app` below with the rest of the config routes: retention after an upload keeps what the fleet runs,
-        // which the registry knows. A lookup file is streamed to disk, so the limit is what a disk takes rather than
-        // what memory holds.
+        // Not on `app` below with the rest of the config routes: retention after a table's saved contents and after an
+        // upload keeps what the fleet runs, which the registry knows. An edited CSV travels whole in this body, so it
+        // is as large as the file.
+        .route(
+            "/api/areas/:area/lookups",
+            put(config_api::put_lookup_tables).layer(axum::extract::DefaultBodyLimit::max(256 << 20)),
+        )
+        // A lookup file is streamed to disk, so the limit is what a disk takes rather than what memory holds.
         .route(
             "/api/areas/:area/lookups/upload",
             post(upload_lookup).layer(axum::extract::DefaultBodyLimit::max(
@@ -2095,11 +2100,6 @@ async fn run_leader() {
         .route("/api/areas/:area/preview/schema-import", post(import_schema))
         .route("/api/preview/from-json-schema", post(schema_api::from_json_schema))
         .route("/api/preview/schema-export", post(schema_api::export))
-        // An edited CSV travels whole in this body, so it is as large as the file.
-        .route(
-            "/api/areas/:area/lookups",
-            put(config_api::put_lookup_tables).layer(axum::extract::DefaultBodyLimit::max(256 << 20)),
-        )
         .route("/api/areas/:area/manifest", put(config_api::put_manifest))
         .route("/api/areas/:area/pipelines", get(config_api::list_pipelines))
         .route(
