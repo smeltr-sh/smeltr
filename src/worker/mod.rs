@@ -1180,17 +1180,19 @@ fn spawn_reader(
 ///
 /// `topology` arrives compiled because compiling is the one failure the caller must find before it tears the running
 /// deployment down -- see [`redeploy`]. It is read-only afterward, and every thread in the pool runs the same plans.
-#[allow(clippy::too_many_arguments)]
 fn deploy(
     system: &LoadedSystem,
     topology: Arc<crate::plan::topology::CompiledTopology>,
     thread_limit: usize,
     fitted: Option<memory::Fit>,
-    captures: &Arc<capture::Captures>,
-    secrets: &crate::plan::topology::HeldSecrets,
-    registry: &Arc<Metrics>,
-    held: &Arc<held::Held>,
+    runtime: &child::Runtime,
 ) -> Result<Deployment, String> {
+    let child::Runtime {
+        captures,
+        secrets,
+        registry,
+        held,
+    } = runtime;
     let registry = registry.clone();
     let refusals = Arc::new(crate::runtime::RefusalRing::default());
     // One tallied batch per route per heartbeat: what the leader sees of a stream arrives at the pace it hears
@@ -4753,14 +4755,8 @@ fn committer_time(repo_dir: &Path, commit: &str) -> Result<i64, String> {
 
 /// Load a commit and start running it, in the process that will run it. Every refusal here happens before
 /// anything is consumed: the supervisor keeps whatever was running and retries the latest target.
-fn start_deployment(
-    spec: &child::StartSpec,
-    captures: &Arc<capture::Captures>,
-    secrets: &crate::plan::topology::HeldSecrets,
-    registry: &Arc<Metrics>,
-    held: &Arc<held::Held>,
-) -> Result<Deployment, String> {
-    let (mut system, topology, _) = load_target(&spec.repo_dir, &spec.commit, &spec.group_id, secrets)?;
+fn start_deployment(spec: &child::StartSpec, runtime: &child::Runtime) -> Result<Deployment, String> {
+    let (mut system, topology, _) = load_target(&spec.repo_dir, &spec.commit, &spec.group_id, &runtime.secrets)?;
     // What differs between the workers of a group, which the bundle they all run cannot say.
     let zone = crate::startup_config::worker_zone();
     for source in &mut system.topology.sources {
@@ -4790,17 +4786,7 @@ fn start_deployment(
         None => None,
     };
     process_memory_budget().set_limit(fitted.map_or_else(crate::startup_config::memory_budget_bytes, |f| f.columnar));
-    deploy(
-        &system,
-        topology,
-        spec.thread_limit,
-        fitted,
-        captures,
-        secrets,
-        registry,
-        held,
-    )
-    .map_err(|e| e.to_string())
+    deploy(&system, topology, spec.thread_limit, fitted, runtime).map_err(|e| e.to_string())
 }
 
 /// Serve one capture invitation. A source this deployment already reads is tapped by the transform threads with
@@ -8271,17 +8257,10 @@ mod tests {
             secrets: vec![],
             incarnation: 1,
         };
-        let mut secrets = crate::plan::topology::HeldSecrets::default();
-        secrets.set_stored([("t".to_string(), 1, "T".to_string())]);
-        let registry = Arc::new(Metrics::new());
-        let deployment = start_deployment(
-            &spec,
-            &Arc::new(capture::Captures::default()),
-            &secrets,
-            &registry,
-            &Arc::default(),
-        )
-        .unwrap();
+        let mut runtime = child::Runtime::default();
+        runtime.secrets.set_stored([("t".to_string(), 1, "T".to_string())]);
+        let registry = runtime.registry.clone();
+        let deployment = start_deployment(&spec, &runtime).unwrap();
 
         let parts = |samples: Vec<crate::metrics::MetricSample>| {
             let mut parts: Vec<Vec<(&'static str, String)>> = samples
@@ -8388,14 +8367,7 @@ mod tests {
             secrets: vec![],
             incarnation: 1,
         };
-        let deployment = start_deployment(
-            &spec,
-            &Arc::new(capture::Captures::default()),
-            &crate::plan::topology::HeldSecrets::default(),
-            &Arc::new(Metrics::new()),
-            &Arc::default(),
-        )
-        .unwrap();
+        let deployment = start_deployment(&spec, &child::Runtime::default()).unwrap();
         // Long enough for the metrics source to hand over a batch the destination will never acknowledge.
         std::thread::sleep(Duration::from_secs(3));
 
@@ -8414,9 +8386,7 @@ mod tests {
     #[test]
     fn a_commit_that_does_not_load_is_refused_rather_than_started() {
         let dir = repo("no-compile");
-        let captures = Arc::new(capture::Captures::default());
-        let registry = Arc::new(Metrics::new());
-        let secrets = crate::plan::topology::HeldSecrets::default();
+        let runtime = child::Runtime::default();
 
         // An empty bundle deploys: no sources, no destinations, and so no threads.
         let good = head_of(&dir);
@@ -8431,7 +8401,7 @@ mod tests {
             secrets: vec![],
             incarnation: 1,
         };
-        let Ok(deployment) = start_deployment(&spec(&good), &captures, &secrets, &registry, &Arc::default()) else {
+        let Ok(deployment) = start_deployment(&spec(&good), &runtime) else {
             panic!("an empty bundle runs")
         };
         stop_deployment(deployment);
@@ -8442,7 +8412,7 @@ mod tests {
             r#"{"id":"p","steps":[{"type":"nonsense"}]}"#,
         );
         let bad = commit(&dir, "a pipeline that does not load");
-        let Err(refused) = start_deployment(&spec(&bad), &captures, &secrets, &registry, &Arc::default()) else {
+        let Err(refused) = start_deployment(&spec(&bad), &runtime) else {
             panic!("a commit that does not load cannot start")
         };
         assert!(refused.contains("does not load"), "unexpected refusal: {refused}");
@@ -8487,10 +8457,7 @@ mod tests {
                 secrets: vec![],
                 incarnation: 1,
             },
-            &Arc::new(capture::Captures::default()),
-            &crate::plan::topology::HeldSecrets::default(),
-            &Arc::new(Metrics::new()),
-            &Arc::default(),
+            &child::Runtime::default(),
         ) else {
             panic!("a credential this host does not hold cannot be deployed against")
         };
