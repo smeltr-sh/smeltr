@@ -223,6 +223,8 @@ pub enum AuthSource {
     Local,
     /// An issuer and a subject an OpenID provider vouches for. The leader holds no credential for it.
     Oidc,
+    /// A script outside the leader, calling the API with a key ([`IntegrationRecord`]). It never signs in.
+    Integration,
 }
 
 impl AuthSource {
@@ -230,6 +232,7 @@ impl AuthSource {
         match self {
             AuthSource::Local => "local",
             AuthSource::Oidc => "oidc",
+            AuthSource::Integration => "integration",
         }
     }
 
@@ -237,6 +240,7 @@ impl AuthSource {
         match s {
             "local" => Some(AuthSource::Local),
             "oidc" => Some(AuthSource::Oidc),
+            "integration" => Some(AuthSource::Integration),
             _ => None,
         }
     }
@@ -287,7 +291,7 @@ pub struct SecurityEvent {
     pub actor: String,
     /// What was attempted, in a fixed vocabulary: `login`, `logout`, `password-change`, `account-create`,
     /// `account-disable`, `account-enable`, `password-reset`, `revoke-sessions`, `bootstrap`, `recover`, `role-put`,
-    /// `role-delete`.
+    /// `role-delete`, `integration-create`, `integration-change`, `integration-disable`, `key-create`, `key-revoke`.
     pub action: String,
     /// What it was done to -- a user id, usually. Empty when the action names no object.
     pub target: String,
@@ -368,6 +372,10 @@ pub enum AccountError {
     NoSuchUser,
     /// The operation would leave no enabled administrator able to log in.
     LastAdministrator,
+    /// Another integration has that name.
+    NameTaken,
+    /// The integration is disabled, and takes no key until it is enabled.
+    Disabled,
     /// A local-credential operation named an account that is not local.
     WrongAuthSource,
     /// The account moved on since the caller read it: disabled, or its generation bumped by a reset or a
@@ -381,6 +389,8 @@ impl std::fmt::Display for AccountError {
             AccountError::UsernameTaken => write!(f, "that username is already taken"),
             AccountError::NoSuchUser => write!(f, "no such user"),
             AccountError::LastAdministrator => write!(f, "this is the last local administrator account"),
+            AccountError::NameTaken => write!(f, "another integration has that name"),
+            AccountError::Disabled => write!(f, "that integration is disabled"),
             AccountError::WrongAuthSource => write!(f, "that account does not sign in with a password"),
             AccountError::Superseded => write!(f, "that account changed since it was read"),
         }
@@ -422,6 +432,66 @@ pub struct OidcIdentityRecord {
     /// What the provider called the person at the last sign-in or refresh: their email, else their preferred username.
     pub login: Option<String>,
     pub last_sign_in: i64,
+}
+
+/// An integration: an account a script outside the leader calls the operator API as, with one of its keys. Its name
+/// is its account's display name, and what it holds comes from its roles, as an OIDC account's comes from its groups.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntegrationRecord {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    /// The roles an administrator gave it, by name.
+    pub roles: Vec<String>,
+    /// Holds everything, whatever its roles give.
+    pub administrator: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// Its keys still in force, oldest first. Never a key or its hash.
+    pub keys: Vec<ApiKeyRecord>,
+}
+
+/// One key an integration holds, as its roster shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApiKeyRecord {
+    pub id: String,
+    pub label: String,
+    pub created_at: i64,
+    /// When it last let a request in, to the minute. `None` for a key never used.
+    pub last_used_at: Option<i64>,
+}
+
+/// A key presented to the gate, as its row says: whose it is, and whether it still lets anyone in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PresentedKey {
+    pub id: String,
+    pub user_id: String,
+    pub revoked: bool,
+    pub last_used_at: Option<i64>,
+}
+
+/// A new integration, which holds no key until one is made for it.
+pub struct NewIntegration<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub roles: &'a [String],
+    pub administrator: bool,
+}
+
+/// A new key. The key itself is never here: the leader answers it once and keeps the hash.
+pub struct NewApiKey<'a> {
+    pub id: &'a str,
+    pub label: &'a str,
+    pub token_hash: &'a str,
+    pub created_at: i64,
+}
+
+/// One change to an integration, as one change to an account is one field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IntegrationChange {
+    Name(String),
+    Roles(Vec<String>),
+    Administrator(bool),
 }
 
 /// A conversation between a person and their agent. Its turns are kept apart, in order.
@@ -919,6 +989,59 @@ pub trait Store: Send + Sync {
 
     /// Newest first, capped at `limit`.
     fn list_security_events(&self, limit: usize) -> Result<Vec<SecurityEvent>, StoreError>;
+
+    // -- integrations ------------------------------------------------------
+    //
+    // A key is written and compared as its hash, never listed: only `api_key_by_hash` reads a key's row by it.
+
+    /// Create an enabled integration with no key, `event` in the same transaction. Refused when another integration
+    /// has its name.
+    fn create_integration(
+        &self,
+        integration: NewIntegration<'_>,
+        event: &SecurityEvent,
+    ) -> Result<Result<(), AccountError>, StoreError>;
+
+    /// Every integration, oldest first, each with its keys in force.
+    fn list_integrations(&self) -> Result<Vec<IntegrationRecord>, StoreError>;
+
+    /// The integration `id`. `None` for no account, or an account that is not an integration.
+    fn integration(&self, id: &str) -> Result<Option<IntegrationRecord>, StoreError>;
+
+    /// Change one thing about an integration, `event` in the same transaction.
+    fn change_integration(
+        &self,
+        id: &str,
+        change: &IntegrationChange,
+        event: &SecurityEvent,
+    ) -> Result<Result<(), AccountError>, StoreError>;
+
+    /// Enable or disable an integration, `event` in the same transaction. Disabling revokes every key it holds, so
+    /// enabling it again brings back none of them.
+    fn set_integration_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+        event: &SecurityEvent,
+    ) -> Result<Result<(), AccountError>, StoreError>;
+
+    /// Give the enabled integration `id` a new key, `event` in the same transaction.
+    fn create_api_key(
+        &self,
+        id: &str,
+        key: NewApiKey<'_>,
+        event: &SecurityEvent,
+    ) -> Result<Result<(), AccountError>, StoreError>;
+
+    /// Revoke the key `key_id` of the integration `id` at `at`, `event` in the same transaction. Its row stays, so
+    /// the key stays out. False when the integration holds no such key in force.
+    fn revoke_api_key(&self, id: &str, key_id: &str, at: i64, event: &SecurityEvent) -> Result<bool, StoreError>;
+
+    /// The key whose hash is `token_hash`, revoked or not. `None` for a key never made.
+    fn api_key_by_hash(&self, token_hash: &str) -> Result<Option<PresentedKey>, StoreError>;
+
+    /// Record that the key `key_id` let a request in at `at`.
+    fn mark_api_key_used(&self, key_id: &str, at: i64) -> Result<(), StoreError>;
 
     /// What `user_id` lets their own agent use: the default until they have said.
     fn agent_permissions_of(&self, user_id: &str) -> Result<super::access::AgentPermissions, StoreError>;
