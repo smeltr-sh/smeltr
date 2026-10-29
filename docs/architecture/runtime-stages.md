@@ -116,8 +116,9 @@ draining a queue every reader pushes to. Retry belongs to egress: it keeps
 each unit until acknowledged and re-sends it itself, so a reader carries
 offsets and nothing else. A destination that names which of a batch's rows
 did not land has only those sent again: the rest of the batch is released,
-and the batch is acknowledged once they land. Any other delivery failure sends
-again every unit not yet acknowledged. A destination's limit is its share of the pool when
+and the batch is acknowledged once they land. A batch the destination would not
+take is sent again alone. A destination that fails as a whole sends again every
+unit not yet acknowledged. A destination's limit is its share of the pool when
 the worker sizes it, else the `bufferBytes` it states or its kind's default.
 One that writes files holds up to its limit, since it acknowledges a batch
 only once the file holding it commits. Every other destination is paced:

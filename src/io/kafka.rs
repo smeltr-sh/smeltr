@@ -21,7 +21,7 @@ use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use crate::core::id::DestId;
 use crate::io::{
     BatchCompletion, BatchId, CommitMap, Destination, Dispatched, IoError, OutgoingRecord, OwnedRecord, PartitionLag,
-    Rejection, Source, SourceRecord, TopicPartition,
+    Rejection, Source, SourceRecord, TopicPartition, Undelivered,
 };
 use crate::metrics::MetricsHandle;
 use crate::plan::topology::{HeldSecrets, KafkaDestinationConfig, KafkaProps, KafkaSourceConfig, StopPosition, Tls};
@@ -85,12 +85,16 @@ fn held_bytes(value: usize, key: usize) -> usize {
     value + key + MESSAGE_OVERHEAD_BYTES
 }
 
-/// What one queued record carries back to its delivery report.
+/// What one queued record carries back to its delivery report. Sixteen bytes, so each record's allocation is the
+/// allocator's smallest (`per_message_overhead`): a record is under `message.max.bytes`'s 1 GB, and a batch has fewer
+/// rows than `u32` counts.
 struct Sent {
     /// The send-sequence its batch was tagged with, so an acknowledgment is attributed to the batch.
     seq: u64,
     /// Its `held_bytes`, given back when it is reported.
-    held: usize,
+    held: u32,
+    /// Its position in the rows its batch was handed over with, so a failure names it.
+    row: u32,
 }
 
 /// The range librdkafka lets `message.max.bytes` take. A broker ceiling outside it is brought inside: a producer built
@@ -123,6 +127,7 @@ fn is_rejection(e: &KafkaError) -> bool {
             | RDKafkaErrorCode::UnknownTopicOrPartition
             | RDKafkaErrorCode::InvalidMessage
             | RDKafkaErrorCode::InvalidMessageSize
+            | RDKafkaErrorCode::InvalidRecord
     )
 }
 
@@ -891,43 +896,92 @@ impl Source for KafkaSource {
 /// a batch is acknowledged (design doc, Runtime stages), so failures are recorded here.
 #[derive(Default)]
 struct Completion {
-    /// Unacknowledged records per send-sequence. Keyed by sequence rather than batch id: a hand-over that fails part
-    /// way leaves records queued under the sequence, and the re-send joins them under a batch id of its own.
+    /// Unreported records per send-sequence. Keyed by sequence rather than batch id: records are counted as they are
+    /// queued, before the hand-over is sealed under its batch.
     outstanding: HashMap<u64, u64>,
     /// Sealed sequences and their batch ids. A sequence not here is still accumulating and must not be reported
     /// complete.
     sealed: HashMap<u64, BatchId>,
-    /// Sealed and fully acknowledged, waiting to be reported.
-    done: Vec<BatchId>,
-    /// Sequences with at least one failed record. Never reported complete, or the caller would commit past records that
-    /// are not in Kafka.
-    failed_seqs: HashSet<u64>,
-    /// The first delivery failure since last taken.
-    failed: Option<String>,
+    /// What each sequence's records that did not land said.
+    failed: HashMap<u64, Failed>,
+    /// Sequences a hand-over that failed part way left records queued under. Its batch goes again whole, under a
+    /// sequence of its own, so what is reported for these answers for nothing.
+    abandoned: HashSet<u64>,
+    /// Sealed and wholly reported, waiting to be returned.
+    done: Vec<BatchCompletion>,
+}
+
+/// What a sequence's records that did not land said.
+#[derive(Default)]
+struct Failed {
+    /// The rows that may land if sent again, under the first such failure.
+    undelivered: Option<Undelivered>,
+    /// The records the broker refuses however often they are sent, for the destination's answer to `Refused`.
+    refused: Vec<Rejection>,
+}
+
+/// Why a record did not land.
+enum Failure {
+    /// It may land if sent again.
+    Undelivered(String),
+    /// It never will, as sent (`is_rejection`).
+    Refused(String),
 }
 
 impl Completion {
-    /// A sequence completes once it is sealed and has nothing outstanding; either can happen last.
+    /// Row `row` of sequence `seq` was reported: landed, or `failure`.
+    fn reported(&mut self, seq: u64, row: usize, failure: Option<Failure>) {
+        if let Some(failure) = failure.filter(|_| !self.abandoned.contains(&seq)) {
+            let failed = self.failed.entry(seq).or_default();
+            match failure {
+                Failure::Undelivered(why) => failed
+                    .undelivered
+                    .get_or_insert_with(|| Undelivered {
+                        error: IoError::transient(format!("a produced message failed to deliver: {why}")),
+                        rows: Vec::new(),
+                    })
+                    .rows
+                    .push(row),
+                Failure::Refused(reason) => failed.refused.push(Rejection {
+                    doc: row,
+                    reason,
+                    record: None,
+                }),
+            }
+        }
+        if let Some(n) = self.outstanding.get_mut(&seq) {
+            *n = n.saturating_sub(1);
+        }
+        self.settle(seq);
+    }
+
+    /// A sequence completes once it is sealed and has nothing outstanding; either can happen last. One abandoned is
+    /// forgotten once nothing of it is outstanding.
     fn settle(&mut self, seq: u64) {
-        if self.failed_seqs.contains(&seq) {
+        if self.outstanding.get(&seq).is_some_and(|n| *n > 0) {
             return;
         }
-        if self.outstanding.get(&seq).is_none_or(|n| *n == 0)
-            && let Some(batch) = self.sealed.remove(&seq)
-        {
+        if self.abandoned.remove(&seq) {
             self.outstanding.remove(&seq);
-            self.done.push(batch);
+            return;
+        }
+        if let Some(batch) = self.sealed.remove(&seq) {
+            self.outstanding.remove(&seq);
+            let failed = self.failed.remove(&seq).unwrap_or_default();
+            self.done.push(BatchCompletion {
+                batch,
+                rejections: failed.refused,
+                throttled: false,
+                undelivered: failed.undelivered,
+            });
         }
     }
 
-    /// Forgets everything: the caller has been told delivery failed and re-runs those batches from their source
-    /// records.
-    fn reset(&mut self) {
-        self.outstanding.clear();
-        self.sealed.clear();
-        self.done.clear();
-        self.failed_seqs.clear();
-        self.failed = None;
+    /// The hand-over under `seq` failed part way, and its batch goes again whole.
+    fn abandon(&mut self, seq: u64) {
+        self.failed.remove(&seq);
+        self.abandoned.insert(seq);
+        self.settle(seq);
     }
 }
 
@@ -1084,27 +1138,27 @@ impl ProducerContext for DeliveryTracker {
     type DeliveryOpaque = Box<Sent>;
 
     fn delivery(&self, result: &DeliveryResult<'_>, sent: Self::DeliveryOpaque) {
-        self.held.fetch_sub(sent.held, std::sync::atomic::Ordering::Relaxed);
-        let seq = sent.seq;
-        let mut state = self.state.lock().unwrap();
-        if let Err((e, _)) = result {
-            // First failure wins; `flush` reports one `Result`.
-            if state.failed.is_none() {
-                state.failed = Some(match e {
-                    KafkaError::MessageProduction(RDKafkaErrorCode::UnsupportedForMessageFormat)
-                        if self.gzip_to_event_hubs =>
-                    {
-                        format!("{e}. The namespace does not take gzip; set compression to none")
-                    }
-                    _ => e.to_string(),
-                });
+        self.held
+            .fetch_sub(sent.held as usize, std::sync::atomic::Ordering::Relaxed);
+        let failure = result.as_ref().err().map(|(e, _)| {
+            let why = match e {
+                KafkaError::MessageProduction(RDKafkaErrorCode::UnsupportedForMessageFormat)
+                    if self.gzip_to_event_hubs =>
+                {
+                    format!("{e}. The namespace does not take gzip; set compression to none")
+                }
+                _ => e.to_string(),
+            };
+            if is_rejection(e) {
+                Failure::Refused(why)
+            } else {
+                Failure::Undelivered(why)
             }
-            state.failed_seqs.insert(seq);
-        }
-        if let Some(n) = state.outstanding.get_mut(&seq) {
-            *n = n.saturating_sub(1);
-        }
-        state.settle(seq);
+        });
+        self.state
+            .lock()
+            .unwrap()
+            .reported(sent.seq, sent.row as usize, failure);
     }
 }
 
@@ -1291,11 +1345,15 @@ impl KafkaDestination {
     /// Queue one record with librdkafka under the batch being handed over. `record.doc_id` is ignored. `key` is the
     /// partition key, and routing a document id into it would change partitioning and ordering on every Kafka
     /// destination in a deployment that only meant to turn on Elasticsearch dedupe.
-    fn produce(&mut self, out: OutgoingRecord<'_>) -> Result<(), IoError> {
+    fn produce(&mut self, row: usize, out: OutgoingRecord<'_>) -> Result<(), IoError> {
         use std::sync::atomic::Ordering::Relaxed;
         let topic = out.placement.unwrap_or(&self.default_topic);
         let held = held_bytes(out.value.len(), out.key.map_or(0, <[u8]>::len));
-        let sent = Box::new(Sent { seq: self.seq, held });
+        let sent = Box::new(Sent {
+            seq: self.seq,
+            held: u32::try_from(held).expect("a record is under message.max.bytes"),
+            row: u32::try_from(row).expect("a batch has fewer rows than u32 counts"),
+        });
         let mut record = BaseRecord::with_opaque_to(topic, sent).payload(out.value);
         if let Some(k) = out.key {
             record = record.key(k);
@@ -1395,12 +1453,16 @@ impl Destination for KafkaDestination {
                     }
                 }
             }
-            match self.produce(out) {
+            match self.produce(i, out) {
                 Ok(()) => {}
                 // Refused before queuing: this record is refused, and the batch goes on without it.
                 Err(e) if e.is_rejection() => rejections.push(Rejection::of(&rows, i, e.message)),
-                // The records already queued stay counted under this batch, and the re-send joins them.
-                Err(e) => return Err(e),
+                // The batch goes again whole, so what is already queued of it answers for nothing.
+                Err(e) => {
+                    self.state.lock().unwrap().abandon(self.seq);
+                    self.seq += 1;
+                    return Err(e);
+                }
             }
         }
         {
@@ -1427,17 +1489,11 @@ impl Destination for KafkaDestination {
             }
             self.producer.poll(Duration::from_millis(1));
         }
+        // The barrier form: everything sent so far is reported, so settle whatever is still waiting. A record that
+        // failed comes back with its batch's completion.
         let mut state = self.state.lock().unwrap();
-        // Checked before anything is settled: an empty queue does not mean every message delivered, and settling first
-        // would complete a batch whose records failed.
-        if let Some(msg) = state.failed.take() {
-            state.reset();
-            return Err(IoError::transient(format!(
-                "a produced message failed to deliver: {msg}"
-            )));
-        }
-        // The barrier form: everything sent so far is delivered, so seal whatever is still accumulating.
         state.outstanding.clear();
+        state.abandoned.clear();
         let sealed: Vec<u64> = state.sealed.keys().copied().collect();
         for seq in sealed {
             state.settle(seq);
@@ -1447,24 +1503,7 @@ impl Destination for KafkaDestination {
 
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
         self.producer.poll(Duration::ZERO);
-        let mut state = self.state.lock().unwrap();
-        if let Some(msg) = state.failed.take() {
-            state.reset();
-            return Err(IoError::transient(format!(
-                "a produced message failed to deliver: {msg}"
-            )));
-        }
-        // Rejections are always empty: librdkafka refuses a record synchronously in `deliver`, so none waits for an
-        // acknowledgment.
-        Ok(std::mem::take(&mut state.done)
-            .into_iter()
-            .map(|batch| BatchCompletion {
-                batch,
-                rejections: Vec::new(),
-                throttled: false,
-                undelivered: None,
-            })
-            .collect())
+        Ok(std::mem::take(&mut self.state.lock().unwrap().done))
     }
 
     /// Set by the producer's own error callback, which `poll_completions` runs.
@@ -1542,7 +1581,8 @@ mod tests {
         for seq in 0..RECORDS {
             let sent = Box::new(Sent {
                 seq: seq as u64,
-                held: held_bytes(1, 0),
+                held: held_bytes(1, 0) as u32,
+                row: 0,
             });
             let record = BaseRecord::<(), [u8], _>::with_opaque_to("t", sent).payload(b"x");
             producer.send(record).map_err(|(e, _)| e).unwrap();
@@ -2201,6 +2241,96 @@ mod tests {
         );
     }
 
+    /// A sequence completes once, after its last record is reported, naming the rows that may land if sent again and
+    /// refusing the ones that never will; one a failed hand-over abandoned answers for nothing.
+    #[test]
+    fn a_completion_names_the_rows_that_did_not_land() {
+        let mut state = Completion::default();
+        state.outstanding.insert(0, 3);
+        state.reported(0, 0, None);
+        state.reported(0, 1, Some(Failure::Undelivered("timed out".into())));
+        state.reported(0, 2, Some(Failure::Refused("too large".into())));
+        assert!(state.done.is_empty(), "not before it is sealed");
+        state.sealed.insert(0, 7);
+        state.settle(0);
+        let done = std::mem::take(&mut state.done);
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].batch, 7);
+        assert_eq!(done[0].rejections.iter().map(|r| r.doc).collect::<Vec<_>>(), vec![2]);
+        let undelivered = done[0].undelivered.as_ref().expect("a row did not land");
+        assert_eq!(undelivered.rows, vec![1]);
+        assert!(undelivered.error.message.contains("timed out"), "{}", undelivered.error);
+
+        state.outstanding.insert(1, 2);
+        state.reported(1, 0, Some(Failure::Undelivered("timed out".into())));
+        state.abandon(1);
+        state.reported(1, 1, None);
+        state.outstanding.insert(2, 1);
+        state.sealed.insert(2, 8);
+        state.reported(2, 0, None);
+        let done = std::mem::take(&mut state.done);
+        assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![8]);
+        assert!(
+            done[0].undelivered.is_none(),
+            "the abandoned sequence's failure is not the next one's"
+        );
+        assert!(state.outstanding.is_empty() && state.abandoned.is_empty() && state.failed.is_empty());
+    }
+
+    /// A record the broker failed is that batch's alone: a failure that may pass names its rows to send again, one
+    /// that never will refuses them, and a batch beside it lands.
+    #[test]
+    fn a_failed_record_comes_back_with_its_own_batch() {
+        use rdkafka::types::{RDKafkaApiKey, RDKafkaRespErr};
+        let mock = mock_cluster_with_topic("failing-topic");
+        let mut dest = KafkaDestination::new(
+            &KafkaDestinationConfig {
+                payload: crate::plan::config::Payload::Record,
+                compression: crate::plan::topology::Compression::None,
+                acks: crate::plan::topology::Acks::All,
+                stall_after: Duration::from_secs(10),
+                brokers: mock.bootstrap_servers(),
+                default_topic: "failing-topic".to_string(),
+                service: crate::plan::topology::KafkaService::Kafka,
+                tls: None,
+                buffer_bytes: 64 * 1024 * 1024,
+                props: Default::default(),
+                avro: None,
+            },
+            7,
+            MetricsHandle::new(Arc::new(crate::metrics::Metrics::new()), "egress-7"),
+            &Default::default(),
+        )
+        .unwrap();
+        let rows =
+            |n: usize| -> Vec<OwnedRecord> { (0..n).map(|_| OwnedRecord::from(&OutgoingRecord::new(b"x"))).collect() };
+        let mut answer = |batch: BatchId, error: Option<RDKafkaRespErr>| {
+            if let Some(error) = error {
+                mock.request_errors(RDKafkaApiKey::Produce, &[error]);
+            }
+            dest.deliver(batch, Cow::Owned(rows(2))).unwrap();
+            dest.flush().unwrap();
+            let done = dest.poll_completions().expect("a failed record fails no poll");
+            assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![batch]);
+            let c = &done[0];
+            (
+                c.undelivered.as_ref().map(|u| u.rows.clone()),
+                c.rejections.iter().map(|r| r.doc).collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            answer(1, Some(RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION)),
+            (Some(vec![0, 1]), vec![]),
+            "a failure that may pass names the rows to send again"
+        );
+        assert_eq!(
+            answer(2, Some(RDKafkaRespErr::RD_KAFKA_RESP_ERR_MSG_SIZE_TOO_LARGE)),
+            (None, vec![0, 1]),
+            "one that never will refuses them"
+        );
+        assert_eq!(answer(3, None), (None, vec![]), "and the next batch lands");
+    }
+
     /// A producer whose broker is gone queues records only while what they hold fits its share of `bufferBytes`,
     /// counted with their overhead, then says it is not draining once `stallAfterSecs` runs out.
     #[test]
@@ -2229,14 +2359,14 @@ mod tests {
         .unwrap();
         mock.broker_down(1).unwrap();
         let queued = (0..10 * fits)
-            .take_while(|_| dest.produce(OutgoingRecord::new(&value)).is_ok())
+            .take_while(|_| dest.produce(0, OutgoingRecord::new(&value)).is_ok())
             .count();
         assert_eq!(queued, fits);
         assert_eq!(
             dest.held.load(std::sync::atomic::Ordering::Relaxed),
             fits * held_bytes(value.len(), 0)
         );
-        let refused = dest.produce(OutgoingRecord::new(&value)).unwrap_err();
+        let refused = dest.produce(0, OutgoingRecord::new(&value)).unwrap_err();
         assert!(refused.message.contains("not draining"), "{}", refused.message);
     }
 
