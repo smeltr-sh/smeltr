@@ -1462,6 +1462,7 @@ impl Destination for KafkaDestination {
                 batch,
                 rejections: Vec::new(),
                 throttled: false,
+                undelivered: None,
             })
             .collect())
     }

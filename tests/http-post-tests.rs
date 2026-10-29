@@ -265,6 +265,45 @@ fn a_refused_request_is_split_to_the_row_at_fault() {
     }
 }
 
+/// A request that fails past its retries names its batch's rows that did not land, and keeps the refusals answered
+/// before it: a split's half never sent is undelivered too.
+#[test]
+fn a_failed_request_names_the_rows_it_did_not_land() {
+    // [a,b,c,d] refused whole, so split.
+    for (statuses, undelivered, refused) in [
+        // [a,b] lands; [c,d] stalls.
+        (&[400, 200, 404][..], vec![2, 3], vec![]),
+        // [a,b] stalls; [c,d] is never sent.
+        (&[400, 404][..], vec![0, 1, 2, 3], vec![]),
+        // [a,b] lands; [c,d] refused, so split; [c] refused alone; [d] stalls.
+        (&[400, 200, 400, 400, 404][..], vec![3], vec![2]),
+    ] {
+        let c = config("http://unused", RequestBody::Lines);
+        let (sender, sent) = scripted(statuses);
+        let mut d = HttpDestination::new(scripted(&[]).0, Post::new(&c)).with_senders(vec![sender], 1);
+        let rows = vec![
+            row(b"{\"n\":0}"),
+            row(b"{\"n\":1}"),
+            row(b"{\"n\":2}"),
+            row(b"{\"n\":3}"),
+        ];
+        assert_eq!(d.deliver(7, Cow::Owned(rows)).unwrap().0, Dispatched::InFlight);
+        d.flush().unwrap();
+        let done = d
+            .poll_completions()
+            .expect("a failed request is its batch's answer, not the pool's");
+        assert_eq!(done.len(), 1, "{statuses:?}");
+        let failed = done[0].undelivered.as_ref().expect("the batch did not land whole");
+        assert!(failed.error.message.contains("HTTP 404"), "{}", failed.error.message);
+        let mut rows = failed.rows.clone();
+        rows.sort_unstable();
+        assert_eq!(rows, undelivered, "{statuses:?}");
+        let docs: Vec<usize> = done[0].rejections.iter().map(|r| r.doc).collect();
+        assert_eq!(docs, refused, "{statuses:?}");
+        assert_eq!(bodies(&sent).len(), statuses.len(), "{statuses:?}");
+    }
+}
+
 /// Answers every request of more than `fits` lines as too large to hold, and lands the rest.
 struct Oversizing {
     fits: usize,
