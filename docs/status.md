@@ -198,3 +198,4 @@ catalog's volume entry both wait on it.
 - **History clips its last column at a 1440 px window.**
 - **A worker's id is `hostname-pid-nanos`** (`worker::generate_worker_id`). No setting names a worker.
 - **A leader started without a worker still seeds a worker group,** which a fleet that names its own groups carries empty until someone deletes it.
+- **Motion ignores `prefers-reduced-motion`.** The fold chevron (`ChevronIcon.svelte`) and other transitions play for a reader who asks the system for less motion.
