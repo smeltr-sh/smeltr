@@ -1496,12 +1496,10 @@ impl Announcer for FakeAnnouncer {
     }
 }
 
-/// What a seed's objects are put in and read from: the stores by bucket, the announcer a queue kind announces them
-/// with, none for a listing, the runtime the stores run on, and the pace they are read at. In memory offline; the
-/// service or its emulator live.
+/// What a seed's objects are put in and read from: the stores by bucket, the runtime they run on, and the pace they
+/// are read at. In memory offline; the service or its emulator live.
 struct Backend<'a> {
     stores: BTreeMap<String, Arc<dyn ObjectStore>>,
-    announcer: Option<&'a mut dyn Announcer>,
     runtime: &'a tokio::runtime::Runtime,
     pace: Pace,
 }
@@ -1527,28 +1525,14 @@ impl Backend<'_> {
     }
 }
 
-/// Reads drawn objects through `backend` from the source `open` makes: by its announcer's notifications where it has
-/// one, else by listing.
-fn read(
-    rng: &mut Rng,
-    cov: &mut Reached,
-    c: &ObjectSourceConfig,
-    backend: Backend,
-    open: impl FnOnce() -> Result<Box<dyn Source>, String>,
-) -> Result<(), String> {
-    match backend.announcer {
-        Some(_) => read_queue(rng, cov, c, backend, open),
-        None => read_listing(rng, cov, c, backend, open),
-    }
-}
-
 /// Reads drawn objects in `backend`'s stores, by bucket, through the queue's notifications, each parsed as its kind
 /// parses it and sent with the announcer, and checks every message is deleted once its records are committed.
 fn read_queue(
     rng: &mut Rng,
     cov: &mut Reached,
     c: &ObjectSourceConfig,
-    mut backend: Backend,
+    backend: Backend,
+    announcer: &mut dyn Announcer,
     open: impl FnOnce() -> Result<Box<dyn Source>, String>,
 ) -> Result<(), String> {
     let kind = match &c.queue {
@@ -1556,9 +1540,6 @@ fn read_queue(
         ObjectQueue::StorageQueue { .. } => Kind::AzureBlobQueue,
         ObjectQueue::PubSub { .. } => Kind::GcsPubSub,
         ObjectQueue::List { .. } => unreachable!("a listing reads by listing"),
-    };
-    let Some(announcer) = backend.announcer.take() else {
-        unreachable!("a queue reads what it is announced");
     };
     let pace = backend.pace;
     let buckets: Vec<&str> = backend.stores.keys().map(String::as_str).collect();
@@ -1842,11 +1823,10 @@ fn offline_seed(seed: u64, reached: &mut Reached, runtime: &Arc<tokio::runtime::
         };
         let backend = Backend {
             stores: BTreeMap::from([(list_root(place), store.clone() as Arc<dyn ObjectStore>)]),
-            announcer: None,
             runtime,
             pace: OFFLINE,
         };
-        read(&mut rng, reached, &c, backend, open)
+        read_listing(&mut rng, reached, &c, backend, open)
     } else {
         let stores: BTreeMap<String, Arc<dyn ObjectStore>> = ["logs", "other"]
             .iter()
@@ -1871,11 +1851,10 @@ fn offline_seed(seed: u64, reached: &mut Reached, runtime: &Arc<tokio::runtime::
         };
         let backend = Backend {
             stores,
-            announcer: Some(&mut announcer),
             runtime,
             pace: OFFLINE,
         };
-        read(&mut rng, reached, &c, backend, open)
+        read_queue(&mut rng, reached, &c, backend, &mut announcer, open)
     };
     read.map_err(|e| format!("{e}\n{json}"))
 }
@@ -1955,11 +1934,14 @@ fn live_fuzz(
         let open = || smeltr::io::object_source::open(&c, &secrets).map_err(|e| format!("does not build: {e:?}"));
         let backend = Backend {
             stores,
-            announcer: made.announcer.as_mut().map(|a| &mut **a as &mut dyn Announcer),
             runtime: &runtime,
             pace: LIVE,
         };
-        read(&mut rng, &mut reached, &c, backend, open).map_err(|e| format!("{e}\n{json}"))?;
+        match made.announcer.as_mut() {
+            Some(announcer) => read_queue(&mut rng, &mut reached, &c, backend, &mut **announcer, open),
+            None => read_listing(&mut rng, &mut reached, &c, backend, open),
+        }
+        .map_err(|e| format!("{e}\n{json}"))?;
         reached.credit(&mut cov);
         Ok(())
     });
