@@ -783,12 +783,23 @@ fn a_refusal_the_framework_answers_wears_the_envelope() {
             ("POST", groups, "text/plain", b"{}".to_vec()),
             415,
         ),
-        // Just past axum's 2 MiB: the leader reads up to the limit before it refuses, so no more of the body is
-        // left to send when it closes, which would break the pipe under the client.
+        // Just past axum's 2 MiB, which sign-in keeps: the leader reads up to the limit before it refuses, so no more
+        // of the body is left to send when it closes, which would break the pipe under the client.
         (
             "a body past the limit",
-            ("POST", groups, json, vec![b' '; (2 << 20) + 1]),
+            ("POST", "/api/auth/login", json, vec![b' '; (2 << 20) + 1]),
             413,
+        ),
+        // A signed-in person's body is read past it, so this one is answered for its shape.
+        (
+            "a person's body past sign-in's limit",
+            (
+                "POST",
+                groups,
+                json,
+                [br#"{"id": 5}"#.as_slice(), &vec![b' '; 2 << 20]].concat(),
+            ),
+            422,
         ),
         (
             "a query that does not parse",

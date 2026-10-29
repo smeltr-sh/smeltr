@@ -971,6 +971,11 @@ struct LeaderSetup {
     leader: smeltr::leader::AppState,
 }
 
+/// How large a body a signed-in person may send: a bundle edited as JSON, an uploaded file to import or preview, a
+/// lookup table's contents. The sign-in gate refuses a request before its body is read, so only a person the leader
+/// knows can make it hold this much. Sign-in, enrollment and the worker routes keep axum's default.
+const PEOPLE_BODY_LIMIT: usize = 1 << 30;
+
 async fn setup_leader(
     port: u16,
     auth: gate::Auth,
@@ -1095,10 +1100,7 @@ async fn setup_leader(
         // Not on `app` below with the rest of the config routes: retention after a table's saved contents and after an
         // upload keeps what the fleet runs, which the registry knows. An edited CSV travels whole in this body, so it
         // is as large as the file.
-        .route(
-            "/api/areas/:area/lookups",
-            put(config_api::put_lookup_tables).layer(axum::extract::DefaultBodyLimit::max(256 << 20)),
-        )
+        .route("/api/areas/:area/lookups", put(config_api::put_lookup_tables))
         // A lookup file is streamed to disk, so the limit is what a disk takes rather than what memory holds.
         .route(
             "/api/areas/:area/lookups/upload",
@@ -1106,6 +1108,7 @@ async fn setup_leader(
                 smeltr::lookup::store::MAX_FILE_BYTES as usize,
             )),
         )
+        .layer(axum::extract::DefaultBodyLimit::max(PEOPLE_BODY_LIMIT))
         .route_layer(axum::middleware::from_fn_with_state(auth, gate::require_principal));
     let routes = smeltr::leader::compose(state.clone(), admin_and_cluster);
 
@@ -2160,10 +2163,12 @@ async fn run_leader() {
 
     // `route_layer` covers only the routes above it; the auth routes below are merged after it because a person
     // with no session has to be able to reach them.
-    let app = app.route_layer(axum::middleware::from_fn_with_state(
-        auth.clone(),
-        gate::require_principal,
-    ));
+    let app = app
+        .layer(axum::extract::DefaultBodyLimit::max(PEOPLE_BODY_LIMIT))
+        .route_layer(axum::middleware::from_fn_with_state(
+            auth.clone(),
+            gate::require_principal,
+        ));
 
     let LeaderSetup { routes, tls, leader } = setup_leader(port, auth.clone(), store, registry).await;
     // Before `leader` goes into the certificate state, which a leader serving plain HTTP has none of.
