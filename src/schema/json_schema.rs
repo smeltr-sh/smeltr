@@ -8,7 +8,7 @@
 
 use serde_json::{Map, Value, json};
 
-use super::{Field, Schema};
+use super::{Field, Node, Schema};
 use crate::core::column::DataType;
 
 const DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
@@ -191,10 +191,7 @@ fn shown(at: &str) -> String {
 
 /// `schema` as a JSON Schema document, each object written where it is.
 pub fn write(schema: &Schema) -> Value {
-    let mut root = Node::default();
-    for f in &schema.fields {
-        root.insert(&f.keys(), f);
-    }
+    let root = schema.tree();
     let mut doc = Map::new();
     doc.insert("$schema".to_string(), json!(DIALECT));
     doc.insert("title".to_string(), json!(schema.title));
@@ -207,29 +204,7 @@ pub fn write(schema: &Schema) -> Value {
     Value::Object(doc)
 }
 
-/// The schema's fields as a tree, a node per key, in the schema's order.
-#[derive(Default)]
-struct Node<'s> {
-    field: Option<&'s Field>,
-    children: Vec<(String, Node<'s>)>,
-}
-
-impl<'s> Node<'s> {
-    fn insert(&mut self, keys: &[String], field: &'s Field) {
-        let Some((key, rest)) = keys.split_first() else {
-            self.field = Some(field);
-            return;
-        };
-        let child = match self.children.iter().position(|(k, _)| k == key) {
-            Some(i) => &mut self.children[i].1,
-            None => {
-                self.children.push((key.clone(), Node::default()));
-                &mut self.children.last_mut().expect("just pushed").1
-            }
-        };
-        child.insert(rest, field);
-    }
-
+impl Node<'_> {
     /// The node as the object its children are the properties of.
     fn object(&self) -> Value {
         let mut properties = Map::new();

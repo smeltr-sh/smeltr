@@ -164,62 +164,65 @@ impl Finding {
 
 impl Schema {
     /// The record type of the rows that fit the schema: each field at its path, a field under an array in each of its
-    /// elements, and an object the schema names only by the fields under it as an object of those.
+    /// elements, and a key only the fields under it name as an object of those.
     pub fn record_type(&self) -> DataType {
-        let mut root = DataType::Struct(Vec::new(), true);
+        self.tree().object_type()
+    }
+
+    /// The schema's fields as a tree, a node per key, in the schema's order.
+    pub(crate) fn tree(&self) -> Node<'_> {
+        let mut root = Node::default();
         for f in &self.fields {
-            place(&mut root, &f.keys(), &f.ty);
+            root.insert(&f.keys(), f);
         }
         root
     }
 }
 
-/// Puts a field of type `ty` at `keys` under `at`, making each object above it that is not there yet.
-fn place(at: &mut DataType, keys: &[String], ty: &DataType) {
-    // An object typed `any` holds the fields under it.
-    if fields_of_mut(at).is_none() {
-        *at = DataType::Struct(Vec::new(), true);
-    }
-    let fields = fields_of_mut(at).expect("made an object above");
-    let (key, below) = keys.split_first().expect("`read` refuses an empty path");
-    let i = match fields.iter().position(|(k, _)| k == key) {
-        Some(i) if below.is_empty() => return merge(&mut fields[i].1, ty),
-        Some(i) => i,
-        None if below.is_empty() => return fields.push((key.clone(), ty.clone())),
-        None => {
-            fields.push((key.clone(), DataType::Struct(Vec::new(), true)));
-            fields.len() - 1
-        }
-    };
-    place(&mut fields[i].1, below, ty);
+/// A key of a schema's tree (`Schema::tree`): the field the schema declares there, if any, and the keys under it.
+#[derive(Default)]
+pub(crate) struct Node<'s> {
+    pub field: Option<&'s Field>,
+    pub children: Vec<(String, Node<'s>)>,
 }
 
-/// `declared`, a field's own type, over `at`, the object its fields under it already made.
-fn merge(at: &mut DataType, declared: &DataType) {
-    match declared {
-        DataType::Array(element) if !matches!(at, DataType::Array(_)) => {
-            let mut inner = std::mem::replace(at, DataType::Null);
-            merge(&mut inner, element);
-            *at = DataType::Array(Box::new(inner));
-        }
-        DataType::Struct(declared, _) => {
-            if let Some(fields) = fields_of_mut(at) {
-                for (k, t) in declared {
-                    if !fields.iter().any(|(have, _)| have == k) {
-                        fields.push((k.clone(), t.clone()));
-                    }
-                }
+impl<'s> Node<'s> {
+    fn insert(&mut self, keys: &[String], field: &'s Field) {
+        let Some((key, rest)) = keys.split_first() else {
+            self.field = Some(field);
+            return;
+        };
+        let child = match self.children.iter().position(|(k, _)| k == key) {
+            Some(i) => &mut self.children[i].1,
+            None => {
+                self.children.push((key.clone(), Node::default()));
+                &mut self.children.last_mut().expect("just pushed").1
             }
-        }
-        _ => {}
+        };
+        child.insert(rest, field);
     }
-}
 
-fn fields_of_mut(ty: &mut DataType) -> Option<&mut Vec<(String, DataType)>> {
-    match ty {
-        DataType::Struct(fields, _) => Some(fields),
-        DataType::Array(element) => fields_of_mut(element),
-        _ => None,
+    /// The node as the object its children are the fields of.
+    fn object_type(&self) -> DataType {
+        let fields = (self.children.iter()).map(|(key, child)| (key.clone(), child.value_type()));
+        DataType::Struct(fields.collect(), true)
+    }
+
+    /// The node's own type: its field's, with its children as the fields of the object it holds.
+    fn value_type(&self) -> DataType {
+        match self.field.map(|f| &f.ty) {
+            // A key only children name is an object.
+            None => self.object_type(),
+            Some(ty) => self.type_as(ty),
+        }
+    }
+
+    fn type_as(&self, ty: &DataType) -> DataType {
+        match ty {
+            DataType::Struct(..) => self.object_type(),
+            DataType::Array(element) => DataType::Array(Box::new(self.type_as(element))),
+            other => other.clone(),
+        }
     }
 }
 
