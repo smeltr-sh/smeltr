@@ -171,7 +171,7 @@ fn run_once(brokers: &str, inputs: &[String], output: &str, rows: usize, max_row
 /// `run_once` with the source declaring `encoding`.
 fn decoding(brokers: &str, inputs: &[String], output: &str, rows: usize, max_rows: usize, encoding: &str) -> Profile {
     let group = unique("profile-group");
-    run_in_group(
+    run_bundle(
         &bundle_json(brokers, inputs, output, &group, encoding),
         rows,
         max_rows,
@@ -214,7 +214,7 @@ impl Gate {
 
 /// `run_once` on `bundle` (`bundle_json`), optionally behind a gate
 /// between warm-up and the timed run.
-fn run_in_group(bundle: &str, rows: usize, max_rows: usize, gate: Option<&Gate>) -> Profile {
+fn run_bundle(bundle: &str, rows: usize, max_rows: usize, gate: Option<&Gate>) -> Profile {
     let system = smeltr::config_file::load_str(bundle).expect("bundle loads");
     let topology = system.compile_topology().expect("bundle compiles");
 
@@ -475,7 +475,7 @@ fn thread_scaling() {
                     group.clone(),
                     gate.clone(),
                 );
-                std::thread::spawn(move || run_in_group(&bundle_json(&b, &i, &o, &g, "auto"), ROWS, 4000, Some(&gate)))
+                std::thread::spawn(move || run_bundle(&bundle_json(&b, &i, &o, &g, "auto"), ROWS, 4000, Some(&gate)))
             })
             .collect();
         let profiles: Vec<Profile> = handles.into_iter().map(|h| h.join().unwrap()).collect();
