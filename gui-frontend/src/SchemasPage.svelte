@@ -27,7 +27,8 @@
   import {
     fromJsonSchema,
     importSchema,
-    toJsonSchema,
+    exportSchema,
+    type ExportFormat,
     sharedConfig,
     putSchemas,
     type DestinationDto,
@@ -131,12 +132,12 @@
     adding = false;
   }
 
-  async function exported(id: string) {
+  async function exported(id: string, format: ExportFormat) {
     const own = [...schemas, ...sharedSchemas].find((s) => s.id === id);
     if (!own) return;
     try {
-      const written = await toJsonSchema($state.snapshot(own));
-      if (written.ok) downloadJson(fileName(id), written.schema);
+      const written = await exportSchema($state.snapshot(own), format);
+      if (written.ok) downloadJson(fileName(id, format), written.document);
       else reported(new Error(written.errors.map((e) => e.message).join(' ')));
     } catch (e) {
       reported(e);
@@ -354,7 +355,12 @@
           <span class="required">*</span> required.</span
         >
         <span class="grow"></span>
-        <button type="button" onclick={() => void exported(id)}>Export JSON Schema</button>
+        <button type="button" onclick={() => void exported(id, 'json-schema')}
+          >Export JSON Schema</button
+        >
+        <button type="button" onclick={() => void exported(id, 'elasticsearch')}
+          >Export Elasticsearch mapping</button
+        >
       </div>
       <SchemaFields {of} {q} />
     </td>

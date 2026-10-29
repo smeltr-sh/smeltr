@@ -53,7 +53,9 @@ path from the record's root, the type it must hold, whether a row must hold it,
 and what it means. A path spells its keys with dots, and a type is spelled as
 a declaration spells one, so a schema, a parser's field table and a
 declaration read the same. A bundle declares its schemas as such tables, and
-JSON Schema is read in and written out (`schema::json_schema`). A pipeline
+JSON Schema is read in (`schema::json_schema`). A schema is exported as
+JSON Schema, or as the mapping an Elasticsearch index holding its rows should
+have. A pipeline
 names the schemas it produces, and a destination may name the schemas it
 accepts. Both are checked at save to name a schema the group can see. A
 schema is also imported: a pipeline of the bundle run over an uploaded

@@ -81,9 +81,9 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "POST",
-        path: "/api/preview/to-json-schema",
-        what: "A schema written as a JSON Schema document. No query.",
-        body: "{ id, title?, description?, fields: { field, type, required?, description? }[] }",
+        path: "/api/preview/schema-export",
+        what: "A schema written in an export format: a JSON Schema document, or an Elasticsearch index's mapping. No query.",
+        body: "{ schema: { id, title?, description?, fields: { field, type, required?, description? }[] }, format: \"json-schema\" | \"elasticsearch\" }",
     },
     Route {
         method: "PUT",

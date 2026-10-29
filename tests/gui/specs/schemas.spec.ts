@@ -1,5 +1,6 @@
 // Schemas: a bundle's schemas opened and searched by field, one added from a JSON Schema, a pipeline's Produces and
 // a destination's accepts, and what review finds where rows do not fit.
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 import { test, expect, goto, type Api } from '../fleet';
@@ -50,6 +51,36 @@ test('a schema opens to its fields, and the search narrows them', async ({
   await expect(admin.getByRole('cell', { name: 'src_endpoint.port', exact: true })).toBeVisible();
   await expect(admin.getByText('3 fields of 8 hold “src_endpoint”.')).toBeVisible();
   await admin.screenshot({ path: 'results/schemas-fields.png' });
+});
+
+test('a schema exports as JSON Schema and as an Elasticsearch mapping', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await declare(api);
+  await goto(admin, leader, '#/build/schemas');
+  await admin.getByRole('button', { name: 'login fields' }).click();
+  const exported = async (button: string) => {
+    const download = admin.waitForEvent('download');
+    await admin.getByRole('button', { name: button }).click();
+    const file = await download;
+    return {
+      name: file.suggestedFilename(),
+      body: JSON.parse(await readFile(await file.path(), 'utf8')),
+    };
+  };
+  const schema = await exported('Export JSON Schema');
+  expect(schema.name).toBe('login.schema.json');
+  expect(schema.body.required).toEqual(['activity_id', 'time', 'user']);
+  const mapping = await exported('Export Elasticsearch mapping');
+  expect(mapping.name).toBe('login.mapping.json');
+  expect(mapping.body.mappings.properties.src_endpoint).toEqual({
+    properties: {
+      ip: { type: 'keyword', ignore_above: 8191 },
+      port: { type: 'long' },
+    },
+  });
 });
 
 test('a search finds a schema by a field it holds', async ({ admin, leader, api }) => {

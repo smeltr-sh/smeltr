@@ -1,6 +1,6 @@
 // Schemas as the GUI shows them: who uses a schema, a search over their fields, and a schema handed over as a file.
 
-import type { DestinationDto, PipelineDto, SchemaDto } from './api';
+import type { DestinationDto, ExportFormat, PipelineDto, SchemaDto } from './api';
 
 /** One object naming a schema: a pipeline producing it, or a destination accepting it. */
 export type User = { kind: 'pipeline' | 'destination'; id: string };
@@ -54,9 +54,10 @@ export function matchesOf(
   return out;
 }
 
-/** A schema's file name: its id, with what a file name cannot hold made a dash. */
-export function fileName(id: string): string {
-  return `${id.replace(/[^A-Za-z0-9._-]+/g, '-')}.schema.json`;
+/** A schema's file name as `format` exports it: its id, with what a file name cannot hold made a dash. */
+export function fileName(id: string, format: ExportFormat): string {
+  const kind = format === 'json-schema' ? 'schema' : 'mapping';
+  return `${id.replace(/[^A-Za-z0-9._-]+/g, '-')}.${kind}.json`;
 }
 
 /** Hands `value` to the browser as a JSON file named `name`. */

@@ -1,5 +1,5 @@
-//! A schema brought in as JSON Schema or by an importer pipeline, and handed out as JSON Schema. The leader's
-//! `/api/preview/from-json-schema`, `/api/preview/to-json-schema` and `/api/areas/:area/preview/schema-import`, and
+//! A schema brought in as JSON Schema or by an importer pipeline, and handed out in an export format. The leader's
+//! `/api/preview/from-json-schema`, `/api/preview/schema-export` and `/api/areas/:area/preview/schema-import`, and
 //! the website demo's service, answer from here. A bundle's schemas are config like any other: read with
 //! `GET /api/areas/:area`, saved with `PUT /api/areas/:area/schemas`.
 
@@ -32,17 +32,36 @@ pub fn from_json_schema(req: &FromJsonSchema) -> Result<ReadSchema, String> {
     })
 }
 
-/// A schema written as a JSON Schema document.
-#[derive(Default, serde::Serialize)]
-pub struct WrittenSchema {
-    pub schema: Value,
+/// What a schema is exported as.
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExportFormat {
+    /// A JSON Schema document.
+    JsonSchema,
+    /// The body of `PUT /<index>` for an index whose documents fit it (`io::elastic_mapping`).
+    Elasticsearch,
 }
 
-/// `schema` as JSON Schema.
-pub fn to_json_schema(schema: &SchemaDto) -> Result<WrittenSchema, String> {
-    crate::schema::read(schema).map(|s| WrittenSchema {
-        schema: json_schema::write(&s),
-    })
+#[derive(serde::Deserialize)]
+pub struct ExportRequest {
+    pub schema: SchemaDto,
+    pub format: ExportFormat,
+}
+
+/// A schema written in an export format.
+#[derive(Default, serde::Serialize)]
+pub struct ExportedSchema {
+    pub document: Value,
+}
+
+/// `req`'s schema, written as its format has it.
+pub fn export(req: &ExportRequest) -> Result<ExportedSchema, String> {
+    let schema = crate::schema::read(&req.schema)?;
+    let document = match req.format {
+        ExportFormat::JsonSchema => json_schema::write(&schema),
+        ExportFormat::Elasticsearch => crate::io::elastic_mapping::mapping(&schema.record_type()),
+    };
+    Ok(ExportedSchema { document })
 }
 
 /// An uploaded file as the records an importer runs over, cut as a source cuts its bytes: where `line_breaker` breaks
@@ -178,8 +197,21 @@ mod tests {
         let rows: Vec<&str> = schema.fields.iter().map(|f| f.field.as_str()).collect();
         assert_eq!(rows, ["time", "user", "user.name"]);
         assert!(schema.fields[0].required);
-        let out = to_json_schema(&schema).unwrap().schema;
+        let export = |format| {
+            export(&ExportRequest {
+                schema: schema.clone(),
+                format,
+            })
+            .unwrap()
+            .document
+        };
+        let out = export(ExportFormat::JsonSchema);
         assert_eq!(out["properties"]["user"]["properties"]["name"]["type"], "string");
+        let mapping = export(ExportFormat::Elasticsearch);
+        assert_eq!(
+            mapping["mappings"]["properties"]["user"]["properties"]["name"]["type"],
+            "keyword"
+        );
         assert!(
             from_json_schema(&FromJsonSchema {
                 id: String::new(),

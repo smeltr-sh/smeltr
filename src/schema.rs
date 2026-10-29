@@ -162,6 +162,67 @@ impl Finding {
     }
 }
 
+impl Schema {
+    /// The record type of the rows that fit the schema: each field at its path, a field under an array in each of its
+    /// elements, and an object the schema names only by the fields under it as an object of those.
+    pub fn record_type(&self) -> DataType {
+        let mut root = DataType::Struct(Vec::new(), true);
+        for f in &self.fields {
+            place(&mut root, &f.keys(), &f.ty);
+        }
+        root
+    }
+}
+
+/// Puts a field of type `ty` at `keys` under `at`, making each object above it that is not there yet.
+fn place(at: &mut DataType, keys: &[String], ty: &DataType) {
+    // An object typed `any` holds the fields under it.
+    if fields_of_mut(at).is_none() {
+        *at = DataType::Struct(Vec::new(), true);
+    }
+    let fields = fields_of_mut(at).expect("made an object above");
+    let (key, below) = keys.split_first().expect("`read` refuses an empty path");
+    let i = match fields.iter().position(|(k, _)| k == key) {
+        Some(i) if below.is_empty() => return merge(&mut fields[i].1, ty),
+        Some(i) => i,
+        None if below.is_empty() => return fields.push((key.clone(), ty.clone())),
+        None => {
+            fields.push((key.clone(), DataType::Struct(Vec::new(), true)));
+            fields.len() - 1
+        }
+    };
+    place(&mut fields[i].1, below, ty);
+}
+
+/// `declared`, a field's own type, over `at`, the object its fields under it already made.
+fn merge(at: &mut DataType, declared: &DataType) {
+    match declared {
+        DataType::Array(element) if !matches!(at, DataType::Array(_)) => {
+            let mut inner = std::mem::replace(at, DataType::Null);
+            merge(&mut inner, element);
+            *at = DataType::Array(Box::new(inner));
+        }
+        DataType::Struct(declared, _) => {
+            if let Some(fields) = fields_of_mut(at) {
+                for (k, t) in declared {
+                    if !fields.iter().any(|(have, _)| have == k) {
+                        fields.push((k.clone(), t.clone()));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn fields_of_mut(ty: &mut DataType) -> Option<&mut Vec<(String, DataType)>> {
+    match ty {
+        DataType::Struct(fields, _) => Some(fields),
+        DataType::Array(element) => fields_of_mut(element),
+        _ => None,
+    }
+}
+
 /// What a record has at each path. An array's elements sit at the array's path, so a field under it is each
 /// element's.
 struct Shape<'r> {
@@ -387,6 +448,31 @@ mod tests {
             fields: rows,
         };
         Arc::new(read(&dto).unwrap())
+    }
+
+    #[test]
+    fn a_schemas_record_type_holds_each_field_at_its_path() {
+        let schema = declared(
+            "s",
+            "S",
+            vec![
+                row("user.name", "str", false),
+                row("user", "{...}", true),
+                row("src.ip", "str", false),
+                row("hits.id", "str", false),
+                row("hits", "array<{...}>", false),
+                row("tags", "array<str>", false),
+            ],
+        );
+        assert_eq!(
+            schema.record_type(),
+            open(&[
+                ("user", open(&[("name", DataType::Str)])),
+                ("src", open(&[("ip", DataType::Str)])),
+                ("hits", DataType::Array(Box::new(open(&[("id", DataType::Str)])))),
+                ("tags", DataType::Array(Box::new(DataType::Str))),
+            ])
+        );
     }
 
     /// A sign-in: a time in epoch milliseconds, objects, and an array of objects.

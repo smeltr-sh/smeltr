@@ -520,13 +520,13 @@ async fn schemas_from_json_schema(
         .await
 }
 
-async fn schemas_to_json_schema(
+async fn schemas_export(
     State(service): State<Service>,
-    Json(schema): Json<smeltr::config_file::SchemaDto>,
-) -> Envelope<catalog::WrittenSchema> {
+    Json(req): Json<catalog::ExportRequest>,
+) -> Envelope<catalog::ExportedSchema> {
     service
         .run(unavailable, move || {
-            catalog::to_json_schema(&schema).map_err(Refusal::invalid).into()
+            catalog::export(&req).map_err(Refusal::invalid).into()
         })
         .await
 }
@@ -603,7 +603,7 @@ fn app(service: Service) -> Router {
         .route("/tests", post(tests))
         .route("/onboard/propose", post(onboard_propose))
         .route("/schemas/from-json-schema", post(schemas_from_json_schema))
-        .route("/schemas/to-json-schema", post(schemas_to_json_schema))
+        .route("/schemas/export", post(schemas_export))
         .route("/schema-findings", post(schema_findings))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
         .with_state(service)

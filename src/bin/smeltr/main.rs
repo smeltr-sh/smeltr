@@ -2098,7 +2098,7 @@ async fn run_leader() {
         .route("/api/areas/:area/schemas", put(config_api::put_schemas))
         .route("/api/areas/:area/preview/schema-import", post(import_schema))
         .route("/api/preview/from-json-schema", post(schema_api::from_json_schema))
-        .route("/api/preview/to-json-schema", post(schema_api::to_json_schema))
+        .route("/api/preview/schema-export", post(schema_api::export))
         // An edited CSV travels whole in this body, so it is as large as the file.
         .route(
             "/api/areas/:area/lookups",

@@ -5331,16 +5331,18 @@ export function importSchema(req: {
   );
 }
 
-export interface WrittenSchema {
+/** What a schema is exported as: a JSON Schema document, or an Elasticsearch index's mapping. */
+export type ExportFormat = 'json-schema' | 'elasticsearch';
+
+export interface ExportedSchema {
   ok: boolean;
   errors: ApiError[];
-  /** The JSON Schema document. */
-  schema: Record<string, unknown>;
+  document: Record<string, unknown>;
 }
 
-/** `schema` as a JSON Schema document. */
-export function toJsonSchema(schema: SchemaDto): Promise<WrittenSchema> {
-  return post('/api/preview/to-json-schema', schema, 'quiet');
+/** `schema` written as `format` has it. */
+export function exportSchema(schema: SchemaDto, format: ExportFormat): Promise<ExportedSchema> {
+  return post('/api/preview/schema-export', { schema, format }, 'quiet');
 }
 
 /** One schema finding at a branch's tip (`LoadedSystem::schema_findings`). */

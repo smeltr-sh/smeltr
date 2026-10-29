@@ -716,8 +716,7 @@ export class DemoLeader {
       if (path === '/api/preview/onboard') return this.ask('/onboard/propose', json());
       if (path === '/api/preview/from-json-schema')
         return this.ask('/schemas/from-json-schema', json());
-      if (path === '/api/preview/to-json-schema')
-        return this.ask('/schemas/to-json-schema', json());
+      if (path === '/api/preview/schema-export') return this.ask('/schemas/export', json());
       if (path === '/api/captures') return this.startCapture(json());
       const stop = path.match(/^\/api\/captures\/([^/]+)\/stop$/);
       if (stop) return this.stopCapture(decodeURIComponent(stop[1]));
