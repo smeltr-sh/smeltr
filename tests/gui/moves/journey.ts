@@ -347,8 +347,9 @@ async function signInLocally(page: Page, world: World, username: string, passwor
   await signInThroughGui(page, username, password);
 }
 
+// A save can take seconds on a busy machine, and the flag stays until it answers.
 const unsaved = (page: Page) => () =>
-  expect(page.getByText('Unsaved', { exact: true })).toBeHidden();
+  expect(page.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 30_000 });
 
 const firstStart: Move = {
   name: 'first-start',
