@@ -47,7 +47,7 @@ def main():
                 for name, ex in json.loads(page.read_text()).items()]
     # What the examples name goes in first: a pipeline naming a missing table or pipeline is refused.
     tables = {t["id"]: t for _, _, ex in examples for t in ex.get("lookupTables", [])}
-    c.put("lookup-tables", list(tables.values()), BRANCH, SCOPE)
+    c.put("lookups", list(tables.values()), BRANCH, SCOPE)
     for p in {p["id"]: p for _, _, ex in examples for p in ex.get("pipelines", [])}.values():
         c.put_pipeline(p, BRANCH, SCOPE)
     shots = []

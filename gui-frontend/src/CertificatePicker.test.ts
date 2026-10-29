@@ -27,11 +27,15 @@ async function options(usableAs: 'server' | 'client', value?: string): Promise<s
     vi.fn(
       async () =>
         new Response(
-          JSON.stringify([
-            listed('web', true, false),
-            listed('mtls', false, true),
-            listed('both', true, true),
-          ]),
+          JSON.stringify({
+            ok: true,
+            errors: [],
+            certificates: [
+              listed('web', true, false),
+              listed('mtls', false, true),
+              listed('both', true, true),
+            ],
+          }),
           { headers: { 'content-type': 'application/json' } },
         ),
     ),

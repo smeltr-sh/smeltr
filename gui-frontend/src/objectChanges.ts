@@ -731,8 +731,8 @@ export function testsCovering(
   id: string,
 ): TestResult[] {
   return results.filter((t) => {
-    if (t.scope !== scope) return false;
-    const summary = summaries.get(scopedKey(t.scope, t.id));
+    if (t.area !== scope) return false;
+    const summary = summaries.get(scopedKey(t.area, t.id));
     const pipelines = summary ? summary.pipelines : t.pipeline ? [t.pipeline] : [];
     return pipelines.includes(id);
   });

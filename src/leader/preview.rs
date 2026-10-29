@@ -15,7 +15,7 @@ use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind};
 use crate::core::id::{FunctionId, SlotId};
 use crate::format::record::RecordView;
-use crate::leader::envelope::{ApiError, Empty, Envelope};
+use crate::leader::envelope::{ApiError, Envelope, Refusal};
 use crate::plan;
 use crate::plan::compile::Plan;
 use crate::plan::config::CompileError;
@@ -24,6 +24,7 @@ use crate::plan::resolve::Origin;
 use crate::plan::topology::SourceMeta;
 use crate::plan::tree;
 use crate::schema::Schema;
+use axum::http::StatusCode;
 
 #[derive(serde::Deserialize)]
 pub struct PreviewRequest {
@@ -268,18 +269,15 @@ fn kinds_of(counts: &crate::core::tally::TagCounts) -> Vec<(String, u32)> {
 }
 
 impl Preview {
-    /// Which stage stopped the preview, and why. A compile failure still names every pipeline, so the editor's
-    /// list stands.
+    /// Which stage stopped the preview, and why, at 422: what was sent to preview is what is refused. A compile
+    /// failure still names every pipeline, so the editor's list stands.
     pub fn failed(stage: &'static str, errors: Vec<ApiError>, pipeline_names: Vec<String>) -> Envelope<Preview> {
-        Envelope {
-            ok: false,
-            errors,
-            body: Preview {
-                stage: Some(stage),
-                pipeline_names,
-                ..Default::default()
-            },
-        }
+        let body = Preview {
+            stage: Some(stage),
+            pipeline_names,
+            ..Default::default()
+        };
+        Envelope::with(body, StatusCode::UNPROCESSABLE_ENTITY, errors)
     }
 }
 
@@ -542,31 +540,32 @@ pub fn run_route_preview(
     at_micros: Option<i64>,
 ) -> Envelope<RoutePreview> {
     let Some(source_name) = sample.source.clone() else {
-        return Envelope::failed_one(
+        return Envelope::refused(Refusal::invalid(
             "this sample does not say which source it stands for, and routing selects on a source -- \
              name one on the sample to route it",
-        );
+        ));
     };
 
     let system = match config_file::load_str_at(config, &declared_at) {
         Ok(system) => system,
-        Err(e) => return Envelope::failed_one(e.to_string()),
+        Err(e) => return Envelope::refused(Refusal::invalid(e.to_string())),
     };
     let Some(source) = system.topology.sources.iter().find(|s| s.name == source_name) else {
-        return Envelope::failed_one(format!(
+        return Envelope::refused(Refusal::invalid(format!(
             "this sample stands for source {source_name:?}, which this config does not declare"
-        ));
+        )));
     };
     let source_id = source.id;
 
     let compiled = match system.compile_topology() {
         Ok(compiled) => compiled,
         Err(errs) => {
-            return Envelope::failed(
+            return Envelope::refused(Refusal::all(
+                StatusCode::UNPROCESSABLE_ENTITY,
                 errs.iter()
                     .map(|e| ApiError::from_compile(e, system.step_id_for(e.pipeline, e.function)))
                     .collect(),
-            );
+            ));
         }
     };
     let route_ids: Vec<String> = compiled.routes.iter().map(|r| r.id.clone()).collect();
@@ -579,7 +578,7 @@ pub fn run_route_preview(
         warnings,
     } = match read_sample(&compiled.meta_for(source_id), &sample.columns, &sample.records) {
         Ok(read) => read,
-        Err(e) => return Envelope::failed_one(e),
+        Err(e) => return Envelope::refused(Refusal::invalid(e)),
     };
 
     let previewed = crate::runtime::preview_routes_at(
@@ -664,23 +663,23 @@ pub fn captures_of(req: GrokCapturesRequest) -> Envelope<GrokCaptures> {
         Ok(m) => Envelope::ok(GrokCaptures {
             captures: m.capture_names().into_iter().map(str::to_string).collect(),
         }),
-        Err(e) => Envelope::failed_one(e.to_string()),
+        Err(e) => Envelope::refused(Refusal::invalid(e.to_string())),
     }
 }
 
 /// Not `ok` when a save would refuse the pattern, with why, word for word as the save says it.
 pub fn line_breaker_verdict(req: LineBreakerRequest) -> Envelope {
     let refusal = config_file::line_breaker_refusal("this line breaker", &req.pattern);
-    Envelope::with(Empty, refusal.into_iter().map(ApiError::new).collect())
+    match refusal {
+        Some(refusal) => Envelope::refused(Refusal::invalid(refusal)),
+        None => Envelope::done(),
+    }
 }
 
 pub fn format_code(req: FormatRequest) -> Envelope<Formatted> {
-    Envelope::with(
-        Formatted {
-            code: crate::expr::pretty::format(&req.code, req.kind),
-        },
-        Vec::new(),
-    )
+    Envelope::ok(Formatted {
+        code: crate::expr::pretty::format(&req.code, req.kind),
+    })
 }
 
 /// `system` compiled, and the id of its destination `name`: what a capture filter there is compiled over, as a worker
@@ -974,13 +973,15 @@ pub fn run_preview(
     let (preview_rows, touched) = match previewed {
         Ok(previewed) => previewed,
         Err(over) => {
-            return Preview::failed(
+            let mut refused = Preview::failed(
                 "memory",
                 vec![ApiError::new(format!(
                     "this sample asked for more memory than a preview may hold: {over}"
                 ))],
                 pipeline_names,
             );
+            refused.status = StatusCode::PAYLOAD_TOO_LARGE;
+            return refused;
         }
     };
 
@@ -1343,9 +1344,9 @@ pub struct TestResult {
     /// `None` for an end-to-end test, which names no pipeline.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pipeline: Option<String>,
-    /// Which scope this ran in -- ids are unique only within a scope, the same collision
-    /// `ScopedTestSummary`'s doc names.
-    pub scope: String,
+    /// Which area this ran in -- ids are unique only within an area, the same collision
+    /// `AreaTestSummary`'s doc names.
+    pub area: String,
     /// Absent when the run could not happen at all -- a sample that is gone, a pipeline that does not compile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verdict: Option<Verdict>,
@@ -1368,7 +1369,7 @@ pub fn run_test(
         id: test.id.clone(),
         name: test.name.clone(),
         pipeline: test.pipeline.clone(),
-        scope: scope.to_string(),
+        area: scope.to_string(),
         verdict: None,
         error: None,
     };
@@ -1431,7 +1432,7 @@ pub fn run_pipeline_actual(
         columns,
         records,
     );
-    if !previewed.ok {
+    if !previewed.succeeded() {
         return Err(previewed
             .errors
             .iter()
@@ -1452,7 +1453,7 @@ pub fn run_route_actual(
     sample: config_file::SampleDto,
 ) -> Result<Vec<Option<serde_json::Value>>, String> {
     let resp = run_route_preview(config, sample, declared_at, Some(locked_at));
-    if !resp.ok {
+    if !resp.succeeded() {
         return Err(resp
             .errors
             .iter()
@@ -1647,7 +1648,7 @@ mod tests {
             Vec::new(),
         );
         assert!(
-            previewed.ok,
+            previewed.succeeded(),
             "{:?}",
             previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -1740,7 +1741,7 @@ mod tests {
                 &[],
                 Vec::new(),
             );
-            assert!(previewed.ok);
+            assert!(previewed.succeeded());
             previewed.body.capture_filter.unwrap()
         };
         let both = check("n > 1");
@@ -1776,6 +1777,6 @@ mod tests {
             &[],
             Vec::new(),
         );
-        assert!(!previewed.ok);
+        assert!(!previewed.succeeded());
     }
 }

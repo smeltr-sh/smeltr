@@ -183,8 +183,8 @@
                   <a href="#/admin/secrets/key">{warning.subjectId}</a>
                 {:else if ['acmeRenewalFailing', 'leaderCertificateRunningOut', 'authorityAging'].includes(warning.condition)}
                   <a href="#/admin/system/certificates">{warning.subjectId}</a>
-                {:else if warning.subjectKind === 'pipeline' && warning.scope}
-                  {@const scope = warning.scope}
+                {:else if warning.subjectKind === 'pipeline' && warning.area}
+                  {@const scope = warning.area}
                   <a
                     href={`#/build/pipelines/${encodeURIComponent(warning.subjectId)}`}
                     onclick={() => setScope(scope)}>{warning.subjectId}</a

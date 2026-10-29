@@ -178,7 +178,7 @@
   /** What a reader calls pipeline `id` of `scope`: its name from the configs, or from the scope's
    * `Impact.pipelineNames`, which also names one the change reaches in a scope it does not touch. */
   function pipelineName(scope: string, id: string): string {
-    const reached = touchedByScope.find((si) => si.scope === scope)?.pipelineNames ?? {};
+    const reached = touchedByScope.find((si) => si.area === scope)?.pipelineNames ?? {};
     return nameOf({ ...reached, ...namesByScope.get(scope) }, id);
   }
 
@@ -202,7 +202,7 @@
     const named = [
       ...Object.entries(namesByScope.get(scope) ?? {}),
       ...touchedByScope
-        .filter((si) => si.scope === scope)
+        .filter((si) => si.area === scope)
         .flatMap((si) => Object.entries(si.pipelineNames ?? {})),
     ];
     const hit = named.find(([id]) => slugify(id) === file[2]);
@@ -241,7 +241,7 @@
       }
       touchedByScope = runRes.touched ?? [];
       testResults = runRes.results;
-      testSummaryByKey = new Map(listRes.tests.map((t) => [scopedKey(t.scope, t.id), t]));
+      testSummaryByKey = new Map(listRes.tests.map((t) => [scopedKey(t.area, t.id), t]));
     } catch (e) {
       testsError = unreported(e);
     } finally {

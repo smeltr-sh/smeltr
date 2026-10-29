@@ -24,6 +24,7 @@ use axum::response::{IntoResponse, Response};
 
 use smeltr::leader::access::{Access, AgentPermissions, ByAgent, Level};
 use smeltr::leader::blocking;
+use smeltr::leader::envelope::Refusal;
 use smeltr::leader::sessions::{Refused, Sessions};
 use smeltr::leader::store::{Actor, AuthSource, Store, StoreError, UserRecord};
 use smeltr::leader::throttle::LoginThrottle;
@@ -138,43 +139,20 @@ impl Origin {
 
 /// What a session whose account must change its password may reach. Everything else answers `403` until it has.
 ///
-/// Signing out is on the list: an operator who cannot finish must still be able to leave.
-const RESTRICTED: &[&str] = &["/api/auth/session", "/api/auth/password", "/api/auth/logout"];
+/// The session is on the list, and signing out is deleting it: an operator who cannot finish must still be able to
+/// leave.
+const RESTRICTED: &[&str] = &["/api/auth/session", "/api/auth/password"];
 
-/// A refusal, as the JSON body `{"ok":false,"error":message}`, so no route under the gate answers a browser's `fetch`
-/// with HTML it will try to parse. `error` reads back as exactly `message`, whatever characters it holds: the GUI
-/// shows it as the reason.
+/// A refusal, as the envelope every route answers in, so no route under the gate answers a browser's `fetch` with
+/// HTML it will try to parse. The message is the one error, and the GUI shows it as the reason.
 pub fn refuse(status: StatusCode, message: &str) -> Response {
-    (
-        status,
-        [
-            (header::CONTENT_TYPE, "application/json"),
-            // A refusal is about this request and this moment; a cache holding one would sign somebody out later.
-            (header::CACHE_CONTROL, "no-store"),
-        ],
-        format!("{{\"ok\":false,\"error\":{}}}", json_string(message)),
-    )
-        .into_response()
+    Refusal::new(status, message).into_response()
 }
 
-/// `message` as a JSON string. Hand-rolled because the alternative is a `serde_json::json!` allocation on a path
-/// that runs for every refusal, and the escaping a refusal needs is this short.
-fn json_string(message: &str) -> String {
-    let mut out = String::with_capacity(message.len() + 2);
-    out.push('"');
-    for c in message.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+/// The account store could not answer. What it said is logged where it failed, not answered: it names the store's
+/// files.
+pub fn store_unavailable() -> Response {
+    refuse(StatusCode::SERVICE_UNAVAILABLE, "the account store is unavailable")
 }
 
 /// The session token this request carries, if any.
@@ -262,7 +240,7 @@ pub async fn require_principal(
         Ok(user) => user,
         Err(e) => {
             tracing::error!(target: "leader.identity_unavailable", error = %e, "the account store could not be read");
-            return refuse(StatusCode::SERVICE_UNAVAILABLE, "the account store is unavailable");
+            return store_unavailable();
         }
     };
 
@@ -289,9 +267,9 @@ pub async fn require_principal(
         );
     }
 
-    let need = policy::need(&method, &path, req.uri().query());
+    let need = policy::need(&method, &path);
     if !need.met_by(&access) {
-        return refuse(StatusCode::FORBIDDEN, &need.refusal());
+        return Refusal::from(need).into_response();
     }
 
     // An `Actor`, which is what an audit row and a git author both take: who is asking is one fact, and a second
@@ -325,6 +303,47 @@ pub async fn harden(req: axum::extract::Request, next: axum::middleware::Next) -
     );
     headers.insert(header::REFERRER_POLICY, header::HeaderValue::from_static("same-origin"));
     response
+}
+
+/// Every answer under `/api/` is about this request and this moment (`docs/architecture/api.md`): a cache holding one
+/// would answer it again later, or to someone else.
+pub async fn uncached(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let api = req.uri().path().starts_with("/api/");
+    let mut response = next.run(req).await;
+    if api {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+    }
+    response
+}
+
+/// What the framework answers before a handler runs -- a body that cannot be read, a query or path that does not
+/// parse, a wrong method -- in the envelope every operator and open route answers, its text the one error. A
+/// handler's own failure already is one. The worker family carries no envelope (`docs/architecture/api.md`), so it
+/// is left as it is.
+pub async fn shape(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let path = req.uri().path();
+    let enveloped = path.starts_with("/api/") && !path.starts_with("/api/worker/");
+    let response = next.run(req).await;
+    let json = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|t| t.as_bytes().starts_with(b"application/json"));
+    let status = response.status();
+    if !enveloped || json || !(status.is_client_error() || status.is_server_error()) {
+        return response;
+    }
+    // A rejection's text is a line. Anything longer is not one, and is answered by its status alone.
+    let text = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap_or_default();
+    let text = String::from_utf8_lossy(&text);
+    let message = match text.trim() {
+        "" => status.canonical_reason().unwrap_or("refused").to_lowercase(),
+        text => text.to_string(),
+    };
+    refuse(status, &message)
 }
 
 /// Whether `user` may hold a session at all. A local account must still be an administrator, which it always is;
@@ -545,14 +564,13 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_carries_json_and_is_never_cached() {
+    fn a_refusal_carries_json() {
         let response = refuse(StatusCode::UNAUTHORIZED, "sign in to use this");
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
-        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
     }
 
-    /// The GUI parses every refusal and shows its `error`. Any message must reach it whole, whatever it holds.
+    /// The GUI parses every refusal and shows its error. Any message must reach it whole, whatever it holds.
     #[tokio::test]
     async fn a_refusal_reads_back_as_the_message_it_was_given() {
         for message in [
@@ -562,9 +580,12 @@ mod tests {
             "naïve \u{1d11e}",
         ] {
             let response = refuse(StatusCode::BAD_REQUEST, message);
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
             let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
             let body: serde_json::Value = serde_json::from_slice(&body).expect("a refusal is JSON");
-            assert_eq!(body, serde_json::json!({ "ok": false, "error": message }));
+            assert_eq!(body["ok"], false);
+            assert_eq!(body["errors"].as_array().map(Vec::len), Some(1), "{body}");
+            assert_eq!(body["errors"][0]["message"], message);
         }
     }
 
@@ -639,8 +660,8 @@ mod tests {
 
         fn router(auth: Auth) -> Router {
             Router::new()
-                .route("/api/config", get(reached))
-                .route("/api/sources", put(reached))
+                .route("/api/areas/:area", get(reached))
+                .route("/api/areas/:area/sources", put(reached))
                 .route("/api/users", get(reached))
                 .route_layer(axum::middleware::from_fn_with_state(auth, require_principal))
         }
@@ -710,14 +731,14 @@ mod tests {
             let auth = auth(store);
             let at = serve(auth.clone()).await;
 
-            let (status, body) = ask(at, &auth, &viewer, "GET", "/api/config?scope=payments").await;
+            let (status, body) = ask(at, &auth, &viewer, "GET", "/api/areas/payments").await;
             assert_eq!((status, body.as_str()), (200, "reached"));
 
-            let (status, body) = ask(at, &auth, &viewer, "PUT", "/api/sources?scope=payments").await;
+            let (status, body) = ask(at, &auth, &viewer, "PUT", "/api/areas/payments/sources").await;
             assert_eq!(status, 403, "{body}");
             assert!(body.contains("this needs editor in payments"), "{body}");
 
-            let (status, body) = ask(at, &auth, &viewer, "GET", "/api/config?scope=search").await;
+            let (status, body) = ask(at, &auth, &viewer, "GET", "/api/areas/search").await;
             assert_eq!(status, 403, "{body}");
             assert!(body.contains("this needs viewer in search"), "{body}");
 
@@ -735,7 +756,7 @@ mod tests {
             let auth = auth(store);
             let at = serve(auth.clone()).await;
 
-            for target in ["/api/config", "/api/config?scope=payments"] {
+            for target in ["/api/areas/payments", "/api/areas/shared"] {
                 let (status, body) = ask(at, &auth, &nobody, "GET", target).await;
                 assert_eq!(status, 403, "{target}: {body}");
             }
@@ -761,7 +782,7 @@ mod tests {
                 ask(at, &auth, &person, "GET", "/api/users").await,
                 (200, "reached".to_string())
             );
-            assert_eq!(ask(at, &auth, &person, "PUT", "/api/sources?scope=search").await.0, 200);
+            assert_eq!(ask(at, &auth, &person, "PUT", "/api/areas/search/sources").await.0, 200);
         }
 
         fn payments_deployer() -> Role {
@@ -785,16 +806,13 @@ mod tests {
             let agent = serve_by_agent(auth.clone()).await;
 
             assert_eq!(
-                ask(direct, &auth, &person, "PUT", "/api/sources?scope=payments")
+                ask(direct, &auth, &person, "PUT", "/api/areas/payments/sources")
                     .await
                     .0,
                 200
             );
-            assert_eq!(
-                ask(agent, &auth, &person, "GET", "/api/config?scope=payments").await.0,
-                200
-            );
-            let (status, body) = ask(agent, &auth, &person, "PUT", "/api/sources?scope=payments").await;
+            assert_eq!(ask(agent, &auth, &person, "GET", "/api/areas/payments").await.0, 200);
+            let (status, body) = ask(agent, &auth, &person, "PUT", "/api/areas/payments/sources").await;
             assert_eq!(status, 403, "{body}");
             assert!(body.contains("this needs editor in payments"), "{body}");
 
@@ -811,11 +829,11 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(
-                ask(agent, &auth, &person, "PUT", "/api/sources?scope=payments").await.0,
+                ask(agent, &auth, &person, "PUT", "/api/areas/payments/sources").await.0,
                 200
             );
             assert_eq!(
-                ask(agent, &auth, &person, "GET", "/api/config?scope=search").await.0,
+                ask(agent, &auth, &person, "GET", "/api/areas/search").await.0,
                 403,
                 "agent permissions never reach past their person"
             );
@@ -837,10 +855,7 @@ mod tests {
             let agent = serve_by_agent(auth.clone()).await;
 
             assert_eq!(ask(agent, &auth, &person, "GET", "/api/users").await.0, 403);
-            assert_eq!(
-                ask(agent, &auth, &person, "GET", "/api/config?scope=search").await.0,
-                200
-            );
+            assert_eq!(ask(agent, &auth, &person, "GET", "/api/areas/search").await.0, 200);
             let event = accounts::event_for(&Actor::system(), "agent-permissions-put", &person.id, "ok");
             store
                 .put_agent_permissions(&person.id, &AgentPermissions::Everything, &event)

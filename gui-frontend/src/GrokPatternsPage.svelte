@@ -1,6 +1,6 @@
 <!--
-  Grok patterns page: `grok-patterns.json`, read through `GET /api/config`
-  and written with `PUT /api/grok-patterns`, plus the raw-JSON page. A
+  Grok patterns page: `grok-patterns.json`, read through `GET /api/areas/:area`
+  and written with `PUT /api/areas/:area/grok-patterns`, plus the raw-JSON page. A
   pattern is declared once for the bundle and named as `%{NAME}` from any
   grok in its group, the way a lookup table is named by id.
 

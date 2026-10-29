@@ -1,5 +1,5 @@
 <!--
-  Schemas page: the bundle's `schemas/`, read through `GET /api/config` and written with `PUT /api/schemas`, plus the
+  Schemas page: the bundle's `schemas/`, read through `GET /api/areas/:area` and written with `PUT /api/areas/:area/schemas`, plus the
   raw-JSON page. A schema is a contract a pipeline's rows are held to: a table of fields, each a dotted path and a
   type. The pipeline names it under Produces, and a destination may name it under accepts.
 

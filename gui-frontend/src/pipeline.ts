@@ -549,7 +549,7 @@ export function buildFileConfig(
 /**
  * The step tree as it stood right before (`includeTarget: false`) or right
  * after (`true`) `target` ran; a per-step diff runs both through
- * `/api/preview` like a normal Run. `target` is the step the caller holds,
+ * `/api/areas/:area/preview/pipeline` like a normal Run. `target` is the step the caller holds,
  * matched by identity, so two steps that share an id cannot be confused.
  *
  * Everything from `target`'s position on is dropped, including the other

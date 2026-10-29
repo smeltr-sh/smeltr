@@ -13,90 +13,59 @@ use std::path::Path;
 
 use axum::Json;
 use axum::extract::{Extension, Path as AxPath, Query};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 
 use smeltr::config_file::{self, Impact, TestDto, TestSummary, Verdict};
 use smeltr::leader::access::{Access, Level};
-use smeltr::leader::blocking;
 use smeltr::leader::deploy_checks::FailingTest;
-use smeltr::leader::envelope::{ApiError, Envelope};
+use smeltr::leader::envelope::{ApiError, Envelope, Refusal};
 use smeltr::leader::preview::{TestResult, run_test};
 use smeltr::leader::store::Actor;
+use smeltr::leader::{blocking, blocking_answer};
 use smeltr::startup_config::leader_data_dir;
 
 use crate::config_api::{self, BranchQuery, ConfigQuery, blocking_save};
-use crate::gate::refuse;
 
-/// Which scope(s) `list_tests`/`run_tests` read: one, the same as every other config call, or -- what a
-/// review asks for -- every scope the branch's own change reaches (`branch_api::scopes_touched`), since
-/// the branch under review is not the reviewer's own editing scope (the chip). `scope` and `ownScopes`
-/// carry one meaning each rather than `scope` sometimes selecting a bundle and sometimes triggering
-/// derivation: a caller reviewing a change sends `ownScopes=true` and no `scope`.
-#[derive(serde::Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct TestScopeQuery {
-    branch: Option<String>,
-    scope: Option<String>,
-    #[serde(default)]
-    own_scopes: bool,
+/// Which tests a list or a run covers: one area's, the same as every other config call, or -- what a review asks
+/// for -- every area the branch's own change reaches (`branch_api::scopes_touched`), since the branch under review
+/// is not the reviewer's own editing area (the chip).
+#[derive(Debug)]
+enum Covers {
+    Area(String),
+    Change,
 }
 
-impl TestScopeQuery {
-    fn branch_name(&self) -> &str {
-        self.branch.as_deref().unwrap_or(config_api::UNNAMED_BRANCH)
-    }
-}
-
-/// `q`'s scopes: the branch's own (`branch_api::scopes_touched`) when it asked for those, otherwise the
-/// one it named, which `config_api::Reading` refuses when it is none, as every other config call does.
+/// The scopes `covers` names: the branch's own (`branch_api::scopes_touched`) for a change, otherwise the one area.
 ///
-/// The gate judged a named scope already. The branch's own it could not, so the caller is judged here, at `level`
+/// The gate judged an area already. The branch's own it could not, so the caller is judged here, at `level`
 /// over the change (`branch_api::lacking_in_change`): each changed path in its own area, a change to `shared/` as
 /// shared. The scopes answered are wider than that -- a change to `shared/` reaches every group's tests -- since
 /// what is run is what the change reaches, and what is judged is what the person changed.
 fn resolve_scopes(
     data_dir: &Path,
     branch: &str,
-    q: &TestScopeQuery,
+    covers: &Covers,
     access: &Access,
     level: Level,
 ) -> Result<Vec<String>, Refusal> {
-    if q.own_scopes {
-        if let Some(why) =
-            crate::branch_api::lacking_in_change(access, data_dir, branch, level).map_err(Refusal::Failed)?
-        {
-            return Err(Refusal::Lacking(why));
+    match covers {
+        Covers::Change => {
+            if let Some(why) = crate::branch_api::lacking_in_change(access, data_dir, branch, level)? {
+                return Err(Refusal::forbidden(why));
+            }
+            crate::branch_api::scopes_touched(data_dir, branch)
         }
-        crate::branch_api::scopes_touched(data_dir, branch).map_err(Refusal::Failed)
-    } else {
-        Ok(vec![q.scope.clone().unwrap_or_default()])
+        Covers::Area(area) => Ok(vec![area.clone()]),
     }
 }
 
-/// Why a list or run answered nothing.
-#[derive(Debug)]
-enum Refusal {
-    /// The caller lacks the level the change needs: answered 403, as `branch_api` answers it.
-    Lacking(String),
-    /// The branch could not be read: answered as the call's own failure.
-    Failed(String),
-}
-
-impl From<String> for Refusal {
-    fn from(message: String) -> Self {
-        Refusal::Failed(message)
-    }
-}
-
-/// A test's summary, tagged with the scope it is on: an id is unique only within a scope, the same
+/// A test's summary, tagged with the area it is in: an id is unique only within an area, the same
 /// collision a group-scoped `Warning::subject_id` or `MapNode::author_id` already carries a group to
 /// resolve (`src/leader/warnings.rs`, `src/leader/map.rs`) -- necessary here once a review can run more
-/// than one scope's tests in a single answer.
+/// than one area's tests in a single answer.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScopedTestSummary {
-    pub scope: String,
+pub struct AreaTestSummary {
+    pub area: String,
     #[serde(flatten)]
     pub summary: TestSummary,
 }
@@ -104,26 +73,37 @@ pub struct ScopedTestSummary {
 #[derive(Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tests {
-    tests: Vec<ScopedTestSummary>,
+    tests: Vec<AreaTestSummary>,
 }
 
-pub async fn list_tests(Extension(access): Extension<Access>, Query(q): Query<TestScopeQuery>) -> Response {
-    let listed = blocking(move || Ok::<_, String>(list_in(&leader_data_dir(), &q, &access))).await;
-    listed.unwrap_or_else(|e| Json(Envelope::<Tests>::failed_one(e)).into_response())
+/// One area's tests.
+pub async fn list_tests(
+    Extension(access): Extension<Access>,
+    AxPath(area): AxPath<String>,
+    Query(q): Query<BranchQuery>,
+) -> Envelope<Tests> {
+    blocking_answer(move || list_in(&leader_data_dir(), q.name(), &Covers::Area(area), &access)).await
+}
+
+/// The tests of every area the change on branch `:name` reaches.
+pub async fn list_change_tests(
+    Extension(access): Extension<Access>,
+    AxPath(branch): AxPath<String>,
+) -> Envelope<Tests> {
+    blocking_answer(move || list_in(&leader_data_dir(), &branch, &Covers::Change, &access)).await
 }
 
 /// [`list_tests`] over the leader at `data_dir`.
-fn list_in(data_dir: &Path, q: &TestScopeQuery, access: &Access) -> Response {
+fn list_in(data_dir: &Path, branch: &str, covers: &Covers, access: &Access) -> Envelope<Tests> {
     let read = || {
-        let branch = q.branch_name();
-        let scopes = resolve_scopes(data_dir, branch, q, access, Level::Viewer)?;
+        let scopes = resolve_scopes(data_dir, branch, covers, access, Level::Viewer)?;
         let mut tests = Vec::new();
         let mut errors = Vec::new();
         for scope in scopes {
             let reading = config_api::Reading::open_in(data_dir, branch, &scope)?;
             let (listed, unreadable) = config_file::list_tests(&mut reading.files());
-            tests.extend(listed.into_iter().map(|summary| ScopedTestSummary {
-                scope: scope.clone(),
+            tests.extend(listed.into_iter().map(|summary| AreaTestSummary {
+                area: scope.clone(),
                 summary,
             }));
             errors.extend(
@@ -135,15 +115,13 @@ fn list_in(data_dir: &Path, q: &TestScopeQuery, access: &Access) -> Response {
         Ok::<_, Refusal>((tests, errors))
     };
     match read() {
-        // `ok` with errors beside it: the tests that could be read are listed, and each scope that could not says why.
-        Ok((tests, errors)) => Json(Envelope {
-            ok: true,
-            errors: errors.into_iter().map(ApiError::new).collect(),
-            body: Tests { tests },
-        })
-        .into_response(),
-        Err(Refusal::Lacking(why)) => refuse(StatusCode::FORBIDDEN, &why),
-        Err(Refusal::Failed(e)) => Json(Envelope::<Tests>::failed_one(e)).into_response(),
+        // The tests that could be read are listed, and each file that could not says why.
+        Ok((tests, errors)) => Envelope::with(
+            Tests { tests },
+            config_api::read_status(&errors),
+            errors.into_iter().map(ApiError::new).collect(),
+        ),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -154,16 +132,16 @@ pub struct Test {
 }
 
 /// A test at the branch's tip, or at the commit `at` names.
-pub async fn get_test(AxPath(id): AxPath<String>, Query(q): Query<ConfigQuery>) -> Json<Envelope<Test>> {
+pub async fn get_test(AxPath((area, id)): AxPath<(String, String)>, Query(q): Query<ConfigQuery>) -> Envelope<Test> {
     let read = blocking(move || {
-        let reading = q.open_in(&leader_data_dir())?;
-        config_file::read_test(&mut reading.files(), &id).map_err(|e| e.to_string())
+        let reading = q.open_in(&leader_data_dir(), &area)?;
+        config_file::read_test(&mut reading.files(), &id).map_err(|e| Refusal::internal(e.to_string()))
     })
     .await;
     match read {
-        Ok(Some(test)) => Json(Envelope::ok(Test { test: Some(test) })),
-        Ok(None) => Json(Envelope::failed_one("there is no test by that name on this branch")),
-        Err(e) => Json(Envelope::failed_one(e)),
+        Ok(Some(test)) => Envelope::ok(Test { test: Some(test) }),
+        Ok(None) => Envelope::refused(Refusal::not_found("there is no test by that name on this branch")),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -173,30 +151,28 @@ pub async fn get_test(AxPath(id): AxPath<String>, Query(q): Query<ConfigQuery>) 
 /// config or change the test" a decision a reviewer sees rather than a silent edit.
 pub async fn put_test(
     Extension(actor): Extension<Actor>,
+    AxPath((area, id)): AxPath<(String, String)>,
     Query(q): Query<BranchQuery>,
     headers: axum::http::HeaderMap,
-    Json(test): Json<TestDto>,
-) -> Json<Envelope<crate::config_api::Save>> {
-    let (branch, base, scope) = (
-        q.name().to_string(),
-        config_api::base_commit(&headers),
-        q.scope().to_string(),
-    );
+    Json(mut test): Json<TestDto>,
+) -> Envelope<crate::config_api::Save> {
+    test.id = id;
+    let (branch, base) = (q.name().to_string(), config_api::base_commit(&headers));
     let message = format!("lock test {}", test.name);
     blocking_save(move || {
         if test.pipeline.is_none() {
-            let reading = match config_api::Reading::open(&branch, &scope) {
+            let reading = match config_api::Reading::open(&branch, &area) {
                 Ok(reading) => reading,
-                Err(e) => return Envelope::failed_one(e),
+                Err(e) => return Envelope::refused(e),
             };
             if let Err(e) = check_lockable(&mut reading.files(), &test) {
-                return Envelope::failed_one(e);
+                return Envelope::refused(e);
             }
         }
         config_api::write_test_file(
             &branch,
             base,
-            &scope,
+            &area,
             &test.id,
             Some(config_file::test_bytes(&test)),
             &message,
@@ -208,35 +184,31 @@ pub async fn put_test(
 
 /// A test naming no pipeline routes its sample by its source, which `SampleDto.source` may not name. Refused here
 /// rather than stored and failed on every later run: whether it is lockable is knowable now, from the sample alone.
-fn check_lockable(files: &mut dyn config_file::FileSet, test: &TestDto) -> Result<(), String> {
+fn check_lockable(files: &mut dyn config_file::FileSet, test: &TestDto) -> Result<(), Refusal> {
     match config_file::read_sample(files, &test.sample) {
         Ok(Some(sample)) if sample.source.is_some() => Ok(()),
-        Ok(Some(_)) => Err(format!(
+        Ok(Some(_)) => Err(Refusal::invalid(format!(
             "this test names no pipeline and its sample {:?} names no source, so it cannot be routed -- \
              give the test a pipeline, or give the sample a source",
             test.sample
-        )),
-        Ok(None) => Err(format!(
+        ))),
+        Ok(None) => Err(Refusal::invalid(format!(
             "this test runs over the sample {:?}, which is not on this branch",
             test.sample
-        )),
-        Err(e) => Err(e.to_string()),
+        ))),
+        Err(e) => Err(Refusal::internal(e.to_string())),
     }
 }
 
 pub async fn delete_test(
     Extension(actor): Extension<Actor>,
-    AxPath(id): AxPath<String>,
+    AxPath((area, id)): AxPath<(String, String)>,
     Query(q): Query<BranchQuery>,
     headers: axum::http::HeaderMap,
-) -> Json<Envelope<crate::config_api::Save>> {
-    let (branch, base, scope) = (
-        q.name().to_string(),
-        config_api::base_commit(&headers),
-        q.scope().to_string(),
-    );
+) -> Envelope<crate::config_api::Save> {
+    let (branch, base) = (q.name().to_string(), config_api::base_commit(&headers));
     let message = format!("delete test {id}");
-    blocking_save(move || config_api::write_test_file(&branch, base, &scope, &id, None, &message, &actor)).await
+    blocking_save(move || config_api::write_test_file(&branch, base, &area, &id, None, &message, &actor)).await
 }
 
 // -- running ------------------------------------------------------------
@@ -251,15 +223,15 @@ pub struct Run {
     /// reached and untested -- which is why the list is shown at all, not only the results. Empty --
     /// omitted entirely -- when `touched` was not asked for, or no scope run reached anything.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    touched: Vec<ScopedImpact>,
+    touched: Vec<AreaImpact>,
 }
 
-/// One scope's `Impact`, tagged with the scope: `Reached.id` is unique only within a scope, the same
-/// collision `ScopedTestSummary`'s doc names.
+/// One area's `Impact`, tagged with the area: `Reached.id` is unique only within an area, the same
+/// collision `AreaTestSummary`'s doc names.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScopedImpact {
-    pub scope: String,
+pub struct AreaImpact {
+    pub area: String,
     #[serde(flatten)]
     pub impact: Impact,
 }
@@ -289,23 +261,29 @@ pub struct RunRequest {
 /// alone.
 pub async fn run_tests(
     Extension(access): Extension<Access>,
-    Query(q): Query<TestScopeQuery>,
+    AxPath(area): AxPath<String>,
+    Query(q): Query<BranchQuery>,
     Json(req): Json<RunRequest>,
-) -> Response {
-    let run = blocking(move || Ok::<_, String>(run_as(&leader_data_dir(), &q, &access, req))).await;
-    run.unwrap_or_else(|e| Json(Envelope::<Run>::failed_one(e)).into_response())
+) -> Envelope<Run> {
+    let covers = Covers::Area(area);
+    blocking_answer(move || run_as(&leader_data_dir(), q.name(), &covers, &access, req)).await
+}
+
+/// [`run_tests`] over every area the change on branch `:name` reaches.
+pub async fn run_change_tests(
+    Extension(access): Extension<Access>,
+    AxPath(branch): AxPath<String>,
+    Json(req): Json<RunRequest>,
+) -> Envelope<Run> {
+    blocking_answer(move || run_as(&leader_data_dir(), &branch, &Covers::Change, &access, req)).await
 }
 
 /// [`run_tests`] over the leader at `data_dir`.
-fn run_as(data_dir: &Path, q: &TestScopeQuery, access: &Access, req: RunRequest) -> Response {
-    let branch = q.branch_name();
-    let run = resolve_scopes(data_dir, branch, q, access, Level::Editor)
-        .and_then(|scopes| Ok(run_scoped(data_dir, branch, &scopes, req.ids, req.touched)?));
-    match run {
-        Ok((results, touched)) => Json(Envelope::ok(Run { results, touched })).into_response(),
-        Err(Refusal::Lacking(why)) => refuse(StatusCode::FORBIDDEN, &why),
-        Err(Refusal::Failed(e)) => Json(Envelope::<Run>::failed_one(e)).into_response(),
-    }
+fn run_as(data_dir: &Path, branch: &str, covers: &Covers, access: &Access, req: RunRequest) -> Envelope<Run> {
+    resolve_scopes(data_dir, branch, covers, access, Level::Editor)
+        .and_then(|scopes| run_scoped(data_dir, branch, &scopes, req.ids, req.touched))
+        .map(|(results, touched)| Run { results, touched })
+        .into()
 }
 
 /// `run_on_branch` for every scope in `scopes`, merged into one answer: every result carries the scope it
@@ -316,15 +294,15 @@ fn run_scoped(
     scopes: &[String],
     ids: Vec<String>,
     touched_only: bool,
-) -> Result<(Vec<TestResult>, Vec<ScopedImpact>), String> {
+) -> Result<(Vec<TestResult>, Vec<AreaImpact>), Refusal> {
     let mut results = Vec::new();
     let mut touched = Vec::new();
     for scope in scopes {
         let (scope_results, impact) = run_on_branch(data_dir, branch, scope, ids.clone(), touched_only)?;
         results.extend(scope_results);
         if !impact_is_empty(&impact) {
-            touched.push(ScopedImpact {
-                scope: scope.clone(),
+            touched.push(AreaImpact {
+                area: scope.clone(),
                 impact,
             });
         }
@@ -342,7 +320,7 @@ fn run_on_branch(
     scope: &str,
     ids: Vec<String>,
     touched_only: bool,
-) -> Result<(Vec<TestResult>, Impact), String> {
+) -> Result<(Vec<TestResult>, Impact), Refusal> {
     let reading = config_api::Reading::open_in(data_dir, branch, scope)?;
     run_in(data_dir, reading, scope, ids, touched_only)
 }
@@ -354,7 +332,7 @@ fn run_in(
     scope: &str,
     ids: Vec<String>,
     touched_only: bool,
-) -> Result<(Vec<TestResult>, Impact), String> {
+) -> Result<(Vec<TestResult>, Impact), Refusal> {
     let raw = reading.raw();
 
     // The bundle this scope actually runs: `shared/` merged in for a group, the same merge `load_group_from` does
@@ -384,7 +362,7 @@ fn run_in(
                 .collect(),
         ),
     };
-    let config = serde_json::to_string(&exec_file).map_err(|e| e.to_string())?;
+    let config = serde_json::to_string(&exec_file).map_err(|e| Refusal::internal(e.to_string()))?;
 
     // What the change reaches, read against `main` -- the tree it would be deployed onto. Merged with `shared/` on
     // both sides for a group scope, the same way `exec_file` is: an edit landing only in `shared/` -- a source, a
@@ -455,7 +433,7 @@ fn run_in(
                     id: id.clone(),
                     name: id,
                     pipeline: None,
-                    scope: scope.to_string(),
+                    area: scope.to_string(),
                     verdict: None,
                     error: Some("there is no test by that name on this branch".to_string()),
                 });
@@ -466,7 +444,7 @@ fn run_in(
                     id: id.clone(),
                     name: id,
                     pipeline: None,
-                    scope: scope.to_string(),
+                    area: scope.to_string(),
                     verdict: None,
                     error: Some(e.to_string()),
                 });
@@ -496,7 +474,7 @@ pub fn failing_at(data_dir: &Path, commit: &str) -> Vec<FailingTest> {
         out.extend(results.into_iter().filter_map(|r| {
             let verdict = r.verdict.filter(|v| !v.passed)?;
             Some(FailingTest {
-                scope: r.scope,
+                scope: r.area,
                 id: r.id,
                 name: r.name,
                 pipeline: r.pipeline,
@@ -557,22 +535,6 @@ mod tests {
     use smeltr::config_file::{DirFileSet, Reached, Reason, SampleDto};
     use smeltr::leader::preview::{run_pipeline_actual, run_route_actual};
 
-    /// The query string `api.ts`'s `reviewScoped` builds, parsed by the extractor that serves it. `own_scopes`
-    /// is a `bool`, so serde takes `true` and `false` and nothing else; `ownScopes=1` is a deserialize error
-    /// that reaches the reviewer as an HTTP 400 where the test results belong. Neither side's tests can see the
-    /// other's, so the literal is pinned here and in `api.test.ts`.
-    #[test]
-    fn the_query_a_review_sends_parses() {
-        let uri: axum::http::Uri = "/api/tests?branch=al%2Fvendor-returns&ownScopes=true".parse().unwrap();
-        let Query(q) = Query::<TestScopeQuery>::try_from_uri(&uri).unwrap();
-        assert_eq!(q.branch_name(), "al/vendor-returns");
-        assert!(q.own_scopes);
-        assert_eq!(q.scope, None);
-
-        let one: axum::http::Uri = "/api/tests?branch=b&ownScopes=1".parse().unwrap();
-        assert!(Query::<TestScopeQuery>::try_from_uri(&one).is_err());
-    }
-
     /// The wire shape the GUI's TypeScript is written against: `Reason` is internally tagged on `type`, camelCase,
     /// with its payload fields un-renamed (`rename_all` on an enum renames variants, not a struct variant's own
     /// fields).
@@ -627,12 +589,12 @@ mod tests {
         );
     }
 
-    /// A `ScopedTestSummary`/`ScopedImpact` flattens its scope alongside the wrapped shape, rather than
-    /// nesting it under a second key -- the GUI reads `t.scope` next to `t.id` like any other field.
+    /// An `AreaTestSummary`/`AreaImpact` flattens its area alongside the wrapped shape, rather than
+    /// nesting it under a second key -- the GUI reads `t.area` next to `t.id` like any other field.
     #[test]
-    fn a_scoped_test_summary_flattens_its_scope_beside_the_summary() {
-        let scoped = ScopedTestSummary {
-            scope: "west".to_string(),
+    fn an_area_test_summary_flattens_its_area_beside_the_summary() {
+        let scoped = AreaTestSummary {
+            area: "west".to_string(),
             summary: TestSummary {
                 id: "t1".to_string(),
                 name: "t1".to_string(),
@@ -647,7 +609,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&scoped).unwrap(),
             serde_json::json!({
-                "scope": "west",
+                "area": "west",
                 "id": "t1",
                 "name": "t1",
                 "pipeline": "orders",
@@ -752,7 +714,7 @@ mod tests {
         let verdict = passing.verdict.expect("the route preview runs cleanly");
         assert!(verdict.passed, "{:?}", verdict.first_difference);
         assert_eq!(passing.pipeline, None, "an end-to-end test names no pipeline");
-        assert_eq!(passing.scope, "west", "the scope it was run in travels with the result");
+        assert_eq!(passing.area, "west", "the area it was run in travels with the result");
 
         // The sample held two records at lock and holds one now: a changed input fails the test.
         let shrunk = TestDto {
@@ -847,7 +809,7 @@ mod tests {
             expected: vec![],
         };
         let err = check_lockable(&mut DirFileSet { root: &dir }, &test).expect_err("the sample names no source");
-        assert!(err.contains("names no source"), "{err}");
+        assert!(err.message().contains("names no source"), "{err}");
     }
 
     // -- run_scoped -------------------------------------------------------
@@ -930,7 +892,7 @@ mod tests {
         assert!(touched.is_empty(), "not asked for: {touched:?}");
         assert_eq!(results.len(), 2, "{results:?}");
         assert!(results.iter().all(|r| r.id == "dup-test"), "{results:?}");
-        let mut scopes: Vec<&str> = results.iter().map(|r| r.scope.as_str()).collect();
+        let mut scopes: Vec<&str> = results.iter().map(|r| r.area.as_str()).collect();
         scopes.sort();
         assert_eq!(scopes, vec!["east", "west"]);
     }
@@ -1374,51 +1336,55 @@ mod tests {
         );
         git::commit_edits(&repo, "work", &parent, None, &edits, "edit shared", &Actor::system()).unwrap();
 
-        let q = TestScopeQuery {
-            branch: Some("work".to_string()),
-            scope: None,
-            own_scopes: true,
-        };
+        let change = ("work", &Covers::Change);
         let holding = |level: Level| Access::Areas(BTreeMap::from([(config_file::SHARED_DIR.to_string(), level)]));
-        let body = |response: Response| {
-            let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
-            let bytes = runtime
-                .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
-                .unwrap();
-            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
-        };
 
-        let listed = list_in(&data, &q, &holding(Level::Viewer));
-        assert_eq!(listed.status(), StatusCode::OK);
-        let listed = body(listed);
+        let listed = list_in(&data, change.0, change.1, &holding(Level::Viewer));
+        assert_eq!(listed.status, StatusCode::OK);
+        let listed = listed.to_json();
         assert_eq!(listed["ok"], true, "{listed}");
         assert_eq!(
             listed["tests"][0]["id"], "west-test",
             "a shared change still lists west's tests: {listed}"
         );
 
-        let ran = run_as(&data, &q, &holding(Level::Deployer), RunRequest::default());
-        assert_eq!(ran.status(), StatusCode::OK);
-        let ran = body(ran);
+        let ran = run_as(
+            &data,
+            change.0,
+            change.1,
+            &holding(Level::Deployer),
+            RunRequest::default(),
+        );
+        assert_eq!(ran.status, StatusCode::OK);
+        let ran = ran.to_json();
         assert_eq!(ran["ok"], true, "{ran}");
         assert_eq!(ran["results"][0]["id"], "west-test", "{ran}");
-        assert_eq!(ran["results"][0]["scope"], "west", "{ran}");
+        assert_eq!(ran["results"][0]["area"], "west", "{ran}");
 
-        let ran = run_as(&data, &q, &holding(Level::Editor), RunRequest::default());
+        let ran = run_as(
+            &data,
+            change.0,
+            change.1,
+            &holding(Level::Editor),
+            RunRequest::default(),
+        );
         assert_eq!(
-            ran.status(),
+            ran.status,
             StatusCode::OK,
             "an editor in shared runs a shared change's tests"
         );
 
         // West's editor reads shared but does not edit it.
         let west_editor = Access::Areas(BTreeMap::from([("west".to_string(), Level::Editor)]));
-        let refused = run_as(&data, &q, &west_editor, RunRequest::default());
-        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
-        assert_eq!(body(refused)["ok"], false);
+        let refused = run_as(&data, change.0, change.1, &west_editor, RunRequest::default());
+        assert_eq!(refused.status, StatusCode::FORBIDDEN);
+        assert_eq!(refused.to_json()["ok"], false);
 
         let unheld = Access::Areas(BTreeMap::new());
-        assert_eq!(list_in(&data, &q, &unheld).status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            list_in(&data, change.0, change.1, &unheld).status,
+            StatusCode::FORBIDDEN
+        );
     }
 
     fn empty_file_config() -> config_file::FileConfig {

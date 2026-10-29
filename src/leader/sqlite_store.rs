@@ -30,13 +30,13 @@ pub struct SqliteStore {
 
 impl From<rusqlite::Error> for StoreError {
     fn from(e: rusqlite::Error) -> StoreError {
-        StoreError(e.to_string())
+        StoreError::failed(e.to_string())
     }
 }
 
 impl From<secrets::KeyError> for StoreError {
     fn from(e: secrets::KeyError) -> StoreError {
-        StoreError(e.0)
+        StoreError::failed(e.0)
     }
 }
 
@@ -57,7 +57,7 @@ fn make_private(path: &Path) -> Result<(), StoreError> {
     if path.as_os_str() == ":memory:" {
         return Ok(());
     }
-    let failed = |what: &Path, e: std::io::Error| StoreError(format!("{}: {e}", what.display()));
+    let failed = |what: &Path, e: std::io::Error| StoreError::failed(format!("{}: {e}", what.display()));
 
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         set_mode_if_looser(parent, 0o700).map_err(|e| failed(parent, e))?;
@@ -463,7 +463,7 @@ impl SqliteStore {
         let mut conn = Connection::open(path)?;
         // First, so the leader never acts on what a damaged file says.
         if let Some(found) = damage(&conn, check_for(&conn))? {
-            return Err(StoreError(refusal(path, &found)));
+            return Err(StoreError::failed(refusal(path, &found)));
         }
         // Before the steps, so it is the file as this start found it, in the format the last build left.
         if let Err(e) = keep_previous(&conn, path) {
@@ -477,7 +477,7 @@ impl SqliteStore {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         // After WAL is on, so the sidecar files it creates are covered too.
         make_private(path)?;
-        super::steps::upgrade_sqlite(&mut conn, "leader.db", STEPS).map_err(StoreError)?;
+        super::steps::upgrade_sqlite(&mut conn, "leader.db", STEPS).map_err(StoreError::failed)?;
         Ok(SqliteStore {
             conn: Mutex::new(conn),
             secret_key: secret_key.to_path_buf(),
@@ -488,7 +488,7 @@ impl SqliteStore {
     /// sealed then is one the restored key could not open.
     fn key_for_sealing(&self) -> Result<EncryptionKey, StoreError> {
         if let Some(problem) = self.key_standing()?.problem() {
-            return Err(StoreError(problem));
+            return Err(StoreError::conflict(problem));
         }
         Ok(secrets::load_or_create(&self.secret_key)?)
     }
@@ -567,7 +567,7 @@ impl SqliteStore {
             return Ok(None);
         };
         Sealed::from_parts(key_id, &nonce, ciphertext).map(Some).ok_or_else(|| {
-            StoreError(format!(
+            StoreError::failed(format!(
                 "secret {name:?} v{version}: its stored nonce is the wrong length"
             ))
         })
@@ -613,19 +613,19 @@ impl SqliteStore {
         kept: Option<&Kept>,
     ) -> Result<(), StoreError> {
         if !crate::config_file::is_safe_secret_name(name) {
-            return Err(StoreError(crate::config_file::unsafe_secret_name(name)));
+            return Err(StoreError::invalid(crate::config_file::unsafe_secret_name(name)));
         }
         // Sealed before the row is written, so a key that cannot be created leaves no half-made secret behind.
         let sealed = match (custody, value) {
             (Custody::LeaderStored, Some(value)) => Some(self.key_for_sealing()?.seal(name, value.as_bytes())),
             (Custody::LeaderStored, None) => {
-                return Err(StoreError(format!(
+                return Err(StoreError::invalid(format!(
                     "secret {name:?} is leader-stored, so it needs a value"
                 )));
             }
             (Custody::WorkerLocal, None) => None,
             (Custody::WorkerLocal, Some(_)) => {
-                return Err(StoreError(format!(
+                return Err(StoreError::invalid(format!(
                     "secret {name:?} is worker-local, so its value is never the leader's to hold"
                 )));
             }
@@ -640,7 +640,7 @@ impl SqliteStore {
             (name, custody.as_str(), description),
         )?;
         if inserted == 0 {
-            return Err(StoreError(format!("secret {name:?} already exists")));
+            return Err(StoreError::conflict(format!("secret {name:?} already exists")));
         }
         if let Some(sealed) = &sealed {
             let version = Self::take_version(&tx, name)?.expect("the row this transaction just inserted");
@@ -648,7 +648,7 @@ impl SqliteStore {
         }
         match kept {
             Some(Kept::Issued(issued)) => {
-                let names = serde_json::to_string(&issued.names).map_err(|e| StoreError(e.to_string()))?;
+                let names = serde_json::to_string(&issued.names).map_err(|e| StoreError::failed(e.to_string()))?;
                 tx.execute(
                     "INSERT INTO issued_certificates (name, names, validity_days) VALUES (?1, ?2, ?3)",
                     (name, names, issued.validity_days),
@@ -669,7 +669,7 @@ impl SqliteStore {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let version = Self::take_version(&tx, name)?
-            .ok_or_else(|| StoreError(format!("no leader-stored secret named {name:?}")))?;
+            .ok_or_else(|| StoreError::not_found(format!("no leader-stored secret named {name:?}")))?;
         Self::insert_version(&tx, name, version, &sealed, chain)?;
         tx.commit()?;
         Ok(version)
@@ -1040,7 +1040,7 @@ impl Store for SqliteStore {
             (worker_id, token_hash),
         )?;
         if inserted == 0 {
-            return Err(StoreError(format!(
+            return Err(StoreError::conflict(format!(
                 "worker {worker_id:?} is already enrolled; a worker that lost its credential \
                  needs a new worker id"
             )));
@@ -1201,21 +1201,22 @@ impl Store for SqliteStore {
         })?;
         for row in rows {
             let (name, names, validity_days) = row?;
-            let names = serde_json::from_str(&names).map_err(|e| StoreError(format!("{name:?}'s names: {e}")))?;
+            let names =
+                serde_json::from_str(&names).map_err(|e| StoreError::failed(format!("{name:?}'s names: {e}")))?;
             out.insert(name, Kept::Issued(Issued { names, validity_days }));
         }
         Ok(out)
     }
 
     fn set_issued(&self, name: &str, issued: &Issued) -> Result<(), StoreError> {
-        let names = serde_json::to_string(&issued.names).map_err(|e| StoreError(e.to_string()))?;
+        let names = serde_json::to_string(&issued.names).map_err(|e| StoreError::failed(e.to_string()))?;
         let conn = self.conn.lock().unwrap();
         let updated = conn.execute(
             "UPDATE issued_certificates SET names = ?2, validity_days = ?3 WHERE name = ?1",
             (name, names, issued.validity_days),
         )?;
         if updated == 0 {
-            return Err(StoreError(format!("this leader does not issue {name:?}")));
+            return Err(StoreError::not_found(format!("this leader does not issue {name:?}")));
         }
         Ok(())
     }
@@ -1356,7 +1357,7 @@ impl Store for SqliteStore {
     fn regenerate_key(&self, event: &SecurityEvent) -> Result<KeyStanding, StoreError> {
         let standing = self.key_standing()?;
         if !standing.broken() {
-            return Err(StoreError(
+            return Err(StoreError::conflict(
                 "the secrets encryption key opens what is stored under it: there is nothing to regenerate".to_string(),
             ));
         }
@@ -1364,7 +1365,7 @@ impl Store for SqliteStore {
             let now = super::warnings::now_millis() / 1000;
             let aside = PathBuf::from(format!("{}.replaced-{now}", self.secret_key.display()));
             std::fs::rename(&self.secret_key, &aside)
-                .map_err(|e| StoreError(format!("{}: {e}", self.secret_key.display())))?;
+                .map_err(|e| StoreError::failed(format!("{}: {e}", self.secret_key.display())))?;
             tracing::warn!(
                 target: "secrets.key_replaced",
                 path = %aside.display(),
@@ -1709,7 +1710,8 @@ impl Store for SqliteStore {
     }
 
     fn oidc_sign_in(&self, who: OidcSignIn<'_>, created: &SecurityEvent) -> Result<UserRecord, StoreError> {
-        let groups = serde_json::to_string(who.groups).map_err(|e| StoreError(format!("encoding groups: {e}")))?;
+        let groups =
+            serde_json::to_string(who.groups).map_err(|e| StoreError::failed(format!("encoding groups: {e}")))?;
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         // The lookup and the insert are one transaction, so two first sign-ins racing for one identity make one
@@ -1767,8 +1769,8 @@ impl Store for SqliteStore {
         let Some((issuer, subject, groups, login, last_sign_in)) = row else {
             return Ok(None);
         };
-        let groups =
-            serde_json::from_str(&groups).map_err(|e| StoreError(format!("reading groups of {user_id}: {e}")))?;
+        let groups = serde_json::from_str(&groups)
+            .map_err(|e| StoreError::failed(format!("reading groups of {user_id}: {e}")))?;
         Ok(Some(OidcIdentityRecord {
             issuer,
             subject,
@@ -1779,7 +1781,7 @@ impl Store for SqliteStore {
     }
 
     fn oidc_refreshed(&self, user_id: &str, groups: &[String], login: Option<&str>) -> Result<(), StoreError> {
-        let groups = serde_json::to_string(groups).map_err(|e| StoreError(format!("encoding groups: {e}")))?;
+        let groups = serde_json::to_string(groups).map_err(|e| StoreError::failed(format!("encoding groups: {e}")))?;
         self.conn.lock().unwrap().execute(
             "UPDATE oidc_identities SET groups = ?2, login = ?3 WHERE user_id = ?1",
             rusqlite::params![user_id, groups, login],
@@ -1855,7 +1857,7 @@ impl Store for SqliteStore {
         match permissions {
             None => Ok(AgentPermissions::default()),
             Some(permissions) => serde_json::from_str(&permissions)
-                .map_err(|e| StoreError(format!("reading the agent permissions of {user_id}: {e}"))),
+                .map_err(|e| StoreError::failed(format!("reading the agent permissions of {user_id}: {e}"))),
         }
     }
 
@@ -1865,8 +1867,8 @@ impl Store for SqliteStore {
         permissions: &AgentPermissions,
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError> {
-        let encoded =
-            serde_json::to_string(permissions).map_err(|e| StoreError(format!("encoding agent permissions: {e}")))?;
+        let encoded = serde_json::to_string(permissions)
+            .map_err(|e| StoreError::failed(format!("encoding agent permissions: {e}")))?;
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         if !user_exists(&tx, user_id)? {
@@ -1985,11 +1987,11 @@ impl Store for SqliteStore {
         for row in rows {
             let (name, area, level): (String, String, String) = row?;
             let level = Level::parse(&level)
-                .ok_or_else(|| StoreError(format!("role {name} holds an unknown level {level:?} in {area}")))?;
+                .ok_or_else(|| StoreError::failed(format!("role {name} holds an unknown level {level:?} in {area}")))?;
             // Both lists are by name and the foreign key holds every area's role in the first.
             let at = roles
                 .binary_search_by(|role| role.name.as_str().cmp(&name))
-                .map_err(|_| StoreError(format!("an area of {name}, which is no role")))?;
+                .map_err(|_| StoreError::failed(format!("an area of {name}, which is no role")))?;
             roles[at].areas.insert(area, level);
         }
         Ok(roles)
@@ -3211,7 +3213,7 @@ mod tests {
         );
 
         let refused = s.add_secret_version("kafka-west-sasl", "hunter3").unwrap_err();
-        assert_eq!(refused.0, problem);
+        assert_eq!(refused.message, problem);
         assert!(
             s.create_secret("es-auth", Custody::LeaderStored, "", Some("x"))
                 .is_err()
@@ -4135,7 +4137,10 @@ mod tests {
         bytes[page..2 * page].fill(0xA5);
         std::fs::write(&db, &bytes).unwrap();
 
-        let refused = SqliteStore::open(&db, &key).err().expect("a damaged file opened").0;
+        let refused = SqliteStore::open(&db, &key)
+            .err()
+            .expect("a damaged file opened")
+            .message;
         assert!(refused.contains(&db.display().to_string()), "{refused}");
         assert!(
             refused.contains("damaged") && refused.contains("a backup of your own"),
@@ -4203,7 +4208,7 @@ mod tests {
         let refused = SqliteStore::open(&db, &key)
             .err()
             .expect("a start about to upgrade opened")
-            .0;
+            .message;
         assert!(
             refused.contains("damaged") && refused.contains("sqlite_autoindex_users_1"),
             "{refused}"
@@ -4229,7 +4234,7 @@ mod tests {
         drop(conn);
 
         match SqliteStore::open(&db, &key) {
-            Err(e) => assert!(e.0.contains("newer build"), "{}", e.0),
+            Err(e) => assert!(e.message.contains("newer build"), "{}", e.message),
             Ok(_) => panic!("a database from a newer build was opened"),
         }
     }

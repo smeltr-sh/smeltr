@@ -520,9 +520,9 @@ describe('canonicalJson', () => {
 describe('testsCovering', () => {
   it('matches by the summary, falling back to the result', () => {
     const results: TestResult[] = [
-      { id: 't1', name: 't1', scope: 'net', pipeline: 'p' },
-      { id: 't2', name: 't2', scope: 'net' },
-      { id: 't3', name: 't3', scope: 'other', pipeline: 'p' },
+      { id: 't1', name: 't1', area: 'net', pipeline: 'p' },
+      { id: 't2', name: 't2', area: 'net' },
+      { id: 't3', name: 't3', area: 'other', pipeline: 'p' },
     ];
     const summaries = new Map<string, TestSummary>([
       [
@@ -530,7 +530,7 @@ describe('testsCovering', () => {
         {
           id: 't2',
           name: 't2',
-          scope: 'net',
+          area: 'net',
           sample: 's',
           rowsIn: 1,
           rowsOut: 1,

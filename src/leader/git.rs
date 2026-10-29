@@ -16,14 +16,48 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use super::envelope::ErrorKind;
 use super::store::Actor;
 
+/// A git operation that did not do what it was asked. `kind` says whether it failed or the repository's state
+/// refused it, which is what a route answers it at (`envelope::Refusal`).
 #[derive(Debug)]
-pub struct GitError(pub String);
+pub struct GitError {
+    pub kind: ErrorKind,
+    pub message: String,
+}
+
+impl GitError {
+    pub fn failed(message: impl Into<String>) -> Self {
+        GitError {
+            kind: ErrorKind::Failed,
+            message: message.into(),
+        }
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        GitError::of(ErrorKind::Conflict, message)
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        GitError::of(ErrorKind::NotFound, message)
+    }
+
+    pub fn invalid(message: impl Into<String>) -> Self {
+        GitError::of(ErrorKind::Invalid, message)
+    }
+
+    pub fn of(kind: ErrorKind, message: impl Into<String>) -> Self {
+        GitError {
+            kind,
+            message: message.into(),
+        }
+    }
+}
 
 impl std::fmt::Display for GitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.message)
     }
 }
 
@@ -31,21 +65,21 @@ impl std::error::Error for GitError {}
 
 impl From<GitError> for String {
     fn from(e: GitError) -> String {
-        e.0
+        e.message
     }
 }
 
 /// The repository, opened for this call. Opening reads config and nothing more -- refs and objects are found on
 /// demand -- so a handle is not worth holding across threads, and `gix::Repository` is `!Sync` anyway.
 fn open(repo_path: &Path) -> Result<gix::Repository, GitError> {
-    gix::open(repo_path).map_err(|e| GitError(format!("opening {}: {e}", repo_path.display())))
+    gix::open(repo_path).map_err(|e| GitError::failed(format!("opening {}: {e}", repo_path.display())))
 }
 
 /// What a rev names here: a branch, a commit id, or a tree id -- the same spec git would take.
 fn resolve(repo: &gix::Repository, rev: &str) -> Result<gix::ObjectId, GitError> {
     repo.rev_parse_single(rev)
         .map(|id| id.detach())
-        .map_err(|e| GitError(format!("{rev:?} names nothing here: {e}")))
+        .map_err(|e| GitError::failed(format!("{rev:?} names nothing here: {e}")))
 }
 
 /// The tree a rev holds. Readers are handed both kinds: a commit for what a branch is at, and a bare tree for a
@@ -70,7 +104,7 @@ pub fn repo_path(data_dir: &Path) -> PathBuf {
 /// A group's subtree within the repository, refusing an id that is not safe as a path component. The check itself
 /// lives beside the loader that also joins one (`config_file::group_subtree`), so both ways in agree.
 pub fn group_subtree(group_id: &str) -> Result<String, GitError> {
-    crate::config_file::group_subtree(group_id).map_err(GitError)
+    crate::config_file::group_subtree(group_id).map_err(GitError::invalid)
 }
 
 /// A bare repository whose `HEAD` names `main`, idempotent. Pinning the branch here rather than taking the host's
@@ -94,21 +128,22 @@ pub fn init_bare_repo(path: &Path) -> Result<(), GitError> {
     // What a start stopped part way left.
     if partial.exists() {
         std::fs::remove_dir_all(&partial)
-            .map_err(|e| GitError(format!("removing the half-made {}: {e}", partial.display())))?;
+            .map_err(|e| GitError::failed(format!("removing the half-made {}: {e}", partial.display())))?;
     }
-    std::fs::create_dir_all(&partial).map_err(|e| GitError(e.to_string()))?;
+    std::fs::create_dir_all(&partial).map_err(|e| GitError::failed(e.to_string()))?;
     build_bare_repo(&partial).inspect_err(|_| {
         let _ = std::fs::remove_dir_all(&partial);
     })?;
     // An empty directory at `path` is not a repository; a rename onto a directory needs it gone first on Windows.
     if path.exists() {
-        std::fs::remove_dir(path).map_err(|e| GitError(format!("{} is in the way: {e}", path.display())))?;
+        std::fs::remove_dir(path).map_err(|e| GitError::failed(format!("{} is in the way: {e}", path.display())))?;
     }
-    std::fs::rename(&partial, path).map_err(|e| GitError(format!("moving {} into place: {e}", partial.display())))
+    std::fs::rename(&partial, path)
+        .map_err(|e| GitError::failed(format!("moving {} into place: {e}", partial.display())))
 }
 
 fn build_bare_repo(path: &Path) -> Result<(), GitError> {
-    let repo = gix::init_bare(path).map_err(|e| GitError(format!("creating {}: {e}", path.display())))?;
+    let repo = gix::init_bare(path).map_err(|e| GitError::failed(format!("creating {}: {e}", path.display())))?;
 
     use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit};
     repo.edit_reference(RefEdit {
@@ -120,9 +155,9 @@ fn build_bare_repo(path: &Path) -> Result<(), GitError> {
         name: full_name("HEAD")?,
         deref: false,
     })
-    .map_err(|e| GitError(format!("pointing HEAD at {MAIN_BRANCH}: {e}")))?;
+    .map_err(|e| GitError::failed(format!("pointing HEAD at {MAIN_BRANCH}: {e}")))?;
     // Unstamped with commits in it reads as pre-release on the next start, so it is stamped before it is in place.
-    super::steps::stamp_new_repo(path).map_err(GitError)
+    super::steps::stamp_new_repo(path).map_err(GitError::failed)
 }
 
 /// Whether the repository has been created. `HEAD` is what `init_bare_repo` writes, so a directory that exists and
@@ -142,7 +177,7 @@ pub fn check_repo(repo_path: &Path) -> Result<(), GitError> {
     if !repo_ready(repo_path) {
         // `init_bare_repo` moves a repository into place whole, so one with files and no `HEAD` lost it.
         if std::fs::read_dir(repo_path).is_ok_and(|mut entries| entries.next().is_some()) {
-            return Err(GitError(format!(
+            return Err(GitError::failed(format!(
                 "{} does not read back whole: it has no HEAD",
                 repo_path.display()
             )));
@@ -150,7 +185,7 @@ pub fn check_repo(repo_path: &Path) -> Result<(), GitError> {
         return Ok(());
     }
     let repo = open(repo_path)?;
-    let damaged = |what: String| GitError(format!("{} does not read back whole: {what}", repo_path.display()));
+    let damaged = |what: String| GitError::failed(format!("{} does not read back whole: {what}", repo_path.display()));
     let references = repo.references().map_err(|e| damaged(e.to_string()))?;
     let mut tips = Vec::new();
     for reference in references.all().map_err(|e| damaged(e.to_string()))? {
@@ -236,7 +271,7 @@ pub fn ensure_main_commit(repo_path: &Path) -> Result<(), GitError> {
     // pointing at an object that is not there.
     let tree = repo
         .write_object(gix::objs::Tree::empty())
-        .map_err(|e| GitError(format!("writing the empty tree: {e}")))?
+        .map_err(|e| GitError::failed(format!("writing the empty tree: {e}")))?
         .detach();
     let commit = commit_tree_in(
         &repo,
@@ -270,7 +305,7 @@ pub fn seed_first_commit(repo_path: &Path, edits: &[FileEdit], message: &str) ->
         return Ok(false);
     }
 
-    let failed = |e: String| GitError(format!("seeding {MAIN_BRANCH}: {e}"));
+    let failed = |e: String| GitError::failed(format!("seeding {MAIN_BRANCH}: {e}"));
     let empty = repo
         .write_object(gix::objs::Tree::empty())
         .map_err(|e| failed(e.to_string()))?
@@ -309,7 +344,7 @@ pub fn seed_first_commit(repo_path: &Path, edits: &[FileEdit], message: &str) ->
 /// separator can never smuggle in a `..` or an empty component that a joined path would collapse.
 pub fn check_branch_name(branch: &str) -> Result<(), GitError> {
     let refused = || {
-        Err(GitError(format!(
+        Err(GitError::invalid(format!(
             "unsafe branch name {branch:?}: only letters, digits, '-', '_', '.' and '/' as a separator are \
              allowed, no part may start with '.' or '-' or be empty, and it must be 1-100 characters"
         )))
@@ -346,7 +381,7 @@ pub fn branch_exists(repo_path: &Path, branch: &str) -> Result<bool, GitError> {
 pub fn create_branch(data_dir: &Path, branch: &str) -> Result<String, GitError> {
     check_branch_name(branch)?;
     if branch == MAIN_BRANCH {
-        return Err(GitError(format!(
+        return Err(GitError::invalid(format!(
             "{MAIN_BRANCH} is what deploys move -- it is not a branch to start"
         )));
     }
@@ -354,11 +389,13 @@ pub fn create_branch(data_dir: &Path, branch: &str) -> Result<String, GitError> 
     init_bare_repo(&repo)?;
     ensure_main_commit(&repo)?;
     let Some(head) = main_head(&repo) else {
-        return Err(GitError(format!("{MAIN_BRANCH} has no commit to start a branch from")));
+        return Err(GitError::failed(format!(
+            "{MAIN_BRANCH} has no commit to start a branch from"
+        )));
     };
 
     if let Some(other) = name_collision(&repo, branch)? {
-        return Err(GitError(format!(
+        return Err(GitError::conflict(format!(
             "branch {branch:?} cannot be started while {other:?} exists: a name and a namespace are the same \
              path, so one of them has to be renamed"
         )));
@@ -367,7 +404,7 @@ pub fn create_branch(data_dir: &Path, branch: &str) -> Result<String, GitError> 
     let reference = format!("refs/heads/{branch}");
     if let Err(e) = swap_ref(&repo, &reference, &head, None) {
         return Err(if branch_exists(&repo, branch)? {
-            GitError(format!("branch {branch:?} is already there"))
+            GitError::conflict(format!("branch {branch:?} is already there"))
         } else {
             e
         });
@@ -391,14 +428,14 @@ fn name_collision(repo_path: &Path, branch: &str) -> Result<Option<String>, GitE
 pub fn delete_branch(data_dir: &Path, branch: &str, at: Option<&str>) -> Result<(), GitError> {
     check_branch_name(branch)?;
     if branch == MAIN_BRANCH {
-        return Err(GitError(format!(
+        return Err(GitError::invalid(format!(
             "{MAIN_BRANCH} is what deploys move and is not deleted"
         )));
     }
     let repo = repo_path(data_dir);
     if !branch_exists(&repo, branch)? {
         // `update-ref -d` is content to delete what is not there, so this is said here or not at all.
-        return Err(GitError(format!("there is no branch {branch:?}")));
+        return Err(GitError::not_found(format!("there is no branch {branch:?}")));
     }
     let git = open(&repo)?;
     let at = at.map(|at| resolve(&git, at)).transpose()?;
@@ -484,7 +521,7 @@ fn tree_with(
     edits: &[FileEdit],
 ) -> Result<(gix::ObjectId, gix::ObjectId), GitError> {
     let parent_tree = tree_at(repo, parent)?;
-    let failed = |e: String| GitError(format!("building a commit on {parent}: {e}"));
+    let failed = |e: String| GitError::failed(format!("building a commit on {parent}: {e}"));
 
     let base = repo.find_tree(parent_tree).map_err(|e| failed(e.to_string()))?;
     let mut editor = base.edit().map_err(|e| failed(e.to_string()))?;
@@ -526,17 +563,18 @@ fn commit_subject(repo_path: &Path, commit: &str) -> Result<String, GitError> {
     let id = resolve(&repo, commit)?;
     let commit = repo
         .find_commit(id)
-        .map_err(|e| GitError(format!("reading {id}: {e}")))?;
+        .map_err(|e| GitError::failed(format!("reading {id}: {e}")))?;
     let message = commit
         .message_raw()
-        .map_err(|e| GitError(format!("reading {id}: {e}")))?
+        .map_err(|e| GitError::failed(format!("reading {id}: {e}")))?
         .to_string();
     Ok(message.lines().next().unwrap_or_default().trim().to_string())
 }
 
 /// A ref name, refused here rather than reaching the ref store as something else.
 fn full_name(reference: &str) -> Result<gix::refs::FullName, GitError> {
-    gix::refs::FullName::try_from(reference).map_err(|e| GitError(format!("{reference:?} is not a ref name: {e}")))
+    gix::refs::FullName::try_from(reference)
+        .map_err(|e| GitError::failed(format!("{reference:?} is not a ref name: {e}")))
 }
 
 /// Now, as a commit carries it: unix seconds at UTC, and no earlier than `after`. The leader is the only committer its
@@ -555,7 +593,7 @@ fn signature_time(after: i64) -> String {
 fn after_parents(repo: &gix::Repository, parents: &[gix::ObjectId]) -> Result<i64, GitError> {
     let mut latest = 0;
     for parent in parents {
-        let unreadable = |e: &dyn std::fmt::Display| GitError(format!("reading commit {parent}: {e}"));
+        let unreadable = |e: &dyn std::fmt::Display| GitError::failed(format!("reading commit {parent}: {e}"));
         let commit = repo.find_commit(*parent).map_err(|e| unreadable(&e))?;
         let time = commit
             .committer()
@@ -658,7 +696,9 @@ fn commit_tree_in(
         email: email.as_str().into(),
         time: when.as_str(),
     };
-    let who = who.to_owned().map_err(|e| GitError(format!("writing a commit: {e}")))?;
+    let who = who
+        .to_owned()
+        .map_err(|e| GitError::failed(format!("writing a commit: {e}")))?;
     let (leader_name, leader_email) = signature_for(&Actor::system());
     let leader = gix::actor::SignatureRef {
         name: leader_name.as_str().into(),
@@ -667,7 +707,7 @@ fn commit_tree_in(
     };
     let leader = leader
         .to_owned()
-        .map_err(|e| GitError(format!("writing a commit: {e}")))?;
+        .map_err(|e| GitError::failed(format!("writing a commit: {e}")))?;
     let message = format!("{}\n", messages.join("\n\n").trim_end_matches('\n'));
 
     let commit = gix::objs::Commit {
@@ -681,7 +721,7 @@ fn commit_tree_in(
     };
     repo.write_object(&commit)
         .map(|id| id.detach())
-        .map_err(|e| GitError(format!("writing a commit: {e}")))
+        .map_err(|e| GitError::failed(format!("writing a commit: {e}")))
 }
 
 /// Point `reference` at `new`, but only while it still holds `old` -- `None` for "only if it does not exist". The
@@ -707,7 +747,7 @@ fn swap_ref_in(
     // first restores that. What the check cannot close is two callers creating the same ref at the same object,
     // which is both of them getting what they asked for.
     if old.is_none() && repo.find_reference(reference).is_ok() {
-        return Err(GitError(format!("{reference} is already there")));
+        return Err(GitError::conflict(format!("{reference} is already there")));
     }
     let expected = match old {
         Some(old) => PreviousValue::MustExistAndMatch(gix::refs::Target::Object(old)),
@@ -725,7 +765,7 @@ fn swap_ref_in(
         name: full_name(reference)?,
         deref: false,
     })
-    .map_err(|e| GitError(format!("{reference} did not move: {e}")))?;
+    .map_err(|e| GitError::failed(format!("{reference} did not move: {e}")))?;
     forget_advertisement();
     Ok(())
 }
@@ -744,7 +784,7 @@ fn delete_ref(repo: &gix::Repository, reference: &str, at: Option<gix::ObjectId>
         name: full_name(reference)?,
         deref: false,
     })
-    .map_err(|e| GitError(format!("{reference} was not deleted: {e}")))?;
+    .map_err(|e| GitError::failed(format!("{reference} was not deleted: {e}")))?;
     forget_advertisement();
     Ok(())
 }
@@ -807,7 +847,7 @@ pub fn list_tree(repo_path: &Path, commit: &str, path: &str) -> Result<Vec<TreeE
     }
     let mut entries = Vec::new();
     for entry in tree.iter() {
-        let entry = entry.map_err(|e| GitError(format!("listing {path:?} of {commit}: {e}")))?;
+        let entry = entry.map_err(|e| GitError::failed(format!("listing {path:?} of {commit}: {e}")))?;
         entries.push(TreeEntry {
             mode: mode_text(entry.inner.mode),
             name: entry.inner.filename.to_string(),
@@ -826,18 +866,18 @@ pub fn read_blobs(repo_path: &Path, commit: &str, paths: &[String]) -> Result<Ve
     let root = tree_at(&repo, commit)?;
     let tree = repo
         .find_tree(root)
-        .map_err(|e| GitError(format!("reading {commit}: {e}")))?;
+        .map_err(|e| GitError::failed(format!("reading {commit}: {e}")))?;
 
     let mut answers = Vec::with_capacity(paths.len());
     for path in paths {
         let found = tree
             .lookup_entry_by_path(path.as_str())
-            .map_err(|e| GitError(format!("reading {path:?} of {commit}: {e}")))?;
+            .map_err(|e| GitError::failed(format!("reading {path:?} of {commit}: {e}")))?;
         answers.push(match found {
             Some(entry) => Some(
                 entry
                     .object()
-                    .map_err(|e| GitError(format!("reading {path:?} of {commit}: {e}")))?
+                    .map_err(|e| GitError::failed(format!("reading {path:?} of {commit}: {e}")))?
                     .detach()
                     .data,
             ),
@@ -862,7 +902,7 @@ pub fn last_changed(
         return Ok(placed);
     }
     let repo = open(repo_path)?;
-    let failed = |e: String| GitError(format!("reading the history of {commit}: {e}"));
+    let failed = |e: String| GitError::failed(format!("reading the history of {commit}: {e}"));
     let version = |tree: &gix::Tree<'_>, path: &str| -> Result<Option<gix::ObjectId>, GitError> {
         Ok(tree
             .lookup_entry_by_path(path)
@@ -966,20 +1006,20 @@ impl Anchor {
             } => {
                 scope_prefix(scope)?;
                 if !ANCHOR_SECTIONS.iter().any(|(name, _)| name == section) {
-                    return Err(GitError(format!(
+                    return Err(GitError::invalid(format!(
                         "{section:?} is not a section an object is anchored in"
                     )));
                 }
                 if id.is_empty() || step.as_deref() == Some("") {
-                    return Err(GitError(
-                        "an object anchor names its object, and its step when it has one".into(),
+                    return Err(GitError::invalid(
+                        "an object anchor names its object, and its step when it has one",
                     ));
                 }
             }
             Anchor::Line { path, line } => {
                 if path.is_empty() || path.starts_with('/') || *line == 0 {
-                    return Err(GitError(
-                        "a line anchor names a file in the repository and a line counted from 1".into(),
+                    return Err(GitError::invalid(
+                        "a line anchor names a file in the repository and a line counted from 1",
                     ));
                 }
             }
@@ -995,7 +1035,7 @@ impl Anchor {
                 match ANCHOR_SECTIONS.iter().find(|(name, _)| name == section) {
                     Some((_, Some(file))) => Ok(format!("{prefix}/{file}")),
                     Some((_, None)) => Ok(format!("{prefix}/{section}/{}.json", crate::config_file::slugify(id))),
-                    None => Err(GitError(format!(
+                    None => Err(GitError::invalid(format!(
                         "{section:?} is not a section an object is anchored in"
                     ))),
                 }
@@ -1275,7 +1315,7 @@ fn change_tip(repo_path: &Path, branch: &str) -> Result<Option<String>, GitError
     };
     let id = reference
         .into_fully_peeled_id()
-        .map_err(|e| GitError(format!("reading {branch:?}'s change: {e}")))?;
+        .map_err(|e| GitError::failed(format!("reading {branch:?}'s change: {e}")))?;
     Ok(Some(id.detach().to_string()))
 }
 
@@ -1284,7 +1324,7 @@ fn read_markers(repo_path: &Path, branch: &str) -> Result<Vec<Marker>, GitError>
     let Ok(reference) = repo.find_reference(&change_ref(branch)) else {
         return Ok(vec![]);
     };
-    let failed = |e: String| GitError(format!("reading {branch:?}'s change: {e}"));
+    let failed = |e: String| GitError::failed(format!("reading {branch:?}'s change: {e}"));
     let tip = reference.into_fully_peeled_id().map_err(|e| failed(e.to_string()))?;
 
     let mut markers = Vec::new();
@@ -1378,7 +1418,7 @@ fn write_marker(
     let mut closing = String::new();
     for (key, value) in trailers {
         if value.contains(['\n', '\r']) {
-            return Err(GitError(format!("{key} cannot hold a line break")));
+            return Err(GitError::invalid(format!("{key} cannot hold a line break")));
         }
         closing.push_str(&format!("{key} {value}\n"));
     }
@@ -1392,13 +1432,13 @@ fn write_marker(
     let repo = open(repo_path)?;
     let tree = repo
         .write_object(gix::objs::Tree::empty())
-        .map_err(|e| GitError(format!("writing the empty tree: {e}")))?
+        .map_err(|e| GitError::failed(format!("writing the empty tree: {e}")))?
         .detach()
         .to_string();
     let parents: Vec<&str> = expected.into_iter().collect();
     let commit = commit_tree(repo_path, &tree, &parents, &[&message], author, Ordered::Clock)?;
     swap_ref(repo_path, &reference, &commit, expected).map_err(|_| {
-        GitError(format!(
+        GitError::conflict(format!(
             "{branch:?}'s change moved while this was being written -- read it again"
         ))
     })
@@ -1414,15 +1454,15 @@ pub fn open_change(
 ) -> Result<(), GitError> {
     check_branch_name(branch)?;
     if title.trim().is_empty() {
-        return Err(GitError(
-            "a change needs a title: it is what the deploy commit is called".into(),
+        return Err(GitError::invalid(
+            "a change needs a title: it is what the deploy commit is called",
         ));
     }
     let tip = change_tip(repo_path, branch)?;
     if let Some(change) = read_change(repo_path, branch)?
         && change.state == ChangeState::Open
     {
-        return Err(GitError(format!("{branch:?} is already open for review")));
+        return Err(GitError::conflict(format!("{branch:?} is already open for review")));
     }
     write_marker(
         repo_path,
@@ -1441,8 +1481,8 @@ pub fn close_change(repo_path: &Path, branch: &str, reason: &str, author: &Actor
     let tip = change_tip(repo_path, branch)?;
     match read_change(repo_path, branch)? {
         Some(change) if change.state == ChangeState::Open => {}
-        Some(_) => return Err(GitError(format!("{branch:?} is not open for review"))),
-        None => return Err(GitError(format!("{branch:?} was never opened for review"))),
+        Some(_) => return Err(GitError::conflict(format!("{branch:?} is not open for review"))),
+        None => return Err(GitError::conflict(format!("{branch:?} was never opened for review"))),
     }
     let reason = match reason.trim() {
         "" => NO_REASON,
@@ -1471,15 +1511,15 @@ pub fn retitle_change(
 ) -> Result<(), GitError> {
     check_branch_name(branch)?;
     if title.trim().is_empty() {
-        return Err(GitError(
-            "a change needs a title: it is what the deploy commit is called".into(),
+        return Err(GitError::invalid(
+            "a change needs a title: it is what the deploy commit is called",
         ));
     }
     let tip = change_tip(repo_path, branch)?;
     match read_change(repo_path, branch)? {
         Some(change) if change.state == ChangeState::Open => {}
-        Some(_) => return Err(GitError(format!("{branch:?} is not open for review"))),
-        None => return Err(GitError(format!("{branch:?} was never opened for review"))),
+        Some(_) => return Err(GitError::conflict(format!("{branch:?} is not open for review"))),
+        None => return Err(GitError::conflict(format!("{branch:?} was never opened for review"))),
     }
     write_marker(
         repo_path,
@@ -1508,17 +1548,17 @@ pub fn comment_on_change(
     check_branch_name(branch)?;
     let body = body.trim();
     if body.is_empty() {
-        return Err(GitError("a comment needs something said in it".into()));
+        return Err(GitError::invalid("a comment needs something said in it"));
     }
     let tip = change_tip(repo_path, branch)?;
     if read_change(repo_path, branch)?.is_none() {
-        return Err(GitError(format!("{branch:?} was never opened for review")));
+        return Err(GitError::conflict(format!("{branch:?} was never opened for review")));
     }
     let mut trailers = Vec::new();
     if let Some(anchor) = &anchor {
         if reply_to.is_some() {
-            return Err(GitError(
-                "a reply is about what its thread is about, so it takes no anchor".into(),
+            return Err(GitError::invalid(
+                "a reply is about what its thread is about, so it takes no anchor",
             ));
         }
         anchor.check()?;
@@ -1551,11 +1591,13 @@ fn thread_root<'a>(markers: &'a [Marker], branch: &str, id: &str) -> Result<&'a 
     check_commit_id(id)?;
     match markers.iter().find(|m| m.id == id.to_ascii_lowercase()) {
         Some(m) if m.kind == MarkerKind::Comment && m.reply_to.is_none() => Ok(m),
-        Some(m) if m.kind == MarkerKind::Comment => Err(GitError(format!(
+        Some(m) if m.kind == MarkerKind::Comment => Err(GitError::invalid(format!(
             "{id} is a reply: a thread is answered at the comment that started it"
         ))),
-        Some(_) => Err(GitError(format!("{id} is not a comment"))),
-        None => Err(GitError(format!("there is no comment {id} on {branch:?}'s change"))),
+        Some(_) => Err(GitError::invalid(format!("{id} is not a comment"))),
+        None => Err(GitError::not_found(format!(
+            "there is no comment {id} on {branch:?}'s change"
+        ))),
     }
 }
 
@@ -1572,9 +1614,9 @@ pub fn resolve_thread(
     let markers = read_markers(repo_path, branch)?;
     let root = thread_root(&markers, branch, root)?.id.clone();
     if thread_resolved(&markers, &root) == resolved {
-        return Err(GitError(match resolved {
-            true => "this thread is already resolved".into(),
-            false => "this thread is not resolved".into(),
+        return Err(GitError::conflict(match resolved {
+            true => "this thread is already resolved",
+            false => "this thread is not resolved",
         }));
     }
     let kind = if resolved {
@@ -1615,18 +1657,21 @@ pub fn review_change(
     check_branch_name(branch)?;
     let body = body.trim();
     if verdict == Verdict::ChangesRequested && body.is_empty() {
-        return Err(GitError("asking for changes needs to say what to change".into()));
+        return Err(GitError::invalid("asking for changes needs to say what to change"));
     }
     let tip = change_tip(repo_path, branch)?;
     let change = match read_change(repo_path, branch)? {
         Some(change) if change.state == ChangeState::Open => change,
-        Some(_) => return Err(GitError(format!("{branch:?} is not open for review"))),
-        None => return Err(GitError(format!("{branch:?} was never opened for review"))),
+        Some(_) => return Err(GitError::conflict(format!("{branch:?} is not open for review"))),
+        None => return Err(GitError::conflict(format!("{branch:?} was never opened for review"))),
     };
     // An empty id is an identity no account owns -- the leader's own, or one a marker could not name -- and two of
     // those are not the same person.
     if !change.author.id.is_empty() && change.author.id == author.id {
-        return Err(GitError("you opened this change, so somebody else reviews it".into()));
+        return Err(GitError::of(
+            ErrorKind::Forbidden,
+            "you opened this change, so somebody else reviews it",
+        ));
     }
     write_marker(
         repo_path,
@@ -1710,7 +1755,7 @@ pub fn change_timeline(repo_path: &Path, branch: &str) -> Result<Vec<TimelineEve
     check_branch_name(branch)?;
     let mut markers = read_markers(repo_path, branch)?;
     if markers.iter().all(|m| m.state().is_none()) {
-        return Err(GitError(format!("{branch:?} was never opened for review")));
+        return Err(GitError::conflict(format!("{branch:?} was never opened for review")));
     }
     markers.reverse();
 
@@ -1806,7 +1851,7 @@ fn saves(repo_path: &Path, branch: &str) -> Result<Vec<TimelineEvent>, GitError>
     let repo = open(repo_path)?;
     let tip = resolve(&repo, branch)?;
     let head = resolve(&repo, MAIN_BRANCH)?;
-    let failed = |e: String| GitError(format!("reading {branch:?}'s saves: {e}"));
+    let failed = |e: String| GitError::failed(format!("reading {branch:?}'s saves: {e}"));
     let mut saves = Vec::new();
     for info in repo
         .rev_walk([tip])
@@ -1935,46 +1980,46 @@ fn squash_change_from(
 ) -> Result<Squash, GitError> {
     check_branch_name(branch)?;
     if branch == MAIN_BRANCH {
-        return Err(GitError(format!(
+        return Err(GitError::failed(format!(
             "{MAIN_BRANCH} is what a deploy moves, not what it deploys"
         )));
     }
     let repo = repo_path(data_dir);
     let Some(tip) = branch_tip(&repo, branch) else {
-        return Err(GitError(format!("there is no branch {branch:?}")));
+        return Err(GitError::not_found(format!("there is no branch {branch:?}")));
     };
     if expected.is_some_and(|expected| expected != tip) {
-        return Err(GitError(format!(
+        return Err(GitError::conflict(format!(
             "{branch:?} moved while this was being deployed -- look at it again"
         )));
     }
 
     let Some(change) = read_change(&repo, branch)? else {
-        return Err(GitError(format!("{branch:?} was never opened for review")));
+        return Err(GitError::conflict(format!("{branch:?} was never opened for review")));
     };
     if change.state != ChangeState::Open {
-        return Err(GitError(format!("{branch:?} is not open for review")));
+        return Err(GitError::conflict(format!("{branch:?} is not open for review")));
     }
 
     let (ahead, behind) = ahead_behind_in(&open(&repo)?, &tip)?;
     if ahead == 0 {
-        return Err(GitError(format!("{branch:?} changes nothing")));
+        return Err(GitError::conflict(format!("{branch:?} changes nothing")));
     }
     if behind > 0 {
         // Merging is deploying, so a review against a `main` that has moved would put untested config in front of
         // live data (W4).
-        return Err(GitError(format!(
+        return Err(GitError::conflict(format!(
             "{MAIN_BRANCH} has moved on by {behind} commit{} since this change was opened -- bring it current first",
             if behind == 1 { "" } else { "s" }
         )));
     }
 
-    let head = main_head(&repo).ok_or_else(|| GitError(format!("{MAIN_BRANCH} has no commit")))?;
+    let head = main_head(&repo).ok_or_else(|| GitError::failed(format!("{MAIN_BRANCH} has no commit")))?;
     // The branch is not behind `main`, so what a squash merge would produce is the tree the branch already holds,
     // less its left-out samples.
     let tree = deploying_tree(&repo, &head, &tip)?;
     if tree == tree_of(&repo, &head)? {
-        return Err(GitError(format!(
+        return Err(GitError::conflict(format!(
             "{branch:?} makes no difference to {MAIN_BRANCH} -- there is nothing to deploy"
         )));
     }
@@ -1982,7 +2027,7 @@ fn squash_change_from(
     // What the fleet runs has to run. A branch can hold a commit smeltr did not make (design doc, Config plane), and
     // two changes that each loaded alone can still leave `main` naming what the other removed.
     if let Some(why) = worse_than_running(&repo, &tree)? {
-        return Err(GitError(format!(
+        return Err(GitError::conflict(format!(
             "deploying {branch:?} would break what runs: {why}. Nothing was deployed"
         )));
     }
@@ -2084,7 +2129,7 @@ pub fn deploy_squash(data_dir: &Path, squash: &Squash, author: &Actor) -> Result
     let (new, old_head) = (resolve(&git, &squash.commit)?, resolve(&git, &squash.head)?);
     let running = deployed_in(&git);
     let moved = |_| {
-        GitError(format!(
+        GitError::conflict(format!(
             "{MAIN_BRANCH} moved while this was being deployed -- bring {branch:?} current and try again"
         ))
     };
@@ -2115,7 +2160,7 @@ pub fn check_commit_id(commit: &str) -> Result<(), GitError> {
     if (7..=40).contains(&commit.len()) && commit.chars().all(|c| c.is_ascii_hexdigit()) {
         return Ok(());
     }
-    Err(GitError(format!(
+    Err(GitError::invalid(format!(
         "{commit:?} is not a commit id: 7 to 40 hexadecimal characters"
     )))
 }
@@ -2137,7 +2182,7 @@ pub fn deploy_commit(data_dir: &Path, commit: &str, author: &Actor) -> Result<St
     let short = short(commit);
     let running = deployed_in(&git);
     if running == Some(target) {
-        return Err(GitError(format!("{short} is already what is deployed")));
+        return Err(GitError::conflict(format!("{short} is already what is deployed")));
     }
     let release = Some(target.to_string()) == main_head(&repo);
     let subject = if release {
@@ -2146,7 +2191,7 @@ pub fn deploy_commit(data_dir: &Path, commit: &str, author: &Actor) -> Result<St
         format!("{ROLLED_BACK_SUBJECT}{short}: {}", commit_subject(&repo, commit)?)
     };
     deploy_in(&git, target, running, Main::Stays, &subject, !release, author)
-        .map_err(|_| GitError(format!("the fleet moved while {short} was being deployed -- try again")))?;
+        .map_err(|_| GitError::conflict(format!("the fleet moved while {short} was being deployed -- try again")))?;
     Ok(target.to_string())
 }
 
@@ -2161,7 +2206,7 @@ pub fn deploying_would_not_load(data_dir: &Path, commit: &str) -> Result<Vec<(St
 fn check_deployable(repo: &Path, commit: &str) -> Result<(), GitError> {
     check_commit_id(commit)?;
     if !is_ancestor(repo, commit, MAIN_BRANCH)? {
-        return Err(GitError(format!(
+        return Err(GitError::conflict(format!(
             "{commit} is not in {MAIN_BRANCH}'s history -- only something that has been deployed can be deployed again"
         )));
     }
@@ -2255,7 +2300,7 @@ fn deploy_in(
         .map(|id| id.detach());
     let empty = repo
         .write_object(gix::objs::Tree::empty())
-        .map_err(|e| GitError(format!("writing the empty tree: {e}")))?
+        .map_err(|e| GitError::failed(format!("writing the empty tree: {e}")))?
         .detach();
     let mut message = format!("{subject}\n\n{DEPLOYED_TRAILER} {new}");
     if hold {
@@ -2281,7 +2326,7 @@ fn deploy_in(
         Main::MovesFrom(old) => edits.push(swap_edit(&main_ref, new, Some(old))?),
     }
     repo.edit_references(edits)
-        .map_err(|e| GitError(format!("the fleet did not move: {e}")))?;
+        .map_err(|e| GitError::failed(format!("the fleet did not move: {e}")))?;
     forget_advertisement();
     Ok(())
 }
@@ -2325,7 +2370,7 @@ pub fn follow(repo_path: &Path, commit: &str) -> Result<(), GitError> {
     let head = main_head(repo_path).map(|head| resolve(&git, &head)).transpose()?;
     let running = deployed_in(&git);
     let moved = |_| {
-        GitError(format!(
+        GitError::conflict(format!(
             "{MAIN_BRANCH} moved while {short} was being followed -- the next sync tries again"
         ))
     };
@@ -2339,7 +2384,7 @@ pub fn follow(repo_path: &Path, commit: &str) -> Result<(), GitError> {
         return deploy_in(&git, new, running, main, &subject, false, &Actor::system()).map_err(moved);
     }
     let Some(held) = running else {
-        return Err(GitError(format!(
+        return Err(GitError::failed(format!(
             "the remote's {MAIN_BRANCH} at {short} does not load, and nothing is deployed yet to hold the fleet on"
         )));
     };
@@ -2358,7 +2403,7 @@ fn move_main_under(
         swap_edit(&format!("refs/heads/{MAIN_BRANCH}"), new, head)?,
         swap_edit(DEPLOYED_REF, held, Some(held))?,
     ])
-    .map_err(|e| GitError(e.to_string()))?;
+    .map_err(|e| GitError::failed(e.to_string()))?;
     forget_advertisement();
     Ok(())
 }
@@ -2398,7 +2443,7 @@ pub struct Hold {
 /// The hold the fleet is under, or `None` when it runs `main`'s head.
 pub fn hold(repo_path: &Path) -> Result<Option<Hold>, GitError> {
     let repo = open(repo_path)?;
-    let failed = |e: String| GitError(format!("reading the deploy log: {e}"));
+    let failed = |e: String| GitError::failed(format!("reading the deploy log: {e}"));
     let log_tip = || -> Option<gix::ObjectId> {
         Some(
             repo.find_reference(DEPLOY_LOG_REF)
@@ -2505,7 +2550,7 @@ pub struct CommitSummary {
 /// Every branch, `main` included. Callers filter: `main` is not editable, but it is listed where a diff needs it.
 pub fn list_branches(repo_path: &Path) -> Result<Vec<BranchSummary>, GitError> {
     let repo = open(repo_path)?;
-    let failed = |e: String| GitError(format!("listing branches: {e}"));
+    let failed = |e: String| GitError::failed(format!("listing branches: {e}"));
     let mut branches = Vec::new();
     for reference in repo
         .references()
@@ -2549,10 +2594,10 @@ fn ahead_behind_in(repo: &gix::Repository, branch: &str) -> Result<(u32, u32), G
             .rev_walk([from])
             .with_hidden([hidden])
             .all()
-            .map_err(|e| GitError(format!("counting {branch:?} against {MAIN_BRANCH}: {e}")))?;
+            .map_err(|e| GitError::failed(format!("counting {branch:?} against {MAIN_BRANCH}: {e}")))?;
         let mut count = 0;
         for info in walk {
-            info.map_err(|e| GitError(format!("counting {branch:?} against {MAIN_BRANCH}: {e}")))?;
+            info.map_err(|e| GitError::failed(format!("counting {branch:?} against {MAIN_BRANCH}: {e}")))?;
             count += 1;
         }
         Ok(count)
@@ -2595,7 +2640,7 @@ fn since_main(repo: &gix::Repository, branch: &str) -> Result<(gix::ObjectId, gi
     let head = resolve(repo, MAIN_BRANCH)?;
     let base = repo
         .merge_base(tip, head)
-        .map_err(|e| GitError(format!("{branch:?} and {MAIN_BRANCH} share no commit: {e}")))?
+        .map_err(|e| GitError::failed(format!("{branch:?} and {MAIN_BRANCH} share no commit: {e}")))?
         .detach();
     Ok((base, tip))
 }
@@ -2606,7 +2651,7 @@ fn tree_changes(
     old: gix::ObjectId,
     new: gix::ObjectId,
 ) -> Result<Vec<gix::object::tree::diff::ChangeDetached>, GitError> {
-    let failed = |e: String| GitError(format!("diffing {old} against {new}: {e}"));
+    let failed = |e: String| GitError::failed(format!("diffing {old} against {new}: {e}"));
     let old = repo
         .find_commit(old)
         .map_err(|e| failed(e.to_string()))?
@@ -2656,7 +2701,7 @@ fn side_bytes(repo: &gix::Repository, side: &Side) -> Result<Vec<u8>, GitError> 
     };
     Ok(repo
         .find_object(*id)
-        .map_err(|e| GitError(format!("reading {id}: {e}")))?
+        .map_err(|e| GitError::failed(format!("reading {id}: {e}")))?
         .detach()
         .data)
 }
@@ -2779,7 +2824,7 @@ fn patch(
         gix::diff::blob::unified_diff::ContextSize::default(),
     )
     .consume()
-    .map_err(|e| GitError(format!("diffing {at}: {e}")))?;
+    .map_err(|e| GitError::failed(format!("diffing {at}: {e}")))?;
     out.push_str(&body);
     Ok(out)
 }
@@ -2856,7 +2901,7 @@ pub fn log_where(
 ) -> Result<Vec<CommitSummary>, GitError> {
     let repo = open(repo_path)?;
     let start = resolve(&repo, rev)?;
-    let failed = |e: String| GitError(format!("reading the history of {rev}: {e}"));
+    let failed = |e: String| GitError::failed(format!("reading the history of {rev}: {e}"));
     // A commit fetched from a remote was written there, by whoever could push to it, so what it says about an account
     // is a claim nobody here checked ([`account_of`]).
     // `None` when nothing was fetched. Walked only as far as the fetched history, so it costs what the leader wrote
@@ -2958,7 +3003,7 @@ fn strip_trailer(body: &str, trailer: &str) -> String {
 
 /// The paths one commit touched, against its first parent. A root commit touches everything it holds.
 fn commit_files(repo: &gix::Repository, commit: gix::ObjectId) -> Result<Vec<String>, GitError> {
-    let failed = |e: String| GitError(format!("reading what {commit} touched: {e}"));
+    let failed = |e: String| GitError::failed(format!("reading what {commit} touched: {e}"));
     let commit = repo.find_commit(commit).map_err(|e| failed(e.to_string()))?;
     let new = commit.tree().map_err(|e| failed(e.to_string()))?;
     let old = match commit.parent_ids().next() {
@@ -3074,7 +3119,12 @@ fn backend(
 
     let (project_root, repo_name) = match (repo_path.parent(), repo_path.file_name()) {
         (Some(root), Some(name)) => (root, name),
-        _ => return Err(GitError(format!("{} is not a repository path", repo_path.display()))),
+        _ => {
+            return Err(GitError::failed(format!(
+                "{} is not a repository path",
+                repo_path.display()
+            )));
+        }
     };
 
     let mut cmd = Command::new("git");
@@ -3209,7 +3259,7 @@ pub fn push(
         .args(["push", "--porcelain", "--no-verify", &lease, url, &refspec])
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| GitError(format!("spawning git push: {e}")))?;
+        .map_err(|e| GitError::failed(format!("spawning git push: {e}")))?;
     if output.status.success() {
         return Ok(Pushed::Done);
     }
@@ -3239,7 +3289,9 @@ pub fn push(
     } else {
         format!("{why}: {}", host_said.join(" "))
     };
-    Err(GitError(format!("pushing {branch} to {url} did not work: {why}")))
+    Err(GitError::failed(format!(
+        "pushing {branch} to {url} did not work: {why}"
+    )))
 }
 
 /// Where `branch` is on the host at `url`, or `None` when the host has no such branch.
@@ -3254,9 +3306,9 @@ pub fn host_branch(
         .args(["ls-remote", url, &format!("refs/heads/{branch}")])
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| GitError(format!("spawning git ls-remote: {e}")))?;
+        .map_err(|e| GitError::failed(format!("spawning git ls-remote: {e}")))?;
     if !output.status.success() {
-        return Err(GitError(format!(
+        return Err(GitError::failed(format!(
             "asking {url} where {branch} is did not work: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         )));
@@ -3280,7 +3332,7 @@ pub fn branch_tips(repo_path: &Path) -> Result<std::collections::HashMap<String,
 /// Every ref under `prefix`, by the rest of its name, and the commit it names.
 fn tips_under(repo_path: &Path, prefix: &str) -> Result<std::collections::HashMap<String, String>, GitError> {
     let repo = open(repo_path)?;
-    let failed = |e: String| GitError(format!("listing {prefix}: {e}"));
+    let failed = |e: String| GitError::failed(format!("listing {prefix}: {e}"));
     let mut out = std::collections::HashMap::new();
     for reference in repo
         .references()
@@ -3316,7 +3368,7 @@ pub fn record_host_branch(repo_path: &Path, branch: &str, tip: Option<&str>) -> 
                 name: full_name(&name)?,
                 deref: false,
             })
-            .map_err(|e| GitError(format!("{name} did not move: {e}")))?;
+            .map_err(|e| GitError::failed(format!("{name} did not move: {e}")))?;
             Ok(())
         }
         None => delete_ref(&repo, &name, None),
@@ -3341,7 +3393,7 @@ fn parse_cgi(out: &[u8]) -> Result<CgiResponse, GitError> {
         .map(|i| (i, i + 4))
         .or_else(|| out.windows(2).position(|w| w == b"\n\n").map(|i| (i, i + 2)));
     let Some((head_end, body_start)) = split else {
-        return Err(GitError("git http-backend wrote no header block".into()));
+        return Err(GitError::failed("git http-backend wrote no header block"));
     };
 
     let mut status = 200;
@@ -3388,7 +3440,7 @@ fn run(mut cmd: Command, args: &[&str], stdin_body: &[u8]) -> Result<Vec<u8>, Gi
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| GitError(format!("spawning git {args:?}: {e}")))?;
+        .map_err(|e| GitError::failed(format!("spawning git {args:?}: {e}")))?;
 
     // stdin is written on its own thread: `upload-pack` can fill its stdout pipe before this process finishes writing
     // stdin.
@@ -3401,11 +3453,11 @@ fn run(mut cmd: Command, args: &[&str], stdin_body: &[u8]) -> Result<Vec<u8>, Gi
 
     let output = child
         .wait_with_output()
-        .map_err(|e| GitError(format!("running git {args:?}: {e}")))?;
+        .map_err(|e| GitError::failed(format!("running git {args:?}: {e}")))?;
     let _ = writer.join();
 
     if !output.status.success() {
-        return Err(GitError(format!(
+        return Err(GitError::failed(format!(
             "git {args:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )));
@@ -3811,7 +3863,7 @@ mod tests {
         assert_ne!(served.status, 200, "a push must not be served");
     }
 
-    /// The leader hands every path under `/repo/` to this and keeps no list of its own, so this is the whole guard
+    /// The leader hands every path under `/api/worker/repo/` to this and keeps no list of its own, so this is the whole guard
     /// on that route. A path a worker picks must never read a file git does not serve: not the repository's own
     /// config, and not what sits beside the repository in the data directory.
     #[test]
@@ -4612,7 +4664,7 @@ mod tests {
         );
         open_change(&repo, "work", "Tried", "", &Actor::system()).unwrap();
         let err = deploy_change(&data, "work", &Actor::system()).expect_err("nothing reaches main");
-        assert!(err.0.contains("nothing to deploy"), "{}", err.0);
+        assert!(err.message.contains("nothing to deploy"), "{}", err.message);
         std::fs::remove_dir_all(&data).ok();
     }
 

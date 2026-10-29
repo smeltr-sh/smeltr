@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 import { test, expect, goto, type Api } from '../fleet';
 
-const ON = '?branch=work&scope=shared';
+const ON = '?branch=work';
+const SHARED = '/api/areas/shared';
 
 /** A sign-in, as a bundle declares it: an id, a time in epoch milliseconds and a user are required. */
 const LOGIN = {
@@ -26,7 +27,7 @@ const AUDIT = { id: 'audit', title: 'Audit', fields: [{ field: 'action', type: '
 
 /** `shared/` declaring `login` and `audit`. */
 async function declare(api: Api) {
-  await api.put(`/api/schemas${ON}`, [LOGIN, AUDIT]);
+  await api.put(`${SHARED}/schemas${ON}`, [LOGIN, AUDIT]);
 }
 
 test('a schema opens to its fields, and the search narrows them', async ({
@@ -85,7 +86,7 @@ test("a JSON Schema added on the Schemas page is saved as the bundle's own", asy
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`${SHARED}${ON}`);
   expect(saved.config.schemas).toEqual([
     {
       id: 'orders',
@@ -104,7 +105,7 @@ test("a pipeline's Produces is saved with it, and the editor says what its rows 
   api,
 }) => {
   await declare(api);
-  await api.put(`/api/pipelines/logins${ON}`, { id: 'logins', name: 'logins', steps: [] });
+  await api.put(`${SHARED}/pipelines/logins${ON}`, { id: 'logins', name: 'logins', steps: [] });
   await goto(admin, leader, '#/build/pipelines/logins');
   const produces = admin.locator('.produces');
   await produces.getByRole('combobox', { name: 'Add a schema it produces' }).selectOption('login');
@@ -117,7 +118,7 @@ test("a pipeline's Produces is saved with it, and the editor says what its rows 
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
-  const saved = await api.get(`/api/pipelines/logins${ON}`);
+  const saved = await api.get(`${SHARED}/pipelines/logins${ON}`);
   expect(saved.pipeline.produces).toEqual(['login']);
 });
 
@@ -136,7 +137,7 @@ test("a destination's accepts is saved with it", async ({ admin, leader, api }) 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
 
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`${SHARED}${ON}`);
   expect(saved.config.destinations[0].accepts).toEqual(['audit']);
 });
 
@@ -176,7 +177,7 @@ test('a schema is imported by a pipeline of the bundle run over an uploaded file
   leader,
   api,
 }) => {
-  await api.put(`/api/pipelines/ecs-importer${ON}`, ECS_IMPORTER);
+  await api.put(`${SHARED}/pipelines/ecs-importer${ON}`, ECS_IMPORTER);
   await goto(admin, leader, '#/build/schemas');
   await admin.getByRole('button', { name: '+ Add schema' }).click();
   const dialog = admin.getByRole('dialog');
@@ -200,7 +201,7 @@ test('a schema is imported by a pipeline of the bundle run over an uploaded file
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
-  const saved = await api.get(`/api/config${ON}`);
+  const saved = await api.get(`${SHARED}${ON}`);
   const fields = saved.config.schemas[0].fields;
   expect(saved.config.schemas[0].id).toBe('ecs');
   expect(fields).toHaveLength(13);
@@ -221,16 +222,17 @@ test('a schema is imported by a pipeline of the bundle run over an uploaded file
 /** On `branch`, in group `default`: a pipeline producing `login` that writes nothing, routed from a metrics source
  * to a destination that accepts only `audit`. */
 async function arrangeMisfit(api: Api, branch: string) {
-  const on = `?branch=${branch}&scope=default`;
-  await api.put(`/api/schemas${on}`, [LOGIN, AUDIT]);
-  await api.put(`/api/sources${on}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
-  await api.put(`/api/pipelines/logins${on}`, {
+  const on = `?branch=${branch}`;
+  const DEFAULT = '/api/areas/default';
+  await api.put(`${DEFAULT}/schemas${on}`, [LOGIN, AUDIT]);
+  await api.put(`${DEFAULT}/sources${on}`, [{ id: 'm1', type: 'metrics', bucketSeconds: 10 }]);
+  await api.put(`${DEFAULT}/pipelines/logins${on}`, {
     id: 'logins',
     name: 'logins',
     steps: [],
     produces: ['login'],
   });
-  await api.put(`/api/destinations${on}`, [
+  await api.put(`${DEFAULT}/destinations${on}`, [
     {
       id: 'search',
       type: 'elasticsearch',
@@ -239,7 +241,7 @@ async function arrangeMisfit(api: Api, branch: string) {
       accepts: ['audit'],
     },
   ]);
-  await api.put(`/api/routes${on}`, [
+  await api.put(`${DEFAULT}/routes${on}`, [
     { id: 'r1', source: 'm1', condition: null, pipeline: 'logins', deliver: [{ to: ['search'] }] },
   ]);
 }
@@ -271,7 +273,7 @@ test('a field the schema requires and the rows lack is a column of its own, with
   api,
 }) => {
   await declare(api);
-  await api.put(`/api/pipelines/logins${ON}`, {
+  await api.put(`${SHARED}/pipelines/logins${ON}`, {
     id: 'logins',
     name: 'logins',
     produces: ['login'],
@@ -291,7 +293,7 @@ test('a field the schema requires and the rows lack is a column of its own, with
       },
     ],
   });
-  await api.put(`/api/samples${ON}`, {
+  await api.put(`${SHARED}/samples/logins-sample${ON}`, {
     id: 'logins-sample',
     name: 'logins',
     records: [{ _raw: '{"when":"2026-10-27T10:00:00Z"}' }],

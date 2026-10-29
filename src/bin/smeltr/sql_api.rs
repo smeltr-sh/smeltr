@@ -7,7 +7,7 @@ use axum::Json;
 use smeltr::config_file::SourceDto;
 use smeltr::io::sql::{Bind, Query, Statement};
 use smeltr::io::sql_source::{Mode, SqlSourceConfig, Start};
-use smeltr::leader::envelope::Envelope;
+use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::plan::topology::SourceKind;
 
 #[derive(serde::Deserialize)]
@@ -49,16 +49,15 @@ pub enum BindDto {
 
 /// The statements `source` runs, as `io::sql::statement` writes them. A source that declares no fields yet reads
 /// every poll, as Run reads it.
-pub async fn sql_statement(Json(request): Json<StatementRequest>) -> Json<Envelope<Statements>> {
-    Json(
-        statements(request.source)
-            .map(|Shown { first, later, run }| Statements {
-                first: Some(first),
-                later,
-                run: Some(run),
-            })
-            .into(),
-    )
+pub async fn sql_statement(Json(request): Json<StatementRequest>) -> Envelope<Statements> {
+    statements(request.source)
+        .map(|Shown { first, later, run }| Statements {
+            first: Some(first),
+            later,
+            run: Some(run),
+        })
+        .map_err(Refusal::invalid)
+        .into()
 }
 
 struct Shown {
