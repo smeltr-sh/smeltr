@@ -24,7 +24,7 @@
     /** Whether the title is a name, set in the code face. */
     mono?: boolean;
     onclose: () => void;
-    /** Icons before ✕, each a `.icon`. */
+    /** Icons before ✕, each an `.icon` control. */
     actions?: Snippet;
     children: Snippet;
   } = $props();
@@ -94,25 +94,5 @@
     display: flex;
     gap: 0.15rem;
     margin-left: auto;
-  }
-
-  .actions :global(.icon),
-  .actions :global(.cross) {
-    width: 24px;
-    height: 24px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 0;
-    border-radius: var(--radius);
-    background: none;
-    color: var(--dim);
-    cursor: pointer;
-  }
-
-  .actions :global(.icon:hover),
-  .actions :global(.cross:hover) {
-    color: var(--ink);
-    background: color-mix(in oklch, var(--ink) 12%, transparent);
   }
 </style>

@@ -401,7 +401,7 @@
               <Locked refusedInDemo>
                 <button
                   type="button"
-                  class="pencil"
+                  class="icon pencil"
                   onclick={startRename}
                   aria-label="Rename this change"
                   title="Rename"
@@ -655,22 +655,6 @@
      glyph has none of. */
   .pencil {
     align-self: center;
-    display: inline-flex;
-    border: 0;
-    background: none;
-    color: var(--dim);
-    padding: 0.15rem;
-    cursor: pointer;
-  }
-
-  .pencil:hover {
-    color: var(--ink);
-  }
-
-  .pencil:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-    border-radius: var(--radius);
   }
 
   /* The change and what was said about it on the left, what it does on the right. */

@@ -70,7 +70,7 @@
         <div class="rail-top">
           <button
             type="button"
-            class="fold"
+            class="icon"
             aria-expanded={!folded}
             aria-label={folded
               ? `Show ${tabLabel} section names`
@@ -160,26 +160,6 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-  }
-
-  .fold {
-    display: inline-flex;
-    padding: 0.25rem;
-    border: none;
-    border-radius: var(--radius);
-    background: none;
-    color: var(--dim);
-    cursor: pointer;
-  }
-
-  .fold:hover {
-    color: var(--ink);
-    background: color-mix(in oklab, var(--ink) 8%, var(--bg));
-  }
-
-  .fold:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
   }
 
   .rail-title {

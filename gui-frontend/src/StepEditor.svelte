@@ -582,7 +582,7 @@
     {#if !readOnly && step.type !== 'if' && step.type !== 'comment'}
       <button
         type="button"
-        class="fold"
+        class="icon fold"
         class:active={step.disabled}
         onclick={() => (step.disabled = !step.disabled)}
         aria-label={step.disabled ? 'Enable this step' : 'Disable this step'}
@@ -591,6 +591,7 @@
     {/if}
     <button
       type="button"
+      class="icon"
       class:active={isPausedAt}
       onclick={togglePause}
       aria-label={isPausedAt ? 'Show the whole pipeline' : 'Pause the records after this step'}
@@ -598,11 +599,15 @@
       >{isPausedAt ? '●︎' : '◎︎'}</button
     >
     {#if !readOnly}
-      <button type="button" class="fold" onclick={moveUp} aria-label="Move up" title="Move up"
+      <button type="button" class="icon fold" onclick={moveUp} aria-label="Move up" title="Move up"
         >↑︎</button
       >
-      <button type="button" class="fold" onclick={moveDown} aria-label="Move down" title="Move down"
-        >↓︎</button
+      <button
+        type="button"
+        class="icon fold"
+        onclick={moveDown}
+        aria-label="Move down"
+        title="Move down">↓︎</button
       >
       <span class="fold"><CrossButton removes label="Delete" onclick={remove} /></span>
       {@render more()}
@@ -1760,25 +1765,14 @@
     }
   }
 
-  /* Bare glyphs, as `CrossButton` beside them is. */
+  /* A fixed box, centered on its glyph: "◎︎" and "●︎" are not the same
+     width in the font, and a box sized to its glyph shifts the row when
+     this one toggles. */
   .controls button {
-    background: none;
-    border: 1px solid transparent;
-    border-radius: var(--radius);
-    color: var(--dim);
-    font-size: var(--text-note);
-    cursor: pointer;
-    /* A fixed box, centered on its glyph, rather than padding around
-       whatever width that glyph happens to render at: "◎︎" and "●︎" are
-       not the same width in the font, and sizing to content made the
-       button -- and everything after it in the row -- shift when this one
-       toggled. */
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
     width: var(--control-width);
     height: var(--control-height);
     padding: 0;
+    font-size: var(--text-note);
   }
 
   /* A drawn glyph centers on its box; a text glyph's ink sits lower in its line. */
@@ -1786,13 +1780,9 @@
     transform: translateY(0.1em);
   }
 
-  .controls button:hover,
-  .controls button.active {
-    color: var(--ink);
-  }
-
   /* Not the color alone: a backdrop marks it on. */
   .controls button.active {
+    color: var(--ink);
     background: color-mix(in srgb, var(--ink) 10%, transparent);
     font-weight: 600;
   }
