@@ -159,3 +159,24 @@ test("the samples page runs the scope's locked tests in the service", async ({ p
   await expect(page.getByText('panos-traffic maps sessions to ECS')).toBeVisible();
   await expect(page.getByText('Passing')).toHaveCount(2);
 });
+
+test('the Schemas page reads a schema through the service', async ({ page }) => {
+  await open(page, '#/build/schemas');
+  await page.getByRole('button', { name: '+ Add schema' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'JSON Schema', exact: true }).click();
+  await dialog.getByLabel('id', { exact: true }).fill('login');
+  const login = {
+    type: 'object',
+    properties: {
+      user: { type: 'object', properties: { name: { type: 'string' } } },
+      src_endpoint: { type: 'object', properties: { port: { type: 'integer' } } },
+    },
+  };
+  await dialog.getByRole('textbox', { name: 'JSON Schema' }).fill(JSON.stringify(login));
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole('cell', { name: 'user.name', exact: true })).toBeVisible();
+  await page.getByRole('searchbox', { name: 'Search schemas' }).fill('src_endpoint.port');
+  await expect(page.getByRole('cell', { name: 'src_endpoint.port', exact: true })).toBeVisible();
+});

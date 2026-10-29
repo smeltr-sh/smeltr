@@ -68,6 +68,30 @@ pub const CATALOG: &[Route] = &[
         body: "{ id: string, pattern: string }[]",
     },
     Route {
+        method: "POST",
+        path: "/api/areas/:area/preview/schema-import",
+        what: "A schema imported by a pipeline: pipeline of config run over the records of an uploaded file, cut where lineBreaker breaks it or a record per line, each row it writes a field. Query: branch.",
+        body: "{ config: string, pipeline: string, id: string, title?: string, text: string, lineBreaker?: string }",
+    },
+    Route {
+        method: "POST",
+        path: "/api/preview/from-json-schema",
+        what: "A JSON Schema document read as a schema: its table of fields. No query.",
+        body: "{ id?: string, schema: object }",
+    },
+    Route {
+        method: "POST",
+        path: "/api/preview/schema-export",
+        what: "A schema written in an export format: a JSON Schema document, or an Elasticsearch index's mapping. No query.",
+        body: "{ schema: { id, title?, description?, fields: { field, type, required?, description? }[] }, format: \"json-schema\" | \"elasticsearch\" }",
+    },
+    Route {
+        method: "PUT",
+        path: "/api/areas/:area/schemas",
+        what: "Replace the area's schemas on a branch: each a table of fields, a dotted path and a type each. Query: branch.",
+        body: "{ id, title?, description?, fields: { field, type, required?, description? }[] }[]",
+    },
+    Route {
         method: "PUT",
         path: "/api/areas/:area/lookups",
         what: "Replace the area's lookup tables on a branch; a CSV table may carry its file's new text. Query: branch.",
@@ -119,7 +143,7 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/areas/:area/undo",
         what: "Put one object back as it was where the branch left main, as one save. Query: branch.",
-        body: "{ section: 'sources'|'destinations'|'routes'|'lookupTables'|'grokPatterns'|'pipelines', id: string }",
+        body: "{ section: 'sources'|'destinations'|'routes'|'lookupTables'|'grokPatterns'|'schemas'|'pipelines', id: string }",
     },
     Route {
         method: "POST",
@@ -186,6 +210,12 @@ pub const CATALOG: &[Route] = &[
         method: "GET",
         path: "/api/branches/:name/diff",
         what: "A branch's changed files and unified diff against main. Query: path (one file).",
+        body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/branches/:name/schema-findings",
+        what: "What breaks a schema at a branch's tip, in each group its change reaches. No query.",
         body: "",
     },
     Route {

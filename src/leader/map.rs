@@ -391,6 +391,7 @@ pub fn merged_file(
     file.routes = cat(&shared.file.routes, &group.file.routes);
     file.lookup_tables = cat(&shared.file.lookup_tables, &group.file.lookup_tables);
     file.grok_patterns = cat(&shared.file.grok_patterns, &group.file.grok_patterns);
+    file.schemas = cat(&shared.file.schemas, &group.file.schemas);
     file.pipelines = cat(&shared.file.pipelines, &group.file.pipelines);
     file
 }
@@ -699,6 +700,7 @@ mod tests {
                 buffer_bytes: Default::default(),
                 props: Default::default(),
             },
+            accepts: vec![],
         }
     }
 
@@ -707,6 +709,7 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             steps,
+            produces: vec![],
         }
     }
 
@@ -757,6 +760,7 @@ mod tests {
             grok_patterns: vec![],
             on_exception: None,
             name: None,
+            schemas: vec![],
         }
     }
 

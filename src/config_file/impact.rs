@@ -276,6 +276,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             steps,
+            produces: vec![],
         }
     }
 
@@ -350,6 +351,7 @@ mod tests {
             grok_patterns: vec![],
             on_exception: None,
             name: None,
+            schemas: vec![],
         }
     }
 
@@ -675,6 +677,7 @@ mod tests {
                 buffer_bytes: Default::default(),
                 props: Default::default(),
             },
+            accepts: vec![],
         };
         let routes = vec![
             route("r1", "orders-west", "orders-normalize", &["es"]),

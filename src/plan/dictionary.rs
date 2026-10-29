@@ -3,6 +3,7 @@
 //! in. Each system that wants a schema renders this type its own way (`io::elastic_mapping`).
 
 use crate::core::column::DataType;
+use crate::core::id::FunctionId;
 use crate::plan::compile::Plan;
 use crate::plan::tree::{self, Node, Object};
 
@@ -29,6 +30,39 @@ fn object_type(o: &Object, layout: &[DataType]) -> DataType {
         (key.clone(), ty)
     });
     DataType::Struct(fields.collect(), o.unclaimed.is_some())
+}
+
+/// The step that wrote the field at `keys` of what `plan` writes: the one that bound its leaf, or the unclaimed
+/// fields of the object holding it, or the last to copy a value there (`Plan::aliases`). `None` where the source gave
+/// it.
+pub fn writer(plan: &Plan, keys: &[String]) -> Option<FunctionId> {
+    let mut at = &plan.tree;
+    let mut name = String::new();
+    let mut slot = None;
+    for key in keys {
+        match at.fields.get(key) {
+            Some(tree::Node::Object(o)) => at = o,
+            Some(tree::Node::Leaf(s)) => {
+                tree::push_key(&mut name, key);
+                slot = Some(*s);
+                break;
+            }
+            None => {
+                slot = at.unclaimed;
+                break;
+            }
+        }
+        tree::push_key(&mut name, key);
+    }
+    let slot = slot?;
+    let copied = plan.aliases.iter().rev().find(|(s, n, ..)| *s == slot && *n == name);
+    if let Some((.., f)) = copied {
+        return Some(*f);
+    }
+    match plan.provenance.get(slot)?.origin {
+        crate::plan::resolve::Origin::Function(f) => Some(f),
+        _ => None,
+    }
 }
 
 /// `record` with what the sample's output `rows` show, where only a row knows the type: a variant or a null takes
@@ -185,5 +219,31 @@ mod tests {
                 ("tags".to_string(), "array<str>".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn a_field_was_written_by_the_step_that_bound_spread_or_copied_it() {
+        use crate::plan::config::{FunctionConfig, FunctionKind, PipelineConfig, Step};
+        let code = |id, body: &str| Step::Function(FunctionConfig::new(id, FunctionKind::Code { body: body.into() }));
+        let p = PipelineConfig {
+            id: 0,
+            name: "p".into(),
+            body: vec![
+                code(0, "Object.assign($, json(_raw));"),
+                code(1, "x = 1;"),
+                code(2, "y = x; $[\"@t\"] = _raw;"),
+            ],
+            step_ids: Vec::new(),
+            lookup_tables: Default::default(),
+            grok_patterns: Default::default(),
+        };
+        let plan = crate::plan::compile::compile(&p, &crate::plan::topology::SourceMeta::NONE).unwrap();
+        let keys = |k: &[&str]| k.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        assert_eq!(writer(&plan, &keys(&["@timestamp"])), Some(0));
+        assert_eq!(writer(&plan, &keys(&["x"])), Some(1));
+        // A copy shares its value's slot, and is the copying step's.
+        assert_eq!(writer(&plan, &keys(&["y"])), Some(2));
+        assert_eq!(writer(&plan, &keys(&["@t"])), Some(2));
+        assert_eq!(writer(&plan, &keys(&["_raw"])), None);
     }
 }

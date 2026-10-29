@@ -42,7 +42,7 @@ reaches it, one crosses both tiers.
 | [Exception taxonomy](architecture/exception-taxonomy.md) | what a stage does when a row or a batch goes wrong |
 | **How work arrives** | |
 | [Control plane](architecture/control-plane.md) | what a worker is running and when it changes |
-| [Config plane](architecture/config-plane.md) | the bundle, its validation, and how a change becomes a commit on `main` |
+| [Config plane](architecture/config-plane.md) | the bundle, its validation, the schemas its rows are held to, and how a change becomes a commit on `main` |
 | [Security](architecture/security.md) | trust between worker and leader, people and their access, credentials, and the cryptography under them |
 | [API](architecture/api.md) | the routes the leader answers, who may call each, and the shape of an answer |
 | **Cross-cutting** | |
@@ -98,7 +98,9 @@ Collector, the destinations that refuse records rather than being
 unreachable; any service taking a POST of NDJSON, a JSON array or one record per request, with the headers it asks
 for; Prometheus and any store taking its remote_write; a Log Analytics workspace, through a data collection rule; S3, Google Cloud Storage, Azure Blob Storage and a directory on an SFTP server, as NDJSON, JSON, text, the bytes as they arrived, Parquet or Avro, one file per prefix across batches. Functions: Call, Code, Comment, Drop,
 Eval, Lookup, Parser, Rename, Unroll. Parsers: JSON, CSV, key-value, Grok.
-Multiple routes per source. At-least-once delivery, metrics excepted. JSON
+Schemas a pipeline's rows are held to, read and written as JSON Schema or
+imported from a file of fields; a row that does not fit is a finding and
+refuses nothing. Multiple routes per source. At-least-once delivery, metrics excepted. JSON
 output.
 
 ### Out of scope, permanently

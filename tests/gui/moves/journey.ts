@@ -42,8 +42,9 @@ import {
 import { historyRow } from './change';
 
 /** What one branch or deploy holds of what the moves add: the ids of sources, destinations, lookup tables, grok
- * patterns and worker groups, the names of pipelines and samples, each eval step as its pipeline and the field it sets, and
- * each route by its source, its pipeline's name and the destination it delivers to, if any. */
+ * patterns, schemas and worker groups, the names of pipelines and samples, each eval step as its pipeline and the field
+ * it sets, each schema a pipeline produces as its pipeline and the schema's id, and each route by its source, its
+ * pipeline's name and the destination it delivers to, if any. */
 export type Config = {
   sources: string[];
   destinations: string[];
@@ -52,6 +53,8 @@ export type Config = {
   routes: { source: string; pipeline: string; to: string | null }[];
   lookups: string[];
   grokPatterns: string[];
+  schemas: string[];
+  produces: string[];
   samples: string[];
   groups: string[];
 };
@@ -64,6 +67,8 @@ const EMPTY: Config = {
   routes: [],
   lookups: [],
   grokPatterns: [],
+  schemas: [],
+  produces: [],
   samples: [],
   groups: [],
 };
@@ -231,16 +236,19 @@ async function configOn(api: Api, branch: string): Promise<Config> {
     for (const p of res.config.pipelines as {
       id: string;
       name: string;
+      produces?: string[];
       steps: { type: string; assignments?: { target: string }[] }[];
     }[]) {
       c.pipelines.push(p.name);
       names.set(p.id, p.name);
+      c.produces.push(...(p.produces ?? []).map((schema) => `${p.name}:${schema}`));
       for (const step of p.steps)
         if (step.type === 'eval') c.steps.push(`${p.name}:${step.assignments![0].target}`);
     }
     routes.push(...res.config.routes);
     c.lookups.push(...(res.config.lookupTables ?? []).map((t: { id: string }) => t.id));
     c.grokPatterns.push(...(res.config.grokPatterns ?? []).map((p: { id: string }) => p.id));
+    c.schemas.push(...(res.config.schemas ?? []).map((s: { id: string }) => s.id));
     const samples: { name: string }[] = (await api.get(`/api/areas/${scope}/samples?branch=${on}`))
       .samples;
     c.samples.push(...samples.map((s) => s.name));
@@ -1024,11 +1032,17 @@ const deploy: Move = {
 };
 
 /** The routes the fleet runs that carry rows to the sink: from a metrics source, which makes rows of its own,
- * unlike a receiver nothing sends to, into an Elasticsearch destination, which every one the moves add writes. */
-const flowing = (w: World) =>
-  w.deploys[w.running].config.routes.filter(
-    (r) => r.source.startsWith('src-') && r.to?.startsWith('dst-'),
+ * unlike a receiver nothing sends to, into an Elasticsearch destination, which every one the moves add writes. The
+ * moves' routes match every row, so only a source's first route takes its rows. */
+const flowing = (w: World) => {
+  const routes = w.deploys[w.running].config.routes;
+  return routes.filter(
+    (r) =>
+      r.source.startsWith('src-') &&
+      r.to?.startsWith('dst-') &&
+      routes.find((first) => first.source === r.source) === r,
   );
+};
 
 const rowsArrive: Move = {
   name: 'rows-arrive',
@@ -1531,6 +1545,87 @@ const addGrokPattern: Move = {
     const saved = res.config.grokPatterns.find((p: { id: string }) => p.id === id);
     expect(saved.pattern).toBe(pattern);
     return `add grok pattern ${id}`;
+  },
+};
+
+/** A JSON Schema type, and the type the schema's table spells it as. */
+const JSON_TYPES = [
+  ['string', 'str'],
+  ['integer', 'i64'],
+  ['number', 'f64'],
+  ['boolean', 'bool'],
+] as const;
+
+const addSchema: Move = {
+  name: 'add-schema',
+  leadsTo: ['produce-schema'],
+  weight: (w) => (w.password && w.editing.schemas.length < 2 ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const id = `schema-${world.made++}`;
+    // Empty, or read from a JSON Schema of a few fields, some required.
+    const fields = rng.chance(3)
+      ? []
+      : Array.from({ length: 1 + rng.below(3) }, (_, i) => {
+          const [json, ty] = rng.pick(JSON_TYPES);
+          return { field: `f${i}`, json, type: ty, required: rng.chance(2) };
+        });
+    await goto(page, leader, '#/build/schemas');
+    await page.getByRole('button', { name: '+ Add schema' }).click();
+    const dialog = page.getByRole('dialog');
+    if (fields.length) {
+      await dialog.getByRole('button', { name: 'JSON Schema', exact: true }).click();
+      await dialog.getByLabel('id', { exact: true }).fill(id);
+      const doc = {
+        type: 'object',
+        required: fields.filter((f) => f.required).map((f) => f.field),
+        properties: Object.fromEntries(fields.map((f) => [f.field, { type: f.json }])),
+      };
+      await dialog.getByRole('textbox', { name: 'JSON Schema' }).fill(JSON.stringify(doc));
+    } else {
+      await dialog.getByRole('button', { name: 'Empty schema', exact: true }).click();
+      await dialog.getByLabel('id', { exact: true }).fill(id);
+    }
+    await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await save(j, unsaved(page));
+    world.editing.schemas.push(id);
+    await editingIsSaved(j);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${world.branch}`);
+    const saved = res.config.schemas.find((s: { id: string }) => s.id === id);
+    expect(saved.fields).toEqual(
+      fields.map((f) =>
+        f.required
+          ? { field: f.field, type: f.type, required: true }
+          : { field: f.field, type: f.type },
+      ),
+    );
+    return `add schema ${id} of ${fields.length} field(s)`;
+  },
+};
+
+/** Each pipeline and schema the pipeline does not yet produce, as `pipeline:schema`. */
+const unproduced = (w: World) =>
+  w.editing.pipelines.flatMap((p) =>
+    w.editing.schemas.map((s) => `${p}:${s}`).filter((ps) => !w.editing.produces.includes(ps)),
+  );
+
+const produceSchema: Move = {
+  name: 'produce-schema',
+  weight: (w) => (unproduced(w).length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const pair = rng.pick(unproduced(world));
+    const [pipeline, schema] = pair.split(':');
+    await goto(page, leader, '#/build/pipelines');
+    await page.getByRole('link', { name: pipeline, exact: true }).click();
+    const produces = page.locator('.produces');
+    await produces.getByRole('combobox', { name: 'Add a schema it produces' }).selectOption(schema);
+    await expect(produces.getByRole('link', { name: schema, exact: true })).toBeVisible();
+    await save(j, () => expect(page.getByText('Saved.')).toBeVisible());
+    world.editing.produces.push(pair);
+    await editingIsSaved(j);
+    return `name schema ${schema} under what "${pipeline}" produces`;
   },
 };
 
@@ -2586,6 +2681,8 @@ export const MOVES: readonly Move[] = [
   addOtherDestination,
   addLookup,
   addGrokPattern,
+  addSchema,
+  produceSchema,
   pasteSample,
   editSample,
   deleteSample,

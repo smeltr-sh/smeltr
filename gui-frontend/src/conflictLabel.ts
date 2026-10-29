@@ -30,6 +30,8 @@ export function conflictLabel(conflict: MergeConflict): string {
   let label: string | null = null;
   if (file.startsWith('pipelines/')) {
     label = named((v) => (typeof v.name === 'string' ? `Pipeline ${v.name}` : null));
+  } else if (file.startsWith('schemas/')) {
+    label = named((v) => (typeof v.id === 'string' ? `Schema ${v.id}` : null));
   } else if (file === 'routes.json' && conflict.id !== undefined) {
     label = `Route ${named(routeName) ?? ''}`.trimEnd();
   } else if (conflict.id !== undefined && SECTIONS[file]) {

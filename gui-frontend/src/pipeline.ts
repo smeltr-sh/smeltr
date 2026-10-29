@@ -483,6 +483,7 @@ interface RawPipelineDto {
   id: string;
   name: string;
   steps: unknown[];
+  produces?: string[];
 }
 
 /**
@@ -501,12 +502,19 @@ export function buildFileConfig(
   otherPipelines: RawPipelineDto[],
   lookupTables: unknown[],
   grokPatterns: unknown[] = [],
+  schemas: unknown[] = [],
+  produces: string[] = [],
 ): unknown {
   const callerSteps = steps.map(stepToDto);
   const byId = new Map(otherPipelines.map((p) => [p.id, p]));
 
   const includedPipelines: RawPipelineDto[] = [
-    { id: pipelineId, name: pipelineName, steps: callerSteps },
+    {
+      id: pipelineId,
+      name: pipelineName,
+      steps: callerSteps,
+      ...(produces.length > 0 ? { produces } : {}),
+    },
   ];
   const visited = new Set([pipelineId]);
   const toVisit: string[] = [];
@@ -533,6 +541,7 @@ export function buildFileConfig(
     destinations: [],
     lookupTables,
     grokPatterns,
+    schemas,
     pipelines: includedPipelines,
   };
 }
@@ -944,6 +953,7 @@ export function stepsFromDto(dtoSteps: unknown[]): Step[] {
 export function parsePipelineDtoJson(text: string): {
   pipelineName: string;
   steps: Step[];
+  produces: string[];
 } {
   let doc: unknown;
   try {
@@ -955,6 +965,7 @@ export function parsePipelineDtoJson(text: string): {
   return {
     pipelineName: str(root, 'name', '(root)'),
     steps: stepsFromDto(arr(root, 'steps', '(root)')),
+    produces: 'produces' in root ? arr(root, 'produces', '(root)').map(String) : [],
   };
 }
 

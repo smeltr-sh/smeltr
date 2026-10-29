@@ -3,10 +3,10 @@
 //! The demo runs the real GUI in a visitor's browser over a leader the page itself plays: it holds the visitor's
 //! bundle, samples and fleet. What only the engine can answer comes here -- a preview, a route preview, a save's
 //! validation, a grok pattern's captures, a line breaker's verdict, which records a capture filter keeps, a scope's
-//! tests and what they make of it, a branch's map, and what a captured sample reads as. Each request carries the
-//! bundle and the sample it is about, so nothing is stored and one visitor never sees another. Every answer comes from
-//! the functions the leader's own routes call (`smeltr::leader::preview`, `smeltr::leader::map`,
-//! `smeltr::leader::onboard`).
+//! tests and what they make of it, a branch's map, what a captured sample reads as, the schema catalog and what
+//! breaks a schema in a group. Each request carries the bundle and the sample it is about, so nothing is stored and
+//! one visitor never sees another. Every answer comes from the functions the leader's own routes call
+//! (`smeltr::leader::preview`, `smeltr::leader::map`, `smeltr::leader::onboard`, `smeltr::leader::schema_catalog`).
 //!
 //! It is public and unauthenticated, so it reads nothing a request names but the lookup tables under
 //! `SMELTR_DEMO_BUNDLE`'s `lookups/`, takes a bounded body, bounded samples and bounded routes, and runs as many
@@ -27,6 +27,7 @@ use smeltr::leader::preview::{
     LineBreakerRequest, Preview, PreviewRequest, RoutePreview, TestResult, captures_of, format_code,
     line_breaker_verdict, run_preview, run_route_preview, run_test,
 };
+use smeltr::leader::schema_catalog as catalog;
 use tokio::sync::Semaphore;
 
 /// `work`, holding `_core` until it ends.
@@ -508,6 +509,85 @@ async fn onboard_propose(State(service): State<Service>, Json(body): Json<Onboar
     }
 }
 
+async fn schemas_from_json_schema(
+    State(service): State<Service>,
+    Json(req): Json<catalog::FromJsonSchema>,
+) -> Envelope<catalog::ReadSchema> {
+    service
+        .run(unavailable, move || {
+            catalog::from_json_schema(&req).map_err(Refusal::invalid).into()
+        })
+        .await
+}
+
+async fn schemas_export(
+    State(service): State<Service>,
+    Json(req): Json<catalog::ExportRequest>,
+) -> Envelope<catalog::ExportedSchema> {
+    service
+        .run(unavailable, move || {
+            catalog::export(&req).map_err(Refusal::invalid).into()
+        })
+        .await
+}
+
+#[derive(Default, serde::Serialize)]
+struct SchemaFindings {
+    findings: Vec<SchemaFindingOut>,
+}
+
+/// One finding, as the leader's `/api/branches/:name/schema-findings` writes it but for its group, which the demo's
+/// leader adds.
+#[derive(serde::Serialize)]
+struct SchemaFindingOut {
+    pipeline: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step: Option<String>,
+    message: String,
+}
+
+#[derive(serde::Deserialize)]
+struct FindingsBody {
+    #[serde(flatten)]
+    bundle: Bundle,
+    /// The bundle as main had it where the branch left it, whose findings are not the branch's.
+    #[serde(default)]
+    base: Option<Bundle>,
+}
+
+/// What breaks a schema in a group's bundle, beyond what already broke in `base`.
+async fn schema_findings(State(service): State<Service>, Json(body): Json<FindingsBody>) -> Envelope<SchemaFindings> {
+    let FindingsBody { bundle, base } = body;
+    if let Err(e) = refuse_oversized(bundle.files().chain(base.iter().flat_map(Bundle::files)), []) {
+        return Envelope::refused(e);
+    }
+    let s = service.clone();
+    service
+        .run(unavailable, move || {
+            let base = base.and_then(|b| b.merged().ok()).map(|(file, _)| {
+                let declared_at = s.declared_at(&file);
+                (file, declared_at)
+            });
+            let found = bundle.merged().and_then(|(file, _)| {
+                let declared_at = s.declared_at(&file);
+                catalog::findings(file, &declared_at, base)
+            });
+            found
+                .map(|found| SchemaFindings {
+                    findings: (found.into_iter())
+                        .map(|f| SchemaFindingOut {
+                            pipeline: f.pipeline,
+                            step: f.step,
+                            message: f.message,
+                        })
+                        .collect(),
+                })
+                .map_err(Refusal::invalid)
+                .into()
+        })
+        .await
+}
+
 fn app(service: Service) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -522,6 +602,9 @@ fn app(service: Service) -> Router {
         .route("/connections", post(connections))
         .route("/tests", post(tests))
         .route("/onboard/propose", post(onboard_propose))
+        .route("/schemas/from-json-schema", post(schemas_from_json_schema))
+        .route("/schemas/export", post(schemas_export))
+        .route("/schema-findings", post(schema_findings))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
         .with_state(service)
 }

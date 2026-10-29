@@ -93,6 +93,8 @@ export type Route =
   | { tab: 'build'; page: 'pipelines'; sample?: string; only?: string[] }
   | { tab: 'build'; page: 'lookups'; json: boolean }
   | { tab: 'build'; page: 'grok'; json: boolean; only?: string[] }
+  // `open` is a schema to land on, opened: what a pipeline's Produces links to.
+  | { tab: 'build'; page: 'schemas'; json: boolean; open?: string }
   // `sampling` is the Route a sample tab (`ROUTES_TABS`). `make` opens a new route; `chose` puts the pipeline the editor just saved on one being made (`Making`), and
   // `group` is that one's.
   // `back` is the page Save returns to.
@@ -273,6 +275,7 @@ export const RESOURCES_TABS: SectionItem[] = [
   { label: 'Samples', hash: '#/build' },
   { label: 'Lookup tables', hash: '#/build/lookups' },
   { label: 'Grok patterns', hash: '#/build/grok' },
+  { label: 'Schemas', hash: '#/build/schemas' },
 ];
 
 /** The Resources tabs the person signed in may open: samples are an editor's. */
@@ -334,6 +337,7 @@ const SECTION_OF: Record<Route['page'], string | null> = {
   routes: 'Routes',
   lookups: 'Resources',
   grok: 'Resources',
+  schemas: 'Resources',
   'route-preview': 'Routes',
   pipeline: 'Pipelines',
   'lock-test': 'Resources',
@@ -376,6 +380,7 @@ const SCOPED_PAGES: ReadonlySet<Route['page']> = new Set([
   'route-preview',
   'lookups',
   'grok',
+  'schemas',
   'lock-test',
 ]);
 
@@ -507,6 +512,10 @@ export function parseRoute(hash: string): Route {
       if (parts[1] === 'lookups') return { tab: 'build', page: 'lookups', json: json(2) };
       if (parts[1] === 'grok')
         return { tab: 'build', page: 'grok', json: json(2), ...only(search) };
+      if (parts[1] === 'schemas') {
+        const open = new URLSearchParams(search).get('open');
+        return { tab: 'build', page: 'schemas', json: json(2), ...(open ? { open } : {}) };
+      }
       if (parts[1] === 'routes') {
         if (parts[2] === 'preview') return { tab: 'build', page: 'route-preview' };
         const params = new URLSearchParams(search);
@@ -657,7 +666,7 @@ function pipelineCrumb(id: string, names: PipelineNames): string {
  * themselves here, the same way a `RESOURCES_TABS` entry names itself in
  * the tab strip. */
 function drilledInto(route: Route, names: PipelineNames): Crumb[] {
-  const [samplesTab, lookupsTab, grokTab] = RESOURCES_TABS;
+  const [samplesTab, lookupsTab, grokTab, schemasTab] = RESOURCES_TABS;
   switch (route.page) {
     case 'samples':
       return [{ label: samplesTab.label }];
@@ -665,6 +674,8 @@ function drilledInto(route: Route, names: PipelineNames): Crumb[] {
       return [{ label: lookupsTab.label }];
     case 'grok':
       return [{ label: grokTab.label }];
+    case 'schemas':
+      return [{ label: schemasTab.label }];
     case 'route-preview':
       return [{ label: 'route preview' }];
     case 'pipeline':
@@ -760,6 +771,7 @@ const HELD_PAGES: Record<string, string> = {
   manifest: 'routes',
   lookups: 'lookups',
   grok: 'grok',
+  schemas: 'schemas',
 };
 
 const SECTION_PAGES: Record<string, string> = {
@@ -784,6 +796,7 @@ export function editorFor(path: string): { scope: string; hash: string } | null 
 
   const pipeline = /^pipelines\/(.+)\.json$/.exec(file);
   if (pipeline) return { scope, hash: `#/build/pipelines/${encodeURIComponent(pipeline[1])}` };
+  if (/^schemas\/.+\.json$/.test(file)) return { scope, hash: '#/build/schemas' };
 
   const page = SECTION_PAGES[file];
   return page ? { scope, hash: `#/build/${page}` } : null;

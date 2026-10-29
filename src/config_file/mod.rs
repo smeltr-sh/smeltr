@@ -36,6 +36,7 @@ mod sample;
 mod test;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::core::column::DataType;
 use crate::core::error::ExceptionKind;
@@ -44,17 +45,18 @@ use crate::plan::config::{Answer, CompileError, PipelineConfig};
 use crate::plan::topology::{CompiledTopology, DestinationKind, Records, TopologyConfig};
 
 pub use bundle::{
-    BundleError, DirFileSet, FileSet, GROK_PATTERNS_FILE, GROUPS_DIR, LOOKUP_TABLES_FILE, LOOKUPS_DIR, RawBundle,
-    SECTION_FILES, SHARED_DIR, bundle_files, group_subtree, is_safe_group_id, is_safe_group_name, is_safe_secret_name,
-    load_bundle_dir, load_bundle_from, load_group_dir, load_group_from, manifest_bytes, read_raw_from,
-    slugged_pipelines, slugify, unsafe_group_id, unsafe_group_name, unsafe_secret_name,
+    BundleError, DirFileSet, FileSet, GROK_PATTERNS_FILE, GROUPS_DIR, LOOKUP_TABLES_FILE, LOOKUPS_DIR, PIPELINES_DIR,
+    RawBundle, SCHEMAS_DIR, SECTION_FILES, SHARED_DIR, bundle_files, group_subtree, is_safe_group_id,
+    is_safe_group_name, is_safe_secret_name, load_bundle_dir, load_bundle_from, load_group_dir, load_group_from,
+    manifest_bytes, read_raw_from, slugged_pipelines, slugged_schemas, slugify, unsafe_group_id, unsafe_group_name,
+    unsafe_secret_name,
 };
 pub use dto::{
     AnswerDto, AssignmentDto, BufferBytes, CompoundTypeDto, CustomPatternDto, DataTypeDto, DeliverRuleDto,
     DestinationDto, DestinationKindDto, FetchBytes, FieldDto, FileConfig, GrokPatternDto, LeaderSecretDto,
     LookupOutputDto, LookupSourceDto, LookupTableDto, MatchKindDto, MultiplicityDto, OnExceptionDto, PUBSUB_ENDPOINT,
-    ParserKindDto, PipelineDto, RenamePairDto, RouteDto, SecretRefDto, SourceDto, SourceKindDto, SqlKind, SqlSourceDto,
-    StartPositionDto, StepDto,
+    ParserKindDto, PipelineDto, RenamePairDto, RouteDto, SchemaDto, SchemaFieldDto, SecretRefDto, SourceDto,
+    SourceKindDto, SqlKind, SqlSourceDto, StartPositionDto, StepDto,
 };
 pub use impact::{Impact, Reached, Reason, pipeline_answers_differ, pipelines_touched};
 pub use links::{Connections, Kind, Links, Object};
@@ -84,11 +86,22 @@ pub fn validate(file: FileConfig) -> Result<LoadedSystem, LoadError> {
 /// `validate` for a bundle read from a directory: `declared_at` says where each lookup table was declared, which is
 /// what a relative lookup path resolves against.
 pub fn validate_at(file: FileConfig, declared_at: &load::DeclaredAt) -> Result<LoadedSystem, LoadError> {
-    let system = load::from_file_config_at(file, declared_at)?;
-    system
+    let mut system = load::from_file_config_at(file, declared_at)?;
+    let compiled = system
         .compile_topology()
         .map_err(|errs| LoadError::Validation(errs.into_iter().map(|e| system.to_validation_error(e)).collect()))?;
+    system.compiled = Some(compiled);
     Ok(system)
+}
+
+/// A pipeline's rows breaking a schema it produces, or a destination it delivers to accepting none it does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaFinding {
+    /// The pipeline's id.
+    pub pipeline: String,
+    /// The step that wrote the field, by its id. `None` for a field no step writes, and for a destination's.
+    pub step: Option<String>,
+    pub message: String,
 }
 
 /// The compiler's inputs, with every string id resolved to an integer id. Not yet compiled: `load_str` stops here so
@@ -100,6 +113,20 @@ pub struct LoadedSystem {
     /// `PipelineConfig::id` (a compiler-local index) back to the DTO's string id, so a `CompileError::pipeline`
     /// can be reported the way the file that declared it names it.
     pub pipeline_ids: Vec<String>,
+    /// The schemas each pipeline produces, by `PipelineConfig::id`.
+    pub produces: Vec<Vec<Arc<crate::schema::Schema>>>,
+    /// The schemas each destination accepts, for the destinations that name any.
+    pub accepts: HashMap<DestId, Vec<Arc<crate::schema::Schema>>>,
+    /// What `validate` compiled; `None` for a system loaded without validating it.
+    pub compiled: Option<CompiledTopology>,
+}
+
+/// A route as `LoadedSystem::checked_routes` walks it.
+struct CheckedRoute<'a> {
+    route: &'a crate::plan::topology::CompiledRoute,
+    pipeline: String,
+    produces: &'a [Arc<crate::schema::Schema>],
+    misfits: Option<(&'a crate::plan::compile::Plan, Vec<crate::schema::Finding>)>,
 }
 
 impl LoadedSystem {
@@ -194,6 +221,11 @@ impl LoadedSystem {
         self.pipelines.iter().find(|p| p.id == index)
     }
 
+    /// The schemas the pipeline `PipelineConfig::id` names produces.
+    pub fn produced_by(&self, pipeline: usize) -> &[Arc<crate::schema::Schema>] {
+        self.produces.get(pipeline).map_or(&[], Vec::as_slice)
+    }
+
     /// The step a `CompileError`'s `pipeline`/`function` indices name, by its own string id. `function` is a
     /// position local to one pipeline and, once a `call` step has inlined another pipeline's steps into it, no
     /// longer lines up with document order the way it did before expansion; the id does not move. `None` when
@@ -207,6 +239,106 @@ impl LoadedSystem {
             .step_ids
             .get(function_id as usize)
             .cloned()
+    }
+
+    /// Where a pipeline's rows break the schemas it produces, and where it delivers to a destination that accepts
+    /// none of them, over every route `compiled` runs it on. A finding never refuses the system.
+    pub fn schema_findings(&self, compiled: &CompiledTopology) -> Vec<SchemaFinding> {
+        self.schema_findings_beyond(compiled, &[])
+    }
+
+    /// Each field of a pipeline's rows that breaks a schema it produces, by the pipeline's id.
+    pub fn schema_misfits(&self, compiled: &CompiledTopology) -> Vec<(String, crate::schema::Finding)> {
+        let mut out: Vec<(String, crate::schema::Finding)> = Vec::new();
+        for checked in self.checked_routes(compiled) {
+            for f in checked.misfits.into_iter().flat_map(|(_, misfits)| misfits) {
+                if !out.iter().any(|(p, o)| *p == checked.pipeline && *o == f) {
+                    out.push((checked.pipeline.clone(), f));
+                }
+            }
+        }
+        out
+    }
+
+    /// Each route `compiled` runs, with its pipeline's id and, where the pipeline produces a schema, the plan its
+    /// rows come from and where they break what it produces. The one walk `schema_misfits` and
+    /// `schema_findings_beyond` share.
+    fn checked_routes<'a>(&'a self, compiled: &'a CompiledTopology) -> impl Iterator<Item = CheckedRoute<'a>> {
+        compiled.routes.iter().map(move |route| {
+            let produces = self.produced_by(route.pipeline);
+            let misfits = (compiled.plan_for(route.source, route.pipeline))
+                .filter(|_| !produces.is_empty())
+                .map(|plan| {
+                    let record = crate::plan::dictionary::record_type(plan, &route.on_exception.tag_field);
+                    (plan, crate::schema::check(produces, &record))
+                });
+            CheckedRoute {
+                route,
+                pipeline: self.pipeline_ids.get(route.pipeline).cloned().unwrap_or_default(),
+                produces,
+                misfits,
+            }
+        })
+    }
+
+    /// `schema_findings`, leaving out the misfits `known` holds (`schema_misfits`), so a finding that names several
+    /// fields names only the others.
+    pub fn schema_findings_beyond(
+        &self,
+        compiled: &CompiledTopology,
+        known: &[(String, crate::schema::Finding)],
+    ) -> Vec<SchemaFinding> {
+        let mut out: Vec<SchemaFinding> = Vec::new();
+        let mut push = |f: SchemaFinding| {
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        };
+        for CheckedRoute {
+            route,
+            pipeline,
+            produces,
+            misfits,
+        } in self.checked_routes(compiled)
+        {
+            if let Some((plan, mut findings)) = misfits {
+                // A field the source gave is the first step's to fix, which the record enters through.
+                let first = (self.pipelines.iter().find(|p| p.id == route.pipeline))
+                    .and_then(|p| p.body.first())
+                    .map(|step| match step {
+                        crate::plan::config::Step::Function(f) => f.id,
+                        crate::plan::config::Step::If { id, .. } => *id,
+                    });
+                findings.retain(|f| !known.iter().any(|(p, k)| *p == pipeline && k == f));
+                for (keys, message) in crate::schema::told(produces, &findings) {
+                    let at = keys.and_then(|keys| crate::plan::dictionary::writer(plan, &keys).or(first));
+                    push(SchemaFinding {
+                        pipeline: pipeline.clone(),
+                        step: self.step_id_for(Some(route.pipeline), at),
+                        message,
+                    });
+                }
+            }
+            for dest in route.deliver.iter().flat_map(|rule| &rule.to) {
+                let Some(accepts) = self.accepts.get(dest) else {
+                    continue;
+                };
+                if accepts.iter().any(|a| produces.iter().any(|p| p.id == a.id)) {
+                    continue;
+                }
+                let name = (self.topology.destinations.iter().find(|d| d.id == *dest)).map_or("", |d| d.name.as_str());
+                let titles: Vec<&str> = accepts.iter().map(|a| a.title.as_str()).collect();
+                push(SchemaFinding {
+                    pipeline: pipeline.clone(),
+                    step: None,
+                    message: format!(
+                        "destination {name:?} accepts {}, but pipeline {pipeline:?} produces no schema it accepts",
+                        titles.join(", ")
+                    ),
+                });
+            }
+        }
+        out
     }
 
     /// What each destination that writes columns writes, route by route, and an error for each record it cannot hold.
@@ -446,6 +578,43 @@ mod tests {
                           "deliver": [{{ "to": [] }}, {{ "when": {when:?}, "to": ["out"] }}] }}]
             }}"#
         )
+    }
+
+    #[test]
+    fn a_pipelines_schema_findings_are_at_its_steps_and_its_destinations() {
+        let json = r#"{
+          "version": 1,
+          "sources": [{ "id": "k", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g" }],
+          "schemas": [
+            { "id": "stamped", "title": "Stamped", "fields": [{ "field": "@timestamp", "type": "datetime" }] },
+            { "id": "login", "title": "Login" }
+          ],
+          "destinations": [{ "id": "out", "type": "kafka", "brokers": "b:9092", "defaultTopic": "t",
+                             "accepts": ["login"] }],
+          "pipelines": [{ "id": "p", "name": "p", "produces": ["stamped"],
+                          "steps": [{ "id": "s", "type": "code", "body": "$[\"@timestamp\"] = \"now\";" }] }],
+          "routes": [{ "id": "r", "source": "k", "pipeline": "p", "deliver": [{ "to": ["out"] }] }]
+        }"#;
+        let system = load_str(json).unwrap();
+        let compiled = system.compile_topology().unwrap();
+        let found: Vec<_> = (system.schema_findings(&compiled).into_iter())
+            .map(|f| (f.pipeline, f.step, f.message))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (
+                    "p".to_string(),
+                    Some("s".to_string()),
+                    "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
+                ),
+                (
+                    "p".to_string(),
+                    None,
+                    "destination \"out\" accepts Login, but pipeline \"p\" produces no schema it accepts".to_string()
+                ),
+            ]
+        );
     }
 
     #[test]

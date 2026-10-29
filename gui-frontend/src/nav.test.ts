@@ -592,6 +592,13 @@ describe('editorFor', () => {
     expect(editorFor('shared/pipelines/a b.json')?.hash).toBe('#/build/pipelines/a%20b');
   });
 
+  it('opens a schema file on the schemas page', () => {
+    expect(editorFor('groups/west/schemas/ecs.json')).toEqual({
+      scope: 'west',
+      hash: '#/build/schemas',
+    });
+  });
+
   it('has no page for a group manifest', () => {
     expect(editorFor('groups/west/system.json')).toBeNull();
     expect(editorFor('shared/system.json')).toBeNull();

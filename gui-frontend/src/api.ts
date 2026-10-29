@@ -539,7 +539,10 @@ export const LIMITS = {
  * shape: the two kinds share only `id`, and the loader rejects unknown
  * fields, so a Kafka field left on an Elasticsearch destination would stop
  * the bundle loading. */
-export type DestinationDto =
+export type DestinationDto = {
+  /** The schemas a pipeline delivering here should produce one of, by id. Review checks it; nothing refuses. */
+  accepts?: string[];
+} & (
   | (TlsDto & {
       id: string;
       type: 'kafka';
@@ -775,7 +778,8 @@ export type DestinationDto =
         stallAfterSecs?: number;
         /** Seconds files stay open before they are committed. Within `LIMITS.tableFileIntervalSecs`. */
         fileIntervalSecs?: number;
-      });
+      })
+);
 
 /** A Databricks Unity Catalog table, signed in to as a service principal with OAuth client credentials. */
 export interface UnityCatalog {
@@ -1039,6 +1043,8 @@ export interface PipelineDto {
   id: string;
   name: string;
   steps: unknown[];
+  /** The schemas its rows are held to, by their ids in the bundle. */
+  produces?: string[];
 }
 
 /** A shared lookup table, referenced by id from any `lookup` step. `headers`
@@ -1069,6 +1075,27 @@ export interface GrokPatternDto {
   pattern: string;
 }
 
+/** A bundle's own schema (`src/schema.rs`): a table of fields, named by id from the pipelines that produce it and
+ * the destinations that accept it. */
+export interface SchemaDto {
+  id: string;
+  /** Shown for it. The id where absent. */
+  title?: string;
+  description?: string;
+  fields: SchemaFieldDto[];
+}
+
+/** One field of a schema: a row of its table. */
+export interface SchemaFieldDto {
+  /** Its keys from the record's root, dotted. */
+  field: string;
+  /** What it must hold, spelled as a declaration spells a type: `str`, `array<i64>`, `{...}` for an object. */
+  type: string;
+  /** Whether a row must hold it. */
+  required?: boolean;
+  description?: string;
+}
+
 export interface FileConfigDto {
   version: number;
   /** What each exception does to its row, under each route's own. Absent leaves the built-in answers. The group's
@@ -1080,6 +1107,7 @@ export interface FileConfigDto {
   routes: RouteDto[];
   lookupTables: LookupTableDto[];
   grokPatterns: GrokPatternDto[];
+  schemas?: SchemaDto[];
   /** A group's display name, from its manifest. Absent shows the id. */
   name?: string;
 }
@@ -1506,7 +1534,7 @@ export async function sharedConfig(): Promise<FileConfigDto | null> {
 
 /** A section of a bundle, by its key in `FileConfigDto`. */
 export type ConfigSection =
-  'sources' | 'destinations' | 'routes' | 'lookupTables' | 'grokPatterns' | 'pipelines';
+  'sources' | 'destinations' | 'routes' | 'lookupTables' | 'grokPatterns' | 'schemas' | 'pipelines';
 
 /** What Undo changes puts back: one object, or one file no section owns by
  * its path in the scope's bundle. */
@@ -1586,6 +1614,10 @@ export function putGrokPatterns(
   base?: string | null,
 ): Promise<MutationResult> {
   return configJson(inArea('/grok-patterns'), putBody(grokPatterns), { base });
+}
+
+export function putSchemas(schemas: SchemaDto[], base?: string | null): Promise<MutationResult> {
+  return configJson(inArea('/schemas'), putBody(schemas), { base });
 }
 
 export function putLookupTables(
@@ -1979,6 +2011,19 @@ export interface PreviewResult {
   capture_filter?: CaptureFilterCheck;
   /** What compiles but is likely a mistake, each placed at its step as an error is. */
   warnings?: ApiError[];
+  /** How many of `warnings` are where the rows break the schemas the pipeline produces. */
+  schema_findings?: number;
+  /** The fields the schemas the pipeline produces require and its rows lack. */
+  missing?: MissingField[];
+}
+
+/** A field a schema requires that a pipeline's rows lack (`schema::Missing`). */
+export interface MissingField {
+  path: string;
+  /** What a pipeline writes to keep it, as a declaration spells a type. */
+  written_as: string;
+  /** The schema's title. */
+  schema: string;
 }
 
 /** What a preview that did not run says went wrong. */
@@ -2468,6 +2513,7 @@ export type WarningCondition =
   | 'remoteNotFollowed'
   | 'deployDoesNotLoad'
   | 'deployFailsTests'
+  | 'deployBreaksSchemas'
   | 'declaredFieldFailing'
   | 'declaredFieldGone'
   | 'streamUnrouted'
@@ -2568,6 +2614,8 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Deployed config does not load';
     case 'deployFailsTests':
       return 'Test failing';
+    case 'deployBreaksSchemas':
+      return 'Rows do not fit a schema';
     case 'declaredFieldFailing':
       return 'Field not its declared type';
     case 'declaredFieldGone':
@@ -5241,4 +5289,76 @@ export function restartConversation(
 
 export function deleteConversation(id: string): Promise<object | AccountRefusal> {
   return accountCall(conversationPath(id), { method: 'DELETE' });
+}
+
+// -- schemas ----------------------------------------------------------------
+// JSON Schema in and out (`src/bin/smeltr/schema_api.rs`). A bundle's schemas are its config, saved with `putSchemas`.
+
+export interface ReadSchema {
+  ok: boolean;
+  errors: ApiError[];
+  /** The schema the JSON Schema declares. */
+  schema: SchemaDto;
+}
+
+/** `doc`, a JSON Schema document, read as the schema `id`. Not `ok`, with why, where it does not read. */
+export function fromJsonSchema(id: string, doc: Record<string, unknown>): Promise<ReadSchema> {
+  return post('/api/preview/from-json-schema', { id, schema: doc }, 'quiet');
+}
+
+/** The schema `id` that `pipeline` of `config`, the bundle as the editor holds it, writes when run over the records of
+ * `text`, an uploaded file, on the branch: each row it writes is a field. Not `ok`, with why, where the pipeline does not run
+ * or a row is no field. */
+export function importSchema(req: {
+  id: string;
+  title?: string;
+  config: FileConfigDto;
+  pipeline: string;
+  /** The uploaded file, cut into records on the leader as a source cuts its bytes. */
+  text: string;
+  /** Where a record ends; absent, each line is one. */
+  lineBreaker?: string;
+}): Promise<ReadSchema> {
+  return post(
+    branched(inArea('/preview/schema-import')),
+    {
+      config: JSON.stringify(req.config),
+      pipeline: req.pipeline,
+      id: req.id,
+      title: req.title ?? '',
+      text: req.text,
+      lineBreaker: req.lineBreaker,
+    },
+    'quiet',
+  );
+}
+
+/** What a schema is exported as: a JSON Schema document, or an Elasticsearch index's mapping. */
+export type ExportFormat = 'json-schema' | 'elasticsearch';
+
+export interface ExportedSchema {
+  ok: boolean;
+  errors: ApiError[];
+  document: Record<string, unknown>;
+}
+
+/** `schema` written as `format` has it. */
+export function exportSchema(schema: SchemaDto, format: ExportFormat): Promise<ExportedSchema> {
+  return post('/api/preview/schema-export', { schema, format }, 'quiet');
+}
+
+/** One schema finding at a branch's tip (`LoadedSystem::schema_findings`). */
+export interface SchemaFindingDto {
+  group: string;
+  pipeline: string;
+  /** The step that wrote the field. Absent for a field no step writes, and for a destination's accepts. */
+  step?: string;
+  message: string;
+}
+
+/** What breaks a schema at `branch`'s tip, in every group its change reaches. */
+export function branchSchemaFindings(
+  branch: string,
+): Promise<{ ok: boolean; errors: ApiError[]; findings: SchemaFindingDto[] }> {
+  return apiJson(`/api/branches/${encodeURIComponent(branch)}/schema-findings`, undefined, 'quiet');
 }

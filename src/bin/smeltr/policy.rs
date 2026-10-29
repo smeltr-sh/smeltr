@@ -74,6 +74,8 @@ pub fn need(method: &Method, path: &str) -> Need {
     }
 
     match (method.clone(), segments.as_slice()) {
+        // A schema read from or written as JSON Schema: what the schema it is given holds, never config.
+        (Method::POST, ["preview", "from-json-schema" | "schema-export"]) => Need::Somewhere(Level::Viewer),
         // Production records a preview or a capture shows, in no one area.
         (Method::POST, ["captures"])
         | (Method::GET | Method::HEAD | Method::DELETE, ["captures", _])
@@ -88,6 +90,7 @@ pub fn need(method: &Method, path: &str) -> Need {
         (Method::GET | Method::HEAD, ["branches"])
         | (Method::GET | Method::HEAD, ["main", "history" | "diff"])
         | (Method::GET | Method::HEAD, ["branches", _, "diff"])
+        | (Method::GET | Method::HEAD, ["branches", _, "schema-findings"])
         | (Method::GET | Method::HEAD, ["branches", _, "tests"])
         | (Method::GET | Method::HEAD, ["branches", _, "timeline"])
         | (Method::POST, ["branches", _, "comments"])
@@ -148,13 +151,16 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
             Method::GET | Method::HEAD | Method::PUT | Method::DELETE,
             ["pipelines", _] | ["tests", _] | ["files", _, ..],
         ) => read,
-        (Method::PUT, ["sources" | "destinations" | "routes" | "lookups" | "grok-patterns" | "manifest"])
+        (
+            Method::PUT,
+            ["sources" | "destinations" | "routes" | "lookups" | "grok-patterns" | "schemas" | "manifest"],
+        )
         | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"]) => Level::Editor,
 
         // Production records: samples, and what a preview of them shows.
         (Method::GET | Method::HEAD | Method::POST, ["samples"])
         | (Method::GET | Method::HEAD | Method::PUT | Method::DELETE, ["samples", _])
-        | (Method::POST, ["preview", "pipeline" | "routes"]) => Level::Editor,
+        | (Method::POST, ["preview", "pipeline" | "routes" | "schema-import"]) => Level::Editor,
         _ => return None,
     })
 }
@@ -279,6 +285,7 @@ mod tests {
             (Method::POST, "/api/areas/payments/lookups/upload"),
             (Method::PUT, "/api/areas/payments/files/pipelines/x.json"),
             (Method::DELETE, "/api/areas/payments/files/x.json"),
+            (Method::PUT, "/api/areas/payments/schemas"),
         ] {
             assert_eq!(need(&method, path), area("payments", Level::Editor), "{method} {path}");
         }
@@ -295,6 +302,7 @@ mod tests {
             (Method::POST, "/api/areas/payments/test-runs"),
             (Method::POST, "/api/areas/payments/preview/pipeline"),
             (Method::POST, "/api/areas/payments/preview/routes"),
+            (Method::POST, "/api/areas/payments/preview/schema-import"),
         ] {
             assert_eq!(need(&method, path), area("payments", Level::Editor), "{method} {path}");
         }
@@ -352,6 +360,9 @@ mod tests {
             (Method::GET, "/api/main/history"),
             (Method::GET, "/api/main/diff"),
             (Method::GET, "/api/branches/b/diff"),
+            (Method::GET, "/api/branches/b/schema-findings"),
+            (Method::POST, "/api/preview/from-json-schema"),
+            (Method::POST, "/api/preview/schema-export"),
             (Method::GET, "/api/branches/b/timeline"),
             (Method::POST, "/api/branches/b/comments"),
             (Method::POST, "/api/branches/b/threads/t1"),

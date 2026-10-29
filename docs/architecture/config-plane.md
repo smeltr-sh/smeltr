@@ -3,7 +3,7 @@
 A system of the [design document](../smeltr-design.md).
 
 Configuration is a directory of files, the **bundle**: sources, destinations,
-routes, lookup tables, grok patterns, one file per pipeline, and the samples and
+routes, lookup tables, grok patterns, one file per pipeline and per schema, and the samples and
 tests an author works from. It is meant to be read by humans and reviewed like code,
 so it lives in git and a deploy points the fleet at a commit on `main`. Every
 object is keyed by a string id, unique in its scope.
@@ -45,6 +45,44 @@ group, so a step's own pattern may not take a shared one's name, and a shared
 one may not take a built-in's. A shared pattern resolves against shared ones
 and the built-ins alone, so it reads the same in every step, and it is checked
 at save whether or not a step names it yet.
+
+## Schemas
+
+A schema is what a pipeline's rows should hold: a table of fields, each a
+path from the record's root, the type it must hold, whether a row must hold it,
+and what it means. A path spells its keys with dots, and a type is spelled as
+a declaration spells one, so a schema, a parser's field table and a
+declaration read the same. A bundle declares its schemas as such tables, and
+JSON Schema is read in (`schema::json_schema`). A schema is exported as
+JSON Schema, or as the mapping an Elasticsearch index holding its rows should
+have. A pipeline
+names the schemas it produces, and a destination may name the schemas it
+accepts. Both are checked at save to name a schema the group can see. A
+schema is also imported: a pipeline of the bundle run over an uploaded
+file's records writes one row per field, `field`, `type`, `required` and
+`description`, and the rows are the schema. ECS and OCSF come in that way,
+as any file of fields does.
+
+```mermaid
+flowchart LR
+  S[the bundle's schemas] --> P[pipeline produces]
+  S --> D[destination accepts]
+  P --> F{rows fit?}
+  D --> F
+  F -- no --> W[finding: editor, review, deployed commit]
+```
+
+A finding never refuses a save or a deploy: it says where the rows do not fit.
+Review shows the findings a change adds, not those main already had where the
+branch left it, field by field: a finding that names several fields names only
+those the change adds.
+The record's type is held to the table path by path: a field whose type only
+the row knows keeps any, an object keeps any object type, and a required field
+is missing where the object it sits in is there and does not declare it. A
+field several schemas name is a misfit only where every one of them says so,
+and a field one requires is missing only where every schema the pipeline
+produces requires it. A route delivering to a destination whose accepts names
+none of what its pipeline produces is a finding of the same kind.
 
 ## Groups and `shared/`
 

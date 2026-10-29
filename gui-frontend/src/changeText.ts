@@ -251,8 +251,8 @@ interface Section {
 function sections(before: FileConfigDto, after: FileConfigDto): Section[] {
   return SECTIONS.map((spec) => ({
     noun: spec.noun,
-    before: before[spec.key],
-    after: after[spec.key],
+    before: before[spec.key] ?? [],
+    after: after[spec.key] ?? [],
     skip: spec.skip,
   }));
 }

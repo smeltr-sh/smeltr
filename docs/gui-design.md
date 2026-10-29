@@ -520,6 +520,24 @@ Uploading a CSV or MMDB file is a commit like any other save; for CSV the
 header row comes back and is kept on the table so the column pickers work
 after a reload.
 
+## Schemas
+
+The Schemas page lists the bundle's own schemas, then `shared/`'s. A search
+reaches into fields, so a field's path finds the schemas that name it. A schema
+folds open to its table of fields, narrowed to the search, and any schema
+exports as JSON Schema or as an Elasticsearch mapping. A schema is added empty,
+from a JSON Schema, or imported: a pipeline of the bundle is picked and a file
+uploaded, the leader runs the pipeline over the file's records as a preview
+runs, and each row it writes is a field.
+
+A pipeline names what it produces in the editor's Produces row, and a
+destination what it accepts on its own form. Where the rows do not fit, the
+editor says so at the step that wrote the field, and gives each field a
+schema requires and the rows lack a column of its own, with the type to write
+it as, and lists it in the Fields menu. Review lists it under its
+Schemas tab and counts it in the dock, and none of it blocks a save or a
+deploy.
+
 ## Backed by the file
 
 Every page that affects configuration is backed by the JSON file that is

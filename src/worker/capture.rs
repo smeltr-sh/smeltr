@@ -1516,6 +1516,7 @@ pub fn source_kind_of(dto: crate::config_file::SourceDto) -> Result<crate::plan:
         grok_patterns: Vec::new(),
         on_exception: None,
         name: None,
+        schemas: vec![],
     };
     let json = serde_json::to_string(&file).map_err(|e| e.to_string())?;
     let system = crate::config_file::load_str(&json).map_err(|e| e.to_string())?;

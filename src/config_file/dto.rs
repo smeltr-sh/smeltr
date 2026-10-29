@@ -144,6 +144,8 @@ pub struct FileConfig {
     pub lookup_tables: Vec<LookupTableDto>,
     #[serde(default, rename = "grokPatterns")]
     pub grok_patterns: Vec<GrokPatternDto>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schemas: Vec<SchemaDto>,
     /// The group's answer to every exception kind. Absent means encoding is ignored, delivery blocks, and every other
     /// category is tagged.
     #[serde(default, rename = "exceptions", skip_serializing_if = "Option::is_none")]
@@ -1199,6 +1201,9 @@ pub struct DestinationDto {
     /// The destination's answer to `Refused`, over the group's. It names no other kind.
     #[serde(default, rename = "exceptions", skip_serializing_if = "Option::is_none")]
     pub on_exception: Option<OnExceptionDto>,
+    /// The schemas, by id, a pipeline that sends here produces one of. Empty accepts any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepts: Vec<String>,
     #[serde(flatten)]
     pub kind: DestinationKindDto,
 }
@@ -3140,6 +3145,9 @@ pub struct PipelineDto {
     pub name: String,
     #[serde(default)]
     pub steps: Vec<StepDto>,
+    /// The schemas it produces, by id: each row keeps one of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub produces: Vec<String>,
 }
 
 /// `plan::config::OnException`, over the answers of the layer below: the built-in ones, then the group's. Each key
@@ -3326,6 +3334,37 @@ pub enum ParserKindDto {
 pub struct CustomPatternDto {
     pub name: String,
     pub pattern: String,
+}
+
+/// A schema the bundle declares (`schema`): a table of fields, named by id from the pipelines that produce it and
+/// the destinations that accept it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaDto {
+    pub id: String,
+    /// Shown for it. The id where empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default)]
+    pub fields: Vec<SchemaFieldDto>,
+}
+
+/// One field of a schema: a row of its table.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaFieldDto {
+    /// Its keys from the record's root, dotted.
+    pub field: String,
+    /// What it must hold, spelled as a declaration spells a type: `str`, `array<i64>`, `{...}` for an object.
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// Whether a row must hold it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 /// A named grok pattern, declared once for the bundle and named as `%{id}` from any grok in it.

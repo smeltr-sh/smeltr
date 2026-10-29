@@ -27,6 +27,7 @@ export type Noun =
   | 'route'
   | 'lookup table'
   | 'grok pattern'
+  | 'schema'
   | 'pipeline'
   | 'worker group'
   | 'sample'
@@ -59,7 +60,7 @@ export interface SectionSpec {
 }
 
 /** Every section a change can touch, in the order a change is told:
- * sources, destinations, routes, lookup tables, grok patterns, pipelines. */
+ * sources, destinations, routes, lookup tables, grok patterns, schemas, pipelines. */
 export const SECTIONS: SectionSpec[] = [
   { key: 'sources', noun: 'source', skip: ['id'] },
   { key: 'destinations', noun: 'destination', skip: ['id'] },
@@ -67,6 +68,7 @@ export const SECTIONS: SectionSpec[] = [
   { key: 'routes', noun: 'route', skip: ['id'], ordered: true },
   { key: 'lookupTables', noun: 'lookup table', skip: ['id'] },
   { key: 'grokPatterns', noun: 'grok pattern', skip: ['id'] },
+  { key: 'schemas', noun: 'schema', skip: ['id'] },
   { key: 'pipelines', noun: 'pipeline', skip: ['id', 'steps'] },
 ];
 
@@ -95,6 +97,7 @@ export function emptyConfig(): FileConfigDto {
     routes: [],
     lookupTables: [],
     grokPatterns: [],
+    schemas: [],
   };
 }
 
@@ -211,22 +214,26 @@ export interface ScopePair {
 }
 
 /** The file each section is read from. A section whose file does not read
- * is read as empty, so every object in it would read as removed or added. */
+ * is read as empty, so every object in it would read as removed or added. A
+ * pipeline and a schema each have a file of their own (`fileOfObject`). */
 const SECTION_FILE: Record<ConfigSection, string> = {
   sources: 'sources.json',
   destinations: 'destinations.json',
   routes: 'routes.json',
   lookupTables: 'lookup-tables.json',
   grokPatterns: 'grok-patterns.json',
+  schemas: '',
   pipelines: '',
 };
 
 /** The file `spec`'s object `id` is read from. */
 function fileOfObject(spec: SectionSpec, id: string): string {
-  return spec.key === 'pipelines' ? `pipelines/${pipelineSlug(id)}.json` : SECTION_FILE[spec.key];
+  if (spec.key === 'pipelines' || spec.key === 'schemas')
+    return `${spec.key}/${pipelineSlug(id)}.json`;
+  return SECTION_FILE[spec.key];
 }
 
-/** A pipeline's filename, as the leader names it (`config_file::slugify`). */
+/** A pipeline's or schema's filename, as the leader names it (`config_file::slugify`). */
 export function pipelineSlug(id: string): string {
   // Only ASCII letters and digits survive, lowered after: lowering first would turn `K` (Kelvin) into `k`.
   const slug = id

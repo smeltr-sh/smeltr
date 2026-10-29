@@ -27,6 +27,7 @@ mod gate;
 mod oidc_api;
 mod policy;
 mod roles_api;
+mod schema_api;
 mod service;
 mod sql_api;
 mod test_api;
@@ -437,20 +438,36 @@ async fn preview(
 ) -> Envelope<Preview> {
     // Reading the branch spawns git, so it goes off the async executor.
     let branch = q.name().to_string();
-    blocking_answer(move || preview_on(&smeltr::startup_config::leader_data_dir(), &branch, &area, req)).await
+    blocking_answer(move || {
+        preview_on(
+            &smeltr::startup_config::leader_data_dir(),
+            &branch,
+            &area,
+            req,
+            Vec::new(),
+        )
+    })
+    .await
 }
 
 /// A preview of what the editor is looking at on `branch`: its sample and any lookup path in it resolve the same way
 /// a save would, against the bundle on that branch. A group's preview runs with `shared/` merged in, as the group
 /// runs once deployed, so a pipeline calling a shared pipeline or reading a shared lookup table previews rather than
-/// naming it unknown. `data_dir` explicit, as for `Reading::open_in`.
-fn preview_on(data_dir: &std::path::Path, branch: &str, scope: &str, mut req: PreviewRequest) -> Envelope<Preview> {
+/// naming it unknown. `data_dir` explicit, as for `Reading::open_in`. `records` are run where the request names no
+/// sample: what an import hands over.
+fn preview_on(
+    data_dir: &std::path::Path,
+    branch: &str,
+    scope: &str,
+    mut req: PreviewRequest,
+    records: Vec<smeltr::io::RecordObject>,
+) -> Envelope<Preview> {
     let reading = match config_api::Reading::open_in(data_dir, branch, scope) {
         Ok(reading) => reading,
         Err(e) => return Envelope::refused(e),
     };
     let sample = match &req.sample {
-        None => Ok((Vec::new(), Vec::new())),
+        None => Ok((Vec::new(), records)),
         Some(id) => match config_file::read_sample(&mut reading.files(), id) {
             Ok(Some(sample)) => Ok((sample.columns, sample.records)),
             Ok(None) => Err(format!("there is no sample {id:?} on this branch")),
@@ -469,6 +486,62 @@ fn preview_on(data_dir: &std::path::Path, branch: &str, scope: &str, mut req: Pr
         }
         Err(message) => Preview::failed("sample", vec![ApiError::new(message)], vec![]),
     }
+}
+
+/// A schema imported by a pipeline: `pipeline` of `config` run over the records of `text`, an uploaded file, on
+/// `branch` as a preview runs, and each row it writes a field of the schema `id` (`schema_catalog::from_rows`).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportRequest {
+    /// A single-file `config_file` JSON document: the bundle the importer is in.
+    config: String,
+    /// The importer, by `PipelineDto::id`.
+    pipeline: String,
+    id: String,
+    #[serde(default)]
+    title: String,
+    /// The uploaded file, cut into records by `line_breaker` (`schema_catalog::records_of`).
+    text: String,
+    #[serde(default)]
+    line_breaker: Option<String>,
+}
+
+async fn import_schema(
+    axum::extract::Path(area): axum::extract::Path<String>,
+    axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
+    Json(req): Json<ImportRequest>,
+) -> Envelope<smeltr::leader::schema_catalog::ReadSchema> {
+    let branch = q.name().to_string();
+    blocking_answer(move || {
+        let records = match smeltr::leader::schema_catalog::records_of(&req.text, req.line_breaker.as_deref()) {
+            Ok(records) => records,
+            Err(message) => return Envelope::refused(Refusal::invalid(message)),
+        };
+        let preview = preview_on(
+            &smeltr::startup_config::leader_data_dir(),
+            &branch,
+            &area,
+            PreviewRequest {
+                config: req.config,
+                pipeline: Some(req.pipeline),
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
+            },
+            records,
+        );
+        if !preview.succeeded() {
+            return Envelope::refused(Refusal::all(preview.status, preview.errors));
+        }
+        smeltr::leader::schema_catalog::from_rows(&req.id, &req.title, &preview.body.rows)
+            .map_err(Refusal::invalid)
+            .into()
+    })
+    .await
 }
 
 /// Rewrites `req.config`, a group's own bundle, into that bundle merged with `shared/` at the commit `reading`
@@ -1987,6 +2060,7 @@ async fn run_leader() {
         .route("/api/branches/:name/bring-current", post(branch_api::bring_current))
         .route("/api/main/history", get(branch_api::history))
         .route("/api/branches/:name/diff", get(branch_api::branch_diff))
+        .route("/api/branches/:name/schema-findings", get(branch_api::schema_findings))
         .route("/api/main/diff", get(branch_api::commit_diff))
         .route("/api/areas/:area/samples", get(config_api::list_samples))
         .route(
@@ -2017,6 +2091,10 @@ async fn run_leader() {
         .route("/api/areas/:area/undo", post(config_api::undo))
         .route("/api/areas/:area/routes", put(config_api::put_routes))
         .route("/api/areas/:area/grok-patterns", put(config_api::put_grok_patterns))
+        .route("/api/areas/:area/schemas", put(config_api::put_schemas))
+        .route("/api/areas/:area/preview/schema-import", post(import_schema))
+        .route("/api/preview/from-json-schema", post(schema_api::from_json_schema))
+        .route("/api/preview/schema-export", post(schema_api::export))
         // An edited CSV travels whole in this body, so it is as large as the file.
         .route(
             "/api/areas/:area/lookups",
@@ -2904,6 +2982,7 @@ mod tests {
             grok_patterns: vec![],
             on_exception: None,
             name: None,
+            schemas: vec![],
         }
     }
 
@@ -2939,6 +3018,7 @@ mod tests {
                         }],
                     },
                 ],
+                produces: vec![],
             }],
             ..empty_file()
         }
@@ -2989,6 +3069,7 @@ mod tests {
                 id: "enrich".to_string(),
                 name: "enrich".to_string(),
                 steps: vec![eval_step("mark", "enriched", "true")],
+                produces: vec![],
             }],
             ..empty_file()
         };
@@ -3054,6 +3135,7 @@ mod tests {
                 after_dot: None,
                 capture_filter: None,
             },
+            Vec::new(),
         );
 
         assert!(
@@ -3089,6 +3171,7 @@ mod tests {
                 after_dot: None,
                 capture_filter: None,
             },
+            Vec::new(),
         );
         assert!(!response.succeeded(), "{} rows", response.rows.len());
         std::fs::remove_dir_all(&data).ok();
@@ -3528,6 +3611,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             steps,
+            produces: vec![],
         };
         let raw = RawBundle {
             file: FileConfig {
@@ -3545,6 +3629,7 @@ mod tests {
                 grok_patterns: vec![],
                 on_exception: None,
                 name: None,
+                schemas: vec![],
             },
             unreadable: Vec::new(),
         };

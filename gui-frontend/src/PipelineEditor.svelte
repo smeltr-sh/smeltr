@@ -17,6 +17,7 @@
   import { store, stored } from './stored';
   import StepList from './StepList.svelte';
   import Connections from './Connections.svelte';
+  import PipelineProduces from './PipelineProduces.svelte';
   import SectionShell from './SectionShell.svelte';
   import JsonEditPage from './JsonEditPage.svelte';
   import Toggle from './Toggle.svelte';
@@ -76,6 +77,7 @@
     type ApiError,
     errorMessage,
     type GrokPatternDto,
+    type SchemaDto,
     type LookupTableDto,
     type PipelineDto,
     type Connected,
@@ -132,6 +134,8 @@
   let pipelineId = $derived(loadedId || newId);
   let pipelineName = $state('New pipeline');
   let steps: Step[] = $state([]);
+  /** The schemas its rows are held to, by id (`PipelineDto.produces`). */
+  let produces: string[] = $state([]);
   let loading = $state(true);
   let loadFailed = $state(false);
 
@@ -147,12 +151,15 @@
   function signatureOf(theSteps: Step[]): string {
     return JSON.stringify(theSteps.map(stepToDto));
   }
-  function editSignatureOf(name: string, theSteps: Step[]): string {
-    return name + '::' + signatureOf(theSteps);
+  // Produces is added only when it names a schema, so a draft held by a build before Produces still compares.
+  function editSignatureOf(name: string, theSteps: Step[], theProduces: string[]): string {
+    const produced = theProduces.length > 0 ? '::' + JSON.stringify(theProduces) : '';
+    return name + '::' + signatureOf(theSteps) + produced;
   }
   const unfinished = provideUnfinishedRows();
-  let signature = $derived(signatureOf(unfinished.hold(steps).steps));
-  let editSignature = $derived(editSignatureOf(pipelineName, steps));
+  // What the pipeline produces is what its rows are checked against, so a change to it runs the preview again.
+  let signature = $derived(signatureOf(unfinished.hold(steps).steps) + JSON.stringify(produces));
+  let editSignature = $derived(editSignatureOf(pipelineName, steps, produces));
   let savedSignature = $state('');
   // What `savedSignature` names, kept whole (not just its signature) so
   // discarding an edit has something to revert to. Cloned in and out: `steps`
@@ -160,6 +167,7 @@
   // let that mutate the very snapshot discarding is meant to fall back on.
   let savedPipelineName = $state('');
   let savedSteps: Step[] = $state([]);
+  let savedProduces: string[] = $state([]);
   // `loading` guards the window between a route change and the fetch it
   // starts landing: `steps` still holds whatever the previous route left
   // there (or the "New pipeline" default) while `savedSignature` has not
@@ -187,15 +195,15 @@
 
   /** What is held, in the two forms a record needs: the steps to put back,
    * and the signature to compare by, in the form `savedSignature` takes. */
-  function snapshotFor(name: string, theSteps: Step[]) {
+  function snapshotFor(name: string, theSteps: Step[], theProduces: string[]) {
     return {
-      value: JSON.stringify({ pipelineName: name, steps: theSteps }),
-      signature: editSignatureOf(name, theSteps),
+      value: JSON.stringify({ pipelineName: name, steps: theSteps, produces: theProduces }),
+      signature: editSignatureOf(name, theSteps, theProduces),
     };
   }
 
-  /** A held draft. */
-  type Draft = { pipelineName: string; steps: Step[] };
+  /** A held draft. A draft held by a build before Produces has none. */
+  type Draft = { pipelineName: string; steps: Step[]; produces?: string[] };
 
   /** What to do about an edit held from an earlier visit, now that this
    * editor's own read has landed. Restore says nothing: the pipeline is what
@@ -209,6 +217,7 @@
     if (verdict.kind === 'restore') {
       pipelineName = draft.pipelineName;
       steps = draft.steps;
+      produces = draft.produces ?? [];
       return;
     }
     const rows = diffSteps(steps, draft.steps);
@@ -216,6 +225,13 @@
       rows.unshift({
         kind: 'changed',
         summary: `renamed from "${pipelineName}" to "${draft.pipelineName}"`,
+      });
+    }
+    const heldProduces = draft.produces ?? [];
+    if (JSON.stringify(heldProduces) !== JSON.stringify(produces)) {
+      rows.unshift({
+        kind: 'changed',
+        summary: `produces ${heldProduces.length > 0 ? heldProduces.join(', ') : 'no schema'}`,
       });
     }
     moved = { value: verdict.held.value, rows };
@@ -230,7 +246,7 @@
   $effect(() => {
     if (loading || moved) return;
     hold(FILE, {
-      ...snapshotFor(pipelineName, steps),
+      ...snapshotFor(pipelineName, steps, produces),
       baseline: savedSignature,
       readAtCommit,
       label: pipelineName,
@@ -242,12 +258,14 @@
   let ownPipelines: PipelineDto[] = $state([]);
   let ownLookupTables: LookupTableDto[] = $state([]);
   let ownGrokPatterns: GrokPatternDto[] = $state([]);
+  let ownSchemas: SchemaDto[] = $state([]);
   // A group runs with `shared/` merged in, so a `call` step may target a
   // shared pipeline and a lookup step read a shared table. The leader merges
   // them into a group's preview itself, so they are offered, never sent.
   let sharedPipelines: PipelineDto[] = $state([]);
   let sharedLookupTables: LookupTableDto[] = $state([]);
   let sharedGrokPatterns: GrokPatternDto[] = $state([]);
+  let sharedSchemas: SchemaDto[] = $state([]);
   // What a `call` step may target (a self-call is a cycle).
   let otherPipelines = $derived([...sharedPipelines, ...ownPipelines]);
   let pipelineIds = $derived(otherPipelines.map((p) => p.id));
@@ -269,11 +287,13 @@
       ownPipelines = res.config.pipelines.filter((p) => p.id !== id);
       ownLookupTables = res.config.lookupTables;
       ownGrokPatterns = res.config.grokPatterns ?? [];
+      ownSchemas = res.config.schemas ?? [];
     }
     if (shared) {
       sharedPipelines = shared.pipelines;
       sharedLookupTables = shared.lookupTables;
       sharedGrokPatterns = shared.grokPatterns ?? [];
+      sharedSchemas = shared.schemas ?? [];
     }
     configLoaded = true;
   });
@@ -302,14 +322,16 @@
       result = lastGoodResult = null;
       pipelineName = madeFor ? `${madeFor}-parse` : 'New pipeline';
       steps = [];
+      produces = [];
       loading = false;
       loadFailed = false;
       // Literals, not a read-back of `pipelineName`/`steps`: reading them
       // here, right after this same effect just wrote them, would make the
       // effect depend on its own output and re-run itself indefinitely.
-      savedSignature = editSignatureOf('New pipeline', []);
+      savedSignature = editSignatureOf('New pipeline', [], []);
       savedPipelineName = 'New pipeline';
       savedSteps = [];
+      savedProduces = [];
       readAtCommit = null;
       // Outside tracking too, for the same reason -- its own reads of
       // `steps`/`pipelineName`/`editSignature` would otherwise attach to
@@ -333,11 +355,14 @@
         if (res.ok && res.pipeline) {
           const loadedSteps = stepsFromDto(res.pipeline.steps);
           loadedId = res.pipeline.id;
+          const loadedProduces = res.pipeline.produces ?? [];
           pipelineName = res.pipeline.name;
           steps = loadedSteps;
-          savedSignature = editSignatureOf(res.pipeline.name, loadedSteps);
+          produces = loadedProduces;
+          savedSignature = editSignatureOf(res.pipeline.name, loadedSteps, loadedProduces);
           savedPipelineName = res.pipeline.name;
           savedSteps = $state.snapshot(loadedSteps);
+          savedProduces = [...loadedProduces];
           readAtCommit = res.commit ?? null;
           untrack(() => adoptHeld());
         } else {
@@ -493,6 +518,7 @@
   function discard() {
     pipelineName = savedPipelineName;
     steps = $state.snapshot(savedSteps);
+    produces = [...savedProduces];
     moved = null;
   }
 
@@ -526,18 +552,21 @@
       // protecting it.
       const submittedName = pipelineName;
       const submittedSteps = $state.snapshot(steps);
+      const submittedProduces = [...produces];
       const targetId = pipelineId;
       const res = await putPipeline(targetId, {
         id: targetId,
         name: submittedName,
         steps: submittedSteps.map(stepToDto),
+        ...(submittedProduces.length > 0 ? { produces: submittedProduces } : {}),
       });
       if (res.ok) {
         loadedId = targetId;
         saveMessage = 'Saved.';
-        savedSignature = editSignatureOf(submittedName, submittedSteps);
+        savedSignature = editSignatureOf(submittedName, submittedSteps, submittedProduces);
         savedPipelineName = submittedName;
         savedSteps = $state.snapshot(submittedSteps);
+        savedProduces = submittedProduces;
         readAtCommit = res.commit ?? null;
         // Clear the draft under the URL this save was submitted from,
         // including `#/build/pipelines/new` on a new pipeline's first save.
@@ -580,7 +609,7 @@
   }
 
   async function saveFromJson(text: string): Promise<{ ok: boolean; errors: string }> {
-    let parsed: { pipelineName: string; steps: Step[] };
+    let parsed: { pipelineName: string; steps: Step[]; produces: string[] };
     try {
       parsed = parsePipelineDtoJson(text);
     } catch (e) {
@@ -591,14 +620,17 @@
       id: targetId,
       name: parsed.pipelineName,
       steps: parsed.steps.map(stepToDto),
+      ...(parsed.produces.length > 0 ? { produces: parsed.produces } : {}),
     });
     if (res.ok) {
       pipelineName = parsed.pipelineName;
       steps = parsed.steps;
+      produces = parsed.produces;
       loadedId = targetId;
-      savedSignature = editSignatureOf(parsed.pipelineName, parsed.steps);
+      savedSignature = editSignatureOf(parsed.pipelineName, parsed.steps, parsed.produces);
       savedPipelineName = parsed.pipelineName;
       savedSteps = $state.snapshot(parsed.steps);
+      savedProduces = [...parsed.produces];
       readAtCommit = res.commit ?? null;
       drop(`pipelines/${id}`);
       if (back) location.hash = withPipeline(back, targetId);
@@ -613,7 +645,12 @@
 
   function jsonDraft(): string {
     return JSON.stringify(
-      { id: pipelineId, name: pipelineName, steps: steps.map(stepToDto) },
+      {
+        id: pipelineId,
+        name: pipelineName,
+        steps: steps.map(stepToDto),
+        ...(produces.length > 0 ? { produces } : {}),
+      },
       null,
       2,
     );
@@ -733,6 +770,12 @@
   let brokenSteps = $derived(
     stepListErrors === compileErrorsByStep ? orderedStepErrors(steps, compileErrorsByStep) : [],
   );
+  /** The preview's warnings no step shows: a field the schemas it produces require and no step writes. */
+  let unplacedWarnings = $derived.by(() => {
+    if (!result?.ok || !result.warnings) return [];
+    const placed = new Set([...warningsByStep.values()].flat());
+    return result.warnings.filter((w) => !placed.has(w));
+  });
   /** The preview's errors no step shows. */
   let unplacedErrors = $derived.by(() => {
     if (!result || result.ok) return [];
@@ -775,6 +818,8 @@
         ownPipelines,
         ownLookupTables,
         ownGrokPatterns,
+        ownSchemas,
+        produces,
       ),
     );
     const res = await previewPipeline({
@@ -802,6 +847,8 @@
           ownPipelines,
           ownLookupTables,
           ownGrokPatterns,
+          ownSchemas,
+          produces,
         ),
       ),
       pipeline: pipelineId,
@@ -1300,6 +1347,12 @@
     <InlineError message={undoError} />
 
     {#if id !== 'new'}<Connections kind="pipeline" {id} />{/if}
+    <PipelineProduces
+      bind:produces
+      declared={[...sharedSchemas, ...ownSchemas]}
+      findings={result?.ok ? (result.schema_findings ?? 0) : undefined}
+      {readOnly}
+    />
 
     {#if moved}
       {@const held = moved.value}
@@ -1310,6 +1363,7 @@
           const draft = JSON.parse(held) as Draft;
           pipelineName = draft.pipelineName;
           steps = draft.steps;
+          produces = draft.produces ?? [];
           moved = null;
         }}
         ondiscard={() => {
@@ -1354,6 +1408,21 @@
             {askAt}
           />
         </div>
+
+        {#if unplacedWarnings.length > 0}
+          <div class="unplaced-warnings" role="status">
+            {#each unplacedWarnings as w, n (n)}
+              <div class="unplaced-warning">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M12 3.5 L22 20.5 H2 Z" fill="currentColor" />
+                  <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
+                  <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
+                </svg>
+                <span>{w.message}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
 
         {#if !readOnly}
           <div class="run-row">
@@ -1644,5 +1713,36 @@
   .editor {
     min-width: 0;
     overflow-x: auto;
+  }
+
+  /* A warning about the whole pipeline, under its steps: the step-placed ones' look, in a box of its own. */
+  .unplaced-warnings {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.6rem;
+    padding: 0.55rem 0.7rem;
+    background: color-mix(in oklab, var(--warn) 12%, var(--panel));
+    border-radius: var(--radius);
+  }
+
+  .unplaced-warning {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-start;
+    font-size: var(--text-note);
+    color: var(--warn);
+    line-height: 1.45;
+  }
+
+  .unplaced-warning svg {
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+    margin-top: 0.1rem;
+  }
+
+  .unplaced-warning .cutout {
+    fill: var(--field);
   }
 </style>

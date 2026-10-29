@@ -391,3 +391,45 @@ Each value keeps the type it arrived with, and a nanosecond time is an `i64`,
 whole. Starlink moves its read position when it answers, so a batch the
 source holds when its worker stops is not asked for again: a smaller
 `batchSize` loses less.
+
+## 9. A schema from a file (the ECS importer)
+
+A schema is a table of fields, and a pipeline makes rows, so a schema is
+imported by a pipeline: Add schema, Import, pick the pipeline and a file, and
+each row it writes is a field, with `field`, `type`, and `required` and
+`description` where it has them ([Config plane](architecture/config-plane.md#schemas)).
+The file is cut into records as a source cuts its bytes: a record per line,
+or where a line breaker breaks it. ECS's `generated/csv/fields.csv` is one row
+per field, and some of its quoted examples span lines, so its line breaker
+breaks where a row starts with its ECS version: `([\r\n]+)\d+\.\d+\.\d+`. A
+Drop step takes out its header and each `.text` multi-field, which is the field
+above it indexed as text rather than a key of its own:
+`_raw.startsWith("ECS_Version,") || _raw.includes(".text,match_only_text,")`.
+In: `tests/gui/fixtures/ecs-fields-excerpt.csv`.
+
+```ts
+Object.assign($, csv(_raw, [null, null, null, "field", "ecs", null, "normalization", null, "description"]))
+type = ecs == "date" ? "datetime"
+  : ecs == "long" ? "i64"
+  : ecs == "float" || ecs == "scaled_float" || ecs == "double" ? "f64"
+  : ecs == "boolean" ? "bool"
+  : ecs == "object" || ecs == "geo_point" ? "{...}"
+  : ecs == "nested" ? "array<{...}>"
+  : ecs == "flattened" ? "variant"
+  : "str";
+if (normalization == "array") { type = "array<" + type + ">"; }
+required = field == "@timestamp";
+delete(_raw, ecs, normalization);
+```
+
+Out, the schema's first rows:
+
+```json
+{"field": "@timestamp", "type": "datetime", "required": true, "description": "Date/time when the event originated."}
+{"field": "labels", "type": "{...}", "description": "Custom key/value pairs."}
+{"field": "tags", "type": "array<str>", "description": "List of keywords used to tag each event."}
+```
+
+A keyword, a text, an IP and a wildcard are each `str`, since that is what a
+pipeline writes for them; an object a pipeline fills key by key is `{...}`.
+

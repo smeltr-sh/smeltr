@@ -4,6 +4,7 @@
 //! routes, its test runner and the demo's preview service give one answer.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::config_file::{self, Verdict};
 use crate::core::batch::Batch;
@@ -22,6 +23,7 @@ use crate::plan::output::{RowFilter, run_to_json_marked};
 use crate::plan::resolve::Origin;
 use crate::plan::topology::SourceMeta;
 use crate::plan::tree;
+use crate::schema::Schema;
 use axum::http::StatusCode;
 
 #[derive(serde::Deserialize)]
@@ -133,6 +135,12 @@ pub struct Preview {
     /// What compiles but is likely a mistake (`Plan::warnings`), each placed at its step as an error is.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ApiError>,
+    /// How many of `warnings` are where the rows break the schemas the pipeline produces.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub schema_findings: u32,
+    /// The fields the schemas the pipeline produces require and its rows lack, which the editor shows as columns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<crate::schema::Missing>,
     /// The answer to `PreviewRequest::after_dot`. Absent where the dot follows no value: it is in a string, a comment
     /// or a number.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -905,7 +913,8 @@ pub fn run_preview(
         }
     };
     if records.is_empty() {
-        warnings.extend(ecs_warnings(&plan, &record, first).iter().map(warn));
+        let (found, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first);
+        warnings.extend(found.iter().map(warn));
         return Envelope::ok(Preview {
             stage: None,
             pipeline_names,
@@ -919,6 +928,8 @@ pub fn run_preview(
                 sampled: None,
             }),
             warnings,
+            schema_findings: found.len() as u32,
+            missing,
         });
     }
 
@@ -1028,7 +1039,8 @@ pub fn run_preview(
 
     // The dictionary is of every row: a filter chooses what is shown, not what the pipeline writes.
     let sampled = plan::dictionary::with_sample(&record, rows.iter().filter_map(|(r, _)| r.json.as_ref()));
-    warnings.extend(ecs_warnings(&plan, &sampled, first).iter().map(warn));
+    let (found, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first);
+    warnings.extend(found.iter().map(warn));
     let unfiltered = filter.as_ref().map(|_| rows.len() as u32);
     let rows = rows
         .into_iter()
@@ -1048,54 +1060,29 @@ pub fn run_preview(
         unfiltered,
         parsers,
         warnings,
+        schema_findings: found.len() as u32,
+        missing,
     })
 }
 
-/// A warning for each field of `record`, what `plan` writes, whose type is not one ECS's type for it holds
-/// (`io::elastic_mapping::disagreements`), at the step that wrote the field, or at `first` where the source gave it.
-fn ecs_warnings(plan: &Plan, record: &DataType, first: Option<FunctionId>) -> Vec<CompileError> {
-    crate::io::elastic_mapping::disagreements(record)
+/// A warning for each field of `record`, what `plan` writes, that breaks the schemas the pipeline produces
+/// (`schema::check`): at the step that wrote the field, or at `first` where the source gave it. A field the schemas
+/// require and the record lacks has no step that wrote it, and is warned of with none.
+fn schema_warnings(
+    produces: &[Arc<Schema>],
+    plan: &Plan,
+    record: &DataType,
+    first: Option<FunctionId>,
+) -> (Vec<CompileError>, Vec<crate::schema::Missing>) {
+    let findings = crate::schema::check(produces, record);
+    let warned = crate::schema::told(produces, &findings)
         .into_iter()
-        .map(|d| {
-            let path = d.keys.join(".");
-            let (ecs, written) = (d.ecs.name(), d.ecs.written_as());
-            let message = format!("`{path}` is {}, but ECS maps it as {ecs}. Write it as {written}.", d.ty);
-            CompileError::new(writer(plan, &d.keys).or(first), message)
+        .map(|(keys, message)| {
+            let at = keys.and_then(|keys| plan::dictionary::writer(plan, &keys).or(first));
+            CompileError::new(at, message)
         })
-        .collect()
-}
-
-/// The step that wrote the field at `keys` of what `plan` writes: the one that bound its leaf, or the unclaimed
-/// fields of the object holding it, or the last to copy a value there (`Plan::aliases`). `None` where the source gave
-/// it.
-fn writer(plan: &Plan, keys: &[String]) -> Option<FunctionId> {
-    let mut at = &plan.tree;
-    let mut name = String::new();
-    let mut slot = None;
-    for key in keys {
-        match at.fields.get(key) {
-            Some(tree::Node::Object(o)) => at = o,
-            Some(tree::Node::Leaf(s)) => {
-                tree::push_key(&mut name, key);
-                slot = Some(*s);
-                break;
-            }
-            None => {
-                slot = at.unclaimed;
-                break;
-            }
-        }
-        tree::push_key(&mut name, key);
-    }
-    let slot = slot?;
-    let copied = plan.aliases.iter().rev().find(|(s, n, ..)| *s == slot && *n == name);
-    if let Some((.., f)) = copied {
-        return Some(*f);
-    }
-    match plan.provenance.get(slot)?.origin {
-        Origin::Function(f) => Some(f),
-        _ => None,
-    }
+        .collect();
+    (warned, crate::schema::missing(produces, &findings))
 }
 
 /// Clear every `reuse` that would hand away a binding of a name, so `touched` can read each binding after the run.
@@ -1540,13 +1527,32 @@ mod tests {
             .replace(r#""when":"n.","#, "")
     }
 
-    #[test]
-    fn a_field_ecs_maps_as_another_type_is_warned_at_the_step_that_wrote_it() {
-        let config = compiling().replace(
-            r#""body":"x = 1;""#,
-            r#""body":"$[\"@timestamp\"] = \"now\"; source = {ip: \"::1\"};""#,
-        );
-        let previewed = run_preview(
+    /// The schemas `producing` declares: `stamped`, of a `@timestamp`, and `login`, which requires `time` and `user`.
+    const SCHEMAS: &str = r#""schemas":[
+        {"id":"stamped","title":"Stamped","fields":[{"field":"@timestamp","type":"datetime"}]},
+        {"id":"login","title":"Login","fields":[
+            {"field":"time","type":"i64","required":true},
+            {"field":"user","type":"{...}","required":true},
+            {"field":"user.name","type":"str"}]}],"#;
+
+    /// `compiling`, declaring `SCHEMAS`, its pipeline producing `schemas`.
+    fn producing(schemas: &str) -> String {
+        compiling()
+            .replacen(r#"{"version":1,"#, &format!(r#"{{"version":1,{SCHEMAS}"#), 1)
+            .replace(
+                r#""id":"p","name":"P","#,
+                &format!(r#""id":"p","name":"P","produces":{schemas},"#),
+            )
+    }
+
+    fn warnings_of(config: String, columns: &[crate::heartbeat::CaptureColumn]) -> Vec<(Option<String>, String)> {
+        (previewed(config, columns).warnings.iter())
+            .map(|w| (w.step.clone(), w.message.clone()))
+            .collect()
+    }
+
+    fn previewed(config: String, columns: &[crate::heartbeat::CaptureColumn]) -> Preview {
+        run_preview(
             PreviewRequest {
                 config,
                 pipeline: Some("p".into()),
@@ -1559,19 +1565,35 @@ mod tests {
                 capture_filter: None,
             },
             Default::default(),
-            &[],
+            columns,
             Vec::new(),
-        );
-        let warned: Vec<_> = (previewed.body.warnings.iter())
-            .map(|w| (w.step.as_deref(), w.message.as_str()))
-            .collect();
+        )
+        .body
+    }
+
+    #[test]
+    fn the_fields_a_schema_requires_and_the_rows_lack_are_listed_with_their_types() {
+        let missing = previewed(producing(r#"["login"]"#), &[]).missing;
+        let time = missing.iter().find(|m| m.path == "time").unwrap();
+        assert_eq!((time.written_as.as_str(), time.schema.as_str()), ("i64", "Login"));
+        assert_eq!(missing.iter().find(|m| m.path == "user").unwrap().written_as, "{...}");
+        assert_eq!(missing.len(), 2, "{missing:?}");
+    }
+
+    #[test]
+    fn a_field_a_schema_types_otherwise_is_warned_at_the_step_that_wrote_it() {
+        let body = r#""body":"$[\"@timestamp\"] = \"now\"; source = {ip: \"::1\"};""#;
+        let config = producing(r#"["stamped"]"#).replace(r#""body":"x = 1;""#, body);
         assert_eq!(
-            warned,
+            warnings_of(config, &[]),
             [(
-                Some("s"),
-                "`@timestamp` is str, but ECS maps it as date. Write it as datetime."
+                Some("s".to_string()),
+                "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
             )]
         );
+        // A pipeline that produces no schema is held to none.
+        let config = compiling().replace(r#""body":"x = 1;""#, body);
+        assert_eq!(warnings_of(config, &[]), []);
     }
 
     #[test]
@@ -1581,58 +1603,22 @@ mod tests {
             ty: "str".into(),
         };
         let columns = [column("_raw"), column("@timestamp")];
-        let previewed = run_preview(
-            PreviewRequest {
-                config: compiling(),
-                pipeline: Some("p".into()),
-                sample: None,
-                show_internal: false,
-                at_micros: None,
-                filter: None,
-                attribution: false,
-                after_dot: None,
-                capture_filter: None,
-            },
-            Default::default(),
-            &columns,
-            Vec::new(),
-        );
-        let warned: Vec<_> = (previewed.body.warnings.iter())
-            .map(|w| (w.step.as_deref(), w.message.as_str()))
-            .collect();
         assert_eq!(
-            warned,
+            warnings_of(producing(r#"["stamped"]"#), &columns),
             [(
-                Some("u"),
-                "`@timestamp` is str, but ECS maps it as date. Write it as datetime."
+                Some("u".to_string()),
+                "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
             )]
         );
     }
 
     #[test]
-    fn a_field_was_written_by_the_step_that_bound_spread_or_copied_it() {
-        use crate::plan::config::{FunctionConfig, FunctionKind, PipelineConfig, Step};
-        let code = |id, body: &str| Step::Function(FunctionConfig::new(id, FunctionKind::Code { body: body.into() }));
-        let p = PipelineConfig {
-            id: 0,
-            name: "p".into(),
-            body: vec![
-                code(0, "Object.assign($, json(_raw));"),
-                code(1, "x = 1;"),
-                code(2, "y = x; $[\"@t\"] = _raw;"),
-            ],
-            step_ids: Vec::new(),
-            lookup_tables: Default::default(),
-            grok_patterns: Default::default(),
-        };
-        let plan = plan::compile::compile(&p, &SourceMeta::NONE).unwrap();
-        let keys = |k: &[&str]| k.iter().map(|k| k.to_string()).collect::<Vec<_>>();
-        assert_eq!(writer(&plan, &keys(&["@timestamp"])), Some(0));
-        assert_eq!(writer(&plan, &keys(&["x"])), Some(1));
-        // A copy shares its value's slot, and is the copying step's.
-        assert_eq!(writer(&plan, &keys(&["y"])), Some(2));
-        assert_eq!(writer(&plan, &keys(&["@t"])), Some(2));
-        assert_eq!(writer(&plan, &keys(&["_raw"])), None);
+    fn a_field_the_schema_requires_and_no_step_writes_is_warned_at_no_step() {
+        let warned = warnings_of(producing(r#"["login"]"#), &[]);
+        assert_eq!(
+            warned,
+            [(None, "Login requires `time`, `user`; the rows lack them.".to_string())]
+        );
     }
 
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {

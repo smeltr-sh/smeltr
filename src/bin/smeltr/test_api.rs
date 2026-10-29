@@ -850,6 +850,7 @@ mod tests {
             grok_patterns: vec![],
             on_exception: None,
             name: None,
+            schemas: vec![],
         });
 
         let mut edits = Vec::new();
@@ -952,6 +953,7 @@ mod tests {
                         }],
                     },
                 ],
+                produces: vec![],
             }],
             ..empty_file_config()
         };
@@ -1053,6 +1055,7 @@ mod tests {
                         }],
                     },
                 ],
+                produces: vec![],
             }],
             ..empty_file_config()
         };
@@ -1158,6 +1161,7 @@ mod tests {
                 id: "enrich".to_string(),
                 name: "enrich".to_string(),
                 steps,
+                produces: vec![],
             }],
             ..empty_file_config()
         };
@@ -1171,6 +1175,7 @@ mod tests {
                     disabled: false,
                     pipeline: "enrich".to_string(),
                 }],
+                produces: vec![],
             }],
             ..empty_file_config()
         };
@@ -1394,6 +1399,7 @@ mod tests {
             grok_patterns: vec![],
             on_exception: None,
             name: None,
+            schemas: vec![],
         }
     }
 

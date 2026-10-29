@@ -956,6 +956,7 @@ fn a_routes_failure_setting_loads() {
         id: "p".into(),
         name: "p".into(),
         steps: Vec::new(),
+        produces: vec![],
     })
     .unwrap();
     assert_eq!(written, r#"{"id":"p","name":"p","steps":[]}"#);

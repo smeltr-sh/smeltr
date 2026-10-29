@@ -88,6 +88,7 @@ pub enum Condition {
     NewerRelease,
     DeployDoesNotLoad,
     DeployFailsTests,
+    DeployBreaksSchemas,
     DeclaredFieldFailing,
     DeclaredFieldGone,
     StreamUnrouted,
@@ -129,6 +130,7 @@ impl Condition {
         Condition::NewerRelease,
         Condition::DeployDoesNotLoad,
         Condition::DeployFailsTests,
+        Condition::DeployBreaksSchemas,
         Condition::DeclaredFieldFailing,
         Condition::DeclaredFieldGone,
         Condition::StreamUnrouted,
@@ -169,6 +171,7 @@ impl Condition {
             Condition::NewerRelease => "newerRelease",
             Condition::DeployDoesNotLoad => "deployDoesNotLoad",
             Condition::DeployFailsTests => "deployFailsTests",
+            Condition::DeployBreaksSchemas => "deployBreaksSchemas",
             Condition::DeclaredFieldFailing => "declaredFieldFailing",
             Condition::DeclaredFieldGone => "declaredFieldGone",
             Condition::StreamUnrouted => "streamUnrouted",
@@ -260,6 +263,7 @@ const SOURCE_ROWS_ABOVE: &str = "source_rows_above";
 const GROUP_NOT_DEPLOYED: &str = "group_not_deployed";
 const DEPLOY_DOES_NOT_LOAD: &str = "deploy_does_not_load";
 const DEPLOY_FAILS_TESTS: &str = "deploy_fails_tests";
+const DEPLOY_BREAKS_SCHEMAS: &str = "deploy_breaks_schemas";
 
 /// A source blocked on `cause`: its condition, its severity, and its fact-clock entry -- each cause its own, so a
 /// source whose block changes cause is dated from the change.
@@ -1162,6 +1166,12 @@ pub fn currently_active_facts(
 pub fn deploy_facts(checks: &Findings, registry: &crate::leader::registry::Registry) -> Vec<FactKey> {
     let mut out: Vec<FactKey> = checks.not_loading.iter().map(|n| does_not_load_key(&n.group)).collect();
     out.extend(checks.failing.iter().map(|t| fails_tests_key(&t.scope, &t.id)));
+    out.extend(
+        checks
+            .schemas
+            .iter()
+            .map(|(group, f)| breaks_schemas_key(group, &f.pipeline)),
+    );
     if checks.tests_pending() {
         out.extend(registry.facts_of(DEPLOY_FAILS_TESTS));
     }
@@ -1171,6 +1181,11 @@ pub fn deploy_facts(checks: &Findings, registry: &crate::leader::registry::Regis
 /// Keyed by group alone, so a fix that does not fix it carries on the same clock.
 fn does_not_load_key(group: &str) -> FactKey {
     FactKey::new(DEPLOY_DOES_NOT_LOAD, group)
+}
+
+/// Keyed by pipeline alone, so a deploy that leaves it breaking a schema carries on the same clock.
+fn breaks_schemas_key(group: &str, pipeline: &str) -> FactKey {
+    FactKey::new(DEPLOY_BREAKS_SCHEMAS, scoped_subject(group, pipeline))
 }
 
 /// Keyed by test alone, so a deploy that leaves it failing carries on the same clock.
@@ -2719,7 +2734,40 @@ pub(crate) fn sealed_setting_place(key: &str) -> (&str, &'static str) {
 pub fn deploy_checked(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Vec<Warning> {
     let mut out = deploy_does_not_load(checks, starts);
     out.extend(deploy_fails_tests(checks, starts));
+    out.extend(deploy_breaks_schemas(checks, starts));
     out
+}
+
+/// The schema findings at the deployed commit, one warning per pipeline of a group. A finding refuses nothing: the
+/// rows flow as they are, and whoever reads them by the schema meets what does not fit.
+fn deploy_breaks_schemas(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Vec<Warning> {
+    let short = super::git::short(&checks.commit);
+    let mut by_pipeline: BTreeMap<(&str, &str), Vec<&str>> = BTreeMap::new();
+    for (group, f) in &checks.schemas {
+        by_pipeline.entry((group, &f.pipeline)).or_default().push(&f.message);
+    }
+    by_pipeline
+        .into_iter()
+        .map(|((group, pipeline), each)| Warning {
+            area: None,
+            condition: Condition::DeployBreaksSchemas,
+            subject_kind: SubjectKind::Pipeline,
+            site: None,
+            subject_id: pipeline.to_string(),
+            group: Some(group.to_string()),
+            severity: Severity::Warning,
+            since_millis: starts.get(&breaks_schemas_key(group, pipeline)).copied(),
+            message: format!(
+                "{} at the deployed commit {short}: {}",
+                if each.len() == 1 {
+                    "a schema finding".to_string()
+                } else {
+                    format!("{} schema findings", each.len())
+                },
+                each.join(" "),
+            ),
+        })
+        .collect()
 }
 
 /// A group the deployed commit holds that does not load. Its workers refuse it and keep running what they had, and a
@@ -3046,6 +3094,14 @@ mod tests {
                 failing("east", "routes", None),
                 failing("shared", "c", Some("enrich")),
             ],
+            schemas: vec![(
+                "east".to_string(),
+                crate::config_file::SchemaFinding {
+                    pipeline: "orders".to_string(),
+                    step: None,
+                    message: "Login requires `x`; the rows lack it.".to_string(),
+                },
+            )],
         };
         let registry = crate::leader::registry::Registry::default();
         let starts: HashMap<FactKey, i64> = deploy_facts(&checks, &registry).into_iter().zip(1..).collect();
@@ -3093,7 +3149,18 @@ mod tests {
                     None,
                     Severity::Warning
                 ),
+                (
+                    Condition::DeployBreaksSchemas,
+                    SubjectKind::Pipeline,
+                    "orders",
+                    Some("east"),
+                    Severity::Warning
+                ),
             ]
+        );
+        assert_eq!(
+            warnings[4].message,
+            "a schema finding at the deployed commit 01234567: Login requires `x`; the rows lack it."
         );
         assert!(warnings[0].message.contains("01234567"), "{}", warnings[0].message);
         assert!(

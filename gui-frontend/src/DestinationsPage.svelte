@@ -18,6 +18,7 @@
   import ExceptionsFold from './ExceptionsFold.svelte';
   import { BUILT_IN, lay, overrideCount, problems } from './exceptions';
   import DestinationFields from './DestinationFields.svelte';
+  import SchemaChips from './SchemaChips.svelte';
   import JsonEditPage from './JsonEditPage.svelte';
   import CaptureFlow from './CaptureFlow.svelte';
   import {
@@ -28,6 +29,7 @@
     type DestinationDto,
     type ExceptionsDto,
     type RouteDto,
+    type SchemaDto,
     type SecretDto,
   } from './api';
   import { mayCapture } from './access';
@@ -50,6 +52,10 @@
    * what the load checks beside it. */
   let group = $state<ExceptionsDto | undefined>(undefined);
   let routes: RouteDto[] = $state([]);
+  /** What an accepts list may name beside the built-ins. */
+  let ownSchemas: SchemaDto[] = $state([]);
+  let sharedSchemas: SchemaDto[] = $state([]);
+  let schemas = $derived([...sharedSchemas, ...ownSchemas]);
   let all = $derived([...destinations, ...sharedDestinations]);
   let refusals = $derived(problems(group, routes, all));
   /** The destination being captured at, by id, and the scope that declares it. Only a group runs a
@@ -71,6 +77,7 @@
     onLoaded: async (config) => {
       group = config.exceptions;
       routes = config.routes;
+      ownSchemas = config.schemas ?? [];
       await loadShared();
     },
   });
@@ -79,6 +86,7 @@
   async function loadShared() {
     const shared = await sharedConfig();
     sharedDestinations = shared ? shared.destinations : [];
+    sharedSchemas = shared?.schemas ?? [];
   }
 
   void editor.load();
@@ -190,6 +198,22 @@
             <Field label="type"><span class="fixed">{typeLabel(destination.type)}</span></Field>
           </div>
           <DestinationFields {destination} {secrets} {mechanisms} />
+          <Field field="accepts" label="accepts">
+            {#snippet help()}
+              A pipeline sending here should produce one of these schemas. Review says where one
+              does not; nothing blocks it. Left empty, any pipeline may send here.
+            {/snippet}
+            <div class="accepts">
+              <SchemaChips
+                bind:ids={
+                  () => destination.accepts ?? [],
+                  (ids) => (destination.accepts = ids.length > 0 ? ids : undefined)
+                }
+                declared={schemas}
+                adding="Add a schema it accepts"
+              />
+            </div>
+          </Field>
           <ExceptionsFold
             bind:value={destination.exceptions}
             name={destination.id}
@@ -273,5 +297,12 @@
 
   input {
     font-family: var(--mono);
+  }
+
+  .accepts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
   }
 </style>

@@ -21,7 +21,6 @@ pub mod client_credentials;
 pub mod csv;
 pub mod delta;
 pub mod discovery;
-pub mod ecs_fields;
 pub mod elastic;
 pub mod elastic_mapping;
 pub mod elastic_nodes;

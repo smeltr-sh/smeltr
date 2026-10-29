@@ -536,6 +536,7 @@ fn errors_of_merge(
         routes: [&shared_raw.file.routes[..], &raw.file.routes[..]].concat(),
         lookup_tables: [&shared_raw.file.lookup_tables[..], &raw.file.lookup_tables[..]].concat(),
         grok_patterns: [&shared_raw.file.grok_patterns[..], &raw.file.grok_patterns[..]].concat(),
+        schemas: [&shared_raw.file.schemas[..], &raw.file.schemas[..]].concat(),
     };
     config_file::fill_default_group_ids(&mut merged.sources, group_id);
 
@@ -616,6 +617,7 @@ enum Touches {
     Routes,
     LookupTables,
     GrokPatterns,
+    Schemas,
     OnlyPipelines,
     OnlyManifest,
 }
@@ -628,11 +630,11 @@ fn json_bytes<T: serde::Serialize>(value: &T) -> Vec<u8> {
 /// owns, so every other file keeps its bytes and an absent one stays absent: rewriting what a save did not touch
 /// would make two branches that edited different sections conflict on files neither of them changed.
 ///
-/// A pipeline save writes the pipelines that changed and removes the ones that are gone. A pipeline file is removed
+/// A pipeline or schema save writes the ones that changed and removes the ones that are gone. A file is removed
 /// only if it was readable in `old`; one that was not is not in `old.file` to compare against.
 ///
-/// `Err` when two pipeline ids name one file. Every writer asks `slugged_pipelines` the same question, so a save
-/// that could not be read back is refused rather than keeping whichever pipeline was written last.
+/// `Err` when two ids name one file. Every writer asks `slugged_pipelines` the same question, so a save
+/// that could not be read back is refused rather than keeping whichever was written last.
 fn edits_for(file: &FileConfig, old: &RawBundle, touches: Touches) -> Result<Vec<git::FileEdit>, Refusal> {
     let section = |name: &str, bytes: Vec<u8>| {
         Ok(vec![git::FileEdit {
@@ -646,6 +648,15 @@ fn edits_for(file: &FileConfig, old: &RawBundle, touches: Touches) -> Result<Vec
         Touches::Routes => return section("routes.json", json_bytes(&file.routes)),
         Touches::GrokPatterns => {
             return section(config_file::GROK_PATTERNS_FILE, json_bytes(&file.grok_patterns));
+        }
+        Touches::Schemas => {
+            let schemas = config_file::slugged_schemas(file).map_err(|e| Refusal::invalid(e.to_string()))?;
+            return Ok(per_file_edits(
+                config_file::SCHEMAS_DIR,
+                &schemas,
+                &old.file.schemas,
+                |s| &s.id,
+            ));
         }
         Touches::LookupTables => {
             let mut edits = section("lookup-tables.json", json_bytes(&file.lookup_tables))?;
@@ -664,41 +675,49 @@ fn edits_for(file: &FileConfig, old: &RawBundle, touches: Touches) -> Result<Vec
     }
 
     let pipelines = config_file::slugged_pipelines(file).map_err(|e| Refusal::invalid(e.to_string()))?;
-    // Compared as JSON values: `PipelineDto` has no `PartialEq`, and its serialized form is what the file holds.
+    Ok(per_file_edits(
+        config_file::PIPELINES_DIR,
+        &pipelines,
+        &old.file.pipelines,
+        |p| &p.id,
+    ))
+}
+
+/// The edits under `dir` that turn `old` into `new`: a file for each object that changed, a removal for each that is
+/// gone. Compared as JSON values: the DTOs have no `PartialEq`, and the serialized form is what the file holds.
+fn per_file_edits<T: serde::Serialize>(
+    dir: &str,
+    new: &[(String, &T)],
+    old: &[T],
+    id_of: impl Fn(&T) -> &str,
+) -> Vec<git::FileEdit> {
     let before: HashMap<&str, serde_json::Value> = old
-        .file
-        .pipelines
         .iter()
-        .map(|p| {
-            (
-                p.id.as_str(),
-                serde_json::to_value(p).expect("a pipeline DTO serializes"),
-            )
-        })
+        .map(|p| (id_of(p), serde_json::to_value(p).expect("a config_file DTO serializes")))
         .collect();
     let mut edits = Vec::new();
-    for (slug, p) in &pipelines {
+    for (slug, p) in new {
         let unchanged = before
-            .get(p.id.as_str())
-            .is_some_and(|was| *was == serde_json::to_value(p).expect("a pipeline DTO serializes"));
+            .get(id_of(p))
+            .is_some_and(|was| *was == serde_json::to_value(p).expect("a config_file DTO serializes"));
         if !unchanged {
             edits.push(git::FileEdit {
-                path: format!("pipelines/{slug}.json"),
+                path: format!("{dir}/{slug}.json"),
                 content: Some(json_bytes(p)),
             });
         }
     }
-    let new_slugs: HashSet<&str> = pipelines.iter().map(|(slug, _)| slug.as_str()).collect();
-    for p in &old.file.pipelines {
-        let slug = config_file::slugify(&p.id);
+    let new_slugs: HashSet<&str> = new.iter().map(|(slug, _)| slug.as_str()).collect();
+    for p in old {
+        let slug = config_file::slugify(id_of(p));
         if !new_slugs.contains(slug.as_str()) {
             edits.push(git::FileEdit {
-                path: format!("pipelines/{slug}.json"),
+                path: format!("{dir}/{slug}.json"),
                 content: None,
             });
         }
     }
-    Ok(edits)
+    edits
 }
 
 /// The tree a save would leave behind, without building one: `edits` laid over what the parent commit holds. A
@@ -1152,6 +1171,28 @@ pub async fn put_grok_patterns(
     .await
 }
 
+pub async fn put_schemas(
+    Extension(actor): Extension<Actor>,
+    AxPath(area): AxPath<String>,
+    Query(q): Query<BranchQuery>,
+    headers: HeaderMap,
+    Json(schemas): Json<Vec<config_file::SchemaDto>>,
+) -> Envelope<Save> {
+    let (branch, base) = (q.name().to_string(), base_commit(&headers));
+    blocking_save(move || {
+        save_on_branch(
+            &branch,
+            base,
+            &area,
+            Touches::Schemas,
+            "edit schemas".into(),
+            &actor,
+            |file| file.schemas = schemas,
+        )
+    })
+    .await
+}
+
 /// The group's answer to every exception kind. It replaces what the manifest said; `null` or absent says nothing,
 /// which is the default. An unknown key is refused: a misspelt answer would otherwise clear one.
 #[derive(serde::Deserialize)]
@@ -1595,6 +1636,7 @@ pub enum Section {
     Routes,
     LookupTables,
     GrokPatterns,
+    Schemas,
     Pipelines,
 }
 
@@ -1606,6 +1648,7 @@ impl Section {
             Section::Routes => Touches::Routes,
             Section::LookupTables => Touches::LookupTables,
             Section::GrokPatterns => Touches::GrokPatterns,
+            Section::Schemas => Touches::Schemas,
             Section::Pipelines => Touches::OnlyPipelines,
         }
     }
@@ -1617,6 +1660,7 @@ impl Section {
             Section::Routes => "route",
             Section::LookupTables => "lookup table",
             Section::GrokPatterns => "grok pattern",
+            Section::Schemas => "schema",
             Section::Pipelines => "pipeline",
         }
     }
@@ -1761,6 +1805,7 @@ fn undo_in(
         Section::Destinations => put_back_into(&was.destinations, &mut file.destinations, id, |o| &o.id),
         Section::Routes => put_back_into(&was.routes, &mut file.routes, id, |o| &o.id),
         Section::GrokPatterns => put_back_into(&was.grok_patterns, &mut file.grok_patterns, id, |o| &o.id),
+        Section::Schemas => put_back_into(&was.schemas, &mut file.schemas, id, |o| &o.id),
         Section::Pipelines => put_back_into(&was.pipelines, &mut file.pipelines, id, |o| &o.id),
         Section::LookupTables => match put_back(&was.lookup_tables, &file.lookup_tables, id, |o| &o.id) {
             Some(p) => {
@@ -2480,6 +2525,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             steps: vec![],
+            produces: vec![],
         };
         let file = FileConfig {
             version: 1,
@@ -2491,6 +2537,7 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
+            schemas: vec![],
         };
         let old = RawBundle {
             file: file.clone(),
@@ -2633,6 +2680,7 @@ mod tests {
             id: "x".to_string(),
             name: "x".to_string(),
             steps: vec![],
+            produces: vec![],
         })
         .unwrap();
         let stale = Some("0".repeat(40));
@@ -2735,6 +2783,7 @@ mod tests {
             id: "New Pipeline".into(),
             name: name.into(),
             steps,
+            produces: vec![],
         };
         let save = |id: &str, pipeline| {
             let response = Writing::open_in(&data, "work", None, "west").unwrap().save(
@@ -2938,6 +2987,7 @@ mod tests {
                 id: "new".to_string(),
                 name: "new".to_string(),
                 steps: vec![],
+                produces: vec![],
             })
         });
 
@@ -2967,6 +3017,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             steps: vec![],
+            produces: vec![],
         };
         let file = FileConfig {
             version: 1,
@@ -2978,6 +3029,7 @@ mod tests {
             routes: vec![],
             lookup_tables: vec![],
             grok_patterns: vec![],
+            schemas: vec![],
         };
         let old = RawBundle {
             file: file.clone(),
@@ -3093,6 +3145,7 @@ mod tests {
                 id: "passthrough".to_string(),
                 name: "passthrough".to_string(),
                 steps: vec![],
+                produces: vec![],
             })
             .unwrap(),
         );
@@ -3208,6 +3261,7 @@ mod tests {
                 id: "passthrough".to_string(),
                 name: "passthrough".to_string(),
                 steps: vec![],
+                produces: vec![],
             })
             .unwrap(),
             "the group's own pipeline",

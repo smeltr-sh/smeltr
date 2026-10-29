@@ -26,6 +26,8 @@ const NOT_DEFINED_HERE: &[(&str, &str)] = &[
         "_RJEM_MALLOC_CONF",
         "the environment jemalloc reads its settings from, under tikv-jemalloc-sys's prefix",
     ),
+    ("allOf", "a JSON Schema keyword"),
+    ("anyOf", "a JSON Schema keyword"),
     // librdkafka and the rdkafka crate.
     ("RD_KAFKA_EVENT_ERROR", "librdkafka's event type"),
     ("WITH_SASL_CYRUS", "librdkafka build flag"),
