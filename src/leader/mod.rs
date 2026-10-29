@@ -461,7 +461,10 @@ async fn heartbeat(
     forget::sweep(&state, now_ms).await;
     if state.registry.prune_due(now_ms, PRUNE_PROGRESS_EVERY) {
         let state = state.clone();
-        tokio::spawn(async move { prune_source_progress(&state).await });
+        tokio::spawn(async move {
+            prune_source_progress(&state).await;
+            pack_repo(&state).await;
+        });
     }
 
     // A rotation ends on a fact workers report, and this is where they report it. The leader has no other
@@ -720,7 +723,23 @@ pub async fn prune_lookups(state: &AppState) {
     let _ = tokio::task::spawn_blocking(move || lookups::prune(&repo, keep, &running)).await;
 }
 
-/// How often the leader looks for the progress of sources no bundle reads.
+/// Pack what the leader's repository holds loose (`git::pack`). Every save and every follow adds objects, and
+/// unpacked they cost a file each.
+async fn pack_repo(state: &AppState) {
+    let repo = git::repo_path(&state.data_dir);
+    if !repo.exists() {
+        return;
+    }
+    if let Err(e) = blocking(move || git::pack(&repo).map_err(|e| e.message)).await {
+        tracing::warn!(
+            target: "leader.repo_not_packed",
+            error = %e,
+            "the configuration repository could not be packed, so it is tried again later"
+        );
+    }
+}
+
+/// How often the leader looks for the progress of sources no bundle reads, and packs its repository.
 const PRUNE_PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Forgets the stream shapes of every source, and the hold and progress of every single-worker source, that no

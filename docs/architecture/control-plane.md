@@ -76,6 +76,12 @@ each against its pointer and keeps only those. The leader keeps the newest few
 versions of each uploaded file name and whatever a branch or a running
 deployment names, so a rollback reaches as far back as that.
 
+Git itself stays compact on both sides. The leader packs its repository once
+git's own limits are passed, and drops nothing, since a deploy-log marker names
+a commit no ref may reach. A worker has no git binary and gains a pack per
+fetch, so past the same limit it fetches what the fleet runs afresh as one pack
+and removes each older pack that holds nothing more.
+
 Every exchange with the leader gives up once it has stalled for a time budget,
 the first included: the fetch of the root an enrollment code names by
 fingerprint, made before the worker can verify the leader at all. A leader
