@@ -427,6 +427,7 @@ impl Writing {
     /// over it, a commit no branch names, so a table is checked against a file this save adds.
     fn stage(&mut self, files: Vec<git::FileEdit>) -> Result<(), Refusal> {
         // Once per Writing: a second staging would lay its files over the parent, not over the first.
+        debug_assert!(self.staged.is_empty(), "a Writing stages once");
         if files.is_empty() {
             return Ok(());
         }
