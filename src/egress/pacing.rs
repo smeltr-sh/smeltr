@@ -212,10 +212,13 @@ impl Pacing {
         sent
     }
 
-    /// A batch handed over failed, and goes back to be sent again: its bytes are no longer in flight. No sample: its
-    /// round trip is the failure's, not the link's.
-    pub fn abandoned(&mut self, c: Completion) {
-        self.abandoned += c.bytes as u64;
+    /// A batch handed over failed but for `landed` of its bytes, and what failed goes back to be sent again: none of
+    /// it is in flight any more, and what landed counts as delivered. No sample: its round trip is the failure's, not
+    /// the link's.
+    pub fn abandoned(&mut self, c: Completion, landed: usize) {
+        let landed = landed.min(c.bytes);
+        self.delivered += landed as u64;
+        self.abandoned += (c.bytes - landed) as u64;
     }
 
     /// A batch came back acknowledged. Updates the estimates and the target.
@@ -386,9 +389,9 @@ impl Pacer {
         }
     }
 
-    /// Tell the model a batch failed, and goes back to be sent again.
-    pub(super) fn abandoned(&mut self, c: Completion) {
-        self.model.abandoned(c);
+    /// Tell the model a batch failed but for `landed` of its bytes, and goes back to be sent again.
+    pub(super) fn abandoned(&mut self, c: Completion, landed: usize) {
+        self.model.abandoned(c, landed);
     }
 
     /// Tell the model a batch came back, and carry its target to the queue and the metrics when it moves. The ceiling
@@ -782,7 +785,7 @@ mod tests {
             throttled,
         };
         for s in &sent[..8] {
-            p.abandoned(done(*s, false));
+            p.abandoned(done(*s, false), 0);
         }
         p.completed(done(sent[8], true), now + Duration::from_millis(50));
         assert_eq!(
@@ -790,5 +793,26 @@ mod tests {
             Some(BATCH),
             "seven tenths of the two still out, not of all ten"
         );
+    }
+
+    /// A batch that failed in part: what landed is delivered, so the next sample's rate counts it, and only the rest
+    /// went back.
+    #[test]
+    fn the_part_of_a_failed_batch_that_landed_counts_delivered() {
+        let mut p = Pacing::new(BATCH, 1024 * MIB);
+        let now = Instant::now();
+        let sent = p.dispatched(BATCH, now);
+        let c = Completion {
+            bytes: BATCH,
+            sent,
+            app_limited: false,
+            throttled: false,
+        };
+        p.abandoned(c, BATCH / 4);
+        assert_eq!(
+            (p.delivered, p.abandoned),
+            ((BATCH / 4) as u64, (BATCH - BATCH / 4) as u64)
+        );
+        assert_eq!(p.least_rtt, None, "no sample from a failure");
     }
 }
