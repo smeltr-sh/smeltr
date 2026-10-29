@@ -6054,7 +6054,7 @@ mod tests {
         let place = kind.single_worker().expect("one worker reads it");
         assert!(place.starts_with("mysql://db.internal:3306/auth#"), "{place}");
         assert_eq!(
-            sql.meta,
+            kind.meta(),
             crate::plan::topology::SourceMeta::MYSQL
                 .declaring(vec![("event_id".into(), DataType::I64)])
                 .unwrap()

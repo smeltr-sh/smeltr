@@ -8,7 +8,6 @@ use std::time::Duration;
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::error::ExceptionKind;
 use smeltr::core::id::DestId;
-use smeltr::format::encoding::Encoding;
 use smeltr::io::SourceRecord;
 use smeltr::io::fake::{FakeDestination, FakeSource};
 use smeltr::metrics::{MetricValue, Metrics, MetricsHandle};
@@ -89,7 +88,6 @@ fn worker(
     let w = Worker::new(
         0,
         Box::new(source.clone()),
-        Encoding::Auto,
         topology,
         Vec::new(),
         memory,

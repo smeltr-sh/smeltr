@@ -174,7 +174,8 @@ fn worker_decoding(
     source: &FakeSource,
     encoding: Encoding,
 ) -> Worker {
-    let topology = compile_topology(&routes, &pipelines).unwrap_or_else(|e| {
+    let metas = SourceMetas::from([(0, SourceMeta::KAFKA.with_encoding(encoding))]);
+    let topology = compile_topology_with(&routes, &pipelines, OnException::default(), &metas).unwrap_or_else(|e| {
         panic!(
             "topology compile failed: {}",
             e.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("; ")
@@ -183,7 +184,6 @@ fn worker_decoding(
     Worker::new(
         0,
         Box::new(source.clone()),
-        encoding,
         topology,
         Vec::new(),
         MemoryBudget::unlimited(),
@@ -205,7 +205,6 @@ fn worker_with_unmatched(
     Worker::new(
         0,
         Box::new(source.clone()),
-        Encoding::Auto,
         topology,
         Vec::new(),
         MemoryBudget::unlimited(),
@@ -419,7 +418,6 @@ fn a_lag_sample_becomes_a_gauge_labeled_by_source_topic_and_partition() {
     let mut w = Worker::new(
         0,
         Box::new(source),
-        Encoding::Auto,
         topology,
         Vec::new(),
         MemoryBudget::unlimited(),
@@ -2958,7 +2956,6 @@ fn a_refusal_of_an_unmatched_record_is_salvaged_to_the_destinations_dlq() {
         let mut w = Worker::new(
             0,
             Box::new(src.clone()),
-            Encoding::Auto,
             topology,
             Vec::new(),
             MemoryBudget::unlimited(),
@@ -3758,7 +3755,6 @@ fn worker_with_dlqs(
     Worker::new(
         0,
         Box::new(source.clone()),
-        Encoding::Auto,
         topology,
         Vec::new(),
         MemoryBudget::unlimited(),
@@ -3879,7 +3875,6 @@ fn a_parquet_destination_is_handed_columns_and_no_json() {
     let mut w = Worker::new(
         0,
         Box::new(src.clone()),
-        Encoding::Auto,
         topology,
         Vec::new(),
         MemoryBudget::unlimited(),
@@ -3940,7 +3935,6 @@ fn an_unmatched_row_reaches_a_parquet_destination_as_its_raw_text() {
     let mut w = Worker::new(
         0,
         Box::new(src.clone()),
-        Encoding::Auto,
         topology,
         Vec::new(),
         MemoryBudget::unlimited(),

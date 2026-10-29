@@ -20,7 +20,6 @@ use crate::core::column::{Column, DataType};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind, INGEST_FUNCTION, Read};
 use crate::core::id::{DestId, SlotId, SourceId};
-use crate::format::encoding::Encoding;
 use crate::format::json::scalar_text;
 use crate::format::record::RecordView;
 use crate::handoff::{Acks, BlockCause, Handed, Handoff, Ready, Report, Reports, Taken};
@@ -301,6 +300,30 @@ struct Salvage {
     left: Vec<DestId>,
 }
 
+/// Decode every record's `__source.bytes` with the source's encoding into its `_raw`; a row, which has none, has no
+/// text. One pass per batch:
+/// `_raw` is rebuilt per route, but from this text, so nothing decodes twice and a note is recorded once.
+pub(crate) fn decode_records<'a>(records: &'a [SourceRecord], meta: &SourceMeta) -> RawText<'a> {
+    let encoding = meta.encoding();
+    let mut text = Vec::with_capacity(records.len());
+    let mut notes = Vec::new();
+    for (row, read) in meta.read_bytes_each(records).enumerate() {
+        let Some(bytes) = read else {
+            text.push(Cow::Borrowed(""));
+            continue;
+        };
+        let decoded = encoding.decode(bytes);
+        if decoded.replaced {
+            notes.push((row as u32, ExceptionKind::InvalidUtf8));
+        }
+        if let Some(guess) = decoded.guessed {
+            notes.push((row as u32, ExceptionKind::GuessedEncoding { encoding: guess.name() }));
+        }
+        text.push(decoded.text);
+    }
+    RawText { text, notes }
+}
+
 /// One source's side of transform: the facts every batch of its records is run against, and what is parked waiting to
 /// be re-run. Shared, so more than one transform thread can serve the same source; the exclusive half -- the egress
 /// handles a batch's rows are handed to -- stays on [`Transform`].
@@ -309,10 +332,8 @@ pub struct Lane {
     /// The id the author gave this source, which is what a capture names. `None` on the single-source tick driver:
     /// that is not a deployment, and a capture only ever reaches one.
     pub source_name: Option<String>,
-    /// What this source's records carry; the ingest batch is built from it.
+    /// What this source's records carry, and how their bytes become `_raw`'s text; the ingest batch is built from it.
     pub meta: SourceMeta,
-    /// How this source's record bytes become `_raw`'s text (`format::encoding`).
-    pub encoding: Encoding,
     /// Batches this source's reader has polled and no transform thread has taken.
     pub batches: Handoff,
     /// Every destination reachable from this source: what its batches are dispatched to, and what its reader waits on.
@@ -321,36 +342,27 @@ pub struct Lane {
     destinations: Mutex<Vec<DestId>>,
     /// Where a batch's outcome goes: this source's reader, and no other.
     pub reports: Reports,
-    /// Woken when this lane has work, so a thread watching several of them need not poll each.
-    ready: Arc<Ready>,
     parked: Mutex<Parked>,
 }
 
 impl Lane {
-    /// A lane whose arrivals are announced on `ready`. Every lane one transform thread drains shares one.
-    ///
-    /// One argument per fact the lane holds, and every one of them is a different thing a batch of this source's
-    /// records is run against; grouping them into a struct would name a thing that only exists to be unpacked here.
-    #[allow(clippy::too_many_arguments)]
+    /// A lane fed through `batches`. Its parked batches are announced on the same `Ready` as its arrivals, which every
+    /// lane one transform thread drains shares.
     pub fn new(
         source_id: SourceId,
         source_name: Option<String>,
         meta: SourceMeta,
-        encoding: Encoding,
+        batches: Handoff,
         destinations: Vec<DestId>,
         reports: Reports,
-        ready: Arc<Ready>,
-        capacity: usize,
     ) -> Lane {
         Lane {
             source_id,
             source_name,
             meta,
-            encoding,
-            batches: Handoff::watched(ready.clone(), capacity),
+            batches,
             destinations: Mutex::new(destinations),
             reports,
-            ready,
             parked: Mutex::new(Parked::default()),
         }
     }
@@ -410,7 +422,7 @@ impl Lane {
             shown: HashSet::new(),
             _hold: None,
         });
-        self.ready.signal();
+        self.batches.ready().signal();
     }
 
     /// Show the records the held batch blocked on to each capture of `name` that has not been shown them. Under the
@@ -426,7 +438,7 @@ impl Lane {
         }
         let records: Vec<SourceRecord> = held.blocking.iter().map(|(i, _)| held.records[*i].clone()).collect();
         let why: Vec<String> = held.blocking.iter().map(|(_, why)| why.clone()).collect();
-        let raw = decode_records(&records, &self.meta, self.encoding);
+        let raw = decode_records(&records, &self.meta);
         let text: Vec<&str> = raw.text.iter().map(|t| t.as_ref()).collect();
         captures.tap_held(name, &mut held.shown, &records, &text, &why);
     }
@@ -642,7 +654,6 @@ impl Worker {
     pub fn new(
         source_id: SourceId,
         source: Box<dyn Source>,
-        encoding: Encoding,
         topology: CompiledTopology,
         destinations: Vec<DestinationTarget>,
         memory: MemoryBudget,
@@ -653,13 +664,11 @@ impl Worker {
             source_id,
             None,
             topology.meta_for(source_id),
-            encoding,
+            Handoff::new(),
             destinations.iter().map(|d| d.id).collect(),
             reports,
-            Arc::new(Ready::new()),
-            crate::handoff::HANDOFF_BYTES,
         ));
-        let ready = lane.ready.clone();
+        let ready = lane.batches.ready().clone();
         Worker {
             reader: Reader::new(
                 source_id,
@@ -1487,7 +1496,7 @@ impl Transform {
         let mut errors = ErrorSink::new();
         let began = std::time::Instant::now();
 
-        let raw = decode_records(slice, &lane.meta, lane.encoding);
+        let raw = decode_records(slice, &lane.meta);
 
         // A capture sees what this batch is about to be run over: after decode, before any pipeline, so what it
         // keeps is the record as it arrived. A worker nobody is debugging answers `watching` from one atomic load
@@ -2065,7 +2074,7 @@ impl Transform {
             .iter()
             .map(|&(i, r)| match (text, lane.meta.read_bytes(r)) {
                 (Some(text), _) => Cow::Borrowed(text[i].as_ref()),
-                (None, Some(bytes)) => lane.encoding.decode(bytes).text,
+                (None, Some(bytes)) => lane.meta.encoding().decode(bytes).text,
                 (None, None) => Cow::Borrowed(""),
             })
             .collect();
@@ -2733,34 +2742,11 @@ struct Ingest<'a> {
 }
 
 /// A batch's records as text, decoded once per attempt and rebuilt as a column for routing and for each route.
-struct RawText<'a> {
-    text: Vec<Cow<'a, str>>,
+pub(crate) struct RawText<'a> {
+    pub(crate) text: Vec<Cow<'a, str>>,
     /// What a decode had to do, per row. Replayed into every route's exception window, so a repaired or guessed-at
     /// row is marked wherever it is delivered.
     notes: Vec<(u32, ExceptionKind)>,
-}
-
-/// Decode every record's `__source.bytes` with the source's encoding into its `_raw`; a row, which has none, has no
-/// text. One pass per batch:
-/// `_raw` is rebuilt per route, but from this text, so nothing decodes twice and a note is recorded once.
-fn decode_records<'a>(records: &'a [SourceRecord], meta: &SourceMeta, encoding: Encoding) -> RawText<'a> {
-    let mut text = Vec::with_capacity(records.len());
-    let mut notes = Vec::new();
-    for (row, read) in meta.read_bytes_each(records).enumerate() {
-        let Some(bytes) = read else {
-            text.push(Cow::Borrowed(""));
-            continue;
-        };
-        let decoded = encoding.decode(bytes);
-        if decoded.replaced {
-            notes.push((row as u32, ExceptionKind::InvalidUtf8));
-        }
-        if let Some(guess) = decoded.guessed {
-            notes.push((row as u32, ExceptionKind::GuessedEncoding { encoding: guess.name() }));
-        }
-        text.push(decoded.text);
-    }
-    RawText { text, notes }
 }
 
 /// A record in the form `payload` names, for a row no pipeline made: what it read as it arrived, the document a

@@ -1135,11 +1135,9 @@ fn spawn_reader(
         source_id,
         Some(source_name.to_string()),
         topology.meta_for(source_id),
-        kind.encoding(),
+        crate::handoff::Handoff::watched(shared.ready.clone(), depth.lane * depth.batch_bytes),
         destinations.clone(),
         reports,
-        shared.ready.clone(),
-        depth.lane * depth.batch_bytes,
     ));
     let reader = Reader::new(
         source_id,
@@ -4720,14 +4718,7 @@ fn serve_capture(
             }
             continue;
         }
-        // A session naming no source was admitted finished, with why. One on a deployed source is served by the
-        // deployment's own reader, but for one that reads the source itself.
-        if admitted
-            .invitation
-            .source
-            .as_ref()
-            .is_none_or(|source| !admitted.invitation.reads_source_itself() && captures.is_deployed(&source.id))
-        {
+        if captures.served(&admitted) {
             continue;
         }
         let session = admitted.invitation.session.clone();
