@@ -54,7 +54,10 @@ A signed-in person's request may carry a body of up to 1 GiB: a bundle edited
 as JSON, a file to import or preview, a lookup table. The gate refuses a
 request before its body is read, so only a person the leader knows can make it
 hold that much. Sign-in, enrollment and the worker routes, which carry small
-messages, keep a small limit.
+messages, keep a small limit. The cost is memory: a route reads its whole
+body before it answers, and parsing JSON holds several times that, so any
+account, a viewer's included, can make the leader hold gigabytes for as long
+as its requests run.
 
 ## The answer
 
