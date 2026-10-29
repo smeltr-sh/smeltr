@@ -1004,7 +1004,8 @@ const deploy: Move = {
       await expect(page).toHaveURL(/#\/changes\/review/);
       return `"${title}" holds only samples a deploy leaves out, and deploys nothing`;
     }
-    await expect(page).not.toHaveURL(/#\/changes\/review/);
+    // The deploy itself, then the reload it ends with, can outlast the default wait on a busy machine.
+    await expect(page).not.toHaveURL(/#\/changes\/review/, { timeout: 30_000 });
     const api = await j.truth();
     const history: History = await api.get('/api/main/history');
     expect(history.commits[0].subject).toBe(title);
@@ -2620,7 +2621,8 @@ const bringCurrent: Move = {
       .getByRole('dialog', { name: verb.toLowerCase(), exact: true })
       .getByRole('button', { name: verb, exact: true })
       .click();
-    await expect(page).not.toHaveURL(/#\/changes\/review/);
+    // The deploy itself, then the reload it ends with, can outlast the default wait on a busy machine.
+    await expect(page).not.toHaveURL(/#\/changes\/review/, { timeout: 30_000 });
     world.deploys.push({
       subject: title,
       config: copy(world.deploys[world.deploys.length - 1].config),
