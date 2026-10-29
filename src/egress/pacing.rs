@@ -96,6 +96,9 @@ pub struct Pacing {
     dispatched: u64,
     /// Bytes it acknowledged so far.
     delivered: u64,
+    /// Bytes handed over whose batch failed, and so went back to be sent again: in flight no longer, and never
+    /// acknowledged.
+    abandoned: u64,
     /// When the last of those was acknowledged.
     delivered_at: Option<Instant>,
     /// The least round trip, and when it was taken: it stands for [`RTT_WINDOW`].
@@ -139,6 +142,7 @@ impl Pacing {
             target: (2 * batch).min(ceiling),
             dispatched: 0,
             delivered: 0,
+            abandoned: 0,
             delivered_at: None,
             least_rtt: None,
             probing_rtt_from: None,
@@ -208,10 +212,16 @@ impl Pacing {
         sent
     }
 
+    /// A batch handed over failed, and goes back to be sent again: its bytes are no longer in flight. No sample: its
+    /// round trip is the failure's, not the link's.
+    pub fn abandoned(&mut self, c: Completion) {
+        self.abandoned += c.bytes as u64;
+    }
+
     /// A batch came back acknowledged. Updates the estimates and the target.
     pub fn completed(&mut self, c: Completion, now: Instant) {
         if c.throttled && !self.round_throttled {
-            let held = self.dispatched.saturating_sub(self.delivered) as f64;
+            let held = self.dispatched.saturating_sub(self.delivered + self.abandoned) as f64;
             let batches = (THROTTLE_CUT * held / self.batch as f64).floor().max(1.0);
             self.throttled_at = Some((batches as usize).saturating_mul(self.batch));
             self.round_throttled = true;
@@ -374,6 +384,11 @@ impl Pacer {
             app_limited,
             throttled: false,
         }
+    }
+
+    /// Tell the model a batch failed, and goes back to be sent again.
+    pub(super) fn abandoned(&mut self, c: Completion) {
+        self.model.abandoned(c);
     }
 
     /// Tell the model a batch came back, and carry its target to the queue and the metrics when it moves. The ceiling
@@ -752,5 +767,28 @@ mod tests {
         let targets = drive(&mut p, rtt, 100.0 * MIB as f64, 80, false);
         assert!(p.throttled_at.is_none_or(|at| at > 5 * BATCH), "{:?}", p.throttled_at);
         assert!(targets[60..].iter().any(|t| *t >= 5 * BATCH), "{targets:?}");
+    }
+
+    /// A batch that failed is in flight no longer: a throttle cuts from what is still out, not from what went back.
+    #[test]
+    fn a_failed_batch_is_not_counted_in_flight() {
+        let mut p = Pacing::new(BATCH, 1024 * MIB);
+        let now = Instant::now();
+        let sent: Vec<Sent> = (0..10).map(|_| p.dispatched(BATCH, now)).collect();
+        let done = |sent, throttled| Completion {
+            bytes: BATCH,
+            sent,
+            app_limited: false,
+            throttled,
+        };
+        for s in &sent[..8] {
+            p.abandoned(done(*s, false));
+        }
+        p.completed(done(sent[8], true), now + Duration::from_millis(50));
+        assert_eq!(
+            p.throttled_at,
+            Some(BATCH),
+            "seven tenths of the two still out, not of all ten"
+        );
     }
 }
