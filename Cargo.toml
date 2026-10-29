@@ -132,7 +132,7 @@ rustls = { version = "0.23.43", default-features = false, features = ["aws_lc_rs
 
 #For ctrl-c clean exit from the leader
 object_store = { version = "0.14", default-features = false, features = ["aws", "azure", "gcp"] }
-russh = { version = "0.64", default-features = false, features = ["aws-lc-rs", "rsa"] }
+russh = { version = "0.65", default-features = false, features = ["aws-lc-rs", "rsa"] }
 russh-sftp = "3.0"
 futures-util = "0.3"
 async-trait = "0.1"
