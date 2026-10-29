@@ -206,6 +206,8 @@ fn fetch(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>, S
     // helper this host's gitconfig names -- the worker's fetch refuses the same cascade for the same reason.
     // Asked for one is the host answering 401, which gix reports as a credential helper that returned nothing.
     let asked = std::cell::Cell::new(false);
+    // `gix_credentials::protocol::Error` is gix's own type, sized for a helper subprocess's failure modes rather
+    // than this closure's, which has none.
     #[allow(clippy::result_large_err)]
     connection.set_credentials(|_action| {
         asked.set(true);
