@@ -308,16 +308,6 @@ pub fn build(
         .iter()
         .map(|(path, message)| format!("{}/{path}: {message}", config_file::SHARED_DIR))
         .collect();
-    let shared_source_ids: HashSet<String> = shared.file.sources.iter().map(|s| s.id.clone()).collect();
-    let shared_dest_ids: HashSet<String> = shared.file.destinations.iter().map(|d| d.id.clone()).collect();
-    let shared_pipeline_ids: HashSet<String> = shared.file.pipelines.iter().map(|p| p.id.clone()).collect();
-
-    let since_ms = warnings::now_millis() - POISON_WINDOW_BUCKETS * Tier::TenSeconds.bucket_ms();
-    let poisoned = match series_store {
-        None => Poisoned::default(),
-        Some(store) => latest_by_group_pair(store, BATCHES_DLQ_METRIC, since_ms),
-    };
-
     let mut graph = Graph::default();
     let mut group_errors = Vec::new();
 
@@ -332,21 +322,10 @@ pub fn build(
         );
 
         let file = merged_file(&shared, &group.raw, &group.id);
-        let pipeline_author_ids: Vec<String> = file.pipelines.iter().map(|p| p.id.clone()).collect();
         let declared_at = merged_declared_at(&shared, shared_at, &group.raw, &group.at);
 
         match config_file::validate_at(file, &declared_at) {
-            Ok(system) if errors.is_empty() => build_group_graph(
-                &system,
-                &pipeline_author_ids,
-                warnings,
-                &group.id,
-                &shared_source_ids,
-                &shared_dest_ids,
-                &shared_pipeline_ids,
-                &poisoned,
-                &mut graph,
-            ),
+            Ok(system) if errors.is_empty() => build_group_graph(&system, &group.id, &shared.file, &mut graph),
             Ok(_) => group_errors.push(GroupError {
                 group: group.id,
                 errors,
@@ -362,6 +341,12 @@ pub fn build(
                 });
             }
         }
+    }
+
+    mark_warnings(&mut graph.nodes, warnings);
+    if let Some(store) = series_store {
+        let since_ms = warnings::now_millis() - POISON_WINDOW_BUCKETS * Tier::TenSeconds.bucket_ms();
+        draw_poison(&mut graph, &latest_by_group_pair(store, BATCHES_DLQ_METRIC, since_ms));
     }
 
     Map {
@@ -428,32 +413,35 @@ pub fn merged_declared_at(
     declared_at
 }
 
-/// Whether the catalog currently names this object in this group. A warning's subject is the id its author typed,
-/// not the positional one the compiled topology numbers nodes by, and it is unique only together with the group
+/// Flags each node the catalog currently names in its group. A warning's subject is the id its author typed, not the
+/// positional one the compiled topology numbers nodes by, and it is unique only together with the group
 /// (`registry::subject_key`'s own doc: "an id unique only within a group is not fleet-unique") -- so both have to
 /// match.
-fn has_warning(warnings: &[warnings::Warning], kind: SubjectKind, author_id: &str, group: &str) -> bool {
-    warnings
-        .iter()
-        .any(|w| w.subject_kind == kind && w.subject_id == author_id && w.group.as_deref() == Some(group))
+fn mark_warnings(nodes: &mut [MapNode], warnings: &[warnings::Warning]) {
+    for node in nodes {
+        let kind = match node.kind {
+            NodeKind::Source => SubjectKind::Source,
+            NodeKind::Pipeline => SubjectKind::Pipeline,
+            NodeKind::Destination => SubjectKind::Destination,
+        };
+        node.warning = warnings.iter().any(|w| {
+            w.subject_kind == kind && w.subject_id == node.author_id && w.group.as_deref() == Some(&node.group)
+        });
+    }
 }
 
-/// One group's nodes and edges, appended onto the fleet's.
-#[allow(clippy::too_many_arguments)]
+/// One group's nodes and edges as its config declares them, appended onto the fleet's. `shared` is the `shared/`
+/// bundle the group merges in, which says which of its nodes are declared there.
 fn build_group_graph(
     system: &config_file::LoadedSystem,
-    pipeline_author_ids: &[String],
-    warnings: &[warnings::Warning],
     group: &str,
-    shared_source_ids: &HashSet<String>,
-    shared_dest_ids: &HashSet<String>,
-    shared_pipeline_ids: &HashSet<String>,
-    poisoned: &Poisoned,
+    shared: &config_file::FileConfig,
     graph: &mut Graph,
 ) {
     let topo = &system.topology;
     let pipeline_author = |id: usize| -> String {
-        pipeline_author_ids
+        system
+            .pipeline_ids
             .get(id)
             .cloned()
             .expect("a validated system's pipeline ids are assigned 0..len in file order")
@@ -466,8 +454,8 @@ fn build_group_graph(
             name: s.name.clone(),
             kind: NodeKind::Source,
             system: Some(System::from(&s.kind)),
-            shared: shared_source_ids.contains(&s.name),
-            warning: has_warning(warnings, SubjectKind::Source, &s.name, group),
+            shared: shared.sources.iter().any(|shared| shared.id == s.name),
+            warning: false,
         });
     }
     for d in &topo.destinations {
@@ -477,8 +465,8 @@ fn build_group_graph(
             name: d.name.clone(),
             kind: NodeKind::Destination,
             system: Some(System::from(&d.kind)),
-            shared: shared_dest_ids.contains(&d.name),
-            warning: has_warning(warnings, SubjectKind::Destination, &d.name, group),
+            shared: shared.destinations.iter().any(|shared| shared.id == d.name),
+            warning: false,
         });
     }
     // A pipeline is a node only when a route names it directly (module doc): a callee spliced in by `expand_calls`
@@ -491,15 +479,14 @@ fn build_group_graph(
             .find(|p| p.id == id)
             .expect("a validated system's routes only name pipelines that exist");
         let author_id = pipeline_author(id);
-        let warning = has_warning(warnings, SubjectKind::Pipeline, &author_id, group);
         graph.nodes.push(MapNode {
             group: group.to_string(),
-            shared: shared_pipeline_ids.contains(&author_id),
+            shared: shared.pipelines.iter().any(|shared| shared.id == author_id),
             author_id,
             name: pipeline.name.clone(),
             kind: NodeKind::Pipeline,
             system: None,
-            warning,
+            warning: false,
         });
     }
 
@@ -575,33 +562,35 @@ fn build_group_graph(
             });
         }
     }
+}
 
-    // Both ends come from the series, never from the answer to `Unprocessable`: a batch was diverted to the destination the
-    // worker was running, which a branch since edited need not still name. An end this group does not declare has no
-    // node to draw to, so that edge is passed over rather than drawn to nothing.
-    let declared: HashSet<&str> = topo
-        .sources
+/// The poison edges: each batch diverted recently, from its source to its destination. Both ends come from the series,
+/// never from the answer to `Unprocessable`: a batch was diverted to the destination the worker was running, which a
+/// branch since edited need not still name. An end its group did not draw has no node to draw to, so that edge is
+/// passed over rather than drawn to nothing.
+fn draw_poison(graph: &mut Graph, poisoned: &Poisoned) {
+    let drawn: HashSet<(&str, &str)> = graph
+        .nodes
         .iter()
-        .map(|s| s.name.as_str())
-        .chain(topo.destinations.iter().map(|d| d.name.as_str()))
+        .filter(|n| n.kind != NodeKind::Pipeline)
+        .map(|n| (n.group.as_str(), n.name.as_str()))
         .collect();
-    let mut poisoned: Vec<(&String, &String, f64)> = poisoned
+    let mut poison: Vec<PoisonEdge> = poisoned
         .iter()
-        .filter(|((g, source, destination), _)| {
-            g == group && declared.contains(source.as_str()) && declared.contains(destination.as_str())
+        .filter(|((group, source, destination), _)| {
+            drawn.contains(&(group.as_str(), source.as_str()))
+                && drawn.contains(&(group.as_str(), destination.as_str()))
         })
-        .map(|((_, source, destination), batches)| (source, destination, *batches))
-        .collect();
-    // The map is served from a `HashMap`, so an order has to be imposed for one branch to draw the same picture twice.
-    poisoned.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
-    for (source, destination, batches) in poisoned {
-        graph.poison.push(PoisonEdge {
-            group: group.to_string(),
+        .map(|((group, source, destination), batches)| PoisonEdge {
+            group: group.clone(),
             source: source.clone(),
             destination: destination.clone(),
-            throughput: batches,
-        });
-    }
+            throughput: *batches,
+        })
+        .collect();
+    // The map is served from a `HashMap`, so an order has to be imposed for one branch to draw the same picture twice.
+    poison.sort_by(|a, b| (&a.group, &a.source, &a.destination).cmp(&(&b.group, &b.source, &b.destination)));
+    graph.poison = poison;
 }
 
 /// The most recent value of `metric`'s series for each (group, source, destination), among points at or after
