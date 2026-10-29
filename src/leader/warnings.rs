@@ -4367,7 +4367,7 @@ mod tests {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         for (source, failed, at) in [("a", 1, 1_000), ("a", 2, 5_000), ("b", 0, 6_000)] {
             store
-                .record_streams("prod", &declared_window(source, 10, failed), None, true, at)
+                .record_streams("prod", &declared_window(source, 10, failed), true, at)
                 .unwrap();
         }
         let warnings = declared_fields_drifted(Some(&store), 5_000 + HOUR);
@@ -4427,7 +4427,7 @@ mod tests {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         let beat = |keys: &[(&str, u64)], at: i64| {
             store
-                .record_streams("prod", &untaken_window("hec", keys), None, true, at)
+                .record_streams("prod", &untaken_window("hec", keys), true, at)
                 .unwrap();
         };
         beat(&[("okta:system", 3), ("pan:threat", 2)], 1_000);
@@ -4465,7 +4465,7 @@ mod tests {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         let said = |keys: &[(&str, u64)]| {
             store
-                .record_streams("prod", &untaken_window("in", keys), None, true, 1_000)
+                .record_streams("prod", &untaken_window("in", keys), true, 1_000)
                 .unwrap();
             streams_unrouted(Some(&store), 1_000).remove(0).message
         };
@@ -4484,7 +4484,7 @@ mod tests {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         let beat = |source: &str, present: u64, at: i64| {
             store
-                .record_streams("prod", &declared_window(source, present, 0), None, true, at)
+                .record_streams("prod", &declared_window(source, present, 0), true, at)
                 .unwrap();
         };
         beat("a", 10, 1_000);

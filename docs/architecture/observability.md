@@ -101,17 +101,39 @@ about to exit prints and goes, since a buffer has nothing to offer a process
 that will not outlive the handoff; an orderly exit empties the buffer first,
 bounded so that logs delay an exit no more than they may block a write.
 
-## Logs reach the leader
+## What a heartbeat carries
 
-A worker's logs ride its heartbeat, held until the leader answers, so a lost
-connection costs a round trip rather than the events. Each carries a sequence
-number and each worker process a boot id, because that request is retried and
-these rows accumulate where the metrics beside them overwrite. A request past
-the leader's limit is refused, and a worker cannot shrink one it has already
-cut to length -- so it would never heartbeat again. One loud worker can fill
-the leader's cap at the expense of the rest. The last heartbeat is the notice
-that the worker is stopping, and nothing is held past it: a notice that does
-not land costs what it carried.
+A heartbeat is fresh state and one window. The state -- what each thread is
+doing, what the supervisor holds, the commit it runs -- is read again for every
+beat. The window is what accumulates: the metric samples, logs, streams and
+progress gathered since the window before. Each window is numbered in the
+worker process's life and sent again, unchanged, until the leader answers,
+with what arrives meanwhile held for the next; the leader records each number
+once, so a lost answer costs a round trip and counts nothing twice. Logs keep
+their own sequence number and the boot id of the process that wrote them, and
+progress its item, so the leader keeps each once whichever beat carried it.
+
+```mermaid
+sequenceDiagram
+  participant W as worker
+  participant L as leader
+  W->>L: window 4, state
+  Note over L: records window 4
+  L--xW: answer lost
+  W->>L: window 4 again, fresh state
+  Note over L: records the state, not window 4
+  L->>W: answer
+  W->>L: window 5, state
+```
+
+A beat past the leader's limit is refused, and its window is dropped rather
+than kept, since sent again it would be refused again; its progress goes back
+for the next window. A beat the leader cannot record is refused too, and its
+window goes again; only streams that will not write are left out and the rest
+recorded, since they would fail the same way every time the window came. One
+loud worker can fill the leader's cap at the expense of the rest. The last
+heartbeat is the notice that the worker is stopping, and nothing is held past
+it: a notice that does not land costs what it carried.
 
 A log raised while logs are being delivered reaches the console and stops
 there. Otherwise a delivery that fails reports that it failed, and that report
@@ -192,10 +214,9 @@ named. A field name is data, not structure, and without the cap a source
 inventing names would grow a heartbeat without one.
 
 The worker keeps no baseline. It reports a window and forgets it once the
-leader has it. Each window is numbered in the worker's life and sent again,
-unchanged, until the leader answers, with what the runtime sees meanwhile
-held for the next; the leader records each number once, so a beat whose answer
-was lost counts nothing twice. The leader sums every window from every worker
+leader has it: the heartbeat's window ([What a heartbeat
+carries](#what-a-heartbeat-carries)), so a beat whose answer was lost counts
+nothing twice. The leader sums every window from every worker
 of a group into one row per field and per key, each with when it was first
 and last seen. The same caps hold there, so the
 tables grow with the configuration. That accumulated shape is what a

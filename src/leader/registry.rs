@@ -269,11 +269,24 @@ impl Registry {
     /// A stopping heartbeat is the worker's last word, sent once its threads have ended. Its rows become exactly
     /// the reports it carried about the worker itself: what its threads last said is history, and history owns no
     /// partition and blocks no source. What those threads counted still reaches the series.
-    pub fn record_heartbeat(&self, worker_id: &str, reports: Vec<ThreadHeartbeat>, worker: WorkerFacts, now_ms: i64) {
+    ///
+    /// `window` is what the beat gathered beside its samples, and which window of the worker's life both are: a
+    /// window already recorded adds neither again (`RegistryStore::record_heartbeat`).
+    ///
+    /// An error is the durable mirror unwritten, window and all; the live view is updated either way.
+    pub fn record_heartbeat(
+        &self,
+        worker_id: &str,
+        reports: Vec<ThreadHeartbeat>,
+        worker: WorkerFacts,
+        window: super::series::Window<'_>,
+        now_ms: i64,
+    ) -> Result<(), StoreError> {
         let stopping = worker.stopped_at_ms.is_some();
-        if let Some(store) = &self.store {
-            persist_heartbeat(store, worker_id, &reports, &worker, now_ms);
-        }
+        let persisted = match &self.store {
+            Some(store) => persist_heartbeat(store, worker_id, &reports, &worker, window, now_ms),
+            None => Ok(()),
+        };
         let mut threads = self.threads.lock().unwrap();
         let last_seen = Instant::now();
         if stopping {
@@ -301,6 +314,7 @@ impl Registry {
                 },
             );
         }
+        persisted
     }
 
     /// Drops everything held about `worker_id`, in memory and durably: the leader has forgotten it.
@@ -468,32 +482,6 @@ impl Registry {
         });
     }
 
-    /// One heartbeat's streams, added to what `group_id` has accumulated (design doc, Observability: Streams) unless
-    /// they are a `window` already added. `deployed` is whether the worker runs its group's deployed commit
-    /// ([`super::series::RegistryStore::record_streams`]). A
-    /// worker too old to state its group reports under none, and its streams go unrecorded. A store that will not
-    /// take a window says so: it is a window of counts, never data.
-    pub fn record_streams(
-        &self,
-        group_id: Option<&str>,
-        report: &crate::heartbeat::StreamReport,
-        window: Option<super::series::StreamWindow>,
-        deployed: bool,
-        now_ms: i64,
-    ) {
-        let (Some(store), Some(group)) = (&self.store, group_id) else {
-            return;
-        };
-        if let Err(e) = store.record_streams(group, report, window, deployed, now_ms) {
-            tracing::warn!(
-                target: "registry.streams_not_persisted",
-                subject = %group,
-                error = %e,
-                "a heartbeat's streams could not be persisted, so that window of what the fleet saw is missing"
-            );
-        }
-    }
-
     /// Every fact the clock holds for one catalog entry: what a caller that cannot yet say whether those facts still
     /// hold passes back to [`Registry::observe_facts`], so their start times are kept rather than forgotten.
     pub fn facts_of(&self, entry: &str) -> Vec<FactKey> {
@@ -604,8 +592,9 @@ fn persist_heartbeat(
     worker_id: &str,
     reports: &[ThreadHeartbeat],
     worker: &WorkerFacts,
+    window: super::series::Window<'_>,
     now_ms: i64,
-) {
+) -> Result<(), StoreError> {
     let threads: Vec<LatestRow<'_>> = reports
         .iter()
         .filter(|report| worker.stopped_at_ms.is_none() || about_the_worker(report))
@@ -631,10 +620,11 @@ fn persist_heartbeat(
 
     let points = series_points(worker_id, reports);
 
-    if let Err(e) = store.record_heartbeat(&HeartbeatRows {
+    let recorded = store.record_heartbeat(&HeartbeatRows {
         worker_id,
         threads: &threads,
         points: &points,
+        window,
         stop_after_unreachable_secs: worker.stop_after_unreachable_secs,
         commit: worker.commit.as_deref(),
         smeltr_version: &worker.smeltr_version,
@@ -643,7 +633,8 @@ fn persist_heartbeat(
         authority_expires_millis: worker.authority_expires_millis,
         stopped_at_ms: worker.stopped_at_ms,
         now_ms,
-    }) {
+    });
+    if let Err(e) = &recorded {
         // One transaction, so this is the whole heartbeat's mirror rather than a count of the rows that failed. An
         // example row rides along: a store that refuses the same point every beat is diagnosable only by what it
         // refused, and the counts alone cannot name it.
@@ -655,13 +646,13 @@ fn persist_heartbeat(
             metric = points.first().map(|p| p.metric).unwrap_or_default(),
             subject_key = points.first().map(|p| p.subject_key.as_str()).unwrap_or_default(),
             error = %e,
-            "a heartbeat's durable mirror could not be written, so that window of history is missing and every \
-             thread it reported is stale until the next one lands. `metric` and `subject_key` are the first point \
-             it carried, as an example of the shape"
+            "a heartbeat's durable mirror could not be written, so the worker is refused and sends its window \
+             again. `metric` and `subject_key` are the first point it carried, as an example of the shape"
         );
     }
 
     store.maybe_maintain(now_ms);
+    recorded
 }
 
 /// Each sample `reports` carries that is a series point. A sample naming no subject, a fact carried as text, and a
@@ -714,6 +705,7 @@ mod tests {
     use super::*;
     use crate::heartbeat::{MetricSampleDto, ThreadKind};
     use crate::leader::series;
+    use crate::leader::series::Window;
 
     /// The question a rotation asks is about the fleet, not about whoever has spoken. A leader restarted
     /// mid-rotation knows its workers from the durable snapshot and has heard from none of them yet; cutting over
@@ -722,8 +714,22 @@ mod tests {
     fn a_worker_expected_but_not_heard_from_holds_nothing() {
         let r = Registry::default();
         // Two workers the leader knows about, from threads the snapshot carries across a restart.
-        r.record_heartbeat("w1", vec![report("t1", "g")], WorkerFacts::default(), 0);
-        r.record_heartbeat("w2", vec![report("t2", "g")], WorkerFacts::default(), 0);
+        r.record_heartbeat(
+            "w1",
+            vec![report("t1", "g")],
+            WorkerFacts::default(),
+            Window::default(),
+            0,
+        )
+        .unwrap();
+        r.record_heartbeat(
+            "w2",
+            vec![report("t2", "g")],
+            WorkerFacts::default(),
+            Window::default(),
+            0,
+        )
+        .unwrap();
         // Only one of them has said what it holds this run.
         r.record_authority("w1", vec!["incoming".to_string()], true);
 
@@ -781,7 +787,14 @@ mod tests {
     #[test]
     fn a_worker_that_can_never_answer_is_not_waited_for() {
         let r = Registry::default();
-        r.record_heartbeat("gone", vec![report("t1", "g")], WorkerFacts::default(), 0);
+        r.record_heartbeat(
+            "gone",
+            vec![report("t1", "g")],
+            WorkerFacts::default(),
+            Window::default(),
+            0,
+        )
+        .unwrap();
         r.record_authority("gone", vec!["outgoing".to_string()], true);
         // Expected is the caller's answer, and a revoked worker is not in it.
         assert!(r.authorities_held(&HashSet::new()).is_empty());
@@ -792,7 +805,14 @@ mod tests {
     #[test]
     fn a_worker_that_has_merely_gone_quiet_is_still_waited_for() {
         let r = Registry::default();
-        r.record_heartbeat("quiet", vec![report("t1", "g")], WorkerFacts::default(), 0);
+        r.record_heartbeat(
+            "quiet",
+            vec![report("t1", "g")],
+            WorkerFacts::default(),
+            Window::default(),
+            0,
+        )
+        .unwrap();
         r.record_authority("quiet", vec!["outgoing".to_string()], true);
 
         // Nothing injects a clock here, so the moment it was last heard from is set back instead: a day, or as far
@@ -824,10 +844,38 @@ mod tests {
     #[test]
     fn snapshot_holds_one_entry_per_worker_thread_pair() {
         let r = Registry::default();
-        r.record_heartbeat("w1", vec![report("t0", "pool")], WorkerFacts::default(), 0);
-        r.record_heartbeat("w1", vec![report("t1", "pool")], WorkerFacts::default(), 0);
-        r.record_heartbeat("w2", vec![report("t0", "pool")], WorkerFacts::default(), 0);
-        r.record_heartbeat("w1", vec![report("t0", "prod")], WorkerFacts::default(), 0);
+        r.record_heartbeat(
+            "w1",
+            vec![report("t0", "pool")],
+            WorkerFacts::default(),
+            Window::default(),
+            0,
+        )
+        .unwrap();
+        r.record_heartbeat(
+            "w1",
+            vec![report("t1", "pool")],
+            WorkerFacts::default(),
+            Window::default(),
+            0,
+        )
+        .unwrap();
+        r.record_heartbeat(
+            "w2",
+            vec![report("t0", "pool")],
+            WorkerFacts::default(),
+            Window::default(),
+            0,
+        )
+        .unwrap();
+        r.record_heartbeat(
+            "w1",
+            vec![report("t0", "prod")],
+            WorkerFacts::default(),
+            Window::default(),
+            0,
+        )
+        .unwrap();
         let snapshot = r.snapshot();
         assert_eq!(snapshot.len(), 3);
         let w1t0 = snapshot
@@ -848,8 +896,10 @@ mod tests {
                 commit: Some("c0ffee".to_string()),
                 ..Default::default()
             },
+            Window::default(),
             0,
-        );
+        )
+        .unwrap();
         let json = serde_json::to_value(&r.snapshot()[0]).unwrap();
         // Flattened, so the report's fields sit beside the leader's rather than under a key of their own.
         for key in [
@@ -950,8 +1000,10 @@ mod tests {
                     stopped_at_ms: stopping.then_some(at),
                     ..Default::default()
                 },
+                Window::default(),
                 at,
-            );
+            )
+            .unwrap();
         };
         let itself = ThreadHeartbeat {
             kind: Some(ThreadKind::Worker),
@@ -1019,6 +1071,37 @@ mod tests {
         cleanup_registry_db(&path);
     }
 
+    /// A beat the store will not take is an error, so the leader refuses it and the worker sends its window again;
+    /// what it said of its threads still reaches the live view.
+    #[test]
+    fn a_beat_the_store_will_not_take_is_an_error_and_still_seen() {
+        let path = temp_registry_path("not-taken");
+        let r = Registry::open(&path).unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TRIGGER refused BEFORE INSERT ON windows BEGIN SELECT RAISE(ABORT, 'refused'); END")
+            .unwrap();
+        let window = Window {
+            boot_id: 7,
+            seq: Some(1),
+            streams: None,
+        };
+        assert!(
+            r.record_heartbeat(
+                "w1",
+                vec![report("reader-0", "pool")],
+                WorkerFacts::default(),
+                window,
+                0
+            )
+            .is_err(),
+            "a beat that was not recorded was answered as recorded"
+        );
+        assert!(r.snapshot().iter().any(|t| t.report.thread_id == "reader-0"));
+        drop(r);
+        cleanup_registry_db(&path);
+    }
+
     /// The two defects the durable registry closes: a restart used to reset a warning's start time, and could not
     /// tell a worker that had never heartbeated from one that was heartbeating right up until the leader restarted.
     #[test]
@@ -1030,7 +1113,14 @@ mod tests {
         let started_at = warnings::now_millis();
         {
             let r = Registry::open(&path).unwrap();
-            r.record_heartbeat("w1", vec![report("t0", "pool")], WorkerFacts::default(), started_at);
+            r.record_heartbeat(
+                "w1",
+                vec![report("t0", "pool")],
+                WorkerFacts::default(),
+                Window::default(),
+                started_at,
+            )
+            .unwrap();
             r.observe_facts(&HashSet::from([key.clone()]), started_at);
         }
 
@@ -1075,8 +1165,10 @@ mod tests {
                     supervising: Some(supervising.clone()),
                     ..Default::default()
                 },
+                Window::default(),
                 started_at,
-            );
+            )
+            .unwrap();
         }
 
         let r = Registry::open(&path).unwrap();
@@ -1112,8 +1204,10 @@ mod tests {
                     commit: Some("c0ffee".to_string()),
                     ..Default::default()
                 },
+                Window::default(),
                 started_at,
-            );
+            )
+            .unwrap();
         }
 
         // The worker never heartbeats again: this is the restart during which it was already gone.
@@ -1147,8 +1241,10 @@ mod tests {
                 authority_expires_millis: Some(started_at + 1000),
                 ..Default::default()
             },
+            Window::default(),
             started_at,
-        );
+        )
+        .unwrap();
 
         // Its deployment stopped, and it took a new authority. Its supervisor is meanwhile trying to deploy a
         // commit it has not got running -- which is the state the worker has no thread left to report through.
@@ -1165,8 +1261,10 @@ mod tests {
                 authority_expires_millis: Some(started_at + 9000),
                 ..Default::default()
             },
+            Window::default(),
             started_at + 1,
-        );
+        )
+        .unwrap();
 
         let snapshot = r.snapshot();
         assert_eq!(snapshot.len(), 1, "the thread's row is still there to carry it");
@@ -1203,8 +1301,10 @@ mod tests {
                     authority_expires_millis: Some(expires),
                     ..Default::default()
                 },
+                Window::default(),
                 started_at,
-            );
+            )
+            .unwrap();
         }
 
         let r = Registry::open(&path).unwrap();
@@ -1251,7 +1351,14 @@ mod tests {
             value: MetricValueDto::Counter(4),
         }];
 
-        r.record_heartbeat("w1", vec![reader, egress], WorkerFacts::default(), 12_345);
+        r.record_heartbeat(
+            "w1",
+            vec![reader, egress],
+            WorkerFacts::default(),
+            Window::default(),
+            12_345,
+        )
+        .unwrap();
 
         assert_eq!(r.snapshot().len(), 2, "both threads are live state");
         let series = r.series().unwrap();
@@ -1297,7 +1404,14 @@ mod tests {
             ],
             value: MetricValueDto::Counter(5),
         }];
-        r.record_heartbeat("w1", vec![with_metrics], WorkerFacts::default(), 12_345);
+        r.record_heartbeat(
+            "w1",
+            vec![with_metrics],
+            WorkerFacts::default(),
+            Window::default(),
+            12_345,
+        )
+        .unwrap();
 
         let key = subject_key(
             "pool",
@@ -1348,7 +1462,8 @@ mod tests {
             ],
             value: MetricValueDto::Gauge(12.0),
         }];
-        r.record_heartbeat("w1", vec![with_lag], WorkerFacts::default(), 12_345);
+        r.record_heartbeat("w1", vec![with_lag], WorkerFacts::default(), Window::default(), 12_345)
+            .unwrap();
 
         let key = subject_key(
             "pool",
