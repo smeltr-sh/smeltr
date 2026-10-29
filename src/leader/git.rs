@@ -825,35 +825,7 @@ pub fn has_commit(repo_path: &Path, commit: &str) -> Result<bool, GitError> {
 /// List one directory of `commit`'s tree, or nothing where that directory is not in it. Not recursive: a bundle names
 /// what it reads.
 pub fn list_tree(repo_path: &Path, commit: &str, path: &str) -> Result<Vec<TreeEntry>, GitError> {
-    let repo = open(repo_path)?;
-    // A path that is not in the tree is "nothing here", which is how an absent `shared/` or `pipelines/` reads.
-    let Ok(root) = tree_at(&repo, commit) else {
-        return Ok(vec![]);
-    };
-    let Ok(mut tree) = repo.find_tree(root) else {
-        return Ok(vec![]);
-    };
-    if !path.is_empty() {
-        let Ok(Some(entry)) = tree.lookup_entry_by_path(path) else {
-            return Ok(vec![]);
-        };
-        let Ok(object) = entry.object() else {
-            return Ok(vec![]);
-        };
-        if object.kind != gix::object::Kind::Tree {
-            return Ok(vec![]);
-        }
-        tree = object.into_tree();
-    }
-    let mut entries = Vec::new();
-    for entry in tree.iter() {
-        let entry = entry.map_err(|e| GitError::failed(format!("listing {path:?} of {commit}: {e}")))?;
-        entries.push(TreeEntry {
-            mode: mode_text(entry.inner.mode),
-            name: entry.inner.filename.to_string(),
-        });
-    }
-    Ok(entries)
+    open_tree(repo_path, commit)?.list(path)
 }
 
 /// Read several blobs out of `commit`, one answer per path in the order asked and `None` for a path the commit does
@@ -862,18 +834,40 @@ pub fn read_blobs(repo_path: &Path, commit: &str, paths: &[String]) -> Result<Ve
     if paths.is_empty() {
         return Ok(vec![]);
     }
-    let repo = open(repo_path)?;
-    let root = tree_at(&repo, commit)?;
-    let tree = repo
-        .find_tree(root)
-        .map_err(|e| GitError::failed(format!("reading {commit}: {e}")))?;
+    let tree = open_tree(repo_path, commit)?;
+    paths.iter().map(|path| tree.read(path)).collect()
+}
 
-    let mut answers = Vec::with_capacity(paths.len());
-    for path in paths {
+/// `commit`'s tree, opened once for many reads: a bundle is read a file at a time, and opening the repository costs
+/// more than reading a file out of it.
+pub struct OpenTree {
+    repo: gix::Repository,
+    commit: String,
+    /// The root tree, or why `commit` names none.
+    root: Result<gix::ObjectId, String>,
+}
+
+/// Opens `commit`, which may name a tree instead, for [`OpenTree::read`] and [`OpenTree::list`].
+pub fn open_tree(repo_path: &Path, commit: &str) -> Result<OpenTree, GitError> {
+    let repo = open(repo_path)?;
+    let root = tree_at(&repo, commit).map_err(|e| e.message);
+    Ok(OpenTree {
+        repo,
+        commit: commit.to_string(),
+        root,
+    })
+}
+
+impl OpenTree {
+    /// The blob at `path`, `None` when the commit does not hold it.
+    pub fn read(&self, path: &str) -> Result<Option<Vec<u8>>, GitError> {
+        let commit = &self.commit;
+        let root = self.root.as_ref().map_err(|e| GitError::failed(e.clone()))?;
+        let tree = (self.repo.find_tree(*root)).map_err(|e| GitError::failed(format!("reading {commit}: {e}")))?;
         let found = tree
-            .lookup_entry_by_path(path.as_str())
+            .lookup_entry_by_path(path)
             .map_err(|e| GitError::failed(format!("reading {path:?} of {commit}: {e}")))?;
-        answers.push(match found {
+        Ok(match found {
             Some(entry) => Some(
                 entry
                     .object()
@@ -882,9 +876,40 @@ pub fn read_blobs(repo_path: &Path, commit: &str, paths: &[String]) -> Result<Ve
                     .data,
             ),
             None => None,
-        });
+        })
     }
-    Ok(answers)
+
+    /// The entries of the directory at `path`, the root when empty. A path that is not a directory here is
+    /// "nothing here", which is how an absent `shared/` or `pipelines/` reads.
+    pub fn list(&self, path: &str) -> Result<Vec<TreeEntry>, GitError> {
+        let Ok(root) = &self.root else {
+            return Ok(vec![]);
+        };
+        let Ok(mut tree) = self.repo.find_tree(*root) else {
+            return Ok(vec![]);
+        };
+        if !path.is_empty() {
+            let Ok(Some(entry)) = tree.lookup_entry_by_path(path) else {
+                return Ok(vec![]);
+            };
+            let Ok(object) = entry.object() else {
+                return Ok(vec![]);
+            };
+            if object.kind != gix::object::Kind::Tree {
+                return Ok(vec![]);
+            }
+            tree = object.into_tree();
+        }
+        let mut entries = Vec::new();
+        for entry in tree.iter() {
+            let entry = entry.map_err(|e| GitError::failed(format!("listing {path:?} of {}: {e}", self.commit)))?;
+            entries.push(TreeEntry {
+                mode: mode_text(entry.inner.mode),
+                name: entry.inner.filename.to_string(),
+            });
+        }
+        Ok(entries)
+    }
 }
 
 /// When each of `paths` last changed on `commit`'s first-parent line: the committer time, in unix seconds, of the
