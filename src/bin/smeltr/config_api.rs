@@ -210,6 +210,8 @@ pub struct Writing {
     expected: Option<String>,
     /// Where a lookup file is read from: the parent, or the parent with the files this save adds (`stage`).
     seen: String,
+    /// Files that land in the same commit as the config a `save` writes (`stage`).
+    staged: Vec<git::FileEdit>,
 }
 
 /// A branch that is not where the writer read it, said as two commits rather than as a sentence. The editor holds
@@ -307,6 +309,7 @@ impl Writing {
             seen: parent.clone(),
             parent,
             expected,
+            staged: Vec::new(),
         })
     }
 
@@ -361,10 +364,14 @@ impl Writing {
         }
     }
 
-    /// Lookup files are read from the parent with `files` laid over it, a commit no branch names, so a table can
-    /// be checked against a file this save adds.
-    fn stage(&mut self, files: &[git::FileEdit]) -> Result<(), Refusal> {
-        self.seen = git::stage_edits(&self.repo, &self.parent, &self.in_repo(files.to_vec()))?;
+    /// Sets the files the next `save` commits beside the config. Lookup files are read from the parent with them laid
+    /// over it, a commit no branch names, so a table is checked against a file this save adds.
+    fn stage(&mut self, files: Vec<git::FileEdit>) -> Result<(), Refusal> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        self.seen = git::stage_edits(&self.repo, &self.parent, &self.in_repo(files.clone()))?;
+        self.staged = files;
         Ok(())
     }
 
@@ -791,82 +798,55 @@ fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(),
     refuse_worse(starts(&afters), starts(&befores))
 }
 
-/// One save: read the branch's commit, apply, validate, and swap the branch onto the result. The swap is a
-/// compare-and-swap on the commit that was read, so a writer who lost a race is refused rather than overwriting the
-/// winner, and no lock is held. It spawns git, which is why every caller runs it through `blocking`.
-fn save_on_branch(
-    branch: &str,
-    base: Option<String>,
-    scope: &str,
-    touches: Touches,
-    message: String,
-    author: &Actor,
-    mutate: impl FnOnce(&mut FileConfig),
-) -> Envelope<Save> {
-    let data_dir = leader_data_dir();
-    save_on_branch_in(&data_dir, branch, base, scope, touches, message, author, vec![], mutate)
-}
+impl Writing {
+    /// One save: read the branch's commit, apply `mutate`, validate, and swap the branch onto the result with the
+    /// files staged. The swap is a compare-and-swap on the commit that was read, so a writer who lost a race is
+    /// refused rather than overwriting the winner, and no lock is held. It spawns git, which is why every caller runs
+    /// it through `blocking`.
+    fn save(
+        &self,
+        touches: Touches,
+        message: &str,
+        author: &Actor,
+        mutate: impl FnOnce(&mut FileConfig),
+    ) -> Envelope<Save> {
+        let at = self.at();
+        let old = self.read();
 
-/// `data_dir` explicit rather than read from the environment -- what a test needs to run against a scratch
-/// repository. `files` land in the same commit as the config, and the config is validated against them.
-#[allow(clippy::too_many_arguments)]
-fn save_on_branch_in(
-    data_dir: &Path,
-    branch: &str,
-    base: Option<String>,
-    scope: &str,
-    touches: Touches,
-    message: String,
-    author: &Actor,
-    files: Vec<git::FileEdit>,
-    mutate: impl FnOnce(&mut FileConfig),
-) -> Envelope<Save> {
-    let mut writing = match Writing::open_in(data_dir, branch, base.as_deref(), scope) {
-        Ok(writing) => writing,
-        Err(e) => return Save::refused(e),
-    };
-    // A table that names a file this save adds is compiled from that file, and the parent does not hold it yet.
-    if !files.is_empty()
-        && let Err(e) = writing.stage(&files)
-    {
-        return Envelope::refused(e);
-    }
-    let at = writing.at();
-    let old = writing.read();
+        let mut file = old.file.clone();
+        mutate(&mut file);
 
-    let mut file = old.file.clone();
-    mutate(&mut file);
+        // `shared/` has to stand on its own: every group draws on it, so it can reference nothing that only one of
+        // them holds. A group is the other way round -- it runs `shared/` merged with its own subtree, and a route of
+        // its own may name a source `shared/` declares, which the subtree read alone calls unknown. Judging a group by
+        // its subtree refused every legitimate use of the thing `shared/` exists for; `refuse_broken_merge` below is
+        // what holds a group to the bundle it actually runs.
+        if self.prefix == config_file::SHARED_DIR {
+            // The old config is judged where it was saved: a save that rewrites a lookup file in place has already
+            // staged the new bytes at the path the old config names.
+            let before = config_file::BundleAt::Commit {
+                repo: self.repo.clone(),
+                commit: self.parent.clone(),
+                prefix: self.prefix.clone(),
+            };
+            let old_errors = errors_in(old.file.clone(), &before);
+            if let Err(response) = refuse_worse(errors_in(file.clone(), &at), old_errors) {
+                return response;
+            }
+        }
 
-    // `shared/` has to stand on its own: every group draws on it, so it can reference nothing that only one of
-    // them holds. A group is the other way round -- it runs `shared/` merged with its own subtree, and a route of
-    // its own may name a source `shared/` declares, which the subtree read alone calls unknown. Judging a group by
-    // its subtree refused every legitimate use of the thing `shared/` exists for; `refuse_broken_merge` below is
-    // what holds a group to the bundle it actually runs.
-    if writing.prefix == config_file::SHARED_DIR {
-        // The old config is judged where it was saved: a save that rewrites a lookup file in place has already
-        // staged the new bytes at the path the old config names.
-        let before = config_file::BundleAt::Commit {
-            repo: writing.repo.clone(),
-            commit: writing.parent.clone(),
-            prefix: writing.prefix.clone(),
+        let mut edits = match edits_for(&file, &old, touches) {
+            Ok(edits) => edits,
+            Err(e) => return Envelope::refused(e),
         };
-        let old_errors = errors_in(old.file.clone(), &before);
-        if let Err(response) = refuse_worse(errors_in(file.clone(), &at), old_errors) {
+        edits.extend(self.staged.iter().cloned());
+        if let Err(response) = refuse_broken_merge(self, &edits) {
             return response;
         }
-    }
-
-    let mut edits = match edits_for(&file, &old, touches) {
-        Ok(edits) => edits,
-        Err(e) => return Envelope::refused(e),
-    };
-    edits.extend(files);
-    if let Err(response) = refuse_broken_merge(&writing, &edits) {
-        return response;
-    }
-    match writing.commit(edits, &message, author) {
-        Ok(commit) => Save::done(commit),
-        Err(e) => Save::refused(e),
+        match self.commit(edits, message, author) {
+            Ok(commit) => Save::done(commit),
+            Err(e) => Save::refused(e),
+        }
     }
 }
 
@@ -1011,15 +991,9 @@ pub async fn put_sources(
     }
     let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
-        save_on_branch(
-            &branch,
-            base,
-            &area,
-            Touches::Sources,
-            "edit sources".into(),
-            &actor,
-            |file| file.sources = sources,
-        )
+        Writing::open(&branch, base.as_deref(), &area).map_or_else(Save::refused, |writing| {
+            writing.save(Touches::Sources, "edit sources", &actor, |file| file.sources = sources)
+        })
     })
     .await
 }
@@ -1040,15 +1014,11 @@ pub async fn put_destinations(
     }
     let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
-        save_on_branch(
-            &branch,
-            base,
-            &area,
-            Touches::Destinations,
-            "edit destinations".into(),
-            &actor,
-            |file| file.destinations = destinations,
-        )
+        Writing::open(&branch, base.as_deref(), &area).map_or_else(Save::refused, |writing| {
+            writing.save(Touches::Destinations, "edit destinations", &actor, |file| {
+                file.destinations = destinations
+            })
+        })
     })
     .await
 }
@@ -1119,15 +1089,9 @@ pub async fn put_routes(
 ) -> Envelope<Save> {
     let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
-        save_on_branch(
-            &branch,
-            base,
-            &area,
-            Touches::Routes,
-            "edit routes".into(),
-            &actor,
-            |file| file.routes = routes,
-        )
+        Writing::open(&branch, base.as_deref(), &area).map_or_else(Save::refused, |writing| {
+            writing.save(Touches::Routes, "edit routes", &actor, |file| file.routes = routes)
+        })
     })
     .await
 }
@@ -1141,15 +1105,11 @@ pub async fn put_grok_patterns(
 ) -> Envelope<Save> {
     let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
-        save_on_branch(
-            &branch,
-            base,
-            &area,
-            Touches::GrokPatterns,
-            "edit grokPatterns".into(),
-            &actor,
-            |file| file.grok_patterns = patterns,
-        )
+        Writing::open(&branch, base.as_deref(), &area).map_or_else(Save::refused, |writing| {
+            writing.save(Touches::GrokPatterns, "edit grokPatterns", &actor, |file| {
+                file.grok_patterns = patterns
+            })
+        })
     })
     .await
 }
@@ -1184,15 +1144,9 @@ pub async fn put_manifest(
         ));
     }
     blocking_save(move || {
-        save_on_branch(
-            &branch,
-            base,
-            &area,
-            Touches::OnlyManifest,
-            "edit manifest".into(),
-            &actor,
-            |file| body.apply(file),
-        )
+        Writing::open(&branch, base.as_deref(), &area).map_or_else(Save::refused, |writing| {
+            writing.save(Touches::OnlyManifest, "edit manifest", &actor, |file| body.apply(file))
+        })
     })
     .await
 }
@@ -1214,22 +1168,15 @@ pub async fn put_lookup_tables(
     Json(tables): Json<Vec<LookupTableEdit>>,
 ) -> Envelope<Save> {
     let (branch, base) = (q.name().to_string(), base_commit(&headers));
-    blocking_save(move || save_lookup_tables_in(&leader_data_dir(), &branch, base, &area, tables, &actor)).await
+    blocking_save(move || {
+        Writing::open(&branch, base.as_deref(), &area)
+            .map_or_else(Save::refused, |writing| save_lookup_tables(writing, tables, &actor))
+    })
+    .await
 }
 
-fn save_lookup_tables_in(
-    data_dir: &Path,
-    branch: &str,
-    base: Option<String>,
-    scope: &str,
-    edits: Vec<LookupTableEdit>,
-    author: &Actor,
-) -> Envelope<Save> {
-    let repo = git::repo_path(data_dir);
-    let prefix = match Scope::parse(scope) {
-        Ok(scope) => scope.prefix().to_string(),
-        Err(e) => return Envelope::refused(e),
-    };
+fn save_lookup_tables(mut writing: Writing, edits: Vec<LookupTableEdit>, author: &Actor) -> Envelope<Save> {
+    let (repo, prefix) = (writing.repo().to_path_buf(), writing.prefix().to_string());
     let (mut tables, contents): (Vec<_>, Vec<_>) = edits.into_iter().map(|e| (e.table, e.contents)).unzip();
     let mut files = Vec::new();
     for (i, text) in contents.into_iter().enumerate() {
@@ -1253,17 +1200,12 @@ fn save_lookup_tables_in(
             }
         }
     }
-    save_on_branch_in(
-        data_dir,
-        branch,
-        base,
-        scope,
-        Touches::LookupTables,
-        "edit lookupTables".into(),
-        author,
-        files,
-        |file| file.lookup_tables = tables,
-    )
+    if let Err(e) = writing.stage(files) {
+        return Envelope::refused(e);
+    }
+    writing.save(Touches::LookupTables, "edit lookupTables", author, |file| {
+        file.lookup_tables = tables
+    })
 }
 
 /// The path a table's rows are saved at: one per table, so each save rewrites the same pointer and git's history of
@@ -1572,8 +1514,10 @@ pub async fn put_pipeline(
     blocking_save(move || {
         // The History page shows this; a person knows a pipeline by its name, not its id.
         let message = format!("edit pipeline {}", pipeline.name);
-        save_on_branch(&branch, base, &area, Touches::OnlyPipelines, message, &actor, |file| {
-            replace_pipeline(file, &id, pipeline)
+        Writing::open(&branch, base.as_deref(), &area).map_or_else(Save::refused, |writing| {
+            writing.save(Touches::OnlyPipelines, &message, &actor, |file| {
+                replace_pipeline(file, &id, pipeline)
+            })
         })
     })
     .await
@@ -1609,8 +1553,10 @@ pub async fn delete_pipeline(
             })
             .unwrap_or_else(|| id.clone());
         let message = format!("delete pipeline {name}");
-        save_on_branch(&branch, base, &area, Touches::OnlyPipelines, message, &actor, |file| {
-            file.pipelines.retain(|p| p.id != id);
+        Writing::open(&branch, base.as_deref(), &area).map_or_else(Save::refused, |writing| {
+            writing.save(Touches::OnlyPipelines, &message, &actor, |file| {
+                file.pipelines.retain(|p| p.id != id);
+            })
         })
     })
     .await
@@ -1758,7 +1704,7 @@ fn undo_in(
     req: UndoRequest,
     author: &Actor,
 ) -> Envelope<Save> {
-    let writing = match Writing::open_in(data_dir, branch, base.as_deref(), scope) {
+    let mut writing = match Writing::open_in(data_dir, branch, base.as_deref(), scope) {
         Ok(writing) => writing,
         Err(e) => return Save::refused(e),
     };
@@ -1833,19 +1779,13 @@ fn undo_in(
         )));
     }
 
-    // Pinned to the commit `file` was read from, so the save differs from it in this one section and in nothing a
-    // save in between could have brought.
-    save_on_branch_in(
-        data_dir,
-        branch,
-        Some(writing.parent.clone()),
-        scope,
-        section.touches(),
-        format!("undo changes to {} {name}", section.noun()),
-        author,
-        files,
-        |into| *into = file,
-    )
+    // On the commit `file` was read from, so the save differs from it in this one section and in nothing a save in
+    // between could have brought.
+    if let Err(e) = writing.stage(files) {
+        return Envelope::refused(e);
+    }
+    let message = format!("undo changes to {} {name}", section.noun());
+    writing.save(section.touches(), &message, author, |into| *into = file)
 }
 
 /// Puts `within`, a path in the scope's bundle, back as it was at `left_at`, or removes it where `left_at` has none.
@@ -1925,7 +1865,7 @@ fn undo_file_in(
 //
 // Records under a name (`config_file::sample`). A sample is a file in the bundle like any other, so it is written by
 // one commit on a branch and a rollback restores the samples the previous deploy ran with. It is not part of the
-// configuration a deployment loads, so a write skips `save_on_branch`'s whole-bundle validation: no sample can make
+// configuration a deployment loads, so a write skips `Writing::save`'s whole-bundle validation: no sample can make
 // a bundle invalid, and refusing to save records because an unrelated pipeline is mid-edit would be answering for
 // the wrong thing.
 
@@ -2821,15 +2761,10 @@ mod tests {
             steps,
         };
         let save = |id: &str, pipeline| {
-            let response = save_on_branch_in(
-                &data,
-                "work",
-                None,
-                "west",
+            let response = Writing::open_in(&data, "work", None, "west").unwrap().save(
                 Touches::OnlyPipelines,
-                "save pipeline".into(),
+                "save pipeline",
                 &Actor::system(),
-                vec![],
                 |file| replace_pipeline(file, id, pipeline),
             );
             assert!(response.succeeded(), "{response:?}");
@@ -2867,15 +2802,10 @@ mod tests {
             deliver: vec![],
             on_exception: None,
         };
-        let response = save_on_branch_in(
-            &data,
-            "work",
-            None,
-            "west",
+        let response = Writing::open_in(&data, "work", None, "west").unwrap().save(
             Touches::Routes,
-            "add reference".into(),
+            "add reference",
             &Actor::system(),
-            vec![],
             |file| {
                 file.sources.push(SourceDto {
                     id: "source-a".into(),
@@ -2924,15 +2854,10 @@ mod tests {
             )
             .expect("seeded");
 
-        let response = save_on_branch_in(
-            &data,
-            "work",
-            None,
-            "west",
+        let response = Writing::open_in(&data, "work", None, "west").unwrap().save(
             Touches::Sources,
-            "a sources save".to_string(),
+            "a sources save",
             &Actor::system(),
-            vec![],
             |file| {
                 file.sources = vec![SourceDto {
                     id: "source-1".to_string(),
@@ -2966,15 +2891,10 @@ mod tests {
             )
             .expect("seeded");
 
-        let response = save_on_branch_in(
-            &data,
-            "work",
-            None,
-            "west",
+        let response = Writing::open_in(&data, "work", None, "west").unwrap().save(
             Touches::Sources,
-            "a sources save".to_string(),
+            "a sources save",
             &Actor::system(),
-            vec![],
             |file| {
                 file.sources = vec![SourceDto {
                     id: "source-1".to_string(),
@@ -3023,15 +2943,10 @@ mod tests {
             )
             .expect("seeded");
         let save = |touches, mutate: &dyn Fn(&mut FileConfig)| {
-            let response = save_on_branch_in(
-                &data,
-                "work",
-                None,
-                "west",
+            let response = Writing::open_in(&data, "work", None, "west").unwrap().save(
                 touches,
-                "a save".to_string(),
+                "a save",
                 &Actor::system(),
-                vec![],
                 mutate,
             );
             assert!(response.succeeded(), "saved: {response:?}");
@@ -3133,15 +3048,10 @@ mod tests {
 
         let body: ManifestBody =
             serde_json::from_str(r#"{"exceptions":{"categories":{"math":"drop"}}}"#).expect("a manifest body");
-        let response = save_on_branch_in(
-            &data,
-            "work",
-            None,
-            "west",
+        let response = Writing::open_in(&data, "work", None, "west").unwrap().save(
             Touches::OnlyManifest,
-            "edit manifest".to_string(),
+            "edit manifest",
             &Actor::system(),
-            vec![],
             |file| body.apply(file),
         );
         assert!(response.succeeded(), "saved: {response:?}");
@@ -3895,7 +3805,31 @@ mod tests {
         let edit =
             serde_json::json!({ "id": "hosts", "type": "csv", "path": "", "delimiter": ";", "contents": contents });
         let edits = vec![serde_json::from_value(edit).unwrap()];
-        save_lookup_tables_in(data, "work", None, "shared", edits, &Actor::system())
+        save_lookup_tables(
+            Writing::open_in(data, "work", None, "shared").unwrap(),
+            edits,
+            &Actor::system(),
+        )
+    }
+
+    /// A lookup-table save to a scope that is not one is refused as every save is, before its contents are read:
+    /// no commit, the scope's reason, and nothing moved to carry a change over from.
+    #[test]
+    fn a_lookup_table_save_to_no_scope_is_refused_like_any_save() {
+        let data = a_repo("lookup-no-scope");
+        let edit = serde_json::json!({ "id": "hosts", "type": "csv", "path": "", "delimiter": ";", "contents": "x" });
+        // As `put_lookup_tables` answers it.
+        let refused = Writing::open_in(&data, "work", None, "../escaped").map_or_else(Save::refused, |writing| {
+            save_lookup_tables(writing, vec![serde_json::from_value(edit).unwrap()], &Actor::system())
+        });
+        assert!(!refused.succeeded());
+        assert!(
+            refused.errors[0].message.contains("../escaped"),
+            "{}",
+            refused.errors[0].message
+        );
+        assert!(refused.body.commit.is_none() && refused.body.conflict.is_none());
+        std::fs::remove_dir_all(&data).ok();
     }
 
     /// The file and the table that names it land in one commit, and a pipeline that looks the table up is compiled
@@ -4010,7 +3944,11 @@ mod tests {
             table("a b", Some("ip;host\n")),
             table("b", Some("ip;host\n")),
         ];
-        let saved = save_lookup_tables_in(&data, "work", None, "shared", edits, &Actor::system());
+        let saved = save_lookup_tables(
+            Writing::open_in(&data, "work", None, "shared").unwrap(),
+            edits,
+            &Actor::system(),
+        );
         assert!(saved.succeeded(), "{saved:?}");
 
         let raw = Reading::open_in(&data, "work", "shared").unwrap().raw();
@@ -4041,7 +3979,11 @@ mod tests {
             serde_json::from_value(other).unwrap(),
             serde_json::from_value(hosts).unwrap(),
         ];
-        let saved = save_lookup_tables_in(&data, "work", None, "shared", edits, &Actor::system());
+        let saved = save_lookup_tables(
+            Writing::open_in(&data, "work", None, "shared").unwrap(),
+            edits,
+            &Actor::system(),
+        );
         assert!(saved.succeeded(), "{saved:?}");
 
         let raw = Reading::open_in(&data, "work", "shared").unwrap().raw();
@@ -4146,17 +4088,10 @@ mod tests {
     }
 
     fn save_work(data: &Path, touches: Touches, mutate: impl FnOnce(&mut FileConfig)) {
-        let response = save_on_branch_in(
-            data,
-            "work",
-            None,
-            "shared",
-            touches,
-            "an edit".to_string(),
-            &Actor::system(),
-            vec![],
-            mutate,
-        );
+        let response =
+            Writing::open_in(data, "work", None, "shared")
+                .unwrap()
+                .save(touches, "an edit", &Actor::system(), mutate);
         assert!(response.succeeded(), "saved: {response:?}");
     }
 
@@ -4166,6 +4101,35 @@ mod tests {
             id: id.to_string(),
         };
         undo_in(data, "work", None, "shared", req, &Actor::system())
+    }
+
+    /// Undo reads and saves on one `Writing`, so a save that lands on the branch between the two is not
+    /// overwritten: the swap on the commit that was read refuses it and names both commits.
+    #[test]
+    fn a_save_on_a_writing_the_branch_moved_past_is_refused_with_both_commits() {
+        let data = main_with_routes("undo-moved");
+        save_work(&data, Touches::OnlyPipelines, |file| {
+            file.pipelines = vec![pipeline_p(Some("1"))]
+        });
+        let writing = Writing::open_in(&data, "work", None, "shared").unwrap();
+        let read_at = writing.parent.clone();
+        save_work(&data, Touches::OnlyPipelines, |file| {
+            file.pipelines = vec![pipeline_p(Some("2"))]
+        });
+        let moved = git::branch_tip(&git::repo_path(&data), "work").unwrap();
+
+        let refused = writing.save(Touches::OnlyPipelines, "undo", &Actor::system(), |file| {
+            file.pipelines = vec![pipeline_p(None)]
+        });
+        assert!(!refused.succeeded(), "{refused:?}");
+        let conflict = refused.body.conflict.expect("a branch that moved says which commits");
+        assert_eq!((conflict.base, conflict.now), (read_at, Some(moved)));
+        assert_eq!(
+            as_json(&work(&data).pipelines),
+            as_json(&vec![pipeline_p(Some("2"))]),
+            "the save in between stands"
+        );
+        std::fs::remove_dir_all(&data).ok();
     }
 
     fn work(data: &Path) -> FileConfig {
