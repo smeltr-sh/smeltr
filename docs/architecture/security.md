@@ -189,6 +189,21 @@ that data could do. A conversation is its person's alone.
   agent permissions ┘
 ```
 
+An integration is a principal of the same kind as a person, for a script
+outside the leader that calls its API. It is an account of its own that never signs in and
+holds no session. It calls with one of its **keys**, sent as a Bearer token,
+and needs no Origin or CSRF check, since no browser sends a key on its own. The
+leader keeps a key's hash and returns the key once, when it is made, as it does
+a worker's token. An administrator names an integration and gives it roles by
+name, which it holds as an OIDC account holds the roles of its groups, or makes
+it an administrator. It holds any number of keys, so one is replaced without a
+gap. A revoked key stays out, and disabling an integration revokes every key it
+holds.
+
+A key reaches no route that is a person's own, nor integrations
+themselves, so no key makes another. What an integration does is recorded as
+its own, under its name, in the audit and in git.
+
 A disable, a password reset or a revocation that lands while a sign-in is
 checking the password refuses that sign-in. Changing a
 password, one's own or by an admin's reset, ends every session the account
