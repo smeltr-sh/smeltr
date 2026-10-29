@@ -39,9 +39,6 @@
 
 <style>
   .icon {
-    padding: 0 0.25rem;
-    line-height: 1.2;
     font-size: var(--text-micro);
-    color: var(--dim);
   }
 </style>

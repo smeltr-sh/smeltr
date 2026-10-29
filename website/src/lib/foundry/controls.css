@@ -55,6 +55,25 @@
   font-size: var(--text-note);
 }
 
+/* A control that is only a glyph, which its `aria-label` names: bare and dim
+   until hovered, on the 24px target a pointer needs (WCAG 2.5.8). */
+:where(button, .btn).icon {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.5rem;
+  min-height: 1.5rem;
+  padding: 0.2rem;
+  border-color: transparent;
+  background: none;
+  color: var(--dim);
+  line-height: 1;
+}
+
+:where(button:not(:disabled), .btn).icon:hover {
+  border-color: transparent;
+  color: var(--ink);
+}
+
 :where(button):disabled {
   opacity: 0.55;
   cursor: default;
