@@ -55,7 +55,7 @@ const ACCOUNTS = [
     displayName: 'exporter',
     enabled: true,
     administrator: false,
-    authSource: 'integration',
+    authSource: 'key',
     createdAt: 1,
     updatedAt: 1,
     roles: ['smeltr-payments'],
@@ -197,7 +197,7 @@ describe('the Accounts tab', () => {
     expect(pills('exporter')).toEqual(['smeltr-payments']);
   });
 
-  it('lists an integration among the accounts, by its key, with its own actions', async () => {
+  it('lists a key account among the accounts, by its key, with its own actions', async () => {
     await accountsTab();
     expect(row('exporter').textContent).toContain('Key');
     expect(row('exporter').textContent).toContain('1 key');
@@ -207,7 +207,7 @@ describe('the Accounts tab', () => {
     expect(target.querySelector('table[aria-label="Keys"]')?.textContent).toContain('nightly');
   });
 
-  it('adds an integration as an account that signs in with a key', async () => {
+  it('adds an account that signs in with a key', async () => {
     await accountsTab();
     button('+ Add account')!.click();
     flushSync();
@@ -223,7 +223,7 @@ describe('the Accounts tab', () => {
     expect(calls[0]).toEqual({
       method: 'POST',
       url: '/api/accounts',
-      body: { authSource: 'integration', displayName: 'exporter', roles: [], administrator: false },
+      body: { authSource: 'key', displayName: 'exporter', roles: [], administrator: false },
     });
   });
 

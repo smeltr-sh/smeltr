@@ -1,22 +1,22 @@
 <!--
-  What Admin -> Accounts opens under an integration's row: what an
+  What Admin -> Accounts opens under a key account's row: what an
   administrator does to it, and its keys. A new key goes up to the page with
   `onkey`, which shows it once, until it is dismissed.
 -->
 <script lang="ts">
   import { reported } from './errors.svelte';
   import Field from './Field.svelte';
-  import IntegrationAccess from './IntegrationAccess.svelte';
+  import KeyAccountAccess from './KeyAccountAccess.svelte';
   import { ask } from './Confirm.svelte';
   import { ago } from './time';
   import {
     changeAccount,
-    createIntegrationKey,
+    createKey,
     refused,
-    revokeIntegrationKey,
+    revokeKey,
     type AccountChange,
     type AccountDto,
-    type CreatedIntegrationKeyDto,
+    type CreatedKeyDto,
     type RoleDto,
   } from './api';
 
@@ -30,7 +30,7 @@
     roles: RoleDto[];
     /** After a change landed, with the status line that says what it did. */
     onchanged: (message: string) => Promise<void>;
-    onkey: (created: CreatedIntegrationKeyDto) => void;
+    onkey: (created: CreatedKeyDto) => void;
   } = $props();
 
   let busy = $state(false);
@@ -50,7 +50,7 @@
     draftLabel = '';
   }
 
-  /** One change, answered with the integration as it now stands. */
+  /** One change, answered with the account as it now stands. */
   async function change(what: AccountChange, done: string) {
     if (busy) return;
     busy = true;
@@ -101,7 +101,7 @@
     if (busy) return;
     busy = true;
     try {
-      const result = await createIntegrationKey(account.id, draftLabel);
+      const result = await createKey(account.id, draftLabel);
       if (refused(result)) return;
       form = null;
       // Read again first, so the key is shown beside the row that lists it.
@@ -125,7 +125,7 @@
     if (!ok || busy) return;
     busy = true;
     try {
-      const result = await revokeIntegrationKey(account.id, key.id);
+      const result = await revokeKey(account.id, key.id);
       if (refused(result)) return;
       await onchanged('key revoked');
     } catch (e) {
@@ -169,7 +169,7 @@
   </form>
 {:else if form === 'roles'}
   <form class="panel" onsubmit={saveRoles}>
-    <IntegrationAccess {roles} bind:administrator={draftAdministrator} bind:chosen={draftRoles} />
+    <KeyAccountAccess {roles} bind:administrator={draftAdministrator} bind:chosen={draftRoles} />
     <div class="actions">
       <button type="button" onclick={() => (form = null)}>Cancel</button>
       <button class="primary" type="submit" disabled={busy}>Save access</button>

@@ -25,7 +25,7 @@ mod cluster;
 mod config_api;
 mod docs_api;
 mod gate;
-mod integrations_api;
+mod key_accounts_api;
 mod oidc_api;
 mod policy;
 mod roles_api;
@@ -2054,8 +2054,8 @@ async fn run_leader() {
             .route("/api/accounts/:id", patch(accounts_api::patch_account))
             .route("/api/accounts/:id/reset-password", post(accounts_api::reset_password))
             .route("/api/accounts/:id/revoke-sessions", post(accounts_api::revoke_sessions))
-            .route("/api/accounts/:id/keys", post(integrations_api::create_key))
-            .route("/api/accounts/:id/keys/:key", delete(integrations_api::revoke_key))
+            .route("/api/accounts/:id/keys", post(key_accounts_api::create_key))
+            .route("/api/accounts/:id/keys/:key", delete(key_accounts_api::revoke_key))
             .route("/api/security-events", get(accounts_api::list_security_events))
             .route(
                 "/api/me/agent-permissions",

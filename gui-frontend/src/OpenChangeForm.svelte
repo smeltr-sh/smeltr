@@ -120,11 +120,11 @@
 
   async function loadReviewers() {
     try {
-      // A review is a person's: an integration never signs in to give one.
+      // A review is a person's: a key account never signs in to give one.
       reviewers = (await listAccounts())
         .filter(
           (u) =>
-            u.authSource !== 'integration' &&
+            u.authSource !== 'key' &&
             u.enabled &&
             deployBlocker(entry.touches, u.access) === '' &&
             u.id !== session().userId,

@@ -1,5 +1,5 @@
 <!--
-  What an integration holds, as the fields that choose it: everything as an
+  What a key account holds, as the fields that choose it: everything as an
   administrator, or what the roles it is given give.
 -->
 <script lang="ts">

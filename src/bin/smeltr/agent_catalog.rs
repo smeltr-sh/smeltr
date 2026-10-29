@@ -517,19 +517,19 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/accounts",
-        what: "Every account, however it signs in (authSource local, oidc or integration), with its roles and, for an integration, its keys in force, never a key itself, as `accounts`. No query.",
+        what: "Every account, however it signs in (authSource local, oidc or key), with its roles and, for a key account, its keys in force, never a key itself, as `accounts`. No query.",
         body: "",
     },
     Route {
         method: "POST",
         path: "/api/accounts",
-        what: "Create a local administrator, returning a one-time temporary password, or an enabled integration holding no key yet. No query.",
-        body: "{ authSource: 'local', username: string, displayName: string } | { authSource: 'integration', displayName: string, roles?: string[], administrator?: boolean }",
+        what: "Create a local administrator, returning a one-time temporary password, or an enabled key account holding no key yet. No query.",
+        body: "{ authSource: 'local', username: string, displayName: string } | { authSource: 'key', displayName: string, roles?: string[], administrator?: boolean }",
     },
     Route {
         method: "PATCH",
         path: "/api/accounts/:id",
-        what: "Change one account's display name or enabled state, or an integration's roles or administrator, one field per request. Disabling an integration revokes every key it holds. No query.",
+        what: "Change one account's display name or enabled state, or a key account's roles or administrator, one field per request. Disabling a key account revokes every key it holds. No query.",
         body: "{ displayName?: string, enabled?: boolean, roles?: string[], administrator?: boolean } (exactly one)",
     },
     Route {
@@ -547,7 +547,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "DELETE",
         path: "/api/accounts/:id/keys/:key",
-        what: "Revoke one of an integration's keys. No query.",
+        what: "Revoke one of a key account's keys. No query.",
         body: "",
     },
     Route {

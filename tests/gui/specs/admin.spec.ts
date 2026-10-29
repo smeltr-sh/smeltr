@@ -552,7 +552,7 @@ test('AI agents turned on under System offer the agent screens', async ({ admin 
   }
 });
 
-test('an integration made under Accounts calls with its key until the key is revoked', async ({
+test('a key account made under Accounts calls with its key until the key is revoked', async ({
   admin,
   api,
   leader,

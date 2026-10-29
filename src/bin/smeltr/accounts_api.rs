@@ -4,10 +4,9 @@
 //! Behind the gate, so every handler has an [`Actor`] the server built. Who is acting is taken from that and
 //! never from the body: a caller naming themselves in JSON is naming nothing.
 //!
-//! An account signs in with a password, through an OpenID provider, or with a key, as an integration
-//! (`integrations_api`). A local account is an administrator. An OIDC account holds what its roles give
-//! (`roles_api`), which the roster reports beside it. An integration holds the roles it is given here, or
-//! everything when it is made an administrator.
+//! An account signs in with a password, through an OpenID provider, or with a key (`key_accounts_api`). A local
+//! account is an administrator. An OIDC account holds what its roles give (`roles_api`), which the roster reports
+//! beside it. A key account holds the roles it is given here, or everything when it is made an administrator.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -19,12 +18,12 @@ use std::time::Duration;
 use smeltr::leader::access::{Access, Role};
 use smeltr::leader::envelope::Envelope;
 use smeltr::leader::store::{
-    AccountError, Actor, AuthSource, IntegrationRecord, NewLocalUser, Store, StoreError, UserRecord,
+    AccountError, Actor, AuthSource, KeyAccountRecord, NewLocalUser, Store, StoreError, UserRecord,
 };
 use smeltr::leader::{accounts, blocking, sessions};
 
-use crate::gate::{AccessDto, Auth, integration_access, refuse, store_unavailable};
-use crate::integrations_api::{self, KeyDto};
+use crate::gate::{AccessDto, Auth, key_account_access, refuse, store_unavailable};
+use crate::key_accounts_api::{self, KeyDto};
 
 /// An account as the roster shows it. No verifier, no password state beyond whether one must be changed, and
 /// never a key or its hash.
@@ -35,7 +34,7 @@ pub struct AccountDto {
     pub username: Option<String>,
     pub display_name: String,
     pub enabled: bool,
-    /// Whether the account itself makes it an administrator, as a local account always does and an integration
+    /// Whether the account itself makes it an administrator, as a local account always does and a key account
     /// may. What it holds, from this or its roles, is `access`.
     pub administrator: bool,
     pub auth_source: String,
@@ -43,14 +42,14 @@ pub struct AccountDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_login: Option<String>,
     /// The roles this account holds: an OIDC account's are those of its provider groups, as of its last sign-in,
-    /// that a role is named for; an integration's are those it was given. Empty for a local account, which holds
+    /// that a role is named for; a key account's are those it was given. Empty for a local account, which holds
     /// everything without one.
     pub roles: Vec<String>,
     /// Every group the provider named at this account's last sign-in or refresh, a role's or not, exactly as it
     /// named them: what a new role must be called to reach this person. Empty for any other account.
     pub groups: Vec<String>,
     pub access: AccessDto,
-    /// An integration's keys in force. Absent for any other account.
+    /// A key account's keys in force. Absent for any other account.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keys: Option<Vec<KeyDto>>,
     pub created_at: i64,
@@ -63,7 +62,7 @@ impl AccountDto {
         let username = store.username_of(&user.id)?;
         let identity = match user.auth_source {
             AuthSource::Oidc => store.oidc_identity_of(&user.id)?,
-            AuthSource::Local | AuthSource::Integration => None,
+            AuthSource::Local | AuthSource::Key => None,
         };
         let groups = identity.as_ref().map(|i| i.groups.clone()).unwrap_or_default();
         let held = roles
@@ -89,23 +88,23 @@ impl AccountDto {
         })
     }
 
-    /// `integration` as the roster shows it, given every role there is.
-    pub fn of_integration(integration: IntegrationRecord, roles: &[Role]) -> AccountDto {
-        let access = integration_access(&integration, roles);
+    /// `account` as the roster shows it, given every role there is.
+    pub fn of_key_account(account: KeyAccountRecord, roles: &[Role]) -> AccountDto {
+        let access = key_account_access(&account, roles);
         AccountDto {
-            id: integration.id,
+            id: account.id,
             username: None,
-            display_name: integration.name,
-            enabled: integration.enabled,
-            administrator: integration.administrator,
-            auth_source: AuthSource::Integration.as_str().to_string(),
+            display_name: account.display_name,
+            enabled: account.enabled,
+            administrator: account.administrator,
+            auth_source: AuthSource::Key.as_str().to_string(),
             provider_login: None,
-            roles: integration.roles,
+            roles: account.roles,
             groups: Vec::new(),
             access: AccessDto::from(&access),
-            keys: Some(integration.keys.into_iter().map(KeyDto::from).collect()),
-            created_at: integration.created_at,
-            updated_at: integration.updated_at,
+            keys: Some(account.keys.into_iter().map(KeyDto::from).collect()),
+            created_at: account.created_at,
+            updated_at: account.updated_at,
         }
     }
 }
@@ -155,9 +154,9 @@ pub async fn list_accounts(State(auth): State<Auth>) -> Response {
             .collect::<Result<Vec<_>, _>>()?;
         accounts.extend(
             store
-                .list_integrations()?
+                .list_key_accounts()?
                 .into_iter()
-                .map(|integration| AccountDto::of_integration(integration, &roles)),
+                .map(|account| AccountDto::of_key_account(account, &roles)),
         );
         accounts.sort_by_key(|account| account.created_at);
         Ok(accounts)
@@ -176,7 +175,7 @@ pub enum CreateRequest {
     #[serde(rename_all = "camelCase")]
     Local { username: String, display_name: String },
     #[serde(rename_all = "camelCase")]
-    Integration {
+    Key {
         display_name: String,
         #[serde(default)]
         roles: Vec<String>,
@@ -185,7 +184,7 @@ pub enum CreateRequest {
     },
 }
 
-/// `POST /api/accounts`: a local administrator, answered with its temporary password, or an enabled integration
+/// `POST /api/accounts`: a local administrator, answered with its temporary password, or an enabled key account
 /// holding no key yet, answered as the roster shows it.
 pub async fn create_account(
     State(auth): State<Auth>,
@@ -194,11 +193,11 @@ pub async fn create_account(
 ) -> Response {
     match request {
         CreateRequest::Local { username, display_name } => create_user(&auth, &actor, &username, &display_name).await,
-        CreateRequest::Integration {
+        CreateRequest::Key {
             display_name,
             roles,
             administrator,
-        } => integrations_api::create_integration(&auth, &actor, &display_name, roles, administrator).await,
+        } => key_accounts_api::create_key_account(&auth, &actor, &display_name, roles, administrator).await,
     }
 }
 
@@ -293,7 +292,7 @@ pub struct PatchRequest {
 /// refused on the second -- a caller told `409` while the display name had already changed. A refusal before
 /// anything is written is the honest answer, and no screen asks for two at once.
 ///
-/// Roles and administrator are an integration's alone: a local account is an administrator by being local, and an
+/// Roles and administrator are a key account's alone: a local account is an administrator by being local, and an
 /// OIDC account's roles are its provider's.
 pub async fn patch_account(
     State(auth): State<Auth>,
@@ -321,8 +320,8 @@ pub async fn patch_account(
         Ok(None) => return account_error(AccountError::NoSuchUser),
         Err(response) => return *response,
     };
-    if source == AuthSource::Integration {
-        return integrations_api::patch_integration(&auth, &actor, &id, request).await;
+    if source == AuthSource::Key {
+        return key_accounts_api::patch_key_account(&auth, &actor, &id, request).await;
     }
     if request.roles.is_some() || request.administrator.is_some() {
         return refuse(
@@ -377,9 +376,9 @@ pub async fn current_account(auth: &Auth, id: &str) -> Response {
     let looked_up = store_call(move || {
         let roles = store.list_roles()?;
         match store.get_user(&target)? {
-            Some(user) if user.auth_source == AuthSource::Integration => Ok(store
-                .integration(&target)?
-                .map(|integration| AccountDto::of_integration(integration, &roles))),
+            Some(user) if user.auth_source == AuthSource::Key => Ok(store
+                .key_account(&target)?
+                .map(|account| AccountDto::of_key_account(account, &roles))),
             Some(user) => AccountDto::of(store.as_ref(), user, &roles).map(Some),
             None => Ok(None),
         }
@@ -571,11 +570,10 @@ mod tests {
         let local: CreateRequest =
             serde_json::from_str(r#"{"authSource":"local","username":"ada","displayName":"Ada"}"#).unwrap();
         assert!(matches!(local, CreateRequest::Local { .. }));
-        let integration: CreateRequest =
-            serde_json::from_str(r#"{"authSource":"integration","displayName":"exporter"}"#).unwrap();
+        let key: CreateRequest = serde_json::from_str(r#"{"authSource":"key","displayName":"exporter"}"#).unwrap();
         assert!(matches!(
-            integration,
-            CreateRequest::Integration {
+            key,
+            CreateRequest::Key {
                 administrator: false,
                 ..
             }

@@ -1,8 +1,8 @@
-//! What is an integration's own: the accounts scripts call the operator API as, and the keys they call with.
+//! What is a key account's own: the accounts scripts call the operator API as, and the keys they call with.
 //!
-//! An integration holds what its roles give, as an OIDC account holds what its groups give, or everything when it
-//! is an administrator. A key is answered once, when it is made, and kept only as its hash. Disabling an
-//! integration revokes every key it holds, so enabling it again brings none of them back.
+//! A key account holds what its roles give, as an OIDC account holds what its groups give, or everything when it
+//! is an administrator. A key is answered once, when it is made, and kept only as its hash. Disabling a key
+//! account revokes every key it holds, so enabling it again brings none of them back.
 //!
 //! Reached through `/api/accounts` (`accounts_api`), behind the gate and needing an administrator.
 
@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use smeltr::leader::envelope::Envelope;
-use smeltr::leader::store::{Actor, ApiKeyRecord, IntegrationChange, NewApiKey, NewIntegration};
+use smeltr::leader::store::{Actor, ApiKeyRecord, KeyAccountChange, NewApiKey, NewKeyAccount};
 use smeltr::leader::warnings::now_millis;
 use smeltr::leader::{accounts, auth as tokens};
 
@@ -53,8 +53,8 @@ impl From<ApiKeyRecord> for KeyDto {
     }
 }
 
-/// An enabled integration holding no key yet, answered as the roster shows it.
-pub async fn create_integration(
+/// An enabled key account holding no key yet, answered as the roster shows it.
+pub async fn create_key_account(
     auth: &Auth,
     actor: &Actor,
     display_name: &str,
@@ -70,14 +70,14 @@ pub async fn create_integration(
         Err(response) => return *response,
     };
     let id = accounts::generate_user_id();
-    let event = accounts::event_for(actor, "integration-create", &id, "ok");
+    let event = accounts::event_for(actor, "account-create", &id, "ok");
     let store = auth.store.clone();
     let created = id.clone();
     let outcome = store_call(move || {
-        store.create_integration(
-            NewIntegration {
+        store.create_key_account(
+            NewKeyAccount {
                 id: &created,
-                name: &name,
+                display_name: &name,
                 roles: &roles,
                 administrator,
             },
@@ -88,13 +88,7 @@ pub async fn create_integration(
     match outcome {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
-            accounts::record(
-                auth.store.as_ref(),
-                actor,
-                "integration-create",
-                display_name,
-                "refused",
-            );
+            accounts::record(auth.store.as_ref(), actor, "account-create", display_name, "refused");
             return account_error(e);
         }
         Err(response) => return *response,
@@ -102,40 +96,37 @@ pub async fn create_integration(
     (StatusCode::CREATED, current_account(auth, &id).await).into_response()
 }
 
-/// One field of the integration `id` changed, `request` naming exactly one.
-pub async fn patch_integration(auth: &Auth, actor: &Actor, id: &str, request: PatchRequest) -> Response {
+/// One field of the key account `id` changed, `request` naming exactly one.
+pub async fn patch_key_account(auth: &Auth, actor: &Actor, id: &str, request: PatchRequest) -> Response {
     let store = auth.store.clone();
     let (action, outcome) = if let Some(enabled) = request.enabled {
-        let action = if enabled {
-            "integration-change"
+        let action = if enabled { "account-enable" } else { "account-disable" };
+        let event = accounts::event_for(actor, action, id, "ok");
+        let target = id.to_string();
+        (
+            action,
+            store_call(move || store.set_key_account_enabled(&target, enabled, &event)).await,
+        )
+    } else {
+        let (action, change) = if let Some(name) = &request.display_name {
+            match display_name(name) {
+                Ok(name) => ("account-rename", KeyAccountChange::DisplayName(name)),
+                Err(why) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, why),
+            }
+        } else if let Some(roles) = request.roles {
+            match known_roles(auth, roles).await {
+                Ok(roles) => ("account-access", KeyAccountChange::Roles(roles)),
+                Err(response) => return *response,
+            }
         } else {
-            "integration-disable"
+            let administrator = request.administrator.unwrap_or_default();
+            ("account-access", KeyAccountChange::Administrator(administrator))
         };
         let event = accounts::event_for(actor, action, id, "ok");
         let target = id.to_string();
         (
             action,
-            store_call(move || store.set_integration_enabled(&target, enabled, &event)).await,
-        )
-    } else {
-        let change = if let Some(name) = &request.display_name {
-            match display_name(name) {
-                Ok(name) => IntegrationChange::Name(name),
-                Err(why) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, why),
-            }
-        } else if let Some(roles) = request.roles {
-            match known_roles(auth, roles).await {
-                Ok(roles) => IntegrationChange::Roles(roles),
-                Err(response) => return *response,
-            }
-        } else {
-            IntegrationChange::Administrator(request.administrator.unwrap_or_default())
-        };
-        let event = accounts::event_for(actor, "integration-change", id, "ok");
-        let target = id.to_string();
-        (
-            "integration-change",
-            store_call(move || store.change_integration(&target, &change, &event)).await,
+            store_call(move || store.change_key_account(&target, &change, &event)).await,
         )
     };
     match outcome {
@@ -156,7 +147,7 @@ pub struct CreateKeyRequest {
     pub label: String,
 }
 
-/// `POST /api/accounts/:id/keys`: a new key for an enabled integration, answered this once.
+/// `POST /api/accounts/:id/keys`: a new key for an enabled key account, answered this once.
 pub async fn create_key(
     State(auth): State<Auth>,
     actor: axum::Extension<Actor>,
@@ -229,7 +220,7 @@ pub async fn revoke_key(
         Ok(true) => Envelope::done().into_response(),
         Ok(false) => {
             accounts::record(auth.store.as_ref(), &actor, "key-revoke", &key_id, "refused");
-            refuse(StatusCode::NOT_FOUND, "that integration holds no such key")
+            refuse(StatusCode::NOT_FOUND, "that account holds no such key")
         }
         Err(response) => *response,
     }

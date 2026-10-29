@@ -12,9 +12,9 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension};
 use super::access::{AgentPermissions, Level, Role};
 use super::secrets::{self, EncryptionKey, Sealed};
 use super::store::{
-    AccountError, ApiKeyRecord, AuthSource, ConversationRecord, Custody, EnrollmentCodeRecord, HeldSource,
-    IntegrationChange, IntegrationRecord, Issued, Kept, KeyStanding, KeyState, LocalCredentialRecord, NewApiKey,
-    NewEnrollmentCode, NewIntegration, NewLocalUser, OidcIdentityRecord, OidcSignIn, PresentedKey, SecretRecord,
+    AccountError, ApiKeyRecord, AuthSource, ConversationRecord, Custody, EnrollmentCodeRecord, HeldSource, Issued,
+    Kept, KeyAccountChange, KeyAccountRecord, KeyStanding, KeyState, LocalCredentialRecord, NewApiKey,
+    NewEnrollmentCode, NewKeyAccount, NewLocalUser, OidcIdentityRecord, OidcSignIn, PresentedKey, SecretRecord,
     SecurityEvent, SourceHold, Spend, Store, StoreError, StoredValue, Unopenable, UsableEnrollmentCode, UserRecord,
     WorkerCredentialRecord, WorkerKind,
 };
@@ -339,21 +339,21 @@ pub(crate) const STEPS: &[&str] = &[
     // 13 -- a certificate this leader orders over ACME, which it orders again under the `acme.*` settings. Additive:
     // an older build lists it as the certificate it also is.
     "CREATE TABLE acme_certificates (name TEXT PRIMARY KEY);",
-    // 14 -- integrations, the accounts a script calls the operator API as, and the keys each holds. Breaking: a
-    // build without this step reads an 'integration' account as local, and a local account is an administrator.
-    "CREATE TABLE integrations (
+    // 14 -- key accounts, which a script calls the operator API as, and the keys each holds. Breaking: a build
+    // without this step reads a 'key' account as local, and a local account is an administrator.
+    "CREATE TABLE key_accounts (
          user_id       TEXT PRIMARY KEY,
-         auth_source   TEXT NOT NULL CHECK (auth_source = 'integration'),
+         auth_source   TEXT NOT NULL CHECK (auth_source = 'key'),
          -- The roles an administrator gave it, by name, as a JSON array: what an OIDC account's groups are to it.
          roles         TEXT NOT NULL DEFAULT '[]',
-         -- Its own, since the account's says whether a local account is one, and an integration is never local.
+         -- Its own, since the account's says whether a local account is one, and a key account is never local.
          administrator INTEGER NOT NULL DEFAULT 0 CHECK (administrator IN (0, 1)),
          FOREIGN KEY (user_id, auth_source) REFERENCES users (id, auth_source)
      );
      -- A revoked key is marked rather than removed, so it stays refused, and what it did stays answerable.
      CREATE TABLE api_keys (
          id           TEXT PRIMARY KEY,
-         user_id      TEXT NOT NULL REFERENCES integrations (user_id),
+         user_id      TEXT NOT NULL REFERENCES key_accounts (user_id),
          label        TEXT NOT NULL DEFAULT '',
          token_hash   TEXT NOT NULL UNIQUE,
          created_at   INTEGER NOT NULL,
@@ -1582,7 +1582,7 @@ impl Store for SqliteStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, auth_source, display_name, enabled, administrator, generation, created_at, updated_at
-               FROM users WHERE auth_source <> 'integration' ORDER BY created_at, id",
+               FROM users WHERE auth_source <> 'key' ORDER BY created_at, id",
         )?;
         let rows = stmt.query_map([], read_user)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1723,7 +1723,7 @@ impl Store for SqliteStore {
     fn set_display_name(&self, user_id: &str, display_name: &str) -> Result<Result<(), AccountError>, StoreError> {
         let conn = self.conn.lock().unwrap();
         let n = conn.execute(
-            "UPDATE users SET display_name = ?2, updated_at = ?3 WHERE id = ?1 AND auth_source <> 'integration'",
+            "UPDATE users SET display_name = ?2, updated_at = ?3 WHERE id = ?1 AND auth_source <> 'key'",
             rusqlite::params![user_id, display_name, super::warnings::now_millis()],
         )?;
         match n {
@@ -1868,70 +1868,70 @@ impl Store for SqliteStore {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    // -- integrations --------------------------------------------------------
+    // -- key accounts --------------------------------------------------------
 
-    fn create_integration(
+    fn create_key_account(
         &self,
-        integration: NewIntegration<'_>,
+        account: NewKeyAccount<'_>,
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError> {
-        let roles = encode_roles(integration.roles)?;
+        let roles = encode_roles(account.roles)?;
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        if integration_name_taken(&tx, integration.name, integration.id)? {
+        if key_account_name_taken(&tx, account.display_name, account.id)? {
             return Ok(Err(AccountError::NameTaken));
         }
         tx.execute(
             "INSERT INTO users (id, auth_source, display_name, enabled, administrator, generation, created_at, updated_at)
-             VALUES (?1, 'integration', ?2, 1, 0, 1, ?3, ?3)",
-            rusqlite::params![integration.id, integration.name, event.at],
+             VALUES (?1, 'key', ?2, 1, 0, 1, ?3, ?3)",
+            rusqlite::params![account.id, account.display_name, event.at],
         )?;
         tx.execute(
-            "INSERT INTO integrations (user_id, auth_source, roles, administrator) VALUES (?1, 'integration', ?2, ?3)",
-            rusqlite::params![integration.id, roles, integration.administrator as i64],
+            "INSERT INTO key_accounts (user_id, auth_source, roles, administrator) VALUES (?1, 'key', ?2, ?3)",
+            rusqlite::params![account.id, roles, account.administrator as i64],
         )?;
         insert_event(&tx, event)?;
         tx.commit()?;
         Ok(Ok(()))
     }
 
-    fn list_integrations(&self) -> Result<Vec<IntegrationRecord>, StoreError> {
+    fn list_key_accounts(&self) -> Result<Vec<KeyAccountRecord>, StoreError> {
         let conn = self.conn.lock().unwrap();
-        read_integrations(&conn, None)
+        read_key_accounts(&conn, None)
     }
 
-    fn integration(&self, id: &str) -> Result<Option<IntegrationRecord>, StoreError> {
+    fn key_account(&self, id: &str) -> Result<Option<KeyAccountRecord>, StoreError> {
         let conn = self.conn.lock().unwrap();
-        Ok(read_integrations(&conn, Some(id))?.pop())
+        Ok(read_key_accounts(&conn, Some(id))?.pop())
     }
 
-    fn change_integration(
+    fn change_key_account(
         &self,
         id: &str,
-        change: &IntegrationChange,
+        change: &KeyAccountChange,
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        if !integration_exists(&tx, id)? {
+        if !key_account_exists(&tx, id)? {
             return Ok(Err(AccountError::NoSuchUser));
         }
         match change {
-            IntegrationChange::Name(name) => {
-                if integration_name_taken(&tx, name, id)? {
+            KeyAccountChange::DisplayName(name) => {
+                if key_account_name_taken(&tx, name, id)? {
                     return Ok(Err(AccountError::NameTaken));
                 }
                 tx.execute("UPDATE users SET display_name = ?2 WHERE id = ?1", (id, name))?;
             }
-            IntegrationChange::Roles(roles) => {
+            KeyAccountChange::Roles(roles) => {
                 tx.execute(
-                    "UPDATE integrations SET roles = ?2 WHERE user_id = ?1",
+                    "UPDATE key_accounts SET roles = ?2 WHERE user_id = ?1",
                     (id, encode_roles(roles)?),
                 )?;
             }
-            IntegrationChange::Administrator(administrator) => {
+            KeyAccountChange::Administrator(administrator) => {
                 tx.execute(
-                    "UPDATE integrations SET administrator = ?2 WHERE user_id = ?1",
+                    "UPDATE key_accounts SET administrator = ?2 WHERE user_id = ?1",
                     rusqlite::params![id, *administrator as i64],
                 )?;
             }
@@ -1945,7 +1945,7 @@ impl Store for SqliteStore {
         Ok(Ok(()))
     }
 
-    fn set_integration_enabled(
+    fn set_key_account_enabled(
         &self,
         id: &str,
         enabled: bool,
@@ -1953,7 +1953,7 @@ impl Store for SqliteStore {
     ) -> Result<Result<(), AccountError>, StoreError> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        if !integration_exists(&tx, id)? {
+        if !key_account_exists(&tx, id)? {
             return Ok(Err(AccountError::NoSuchUser));
         }
         tx.execute(
@@ -1982,7 +1982,7 @@ impl Store for SqliteStore {
         // Read in the transaction, so a disable landing beside it revokes this key too or refuses it.
         let enabled: Option<bool> = tx
             .query_row(
-                "SELECT u.enabled != 0 FROM users u JOIN integrations i ON i.user_id = u.id WHERE u.id = ?1",
+                "SELECT u.enabled != 0 FROM users u JOIN key_accounts i ON i.user_id = u.id WHERE u.id = ?1",
                 (id,),
                 |row| row.get(0),
             )
@@ -2335,10 +2335,10 @@ fn username_taken(tx: &rusqlite::Transaction<'_>, username: &str) -> Result<bool
     Ok(n != 0)
 }
 
-/// A person's account: an integration's is none, and is changed only as an integration.
+/// A person's account: a key account is none, and is changed only as a key account.
 fn person_exists(tx: &rusqlite::Transaction<'_>, user_id: &str) -> Result<bool, StoreError> {
     let n: i64 = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM users WHERE id = ?1 AND auth_source <> 'integration')",
+        "SELECT EXISTS (SELECT 1 FROM users WHERE id = ?1 AND auth_source <> 'key')",
         (user_id,),
         |row| row.get(0),
     )?;
@@ -2372,19 +2372,19 @@ fn others_who_can_sign_in(tx: &rusqlite::Transaction<'_>, user_id: &str) -> Resu
     )?)
 }
 
-fn integration_exists(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<bool, StoreError> {
+fn key_account_exists(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<bool, StoreError> {
     let n: i64 = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM integrations WHERE user_id = ?1)",
+        "SELECT EXISTS (SELECT 1 FROM key_accounts WHERE user_id = ?1)",
         (id,),
         |row| row.get(0),
     )?;
     Ok(n != 0)
 }
 
-/// Whether an integration other than `id` is called `name`, disabled or not.
-fn integration_name_taken(tx: &rusqlite::Transaction<'_>, name: &str, id: &str) -> Result<bool, StoreError> {
+/// Whether a key account other than `id` is called `name`, disabled or not.
+fn key_account_name_taken(tx: &rusqlite::Transaction<'_>, name: &str, id: &str) -> Result<bool, StoreError> {
     let n: i64 = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM users u JOIN integrations i ON i.user_id = u.id
+        "SELECT EXISTS (SELECT 1 FROM users u JOIN key_accounts i ON i.user_id = u.id
                          WHERE u.display_name = ?1 AND u.id <> ?2)",
         (name, id),
         |row| row.get(0),
@@ -2396,11 +2396,11 @@ fn encode_roles(roles: &[String]) -> Result<String, StoreError> {
     serde_json::to_string(roles).map_err(|e| StoreError::failed(format!("encoding roles: {e}")))
 }
 
-/// Every integration, or only `id`, each with its keys in force.
-fn read_integrations(conn: &Connection, id: Option<&str>) -> Result<Vec<IntegrationRecord>, StoreError> {
+/// Every key account, or only `id`, each with its keys in force.
+fn read_key_accounts(conn: &Connection, id: Option<&str>) -> Result<Vec<KeyAccountRecord>, StoreError> {
     let mut stmt = conn.prepare(
         "SELECT u.id, u.display_name, u.enabled, i.roles, i.administrator, u.created_at, u.updated_at
-           FROM users u JOIN integrations i ON i.user_id = u.id
+           FROM users u JOIN key_accounts i ON i.user_id = u.id
           WHERE ?1 IS NULL OR u.id = ?1
           ORDER BY u.created_at, u.id",
     )?;
@@ -2415,14 +2415,14 @@ fn read_integrations(conn: &Connection, id: Option<&str>) -> Result<Vec<Integrat
             row.get::<_, i64>(6)?,
         ))
     })?;
-    let mut integrations = Vec::new();
+    let mut accounts = Vec::new();
     for row in rows {
-        let (id, name, enabled, roles, administrator, created_at, updated_at) = row?;
+        let (id, display_name, enabled, roles, administrator, created_at, updated_at) = row?;
         let roles =
             serde_json::from_str(&roles).map_err(|e| StoreError::failed(format!("reading roles of {id}: {e}")))?;
-        integrations.push(IntegrationRecord {
+        accounts.push(KeyAccountRecord {
             id,
-            name,
+            display_name,
             enabled,
             roles,
             administrator,
@@ -2449,11 +2449,11 @@ fn read_integrations(conn: &Connection, id: Option<&str>) -> Result<Vec<Integrat
     })?;
     for key in keys {
         let (user_id, key) = key?;
-        if let Some(integration) = integrations.iter_mut().find(|i| i.id == user_id) {
-            integration.keys.push(key);
+        if let Some(account) = accounts.iter_mut().find(|a| a.id == user_id) {
+            account.keys.push(key);
         }
     }
-    Ok(integrations)
+    Ok(accounts)
 }
 
 /// Refuses every session already issued for the account. Returns rows affected, so a caller can tell a missing
@@ -4650,11 +4650,11 @@ mod tests {
         assert_eq!(min_reader, 7);
     }
 
-    // -- integrations --------------------------------------------------------
+    // -- key accounts --------------------------------------------------------
 
-    /// A build without the step would read an integration as local, and so as an administrator.
+    /// A build without the step would read a key account as local, and so as an administrator.
     #[test]
-    fn the_integration_step_is_breaking() {
+    fn the_key_account_step_is_breaking() {
         assert!(!super::super::steps::is_additive(STEPS[13]));
         let mut conn = Connection::open_in_memory().unwrap();
         super::super::steps::upgrade_sqlite(&mut conn, "leader.db", &STEPS[..14]).unwrap();
@@ -4664,14 +4664,14 @@ mod tests {
         assert_eq!(min_reader, 14);
     }
 
-    fn integration_event(action: &str) -> SecurityEvent {
+    fn key_account_event(action: &str) -> SecurityEvent {
         crate::leader::accounts::event_for(&crate::leader::store::Actor::system(), action, "", "ok")
     }
 
-    fn new_integration<'a>(id: &'a str, name: &'a str, roles: &'a [String]) -> NewIntegration<'a> {
-        NewIntegration {
+    fn new_key_account<'a>(id: &'a str, display_name: &'a str, roles: &'a [String]) -> NewKeyAccount<'a> {
+        NewKeyAccount {
             id,
-            name,
+            display_name,
             roles,
             administrator: false,
         }
@@ -4687,42 +4687,42 @@ mod tests {
     }
 
     #[test]
-    fn an_integration_is_an_account_that_is_no_administrator() {
+    fn a_key_account_is_no_administrator() {
         let s = store();
         let roles = vec!["readers".to_string()];
-        s.create_integration(
-            new_integration("i_1", "nightly export", &roles),
-            &integration_event("integration-create"),
+        s.create_key_account(
+            new_key_account("i_1", "nightly export", &roles),
+            &key_account_event("account-create"),
         )
         .unwrap()
         .unwrap();
         let user = s.get_user("i_1").unwrap().unwrap();
-        assert_eq!(user.auth_source, AuthSource::Integration);
+        assert_eq!(user.auth_source, AuthSource::Key);
         assert!(!user.administrator);
-        let integration = s.integration("i_1").unwrap().unwrap();
-        assert_eq!(integration.name, "nightly export");
-        assert_eq!(integration.roles, roles);
-        assert!(integration.enabled && !integration.administrator && integration.keys.is_empty());
-        assert_eq!(s.list_integrations().unwrap(), vec![integration]);
+        let account = s.key_account("i_1").unwrap().unwrap();
+        assert_eq!(account.display_name, "nightly export");
+        assert_eq!(account.roles, roles);
+        assert!(account.enabled && !account.administrator && account.keys.is_empty());
+        assert_eq!(s.list_key_accounts().unwrap(), vec![account]);
     }
 
     #[test]
-    fn an_integration_is_changed_only_as_an_integration() {
+    fn a_key_account_is_changed_only_as_a_key_account() {
         let s = store();
         s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
-        s.create_integration(
-            new_integration("i_1", "export", &[]),
-            &integration_event("integration-create"),
+        s.create_key_account(
+            new_key_account("i_1", "export", &[]),
+            &key_account_event("account-create"),
         )
         .unwrap()
         .unwrap();
         assert_eq!(
             s.list_users().unwrap().len(),
             1,
-            "an integration was listed among people"
+            "a key account was listed among people"
         );
         assert_eq!(
-            s.set_user_enabled("i_1", false, &integration_event("account-disable"))
+            s.set_user_enabled("i_1", false, &key_account_event("account-disable"))
                 .unwrap(),
             Err(AccountError::NoSuchUser)
         );
@@ -4731,33 +4731,33 @@ mod tests {
             Err(AccountError::NoSuchUser)
         );
         assert_eq!(
-            s.revoke_sessions("i_1", &integration_event("revoke-sessions")).unwrap(),
+            s.revoke_sessions("i_1", &key_account_event("revoke-sessions")).unwrap(),
             Err(AccountError::NoSuchUser)
         );
         assert_eq!(
             s.put_agent_permissions(
                 "i_1",
                 &AgentPermissions::Everything,
-                &integration_event("agent-permissions")
+                &key_account_event("agent-permissions")
             )
             .unwrap(),
             Err(AccountError::NoSuchUser)
         );
-        let integration = s.integration("i_1").unwrap().unwrap();
-        assert!(integration.enabled);
-        assert_eq!(integration.name, "export");
+        let account = s.key_account("i_1").unwrap().unwrap();
+        assert!(account.enabled);
+        assert_eq!(account.display_name, "export");
     }
 
     #[test]
-    fn a_local_account_is_no_integration() {
+    fn a_local_account_is_no_key_account() {
         let s = store();
         s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
-        assert_eq!(s.integration("u_1").unwrap(), None);
+        assert_eq!(s.key_account("u_1").unwrap(), None);
         assert_eq!(
-            s.change_integration(
+            s.change_key_account(
                 "u_1",
-                &IntegrationChange::Administrator(true),
-                &integration_event("integration-change")
+                &KeyAccountChange::Administrator(true),
+                &key_account_event("account-access")
             )
             .unwrap(),
             Err(AccountError::NoSuchUser)
@@ -4765,41 +4765,41 @@ mod tests {
     }
 
     #[test]
-    fn an_integration_name_is_taken_once() {
+    fn a_key_accounts_display_name_is_taken_once() {
         let s = store();
-        s.create_integration(
-            new_integration("i_1", "export", &[]),
-            &integration_event("integration-create"),
+        s.create_key_account(
+            new_key_account("i_1", "export", &[]),
+            &key_account_event("account-create"),
         )
         .unwrap()
         .unwrap();
-        s.create_integration(
-            new_integration("i_2", "import", &[]),
-            &integration_event("integration-create"),
+        s.create_key_account(
+            new_key_account("i_2", "import", &[]),
+            &key_account_event("account-create"),
         )
         .unwrap()
         .unwrap();
         assert_eq!(
-            s.create_integration(
-                new_integration("i_3", "export", &[]),
-                &integration_event("integration-create")
+            s.create_key_account(
+                new_key_account("i_3", "export", &[]),
+                &key_account_event("account-create")
             )
             .unwrap(),
             Err(AccountError::NameTaken)
         );
         assert_eq!(
-            s.change_integration(
+            s.change_key_account(
                 "i_2",
-                &IntegrationChange::Name("export".into()),
-                &integration_event("integration-change")
+                &KeyAccountChange::DisplayName("export".into()),
+                &key_account_event("account-rename")
             )
             .unwrap(),
             Err(AccountError::NameTaken)
         );
-        s.change_integration(
+        s.change_key_account(
             "i_1",
-            &IntegrationChange::Name("export".into()),
-            &integration_event("integration-change"),
+            &KeyAccountChange::DisplayName("export".into()),
+            &key_account_event("account-rename"),
         )
         .unwrap()
         .unwrap();
@@ -4808,29 +4808,29 @@ mod tests {
     #[test]
     fn a_change_lands_with_its_event() {
         let s = store();
-        s.create_integration(
-            new_integration("i_1", "export", &[]),
-            &integration_event("integration-create"),
+        s.create_key_account(
+            new_key_account("i_1", "export", &[]),
+            &key_account_event("account-create"),
         )
         .unwrap()
         .unwrap();
-        s.change_integration(
+        s.change_key_account(
             "i_1",
-            &IntegrationChange::Roles(vec!["writers".into()]),
-            &integration_event("integration-change"),
+            &KeyAccountChange::Roles(vec!["writers".into()]),
+            &key_account_event("account-access"),
         )
         .unwrap()
         .unwrap();
-        s.change_integration(
+        s.change_key_account(
             "i_1",
-            &IntegrationChange::Administrator(true),
-            &integration_event("integration-change"),
+            &KeyAccountChange::Administrator(true),
+            &key_account_event("account-access"),
         )
         .unwrap()
         .unwrap();
-        let integration = s.integration("i_1").unwrap().unwrap();
-        assert_eq!(integration.roles, vec!["writers".to_string()]);
-        assert!(integration.administrator);
+        let account = s.key_account("i_1").unwrap().unwrap();
+        assert_eq!(account.roles, vec!["writers".to_string()]);
+        assert!(account.administrator);
         assert!(
             !s.get_user("i_1").unwrap().unwrap().administrator,
             "the account's own flag is a local one's"
@@ -4841,19 +4841,19 @@ mod tests {
             .into_iter()
             .map(|e| e.action)
             .collect();
-        assert_eq!(actions.iter().filter(|a| *a == "integration-change").count(), 2);
+        assert_eq!(actions.iter().filter(|a| *a == "account-access").count(), 2);
     }
 
     #[test]
     fn a_key_is_found_by_its_hash_and_revoked_once() {
         let s = store();
-        s.create_integration(
-            new_integration("i_1", "export", &[]),
-            &integration_event("integration-create"),
+        s.create_key_account(
+            new_key_account("i_1", "export", &[]),
+            &key_account_event("account-create"),
         )
         .unwrap()
         .unwrap();
-        s.create_api_key("i_1", new_key("k_1", "hash-1"), &integration_event("key-create"))
+        s.create_api_key("i_1", new_key("k_1", "hash-1"), &key_account_event("key-create"))
             .unwrap()
             .unwrap();
         let presented = s.api_key_by_hash("hash-1").unwrap().unwrap();
@@ -4864,58 +4864,58 @@ mod tests {
         s.mark_api_key_used("k_1", 60_000).unwrap();
         assert_eq!(s.api_key_by_hash("hash-1").unwrap().unwrap().last_used_at, Some(60_000));
         assert_eq!(
-            s.integration("i_1").unwrap().unwrap().keys[0].last_used_at,
+            s.key_account("i_1").unwrap().unwrap().keys[0].last_used_at,
             Some(60_000)
         );
 
         assert!(
-            !s.revoke_api_key("i_2", "k_1", 7, &integration_event("key-revoke"))
+            !s.revoke_api_key("i_2", "k_1", 7, &key_account_event("key-revoke"))
                 .unwrap(),
-            "revoked through another integration"
+            "revoked through another account"
         );
         assert!(
-            s.revoke_api_key("i_1", "k_1", 7, &integration_event("key-revoke"))
+            s.revoke_api_key("i_1", "k_1", 7, &key_account_event("key-revoke"))
                 .unwrap()
         );
         assert!(
-            !s.revoke_api_key("i_1", "k_1", 8, &integration_event("key-revoke"))
+            !s.revoke_api_key("i_1", "k_1", 8, &key_account_event("key-revoke"))
                 .unwrap()
         );
         assert!(s.api_key_by_hash("hash-1").unwrap().unwrap().revoked);
-        assert!(s.integration("i_1").unwrap().unwrap().keys.is_empty());
+        assert!(s.key_account("i_1").unwrap().unwrap().keys.is_empty());
     }
 
-    /// Enabling an integration again brings back none of the keys it held, which a leaked one was among.
+    /// Enabling a key account again brings back none of the keys it held, which a leaked one was among.
     #[test]
-    fn disabling_an_integration_revokes_every_key() {
+    fn disabling_a_key_account_revokes_every_key() {
         let s = store();
-        s.create_integration(
-            new_integration("i_1", "export", &[]),
-            &integration_event("integration-create"),
+        s.create_key_account(
+            new_key_account("i_1", "export", &[]),
+            &key_account_event("account-create"),
         )
         .unwrap()
         .unwrap();
-        s.create_api_key("i_1", new_key("k_1", "hash-1"), &integration_event("key-create"))
+        s.create_api_key("i_1", new_key("k_1", "hash-1"), &key_account_event("key-create"))
             .unwrap()
             .unwrap();
-        s.create_api_key("i_1", new_key("k_2", "hash-2"), &integration_event("key-create"))
+        s.create_api_key("i_1", new_key("k_2", "hash-2"), &key_account_event("key-create"))
             .unwrap()
             .unwrap();
-        s.set_integration_enabled("i_1", false, &integration_event("integration-disable"))
+        s.set_key_account_enabled("i_1", false, &key_account_event("account-disable"))
             .unwrap()
             .unwrap();
         assert!(s.api_key_by_hash("hash-1").unwrap().unwrap().revoked);
         assert!(s.api_key_by_hash("hash-2").unwrap().unwrap().revoked);
         assert_eq!(
-            s.create_api_key("i_1", new_key("k_3", "hash-3"), &integration_event("key-create"))
+            s.create_api_key("i_1", new_key("k_3", "hash-3"), &key_account_event("key-create"))
                 .unwrap(),
             Err(AccountError::Disabled)
         );
-        s.set_integration_enabled("i_1", true, &integration_event("integration-change"))
+        s.set_key_account_enabled("i_1", true, &key_account_event("account-enable"))
             .unwrap()
             .unwrap();
-        let integration = s.integration("i_1").unwrap().unwrap();
-        assert!(integration.enabled && integration.keys.is_empty());
+        let account = s.key_account("i_1").unwrap().unwrap();
+        assert!(account.enabled && account.keys.is_empty());
         assert!(s.api_key_by_hash("hash-1").unwrap().unwrap().revoked);
     }
 

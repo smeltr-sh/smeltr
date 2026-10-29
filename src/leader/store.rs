@@ -223,8 +223,8 @@ pub enum AuthSource {
     Local,
     /// An issuer and a subject an OpenID provider vouches for. The leader holds no credential for it.
     Oidc,
-    /// A script outside the leader, calling the API with a key ([`IntegrationRecord`]). It never signs in.
-    Integration,
+    /// A key the leader keeps the hash of, sent on every request ([`KeyAccountRecord`]). It never signs in.
+    Key,
 }
 
 impl AuthSource {
@@ -232,7 +232,7 @@ impl AuthSource {
         match self {
             AuthSource::Local => "local",
             AuthSource::Oidc => "oidc",
-            AuthSource::Integration => "integration",
+            AuthSource::Key => "key",
         }
     }
 
@@ -240,7 +240,7 @@ impl AuthSource {
         match s {
             "local" => Some(AuthSource::Local),
             "oidc" => Some(AuthSource::Oidc),
-            "integration" => Some(AuthSource::Integration),
+            "key" => Some(AuthSource::Key),
             _ => None,
         }
     }
@@ -291,7 +291,7 @@ pub struct SecurityEvent {
     pub actor: String,
     /// What was attempted, in a fixed vocabulary: `login`, `logout`, `password-change`, `account-create`,
     /// `account-disable`, `account-enable`, `password-reset`, `revoke-sessions`, `bootstrap`, `recover`, `role-put`,
-    /// `role-delete`, `integration-create`, `integration-change`, `integration-disable`, `key-create`, `key-revoke`.
+    /// `role-delete`, `account-rename`, `account-access`, `key-create`, `key-revoke`.
     pub action: String,
     /// What it was done to -- a user id, usually. Empty when the action names no object.
     pub target: String,
@@ -348,14 +348,6 @@ impl Actor {
         }
     }
 
-    /// An integration, by its name as an administrator gave it.
-    pub fn integration(id: &str, name: &str) -> Actor {
-        Actor {
-            id: id.to_string(),
-            display_name: name.to_string(),
-        }
-    }
-
     /// An account's agent acting for it: its account, named as its.
     pub fn agent_of(id: &str, display_name: &str) -> Actor {
         Actor {
@@ -380,9 +372,9 @@ pub enum AccountError {
     NoSuchUser,
     /// The operation would leave no enabled administrator able to log in.
     LastAdministrator,
-    /// Another integration has that name.
+    /// Another account that signs in with a key has that display name.
     NameTaken,
-    /// The integration is disabled, and takes no key until it is enabled.
+    /// The account is disabled, and takes no key until it is enabled.
     Disabled,
     /// A local-credential operation named an account that is not local.
     WrongAuthSource,
@@ -397,8 +389,8 @@ impl std::fmt::Display for AccountError {
             AccountError::UsernameTaken => write!(f, "that username is already taken"),
             AccountError::NoSuchUser => write!(f, "no such account"),
             AccountError::LastAdministrator => write!(f, "this is the last local administrator account"),
-            AccountError::NameTaken => write!(f, "another integration has that name"),
-            AccountError::Disabled => write!(f, "that integration is disabled"),
+            AccountError::NameTaken => write!(f, "another key account has that display name"),
+            AccountError::Disabled => write!(f, "that account is disabled"),
             AccountError::WrongAuthSource => write!(f, "that account does not sign in with a password"),
             AccountError::Superseded => write!(f, "that account changed since it was read"),
         }
@@ -442,12 +434,12 @@ pub struct OidcIdentityRecord {
     pub last_sign_in: i64,
 }
 
-/// An integration: an account a script outside the leader calls the operator API as, with one of its keys. Its name
-/// is its account's display name, and what it holds comes from its roles, as an OIDC account's comes from its groups.
+/// An account that signs in with a key: what a script outside the leader calls the operator API as. What it holds
+/// comes from its roles, as an OIDC account's comes from its groups.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IntegrationRecord {
+pub struct KeyAccountRecord {
     pub id: String,
-    pub name: String,
+    pub display_name: String,
     pub enabled: bool,
     /// The roles an administrator gave it, by name.
     pub roles: Vec<String>,
@@ -459,7 +451,7 @@ pub struct IntegrationRecord {
     pub keys: Vec<ApiKeyRecord>,
 }
 
-/// One key an integration holds, as its roster shows it.
+/// One key an account holds, as its roster shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApiKeyRecord {
     pub id: String,
@@ -478,10 +470,10 @@ pub struct PresentedKey {
     pub last_used_at: Option<i64>,
 }
 
-/// A new integration, which holds no key until one is made for it.
-pub struct NewIntegration<'a> {
+/// A new key account, which holds no key until one is made for it.
+pub struct NewKeyAccount<'a> {
     pub id: &'a str,
-    pub name: &'a str,
+    pub display_name: &'a str,
     pub roles: &'a [String],
     pub administrator: bool,
 }
@@ -494,10 +486,10 @@ pub struct NewApiKey<'a> {
     pub created_at: i64,
 }
 
-/// One change to an integration, as one change to an account is one field.
+/// One change to a key account, as one change to any account is one field.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum IntegrationChange {
-    Name(String),
+pub enum KeyAccountChange {
+    DisplayName(String),
     Roles(Vec<String>),
     Administrator(bool),
 }
@@ -907,8 +899,8 @@ pub trait Store: Send + Sync {
     // A password hash is written and compared, never listed: only `local_credential_by_username` returns one, so
     // the roster the GUI and the audit read cannot carry a verifier by accident.
     //
-    // `get_user` reads an integration's account as well, since the gate reads every caller. No write here changes
-    // one: an integration changes only as an integration.
+    // `get_user` reads a key account as well, since the gate reads every caller. No write here changes one: a key
+    // account changes only through the writes below.
 
     /// Whether any account exists at all. What bootstrap asks before creating the first administrator; the answer
     /// is only ever a hint, since [`Store::bootstrap_administrator`] re-checks it inside its own transaction.
@@ -928,7 +920,7 @@ pub trait Store: Send + Sync {
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError>;
 
-    /// Every person's account. An integration is an account too, and `list_integrations` lists it.
+    /// Every person's account. A key account is listed by `list_key_accounts`.
     fn list_users(&self) -> Result<Vec<UserRecord>, StoreError>;
 
     fn get_user(&self, id: &str) -> Result<Option<UserRecord>, StoreError>;
@@ -1002,42 +994,42 @@ pub trait Store: Send + Sync {
     /// Newest first, capped at `limit`.
     fn list_security_events(&self, limit: usize) -> Result<Vec<SecurityEvent>, StoreError>;
 
-    // -- integrations ------------------------------------------------------
+    // -- key accounts ------------------------------------------------------
     //
     // A key is written and compared as its hash, never listed: only `api_key_by_hash` reads a key's row by it.
 
-    /// Create an enabled integration with no key, `event` in the same transaction. Refused when another integration
+    /// Create an enabled key account with no key, `event` in the same transaction. Refused when another key account
     /// has its name.
-    fn create_integration(
+    fn create_key_account(
         &self,
-        integration: NewIntegration<'_>,
+        account: NewKeyAccount<'_>,
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError>;
 
-    /// Every integration, oldest first, each with its keys in force.
-    fn list_integrations(&self) -> Result<Vec<IntegrationRecord>, StoreError>;
+    /// Every key account, oldest first, each with its keys in force.
+    fn list_key_accounts(&self) -> Result<Vec<KeyAccountRecord>, StoreError>;
 
-    /// The integration `id`. `None` for no account, or an account that is not an integration.
-    fn integration(&self, id: &str) -> Result<Option<IntegrationRecord>, StoreError>;
+    /// The key account `id`. `None` for no account, or an account that does not sign in with a key.
+    fn key_account(&self, id: &str) -> Result<Option<KeyAccountRecord>, StoreError>;
 
-    /// Change one thing about an integration, `event` in the same transaction.
-    fn change_integration(
+    /// Change one thing about a key account, `event` in the same transaction.
+    fn change_key_account(
         &self,
         id: &str,
-        change: &IntegrationChange,
+        change: &KeyAccountChange,
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError>;
 
-    /// Enable or disable an integration, `event` in the same transaction. Disabling revokes every key it holds, so
+    /// Enable or disable a key account, `event` in the same transaction. Disabling revokes every key it holds, so
     /// enabling it again brings back none of them.
-    fn set_integration_enabled(
+    fn set_key_account_enabled(
         &self,
         id: &str,
         enabled: bool,
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError>;
 
-    /// Give the enabled integration `id` a new key, `event` in the same transaction.
+    /// Give the enabled key account `id` a new key, `event` in the same transaction.
     fn create_api_key(
         &self,
         id: &str,
@@ -1045,8 +1037,8 @@ pub trait Store: Send + Sync {
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError>;
 
-    /// Revoke the key `key_id` of the integration `id` at `at`, `event` in the same transaction. Its row stays, so
-    /// the key stays out. False when the integration holds no such key in force.
+    /// Revoke the key `key_id` of the key account `id` at `at`, `event` in the same transaction. Its row stays, so
+    /// the key stays out. False when the account holds no such key in force.
     fn revoke_api_key(&self, id: &str, key_id: &str, at: i64, event: &SecurityEvent) -> Result<bool, StoreError>;
 
     /// The key whose hash is `token_hash`, revoked or not. `None` for a key never made.

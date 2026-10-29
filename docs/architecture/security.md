@@ -189,19 +189,19 @@ that data could do. A conversation is its person's alone.
   agent permissions ┘
 ```
 
-An integration is an account, for a script outside the leader that calls its
+A key account is an account for a script outside the leader that calls its
 API. A person signs in with a password or through a provider and holds a
-session; an integration calls with one of its **keys**, sent as a Bearer token
+session; a key account calls with one of its **keys**, sent as a Bearer token
 on every request, and holds no session. It needs no Origin or CSRF check, since
 no browser sends a key on its own. The leader keeps a key's hash and returns the
 key once, when it is made, as it does a worker's token. An administrator names
-an integration and gives it roles by name, which it holds as an OIDC account
+a key account and gives it roles by name, which it holds as an OIDC account
 holds the roles of its groups, or makes it an administrator. It holds any number
 of keys, so one is replaced without a gap. A revoked key stays out, and
-disabling an integration revokes every key it holds.
+disabling a key account revokes every key it holds.
 
-What a key reaches is what its integration holds, as a session reaches what
-its person holds. What an integration does is recorded as its own, under its
+What a key reaches is what its account holds, as a session reaches what
+its person holds. What a key account does is recorded as its own, under its
 display name, in the audit and in git.
 
 A disable, a password reset or a revocation that lands while a sign-in is

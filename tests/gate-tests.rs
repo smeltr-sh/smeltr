@@ -577,7 +577,7 @@ fn a_human_cookie_does_not_open_a_worker_route() {
     assert_eq!(status, 401, "a browser session reached the worker protocol");
 }
 
-/// A bearer token is not a session either: one that is no integration's key lets nobody in.
+/// A bearer token is not a session either: one that is no account's key lets nobody in.
 #[test]
 fn a_bearer_token_is_not_a_session() {
     let leader = start("bearer");
@@ -2093,7 +2093,7 @@ fn an_idle_timeout_past_the_absolute_one_is_refused() {
     );
 }
 
-// -- integrations ---------------------------------------------------------------
+// -- key accounts ---------------------------------------------------------------
 
 /// `method path` with `key` and nothing a browser sends: no cookie, no `Origin`, no CSRF value.
 fn with_key(
@@ -2123,15 +2123,15 @@ fn with_key(
     )
 }
 
-/// An integration made by `op`, and its id.
-fn integration(leader: &Leader, op: &Operator, mut body: serde_json::Value) -> String {
-    body["authSource"] = "integration".into();
+/// A key account made by `op`, and its id.
+fn key_account(leader: &Leader, op: &Operator, mut body: serde_json::Value) -> String {
+    body["authSource"] = "key".into();
     let (status, created) = leader.post_as(op, "/api/accounts", body);
     assert_eq!(status, 201, "{created}");
     created["id"].as_str().unwrap().to_string()
 }
 
-/// A new key for the integration `id`, and the key's id.
+/// A new key for the account `id`, and the key's id.
 fn key_for(leader: &Leader, op: &Operator, id: &str) -> (String, String) {
     let (status, created) = leader.post_as(
         op,
@@ -2145,10 +2145,10 @@ fn key_for(leader: &Leader, op: &Operator, id: &str) -> (String, String) {
     )
 }
 
-/// A key holds what its integration's roles give, and nothing it does not.
+/// A key holds what its account's roles give, and nothing it does not.
 #[test]
-fn a_key_calls_the_api_with_what_its_integrations_roles_give() {
-    let leader = start("integration-roles");
+fn a_key_calls_the_api_with_what_its_accounts_roles_give() {
+    let leader = start("key-roles");
     let op = operator(&leader);
     let (status, body) = leader.put_as(
         &op,
@@ -2156,7 +2156,7 @@ fn a_key_calls_the_api_with_what_its_integrations_roles_give() {
         serde_json::json!({ "areas": { "shared": "viewer" } }),
     );
     assert_eq!(status, 200, "{body}");
-    let id = integration(
+    let id = key_account(
         &leader,
         &op,
         serde_json::json!({ "displayName": "nightly export", "roles": ["smeltr-readers"] }),
@@ -2178,7 +2178,7 @@ fn a_key_calls_the_api_with_what_its_integrations_roles_give() {
 
     let (_, roster) = leader.get_as(&op.session, "/api/accounts");
     let listed = &roster["accounts"][1];
-    assert_eq!(listed["authSource"], "integration", "{roster}");
+    assert_eq!(listed["authSource"], "key", "{roster}");
     assert_eq!(listed["displayName"], "nightly export");
     assert!(
         listed["keys"][0]["lastUsedAt"].is_i64(),
@@ -2192,12 +2192,12 @@ fn a_key_calls_the_api_with_what_its_integrations_roles_give() {
 }
 
 /// An administrator's key needs no browser protection, since no browser attaches it, and what it does is its
-/// integration's in the audit.
+/// account's in the audit.
 #[test]
-fn an_administrators_key_changes_things_as_its_integration() {
-    let leader = start("integration-administrator");
+fn an_administrators_key_changes_things_as_its_account() {
+    let leader = start("key-administrator");
     let op = operator(&leader);
-    let id = integration(
+    let id = key_account(
         &leader,
         &op,
         serde_json::json!({ "displayName": "provisioner", "administrator": true }),
@@ -2225,10 +2225,10 @@ fn an_administrators_key_changes_things_as_its_integration() {
 /// The three answers a worker's token has, and for the same reasons: never made, revoked, and a store that could
 /// not say, which this cannot provoke.
 #[test]
-fn a_revoked_key_and_a_disabled_integrations_keys_are_refused() {
-    let leader = start("integration-revoked");
+fn a_revoked_key_and_a_disabled_accounts_keys_are_refused() {
+    let leader = start("key-revoked");
     let op = operator(&leader);
-    let id = integration(
+    let id = key_account(
         &leader,
         &op,
         serde_json::json!({ "displayName": "exporter", "administrator": true }),
@@ -2259,7 +2259,7 @@ fn a_revoked_key_and_a_disabled_integrations_keys_are_refused() {
     );
     assert_eq!(status, 200, "{body}");
     let (status, _) = with_key(&leader, &second, "GET", "/api/health", None);
-    assert_eq!(status, 403, "a disabled integration's key");
+    assert_eq!(status, 403, "a disabled account's key");
     let (status, body) = leader.patch_as(
         &op,
         &format!("/api/accounts/{id}"),
@@ -2278,11 +2278,11 @@ fn a_revoked_key_and_a_disabled_integrations_keys_are_refused() {
         .filter_map(|e| e["action"].as_str())
         .collect();
     for expected in [
-        "integration-create",
+        "account-create",
         "key-create",
         "key-revoke",
-        "integration-disable",
-        "integration-change",
+        "account-disable",
+        "account-enable",
     ] {
         assert!(actions.contains(&expected), "{expected} is not in {actions:?}");
     }
@@ -2293,9 +2293,9 @@ fn a_revoked_key_and_a_disabled_integrations_keys_are_refused() {
 /// keys among them.
 #[test]
 fn an_administrators_key_manages_accounts() {
-    let leader = start("integration-accounts");
+    let leader = start("key-accounts");
     let op = operator(&leader);
-    let id = integration(
+    let id = key_account(
         &leader,
         &op,
         serde_json::json!({ "displayName": "provisioner", "administrator": true }),
@@ -2306,7 +2306,7 @@ fn an_administrators_key_manages_accounts() {
         &key,
         "POST",
         "/api/accounts",
-        Some(serde_json::json!({ "authSource": "integration", "displayName": "exporter" })),
+        Some(serde_json::json!({ "authSource": "key", "displayName": "exporter" })),
     );
     assert_eq!(status, 201, "{body}");
     let made = body["id"].as_str().unwrap().to_string();
@@ -2326,9 +2326,9 @@ fn an_administrators_key_manages_accounts() {
 /// One caller, one credential: a request carrying both a key and a session is neither's.
 #[test]
 fn a_key_and_a_session_together_are_refused() {
-    let leader = start("integration-both");
+    let leader = start("key-both");
     let op = operator(&leader);
-    let id = integration(&leader, &op, serde_json::json!({ "displayName": "exporter" }));
+    let id = key_account(&leader, &op, serde_json::json!({ "displayName": "exporter" }));
     let (key, _) = key_for(&leader, &op, &id);
     let status = status_of(
         ureq::get(format!("{}/api/health", leader.base))
@@ -2340,25 +2340,25 @@ fn a_key_and_a_session_together_are_refused() {
     assert_eq!(status, 400);
 }
 
-/// Names are unique among integrations, and a role an integration is given must exist.
+/// Display names are unique among key accounts, and a role a key account is given must exist.
 #[test]
-fn an_integration_is_refused_a_taken_name_or_an_unknown_role() {
-    let leader = start("integration-refusals");
+fn a_key_account_is_refused_a_taken_name_or_an_unknown_role() {
+    let leader = start("key-refusals");
     let op = operator(&leader);
-    integration(&leader, &op, serde_json::json!({ "displayName": "exporter" }));
+    key_account(&leader, &op, serde_json::json!({ "displayName": "exporter" }));
     let (status, body) = leader.post_as(
         &op,
         "/api/accounts",
-        serde_json::json!({ "authSource": "integration", "displayName": "exporter" }),
+        serde_json::json!({ "authSource": "key", "displayName": "exporter" }),
     );
     assert_eq!(status, 409, "{body}");
     let (status, body) = leader.post_as(
         &op,
         "/api/accounts",
-        serde_json::json!({ "authSource": "integration", "displayName": "importer", "roles": ["nobody"] }),
+        serde_json::json!({ "authSource": "key", "displayName": "importer", "roles": ["nobody"] }),
     );
     assert_eq!(status, 422, "{body}");
-    let id = integration(&leader, &op, serde_json::json!({ "displayName": "importer" }));
+    let id = key_account(&leader, &op, serde_json::json!({ "displayName": "importer" }));
     let (status, body) = leader.patch_as(
         &op,
         &format!("/api/accounts/{id}"),

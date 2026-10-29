@@ -105,8 +105,8 @@ export type World = {
   accounts: Map<string, boolean>;
   /** Each role, by the provider group it names. */
   roles: Set<string>;
-  /** Each integration, by name, and the key it holds in force. */
-  integrations: Map<string, string | null>;
+  /** Each key account, by display name, and the key it holds in force. */
+  keyAccounts: Map<string, string | null>;
   /** AI agents are turned on, against the journey's model endpoint. */
   agentsOn: boolean;
   /** The administrator's conversations with their agent, by title. */
@@ -148,7 +148,7 @@ export function newWorld(): World {
     signIns: [],
     accounts: new Map(),
     roles: new Set(),
-    integrations: new Map(),
+    keyAccounts: new Map(),
     agentsOn: false,
     conversations: [],
     restarted: [],
@@ -1919,20 +1919,20 @@ const disableAccount: Move = {
   },
 };
 
-/** The roster's row for the integration `name`, by the name it is shown under. */
-function integrationRow(page: Page, name: string): Locator {
+/** The roster's row for the key account `name`, by the name it is shown under. */
+function keyAccountRow(page: Page, name: string): Locator {
   return page
     .getByRole('row')
     .filter({ has: page.locator('.name').getByText(name, { exact: true }) });
 }
 
-const addIntegration: Move = {
-  name: 'add-integration',
-  leadsTo: ['revoke-integration-key'],
-  weight: (w) => (w.password && w.integrations.size < 2 ? 1 : 0),
+const addKeyAccount: Move = {
+  name: 'add-key-account',
+  leadsTo: ['revoke-key'],
+  weight: (w) => (w.password && w.keyAccounts.size < 2 ? 1 : 0),
   run: async (j) => {
     const { page, leader, rng, world } = j;
-    const name = `integration-${world.made++}`;
+    const name = `key-account-${world.made++}`;
     const administrator = rng.chance(2);
     await openAdmin(page, 'Accounts');
     await page.getByRole('button', { name: '+ Add account' }).click();
@@ -1943,7 +1943,7 @@ const addIntegration: Move = {
     await dialog.getByRole('button', { name: 'Add' }).click();
     await expect(dialog).toHaveCount(0);
 
-    // The new integration's row opens on its own, and a key is made there.
+    // The new account's row opens on its own, and a key is made there.
     await page.getByRole('button', { name: '+ New key' }).click();
     await page.getByRole('textbox', { name: /^Label\b/ }).fill('journey');
     await page.getByRole('button', { name: 'Create key' }).click();
@@ -1952,7 +1952,7 @@ const addIntegration: Move = {
     const key = (await handover.locator('.secret code').innerText()).trim();
     await handover.getByRole('button', { name: 'Done' }).click();
     await expect(handover).toHaveCount(0);
-    world.integrations.set(name, key);
+    world.keyAccounts.set(name, key);
 
     const accounts: Account[] = await (
       await j.truth()
@@ -1960,25 +1960,25 @@ const addIntegration: Move = {
       .get('/api/accounts')
       .then((a) => a.accounts);
     expect(accounts.find((a) => a.displayName === name)).toMatchObject({
-      authSource: 'integration',
+      authSource: 'key',
       administrator,
       keys: [{ label: 'journey' }],
     });
     expect(await withKey(leader, key, 'GET', '/api/health')).toBe(administrator ? 200 : 403);
     expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(administrator ? 200 : 403);
-    return `add integration ${name}${administrator ? ', an administrator,' : ''} with a key`;
+    return `add key account ${name}${administrator ? ', an administrator,' : ''} with a key`;
   },
 };
 
-const revokeIntegrationKey: Move = {
-  name: 'revoke-integration-key',
-  weight: (w) => ([...w.integrations.values()].some((k) => k) ? 1 : 0),
+const revokeKey: Move = {
+  name: 'revoke-key',
+  weight: (w) => ([...w.keyAccounts.values()].some((k) => k) ? 1 : 0),
   run: async (j) => {
     const { page, leader, rng, world } = j;
-    const name = rng.pick([...world.integrations].filter(([, k]) => k).map(([n]) => n));
-    const key = world.integrations.get(name)!;
+    const name = rng.pick([...world.keyAccounts].filter(([, k]) => k).map(([n]) => n));
+    const key = world.keyAccounts.get(name)!;
     await openAdmin(page, 'Accounts');
-    await integrationRow(page, name).getByRole('button', { name: 'Manage' }).click();
+    await keyAccountRow(page, name).getByRole('button', { name: 'Manage' }).click();
     await page
       .getByRole('table', { name: 'Keys' })
       .getByRole('row')
@@ -1990,7 +1990,7 @@ const revokeIntegrationKey: Move = {
       .getByRole('button', { name: 'Revoke key' })
       .click();
     await expect(page.getByRole('status')).toHaveText('key revoked');
-    world.integrations.set(name, null);
+    world.keyAccounts.set(name, null);
     const accounts: Account[] = await (
       await j.truth()
     )
@@ -2687,8 +2687,8 @@ export const MOVES: readonly Move[] = [
   addAccount,
   disableAccount,
   addRole,
-  addIntegration,
-  revokeIntegrationKey,
+  addKeyAccount,
+  revokeKey,
   turnOnAgents,
   setAgentPermissions,
   askAgent,

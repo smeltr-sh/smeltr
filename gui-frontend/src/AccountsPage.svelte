@@ -5,7 +5,7 @@
 
   A local account is always an administrator. An SSO account holds what the
   roles named for its provider groups give it, so the roster shows those roles
-  and the Roles tab is where what they give is changed. An integration, which
+  and the Roles tab is where what they give is changed. A key account, which
   signs in with a key, holds the roles it is given, or everything as an
   administrator.
 -->
@@ -15,8 +15,8 @@
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import OidcSettings from './OidcSettings.svelte';
-  import IntegrationAccess from './IntegrationAccess.svelte';
-  import IntegrationFold from './IntegrationFold.svelte';
+  import KeyAccountAccess from './KeyAccountAccess.svelte';
+  import KeyAccountFold from './KeyAccountFold.svelte';
   import { toHash } from './logs';
   import Help from './Help.svelte';
   import Field from './Field.svelte';
@@ -32,7 +32,7 @@
   import {
     SHARED_SCOPE,
     changeAccount,
-    createIntegration,
+    createKeyAccount,
     createLocalAccount,
     deleteRole,
     listAccounts,
@@ -43,7 +43,7 @@
     resetAccountPassword,
     revokeAccountSessions,
     type AccountDto,
-    type CreatedIntegrationKeyDto,
+    type CreatedKeyDto,
     type RoleDto,
     type TemporaryPasswordDto,
   } from './api';
@@ -54,9 +54,9 @@
   type Action = 'reset' | 'revoke' | 'enable' | 'disable';
 
   /** What a new account can sign in with. An SSO account is made at its first sign-in. */
-  const SIGN_INS: { value: 'local' | 'integration'; label: string }[] = [
+  const SIGN_INS: { value: 'local' | 'key'; label: string }[] = [
     { value: 'local', label: 'Password' },
-    { value: 'integration', label: 'Key' },
+    { value: 'key', label: 'Key' },
   ];
 
   let accounts = $state<AccountDto[]>([]);
@@ -67,7 +67,7 @@
   let creating = $state(false);
 
   let renameTo = $state('');
-  let newSignIn = $state<'local' | 'integration'>('local');
+  let newSignIn = $state<'local' | 'key'>('local');
   let newUsername = $state('');
   let newDisplayName = $state('');
   let newAdministrator = $state(false);
@@ -82,8 +82,8 @@
    * somebody is still waiting to be given. A second reset of the same account
    * does replace its first: that password no longer signs anybody in. */
   let handovers = $state<TemporaryPasswordDto[]>([]);
-  /** Each new key, with the integration it is for, until it is dismissed: it is the only copy. */
-  let keyHandovers = $state<(CreatedIntegrationKeyDto & { integration: string })[]>([]);
+  /** Each new key, with the account it is for, until it is dismissed: it is the only copy. */
+  let keyHandovers = $state<(CreatedKeyDto & { account: string })[]>([]);
 
   const me = $derived(session().userId);
 
@@ -93,11 +93,11 @@
   }
 
   function signIn(account: AccountDto): string {
-    return { local: 'Password', oidc: 'SSO', integration: 'Key' }[account.authSource];
+    return { local: 'Password', oidc: 'SSO', key: 'Key' }[account.authSource];
   }
 
-  /** What the Roles column shows: a local account is an administrator by being local, and an
-   * integration one by being made one. */
+  /** What the Roles column shows: a local account is an administrator by being local, and a
+   * key account one by being made one. */
   function rolesOf(account: AccountDto): string[] {
     if (account.authSource === 'local') return ['administrator'];
     return account.administrator ? ['administrator', ...account.roles] : account.roles;
@@ -124,7 +124,7 @@
   }
 
   // Read each time Accounts opens, so someone who signed in since shows without a reload. The roles
-  // are what an integration can be given.
+  // are what a key account can be given.
   $effect(() => {
     if (section !== 'accounts') return;
     void refresh();
@@ -151,7 +151,7 @@
   }
 
   const createReady = $derived(
-    newDisplayName.trim() !== '' && (newSignIn === 'integration' || newUsername.trim() !== ''),
+    newDisplayName.trim() !== '' && (newSignIn === 'key' || newUsername.trim() !== ''),
   );
 
   async function create() {
@@ -163,7 +163,7 @@
         if (refused(result)) return;
         handovers = [...handovers, result];
       } else {
-        const result = await createIntegration(newDisplayName, newRoles, newAdministrator);
+        const result = await createKeyAccount(newDisplayName, newRoles, newAdministrator);
         if (refused(result)) return;
         // Opened, so the next thing it needs, a key, is one click away.
         open = result.id;
@@ -244,8 +244,8 @@
     }
   }
 
-  /** After an integration's fold changed it: the roster read again, then what it did said. */
-  async function integrationChanged(said: string) {
+  /** After a key account's fold changed it: the roster read again, then what it did said. */
+  async function keyAccountChanged(said: string) {
     await refresh();
     message = said;
   }
@@ -487,7 +487,7 @@
   {/each}
   {#each keyHandovers as pending (pending.id)}
     <section class="handover">
-      <h2>A new key for {pending.integration}</h2>
+      <h2>A new key for {pending.account}</h2>
       <p class="critical">Copy the key below now: it is shown only once.</p>
       <p class="secret"><code>{pending.key}</code></p>
       <p>Send it as <code>Authorization: Bearer &lt;key&gt;</code>.</p>
@@ -521,7 +521,7 @@
           {#snippet help()}The name its changes are recorded under, in the audit and in history.{/snippet}
           <input bind:value={newDisplayName} autocomplete="off" required />
         </Field>
-        <IntegrationAccess {roles} bind:administrator={newAdministrator} bind:chosen={newRoles} />
+        <KeyAccountAccess {roles} bind:administrator={newAdministrator} bind:chosen={newRoles} />
       {/if}
     </div>
     {#snippet actions()}
@@ -681,7 +681,7 @@
                   {#if account.providerLogin}<div class="dim mono">
                       {account.providerLogin}
                     </div>{/if}
-                {:else if account.authSource === 'integration'}
+                {:else if account.authSource === 'key'}
                   <div class="dim">{keyCount(account)}</div>
                 {:else}
                   <div class="dim mono">{account.username ?? '—'}</div>
@@ -723,15 +723,15 @@
             {#if open === account.id}
               <tr class="fold">
                 <td colspan="5">
-                  {#if account.authSource === 'integration'}
-                    <IntegrationFold
+                  {#if account.authSource === 'key'}
+                    <KeyAccountFold
                       {account}
                       {roles}
-                      onchanged={integrationChanged}
+                      onchanged={keyAccountChanged}
                       onkey={(created) =>
                         (keyHandovers = [
                           ...keyHandovers,
-                          { ...created, integration: account.displayName },
+                          { ...created, account: account.displayName },
                         ])}
                     />
                   {:else}

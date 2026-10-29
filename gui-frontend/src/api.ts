@@ -4621,23 +4621,23 @@ export interface AccountDto {
   username?: string;
   displayName: string;
   enabled: boolean;
-  /** Whether the account itself makes it an administrator, as a local account always does and an
-   * integration may. What it holds, from this or its roles, is `access`. */
+  /** Whether the account itself makes it an administrator, as a local account always does and a
+   * key account may. What it holds, from this or its roles, is `access`. */
   administrator: boolean;
-  /** How the account signs in: `local` (a password), `oidc` (the provider) or `integration` (a key). */
-  authSource: 'local' | 'oidc' | 'integration';
+  /** How the account signs in: `local` (a password), `oidc` (the provider) or `key`. */
+  authSource: 'local' | 'oidc' | 'key';
   /** What the provider last called an OIDC account: its email, else its preferred username. */
   providerLogin?: string;
   createdAt: number;
   updatedAt: number;
-  /** The roles this account holds: an OIDC account's provider groups a role exists for, or the roles an
-   * integration was given. Empty for a local account. */
+  /** The roles this account holds: an OIDC account's provider groups a role exists for, or the roles a
+   * key account was given. Empty for a local account. */
   roles: string[];
   /** Every group the provider named at the last sign-in or refresh, exactly as named. Empty for any other account. */
   groups: string[];
   access: AccessDto;
-  /** An integration's keys in force. Absent for any other account. */
-  keys?: IntegrationKeyDto[];
+  /** A key account's keys in force. Absent for any other account. */
+  keys?: KeyDto[];
 }
 
 /** A generated password, shown once and never retrievable. */
@@ -4702,20 +4702,20 @@ export function createLocalAccount(
   });
 }
 
-/** An enabled integration holding no key yet. */
-export function createIntegration(
+/** An enabled key account holding no key yet. */
+export function createKeyAccount(
   displayName: string,
   roles: string[],
   administrator: boolean,
 ): Promise<AccountDto | AccountRefusal> {
   return accountCall('/api/accounts', {
     method: 'POST',
-    body: JSON.stringify({ authSource: 'integration', displayName, roles, administrator }),
+    body: JSON.stringify({ authSource: 'key', displayName, roles, administrator }),
   });
 }
 
 /** One change to an account: the leader takes one field per request, and roles and administrator
- * only for an integration. */
+ * only for a key account. */
 export type AccountChange =
   { displayName: string } | { enabled: boolean } | { roles: string[] } | { administrator: boolean };
 
@@ -4779,13 +4779,13 @@ export function deleteRole(name: string): Promise<{ ok: boolean; errors: ApiErro
   return apiJson(`/api/roles/${encodeURIComponent(name)}`, { method: 'DELETE' }, 'quiet');
 }
 
-// -- integrations -------------------------------------------------------------
+// -- key accounts -------------------------------------------------------------
 //
-// An integration is an account a script calls the API as, with one of its keys (`integrations_api.rs`). It holds
+// A key account is an account a script calls the API as, with one of its keys (`key_accounts_api.rs`). It holds
 // what its roles give, or everything as an administrator. Administrators only, like the roster.
 
-/** A key in force. Never the key itself, which only `createIntegrationKey` answers. */
-export interface IntegrationKeyDto {
+/** A key in force. Never the key itself, which only `createKey` answers. */
+export interface KeyDto {
   id: string;
   label: string;
   createdAt: number;
@@ -4794,24 +4794,21 @@ export interface IntegrationKeyDto {
 }
 
 /** A key just made: the one answer that carries it. */
-export interface CreatedIntegrationKeyDto {
+export interface CreatedKeyDto {
   id: string;
   label: string;
   createdAt: number;
   key: string;
 }
 
-export function createIntegrationKey(
-  id: string,
-  label: string,
-): Promise<CreatedIntegrationKeyDto | AccountRefusal> {
+export function createKey(id: string, label: string): Promise<CreatedKeyDto | AccountRefusal> {
   return accountCall(`/api/accounts/${encodeURIComponent(id)}/keys`, {
     method: 'POST',
     body: JSON.stringify({ label }),
   });
 }
 
-export function revokeIntegrationKey(id: string, key: string): Promise<object | AccountRefusal> {
+export function revokeKey(id: string, key: string): Promise<object | AccountRefusal> {
   return accountCall(`/api/accounts/${encodeURIComponent(id)}/keys/${encodeURIComponent(key)}`, {
     method: 'DELETE',
   });

@@ -14,8 +14,8 @@
 //! whoever caused the request, so an unsafe request must also prove it came from the GUI -- an exact `Origin` and
 //! a header carrying the session's own CSRF value, which a cross-site caller can read neither of.
 //!
-//! An integration calls with one of its keys instead, as `Authorization: Bearer`. No browser attaches that header
-//! on its own, so a key needs neither protection. A key names its integration, and the integration decides, as an
+//! A key account calls with one of its keys instead, as `Authorization: Bearer`. No browser attaches that header
+//! on its own, so a key needs neither protection. A key names its account, and the account decides, as any
 //! account does.
 
 use std::sync::Arc;
@@ -31,7 +31,7 @@ use smeltr::leader::auth::hash_secret;
 use smeltr::leader::blocking;
 use smeltr::leader::envelope::Refusal;
 use smeltr::leader::sessions::{Refused, Sessions};
-use smeltr::leader::store::{Actor, AuthSource, IntegrationRecord, Store, StoreError, UserRecord};
+use smeltr::leader::store::{Actor, AuthSource, KeyAccountRecord, Store, StoreError, UserRecord};
 use smeltr::leader::throttle::LoginThrottle;
 use smeltr::leader::warnings::now_millis;
 
@@ -192,7 +192,7 @@ pub fn presented_key(headers: &axum::http::HeaderMap) -> Option<String> {
 }
 
 /// How seldom a key's last use is written: often enough to tell a key in use from one forgotten, seldom enough that
-/// a busy integration does not write on every request.
+/// a busy key account does not write on every request.
 const LAST_USED_EVERY: i64 = 60_000;
 
 /// Whether a method changes anything. `GET` and `HEAD` do not, and there are no state-changing `GET`s here, so
@@ -215,7 +215,7 @@ pub async fn require_principal(
             return refuse(StatusCode::BAD_REQUEST, "send a key or a session, not both");
         }
         let by_agent = req.extensions().get::<ByAgent>().is_some();
-        return match integration_of(&auth, key, by_agent).await {
+        return match key_account_of(&auth, key, by_agent).await {
             Ok((actor, access)) => admit(req, next, &method, &path, actor, access).await,
             Err(response) => *response,
         };
@@ -329,12 +329,12 @@ async fn admit(
     next.run(req).await
 }
 
-/// The integration a key names, and what it holds now, read from the store on every request as an account is:
+/// The account a key names, and what it holds now, read from the store on every request as an account is:
 /// for its agent, what it lets its agent use.
 ///
 /// Three refusals, as a worker's token has, because a caller acts on each differently: a key never made is `401`,
-/// a revoked key or a disabled integration `403`, and a store that could not say is `503`, never either of them.
-async fn integration_of(auth: &Auth, key: String, by_agent: bool) -> Result<(Actor, Access), Box<Response>> {
+/// a revoked key or a disabled account `403`, and a store that could not say is `503`, never either of them.
+async fn key_account_of(auth: &Auth, key: String, by_agent: bool) -> Result<(Actor, Access), Box<Response>> {
     let store = auth.store.clone();
     let now = now_millis();
     let looked_up = blocking(move || {
@@ -364,16 +364,16 @@ async fn integration_of(auth: &Auth, key: String, by_agent: bool) -> Result<(Act
     })
     .await;
     match looked_up {
-        Ok(Some((Some(user), Some(access)))) if user.auth_source == AuthSource::Integration => Ok((
+        Ok(Some((Some(user), Some(access)))) if user.auth_source == AuthSource::Key => Ok((
             match by_agent {
                 true => Actor::agent_of(&user.id, &user.display_name),
-                false => Actor::integration(&user.id, &user.display_name),
+                false => Actor::person(&user.id, &user.display_name),
             },
             access,
         )),
         Ok(Some(_)) => Err(Box::new(refuse(
             StatusCode::FORBIDDEN,
-            "this key was revoked, or its integration is disabled",
+            "this key was revoked, or its account is disabled",
         ))),
         Ok(None) => Err(Box::new(refuse(StatusCode::UNAUTHORIZED, "this key is not known"))),
         Err(e) => {
@@ -443,18 +443,18 @@ pub async fn shape(req: axum::extract::Request, next: axum::middleware::Next) ->
 }
 
 /// Whether `user` may hold a session at all. A local account must still be an administrator, which it always is;
-/// an OIDC account is let in whatever it holds, and what it may then do is the policy's to decide. An integration
+/// an OIDC account is let in whatever it holds, and what it may then do is the policy's to decide. A key account
 /// never holds one: it calls with a key.
 pub fn admitted(user: &UserRecord) -> bool {
     user.enabled
         && match user.auth_source {
             AuthSource::Local => user.administrator,
             AuthSource::Oidc => true,
-            AuthSource::Integration => false,
+            AuthSource::Key => false,
         }
 }
 
-/// What `user` holds now: its groups as of its last sign-in, or an integration's roles, against the roles as they
+/// What `user` holds now: its groups as of its last sign-in, or a key account's roles, against the roles as they
 /// are.
 pub fn access_of(store: &dyn Store, user: &UserRecord) -> Result<Access, StoreError> {
     let groups = match user.auth_source {
@@ -464,21 +464,21 @@ pub fn access_of(store: &dyn Store, user: &UserRecord) -> Result<Access, StoreEr
             .oidc_identity_of(&user.id)?
             .map(|identity| identity.groups)
             .unwrap_or_default(),
-        AuthSource::Integration => {
-            return Ok(match store.integration(&user.id)? {
-                Some(integration) => integration_access(&integration, &store.list_roles()?),
-                None => Access::of(AuthSource::Integration, &[], &[]),
+        AuthSource::Key => {
+            return Ok(match store.key_account(&user.id)? {
+                Some(account) => key_account_access(&account, &store.list_roles()?),
+                None => Access::of(AuthSource::Key, &[], &[]),
             });
         }
     };
     Ok(Access::of(user.auth_source, &groups, &store.list_roles()?))
 }
 
-/// What `integration` holds: everything when it is an administrator, else what its roles give.
-pub fn integration_access(integration: &IntegrationRecord, roles: &[Role]) -> Access {
-    match integration.administrator {
+/// What `account` holds: everything when it is an administrator, else what its roles give.
+pub fn key_account_access(account: &KeyAccountRecord, roles: &[Role]) -> Access {
+    match account.administrator {
         true => Access::Administrator,
-        false => Access::of(AuthSource::Integration, &integration.roles, roles),
+        false => Access::of(AuthSource::Key, &account.roles, roles),
     }
 }
 
@@ -583,9 +583,9 @@ mod tests {
         }
     }
 
-    /// An integration calls with a key, so no session of one is admitted, whatever its account says.
+    /// A key account calls with a key, so no session of one is admitted, whatever its account says.
     #[test]
-    fn an_integration_holds_no_session() {
+    fn a_key_account_holds_no_session() {
         let account = |auth_source, administrator| UserRecord {
             id: "u_1".into(),
             auth_source,
@@ -598,8 +598,8 @@ mod tests {
         };
         assert!(admitted(&account(AuthSource::Local, true)));
         assert!(admitted(&account(AuthSource::Oidc, false)));
-        assert!(!admitted(&account(AuthSource::Integration, false)));
-        assert!(!admitted(&account(AuthSource::Integration, true)));
+        assert!(!admitted(&account(AuthSource::Key, false)));
+        assert!(!admitted(&account(AuthSource::Key, true)));
     }
 
     /// `__Host-` is a promise the browser enforces, and it requires `Secure`. Used without it the cookie is
@@ -737,7 +737,7 @@ mod tests {
         use smeltr::leader::access::Role;
         use smeltr::leader::accounts;
         use smeltr::leader::sqlite_store::SqliteStore;
-        use smeltr::leader::store::{NewApiKey, NewIntegration, OidcSignIn};
+        use smeltr::leader::store::{NewApiKey, NewKeyAccount, OidcSignIn};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         const ORIGIN: &str = "http://127.0.0.1:4000";
@@ -988,19 +988,19 @@ mod tests {
             );
         }
 
-        /// An integration's agent holds what the integration lets its agent use, as a person's does, and calls with
-        /// its key.
+        /// A key account's agent holds what the account lets its agent use, as a person's does, and calls with its
+        /// key.
         #[tokio::test]
-        async fn an_integrations_agent_holds_no_more_than_its_permissions() {
+        async fn a_key_accounts_agent_holds_no_more_than_its_permissions() {
             let store = store();
-            let created = accounts::event_for(&Actor::system(), "integration-create", "u_int", "ok");
-            let integration = NewIntegration {
+            let created = accounts::event_for(&Actor::system(), "account-create", "u_int", "ok");
+            let account = NewKeyAccount {
                 id: "u_int",
-                name: "provisioner",
+                display_name: "provisioner",
                 roles: &[],
                 administrator: true,
             };
-            store.create_integration(integration, &created).unwrap().unwrap();
+            store.create_key_account(account, &created).unwrap().unwrap();
             let key = smeltr::leader::auth::generate_secret();
             let made = accounts::event_for(&Actor::system(), "key-create", "key_1", "ok");
             let hash = hash_secret(&key);
