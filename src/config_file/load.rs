@@ -2346,7 +2346,8 @@ fn check_framing(dto: &ObjectFramingDto, id: &str, errors: &mut ItemErrors<'_>) 
 }
 
 /// Refuses a sourcetype named by a blank name, and a line breaker it gives that `check_line_breaker` refuses.
-fn check_sourcetypes(what: &str, sourcetypes: &BTreeMap<String, SourcetypeDto>, errors: &mut ItemErrors<'_>) {
+fn check_sourcetypes(id: &str, sourcetypes: &BTreeMap<String, SourcetypeDto>, errors: &mut ItemErrors<'_>) {
+    let what = format!("source {id:?}");
     for (name, t) in sourcetypes {
         // A field is named by a static path, so a refusal names the sourcetype in its message.
         if name.trim().is_empty() {
@@ -2354,7 +2355,7 @@ fn check_sourcetypes(what: &str, sourcetypes: &BTreeMap<String, SourcetypeDto>, 
                 .at("sourcetypes")
                 .push(format!("{what} names a sourcetype by a blank name"));
         }
-        let what = format!("{what}'s sourcetype {name:?}");
+        let what = format!("source {id}'s sourcetype {name:?}");
         if let Some(line_breaker) = &t.line_breaker {
             check_line_breaker(&what, line_breaker, errors.at("sourcetypes"));
         }
@@ -3069,7 +3070,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             } => {
                 let what = format!("source {:?}", s.id);
                 check_receiver(&what, listener, tls, tokens, errors);
-                check_sourcetypes(&what, sourcetypes, errors);
+                check_sourcetypes(&s.id, sourcetypes, errors);
             }
             SourceKindDto::S2sReceiver {
                 listener,
@@ -3079,7 +3080,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
             } => {
                 let what = format!("source {:?}", s.id);
                 check_receiver(&what, listener, tls, tokens, errors);
-                check_sourcetypes(&what, sourcetypes, errors);
+                check_sourcetypes(&s.id, sourcetypes, errors);
             }
             SourceKindDto::OtlpReceiver {
                 listener, tls, tokens, ..
@@ -3152,7 +3153,7 @@ fn required_fields(file: &FileConfig, attributed: &mut Vec<ValidationError>) {
                     poll_interval_secs: *poll_interval_secs,
                     batch: *batch,
                 };
-                read.check(&what, kind.dialect(), kind.meta(), errors);
+                read.check(&s.id, kind.dialect(), kind.meta(), errors);
             }
             SourceKindDto::OktaLogs {
                 org,
@@ -4502,15 +4503,18 @@ impl SqlRead<'_> {
     /// cannot hold.
     fn check(
         &self,
-        what: &str,
+        id: &str,
         dialect: crate::io::sql::Dialect,
         kind: crate::plan::topology::SourceMeta,
         errors: &mut ItemErrors<'_>,
     ) {
+        let what = format!("source {id:?}");
+        // The possessive leaves the id unquoted: `source "pg"'s query` reads as broken punctuation.
+        let whose = format!("source {id}'s");
         let query = match crate::io::sql::Query::parse(self.query, dialect) {
             Ok(query) => Some(query),
             Err(why) => {
-                errors.at("query").push(format!("{what}'s query: {why}"));
+                errors.at("query").push(format!("{whose} query: {why}"));
                 None
             }
         };
@@ -4566,7 +4570,7 @@ impl SqlRead<'_> {
                             .push(format!("{what} names `{column}` twice in its position"));
                     } else if !named(column) {
                         errors.at("mode").push(format!(
-                            "{what}'s position names `{column}`, which is not one of its fields; a position is read \
+                            "{whose} position names `{column}`, which is not one of its fields; a position is read \
                              from the record"
                         ));
                     }
@@ -4606,7 +4610,7 @@ impl SqlRead<'_> {
                         if let Some(ty) = &first_type
                             && let Err(why) = sql_start_value(value, ty)
                         {
-                            errors.at("mode").push(format!("{what}'s startFrom: {why}"));
+                            errors.at("mode").push(format!("{whose} startFrom: {why}"));
                         }
                     }
                     (SqlStartDto::Now | SqlStartDto::Beginning, Some(_)) => errors.at("mode").push(format!(
@@ -4618,7 +4622,7 @@ impl SqlRead<'_> {
                     for column in query.last_columns() {
                         if !named(column) {
                             errors.at("query").push(format!(
-                                "{what}'s query names :last.{column}, and `{column}` is not one of its fields; :last \
+                                "{whose} query names :last.{column}, and `{column}` is not one of its fields; :last \
                                  is the value a field held in the last row sent"
                             ));
                         }
@@ -4634,7 +4638,7 @@ impl SqlRead<'_> {
                 for column in key.iter().filter(|c| !named(c)) {
                     errors
                         .at("mode")
-                        .push(format!("{what}'s key names `{column}`, which is not one of its fields"));
+                        .push(format!("{whose} key names `{column}`, which is not one of its fields"));
                 }
             }
             SqlModeDto::EveryPoll => {}
@@ -4643,7 +4647,7 @@ impl SqlRead<'_> {
             && let Some(column) = query.last_columns().first()
         {
             errors.at("query").push(format!(
-                "{what}'s query names :last.{column}; only a mode that reads past the last row sent has one"
+                "{whose} query names :last.{column}; only a mode that reads past the last row sent has one"
             ));
         }
     }

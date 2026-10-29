@@ -5809,7 +5809,7 @@ fn an_s2s_sourcetype_with_a_bad_line_breaker_or_name_is_refused() {
         ),
     ] {
         let json = with(&format!(r#"{{"java:app":{{"lineBreaker":{breaker}}}}}"#));
-        let why = format!(r#"source "forwarders"'s sourcetype "java:app" {why}"#);
+        let why = format!(r#"source forwarders's sourcetype "java:app" {why}"#);
         assert!(refused_at(&json, "sourcetypes", &why), "{breaker}: {}", refusal(&json));
     }
     let json = with(r#"{" ":{"lineBreaker":"(\\n)"}}"#);
@@ -5852,7 +5852,7 @@ fn a_hec_receiver_takes_a_line_breaker_by_sourcetype() {
         .collect();
     assert_eq!(rules, [("app:xml", r"</event>(\s*)")]);
     let json = with(r#"{"app:xml":{"lineBreaker":"\\n"}}"#);
-    let why = r#"source "hec"'s sourcetype "app:xml" ends an event where "\n" matches, which has no capture group"#;
+    let why = r#"source hec's sourcetype "app:xml" ends an event where "\n" matches, which has no capture group"#;
     assert!(refused_at(&json, "sourcetypes", why), "{}", refusal(&json));
 }
 
