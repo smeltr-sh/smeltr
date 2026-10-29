@@ -2610,6 +2610,8 @@ const bringCurrent: Move = {
     await goto(page, leader, '#/changes');
     await page.getByPlaceholder('a name for new work').fill(theirs);
     await page.getByRole('button', { name: 'Start a branch' }).click();
+    // The branch menu lists the branches as they are when it opens, so not before this one is there.
+    await expect(page.getByRole('row').filter({ hasText: theirs })).toBeVisible();
     await switchBranch(page, theirs);
     await setFirstValue(j, theirs, id, `theirs-${n}`);
     await goto(page, leader, '#/build');
