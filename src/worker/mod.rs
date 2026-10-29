@@ -5226,24 +5226,8 @@ mod tests {
             &["init", "-q", "--bare", other.to_str().unwrap()],
             &std::env::temp_dir(),
         );
-        let mut hashing = Command::new("git")
-            .args(["hash-object", "-w", "--stdin"])
-            .current_dir(&other)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        std::io::Write::write_all(&mut hashing.stdin.take().unwrap(), b"what a rollback runs").unwrap();
-        let kept = String::from_utf8(hashing.wait_with_output().unwrap().stdout).unwrap();
-        let mut packing = Command::new("git")
-            .args(["pack-objects", "-q", "objects/pack/pack"])
-            .current_dir(&other)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        std::io::Write::write_all(&mut packing.stdin.take().unwrap(), kept.as_bytes()).unwrap();
-        assert!(packing.wait().unwrap().success());
+        let kept = git_with_input(&["hash-object", "-w", "--stdin"], &other, b"what a rollback runs");
+        git_with_input(&["pack-objects", "-q", "objects/pack/pack"], &other, kept.as_bytes());
         move_packs(&other.join("objects/pack"), &clone_dir.join("objects/pack")).unwrap();
         let mut head = deployed;
         while crate::leader::git::object_files(&clone_dir).1 <= crate::leader::git::PACK_LIMIT {
@@ -8163,6 +8147,21 @@ mod tests {
     fn git_ok(args: &[&str], cwd: &Path) {
         let status = Command::new("git").args(args).current_dir(cwd).status().unwrap();
         assert!(status.success(), "git {args:?} failed");
+    }
+
+    /// What git answers to `input` on its stdin.
+    fn git_with_input(args: &[&str], cwd: &Path, input: &[u8]) -> String {
+        let mut git = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(&mut git.stdin.take().unwrap(), input).unwrap();
+        let output = git.wait_with_output().unwrap();
+        assert!(output.status.success(), "git {args:?} failed");
+        String::from_utf8(output.stdout).unwrap()
     }
 
     /// A fixture's own `HEAD`, read through `gix` rather than the git binary -- these fixtures are still built with
