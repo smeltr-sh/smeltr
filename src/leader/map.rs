@@ -1024,7 +1024,7 @@ mod tests {
     #[test]
     fn a_warning_paints_only_the_node_in_the_group_it_names() {
         let held = warnings::Warning {
-            scope: None,
+            area: None,
             condition: warnings::Condition::SourceBlocked,
             subject_kind: SubjectKind::Source,
             site: None,

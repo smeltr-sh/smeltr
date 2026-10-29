@@ -37,7 +37,7 @@ async function fleetOfTwo(fleet: Fleet, page: Page, name: string) {
   await page.goto(leader.url);
   await signInThroughGui(page, leader.username, ADMIN_PASSWORD);
   await expect(page.getByRole('button', { name: 'Sign in' })).toHaveCount(0);
-  const inside = (await api.get('/api/workers')).find(
+  const inside = (await api.get('/api/workers').then((a) => a.workers)).find(
     (w: { workerId: string }) => w.workerId !== name,
   );
   expect(inside, 'the worker inside the leader').toBeDefined();
@@ -61,7 +61,7 @@ test('every worker follows the certificate from Leader issued to Uploaded and ba
 
   await switchToUploaded(page, pki);
   await heard();
-  const uploaded = await api.get('/api/settings/certificates');
+  const uploaded = await api.get('/api/settings/tls');
   expect(uploaded.supplied).toBe(true);
   expect(uploaded.rotation).toBeNull();
   // The tab names the entry it serves, chosen in its picker.
@@ -71,7 +71,7 @@ test('every worker follows the certificate from Leader issued to Uploaded and ba
 
   await switchToLeaderIssued(page);
   await heard();
-  const own = await api.get('/api/settings/certificates');
+  const own = await api.get('/api/settings/tls');
   expect(own.supplied).toBe(false);
   expect(own.rotation).toBeNull();
   await api.ctx.dispose();
@@ -84,9 +84,10 @@ test('a certificate this leader issued is served at once, and so is the way back
   // S6
   test.setTimeout(300_000);
   const { api, heard } = await fleetOfTwo(fleet, page, 'w-same-root');
-  const own = await api.get('/api/settings/certificates');
+  const own = await api.get('/api/settings/tls');
   const names = [...own.names, ...(own.workerName ? [own.workerName] : [])];
-  await api.post('/api/certificates/issued', {
+  await api.post('/api/certificates', {
+    kind: 'issued',
     name: 'same-root',
     description: '',
     names,
@@ -100,7 +101,7 @@ test('a certificate this leader issued is served at once, and so is the way back
   await served.getByRole('button', { name: 'Serve this certificate' }).click();
   await inForce(served, 'Uploaded');
   await heard();
-  const issued = await api.get('/api/settings/certificates');
+  const issued = await api.get('/api/settings/tls');
   expect(issued.entry).toBe('same-root');
   expect(issued.rotation).toBeNull();
 
@@ -110,7 +111,7 @@ test('a certificate this leader issued is served at once, and so is the way back
   await inForce(served, 'Leader issued');
   await expect(served.getByRole('heading', { name: /in progress/ })).toHaveCount(0);
   await heard();
-  const back = await api.get('/api/settings/certificates');
+  const back = await api.get('/api/settings/tls');
   expect(back.entry).toBe('leader');
   expect(back.supplied).toBe(false);
   expect(back.rotation).toBeNull();
@@ -131,7 +132,7 @@ test('a renewal is served while the switch back to Leader issued waits for a wor
   const renewal = fleet.externalPki(pki);
 
   await switchToUploaded(page, pki);
-  const before = await api.get('/api/settings/certificates');
+  const before = await api.get('/api/settings/tls');
 
   // A worker gone quiet is still waited for, so the switch back stays open.
   await fleet.stopWorker('w-away');
@@ -155,9 +156,7 @@ test('a renewal is served while the switch back to Leader issued waits for a wor
   await picker.fill(local);
   await served.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(served.getByRole('button', { name: 'Discard' })).toHaveCount(0);
-  expect((await api.get('/api/settings/certificates')).rotation.deadlineMillis).toBe(
-    later.getTime(),
-  );
+  expect((await api.get('/api/settings/tls')).rotation.deadlineMillis).toBe(later.getTime());
 
   // The chooser is still there under the switch, and a renewal under the uploaded root is served at once.
   ({ served } = await chooseUploaded(page, renewal));
@@ -168,7 +167,7 @@ test('a renewal is served while the switch back to Leader issued waits for a wor
   await expect(
     served.getByRole('heading', { name: /^Switch to Leader issued in progress/ }),
   ).toBeVisible();
-  const renewed = await api.get('/api/settings/certificates');
+  const renewed = await api.get('/api/settings/tls');
   expect(renewed.supplied).toBe(true);
   expect(renewed.rotation?.source).toBe('own');
   expect(renewed.served.fingerprint).not.toBe(before.served.fingerprint);
@@ -179,7 +178,7 @@ test('a renewal is served while the switch back to Leader issued waits for a wor
 
   // Replacing the entry the leader serves serves the new version.
   await replaceServed(page, pki);
-  const replaced = await api.get('/api/settings/certificates');
+  const replaced = await api.get('/api/settings/tls');
   expect(replaced.served.fingerprint).toBe(before.served.fingerprint);
   await api.ctx.dispose();
 });
@@ -196,26 +195,26 @@ test('every worker follows the certificate to ACME, through a renewal and on to 
     // The first order is under a root the fleet does not hold: a switch, published before it is served.
     await switchToAcme(page, authority, ['127.0.0.1']);
     await heard();
-    const first = await api.get('/api/settings/certificates');
+    const first = await api.get('/api/settings/tls');
     expect(first.source).toBe('acme');
     expect(first.rotation).toBeNull();
     expect(first.served.names).toContain('127.0.0.1');
     expect(authority.issued).toBe(1);
     expect(first.entry).toBe('acme');
-    const acme = await api.get('/api/settings/acme');
+    const acme = await api.get('/api/settings/tls/acme');
     expect(acme.lastError).toBeNull();
     expect(acme.renewAfterMillis).toBeLessThan(acme.notAfterMillis);
 
     // A renewal under the same root, proved the other way, is served at once.
     await renewAcme(page, 'HTTP-01');
-    const renewed = await api.get('/api/settings/certificates');
+    const renewed = await api.get('/api/settings/tls');
     expect(renewed.served.fingerprint).not.toBe(first.served.fingerprint);
     expect(renewed.authority.fingerprint).toBe(first.authority.fingerprint);
     await heard();
 
     // The authority moves to a new root: the fleet is given it before anything is served under it.
     await acmeNewRoot(page, authority);
-    const moved = await api.get('/api/settings/certificates');
+    const moved = await api.get('/api/settings/tls');
     expect(moved.source).toBe('acme');
     expect(moved.authority.fingerprint).not.toBe(renewed.authority.fingerprint);
     await heard();
@@ -223,7 +222,7 @@ test('every worker follows the certificate to ACME, through a renewal and on to 
     // And back to the leader's own.
     await switchToLeaderIssued(page);
     await heard();
-    expect((await api.get('/api/settings/certificates')).source).toBe('own');
+    expect((await api.get('/api/settings/tls')).source).toBe('own');
   } finally {
     await authority.stop();
     await api.ctx.dispose();

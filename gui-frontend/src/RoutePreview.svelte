@@ -1,6 +1,6 @@
 <!--
   Route preview: where a saved sample's records would go, through
-  `POST /api/route-preview` (`runtime::preview_routes`). The routes it runs
+  `POST /api/areas/:area/preview/routes` (`runtime::preview_routes`). The routes it runs
   are the ones on screen, saved or not, so this answers what the edit in
   front of you would do.
 

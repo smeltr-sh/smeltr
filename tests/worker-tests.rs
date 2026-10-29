@@ -131,7 +131,7 @@ fn operator_session(agent: &ureq::Agent, base: &str, console: &Arc<std::sync::Mu
     })
     .to_string();
     agent
-        .post(format!("{base}/api/auth/password"))
+        .put(format!("{base}/api/auth/password"))
         .header("origin", base)
         .header("cookie", &cookie)
         .header("x-smeltr-csrf", &csrf)
@@ -1609,11 +1609,15 @@ fn a_certificate_version_the_receiver_could_not_serve_is_refused_and_it_keeps_ru
                 .header("origin", &standalone.base)
                 .header("cookie", &cookie)
                 .header("x-smeltr-csrf", &csrf)
+                .config()
+                .http_status_as_error(false)
+                .build()
                 .send_json(body)
                 .and_then(|mut answer| answer.body_mut().read_json::<serde_json::Value>())
                 .map_err(|e| format!("{method} {path}: {e}"))
         };
         let mut first = issued(rcgen::ExtendedKeyUsagePurpose::ServerAuth);
+        first["kind"] = "supplied".into();
         first["name"] = "rx".into();
         let added = send("POST", "/api/certificates", first)?;
         if added["ok"] != true {

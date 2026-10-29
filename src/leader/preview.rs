@@ -14,13 +14,15 @@ use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind};
 use crate::core::id::{FunctionId, SlotId};
 use crate::format::record::RecordView;
-use crate::leader::envelope::{ApiError, Empty, Envelope};
+use crate::leader::envelope::{ApiError, Envelope, Refusal};
 use crate::plan;
 use crate::plan::compile::Plan;
+use crate::plan::config::CompileError;
 use crate::plan::output::{RowFilter, run_to_json_marked};
 use crate::plan::resolve::Origin;
 use crate::plan::topology::SourceMeta;
 use crate::plan::tree;
+use axum::http::StatusCode;
 
 #[derive(serde::Deserialize)]
 pub struct PreviewRequest {
@@ -259,18 +261,15 @@ fn kinds_of(counts: &crate::core::tally::TagCounts) -> Vec<(String, u32)> {
 }
 
 impl Preview {
-    /// Which stage stopped the preview, and why. A compile failure still names every pipeline, so the editor's
-    /// list stands.
+    /// Which stage stopped the preview, and why, at 422: what was sent to preview is what is refused. A compile
+    /// failure still names every pipeline, so the editor's list stands.
     pub fn failed(stage: &'static str, errors: Vec<ApiError>, pipeline_names: Vec<String>) -> Envelope<Preview> {
-        Envelope {
-            ok: false,
-            errors,
-            body: Preview {
-                stage: Some(stage),
-                pipeline_names,
-                ..Default::default()
-            },
-        }
+        let body = Preview {
+            stage: Some(stage),
+            pipeline_names,
+            ..Default::default()
+        };
+        Envelope::with(body, StatusCode::UNPROCESSABLE_ENTITY, errors)
     }
 }
 
@@ -533,31 +532,32 @@ pub fn run_route_preview(
     at_micros: Option<i64>,
 ) -> Envelope<RoutePreview> {
     let Some(source_name) = sample.source.clone() else {
-        return Envelope::failed_one(
+        return Envelope::refused(Refusal::invalid(
             "this sample does not say which source it stands for, and routing selects on a source -- \
              name one on the sample to route it",
-        );
+        ));
     };
 
     let system = match config_file::load_str_at(config, &declared_at) {
         Ok(system) => system,
-        Err(e) => return Envelope::failed_one(e.to_string()),
+        Err(e) => return Envelope::refused(Refusal::invalid(e.to_string())),
     };
     let Some(source) = system.topology.sources.iter().find(|s| s.name == source_name) else {
-        return Envelope::failed_one(format!(
+        return Envelope::refused(Refusal::invalid(format!(
             "this sample stands for source {source_name:?}, which this config does not declare"
-        ));
+        )));
     };
     let source_id = source.id;
 
     let compiled = match system.compile_topology() {
         Ok(compiled) => compiled,
         Err(errs) => {
-            return Envelope::failed(
+            return Envelope::refused(Refusal::all(
+                StatusCode::UNPROCESSABLE_ENTITY,
                 errs.iter()
                     .map(|e| ApiError::from_compile(e, system.step_id_for(e.pipeline, e.function)))
                     .collect(),
-            );
+            ));
         }
     };
     let route_ids: Vec<String> = compiled.routes.iter().map(|r| r.id.clone()).collect();
@@ -570,7 +570,7 @@ pub fn run_route_preview(
         warnings,
     } = match read_sample(&compiled.meta_for(source_id), &sample.columns, &sample.records) {
         Ok(read) => read,
-        Err(e) => return Envelope::failed_one(e),
+        Err(e) => return Envelope::refused(Refusal::invalid(e)),
     };
 
     let previewed = crate::runtime::preview_routes_at(
@@ -655,23 +655,23 @@ pub fn captures_of(req: GrokCapturesRequest) -> Envelope<GrokCaptures> {
         Ok(m) => Envelope::ok(GrokCaptures {
             captures: m.capture_names().into_iter().map(str::to_string).collect(),
         }),
-        Err(e) => Envelope::failed_one(e.to_string()),
+        Err(e) => Envelope::refused(Refusal::invalid(e.to_string())),
     }
 }
 
 /// Not `ok` when a save would refuse the pattern, with why, word for word as the save says it.
 pub fn line_breaker_verdict(req: LineBreakerRequest) -> Envelope {
     let refusal = config_file::line_breaker_refusal("this line breaker", &req.pattern);
-    Envelope::with(Empty, refusal.into_iter().map(ApiError::new).collect())
+    match refusal {
+        Some(refusal) => Envelope::refused(Refusal::invalid(refusal)),
+        None => Envelope::done(),
+    }
 }
 
 pub fn format_code(req: FormatRequest) -> Envelope<Formatted> {
-    Envelope::with(
-        Formatted {
-            code: crate::expr::pretty::format(&req.code, req.kind),
-        },
-        Vec::new(),
-    )
+    Envelope::ok(Formatted {
+        code: crate::expr::pretty::format(&req.code, req.kind),
+    })
 }
 
 /// `system` compiled, and the id of its destination `name`: what a capture filter there is compiled over, as a worker
@@ -885,11 +885,13 @@ pub fn run_preview(
         keep_bindings(&mut plan);
     }
 
-    let warnings: Vec<ApiError> = plan
-        .warnings
-        .iter()
-        .map(|e| ApiError::from_compile(e, system.step_id_for(Some(pipeline_cfg.id), e.function)))
-        .collect();
+    let warn = |e: &CompileError| ApiError::from_compile(e, system.step_id_for(Some(pipeline_cfg.id), e.function));
+    let mut warnings: Vec<ApiError> = plan.warnings.iter().map(warn).collect();
+    // A field the source gave is warned of at the first step, which the record enters through.
+    let first = pipeline_cfg.body.first().map(|step| match step {
+        plan::config::Step::Function(f) => f.id,
+        plan::config::Step::If { id, .. } => *id,
+    });
 
     // A pipeline has no answers of its own: it is previewed under the group's.
     let on_exception = &system.topology.on_exception;
@@ -904,6 +906,7 @@ pub fn run_preview(
         }
     };
     if records.is_empty() {
+        warnings.extend(ecs_warnings(&plan, &record, first).iter().map(warn));
         return Envelope::ok(Preview {
             stage: None,
             pipeline_names,
@@ -959,13 +962,15 @@ pub fn run_preview(
     let (preview_rows, touched) = match previewed {
         Ok(previewed) => previewed,
         Err(over) => {
-            return Preview::failed(
+            let mut refused = Preview::failed(
                 "memory",
                 vec![ApiError::new(format!(
                     "this sample asked for more memory than a preview may hold: {over}"
                 ))],
                 pipeline_names,
             );
+            refused.status = StatusCode::PAYLOAD_TOO_LARGE;
+            return refused;
         }
     };
 
@@ -1024,6 +1029,7 @@ pub fn run_preview(
 
     // The dictionary is of every row: a filter chooses what is shown, not what the pipeline writes.
     let sampled = plan::dictionary::with_sample(&record, rows.iter().filter_map(|(r, _)| r.json.as_ref()));
+    warnings.extend(ecs_warnings(&plan, &sampled, first).iter().map(warn));
     let unfiltered = filter.as_ref().map(|_| rows.len() as u32);
     let rows = rows
         .into_iter()
@@ -1044,6 +1050,53 @@ pub fn run_preview(
         parsers,
         warnings,
     })
+}
+
+/// A warning for each field of `record`, what `plan` writes, whose type is not one ECS's type for it holds
+/// (`io::elastic_mapping::disagreements`), at the step that wrote the field, or at `first` where the source gave it.
+fn ecs_warnings(plan: &Plan, record: &DataType, first: Option<FunctionId>) -> Vec<CompileError> {
+    crate::io::elastic_mapping::disagreements(record)
+        .into_iter()
+        .map(|d| {
+            let path = d.keys.join(".");
+            let (ecs, written) = (d.ecs.name(), d.ecs.written_as());
+            let message = format!("`{path}` is {}, but ECS maps it as {ecs}. Write it as {written}.", d.ty);
+            CompileError::new(writer(plan, &d.keys).or(first), message)
+        })
+        .collect()
+}
+
+/// The step that wrote the field at `keys` of what `plan` writes: the one that bound its leaf, or the unclaimed
+/// fields of the object holding it, or the last to copy a value there (`Plan::aliases`). `None` where the source gave
+/// it.
+fn writer(plan: &Plan, keys: &[String]) -> Option<FunctionId> {
+    let mut at = &plan.tree;
+    let mut name = String::new();
+    let mut slot = None;
+    for key in keys {
+        match at.fields.get(key) {
+            Some(tree::Node::Object(o)) => at = o,
+            Some(tree::Node::Leaf(s)) => {
+                tree::push_key(&mut name, key);
+                slot = Some(*s);
+                break;
+            }
+            None => {
+                slot = at.unclaimed;
+                break;
+            }
+        }
+        tree::push_key(&mut name, key);
+    }
+    let slot = slot?;
+    let copied = plan.aliases.iter().rev().find(|(s, n, ..)| *s == slot && *n == name);
+    if let Some((.., f)) = copied {
+        return Some(*f);
+    }
+    match plan.provenance.get(slot)?.origin {
+        Origin::Function(f) => Some(f),
+        _ => None,
+    }
 }
 
 /// Clear every `reuse` that would hand away a binding of a name, so `touched` can read each binding after the run.
@@ -1304,9 +1357,9 @@ pub struct TestResult {
     /// `None` for an end-to-end test, which names no pipeline.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pipeline: Option<String>,
-    /// Which scope this ran in -- ids are unique only within a scope, the same collision
-    /// `ScopedTestSummary`'s doc names.
-    pub scope: String,
+    /// Which area this ran in -- ids are unique only within an area, the same collision
+    /// `AreaTestSummary`'s doc names.
+    pub area: String,
     /// Absent when the run could not happen at all -- a sample that is gone, a pipeline that does not compile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verdict: Option<Verdict>,
@@ -1329,7 +1382,7 @@ pub fn run_test(
         id: test.id.clone(),
         name: test.name.clone(),
         pipeline: test.pipeline.clone(),
-        scope: scope.to_string(),
+        area: scope.to_string(),
         verdict: None,
         error: None,
     };
@@ -1392,7 +1445,7 @@ pub fn run_pipeline_actual(
         columns,
         records,
     );
-    if !previewed.ok {
+    if !previewed.succeeded() {
         return Err(previewed
             .errors
             .iter()
@@ -1413,7 +1466,7 @@ pub fn run_route_actual(
     sample: config_file::SampleDto,
 ) -> Result<Vec<Option<serde_json::Value>>, String> {
     let resp = run_route_preview(config, sample, declared_at, Some(locked_at));
-    if !resp.ok {
+    if !resp.succeeded() {
         return Err(resp
             .errors
             .iter()
@@ -1488,6 +1541,101 @@ mod tests {
             .replace(r#""when":"n.","#, "")
     }
 
+    #[test]
+    fn a_field_ecs_maps_as_another_type_is_warned_at_the_step_that_wrote_it() {
+        let config = compiling().replace(
+            r#""body":"x = 1;""#,
+            r#""body":"$[\"@timestamp\"] = \"now\"; source = {ip: \"::1\"};""#,
+        );
+        let previewed = run_preview(
+            PreviewRequest {
+                config,
+                pipeline: Some("p".into()),
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Default::default(),
+            &[],
+            Vec::new(),
+        );
+        let warned: Vec<_> = (previewed.body.warnings.iter())
+            .map(|w| (w.step.as_deref(), w.message.as_str()))
+            .collect();
+        assert_eq!(
+            warned,
+            [(
+                Some("s"),
+                "`@timestamp` is str, but ECS maps it as date. Write it as datetime."
+            )]
+        );
+    }
+
+    #[test]
+    fn a_field_the_source_gave_is_warned_at_the_first_step() {
+        let column = |name: &str| crate::heartbeat::CaptureColumn {
+            name: name.into(),
+            ty: "str".into(),
+        };
+        let columns = [column("_raw"), column("@timestamp")];
+        let previewed = run_preview(
+            PreviewRequest {
+                config: compiling(),
+                pipeline: Some("p".into()),
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Default::default(),
+            &columns,
+            Vec::new(),
+        );
+        let warned: Vec<_> = (previewed.body.warnings.iter())
+            .map(|w| (w.step.as_deref(), w.message.as_str()))
+            .collect();
+        assert_eq!(
+            warned,
+            [(
+                Some("u"),
+                "`@timestamp` is str, but ECS maps it as date. Write it as datetime."
+            )]
+        );
+    }
+
+    #[test]
+    fn a_field_was_written_by_the_step_that_bound_spread_or_copied_it() {
+        use crate::plan::config::{FunctionConfig, FunctionKind, PipelineConfig, Step};
+        let code = |id, body: &str| Step::Function(FunctionConfig::new(id, FunctionKind::Code { body: body.into() }));
+        let p = PipelineConfig {
+            id: 0,
+            name: "p".into(),
+            body: vec![
+                code(0, "Object.assign($, json(_raw));"),
+                code(1, "x = 1;"),
+                code(2, "y = x; $[\"@t\"] = _raw;"),
+            ],
+            step_ids: Vec::new(),
+            lookup_tables: Default::default(),
+            grok_patterns: Default::default(),
+        };
+        let plan = plan::compile::compile(&p, &SourceMeta::NONE).unwrap();
+        let keys = |k: &[&str]| k.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        assert_eq!(writer(&plan, &keys(&["@timestamp"])), Some(0));
+        assert_eq!(writer(&plan, &keys(&["x"])), Some(1));
+        // A copy shares its value's slot, and is the copying step's.
+        assert_eq!(writer(&plan, &keys(&["y"])), Some(2));
+        assert_eq!(writer(&plan, &keys(&["@t"])), Some(2));
+        assert_eq!(writer(&plan, &keys(&["_raw"])), None);
+    }
+
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {
         let config = match at {
             DotAt::Destination(_) => compiling(),
@@ -1514,7 +1662,7 @@ mod tests {
             Vec::new(),
         );
         assert!(
-            previewed.ok,
+            previewed.succeeded(),
             "{:?}",
             previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -1607,7 +1755,7 @@ mod tests {
                 &[],
                 Vec::new(),
             );
-            assert!(previewed.ok);
+            assert!(previewed.succeeded());
             previewed.body.capture_filter.unwrap()
         };
         let both = check("n > 1");
@@ -1643,6 +1791,6 @@ mod tests {
             &[],
             Vec::new(),
         );
-        assert!(!previewed.ok);
+        assert!(!previewed.succeeded());
     }
 }

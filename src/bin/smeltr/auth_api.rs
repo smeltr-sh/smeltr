@@ -9,19 +9,21 @@
 
 use std::time::Instant;
 
-use axum::Json;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use smeltr::leader::accounts::{self, Authenticated, PasswordChange};
 use smeltr::leader::blocking;
+use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::leader::sessions::Refused;
 use smeltr::leader::store::Actor;
 
 use smeltr::leader::access::Access;
 
-use crate::gate::{AccessDto, Auth, access_of, admitted, check_browser_protections, presented_token, refuse};
+use crate::gate::{
+    AccessDto, Auth, access_of, admitted, check_browser_protections, presented_token, refuse, store_unavailable,
+};
 
 /// What the GUI needs to decide which screen to be on.
 #[derive(serde::Serialize)]
@@ -80,20 +82,16 @@ impl SessionDto {
 /// spends the next attempt on nothing.
 fn too_many(wait: std::time::Duration, what: &str) -> Response {
     let seconds = wait.as_secs().max(1);
+    let message = format!("{what} -- try again in {seconds} seconds");
     (
-        StatusCode::TOO_MANY_REQUESTS,
-        [
-            (header::RETRY_AFTER, seconds.to_string()),
-            (header::CACHE_CONTROL, "no-store".to_string()),
-        ],
-        Json(serde_json::json!({ "ok": false, "error": format!("{what} -- try again in {seconds} seconds") })),
+        [(header::RETRY_AFTER, seconds.to_string())],
+        Refusal::new(StatusCode::TOO_MANY_REQUESTS, message),
     )
         .into_response()
 }
 
-/// A session DTO, never cached.
 fn json(dto: SessionDto) -> Response {
-    ([(header::CACHE_CONTROL, "no-store")], Json(dto)).into_response()
+    Envelope::ok(dto).into_response()
 }
 
 /// `GET /api/auth/session`: who this browser is, or that it is nobody.
@@ -136,7 +134,7 @@ pub async fn session(State(auth): State<Auth>, headers: HeaderMap) -> Response {
         Ok(pair) => pair,
         Err(e) => {
             tracing::error!(target: "leader.identity_unavailable", error = %e, "the account store could not be read");
-            return refuse(StatusCode::SERVICE_UNAVAILABLE, "the account store is unavailable");
+            return store_unavailable();
         }
     };
 
@@ -197,7 +195,7 @@ pub async fn login(
         return refuse(StatusCode::FORBIDDEN, "this request is not JSON");
     }
     let Ok(request) = serde_json::from_slice::<LoginRequest>(&body) else {
-        return refuse(StatusCode::BAD_REQUEST, "expected a username and a password");
+        return refuse(StatusCode::UNPROCESSABLE_ENTITY, "expected a username and a password");
     };
 
     // Bounded before a permit is taken, so an oversized password costs a length check rather than a hash.
@@ -229,7 +227,7 @@ pub async fn login(
         Ok(outcome) => outcome,
         Err(e) => {
             tracing::error!(target: "leader.identity_unavailable", error = %e, "a sign-in could not be verified");
-            return refuse(StatusCode::SERVICE_UNAVAILABLE, "the account store is unavailable");
+            return store_unavailable();
         }
     };
 
@@ -276,7 +274,7 @@ pub async fn login(
     let looked_up = blocking(move || Ok((store.get_user(&user_id)?, smeltr::leader::model::on(store.as_ref())?))).await;
     let (current, agents) = match looked_up {
         Ok::<_, smeltr::leader::store::StoreError>((Some(user), agents)) => (user, agents),
-        _ => return refuse(StatusCode::SERVICE_UNAVAILABLE, "the account store is unavailable"),
+        _ => return store_unavailable(),
     };
     // A reset, revocation or disable that landed since the hash was checked has moved the account past what
     // was verified. Refused like any other sign-in that no longer matches: the next attempt is judged afresh.
@@ -305,11 +303,8 @@ pub async fn login(
         "ok",
     );
     (
-        [
-            (header::SET_COOKIE, auth.origin.set_cookie(&issued.token)),
-            (header::CACHE_CONTROL, "no-store".to_string()),
-        ],
-        Json(SessionDto {
+        [(header::SET_COOKIE, auth.origin.set_cookie(&issued.token))],
+        Envelope::ok(SessionDto {
             authenticated: true,
             user_id: Some(current.id),
             display_name: Some(current.display_name),
@@ -345,7 +340,7 @@ fn bounded_subject(canonical: &str) -> String {
 /// exactly what an attacker is asking.
 const GENERIC_REFUSAL: &str = "that username and password do not match an account that can sign in";
 
-/// `POST /api/auth/logout`: end this session.
+/// `DELETE /api/auth/session`: end this session.
 ///
 /// Gated by hand rather than by the middleware, because an account that must change its password must still be
 /// able to leave.
@@ -375,23 +370,14 @@ pub async fn logout(State(auth): State<Auth>, headers: HeaderMap) -> Response {
 /// An answer that also clears the session cookie. The body follows the status: a success carries `message`, a
 /// refusal carries `error`, so a client reads one shape per outcome whether or not a cookie went with it.
 fn cleared(auth: &Auth, status: StatusCode, message: &str) -> Response {
-    let body = if status.is_success() {
-        format!("{{\"ok\":true,\"message\":\"{message}\"}}")
-    } else {
-        format!("{{\"ok\":false,\"error\":\"{message}\"}}")
+    let answer = match status.is_success() {
+        true => Envelope::with(serde_json::json!({ "message": message }), status, vec![]),
+        false => Envelope::refused(Refusal::new(status, message)),
     };
-    (
-        status,
-        [
-            (header::SET_COOKIE, auth.origin.clear_cookie()),
-            (header::CACHE_CONTROL, "no-store".to_string()),
-        ],
-        body,
-    )
-        .into_response()
+    ([(header::SET_COOKIE, auth.origin.clear_cookie())], answer).into_response()
 }
 
-/// `POST /api/auth/activity`: the operator did something, so the idle clock starts again.
+/// `POST /api/auth/session/activity`: the operator did something, so the idle clock starts again.
 ///
 /// Sent after an interaction and never on a timer, which is the difference between a session that ends when
 /// somebody stops working and one that never ends because a tab is open. The manager bounds how often it counts.
@@ -410,7 +396,7 @@ pub async fn activity(State(auth): State<Auth>, headers: HeaderMap) -> Response 
         return *response;
     }
     auth.sessions.touch(&token, Instant::now());
-    ([(header::CACHE_CONTROL, "no-store")], "{\"ok\":true}").into_response()
+    Envelope::done().into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -424,7 +410,7 @@ pub struct PasswordRequest {
     pub new_password: String,
 }
 
-/// `POST /api/auth/password`: choose a new password.
+/// `PUT /api/auth/password`: choose a new password.
 ///
 /// Reachable by a session that must change its password, which is the whole point of it. It ends every session
 /// the account holds, including this one, so the operator signs in again with what they just chose -- and so a
@@ -442,10 +428,13 @@ pub async fn password(State(auth): State<Auth>, headers: HeaderMap, body: axum::
         return *response;
     }
     let Ok(request) = serde_json::from_slice::<PasswordRequest>(&body) else {
-        return refuse(StatusCode::BAD_REQUEST, "expected a new password");
+        return refuse(StatusCode::UNPROCESSABLE_ENTITY, "expected a new password");
     };
     if request.new_password.len() > accounts::MAX_PASSWORD_BYTES {
-        return refuse(StatusCode::BAD_REQUEST, &accounts::PasswordRefused::TooLong.to_string());
+        return refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &accounts::PasswordRefused::TooLong.to_string(),
+        );
     }
 
     let changed = if session.must_change {
@@ -464,7 +453,7 @@ pub async fn password(State(auth): State<Auth>, headers: HeaderMap, body: axum::
             .await
     } else {
         let Some(current) = request.current_password else {
-            return refuse(StatusCode::BAD_REQUEST, "expected your current password");
+            return refuse(StatusCode::UNPROCESSABLE_ENTITY, "expected your current password");
         };
         if current.len() > accounts::MAX_PASSWORD_BYTES {
             return refuse(StatusCode::UNAUTHORIZED, "that is not your current password");
@@ -507,10 +496,10 @@ pub async fn password(State(auth): State<Auth>, headers: HeaderMap, body: axum::
             "your account changed under you -- sign in again",
         ),
         Ok(PasswordChange::WrongPassword) => refuse(StatusCode::UNAUTHORIZED, "that is not your current password"),
-        Ok(PasswordChange::Refused(refused)) => refuse(StatusCode::BAD_REQUEST, &refused.to_string()),
+        Ok(PasswordChange::Refused(refused)) => refuse(StatusCode::UNPROCESSABLE_ENTITY, &refused.to_string()),
         Err(e) => {
             tracing::error!(target: "leader.identity_unavailable", error = %e, "a password change did not land");
-            refuse(StatusCode::SERVICE_UNAVAILABLE, "the account store is unavailable")
+            store_unavailable()
         }
     }
 }

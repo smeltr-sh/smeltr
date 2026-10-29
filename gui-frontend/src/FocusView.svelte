@@ -6,7 +6,7 @@
   routes it sits on.
 
   What it shows comes from two places: the leader's per-object stats over a window
-  (`/api/stats`), read here, and the map's current reading for the node (`/api/map/measurements`),
+  (`/api/areas/:area/stats`), read here, and the map's current reading for the node (`/api/map/measurements`),
   handed in by `MapPage.svelte` with the topology it already holds.
 -->
 <script module lang="ts">

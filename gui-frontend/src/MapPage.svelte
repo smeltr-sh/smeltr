@@ -92,6 +92,8 @@
     type Positioned,
   } from './map';
   import { ago, count } from './time';
+  import StateMark from './StateMark.svelte';
+  import type { State } from './stateGlyphs';
   import { canEdit, mayCapture } from './access';
   import { newRouteHash } from './nav';
 
@@ -351,6 +353,17 @@
    * readings, the layout's own flag before then. */
   function warned(n: MapNode): boolean {
     return measurements ? (readingOf(n)?.warnings.length ?? 0) > 0 : n.warning;
+  }
+
+  /** The sign of the worst warning that names a node, or null when none does. Before the first
+   * readings only the layout's flag is known, which does not say how bad. Info marks the card
+   * without coloring it. */
+  function nodeState(n: MapNode): State | null {
+    if (!measurements) return n.warning ? 'warning' : null;
+    const severities = (readingOf(n)?.warnings ?? []).map((w) => w.severity);
+    if (severities.includes('failed')) return 'error';
+    if (severities.includes('warning')) return 'warning';
+    return severities.length > 0 ? 'info' : null;
   }
 
   /** What arrives at each source that no route takes, by `nodeKey`. */
@@ -823,7 +836,9 @@
           >{@html shapeGlyph({ kind: 'source', system: 'logs' }, 16)} smeltr's own logs</span
         >
         <span class="legend-item">{@html shapeGlyph({ kind: 'pipeline' }, 16)} pipeline</span>
-        <span class="legend-item"><span class="swatch warn"></span> a warning names it</span>
+        <span class="legend-item"
+          ><StateMark state="warning" /><StateMark state="error" /> a warning names it</span
+        >
         <span class="legend-item"><span class="swatch unmatched"></span> no route matched it</span>
         <span class="legend-item"
           ><span class="swatch poison"></span> a batch nothing could process, or an exception</span
@@ -896,7 +911,7 @@
     {/each}
 
     {#if topologyChanged || layoutError}
-      <div class="topology-notice" role="status">
+      <div class="topology-notice callout warn" role="status">
         <span>The layout is out of date</span>
         <button type="button" class="primary" disabled={updating} onclick={updateLayout}
           >Update layout</button
@@ -1031,13 +1046,13 @@
                     {#each band.diagram.positions as p (keyOf(p))}
                       {@const state = cardState(p)}
                       {@const line = cardLine(p.node, cardReading(p.node))}
+                      {@const mark = nodeState(p.node)}
                       <!-- The whole card is the link: the click a plain card gives you is its own
                        biggest target. Editing lives one step further, from the panel this opens
                        (`FocusView.svelte`), so there is no second control here. -->
                       <a
-                        class="node clickable"
+                        class="node clickable {mark ?? ''}"
                         class:terminal={p.node.kind !== 'pipeline'}
-                        class:warn={warned(p.node)}
                         class:selected={state.selected}
                         class:copy={state.copy}
                         class:matched={state.matched}
@@ -1052,6 +1067,7 @@
                         <span class="node-head">
                           <span class="node-shape">{@html shapeGlyph(p.node, 14)}</span>
                           <span class="node-label">{p.node.name}</span>
+                          {#if mark}<StateMark state={mark} />{/if}
                         </span>
                         <span class="node-meta">
                           {cardMeta(p.node)}
@@ -1244,13 +1260,6 @@
     width: 14px;
   }
 
-  .swatch.warn {
-    width: 8px;
-    height: 8px;
-    border-radius: 999px;
-    border: 2px solid var(--error);
-  }
-
   /* A fallback line is dashed, wherever it is drawn. */
   .swatch.unmatched,
   .swatch.poison {
@@ -1378,8 +1387,6 @@
     gap: 0.75rem;
     margin: 0 0 1rem;
     padding: 0.5rem 0.75rem;
-    border-left: 3px solid var(--warn);
-    background: color-mix(in srgb, var(--warn) 10%, var(--bg));
     font-size: var(--text-note);
   }
 
@@ -1489,7 +1496,11 @@
     outline-offset: -2px;
   }
 
-  .node.warn {
+  .node.warning {
+    border-color: var(--warn);
+  }
+
+  .node.error {
     border-color: var(--error);
   }
 
@@ -1499,7 +1510,11 @@
     color: var(--dim);
   }
 
-  .node.warn .node-shape {
+  .node.warning .node-shape {
+    color: var(--warn);
+  }
+
+  .node.error .node-shape {
     color: var(--error);
   }
 
@@ -1566,7 +1581,11 @@
     text-overflow: ellipsis;
   }
 
-  .node.warn .node-label {
+  .node.warning .node-label {
+    color: var(--warn);
+  }
+
+  .node.error .node-label {
     color: var(--error);
   }
 

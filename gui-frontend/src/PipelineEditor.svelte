@@ -1,7 +1,7 @@
 <!--
-  One pipeline's builder: loaded from `GET /api/pipelines/:id` (blank for
+  One pipeline's builder: loaded from `GET /api/areas/:area/pipelines/:id` (blank for
   `id === 'new'`), run in-process against a saved sample through
-  `/api/preview`, and saved with `PUT /api/pipelines/:id`, which the
+  `/api/areas/:area/preview/pipeline`, and saved with `PUT /api/areas/:area/pipelines/:id`, which the
   backend validates against the whole bundle.
 
   The records come from a saved sample, so what a preview ran over has a
@@ -10,6 +10,7 @@
   the URL, else on the one this pipeline last ran over in this browser.
 -->
 <script lang="ts">
+  import StateMark from './StateMark.svelte';
   import InlineError from './InlineError.svelte';
   import { tick, untrack } from 'svelte';
   import { opening } from './StepEditor.svelte';
@@ -739,7 +740,7 @@
     return result.errors.filter((e) => !placed.has(e));
   });
 
-  /** One `/api/preview` call over `stepsSubset`: the whole tree for a
+  /** One `/api/areas/:area/preview/pipeline` call over `stepsSubset`: the whole tree for a
    * Run, a truncated one for each side of a per-step diff. Goes through
    * `previewPipeline`, like every other config call, so it carries the
    * branch being edited. The rows still being written stay out of it.
@@ -1023,8 +1024,8 @@
     return {
       kind: 'source' as const,
       id: c.id,
-      scope: c.scope,
-      group: c.scope === SHARED_SCOPE ? '' : c.scope,
+      scope: c.area,
+      group: c.area === SHARED_SCOPE ? '' : c.area,
     };
   }
 
@@ -1199,7 +1200,8 @@
       {#if result && !result.ok}
         {@const failed = result}
         <ChipPicker kind="error" align="left" bind:open={errorsOpen}>
-          {#snippet face()}⚠ {stageName(failed.stage)} failed · {failed.errors.length} ▾{/snippet}
+          {#snippet face()}<StateMark state="error" />
+            {stageName(failed.stage)} failed · {failed.errors.length} ▾{/snippet}
           {#snippet children()}
             <div class="stage-errors">
               {#if unplacedErrors.length > 0}

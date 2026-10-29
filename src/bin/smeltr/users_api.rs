@@ -9,16 +9,17 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use std::time::Duration;
 
 use smeltr::leader::access::{Access, Role};
+use smeltr::leader::envelope::Envelope;
 use smeltr::leader::store::{AccountError, Actor, AuthSource, NewLocalUser, Store, StoreError, UserRecord};
 use smeltr::leader::{accounts, blocking, sessions};
 
-use crate::gate::{AccessDto, Auth, refuse};
+use crate::gate::{AccessDto, Auth, refuse, store_unavailable};
 
 /// An account as the roster shows it. No verifier, no password state beyond whether one must be changed.
 #[derive(serde::Serialize)]
@@ -84,10 +85,6 @@ pub fn provider_login_of(store: &dyn Store, user: &UserRecord) -> Result<Option<
     Ok(store.oidc_identity_of(&user.id)?.and_then(|identity| identity.login))
 }
 
-pub fn no_store<T: serde::Serialize>(body: T) -> Response {
-    ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
-}
-
 /// Turn a refused account operation into the status that describes it.
 fn account_error(e: AccountError) -> Response {
     let status = match e {
@@ -100,7 +97,7 @@ fn account_error(e: AccountError) -> Response {
 
 fn unavailable(e: StoreError) -> Response {
     tracing::error!(target: "leader.identity_unavailable", error = %e, "an account operation could not be completed");
-    refuse(StatusCode::SERVICE_UNAVAILABLE, "the account store is unavailable")
+    store_unavailable()
 }
 
 /// A store call on the pool, however it fails answered as unavailable.
@@ -123,7 +120,7 @@ pub async fn list_users(State(auth): State<Auth>) -> Response {
     })
     .await;
     match listed {
-        Ok(users) => no_store(users),
+        Ok(users) => Envelope::ok(serde_json::json!({ "users": users })).into_response(),
         Err(response) => *response,
     }
 }
@@ -152,13 +149,13 @@ pub async fn create_user(
 ) -> Response {
     let Some(username) = accounts::canonical_username(&request.username) else {
         return refuse(
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNPROCESSABLE_ENTITY,
             "a username starts with a letter and holds letters, digits, dots, dashes and underscores",
         );
     };
     let display_name = match display_name(&request.display_name) {
         Ok(name) => name,
-        Err(why) => return refuse(StatusCode::BAD_REQUEST, why),
+        Err(why) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, why),
     };
 
     let password = accounts::generate_password();
@@ -205,11 +202,12 @@ pub async fn create_user(
     }
     (
         StatusCode::CREATED,
-        no_store(TemporaryPasswordDto {
+        Envelope::ok(TemporaryPasswordDto {
             user_id: created_id,
             username: created_username,
             temporary_password: password,
-        }),
+        })
+        .into_response(),
     )
         .into_response()
 }
@@ -233,10 +231,15 @@ pub async fn patch_user(
     Json(request): Json<PatchRequest>,
 ) -> Response {
     match (&request.display_name, request.enabled) {
-        (None, None) => return refuse(StatusCode::BAD_REQUEST, "name a display name or an enabled state"),
+        (None, None) => {
+            return refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "name a display name or an enabled state",
+            );
+        }
         (Some(_), Some(_)) => {
             return refuse(
-                StatusCode::BAD_REQUEST,
+                StatusCode::UNPROCESSABLE_ENTITY,
                 "change a display name or an enabled state, not both in one request",
             );
         }
@@ -246,7 +249,7 @@ pub async fn patch_user(
     if let Some(name) = &request.display_name {
         let name = match display_name(name) {
             Ok(name) => name,
-            Err(why) => return refuse(StatusCode::BAD_REQUEST, why),
+            Err(why) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, why),
         };
         let store = auth.store.clone();
         let target = id.clone();
@@ -292,7 +295,7 @@ async fn current_user(auth: &Auth, id: &str) -> Response {
     })
     .await;
     match looked_up {
-        Ok(Some(user)) => no_store(user),
+        Ok(Some(user)) => Envelope::ok(user).into_response(),
         Ok(None) => account_error(AccountError::NoSuchUser),
         Err(response) => *response,
     }
@@ -332,11 +335,12 @@ pub async fn reset_password(
         Ok(username) => username.unwrap_or_default(),
         Err(response) => return *response,
     };
-    no_store(TemporaryPasswordDto {
+    Envelope::ok(TemporaryPasswordDto {
         user_id: id,
         username,
         temporary_password: password,
     })
+    .into_response()
 }
 
 /// `POST /api/users/:id/revoke-sessions`: end every session an account holds, without touching its password.
@@ -354,7 +358,7 @@ pub async fn revoke_sessions(
         Err(response) => return *response,
     }
     let ended = auth.sessions.remove_all_for(&id);
-    no_store(serde_json::json!({ "ok": true, "ended": ended }))
+    Envelope::ok(serde_json::json!({ "ended": ended })).into_response()
 }
 
 /// `GET /api/security-events`: what has happened to accounts, newest first.
@@ -363,8 +367,8 @@ pub async fn list_security_events(State(auth): State<Auth>, headers: HeaderMap) 
     const LIMIT: usize = 500;
     let store = auth.store.clone();
     match store_call(move || store.list_security_events(LIMIT)).await {
-        Ok(events) => no_store(
-            events
+        Ok(events) => {
+            let events: Vec<_> = events
                 .into_iter()
                 .map(|e| {
                     serde_json::json!({
@@ -376,8 +380,9 @@ pub async fn list_security_events(State(auth): State<Auth>, headers: HeaderMap) 
                         "outcome": e.outcome,
                     })
                 })
-                .collect::<Vec<_>>(),
-        ),
+                .collect();
+            Envelope::ok(serde_json::json!({ "events": events })).into_response()
+        }
         Err(response) => *response,
     }
 }
@@ -516,7 +521,7 @@ impl From<sessions::Lifetimes> for SessionSettingsDto {
 
 /// `GET /api/settings/sessions`: the deadlines in force.
 pub async fn get_session_settings(State(auth): State<Auth>) -> Response {
-    no_store(SessionSettingsDto::from(auth.sessions.lifetimes()))
+    Envelope::ok(SessionSettingsDto::from(auth.sessions.lifetimes())).into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -537,7 +542,7 @@ pub async fn put_session_settings(
         Duration::from_secs(request.absolute_seconds),
     ) {
         Ok(lifetimes) => lifetimes,
-        Err(e) => return refuse(StatusCode::BAD_REQUEST, &e),
+        Err(e) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, &e),
     };
 
     // One writer at a time, across the durable write and the in-memory install together. SQLite serializes the
@@ -563,5 +568,5 @@ pub async fn put_session_settings(
         return refuse(StatusCode::SERVICE_UNAVAILABLE, &e);
     }
     auth.sessions.set_lifetimes(lifetimes);
-    no_store(SessionSettingsDto::from(lifetimes))
+    Envelope::ok(SessionSettingsDto::from(lifetimes)).into_response()
 }

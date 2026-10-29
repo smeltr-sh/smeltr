@@ -50,7 +50,7 @@
   /** The rest of a row, one link per scope they sit in, so each opens the list it is on. */
   function rest(row: Row): { scope: string; items: Connected[] }[] {
     const by = new Map<string, Connected[]>();
-    for (const o of row.items.slice(SHOWN)) by.set(o.scope, [...(by.get(o.scope) ?? []), o]);
+    for (const o of row.items.slice(SHOWN)) by.set(o.area, [...(by.get(o.area) ?? []), o]);
     return [...by].map(([scope, items]) => ({ scope, items }));
   }
 </script>
@@ -65,11 +65,11 @@
       {#each all as row (row.label)}
         <dt>{row.label}</dt>
         <dd>
-          {#each row.items.slice(0, SHOWN) as o, i (`${o.scope}\u0000${o.id}`)}
+          {#each row.items.slice(0, SHOWN) as o, i (`${o.area}\u0000${o.id}`)}
             {#if i > 0}<span class="dim">{', '}</span>{/if}<a
               class="link name"
               href={objectHash(o)}
-              onclick={into(o.scope, objectHash(o))}>{o.id}</a
+              onclick={into(o.area, objectHash(o))}>{o.id}</a
             >
           {/each}
           {#each rest(row) as more (more.scope)}

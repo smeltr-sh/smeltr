@@ -13,7 +13,7 @@ function table(id: string, value = '1'): Table {
 
 /** Saves `tables` as `shared/`'s whole set of lookup tables on `branch`, as one commit. */
 async function putTables(api: Api, branch: string, tables: Table[]) {
-  await api.put(`/api/lookup-tables?branch=${encodeURIComponent(branch)}&scope=shared`, tables);
+  await api.put(`/api/areas/shared/lookups?branch=${encodeURIComponent(branch)}`, tables);
 }
 
 /** A branch carrying `tables`, opened for review as `title`. */
@@ -45,7 +45,7 @@ async function addTable(page: Page, leader: Leader, id: string) {
 
 /** The table ids `shared/` holds on `branch`. */
 async function tablesOn(api: Api, branch: string): Promise<string[]> {
-  const res = await api.get(`/api/config?branch=${encodeURIComponent(branch)}&scope=shared`);
+  const res = await api.get(`/api/areas/shared?branch=${encodeURIComponent(branch)}`);
   return res.config.lookupTables.map((t: Table) => t.id);
 }
 
@@ -193,7 +193,7 @@ test('a change behind main is brought current, and its conflict is the author’
 
   await expect(admin.getByText('Current with main', { exact: true })).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Approve & deploy' })).toBeEnabled();
-  const mine = (await api.get('/api/config?branch=mine&scope=shared')).config.lookupTables;
+  const mine = (await api.get('/api/areas/shared?branch=mine')).config.lookupTables;
   expect(mine[0].rows).toEqual([['red', '1']]);
 });
 
@@ -356,7 +356,7 @@ test('the branch list shows every branch with its state, and deletes one', async
   await putTables(api, 'parked', [table('colors')]);
   await arrangeChange(api, 'in-review', 'Add sizes', [table('sizes')]);
   await arrangeChange(api, 'turned-down', 'Add shapes', [table('shapes')]);
-  await api.post('/api/changes/turned-down/close', { reason: '' });
+  await api.post('/api/branches/turned-down/close', { reason: '' });
 
   await goto(admin, leader, '#/changes');
   const row = (name: string) => admin.getByRole('row').filter({ hasText: name });
@@ -384,18 +384,18 @@ test('a sample the branch deleted is put back from its card on the change page',
   leader,
 }) => {
   // W3
-  await api.put('/api/samples?branch=seed&scope=shared', {
+  await api.put('/api/areas/shared/samples/keep?branch=seed', {
     id: 'keep',
     name: 'keep',
     records: [{ _raw: 'a line' }],
   });
   // A sample reaches main only with a test that uses it.
-  await api.put('/api/pipelines/p?branch=seed&scope=shared', {
+  await api.put('/api/areas/shared/pipelines/p?branch=seed', {
     id: 'p',
     name: 'p',
     steps: [{ type: 'drop', id: 'none', condition: 'false' }],
   });
-  await api.put('/api/tests?branch=seed&scope=shared', {
+  await api.put('/api/areas/shared/tests/keep?branch=seed', {
     id: 'keep',
     name: 'keep',
     pipeline: 'p',
@@ -406,7 +406,7 @@ test('a sample the branch deleted is put back from its card on the change page',
   });
   await api.openChange('seed', 'Add a sample');
   await api.deploy('seed');
-  await api.delete('/api/samples/keep?branch=tidy&scope=shared');
+  await api.delete('/api/areas/shared/samples/keep?branch=tidy');
   await api.openChange('tidy', 'Tidy the samples');
 
   await goto(admin, leader, '#/changes');
@@ -418,7 +418,7 @@ test('a sample the branch deleted is put back from its card on the change page',
     .getByRole('button', { name: 'Undo changes' })
     .click();
   await expect(admin.getByText('No objects changed.')).toBeVisible();
-  const { sample } = await api.get('/api/samples/keep?branch=tidy&scope=shared');
+  const { sample } = await api.get('/api/areas/shared/samples/keep?branch=tidy');
   expect(sample.records).toEqual([{ _raw: 'a line' }]);
 });
 
@@ -428,8 +428,8 @@ test('a deployed commit that fails its own tests is deployed, and flagged on the
   leader,
 }) => {
   // W11
-  const on = '?branch=broken-orders&scope=shared';
-  await api.put(`/api/pipelines/orders${on}`, {
+  const on = '?branch=broken-orders';
+  await api.put(`/api/areas/shared/pipelines/orders${on}`, {
     id: 'orders',
     name: 'orders',
     steps: [
@@ -442,13 +442,13 @@ test('a deployed commit that fails its own tests is deployed, and flagged on the
       },
     ],
   });
-  await api.put(`/api/samples${on}`, {
+  await api.put(`/api/areas/shared/samples/orders-sample${on}`, {
     id: 'orders-sample',
     name: 'orders',
     records: [{ _raw: '{"id":1}' }],
   });
   // Locks an output the pipeline does not make, so the test fails at every commit that carries it.
-  await api.put(`/api/tests${on}`, {
+  await api.put(`/api/areas/shared/tests/orders-keep-id${on}`, {
     id: 'orders-keep-id',
     name: 'orders keep their id',
     pipeline: 'orders',
@@ -500,9 +500,9 @@ test('a review sets apart the samples no test uses, which the deploy leaves out'
   api,
   leader,
 }) => {
-  const on = '?branch=scratch&scope=shared';
+  const on = '?branch=scratch';
   await putTables(api, 'scratch', [table('colors')]);
-  await api.put(`/api/samples${on}`, {
+  await api.put(`/api/areas/shared/samples/tried${on}`, {
     id: 'tried',
     name: 'capture 14:20',
     records: [{ _raw: 'a' }],
@@ -517,6 +517,6 @@ test('a review sets apart the samples no test uses, which the deploy leaves out'
   await expect(admin.getByText('1 sample left out', { exact: true })).toBeVisible();
 
   await api.deploy('scratch');
-  const main = await api.get('/api/samples?branch=main&scope=shared');
+  const main = await api.get('/api/areas/shared/samples?branch=main');
   expect(main.samples).toEqual([]);
 });

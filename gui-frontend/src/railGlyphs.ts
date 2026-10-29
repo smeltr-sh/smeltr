@@ -34,9 +34,8 @@ export const RAIL_GLYPHS: Record<string, Glyph> = {
   Branches: {
     d: 'M18 14 H25 V50 H18 Z M25 40 C38 40 44 34 44 24 V14 H51 V24 C51 38 41 47 25 47 Z M15 12 A6.5 6.5 0 1 1 28 12 A6.5 6.5 0 1 1 15 12 Z M15 52 A6.5 6.5 0 1 1 28 52 A6.5 6.5 0 1 1 15 52 Z M41 12 A6.5 6.5 0 1 1 54 12 A6.5 6.5 0 1 1 41 12 Z',
   },
-  // A clock.
+  // A commit log: the Branches line, unforked, each commit a row.
   History: {
-    d: 'M8 32 A24 24 0 1 0 56 32 A24 24 0 1 0 8 32 Z M14 32 A18 18 0 1 0 50 32 A18 18 0 1 0 14 32 Z M29 17 H35 V30 H45 V36 H29 Z',
-    evenodd: true,
+    d: 'M12.5 14 H19.5 V50 H12.5 Z M9.5 14 A6.5 6.5 0 1 1 22.5 14 A6.5 6.5 0 1 1 9.5 14 Z M28 10 H52 L55 18 H25 Z M9.5 32 A6.5 6.5 0 1 1 22.5 32 A6.5 6.5 0 1 1 9.5 32 Z M28 28 H52 L55 36 H25 Z M9.5 50 A6.5 6.5 0 1 1 22.5 50 A6.5 6.5 0 1 1 9.5 50 Z M28 46 H52 L55 54 H25 Z',
   },
 };

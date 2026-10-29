@@ -38,7 +38,7 @@ impl<'a> TreeFiles<'a> {
     }
 
     fn as_io(e: git::GitError) -> std::io::Error {
-        std::io::Error::other(e.0)
+        std::io::Error::other(e.message)
     }
 }
 
@@ -127,7 +127,7 @@ pub fn lookup_pointers(
             let Ok(crate::plan::config::LookupAt::InCommit { path, .. }) = at.lookup(&path) else {
                 continue;
             };
-            let blob = git::read_blobs(repo, rev, std::slice::from_ref(&path)).map_err(|e| e.0)?;
+            let blob = git::read_blobs(repo, rev, std::slice::from_ref(&path)).map_err(|e| e.message)?;
             for blob in blob.into_iter().flatten() {
                 pointers.insert(
                     crate::lookup::store::pointer_in(&blob, &path).map_err(|e| e.0)?,
