@@ -1,7 +1,7 @@
 //! The warning catalog (design doc, Control plane): a fixed set of named conditions, each about one object, each
 //! derived fresh from `Registry::snapshot()`, the worker roster, and which groups the fleet runs, on every call.
-//! There is no warning table --
-//! [`derive`] is the whole mechanism, and a condition absent from its result is not true, not closed or acknowledged.
+//! There is no warning table -- [`crate::leader::catalog`] is the whole mechanism, [`derive`] the fleet's part of it,
+//! and a condition absent from its result is not true, not closed or acknowledged.
 //!
 //! A warning needs a start time this module cannot read off any one heartbeat: nothing on the wire says how long a
 //! fact has held. [`crate::leader::registry::Registry::observe_facts`] is the leader's only memory of that -- when
@@ -205,8 +205,8 @@ pub fn notice_millis(not_before_millis: i64, not_after_millis: i64) -> i64 {
     ((not_after_millis - not_before_millis) as f64 * AUTHORITY_LAST_PART) as i64
 }
 
-/// A named condition about one object: what the design calls a warning. [`derive`] recomputes the whole list on
-/// every call; nothing here is stored, and there is nothing to acknowledge.
+/// A named condition about one object: what the design calls a warning. [`crate::leader::catalog`] recomputes the
+/// whole list on every call; nothing here is stored, and there is nothing to acknowledge.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Warning {
