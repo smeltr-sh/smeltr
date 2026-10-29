@@ -186,7 +186,7 @@ describe('the source', () => {
   });
 
   it('offers rotation only under Leader issued', async () => {
-    await show({ ...CERTIFICATES, rotation: null }, '▸ Rotate authority');
+    await show({ ...CERTIFICATES, rotation: null }, 'Rotate authority');
     expect(target.textContent).toContain('Rotate authority');
     option('Uploaded')!.click();
     flushSync();
@@ -277,7 +277,7 @@ describe('the source', () => {
       }),
     );
     page = mount(CertificatesSettings, { target });
-    await vi.waitFor(() => expect(button('▸ Rotate authority')).toBeDefined());
+    await vi.waitFor(() => expect(button('Rotate authority')).toBeDefined());
     option('Uploaded')!.click();
     flushSync();
     const chooser = target.querySelector('select')!;
@@ -342,7 +342,7 @@ describe('a certificate a start could not serve', () => {
 
     option('Leader issued')!.click();
     flushSync();
-    expect(button('▸ Rotate authority')).toBeUndefined();
+    expect(button('Rotate authority')).toBeUndefined();
     button('Switch to Leader issued')!.click();
     await vi.waitFor(() => expect(puts).toEqual([{ certificate: 'leader' }]));
   });
@@ -367,7 +367,7 @@ describe('ACME', () => {
   };
 
   it('orders only once the terms are agreed to, and fills the names from the certificate', async () => {
-    await show({ ...CERTIFICATES, rotation: null }, '▸ Rotate authority');
+    await show({ ...CERTIFICATES, rotation: null }, 'Rotate authority');
     option('ACME')!.click();
     flushSync();
     const get = button('Get certificate')!;

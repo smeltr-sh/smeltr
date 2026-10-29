@@ -20,6 +20,7 @@
   can be filtered to what changed.
 -->
 <script lang="ts">
+  import ChevronIcon from './ChevronIcon.svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { formatDiffValue } from './diff';
   import { stepName, type Step } from './pipeline';
@@ -286,7 +287,8 @@
           {@render run(mark)}
           <span class="key">
             <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}
-              >{@render sign(mark, null)}<span class="chevron">{line.open ? '▾︎' : '▸︎'}</span
+              >{@render sign(mark, null)}<span class="chevron"
+                ><ChevronIcon open={line.open} /></span
               >{@render name(line.label)}</span
             >
             {#if showTypes}<span class="type">{line.type ?? ''}</span>{/if}
@@ -323,7 +325,7 @@
         aria-expanded={removedOpen}
         onclick={() => (removedOpen = !removedOpen)}
       >
-        <span class="sign"></span><span class="chevron">{removedOpen ? '▾︎' : '▸︎'}</span>
+        <span class="sign"></span><span class="chevron"><ChevronIcon open={removedOpen} /></span>
         <span class="removed-names"
           >{split.removed.length} removed: {split.removed.map((n) => n.path).join(', ')}</span
         >

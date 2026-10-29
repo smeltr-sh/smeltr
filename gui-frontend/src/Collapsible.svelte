@@ -11,6 +11,7 @@
     rows. A `fixed` row has nothing to open and keeps the caret's room, so its cells line up.
 -->
 <script lang="ts">
+  import ChevronIcon from './ChevronIcon.svelte';
   import type { Snippet } from 'svelte';
   import { validationContext } from './validation.svelte';
 
@@ -56,7 +57,7 @@
         aria-expanded={open ?? false}
         onclick={() => (open = !open)}
       >
-        <span class="caret" class:open aria-hidden="true">&#9656;</span>
+        <span class="caret"><ChevronIcon open={open ?? false} /></span>
         <span class="summary">{@render summary()}</span>
       </button>
     {/if}
@@ -118,11 +119,6 @@
     width: 0.75em;
     font-size: 0.75em;
     color: var(--dim);
-    transition: transform 0.12s ease;
-  }
-
-  .caret.open {
-    transform: rotate(90deg);
   }
 
   .summary {
