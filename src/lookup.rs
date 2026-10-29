@@ -348,7 +348,7 @@ impl RowTable {
         key_column: &str,
         match_kind: MatchKind,
     ) -> Result<RowTable, LookupError> {
-        let (headers, _) = csv_header(shown, &file, delimiter)?;
+        let (headers, rest) = csv_header(shown, &file, delimiter)?;
         let key = key_of(&headers, key_column)?;
         let kept = stored.map(|stored| index_path(stored, key_column, match_kind, delimiter));
         // An index this host kept is used when it reads as sound; anything else is built again.
@@ -358,7 +358,7 @@ impl RowTable {
         {
             return RowTable::open(headers, Some(file), index, match_kind, key);
         }
-        let (_, lines) = csv_lines(shown, &file, delimiter)?;
+        let lines = csv_rows(shown, &file[rest..], delimiter)?;
         let mut cells = CellsBuilder::default();
         for (i, fields) in lines.enumerate() {
             let fields = fields?;
@@ -770,8 +770,8 @@ pub fn check_relative(path: &str) -> Result<(), LookupError> {
 /// A lookup table file's headers, every row checked and none kept: what an upload needs to know of a table that may
 /// be gigabytes.
 pub fn csv_headers(shown: &str, bytes: &[u8], delimiter: u8) -> Result<Vec<String>, LookupError> {
-    let (headers, lines) = csv_lines(shown, bytes, delimiter)?;
-    for line in lines {
+    let (headers, rest) = csv_header(shown, bytes, delimiter)?;
+    for line in csv_rows(shown, &bytes[rest..], delimiter)? {
         line?;
     }
     Ok(headers)
@@ -797,31 +797,20 @@ fn csv_header(shown: &str, bytes: &[u8], delimiter: u8) -> Result<(Vec<String>, 
     Err(LookupError(format!("lookup file `{shown}` is empty")))
 }
 
-/// A lookup file's headers, and each later line split into its fields. Blank lines are skipped.
-#[allow(clippy::type_complexity)]
-fn csv_lines<'b>(
+/// A lookup file's lines after its header, `rows`, each split into its fields. Blank lines are skipped.
+fn csv_rows<'b>(
     shown: &str,
-    bytes: &'b [u8],
+    rows: &'b [u8],
     delimiter: u8,
-) -> Result<
-    (
-        Vec<String>,
-        impl Iterator<Item = Result<Vec<csv_scan::Field<'b>>, LookupError>>,
-    ),
-    LookupError,
-> {
-    let (headers, rest) = csv_header(shown, bytes, delimiter)?;
-    let text = std::str::from_utf8(&bytes[rest..])
-        .map_err(|e| LookupError(format!("lookup file `{shown}` is not valid UTF-8: {e}")))?;
+) -> Result<impl Iterator<Item = Result<Vec<csv_scan::Field<'b>>, LookupError>>, LookupError> {
+    let text =
+        std::str::from_utf8(rows).map_err(|e| LookupError(format!("lookup file `{shown}` is not valid UTF-8: {e}")))?;
     let shown = shown.to_string();
     let lines = text.lines().filter(|l| !l.trim().is_empty()).enumerate();
-    Ok((
-        headers,
-        lines.map(move |(n, line)| {
-            csv_scan::split_line(line.as_bytes(), delimiter)
-                .ok_or_else(|| LookupError(format!("lookup file `{shown}` line {}: malformed quoting", n + 2)))
-        }),
-    ))
+    Ok(lines.map(move |(n, line)| {
+        csv_scan::split_line(line.as_bytes(), delimiter)
+            .ok_or_else(|| LookupError(format!("lookup file `{shown}` line {}: malformed quoting", n + 2)))
+    }))
 }
 
 /// What an `Op::Call` that looks up runs: a loaded table, how many of its rows a key takes, and each output's miss
