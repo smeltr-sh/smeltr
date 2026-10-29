@@ -393,8 +393,9 @@ pub struct SchemaFindings {
     findings: Vec<SchemaFindingOut>,
 }
 
-/// What breaks a schema at the branch's tip, in every group its change reaches (`scopes_touched`). A group that does
-/// not load there has no findings: review says it does not load.
+/// What the branch breaks of a schema, in every group its change reaches (`scopes_touched`): the findings at its tip
+/// that were not already there where it left main, since what main already broke is not this change's doing. A group
+/// that does not load at the tip has no findings: review says it does not load.
 pub async fn schema_findings(
     Extension(access): Extension<Access>,
     AxPath(name): AxPath<String>,
@@ -402,30 +403,46 @@ pub async fn schema_findings(
     let answered = blocking(move || {
         let data_dir = leader_data_dir();
         seen(&access, &data_dir, &name)?;
-        let repo = repo()?;
-        let mut findings = Vec::new();
-        for group in scopes_touched(&data_dir, &name)? {
-            if group == config_file::SHARED_DIR {
-                continue;
-            }
-            let Ok(system) = tree::load_group_at(&repo, &name, &group) else {
-                continue;
-            };
-            // Loading compiled it, so this compile does not fail.
-            let Ok(compiled) = system.compile_topology() else {
-                continue;
-            };
-            findings.extend(system.schema_findings(&compiled).into_iter().map(|f| SchemaFindingOut {
-                group: group.clone(),
-                pipeline: f.pipeline,
-                step: f.step,
-                message: f.message,
-            }));
-        }
-        Ok::<_, Refusal>(SchemaFindings { findings })
+        branch_findings(&data_dir, &name)
     })
     .await;
     answered.into()
+}
+
+fn branch_findings(data_dir: &Path, name: &str) -> Result<SchemaFindings, Refusal> {
+    let repo = repo_at(data_dir)?;
+    let base = git::branch_base(&repo, name)?;
+    let mut findings = Vec::new();
+    for group in scopes_touched(data_dir, name)? {
+        if group == config_file::SHARED_DIR {
+            continue;
+        }
+        let was = findings_at(&repo, &base, &group);
+        findings.extend(
+            findings_at(&repo, name, &group)
+                .into_iter()
+                .filter(|f| !was.contains(f))
+                .map(|f| SchemaFindingOut {
+                    group: group.clone(),
+                    pipeline: f.pipeline,
+                    step: f.step,
+                    message: f.message,
+                }),
+        );
+    }
+    Ok(SchemaFindings { findings })
+}
+
+/// The schema findings of `group` at `rev`; none where it does not load there.
+fn findings_at(repo: &Path, rev: &str, group: &str) -> Vec<config_file::SchemaFinding> {
+    let Ok(system) = tree::load_group_at(repo, rev, group) else {
+        return Vec::new();
+    };
+    // Loading compiled it, so this compile does not fail.
+    system
+        .compile_topology()
+        .map(|compiled| system.schema_findings(&compiled))
+        .unwrap_or_default()
 }
 
 // -- POST /api/branches, DELETE /api/branches/:name -----------------------
@@ -1231,6 +1248,52 @@ mod tests {
         let mut files: Vec<(&str, &[u8])> = vec![("shared/system.json", MANIFEST)];
         files.extend(paths.iter().map(|p| (p.as_str(), MANIFEST)));
         save(data, git::MAIN_BRANCH, &files, "seed main");
+    }
+
+    /// A finding main already had is not the branch's: review lists only what its change adds.
+    #[test]
+    fn a_branch_s_schema_findings_are_only_those_it_adds() {
+        let data = temp_dir("schema-findings");
+        let pipeline = |id: &str| format!(r#"{{"id":"{id}","name":"{id}","produces":["login"],"steps":[]}}"#);
+        const SOURCES: &[u8] = br#"[{"id":"k","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}]"#;
+        // A route from `k` through each pipeline, so each one's rows are what the schema is checked against.
+        let routes = |ids: &[&str]| -> Vec<u8> {
+            let each: Vec<String> = ids
+                .iter()
+                .map(|id| format!(r#"{{"id":"r-{id}","source":"k","pipeline":"{id}","deliver":[]}}"#))
+                .collect();
+            format!("[{}]", each.join(",")).into_bytes()
+        };
+        let schema = br#"{"id":"login","title":"Login","fields":[{"field":"user","type":"str","required":true}]}"#;
+        let p = pipeline("p");
+        save(
+            &data,
+            git::MAIN_BRANCH,
+            &[
+                ("shared/system.json", MANIFEST),
+                ("groups/west/system.json", MANIFEST),
+                ("groups/west/schemas/login.json", schema),
+                ("groups/west/pipelines/p.json", p.as_bytes()),
+                ("groups/west/sources.json", SOURCES),
+                ("groups/west/routes.json", &routes(&["p"])),
+            ],
+            "seed main",
+        );
+        git::create_branch(&data, "work").unwrap();
+        let q = pipeline("q");
+        save(
+            &data,
+            "work",
+            &[
+                ("groups/west/pipelines/q.json", q.as_bytes()),
+                ("groups/west/routes.json", &routes(&["p", "q"])),
+            ],
+            "q",
+        );
+
+        let found = branch_findings(&data, "work").unwrap().findings;
+        let pipelines: Vec<_> = found.iter().map(|f| (f.group.as_str(), f.pipeline.as_str())).collect();
+        assert_eq!(pipelines, [("west", "q")], "main's own finding for p is left out");
     }
 
     /// The reported case: two branches off one `main` each add a source. Once one deploys, the other is brought

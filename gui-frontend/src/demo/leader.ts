@@ -510,20 +510,28 @@ export class DemoLeader {
     return undefined;
   }
 
-  /** What breaks a schema in each group `name`'s change touches, by group, as the leader's review reads it. A group
-   * whose bundle does not load is left out, as the leader leaves it out. */
+  /** What `name`'s change breaks of a schema in each group it touches, by group, as the leader's review reads it:
+   * what main already broke is left out. A group whose bundle does not load is left out, as the leader leaves it out. */
   private async schemaFindings(name: string): Promise<Answer> {
     const branch = this.branch(name);
     if (!branch) return refused(404, [bareError(`no branch ${JSON.stringify(name)}`)]);
+    const main = this.branch('main')!;
     const groups = new Set(
       branch.touches.flatMap((file) => /^groups\/([^/]+)\//.exec(file)?.[1] ?? []),
     );
+    const findingsOf = async (b: Branch, group: string): Promise<object[]> => {
+      const own = b.bundles[group] ?? { version: 1 };
+      const answer = await this.ask('/schema-findings', this.bundleOf(b, group, own));
+      const body = answer.body as { ok?: boolean; findings?: object[] };
+      return body.ok ? (body.findings ?? []) : [];
+    };
     const findings: object[] = [];
     for (const group of groups) {
-      const own = branch.bundles[group] ?? { version: 1 };
-      const answer = await this.ask('/schema-findings', this.bundleOf(branch, group, own));
-      const body = answer.body as { ok?: boolean; findings?: object[] };
-      if (body.ok) findings.push(...(body.findings ?? []).map((f) => ({ group, ...f })));
+      const was = new Set((await findingsOf(main, group)).map((f) => JSON.stringify(f)));
+      const now = await findingsOf(branch, group);
+      findings.push(
+        ...now.filter((f) => !was.has(JSON.stringify(f))).map((f) => ({ group, ...f })),
+      );
     }
     return ok({ findings });
   }
