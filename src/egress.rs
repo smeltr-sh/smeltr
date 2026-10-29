@@ -952,9 +952,9 @@ fn remainder(
     rejections: Vec<Rejection>,
     undelivered: &[usize],
 ) -> Unit {
+    // In the batch's order: each of its requests named its own.
     let mut kept: Vec<usize> = undelivered.to_vec();
     kept.sort_unstable();
-    kept.dedup();
     let mut landed = vec![true; unit.rows.len()];
     for &i in kept.iter().chain(rejections.iter().map(|r| &r.doc)) {
         if let Some(at) = landed.get_mut(i) {

@@ -27,6 +27,9 @@ pub struct Delivered {
     /// The destination asked to be sent less (429, 503, a per-item `es_rejected_execution_exception`). Reported rather
     /// than inferred from timing: a slow cluster and a throttled one call for opposite responses.
     pub throttled: bool,
+    /// The batch's rows the job did not land, so only they are sent again. The refusals seen before the failure are in
+    /// `rejections`, so none is lost.
+    pub undelivered: Option<Undelivered>,
 }
 
 /// One blocking delivery. Implementors do a single round trip and say what the destination refused; retrying a
@@ -35,16 +38,7 @@ pub trait Sender: Send + 'static {
     /// Everything one batch needs to be delivered, owned -- it crosses a thread boundary.
     type Job: Send + 'static;
 
-    /// A failure names the batch's rows the job did not land, so only they are sent again, and carries the refusals
-    /// it had already seen, so none is lost.
-    fn send_one(&mut self, job: Self::Job) -> Result<Delivered, Failed>;
-}
-
-/// A job that did not land whole.
-pub struct Failed {
-    pub undelivered: Undelivered,
-    /// Refusals the job saw before it failed.
-    pub rejections: Vec<Rejection>,
+    fn send_one(&mut self, job: Self::Job) -> Delivered;
 }
 
 /// How long a sender waits for a job before handing its free pages back, so what the last request freed has had its
@@ -100,10 +94,10 @@ impl<J> Jobs<J> {
 /// Runs several [`Sender`]s concurrently, keyed by batch.
 pub struct Pool<S: Sender> {
     jobs: Arc<Jobs<S::Job>>,
-    done: Receiver<(BatchId, Result<Delivered, Failed>)>,
+    done: Receiver<(BatchId, Delivered)>,
     /// What a sender spawned later reports on. Dropped once every sender is spawned, so the channel closes when they
     /// have all stopped.
-    done_tx: Option<SyncSender<(BatchId, Result<Delivered, Failed>)>>,
+    done_tx: Option<SyncSender<(BatchId, Delivered)>>,
     handles: Vec<JoinHandle<()>>,
     /// Senders not yet given a thread: none has been busy enough to need them.
     parked: Vec<S>,
@@ -239,21 +233,16 @@ impl<S: Sender> Pool<S> {
     }
 
     /// One request of `batch` answered. Its batch completes into `stashed` once none is left open.
-    fn answered(&mut self, batch: BatchId, outcome: Result<Delivered, Failed>) {
+    fn answered(&mut self, batch: BatchId, outcome: Delivered) {
         self.outstanding -= 1;
         let answers = self.batches.entry(batch).or_default();
         answers.open = answers.open.saturating_sub(1);
-        match outcome {
-            Ok(d) => {
-                answers.rejections.extend(d.rejections);
-                answers.throttled |= d.throttled;
-            }
-            Err(f) => {
-                answers.rejections.extend(f.rejections);
-                match &mut answers.undelivered {
-                    Some(u) => u.rows.extend(f.undelivered.rows),
-                    None => answers.undelivered = Some(f.undelivered),
-                }
+        answers.rejections.extend(outcome.rejections);
+        answers.throttled |= outcome.throttled;
+        if let Some(more) = outcome.undelivered {
+            match &mut answers.undelivered {
+                Some(u) => u.rows.extend(more.rows),
+                None => answers.undelivered = Some(more),
             }
         }
         if answers.open > 0 {
@@ -291,15 +280,16 @@ impl<S: Sender> Pool<S> {
         }
     }
 
-    /// Wait for everything outstanding: the barrier, for `Destination::flush`.
-    pub fn drain(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
+    /// Wait for everything outstanding: the barrier, for `Destination::flush`. The completions are held for the next
+    /// `poll`.
+    pub fn drain(&mut self) -> Result<(), IoError> {
         while self.outstanding > 0 {
             match self.done.recv() {
                 Ok((batch, outcome)) => self.answered(batch, outcome),
                 Err(_) => return Err(IoError::transient("every destination sender thread has stopped")),
             }
         }
-        Ok(std::mem::take(&mut self.stashed))
+        Ok(())
     }
 
     pub fn outstanding(&self) -> usize {

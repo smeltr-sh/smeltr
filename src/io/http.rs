@@ -223,9 +223,6 @@ pub struct HttpDestination<P: Protocol, T: Transport> {
     stall_after: Duration,
     /// Present once the destination has senders; without it `deliver` posts each batch and waits.
     pool: Option<Pool<HttpSender<P, T>>>,
-    /// Completions taken out of the pool by a barrier `flush`, held for the next `poll_completions`; dropping them
-    /// would leave those batches uncommitted.
-    drained: Vec<BatchCompletion>,
     throttle: Option<Throttle>,
 }
 
@@ -257,7 +254,6 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
             max_request_bytes: DEFAULT_MAX_REQUEST_BYTES,
             stall_after: DEFAULT_STALL_AFTER,
             pool: None,
-            drained: Vec::new(),
             throttle: None,
         }
     }
@@ -553,21 +549,16 @@ impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
     /// One request.
     type Job = Group<P::Item>;
 
-    fn send_one(&mut self, mut group: Group<P::Item>) -> Result<pipelined::Delivered, pipelined::Failed> {
+    fn send_one(&mut self, mut group: Group<P::Item>) -> pipelined::Delivered {
         let mut round = Round::new(self.stall_after);
         let delivered = deliver(&self.protocol, &mut self.transport, &mut group, &mut round);
         Throttle::note(&self.throttle, round.waited);
-        match delivered {
-            Ok(()) => Ok(pipelined::Delivered {
-                rejections: round.rejections,
-                throttled: round.throttled,
-            }),
-            Err(error) => Err(pipelined::Failed {
-                undelivered: super::Undelivered {
-                    error,
-                    rows: group.sent_index,
-                },
-                rejections: round.rejections,
+        pipelined::Delivered {
+            rejections: round.rejections,
+            throttled: round.throttled,
+            undelivered: delivered.err().map(|error| super::Undelivered {
+                error,
+                rows: group.sent_index,
             }),
         }
     }
@@ -646,14 +637,13 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
         Ok((Dispatched::InFlight, refused))
     }
 
-    /// Wait for every batch the pool holds. `flush` cannot return the completions, so they are held for the next
+    /// Wait for every batch the pool holds. `flush` cannot return the completions, so the pool holds them for the next
     /// `poll_completions`.
     fn flush(&mut self) -> Result<(), IoError> {
-        if let Some(pool) = &mut self.pool {
-            let done = pool.drain()?;
-            self.drained.extend(done);
+        match &mut self.pool {
+            Some(pool) => pool.drain(),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// Requests the pool has open. A destination delivering one batch at a time has no pool and no figure to report.
@@ -668,11 +658,9 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
     }
 
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
-        // What a barrier saw land is reported before the pool is asked: a failure there would otherwise take it back.
-        let drained = std::mem::take(&mut self.drained);
         match &mut self.pool {
-            Some(pool) if drained.is_empty() => pool.poll(),
-            _ => Ok(drained),
+            Some(pool) => pool.poll(),
+            None => Ok(Vec::new()),
         }
     }
 }
