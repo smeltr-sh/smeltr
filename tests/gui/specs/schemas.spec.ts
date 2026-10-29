@@ -142,15 +142,21 @@ test("a destination's accepts is saved with it", async ({ admin, leader, api }) 
 });
 
 /** The ECS importer: one row per field of ECS's `generated/csv/fields.csv` (Elastic Common Schema, Apache 2.0). The
- * header row is dropped; each other row's column 4 is the field, 5 its ECS type, 7 whether it is an array, 9 its
+ * header row is dropped, and so is each `.text` multi-field: the field above it indexed as text, not a key of its own.
+ * Each other row's column 4 is the field, 5 its ECS type, 7 whether it is an array, 9 its
  * description. Its quoted cells hold line ends, so a row is cut where the next starts, with its version.
- * `tests/gui/fixtures/ecs-fields-excerpt.csv` is that file's first rows and one whose example spans lines. */
+ * `tests/gui/fixtures/ecs-fields-excerpt.csv` is that file's first rows, one whose example spans lines, and a field
+ * with its multi-field. */
 const ECS_LINE_BREAKER = String.raw`([\r\n]+)\d+\.\d+\.\d+`;
 const ECS_IMPORTER = {
   id: 'ecs-importer',
   name: 'ECS importer',
   steps: [
-    { type: 'drop', id: 'header', condition: '_raw.startsWith("ECS_Version,")' },
+    {
+      type: 'drop',
+      id: 'not-fields',
+      condition: '_raw.startsWith("ECS_Version,") || _raw.includes(".text,match_only_text,")',
+    },
     {
       type: 'code',
       id: 'row',
@@ -204,7 +210,7 @@ test('a schema is imported by a pipeline of the bundle run over an uploaded file
   const saved = await api.get(`${SHARED}${ON}`);
   const fields = saved.config.schemas[0].fields;
   expect(saved.config.schemas[0].id).toBe('ecs');
-  expect(fields).toHaveLength(13);
+  expect(fields).toHaveLength(14);
   expect(fields[0]).toEqual({
     field: '@timestamp',
     type: 'datetime',
@@ -214,6 +220,9 @@ test('a schema is imported by a pipeline of the bundle run over an uploaded file
   expect(fields.find((f: { field: string }) => f.field === 'tags').type).toBe('array<str>');
   expect(fields.find((f: { field: string }) => f.field === 'labels').type).toBe('{...}');
   expect(fields.find((f: { field: string }) => f.field === 'client.as.number').type).toBe('i64');
+  expect(fields.map((f: { field: string }) => f.field)).not.toContain(
+    'client.as.organization.name.text',
+  );
   expect(fields.find((f: { field: string }) => f.field === 'gen_ai.input.messages').type).toBe(
     'variant',
   );

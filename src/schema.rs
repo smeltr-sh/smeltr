@@ -46,11 +46,14 @@ impl Field {
 /// object are refused.
 pub fn read(dto: &SchemaDto) -> Result<Schema, String> {
     let mut fields: Vec<Field> = Vec::with_capacity(dto.fields.len());
+    // By path, so a schema of thousands of rows reads in one pass rather than a search of every row for each.
+    let mut by_path: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::with_capacity(dto.fields.len());
     for row in &dto.fields {
         if row.field.is_empty() || row.field.split('.').any(str::is_empty) {
             return Err(format!("`{}` is no field path: keys, dotted", row.field));
         }
-        if fields.iter().any(|f| f.path == row.field) {
+        if by_path.insert(&row.field, fields.len()).is_some() {
             return Err(format!("`{}` is listed twice", row.field));
         }
         let ty = crate::expr::parse::parse_type(&row.ty)
@@ -66,7 +69,7 @@ pub fn read(dto: &SchemaDto) -> Result<Schema, String> {
         let mut keys = f.keys();
         while keys.pop().is_some() && !keys.is_empty() {
             let above = keys.join(".");
-            if let Some(parent) = fields.iter().find(|p| p.path == above)
+            if let Some(parent) = by_path.get(above.as_str()).map(|&i| &fields[i])
                 && !holds_an_object(&parent.ty)
             {
                 return Err(format!(

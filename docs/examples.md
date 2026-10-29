@@ -402,7 +402,10 @@ The file is cut into records as a source cuts its bytes: a record per line,
 or where a line breaker breaks it. ECS's `generated/csv/fields.csv` is one row
 per field, and some of its quoted examples span lines, so its line breaker
 breaks where a row starts with its ECS version: `([\r\n]+)\d+\.\d+\.\d+`. A
-Drop step takes out its header. In: `tests/gui/fixtures/ecs-fields-excerpt.csv`.
+Drop step takes out its header and each `.text` multi-field, which is the field
+above it indexed as text rather than a key of its own:
+`_raw.startsWith("ECS_Version,") || _raw.includes(".text,match_only_text,")`.
+In: `tests/gui/fixtures/ecs-fields-excerpt.csv`.
 
 ```ts
 Object.assign($, csv(_raw, [null, null, null, "field", "ecs", null, "normalization", null, "description"]))

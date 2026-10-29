@@ -41,3 +41,5 @@ ECS_Version,Indexed,Field_Set,Field,Type,Level,Normalization,Example,Description
     }
   ]
 }",The chat history provided to the model as an input.
+9.6.0-dev,true,client,client.as.organization.name,keyword,extended,,Google LLC,Organization name.
+9.6.0-dev,true,client,client.as.organization.name.text,match_only_text,extended,,Google LLC,Organization name.

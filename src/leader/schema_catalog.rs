@@ -1,6 +1,7 @@
-//! A schema brought in as JSON Schema and handed out as it. The leader's `/api/schemas/*` routes and the website
-//! demo's service answer from here. A bundle's schemas are config like any other: read with `GET /api/config`, saved
-//! with `PUT /api/schemas`.
+//! A schema brought in as JSON Schema or by an importer pipeline, and handed out as JSON Schema. The leader's
+//! `/api/preview/from-json-schema`, `/api/preview/to-json-schema` and `/api/areas/:area/preview/schema-import`, and
+//! the website demo's service, answer from here. A bundle's schemas are config like any other: read with
+//! `GET /api/areas/:area`, saved with `PUT /api/areas/:area/schemas`.
 
 use serde_json::Value;
 
@@ -62,10 +63,15 @@ pub fn records_of(text: &str, line_breaker: Option<&str>) -> Result<Vec<crate::i
 
 /// The schema `id` an importer pipeline produced: each row it wrote has a `field`, a `type`, and may have `required`
 /// and `description`, as a schema's table does. `rows` is the pipeline's output (`preview::RowOut`), in which a row
-/// without those, or with them wrong, is refused by its number.
+/// without those, or with them wrong, or with an exception, is refused by its number.
 pub fn from_rows(id: &str, title: &str, rows: &[crate::leader::preview::RowOut]) -> Result<ReadSchema, String> {
     let mut fields = Vec::new();
     for row in rows {
+        // A row a step raised an exception on may have lost a field or written a wrong one, so it is refused rather
+        // than read or passed over. A row with none that is gone was dropped on purpose, as a header is.
+        if let Some(exception) = row.exceptions.first() {
+            return Err(format!("row {}: {}", row.row, exception.message));
+        }
         let Some(json) = row.json.as_ref().and_then(Value::as_object) else {
             continue;
         };
@@ -205,5 +211,36 @@ mod tests {
         );
         assert!(refused(&[row(6, json!({ "field": "a", "type": "nope" }))]).starts_with("`a`: `nope` is no type"));
         assert_eq!(refused(&[]), "the importer wrote no rows");
+    }
+
+    /// A row dropped on purpose is passed over; one an exception dropped or marked is refused by its number.
+    #[test]
+    fn an_importer_row_with_an_exception_is_refused_by_its_number() {
+        use crate::leader::preview::{ExceptionOut, RowOut};
+        let row = |n: u32, json: Option<Value>, exceptions: Vec<ExceptionOut>| RowOut {
+            row: n,
+            json,
+            exceptions,
+            steps: None,
+            dropped_by: None,
+        };
+        let failed = || ExceptionOut {
+            answer: "drop",
+            message: "csv: unclosed quote".to_string(),
+            step: Some("row".to_string()),
+        };
+        let field = || Some(json!({ "field": "a", "type": "str" }));
+        let header = row(0, None, Vec::new());
+        assert_eq!(
+            from_rows("x", "", &[header, row(1, field(), Vec::new())])
+                .unwrap()
+                .schema
+                .fields
+                .len(),
+            1
+        );
+        for broken in [row(2, None, vec![failed()]), row(2, field(), vec![failed()])] {
+            assert_eq!(from_rows("x", "", &[broken]).unwrap_err(), "row 2: csv: unclosed quote");
+        }
     }
 }

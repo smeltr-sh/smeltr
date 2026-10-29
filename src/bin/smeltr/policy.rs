@@ -116,7 +116,6 @@ pub fn need(method: &Method, path: &str) -> Need {
         | (Method::GET | Method::HEAD, ["worker-groups"])
         | (Method::GET | Method::HEAD, ["system"]) => Need::Somewhere(Level::Viewer),
 
-
         // What a person lets their own agent use.
         (Method::GET | Method::HEAD | Method::PUT, ["me", "agent-permissions"]) => Need::Anyone,
         // A person's conversations with their agent, which their handlers keep to the person.
