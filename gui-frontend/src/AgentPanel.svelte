@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
   import Conversation from './Conversation.svelte';
+  import CrossButton from './CrossButton.svelte';
   import { reported } from './errors.svelte';
   import { store, stored } from './stored';
   import { firstLineText } from './markdown';
@@ -97,9 +98,7 @@
     <span class="spacer"></span>
     <a href={open ? `#/me/agent/${open}` : '#/me/agent'} onclick={onclose}>Open on the Agent page</a
     >
-    <button type="button" class="compact" aria-label="Close the agent panel" onclick={onclose}
-      >&times;</button
-    >
+    <CrossButton label="Close the agent panel" onclick={onclose} />
   </div>
   <div class="body" bind:this={body}>
     <Conversation

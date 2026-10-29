@@ -5,8 +5,7 @@
 //! other (`config_file::sample`), which is where capture and paste meet.
 
 use axum::Json;
-use axum::extract::{Extension, Path as AxPath, Query, State};
-use axum::http::HeaderMap;
+use axum::extract::{Extension, Path as AxPath, State};
 use axum::response::{IntoResponse, Response};
 
 use smeltr::config_file;
@@ -17,7 +16,7 @@ use smeltr::leader::store::Actor;
 use smeltr::leader::{AppState, blocking};
 use smeltr::worker::capture::UNCLAIMED;
 
-use crate::config_api::{self, BranchQuery};
+use crate::config_api;
 use crate::policy::Need;
 
 #[derive(Default, serde::Serialize)]
@@ -483,9 +482,7 @@ pub async fn save_capture(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Extension(access): Extension<Access>,
-    AxPath(area): AxPath<String>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    at: config_api::Addressed,
     Json(request): Json<SaveCaptureRequest>,
 ) -> Envelope<SavedCapture> {
     let session = request.capture.clone();
@@ -521,10 +518,9 @@ pub async fn save_capture(
     };
     let records = sample.records.len();
 
-    let (branch, base) = (q.name().to_string(), config_api::base_commit(&headers));
     let saved = blocking(move || {
         let path = config_file::sample_path(&sample.id).map_err(|e| Refusal::invalid(e.to_string()))?;
-        let writing = config_api::Writing::open(&branch, base.as_deref(), &area)?;
+        let writing = at.open()?;
         let content = Some(config_file::sample_bytes(&sample));
         config_api::refuse_sample_collision(&mut writing.files(), &path, &sample.id, &content)
             .map_err(Refusal::conflict)?;

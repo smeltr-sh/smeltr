@@ -333,13 +333,14 @@ async fn heartbeat(
     // One blocking hop for both, and off the runtime's threads: each is a write transaction behind the registry's
     // one connection lock, and a fleet all beating at once would otherwise park every async thread the leader has.
     // Logs first and separately committed -- what a worker had to say about a deployment it is about to describe is
-    // worth having even if describing it fails.
+    // worth having even if describing it fails. The rest of the beat -- its state, and its window's points and
+    // streams -- is one transaction.
     {
         let registry = state.registry.clone();
         let worker = worker_id.clone();
         let events = std::mem::take(&mut req.logs);
         let streams = req.streams.take();
-        let streams_window = req.streams_window;
+        let seq = req.streams_window;
         let boot_id = req.boot_id;
         // Empty from a worker too old to state one, which is stored as no group rather than as a group named "".
         let group = Some(req.group_id.clone()).filter(|g| !g.is_empty());
@@ -352,32 +353,41 @@ async fn heartbeat(
             .record_authority(&worker_id, req.authority_fingerprints.clone(), req.takes_authority);
         let recorded = tokio::task::spawn_blocking(move || {
             registry.record_logs(&worker, boot_id, group.as_deref(), &events);
-            if let Some(streams) = &streams {
-                let window = streams_window.map(|seq| series::StreamWindow {
-                    worker_id: &worker,
-                    boot_id,
-                    seq,
+            // A worker too old to state its group reports under none, and its streams go unrecorded.
+            let streams = streams
+                .as_ref()
+                .zip(group.as_deref())
+                .map(|(report, group_id)| series::Streams {
+                    group_id,
+                    report,
+                    // A worker that names no commit, or a leader with nothing deployed, cannot tell a rollout apart,
+                    // so the report counts as the deployed one.
+                    deployed: match (&facts.commit, git::deployed(&git::repo_path(&data_dir))) {
+                        (Some(running), Some(deployed)) => *running == deployed,
+                        _ => true,
+                    },
                 });
-                // A worker that names no commit, or a leader with nothing deployed, cannot tell a rollout apart, so
-                // the report counts as the deployed one.
-                let deployed = match (&facts.commit, git::deployed(&git::repo_path(&data_dir))) {
-                    (Some(running), Some(deployed)) => *running == deployed,
-                    _ => true,
-                };
-                registry.record_streams(group.as_deref(), streams, window, deployed, now_ms);
-            }
-            registry.record_heartbeat(&worker, threads, facts, now_ms);
+            let window = series::Window { boot_id, seq, streams };
+            registry.record_heartbeat(&worker, threads, facts, window, now_ms)
         })
         .await;
         // Said rather than swallowed: this is what updates the live view as well as the durable one, so a worker
         // whose report never landed reads as silent on `/api/health` while still being answered here.
-        if let Err(e) = recorded {
-            tracing::warn!(
+        match recorded {
+            Err(e) => tracing::warn!(
                 target: "leader.heartbeat_not_recorded",
                 subject = %worker_id,
                 error = %e,
                 "a heartbeat could not be recorded, so this worker's threads stay as they were until the next one"
-            );
+            ),
+            // Refused, so the worker sends the window again rather than count it as recorded.
+            Ok(Err(e)) => {
+                return Err((
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    format!("could not record this heartbeat: {e}"),
+                ));
+            }
+            Ok(Ok(())) => {}
         }
     }
     // Before the forgetting below, so a stopping ephemeral worker's last progress lands and the worker is not
@@ -1102,18 +1112,21 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
             heartbeat_interval,
             registry.series(),
             &deployed,
-            signing.as_ref(),
-            &rotating,
-            &codes,
-            &presenting,
-            &certificates,
-            held.as_ref(),
-            remote_failure.as_ref(),
-            newer_release.as_ref(),
         )
     })
     .await
     .unwrap_or_default();
+    out.extend(warnings::authority_aging(signing.as_ref(), &rotating, now_ms));
+    out.extend(warnings::enrollment_code_names_outgoing_authority(&codes, &presenting));
+    out.extend(warnings::certificate_expiring(&certificates, now_ms));
+    out.extend(held.as_ref().map(warnings::deploy_held));
+    out.extend(remote_failure.as_ref().map(warnings::remote_not_followed));
+    out.extend(
+        newer_release
+            .as_ref()
+            .zip(crate::version::RELEASE)
+            .map(|(n, own)| warnings::newer_release(n, own)),
+    );
     out.extend(deploy_warnings);
     out.extend(normal_warnings);
     out.extend(key_warnings);
@@ -4640,21 +4653,25 @@ mod warnings_endpoint_tests {
     #[tokio::test]
     async fn a_healthy_registry_and_roster_serve_no_warnings() {
         let state = state("healthy");
-        state.registry.record_heartbeat(
-            "w1",
-            vec![ThreadHeartbeat {
-                thread_id: "reader-1".to_string(),
-                group_id: "g".to_string(),
-                kind: Some(ThreadKind::Reader),
-                partitions_owned: vec![],
-                metrics: vec![],
-            }],
-            WorkerFacts {
-                smeltr_version: crate::version::VERSION.to_string(),
-                ..Default::default()
-            },
-            0,
-        );
+        state
+            .registry
+            .record_heartbeat(
+                "w1",
+                vec![ThreadHeartbeat {
+                    thread_id: "reader-1".to_string(),
+                    group_id: "g".to_string(),
+                    kind: Some(ThreadKind::Reader),
+                    partitions_owned: vec![],
+                    metrics: vec![],
+                }],
+                WorkerFacts {
+                    smeltr_version: crate::version::VERSION.to_string(),
+                    ..Default::default()
+                },
+                series::Window::default(),
+                0,
+            )
+            .unwrap();
         assert!(warnings_snapshot(&state).await.unwrap().is_empty());
     }
 
@@ -4713,25 +4730,29 @@ mod warnings_endpoint_tests {
     #[tokio::test]
     async fn a_viewer_is_served_only_the_warnings_of_their_groups() {
         let state = state("visible-to");
-        state.registry.record_heartbeat(
-            "w1",
-            vec![ThreadHeartbeat {
-                thread_id: "reader-1".to_string(),
-                group_id: "g".to_string(),
-                kind: Some(ThreadKind::Reader),
-                partitions_owned: vec![],
-                metrics: vec![MetricSampleDto {
-                    metric: "smeltr_source_blocked_reason".to_string(),
-                    labels: vec![("source".to_string(), "7".to_string())],
-                    value: MetricValueDto::Text("held".to_string()),
+        state
+            .registry
+            .record_heartbeat(
+                "w1",
+                vec![ThreadHeartbeat {
+                    thread_id: "reader-1".to_string(),
+                    group_id: "g".to_string(),
+                    kind: Some(ThreadKind::Reader),
+                    partitions_owned: vec![],
+                    metrics: vec![MetricSampleDto {
+                        metric: "smeltr_source_blocked_reason".to_string(),
+                        labels: vec![("source".to_string(), "7".to_string())],
+                        value: MetricValueDto::Text("held".to_string()),
+                    }],
                 }],
-            }],
-            WorkerFacts {
-                smeltr_version: crate::version::VERSION.to_string(),
-                ..Default::default()
-            },
-            0,
-        );
+                WorkerFacts {
+                    smeltr_version: crate::version::VERSION.to_string(),
+                    ..Default::default()
+                },
+                series::Window::default(),
+                0,
+            )
+            .unwrap();
         run_store(state.store.clone(), |s| s.store_worker_credential("w2", "hash"))
             .await
             .unwrap();
@@ -4782,21 +4803,26 @@ mod warnings_endpoint_tests {
                 value: MetricValueDto::Text("held".to_string()),
             }],
         };
-        state.registry.record_heartbeat(
-            "w1",
-            vec![held.clone()],
-            WorkerFacts {
-                smeltr_version: crate::version::VERSION.to_string(),
-                ..Default::default()
-            },
-            0,
-        );
+        state
+            .registry
+            .record_heartbeat(
+                "w1",
+                vec![held.clone()],
+                WorkerFacts {
+                    smeltr_version: crate::version::VERSION.to_string(),
+                    ..Default::default()
+                },
+                series::Window::default(),
+                0,
+            )
+            .unwrap();
 
         let first = warnings_snapshot(&state).await.unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         state
             .registry
-            .record_heartbeat("w1", vec![held], WorkerFacts::default(), 0);
+            .record_heartbeat("w1", vec![held], WorkerFacts::default(), series::Window::default(), 0)
+            .unwrap();
         let second = warnings_snapshot(&state).await.unwrap();
 
         assert_eq!(first.len(), 1);

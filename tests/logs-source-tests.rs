@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::id::FunctionId;
-use smeltr::format::encoding::Encoding;
 use smeltr::io::fake::FakeDestination;
 use smeltr::io::logs::{LogsSource, LogsSourceConfig};
 use smeltr::metrics::{Metrics, MetricsHandle};
@@ -65,7 +64,6 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
     let mut w = Worker::new(
         9,
         Box::new(source),
-        Encoding::Auto,
         topology,
         Vec::new(),
         MemoryBudget::unlimited(),

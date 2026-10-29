@@ -194,12 +194,19 @@ pub enum MetricValueDto {
     FloatCounter(f64),
     Gauge(f64),
     /// A fact with no natural number -- a reason, a destination's own words -- carried as text. A metric sample never
-    /// produces this from a registry value; a caller builds one directly when a thread has a string fact to report
-    /// alongside its numbers.
+    /// produces this from a registry value; a caller builds one with [`MetricValueDto::text`] when a thread has a
+    /// string fact to report alongside its numbers.
     Text(String),
     /// A kind from a newer build, which this one does not read, kept as it arrived.
     #[serde(untagged)]
     Unknown(serde_json::Value),
+}
+
+impl MetricValueDto {
+    /// A text fact, cut to [`MAX_TEXT_LEN`]: a fact rides every heartbeat while it stands, so none is longer.
+    pub fn text(fact: &str) -> MetricValueDto {
+        MetricValueDto::Text(crate::runtime::truncate(fact, MAX_TEXT_LEN))
+    }
 }
 
 impl From<MetricSample> for MetricSampleDto {
@@ -514,9 +521,10 @@ pub struct HeartbeatRequest {
     /// worker older than this field, and from one that ran nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub streams: Option<StreamReport>,
-    /// Which window of this worker process's life (`boot_id`) `streams` is, counted from 1. A window the leader
-    /// has not acknowledged is sent again under the same number, and the leader records each number once. Absent
-    /// from a worker older than this field, whose every window is recorded as it arrives.
+    /// Which window of this worker process's life (`boot_id`) the beat is, counted from 1: the window every part of
+    /// the beat that accumulates belongs to -- its samples, logs, streams and progress. A window the leader has not
+    /// answered is sent again under the same number, and the leader records each number once. Absent from a worker
+    /// older than this field, whose every beat is recorded as it arrives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub streams_window: Option<u64>,
     pub threads: Vec<ThreadHeartbeat>,
@@ -889,6 +897,12 @@ impl CaptureInvitation {
     pub fn reads_source_itself(&self) -> bool {
         self.start.is_some() || self.source.as_ref().is_some_and(|s| s.kind.runs_its_own_query())
     }
+
+    /// The source a deployment reading it serves this capture from, by tapping its records. None for a capture that
+    /// names no source, or that reads its source itself wherever it is deployed.
+    pub fn tapped(&self) -> Option<&crate::config_file::SourceDto> {
+        self.source.as_ref().filter(|_| !self.reads_source_itself())
+    }
 }
 
 /// One entry of [`HeartbeatResponse::captures`] as this build reads it. An invitation this build cannot read -- a
@@ -1251,6 +1265,12 @@ mod client {
             self.1 == Failure::Status(401)
         }
 
+        /// Whether the leader refused the request for its size: past [`super::HEARTBEAT_BODY_LIMIT`]. Sending it
+        /// again is refused again.
+        pub fn too_large(&self) -> bool {
+            self.1 == Failure::Status(413)
+        }
+
         /// Whether the leader's certificate is one this worker's roots do not accept. Retrying changes nothing until
         /// the roots or the certificate do.
         pub fn certificate_untrusted(&self) -> bool {
@@ -1475,9 +1495,8 @@ mod client {
         /// One heartbeat, retried once if the connection failed: a server may close a pooled idle connection as the
         /// next request reuses it, and `ureq` does not retry a POST itself.
         ///
-        /// Safe only because the leader replaces each thread's last metrics rather than summing them, so a request that
-        /// arrives twice overwrites rather than double-counts. Anything downstream that accumulates these samples needs
-        /// an idempotency key first. A status code is the leader's answer and is not retried.
+        /// Safe because the leader records each window once (`HeartbeatRequest::streams_window`), so a request that
+        /// arrives twice counts once. A status code is the leader's answer and is not retried.
         pub fn send(&self, req: &HeartbeatRequest) -> Result<HeartbeatResponse, HeartbeatError> {
             match self.send_once(req) {
                 Err(e) if e.retryable => self.send_once(req).map_err(|e| e.error),

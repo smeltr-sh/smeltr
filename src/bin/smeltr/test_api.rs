@@ -23,7 +23,7 @@ use smeltr::leader::store::Actor;
 use smeltr::leader::{blocking, blocking_answer};
 use smeltr::startup_config::leader_data_dir;
 
-use crate::config_api::{self, BranchQuery, ConfigQuery, blocking_save};
+use crate::config_api::{self, Addressed, BranchQuery, ConfigQuery, Save, blocking_save};
 
 /// Which tests a list or a run covers: one area's, the same as every other config call, or -- what a review asks
 /// for -- every area the branch's own change reaches (`branch_api::scopes_touched`), since the branch under review
@@ -151,17 +151,15 @@ pub async fn get_test(AxPath((area, id)): AxPath<(String, String)>, Query(q): Qu
 /// config or change the test" a decision a reviewer sees rather than a silent edit.
 pub async fn put_test(
     Extension(actor): Extension<Actor>,
-    AxPath((area, id)): AxPath<(String, String)>,
-    Query(q): Query<BranchQuery>,
-    headers: axum::http::HeaderMap,
+    AxPath((_, id)): AxPath<(String, String)>,
+    at: Addressed,
     Json(mut test): Json<TestDto>,
 ) -> Envelope<crate::config_api::Save> {
     test.id = id;
-    let (branch, base) = (q.name().to_string(), config_api::base_commit(&headers));
     let message = format!("lock test {}", test.name);
     blocking_save(move || {
         if test.pipeline.is_none() {
-            let reading = match config_api::Reading::open(&branch, &area) {
+            let reading = match config_api::Reading::open(&at.branch, &at.area) {
                 Ok(reading) => reading,
                 Err(e) => return Envelope::refused(e),
             };
@@ -169,15 +167,15 @@ pub async fn put_test(
                 return Envelope::refused(e);
             }
         }
-        config_api::write_test_file(
-            &branch,
-            base,
-            &area,
-            &test.id,
-            Some(config_file::test_bytes(&test)),
-            &message,
-            &actor,
-        )
+        at.open().map_or_else(Save::refused, |writing| {
+            config_api::write_test_file(
+                writing,
+                &test.id,
+                Some(config_file::test_bytes(&test)),
+                &message,
+                &actor,
+            )
+        })
     })
     .await
 }
@@ -202,13 +200,16 @@ fn check_lockable(files: &mut dyn config_file::FileSet, test: &TestDto) -> Resul
 
 pub async fn delete_test(
     Extension(actor): Extension<Actor>,
-    AxPath((area, id)): AxPath<(String, String)>,
-    Query(q): Query<BranchQuery>,
-    headers: axum::http::HeaderMap,
+    AxPath((_, id)): AxPath<(String, String)>,
+    at: Addressed,
 ) -> Envelope<crate::config_api::Save> {
-    let (branch, base) = (q.name().to_string(), config_api::base_commit(&headers));
     let message = format!("delete test {id}");
-    blocking_save(move || config_api::write_test_file(&branch, base, &area, &id, None, &message, &actor)).await
+    blocking_save(move || {
+        at.open().map_or_else(Save::refused, |writing| {
+            config_api::write_test_file(writing, &id, None, &message, &actor)
+        })
+    })
+    .await
 }
 
 // -- running ------------------------------------------------------------

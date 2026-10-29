@@ -415,6 +415,23 @@ impl Plan {
     }
 }
 
+/// Where a parse or a lookup writes: `target`, `""` for the record, its declared `ty` where it has one, and whether the
+/// write merges into it or replaces it (`Compiler::parse_into`).
+#[derive(Clone, Copy)]
+struct Dest<'a> {
+    target: &'a str,
+    ty: Option<&'a DataType>,
+    merge: bool,
+}
+
+/// Where the compiler is emitting: the rows what it emits runs on, as `Instr::guard`, and the function it belongs to,
+/// as `Instr::function`. A function that opens a region of its own takes the guard around it apart, as `outer`.
+#[derive(Clone, Copy)]
+struct Here {
+    guard: Option<SlotId>,
+    id: FunctionId,
+}
+
 #[derive(Clone)]
 struct Compiler<'p> {
     /// The bundle's lookup tables, by id (`PipelineConfig::lookup_tables`).
@@ -1592,12 +1609,8 @@ impl Compiler<'_> {
 
     /// Evaluate a `for`'s iterable into a temp slot; it must be statically `Array(_)`. `None` means an error was
     /// recorded.
-    fn resolve_array_iterable(
-        &mut self,
-        iterable: &Expr,
-        id: FunctionId,
-        guard: Option<SlotId>,
-    ) -> Option<(SlotId, DataType)> {
+    fn resolve_array_iterable(&mut self, iterable: &Expr, here: Here) -> Option<(SlotId, DataType)> {
+        let Here { guard, id } = here;
         let iterable_ir = self.expr_ast(iterable, id)?;
         let DataType::Array(element_ty) = iterable_ir.ty.clone() else {
             self.err(
@@ -1709,7 +1722,7 @@ impl Compiler<'_> {
                             }),
                         },
                     };
-                    self.assign(name, &null, false, true, None, id);
+                    self.assign(name, &null, false, true, Here { guard: None, id });
                     return;
                 }
                 // `o.b: str` under `o: {a: i64}` names `o: {a: i64, b: str}`.
@@ -1741,7 +1754,8 @@ impl Compiler<'_> {
 
     /// `target[key] = value`, with a key only the row knows, on an open object: on each row, the write `lay_key` says
     /// the key's path takes. A name nothing binds is an open object with nothing in it first.
-    fn keyed_write(&mut self, target: &str, index: &Expr, value: &Expr, guard: Option<SlotId>, id: FunctionId) {
+    fn keyed_write(&mut self, target: &str, index: &Expr, value: &Expr, here: Here) {
+        let Here { guard, id } = here;
         let (name, node) = self.syms.named(target);
         if let Some(e) = self.syms.write_refused(name) {
             self.err(Some(id), e.message);
@@ -1833,7 +1847,7 @@ impl Compiler<'_> {
             return;
         };
         let span = value.span;
-        let (key, value) = (self.once(key, guard, id), self.once(value, guard, id));
+        let (key, value) = (self.once(key, here), self.once(value, here));
         let object = match resolve(
             &Expr::new(span, ExprKind::Field(target.to_string())),
             &mut self.syms,
@@ -1880,14 +1894,10 @@ impl Compiler<'_> {
                 continue;
             }
             match place {
-                Place::Leaf(leaf) => self.bind_writes(
-                    &leaf.clone(),
-                    vec![(Place::Leaf(leaf), Resolved::Ir(ir))],
-                    false,
-                    guard,
-                    id,
-                ),
-                place => self.bind_resolved(&place, Resolved::Ir(flatten(ir)), guard, id),
+                Place::Leaf(leaf) => {
+                    self.bind_writes(&leaf.clone(), vec![(Place::Leaf(leaf), Resolved::Ir(ir))], false, here)
+                }
+                place => self.bind_resolved(&place, Resolved::Ir(flatten(ir)), here),
             }
         }
     }
@@ -1902,7 +1912,8 @@ impl Compiler<'_> {
 
     /// `ir`, computed once into a slot of its own where it computes anything, for a caller that reads it more than
     /// once.
-    fn once(&mut self, ir: Ir, guard: Option<SlotId>, id: FunctionId) -> Ir {
+    fn once(&mut self, ir: Ir, here: Here) -> Ir {
+        let Here { guard, id } = here;
         if matches!(ir.kind, IrKind::Field(_) | IrKind::Literal(_)) {
             return ir;
         }
@@ -1937,23 +1948,16 @@ impl Compiler<'_> {
     /// Bind `target` to `value`: every `let`, assignment and `Eval` step lands here, and binds the places
     /// `plan::binding::writes` gives. Every place resolves before anything binds, so a place may read what the same
     /// assignment replaces.
-    fn assign(
-        &mut self,
-        target: &str,
-        value: &Expr,
-        declares: bool,
-        typed: bool,
-        guard: Option<SlotId>,
-        id: FunctionId,
-    ) {
+    fn assign(&mut self, target: &str, value: &Expr, declares: bool, typed: bool, here: Here) {
+        let Here { guard, id } = here;
         if let ExprKind::Call { name, args } = &value.kind
             && name == "Object.assign"
             && matches!(args.first().map(|a| &a.kind), Some(ExprKind::Field(p)) if p == target)
         {
-            return self.object_assign(target, &args[1..], declares, typed, guard, id);
+            return self.object_assign(target, &args[1..], declares, typed, here);
         }
         if target == tree::ROOT {
-            return self.assign_root(value, guard, id);
+            return self.assign_root(value, here);
         }
         // `move`'s write replaces what `to` held, whatever its type, as a Rename does.
         if let ExprKind::Field(from) = &value.kind
@@ -1962,7 +1966,7 @@ impl Compiler<'_> {
             && !self.in_loop()
             && self.syms.node(target).is_some()
         {
-            self.delete(target, true, None, id);
+            self.delete(target, true, Here { guard: None, ..here });
         }
         // A `let` and `name: type = e` are the writes that give a name a type of their own.
         let typed = declares || typed;
@@ -1987,12 +1991,12 @@ impl Compiler<'_> {
             let tracked = typing.iter().position(|(n, _)| n == target);
             if tracked.is_some() || self.syms.node(target).is_none() {
                 match &parse {
-                    Some(call) => self.parse_write(target, call, stated.as_ref(), None, id),
+                    Some(call) => self.parse_write(target, call, stated.as_ref(), Here { guard: None, ..here }),
                     None => {
                         let Some(writes) = self.resolve_writes(target, value, id) else {
                             return;
                         };
-                        self.bind_writes(target, writes, true, None, id);
+                        self.bind_writes(target, writes, true, Here { guard: None, ..here });
                     }
                 }
                 let now = self
@@ -2058,7 +2062,7 @@ impl Compiler<'_> {
             );
         }
         if let Some(call) = &parse {
-            return self.parse_write(target, call, stated.as_ref(), guard, id);
+            return self.parse_write(target, call, stated.as_ref(), here);
         }
         let Some(writes) = self.resolve_writes(target, value, id) else {
             return;
@@ -2088,13 +2092,13 @@ impl Compiler<'_> {
                                 site: Site::Declaration(target.to_string()),
                             },
                         );
-                        return self.assign(target, &decl, declares, true, guard, id);
+                        return self.assign(target, &decl, declares, true, here);
                     }
                     None if !untyped.last => {
                         untyped
                             .found
                             .push((at, target.to_string(), self.syms.binding(target), ty));
-                        return self.bind_writes(target, writes, declares, guard, id);
+                        return self.bind_writes(target, writes, declares, here);
                     }
                     None => {}
                 }
@@ -2124,7 +2128,7 @@ impl Compiler<'_> {
         // A write to a name `settle` has not typed yet is taken as it is, and its type noted. A local of the same
         // name, opened inside or after, is another binding and types itself.
         if let Some(i) = self.untyped_found(target) {
-            self.bind_writes(target, writes, declares, guard, id);
+            self.bind_writes(target, writes, declares, here);
             let now = self
                 .syms
                 .node(target)
@@ -2144,19 +2148,13 @@ impl Compiler<'_> {
             }
             _ => writes,
         };
-        self.bind_writes(target, writes, declares, guard, id);
+        self.bind_writes(target, writes, declares, here);
     }
 
     /// `target = call` or `target: ty = call`, `call` a parse function's: the object it gives replaces `target`. A name
     /// bound outside the construct takes it only by a declaration, which binds the name afresh.
-    fn parse_write(
-        &mut self,
-        target: &str,
-        call: &ParseCall,
-        ty: Option<&DataType>,
-        guard: Option<SlotId>,
-        id: FunctionId,
-    ) {
+    fn parse_write(&mut self, target: &str, call: &ParseCall, ty: Option<&DataType>, here: Here) {
+        let Here { id, .. } = here;
         if let Some(ty) = ty
             && !matches!(ty, DataType::Struct(..))
         {
@@ -2182,13 +2180,22 @@ impl Compiler<'_> {
                 );
             }
             // The text is read before the name it may be is bound afresh: `q: {name: str} = q`.
-            let Some(slot) = self.input_slot(call.input, guard, id) else {
+            let Some(slot) = self.input_slot(call.input, here) else {
                 return;
             };
             input = Some(slot);
             self.syms.unbind(target);
         }
-        self.parse_call(target, call, input, ty, guard, id, target.is_empty());
+        self.parse_call(
+            call,
+            input,
+            Dest {
+                target,
+                ty,
+                merge: target.is_empty(),
+            },
+            here,
+        );
     }
 
     /// `e` as a spread of a variant, where it names one outside a loop: its keys on each row lay into an object's
@@ -2204,21 +2211,23 @@ impl Compiler<'_> {
     /// `Object.assign(p, a, …)`, `p` a name or `$`: each source writes `p` in turn. A parse or a variant lays its keys
     /// over what `p` holds, typed by it, as a parse into the record does; any other source is `p = {...p, ...a} as T`,
     /// `T` the type `p` holds.
-    fn object_assign(
-        &mut self,
-        target: &str,
-        sources: &[Expr],
-        declares: bool,
-        typed: bool,
-        guard: Option<SlotId>,
-        id: FunctionId,
-    ) {
+    fn object_assign(&mut self, target: &str, sources: &[Expr], declares: bool, typed: bool, here: Here) {
+        let Here { guard, id } = here;
         let root = target == tree::ROOT;
         for source in sources {
             let call = ParseCall::of(source).or_else(|| self.spread_of(source));
             match (call, self.syms.node(target)) {
-                (Some(call), _) if root => self.parse_call("", &call, None, None, guard, id, true),
-                (None, _) if root && (guard.is_some() || self.in_loop()) => self.assign_keys(source, guard, id),
+                (Some(call), _) if root => self.parse_call(
+                    &call,
+                    None,
+                    Dest {
+                        target: "",
+                        ty: None,
+                        merge: true,
+                    },
+                    here,
+                ),
+                (None, _) if root && (guard.is_some() || self.in_loop()) => self.assign_keys(source, here),
                 (_, None) if !root => return self.err(Some(id), format!("`{target}` is not a field")),
                 (_, Some(Node::Leaf(s))) if !root && *self.syms.type_of(*s) != DataType::Variant => {
                     let held = self.syms.type_of(*s).spell();
@@ -2228,7 +2237,16 @@ impl Compiler<'_> {
                     // Typed by what `p` holds, open: it may hold keys after it.
                     let ty = self.syms.node(target).map(|n| shape(&self.syms, n, true));
                     let ty = ty.filter(|t| matches!(t, DataType::Struct(..)));
-                    self.parse_call(target, &call, None, ty.as_ref(), guard, id, true);
+                    self.parse_call(
+                        &call,
+                        None,
+                        Dest {
+                            target,
+                            ty: ty.as_ref(),
+                            merge: true,
+                        },
+                        here,
+                    );
                 }
                 (None, _) => {
                     let at = Expr::new(source.span, ExprKind::Field(target.to_string()));
@@ -2245,7 +2263,7 @@ impl Compiler<'_> {
                             },
                         );
                     }
-                    self.assign(target, &spread, declares, typed, guard, id);
+                    self.assign(target, &spread, declares, typed, here);
                 }
             }
         }
@@ -2254,7 +2272,8 @@ impl Compiler<'_> {
     /// `Object.assign($, source)` under a guard or in a loop: each key `source` is known to hold is a write of that
     /// field, so the rows the guard skips keep theirs. A source that may hold other keys is refused, since they would
     /// reach those rows.
-    fn assign_keys(&mut self, source: &Expr, guard: Option<SlotId>, id: FunctionId) {
+    fn assign_keys(&mut self, source: &Expr, here: Here) {
+        let Here { id, .. } = here;
         let field = |name: String| Expr::new(source.span, ExprKind::Field(name));
         let keys: Option<Vec<(String, Expr)>> = match &source.kind {
             ExprKind::Object(entries) => entries.iter().map(|(k, v)| Some((k.clone()?, v.clone()))).collect(),
@@ -2277,12 +2296,13 @@ impl Compiler<'_> {
             );
         };
         for (key, value) in keys {
-            self.assign(&key, &value, false, false, guard, id);
+            self.assign(&key, &value, false, false, here);
         }
     }
 
     /// `$ = value`: `value` replaces the record. The engine's own `__` fields and the locals stay.
-    fn assign_root(&mut self, value: &Expr, guard: Option<SlotId>, id: FunctionId) {
+    fn assign_root(&mut self, value: &Expr, here: Here) {
+        let Here { guard, id } = here;
         if guard.is_some() || self.in_loop() {
             return self.err(
                 Some(id),
@@ -2296,11 +2316,20 @@ impl Compiler<'_> {
         };
         // `$ = f(text)`: the text is read, the record goes, and the parse writes a new one.
         if let Some(call) = ParseCall::of(value) {
-            let Some(input) = self.input_slot(call.input, None, id) else {
+            let Some(input) = self.input_slot(call.input, Here { guard: None, ..here }) else {
                 return;
             };
-            self.replace(held(self), None, id);
-            return self.parse_call("", &call, Some(input), None, None, id, true);
+            self.replace(held(self), Here { guard: None, ..here });
+            return self.parse_call(
+                &call,
+                Some(input),
+                Dest {
+                    target: "",
+                    ty: None,
+                    merge: true,
+                },
+                Here { guard: None, ..here },
+            );
         }
         let Some(writes) = self.resolve_writes("", value, id) else {
             return;
@@ -2332,9 +2361,9 @@ impl Compiler<'_> {
             .into_iter()
             .filter(|p| writes.iter().all(|(w, _)| w != p))
             .collect();
-        self.replace(old, None, id);
+        self.replace(old, Here { guard: None, ..here });
         for (place, r) in writes {
-            self.bind_resolved(&place, r, None, id);
+            self.bind_resolved(&place, r, Here { guard: None, ..here });
         }
     }
 
@@ -2499,16 +2528,10 @@ impl Compiler<'_> {
     /// Bind `target` to `writes`, each a place at or under it with what fills it. Everything else at or under `target`
     /// is replaced. A `let` (`declares`) puts the name's own binding from before it out of reach instead, for its
     /// scope to put back when the block ends.
-    fn bind_writes(
-        &mut self,
-        target: &str,
-        writes: Vec<(Place, Resolved)>,
-        declares: bool,
-        guard: Option<SlotId>,
-        id: FunctionId,
-    ) {
+    fn bind_writes(&mut self, target: &str, writes: Vec<(Place, Resolved)>, declares: bool, here: Here) {
+        let Here { guard, id } = here;
         let blended = guard.is_some() || self.in_loop();
-        let mut writes = self.split_objects(writes, guard, id);
+        let mut writes = self.split_objects(writes, here);
         // `null` over an object nulls its leaves and unclaimed fields, and the name stays the object it was, each leaf
         // at its type, so a later read of the whole object still has one.
         let nulled = !declares
@@ -2544,11 +2567,11 @@ impl Compiler<'_> {
             .into_iter()
             .filter(|p| writes.iter().all(|(w, _)| w != p))
             .collect();
-        self.replace(replaced, guard, id);
+        self.replace(replaced, here);
         let empty = writes.is_empty();
         // Each prior is read before anything binds: the places are distinct, and `replace` leaves the written ones.
         for (place, r) in writes {
-            self.bind_resolved(&place, r, guard, id);
+            self.bind_resolved(&place, r, here);
         }
         // `{}` is an object with nothing in it, open where a write builds it on every row.
         match empty {
@@ -2561,12 +2584,8 @@ impl Compiler<'_> {
     /// `writes` with every leaf that would hold an object split into that object's leaves and unclaimed fields: no
     /// leaf holds an object (Language). A value its pieces would each compute is computed once, into a slot of
     /// its own.
-    fn split_objects(
-        &mut self,
-        writes: Vec<(Place, Resolved)>,
-        guard: Option<SlotId>,
-        id: FunctionId,
-    ) -> Vec<(Place, Resolved)> {
+    fn split_objects(&mut self, writes: Vec<(Place, Resolved)>, here: Here) -> Vec<(Place, Resolved)> {
+        let Here { guard, id } = here;
         let mut out = Vec::with_capacity(writes.len());
         for (place, r) in writes {
             let ty = self.resolved_ty(&r);
@@ -2643,7 +2662,8 @@ impl Compiler<'_> {
     }
 
     /// Bind `place` to what `r` fills it with. An unguarded copy outside a loop shares the slot.
-    fn bind_resolved(&mut self, place: &Place, r: Resolved, guard: Option<SlotId>, id: FunctionId) {
+    fn bind_resolved(&mut self, place: &Place, r: Resolved, here: Here) {
+        let Here { guard, id } = here;
         let ir = match r {
             Resolved::Slot(s) if guard.is_none() && !self.in_loop() => {
                 self.syms.put_place(place, s);
@@ -2694,7 +2714,8 @@ impl Compiler<'_> {
 
     /// Replace each of `places`, bound before a write that does not bind it again: unbound, or null where a guard or a
     /// loop trip leaves the old value standing elsewhere.
-    fn replace(&mut self, places: Vec<Place>, guard: Option<SlotId>, id: FunctionId) {
+    fn replace(&mut self, places: Vec<Place>, here: Here) {
+        let Here { guard, .. } = here;
         for place in places {
             if guard.is_none() && !self.in_loop() {
                 self.syms.unbind_place(&place);
@@ -2705,30 +2726,63 @@ impl Compiler<'_> {
                 Place::Leaf(_) => DataType::Null,
             };
             let null = Ir::new(ty, Span::default(), IrKind::Literal(Value::Null));
-            self.bind_resolved(&place, Resolved::Ir(null), guard, id);
+            self.bind_resolved(&place, Resolved::Ir(null), here);
         }
     }
 
-    /// Parse `in_slot` with `kind` into `target`, `""` for the record: each of `declared`, a name under `target`, is a
-    /// write of its name under `guard`, and a dynamic parse lays every other key into the unclaimed fields of the
-    /// deepest object at its name. A parse that merges, into the record or by `Object.assign` into a name, leaves a
-    /// key the row lacks alone: what was bound there, or else the record's key, converted to the declared type. Any
-    /// other parse into a name replaces it, and the name is unbound before.
-    #[allow(clippy::too_many_arguments)]
-    fn parse_into(
-        &mut self,
-        kind: &ParserKind,
-        in_slot: SlotId,
-        matcher: Option<std::sync::Arc<crate::format::grok_scan::Matcher>>,
-        target: &str,
-        merge: bool,
-        declared: &[DeclaredField],
-        formats: Vec<(String, String)>,
-        guard: Option<SlotId>,
-        id: FunctionId,
-    ) {
+    /// Parse `in_slot` as `call` says into `dest`, once the call is checked against its input and the target: each
+    /// field the parser declares, a name under the target, is a write of its name under `here`'s guard, and a dynamic
+    /// parse lays every other key into the unclaimed fields of the deepest object at its name. A parse that merges,
+    /// into the record or by `Object.assign` into a name, leaves a key the row lacks alone: what was bound there, or
+    /// else the record's key, converted to the declared type. Any other parse into a name replaces it, and the name is
+    /// unbound before.
+    fn parse_into(&mut self, call: &ParseCall, in_slot: SlotId, dest: Dest, here: Here) {
+        let Dest { target, ty, merge } = dest;
+        let Here { guard, id } = here;
+        let (kind, matcher) = match call.kind(self.grok_patterns) {
+            Ok(k) => k,
+            Err(message) => return self.err(Some(id), message),
+        };
+        match self.syms.type_of(in_slot) {
+            DataType::Variant if kind == ParserKind::Variant => {}
+            // Bytes are not text until a `decode` says how to read them.
+            DataType::Str | DataType::Null => {}
+            DataType::Variant => {
+                return self.err(
+                    Some(id),
+                    format!("`{}` {}", describe_expr(call.input), variant_use(None)),
+                );
+            }
+            t => {
+                let mut message = format!(
+                    "`{}` parses text, and `{}` is {}",
+                    call.name,
+                    describe_expr(call.input),
+                    t.spell()
+                );
+                if *t == DataType::Bytes {
+                    message.push_str(", which `decode(value, encoding)` reads as text");
+                }
+                return self.err(Some(id), message);
+            }
+        }
+        let keys = matcher_keys(&kind, &matcher);
+        if let Some(k) = keys.iter().flatten().find(|k| tree::is_internal(tree::head(k))) {
+            return self.err(
+                Some(id),
+                format!("`{k}` is the engine's own field; give the capture or column another name"),
+            );
+        }
+        if self.writes_a_local(target, keys.iter().flatten(), id) {
+            return;
+        }
+        let formats = match call.formats() {
+            Ok(f) => f,
+            Err(message) => return self.err(Some(id), message),
+        };
+        let declared = self.parse_fields(target, &kind, keys, ty);
         // A name is a value or an object, so a parser declares one or the other.
-        for d in declared {
+        for d in &declared {
             if let Some(e) = declared.iter().find(|e| binding::is_under(&e.name, &d.name)) {
                 self.err(
                     Some(id),
@@ -2745,8 +2799,8 @@ impl Compiler<'_> {
         // A dynamic parser's declared object is its leaves and its unclaimed fields: each leaf is a field the
         // parse writes, and the object takes the keys under its name that no leaf takes.
         let (mut leaves, declared_objects) = match kind.is_dynamic() {
-            true => lower_objects(declared),
-            false => (declared.to_vec(), Vec::new()),
+            true => lower_objects(&declared),
+            false => (declared, Vec::new()),
         };
         let fields = leaves.iter_mut().map(|d| (d.name.as_str(), &d.ty, &mut d.time_source));
         if let Err(message) = read_formats(target, formats, fields) {
@@ -2817,7 +2871,7 @@ impl Compiler<'_> {
                 guard,
                 outputs: fields,
                 call: Call::Parse {
-                    kind: kind.clone(),
+                    kind,
                     matcher,
                     objects: objects.clone(),
                 },
@@ -2839,11 +2893,11 @@ impl Compiler<'_> {
                 .filter(|(n, _)| binding::at_or_under(n, name))
                 .map(|(n, o)| (Place::Unclaimed(n.clone()), Resolved::Slot(o.out)))
                 .collect();
-            self.bind_writes(name, write, false, guard, id);
+            self.bind_writes(name, write, false, here);
         }
         // Each field is a write of its name, under the guard.
         for ((name, slot), prior) in parsed.into_iter().zip(priors) {
-            if !self.write_over(&name, slot, prior, guard, id) {
+            if !self.write_over(&name, slot, prior, here) {
                 return;
             }
         }
@@ -2886,13 +2940,14 @@ impl Compiler<'_> {
         }
     }
 
-    /// `try { body } catch (var: kinds) { catch } ... finally { finally }` under `guard`. The body is a region a
+    /// `try { body } catch (var: kinds) { catch } ... finally { finally }` under `here`'s guard. The body is a region a
     /// exception leaves (Language); each `catch` runs on the rows holding one of its `kinds`, every kind a `try`
     /// catches where none is named, after their exceptions are cleared, with `var.kind` the first such kind and
     /// `var.message` their text. A row's other exceptions go back on it after the `catch`, in a `try` of their own that
     /// the next `catch` takes, and past the last as if no `catch` had taken them. The `finally` runs on every row that
     /// entered the `try`, whatever left it.
-    fn try_catch(&mut self, body: &[Stmt], catches: &[Catch], finally: &[Stmt], guard: Option<SlotId>, id: FunctionId) {
+    fn try_catch(&mut self, body: &[Stmt], catches: &[Catch], finally: &[Stmt], here: Here) {
+        let Here { guard, id } = here;
         let span = Span::default();
         let entered = guard.filter(|_| !finally.is_empty()).map(|g| self.copy_guard(g, id));
         let mut mask = self.tried(!catches.is_empty(), guard, body, id);
@@ -2960,7 +3015,13 @@ impl Compiler<'_> {
                 self.syms.put_place(&Place::Leaf(format!("{v}.message")), text);
                 scope
             });
-            self.code_block(catch, Some(mask), id);
+            self.code_block(
+                catch,
+                Here {
+                    guard: Some(mask),
+                    ..here
+                },
+            );
             if let Some(scope) = scope {
                 self.syms.close_scope(&scope);
                 self.catch_scopes.pop();
@@ -2991,9 +3052,10 @@ impl Compiler<'_> {
         copy
     }
 
-    /// `throw e` on the rows `guard` selects. The exceptions go back on the rows they were cleared from, so a loop opened
-    /// inside the `catch`, whose trips number their rows afresh, cannot hold one.
-    fn throw(&mut self, e: &Expr, guard: Option<SlotId>, id: FunctionId) {
+    /// `throw e` on the rows `here`'s guard selects. The exceptions go back on the rows they were cleared from, so a
+    /// loop opened inside the `catch`, whose trips number their rows afresh, cannot hold one.
+    fn throw(&mut self, e: &Expr, here: Here) {
+        let Here { guard, id } = here;
         let ExprKind::Field(name) = &e.kind else {
             unreachable!("the parser reads a name after `throw`")
         };
@@ -3022,7 +3084,7 @@ impl Compiler<'_> {
     fn tried(&mut self, catches: bool, outer: Option<SlotId>, stmts: &[Stmt], id: FunctionId) -> SlotId {
         let mask = self.begin(Region::Try { catches }, outer, None, id);
         self.tries += 1;
-        self.code_block(stmts, Some(mask), id);
+        self.code_block(stmts, Here { guard: Some(mask), id });
         self.tries -= 1;
         mask
     }
@@ -3050,13 +3112,14 @@ impl Compiler<'_> {
     /// `stmts` in a region of their own (`begin`).
     fn region(&mut self, region: Region, outer: Option<SlotId>, cond: Option<Ir>, stmts: &[Stmt], id: FunctionId) {
         let mask = self.begin(region, outer, cond, id);
-        self.code_block(stmts, Some(mask), id);
+        self.code_block(stmts, Here { guard: Some(mask), id });
         self.end(mask, id);
     }
 
-    /// `break`, `continue` or an inlined `return`: the rows `guard` selects leave every region out to the nearest
-    /// `to`.
-    fn leave(&mut self, to: Region, guard: Option<SlotId>, id: FunctionId) {
+    /// `break`, `continue` or an inlined `return`: the rows `here`'s guard selects leave every region out to the
+    /// nearest `to`.
+    fn leave(&mut self, to: Region, here: Here) {
+        let Here { guard, id } = here;
         match guard {
             Some(rows) if self.regions.contains(&to) => {
                 let out = self.syms.temp(DataType::Bool, Origin::Temp);
@@ -3075,18 +3138,18 @@ impl Compiler<'_> {
     fn trip(&mut self, test: Option<(&Expr, &[Stmt])>, body: &[Stmt], id: FunctionId) -> Option<SlotId> {
         let enter = |s: &Stmt| !matches!(s, Stmt::Function { .. });
         if test.is_none() && self.tries == 0 && !Stmt::any(body, &enter, &mut |s| matches!(s, Stmt::Leave { .. })) {
-            self.code_block(body, None, id);
+            self.code_block(body, Here { guard: None, id });
             return None;
         }
         let stay = self.begin(Region::Loop, None, None, id);
         self.region(Region::Trip, Some(stay), None, body, id);
         if let Some((cond, next)) = test {
-            self.code_block(next, Some(stay), id);
+            self.code_block(next, Here { guard: Some(stay), id });
             let leave = [Stmt::Leave {
                 to: Region::Loop,
                 span: cond.span,
             }];
-            self.if_stmt(cond, [&[], &leave], WHILE_CONDITION, Some(stay), id);
+            self.if_stmt(cond, [&[], &leave], WHILE_CONDITION, Here { guard: Some(stay), id });
         }
         self.end(stay, id);
         Some(stay)
@@ -3096,7 +3159,8 @@ impl Compiler<'_> {
     /// and its key leaves the unclaimed fields of the object it is in. Inside an `if` or a loop a bound name is a
     /// compile error, as its declaration would be there, unless `moved`: `move` clears it on the rows selected; a
     /// key an open object may hold is taken out on the rows selected.
-    fn delete(&mut self, name: &str, moved: bool, guard: Option<SlotId>, id: FunctionId) {
+    fn delete(&mut self, name: &str, moved: bool, here: Here) {
+        let Here { guard, id } = here;
         if name == tree::ROOT {
             return self.err(
                 Some(id),
@@ -3122,7 +3186,7 @@ impl Compiler<'_> {
                 );
             }
             let null = Expr::new(Span::default(), ExprKind::Literal(Value::Null));
-            return self.assign(name, &null, false, false, guard, id);
+            return self.assign(name, &null, false, false, here);
         }
         // A local is no key of the record.
         if self.syms.is_local(name) {
@@ -3141,73 +3205,21 @@ impl Compiler<'_> {
         self.syms.remove_key(parent, &key);
     }
 
-    /// Write what the parse function `call` gives to the object `target`, `""` for the record, as `parse_into` does.
-    /// `ty`, an object type, is the target's declared type; without it a field `target` holds keeps its type, and a
-    /// new one is open.
-    #[allow(clippy::too_many_arguments)]
-    fn parse_call(
-        &mut self,
-        target: &str,
-        call: &ParseCall,
-        input: Option<SlotId>,
-        ty: Option<&DataType>,
-        guard: Option<SlotId>,
-        id: FunctionId,
-        merge: bool,
-    ) {
-        let Some(in_slot) = input.or_else(|| self.input_slot(call.input, guard, id)) else {
+    /// Write what the parse function `call` gives to `dest`, as `parse_into` does. Without a declared type, an object
+    /// one, a field the target holds keeps its type, and a new one is open.
+    fn parse_call(&mut self, call: &ParseCall, input: Option<SlotId>, dest: Dest, here: Here) {
+        let Some(in_slot) = input.or_else(|| self.input_slot(call.input, here)) else {
             return;
         };
         if call.name == "lookup" {
-            return self.lookup_call(target, call, in_slot, ty, guard, id, merge);
+            return self.lookup_call(call, in_slot, dest, here);
         }
-        let (kind, matcher) = match call.kind(self.grok_patterns) {
-            Ok(k) => k,
-            Err(message) => return self.err(Some(id), message),
-        };
-        match self.syms.type_of(in_slot) {
-            DataType::Variant if kind == ParserKind::Variant => {}
-            // Bytes are not text until a `decode` says how to read them.
-            DataType::Str | DataType::Null => {}
-            DataType::Variant => {
-                return self.err(
-                    Some(id),
-                    format!("`{}` {}", describe_expr(call.input), variant_use(None)),
-                );
-            }
-            t => {
-                let mut message = format!(
-                    "`{}` parses text, and `{}` is {}",
-                    call.name,
-                    describe_expr(call.input),
-                    t.spell()
-                );
-                if *t == DataType::Bytes {
-                    message.push_str(", which `decode(value, encoding)` reads as text");
-                }
-                return self.err(Some(id), message);
-            }
-        }
-        let keys = matcher_keys(&kind, &matcher);
-        if let Some(k) = keys.iter().flatten().find(|k| tree::is_internal(tree::head(k))) {
-            return self.err(
-                Some(id),
-                format!("`{k}` is the engine's own field; give the capture or column another name"),
-            );
-        }
-        if self.writes_a_local(target, keys.iter().flatten(), id) {
-            return;
-        }
-        let formats = match call.formats() {
-            Ok(f) => f,
-            Err(message) => return self.err(Some(id), message),
-        };
-        let declared = self.parse_fields(target, &kind, keys, ty);
-        self.parse_into(&kind, in_slot, matcher, target, merge, &declared, formats, guard, id);
+        self.parse_into(call, in_slot, dest, here);
     }
 
-    /// The slot holding `e`'s value: a field's own, or one `e` is computed into under `guard`.
-    fn input_slot(&mut self, e: &Expr, guard: Option<SlotId>, id: FunctionId) -> Option<SlotId> {
+    /// The slot holding `e`'s value: a field's own, or one `e` is computed into under `here`'s guard.
+    fn input_slot(&mut self, e: &Expr, here: Here) -> Option<SlotId> {
+        let Here { guard, id } = here;
         let input = self.expr_ast(e, id)?;
         Some(match input.kind {
             IrKind::Field(slot) => slot,
@@ -3220,19 +3232,11 @@ impl Compiler<'_> {
         })
     }
 
-    /// `lookup(table, key, {…})` into `target`, as `parse_call` writes a parse: each output a field of `target`, at the
-    /// type `ty` or the field holds, else `str`.
-    #[allow(clippy::too_many_arguments)]
-    fn lookup_call(
-        &mut self,
-        target: &str,
-        call: &ParseCall,
-        in_slot: SlotId,
-        ty: Option<&DataType>,
-        guard: Option<SlotId>,
-        id: FunctionId,
-        merge: bool,
-    ) {
+    /// `lookup(table, key, {…})` into `dest`, as `parse_call` writes a parse: each output a field of the target, at its
+    /// declared type or the type the field holds, else `str`.
+    fn lookup_call(&mut self, call: &ParseCall, in_slot: SlotId, dest: Dest, here: Here) {
+        let Here { id, .. } = here;
+        let Dest { target, ty, merge } = dest;
         let args = match call.lookup() {
             Ok(args) => args,
             Err(message) => return self.err(Some(id), message),
@@ -3290,7 +3294,7 @@ impl Compiler<'_> {
             outputs: &outputs,
             merge,
         };
-        self.lookup_into(&describe_expr(call.input), in_slot, &spec, guard, id);
+        self.lookup_into(&describe_expr(call.input), in_slot, &spec, here);
     }
 
     /// Whether a parse into `target`, the record, writes a key a local names: a second declaration of the local, so a
@@ -3380,8 +3384,9 @@ impl Compiler<'_> {
     }
 
     /// Look `in_slot`, the key `input` names, up in a table as `spec` says, each output a write of its name under
-    /// `guard`.
-    fn lookup_into(&mut self, input: &str, in_slot: SlotId, spec: &LookupSpec, guard: Option<SlotId>, id: FunctionId) {
+    /// `here`'s guard.
+    fn lookup_into(&mut self, input: &str, in_slot: SlotId, spec: &LookupSpec, here: Here) {
+        let Here { guard, id } = here;
         // A key is read, so a variant one needs its declaration. A `null` one belongs to every type, and
         // misses on every row.
         let in_ty = match self.syms.type_of(in_slot).clone() {
@@ -3588,23 +3593,17 @@ impl Compiler<'_> {
                 true => self.prior(&name, self.syms.type_of(slot)),
                 false => None,
             };
-            if !self.write_over(&name, slot, prior, guard, id) {
+            if !self.write_over(&name, slot, prior, here) {
                 return;
             }
         }
     }
 
-    /// `slot`, a call's output, written for `name` under `guard`, over `prior` on the rows it holds null:
+    /// `slot`, a call's output, written for `name` under `here`'s guard, over `prior` on the rows it holds null:
     /// `slot ?? prior`. The call leaves a row the guard masks null, so over a prior the blend keeps the prior there
     /// already and the guard is not needed. `false` means an error was recorded.
-    fn write_over(
-        &mut self,
-        name: &str,
-        slot: SlotId,
-        prior: Option<Ir>,
-        guard: Option<SlotId>,
-        id: FunctionId,
-    ) -> bool {
+    fn write_over(&mut self, name: &str, slot: SlotId, prior: Option<Ir>, here: Here) -> bool {
+        let Here { guard, .. } = here;
         let (value, guard) = match prior {
             None => (Resolved::Slot(slot), guard),
             Some(prior) => {
@@ -3615,7 +3614,12 @@ impl Compiler<'_> {
                 (Resolved::Ir(ir), None)
             }
         };
-        self.bind_writes(name, vec![(Place::Leaf(name.to_string()), value)], false, guard, id);
+        self.bind_writes(
+            name,
+            vec![(Place::Leaf(name.to_string()), value)],
+            false,
+            Here { guard, ..here },
+        );
         true
     }
 
@@ -3642,7 +3646,8 @@ impl Compiler<'_> {
     }
 
     /// `unroll(field, keep_parent_fields)`: one row per element of `field`, which is rebound to the element.
-    fn unroll(&mut self, field: &str, keep_parent_fields: bool, guard: Option<SlotId>, id: FunctionId) {
+    fn unroll(&mut self, field: &str, keep_parent_fields: bool, here: Here) {
+        let Here { guard, id } = here;
         if self.tries > 0 {
             return self.err(
                 Some(id),
@@ -3728,13 +3733,14 @@ impl Compiler<'_> {
         );
         // `field` is rebound to the element.
         let write = vec![(Place::Leaf(field.to_string()), Resolved::Slot(out_slot))];
-        self.bind_writes(field, write, false, None, id);
+        self.bind_writes(field, write, false, Here { guard: None, ..here });
     }
 
-    /// Compile one statement list under `guard`. A name this list `let`s is a local from its `let` to the end of the
-    /// list: bound inside a scope that hides every `name.*` from outside and takes every `name.*` bound inside with it
-    /// when the block ends. A write to the name before its `let` is a write to the name outside.
-    fn code_block(&mut self, stmts: &[Stmt], guard: Option<SlotId>, id: FunctionId) {
+    /// Compile one statement list under `here`'s guard. A name this list `let`s is a local from its `let` to the end of
+    /// the list: bound inside a scope that hides every `name.*` from outside and takes every `name.*` bound inside with
+    /// it when the block ends. A write to the name before its `let` is a write to the name outside.
+    fn code_block(&mut self, stmts: &[Stmt], here: Here) {
+        let Here { id, .. } = here;
         // By the name the user wrote: two `let`s of one name are two locals once the inliner renames them.
         let mut names: Vec<std::borrow::Cow<str>> = Vec::new();
         for stmt in stmts {
@@ -3756,7 +3762,7 @@ impl Compiler<'_> {
                 }
                 scopes.push(self.syms.open_scope(name));
             }
-            self.statement(stmt, guard, id);
+            self.statement(stmt, here);
         }
         for scope in scopes.iter().rev() {
             self.syms.close_scope(scope);
@@ -3764,8 +3770,9 @@ impl Compiler<'_> {
         self.scope_marks.pop();
     }
 
-    /// Compile one statement under `guard`.
-    fn statement(&mut self, stmt: &Stmt, guard: Option<SlotId>, id: FunctionId) {
+    /// Compile one statement under `here`'s guard.
+    fn statement(&mut self, stmt: &Stmt, here: Here) {
+        let Here { guard, id } = here;
         // A caught exception is read, never written: `throw` gives back what its `catch` took.
         let written: Vec<&String> = match stmt {
             Stmt::Assign { target, .. } | Stmt::IndexAssign { target, .. } | Stmt::Unroll { field: target, .. } => {
@@ -3796,7 +3803,7 @@ impl Compiler<'_> {
                         "internal: `return` reached the compiler un-inlined".to_string(),
                     );
                 }
-                Stmt::Leave { to, .. } => self.leave(*to, guard, id),
+                Stmt::Leave { to, .. } => self.leave(*to, here),
                 // An `if` or a loop that writes a name nothing binds is a construct: typed in a pass of its own, then
                 // compiled (`construct`). One that writes only bound names has nothing for that pass to find.
                 Stmt::If { .. } | Stmt::For { .. } | Stmt::While { .. } | Stmt::Try { .. } | Stmt::Body(_) => {
@@ -3815,17 +3822,17 @@ impl Compiler<'_> {
                             .iter()
                             .any(|n| self.syms.node(n).is_none() && !self.syms.is_local(n) && !tree::is_internal(n));
                     match first_writes {
-                        true => self.construct(guard, id, |c| c.construct_stmt(stmt, guard, id)),
-                        false => self.construct_stmt(stmt, guard, id),
+                        true => self.construct(here, |c| c.construct_stmt(stmt, here)),
+                        false => self.construct_stmt(stmt, here),
                     }
                 }
                 // A `let` puts the name's own binding from before it out of reach, whatever its value binds. The scope
                 // puts it back when the block ends.
-                Stmt::Let { name, value } => self.assign(name, value, true, true, guard, id),
+                Stmt::Let { name, value } => self.assign(name, value, true, true, here),
                 Stmt::Assign { target, value, .. } if self.folding.last().is_some_and(|f| f.accs.contains(target)) => {
-                    self.fold_write(target, value, guard, id)
+                    self.fold_write(target, value, here)
                 }
-                Stmt::Assign { target, value, typed } => self.assign(target, value, false, *typed, guard, id),
+                Stmt::Assign { target, value, typed } => self.assign(target, value, false, *typed, here),
                 Stmt::Declare { name, ty } => self.declare(name, ty, id),
                 // Checked, then discarded: there are no side effects.
                 Stmt::Expr(e) => {
@@ -3841,14 +3848,14 @@ impl Compiler<'_> {
                             index: Box::new(index.clone()),
                             value: Box::new(value.clone()),
                         };
-                        self.assign(target, &Expr::new(value.span, write), false, false, guard, id);
+                        self.assign(target, &Expr::new(value.span, write), false, false, here);
                     } else {
-                        self.keyed_write(target, index, value, guard, id);
+                        self.keyed_write(target, index, value, here);
                     }
                 }
                 Stmt::Delete { names, moved, .. } => {
                     for name in names {
-                        self.delete(name, *moved, guard, id);
+                        self.delete(name, *moved, here);
                     }
                 }
                 Stmt::Drop(span) => {
@@ -3865,8 +3872,8 @@ impl Compiler<'_> {
                     };
                     self.drop_where(dropped, id);
                 }
-                Stmt::Unroll { field, keep, .. } => self.unroll(field, *keep, guard, id),
-                Stmt::Throw(e) => self.throw(e, guard, id),
+                Stmt::Unroll { field, keep, .. } => self.unroll(field, *keep, here),
+                Stmt::Throw(e) => self.throw(e, here),
             }
         }
     }
@@ -3877,7 +3884,8 @@ impl Compiler<'_> {
     /// the record's key where the record may hold one, else null on every row. A construct inside one compiles once,
     /// for the pass that is on: the outermost's typing pass sees every write in it, and declares what it first writes
     /// ahead of the outermost.
-    fn construct(&mut self, guard: Option<SlotId>, id: FunctionId, f: impl Fn(&mut Self)) {
+    fn construct(&mut self, here: Here, f: impl Fn(&mut Self)) {
+        let Here { id, .. } = here;
         if !matches!(self.pass, Pass::Outside) {
             return f(self);
         }
@@ -3923,7 +3931,7 @@ impl Compiler<'_> {
                     site: Site::Declaration(name.clone()),
                 },
             );
-            self.assign(&name, &decl, false, true, guard, id);
+            self.assign(&name, &decl, false, true, here);
             names.push(name);
         }
         self.pass = Pass::Compiling(names);
@@ -3932,7 +3940,8 @@ impl Compiler<'_> {
     }
 
     /// A `while`'s loop, on the rows its condition held on before it.
-    fn while_loop(&mut self, cond: &Expr, body: &[Stmt], next: &[Stmt], guard: Option<SlotId>, id: FunctionId) {
+    fn while_loop(&mut self, cond: &Expr, body: &[Stmt], next: &[Stmt], here: Here) {
+        let Here { guard, id } = here;
         self.unshare_assigned(body, None, id);
         self.unshare_assigned(next, None, id);
         let before = self.syms.bindings();
@@ -3977,8 +3986,9 @@ impl Compiler<'_> {
         });
     }
 
-    /// Compile an `if` or a loop statement under `guard`.
-    fn construct_stmt(&mut self, stmt: &Stmt, guard: Option<SlotId>, id: FunctionId) {
+    /// Compile an `if` or a loop statement under `here`'s guard.
+    fn construct_stmt(&mut self, stmt: &Stmt, here: Here) {
+        let Here { guard, id } = here;
         match stmt {
             // A row the condition fails before the loop takes no trip; after that `trip` tests it at each trip's end.
             Stmt::While { cond, body, next } => {
@@ -3989,13 +3999,21 @@ impl Compiler<'_> {
                     return;
                 };
                 self.branches(guard, cond_ir, [true, false], id, |c, _, mask| {
-                    c.while_loop(cond, body, next, Some(mask), id)
+                    c.while_loop(
+                        cond,
+                        body,
+                        next,
+                        Here {
+                            guard: Some(mask),
+                            ..here
+                        },
+                    )
                 });
             }
-            Stmt::If { cond, then, else_ } => self.if_stmt(cond, [then, else_], "an `if` condition", guard, id),
+            Stmt::If { cond, then, else_ } => self.if_stmt(cond, [then, else_], "an `if` condition", here),
             Stmt::Body(body) => self.region(Region::Body, guard, None, body, id),
             Stmt::For { var, iterable, body } => {
-                let Some((array_slot, element_ty)) = self.resolve_array_iterable(iterable, id, guard) else {
+                let Some((array_slot, element_ty)) = self.resolve_array_iterable(iterable, here) else {
                     return;
                 };
 
@@ -4011,7 +4029,7 @@ impl Compiler<'_> {
                     && accs
                         .iter()
                         .all(|a| self.syms.lookup(a).is_some() && self.untyped_found(a).is_none())
-                    && self.array_fold(&accs, (array_slot, element_slot), &leaves, body, guard, id)
+                    && self.array_fold(&accs, (array_slot, element_slot), &leaves, body, here)
                 {
                     self.syms.close_scope(&scope);
                     return;
@@ -4058,7 +4076,7 @@ impl Compiler<'_> {
                     function: id,
                 });
             }
-            Stmt::Try { body, catches, finally } => self.try_catch(body, catches, finally, guard, id),
+            Stmt::Try { body, catches, finally } => self.try_catch(body, catches, finally, here),
             _ => unreachable!("only an `if`, a `try` or a loop is a construct"),
         }
     }
@@ -4073,9 +4091,9 @@ impl Compiler<'_> {
         (array, element_slot): (SlotId, SlotId),
         leaves: &[(SlotId, Ir)],
         body: &[Stmt],
-        guard: Option<SlotId>,
-        id: FunctionId,
+        here: Here,
     ) -> bool {
+        let Here { guard, id } = here;
         let errors = self.errors.len();
         self.folding.push(Folding {
             accs: accs.iter().map(|a| a.to_string()).collect(),
@@ -4085,7 +4103,7 @@ impl Compiler<'_> {
             for (slot, ir) in leaves {
                 c.emit(Op::Eval { ir: ir.clone() }, *slot, ir.ty.clone(), id);
             }
-            c.code_block(body, None, id);
+            c.code_block(body, Here { guard: None, ..here });
         });
         let folding = self.folding.pop().expect("pushed above");
         if folding.refused {
@@ -4117,10 +4135,11 @@ impl Compiler<'_> {
         true
     }
 
-    /// The write `target = value` of an accumulator of the vectorized loop being compiled: its value into a slot of
-    /// its own, with the elements `guard` selects, where it ran. The value takes the accumulator's type as the general
-    /// loop's write does; one with no fold kernel refuses the fold.
-    fn fold_write(&mut self, target: &str, value: &Expr, guard: Option<SlotId>, id: FunctionId) {
+    /// The write `target = value` of an accumulator of the vectorized loop being compiled: its value into a slot of its
+    /// own, with the elements `here`'s guard selects, where it ran. The value takes the accumulator's type as the
+    /// general loop's write does; one with no fold kernel refuses the fold.
+    fn fold_write(&mut self, target: &str, value: &Expr, here: Here) {
+        let Here { guard, id } = here;
         let (op, e) = fold_shape(target, value).expect("`independent` shaped every accumulator's write");
         let Some(ir) = self.expr_ast(e, id) else {
             return;
@@ -4295,9 +4314,10 @@ impl Compiler<'_> {
         }
     }
 
-    /// `if (cond) { then } else { else_ }` under `guard`, `what` naming the condition where it is not a Bool. A
+    /// `if (cond) { then } else { else_ }` under `here`'s guard, `what` naming the condition where it is not a Bool. A
     /// condition with no branch still runs, for what it notes.
-    fn if_stmt(&mut self, cond: &Expr, arms: [&[Stmt]; 2], what: &str, guard: Option<SlotId>, id: FunctionId) {
+    fn if_stmt(&mut self, cond: &Expr, arms: [&[Stmt]; 2], what: &str, here: Here) {
+        let Here { guard, id } = here;
         let Some(cond_ir) = self.expr_ast(cond, id) else {
             return;
         };
@@ -4310,7 +4330,13 @@ impl Compiler<'_> {
         }
         let present = [!arms[0].is_empty() || arms[1].is_empty(), !arms[1].is_empty()];
         self.branches(guard, cond_ir, present, id, |c, arm, mask| {
-            c.code_block(arms[arm], Some(mask), id)
+            c.code_block(
+                arms[arm],
+                Here {
+                    guard: Some(mask),
+                    ..here
+                },
+            )
         });
     }
 
@@ -4330,7 +4356,7 @@ impl Compiler<'_> {
                     };
                     self.note_constant(&cond_ir, cond, *id);
                     let arms = [then, else_];
-                    self.construct(guard, *id, |c| {
+                    self.construct(Here { guard, id: *id }, |c| {
                         c.branches(
                             guard,
                             cond_ir.clone(),
@@ -4363,18 +4389,35 @@ impl Compiler<'_> {
                     // A filter is an `if` around the step, so a name the step first writes is declared ahead of it
                     // from the record's key, and the rows the filter skips keep the key.
                     if every_row {
-                        self.function(&f.kind, f.id, effective, guard);
+                        self.function(
+                            &f.kind,
+                            Here {
+                                guard: effective,
+                                id: f.id,
+                            },
+                            guard,
+                        );
                     } else {
-                        self.construct(guard, f.id, |c| c.function(&f.kind, f.id, effective, guard));
+                        self.construct(Here { guard, id: f.id }, |c| {
+                            c.function(
+                                &f.kind,
+                                Here {
+                                    guard: effective,
+                                    id: f.id,
+                                },
+                                guard,
+                            )
+                        });
                     }
                 }
             }
         }
     }
 
-    /// Compile the step `kind` as the code it lowers to: its own statements under `guard`, its filter and the guard
-    /// around it, and what comes after it under `outer`, the guard around it alone.
-    fn function(&mut self, kind: &FunctionKind, id: FunctionId, guard: Option<SlotId>, outer: Option<SlotId>) {
+    /// Compile the step `kind` as the code it lowers to: its own statements under `here`'s guard, its filter and the
+    /// guard around it, and what comes after it under `outer`, the guard around it alone.
+    fn function(&mut self, kind: &FunctionKind, here: Here, outer: Option<SlotId>) {
+        let Here { id, .. } = here;
         let kind = match lower::names(kind) {
             Ok(kind) => kind,
             Err(message) => return self.err(Some(id), message),
@@ -4392,7 +4435,7 @@ impl Compiler<'_> {
                                 value,
                                 typed: false,
                             };
-                            self.code(&[assign], guard, id);
+                            self.code(&[assign], here);
                         }
                         Err(e) => self.errors.push(e),
                     }
@@ -4412,7 +4455,7 @@ impl Compiler<'_> {
                             let label = label.slice(body).trim();
                             self.warn(id, format!("{label} has no `break`, so the next case runs too"));
                         }
-                        self.code(&stmts, guard, id)
+                        self.code(&stmts, here)
                     }
                     Err(e) => self.err(Some(id), format!("parse error in code block: {}", e.message)),
                 }
@@ -4455,15 +4498,16 @@ impl Compiler<'_> {
             }]),
         };
         self.settle(|c| {
-            c.code_block(&lowered.body, guard, id);
-            c.code_block(&lowered.after, outer, id);
+            c.code_block(&lowered.body, here);
+            c.code_block(&lowered.after, Here { guard: outer, ..here });
         });
     }
 
-    /// Compile the code `stmts` under `guard`, each function it calls expanded.
-    fn code(&mut self, stmts: &[Stmt], guard: Option<SlotId>, id: FunctionId) {
+    /// Compile the code `stmts` under `here`'s guard, each function it calls expanded.
+    fn code(&mut self, stmts: &[Stmt], here: Here) {
+        let Here { id, .. } = here;
         match crate::expr::inline::expand(stmts) {
-            Ok(stmts) => self.settle(|c| c.code_block(&stmts, guard, id)),
+            Ok(stmts) => self.settle(|c| c.code_block(&stmts, here)),
             Err(e) => self.err(Some(id), e.message),
         }
     }

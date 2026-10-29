@@ -3,6 +3,7 @@
   of the common text shapes, per row, which is what nearly every field wants.
 -->
 <script lang="ts">
+  import ChevronIcon from './ChevronIcon.svelte';
   import { untrack } from 'svelte';
 
   let { format = $bindable(), disabled = false }: { format: string; disabled?: boolean } = $props();
@@ -19,7 +20,8 @@
     class:custom={format !== ''}
     aria-expanded={open}
     title="Empty reads an epoch by its magnitude or one of the common text shapes, per row. Open to give a parseTime format."
-    onclick={() => (open = !open)}>{format === '' ? 'auto' : 'format'} {open ? '▾︎' : '▸︎'}</button
+    onclick={() => (open = !open)}
+    >{format === '' ? 'auto' : 'format'} <ChevronIcon {open} /></button
   >
   {#if open}
     <input

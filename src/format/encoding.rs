@@ -18,7 +18,7 @@ pub type Charset = &'static encoding_rs::Encoding;
 pub const FALLBACK: Charset = encoding_rs::WINDOWS_1252;
 
 /// A source's declared encoding.
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Encoding {
     /// Detect per record.
     #[default]

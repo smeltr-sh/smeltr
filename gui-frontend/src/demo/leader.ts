@@ -974,7 +974,7 @@ export class DemoLeader {
           sample: { id: 'pool', name: 'pool', ...this.recording.captures[pool].sample },
         });
         const a = answer.body as { ok?: boolean; errors?: ApiError[]; kept?: number[] };
-        if (!a.ok) return refused(a.errors ?? []);
+        if (!a.ok) return refused(422, a.errors ?? []);
         kept = a.kept ?? [];
       }
     } else {

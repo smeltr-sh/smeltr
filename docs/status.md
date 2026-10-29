@@ -160,11 +160,10 @@ catalog's volume entry both wait on it.
 - **A non-worker leader keeps its own logs only in its own store.** Nothing ships them anywhere else: no syslog emitter, and no worker to run a smeltr logs source.
 - **A tree confirmed dead by its pipe's end-of-file assumes every member still holds that pipe.** A descendant that closed its copy before wedging is not waited on, so `kill_and_confirm` can report a tree gone while it remains. No runtime spawns a descendant today.
 - **A capture invitation can be routed to a runtime about to be replaced.** `route_invitations` acts before the same beat's redeploy decision, so a capture racing a redeploy can be lost.
-- **A heartbeat that times out after the leader persists it can inflate a durable counter.** Closing it needs an idempotency key across the heartbeat protocol.
 - **A worker's bare clone is never repacked.** `gix` has no maintenance primitive, so a worker redeployed often accumulates packs without bound.
 - **A runtime releases a capture session once it writes the report to its own pipe, not once the leader has it,** so a slow upload can see the session re-admitted and re-captured. Closing it needs an acknowledgment frame back from the supervisor.
 - **A runtime confirmed dead with a descendant holding its output pipe is reported as still running.** `RuntimeHandle::exited` does not tell "alive" from "gone, tree unconfirmed".
-- **The heartbeat's body limit assumes a worst case nothing enforces.** `thread_limit` and the reader count have no ceiling, so a large deployment's report can outgrow `HEARTBEAT_BODY_LIMIT`. Closing it needs per-beat windowing for metrics.
+- **A heartbeat's state has no share of the body limit.** Each part of a window does, and counters past theirs spread over beats, but a beat's state -- its threads, their gauges and facts -- grows with the sources and destinations deployed, which have no ceiling.
 - **Capture sessions are retained without a cap; only the outbox (`CAPTURES_WAITING`) is capped.**
 - **The deployment warning's grace does not cover the stop it waits through.** The stop and startup budgets add up to exactly `NOT_DEPLOYING_AFTER_MS`, leaving no slack.
 - **A capture queued while its own upload is in flight is uploaded twice.**
@@ -200,3 +199,4 @@ catalog's volume entry both wait on it.
 - **History clips its last column at a 1440 px window.**
 - **A worker's id is `hostname-pid-nanos`** (`worker::generate_worker_id`). No setting names a worker.
 - **A leader started without a worker still seeds a worker group,** which a fleet that names its own groups carries empty until someone deletes it.
+- **Motion ignores `prefers-reduced-motion`.** The fold chevron (`ChevronIcon.svelte`) and other transitions play for a reader who asks the system for less motion.

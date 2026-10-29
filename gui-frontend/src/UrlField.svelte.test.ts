@@ -30,7 +30,7 @@ function type(input: HTMLInputElement, text: string) {
   flushSync();
 }
 
-const said = () => target.querySelector('[role="status"]')?.textContent ?? null;
+const said = () => target.querySelector('[role="status"]')?.textContent?.trim() ?? null;
 
 beforeEach(() => {
   target = document.createElement('div');
@@ -63,7 +63,7 @@ describe('a URL field', () => {
   it('shows a refusal in place of a warning', () => {
     bound.value = 'http://collector.internal';
     show({ sends: true, error: 'no' });
-    expect(target.querySelector('[role="alert"]')?.textContent).toBe('no');
+    expect(target.querySelector('[role="alert"]')?.textContent?.trim()).toBe('no');
     expect(said()).toBeNull();
   });
 

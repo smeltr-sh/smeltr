@@ -4,6 +4,9 @@
 //! keep-alive connection at any moment, and when it does so exactly as the
 //! next heartbeat reuses it, the write fails before the request was ever
 //! served. `ureq` will not retry a POST itself.
+//!
+//! A retry is safe only because the leader records each window once: a beat
+//! the leader recorded and whose answer was lost goes again, and counts once.
 
 use smeltr::heartbeat::{HeartbeatClient, HeartbeatRequest, ThreadHeartbeat};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -145,4 +148,50 @@ fn a_leader_that_is_simply_down_still_fails() {
         client.send(&beat()).is_err(),
         "an unreachable leader is still an error after the retry"
     );
+}
+
+/// The leader records a beat and its answer is lost, so the worker sends the
+/// same window again; then the next window. Each counter counts once.
+#[test]
+fn a_beat_the_leader_recorded_and_sent_again_counts_once() {
+    use smeltr::heartbeat::{MetricSampleDto, MetricValueDto};
+    use smeltr::leader::series::{Tier, Window};
+
+    let dir = std::env::temp_dir().join(format!("smeltr-heartbeat-retry-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let registry = smeltr::leader::registry::Registry::open(&dir.join("registry.db")).expect("registry.db opens");
+    let send = |seq: u64, rows: u64| {
+        let mut req = beat();
+        req.threads[0].metrics = vec![MetricSampleDto {
+            metric: "smeltr_rows_polled_total".to_string(),
+            labels: vec![("source".to_string(), "in".to_string())],
+            value: MetricValueDto::Counter(rows),
+        }];
+        registry
+            .record_heartbeat(
+                &req.worker_id,
+                req.threads,
+                smeltr::leader::registry::WorkerFacts::default(),
+                Window {
+                    boot_id: 7,
+                    seq: Some(seq),
+                    streams: None,
+                },
+                1_000,
+            )
+            .unwrap();
+    };
+    send(1, 5);
+    send(1, 5);
+    send(2, 3);
+
+    let polled = registry
+        .series()
+        .expect("a durable registry")
+        .series_since("smeltr_rows_polled_total", Tier::TenSeconds, 0)
+        .unwrap();
+    assert_eq!(polled.len(), 1, "{polled:?}");
+    assert_eq!(polled[0].1, vec![(0, 8.0)], "the window sent again was counted twice");
+    let _ = std::fs::remove_dir_all(&dir);
 }

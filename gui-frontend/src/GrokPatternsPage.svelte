@@ -29,7 +29,7 @@
   import JsonEditPage from './JsonEditPage.svelte';
   import { resourcesTabs } from './nav';
   import { sharedConfig, putGrokPatterns, type GrokPatternDto } from './api';
-  import TrashIcon from './TrashIcon.svelte';
+  import CrossButton from './CrossButton.svelte';
   import { count } from './time';
   import {
     builtinRegex,
@@ -229,12 +229,11 @@
                 </td>
                 <td class="act">
                   {#if !readOnly}
-                    <button
-                      type="button"
-                      class="icon"
-                      aria-label="Remove {p.id || 'unnamed'}"
-                      onclick={() => patterns.splice(n, 1)}><TrashIcon /></button
-                    >
+                    <CrossButton
+                      removes
+                      label="Remove {p.id || 'unnamed'}"
+                      onclick={() => patterns.splice(n, 1)}
+                    />
                   {/if}
                 </td>
               </tr>
@@ -349,19 +348,6 @@
 
   .grow {
     flex: 1;
-  }
-
-  /* A bare glyph that turns red only on hover. */
-  .icon {
-    display: inline-grid;
-    padding: 0;
-    border-color: transparent;
-    background: none;
-    color: var(--dim);
-  }
-
-  .icon:hover {
-    color: var(--error);
   }
 
   /* Names a column whose head would otherwise be an empty cell. */

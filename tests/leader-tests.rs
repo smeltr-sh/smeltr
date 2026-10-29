@@ -58,6 +58,11 @@ fn start_leader() -> String {
 /// `start_leader`, also handing back the `data_dir`, so a test can land a
 /// commit on `main` the way a deploy does.
 fn start_leader_with_data_dir() -> (String, std::path::PathBuf) {
+    start_leader_with_registry(Arc::new(Registry::default()))
+}
+
+/// `start_leader_with_data_dir`, keeping its threads and series in `registry`.
+fn start_leader_with_registry(registry: Arc<Registry>) -> (String, std::path::PathBuf) {
     let data_dir = scratch_dir("smeltr-leader-test");
     std::fs::create_dir_all(&data_dir).unwrap();
     let returned = data_dir.clone();
@@ -71,7 +76,10 @@ fn start_leader_with_data_dir() -> (String, std::path::PathBuf) {
                 &scratch_dir("smeltr-leader-key").join("sealing.key"),
             )
             .unwrap();
-            let state = app_state(store, data_dir);
+            let state = AppState {
+                registry,
+                ..app_state(store, data_dir)
+            };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             tx.send(addr.port()).unwrap();
@@ -798,6 +806,61 @@ fn a_capture_report_larger_than_a_framework_default_body_is_accepted() {
             other => panic!("unexpected transport error: {other}"),
         });
     assert_eq!(status, 204, "a capture report past a 2 MiB body was refused");
+}
+
+/// A beat the leader's store will not take is refused, so the worker sends its window again; taken then, it is
+/// counted once however often it comes.
+#[test]
+fn a_beat_the_store_will_not_take_is_refused_and_counted_once_when_it_comes_again() {
+    use smeltr::leader::series::Tier;
+
+    let dir = scratch_dir("smeltr-leader-registry");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("registry.db");
+    let registry = Arc::new(Registry::open(&path).expect("registry.db opens"));
+    let refusing = rusqlite::Connection::open(&path).unwrap();
+    refusing
+        .execute_batch("CREATE TRIGGER refused BEFORE INSERT ON windows BEGIN SELECT RAISE(ABORT, 'refused'); END")
+        .unwrap();
+    let (base, _) = start_leader_with_registry(registry.clone());
+    let token = enroll_worker(&base, "w1");
+    let send = || match ureq::post(format!("{base}/api/worker/heartbeat"))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send_json(serde_json::json!({
+            "workerId": "w1",
+            "bootId": 7,
+            "streamsWindow": 1,
+            "threads": [{
+                "threadId": "t0",
+                "groupId": "pool",
+                "partitionsOwned": [],
+                "metrics": [{
+                    "metric": "smeltr_rows_polled_total",
+                    "labels": [["source", "in"]],
+                    "value": {"kind": "counter", "value": 5},
+                }],
+            }],
+        })) {
+        Ok(r) => r.status().as_u16(),
+        Err(ureq::Error::StatusCode(c)) => c,
+        Err(other) => panic!("unexpected transport error: {other}"),
+    };
+
+    assert_eq!(send(), 503, "a beat that was not recorded was answered as recorded");
+    refusing.execute_batch("DROP TRIGGER refused").unwrap();
+    assert_eq!(send(), 200);
+    assert_eq!(send(), 200);
+    let polled = registry
+        .series()
+        .unwrap()
+        .series_since("smeltr_rows_polled_total", Tier::TenSeconds, 0)
+        .unwrap();
+    assert_eq!(polled.len(), 1, "{polled:?}");
+    assert_eq!(
+        polled[0].1.iter().map(|p| p.1).sum::<f64>(),
+        5.0,
+        "the window was not counted once"
+    );
 }
 
 #[test]

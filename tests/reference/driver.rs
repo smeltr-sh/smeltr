@@ -95,7 +95,6 @@ pub fn run(bundle: &str, line: fn(u64) -> String, rows: u64, max_rows: usize, ke
     let mut worker = Worker::new(
         system.topology.sources[0].id,
         Box::new(source.clone()),
-        system.topology.sources[0].kind.encoding(),
         topology,
         destinations,
         MemoryBudget::unlimited(),

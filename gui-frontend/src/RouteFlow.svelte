@@ -18,6 +18,8 @@
   import { tick, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import Help from './Help.svelte';
+  import CrossButton from './CrossButton.svelte';
+  import CrossIcon from './CrossIcon.svelte';
   import { float } from './float';
   import PickOrNew from './PickOrNew.svelte';
   import ValidatedField from './ValidatedField.svelte';
@@ -818,12 +820,7 @@
       />
     </div>
     {#if !readOnly}
-      <button
-        type="button"
-        class="ib x"
-        aria-label="remove this condition"
-        onclick={() => dropCondition(route)}>&#10005;</button
-      >
+      <CrossButton removes label="remove this condition" onclick={() => dropCondition(route)} />
     {/if}
   </div>
 {/snippet}
@@ -895,12 +892,7 @@
       />
     </div>
     {#if !readOnly}
-      <button
-        type="button"
-        class="ib x"
-        aria-label="remove this condition"
-        onclick={() => dropWhen(route, rule)}>&#10005;</button
-      >
+      <CrossButton removes label="remove this condition" onclick={() => dropWhen(route, rule)} />
     {/if}
     {#if !line}
       <button
@@ -971,12 +963,7 @@
             )}>&#8943;</button
         >
       {:else if !readOnly}
-        <button
-          type="button"
-          class="ib x"
-          aria-label="stop sending to {dest}"
-          onclick={() => takeOff(spot)}>&#10005;</button
-        >
+        <CrossButton removes label="stop sending to {dest}" onclick={() => takeOff(spot)} />
       {/if}
     </div>
     {#if !destinationIds.includes(dest)}
@@ -1252,7 +1239,7 @@
           onremoveroute?.(r);
         }}
       >
-        <span class="k">&#10005;</span>remove this pipeline
+        <span class="k"><CrossIcon /></span>remove this pipeline
       </button>
     {:else if menu.kind === 'dest'}
       {@const spot = menu.spot}
@@ -1291,7 +1278,7 @@
           takeOff(sp);
         }}
       >
-        <span class="k">&#10005;</span>remove this destination
+        <span class="k"><CrossIcon /></span>remove this destination
       </button>
     {:else if menu.kind === 'move'}
       {@const route = menu.route}
@@ -1615,13 +1602,6 @@
     border: none;
     background: transparent;
   }
-  .box .x {
-    opacity: 0.35;
-  }
-  .box:hover .x,
-  .box:focus-within .x {
-    opacity: 1;
-  }
   .node-src {
     min-width: 14rem;
   }
@@ -1676,11 +1656,6 @@
     cursor: pointer;
     flex-shrink: 0;
   }
-  .ib.x:hover {
-    border-color: var(--error);
-    color: var(--error);
-  }
-
   /* The socket: where a wire leaves a box or enters a pill, drawn on its edge. */
   .sock {
     position: absolute;

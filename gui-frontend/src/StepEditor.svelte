@@ -32,6 +32,7 @@
   import ChipPicker from './ChipPicker.svelte';
   import MoreIcon from './MoreIcon.svelte';
   import DisableIcon from './DisableIcon.svelte';
+  import CrossButton from './CrossButton.svelte';
   import { glideTo } from './glide';
   import FieldRow from './FieldRow.svelte';
   import TypePicker from './TypePicker.svelte';
@@ -540,9 +541,7 @@
           onclick={() => addable.forEach((s) => addSuggestion(ps, s))}>Add all</button
         >
       {/if}
-      <button type="button" class="compact" aria-label="Done" title="Done" onclick={open.onClose}
-        >✕︎</button
-      >
+      <CrossButton label="Done" onclick={open.onClose} />
     </div>
     <InlineError message={p.error} />
     {#each shown as s (s.row.name)}
@@ -583,7 +582,7 @@
     {#if !readOnly && step.type !== 'if' && step.type !== 'comment'}
       <button
         type="button"
-        class="fold"
+        class="icon fold"
         class:active={step.disabled}
         onclick={() => (step.disabled = !step.disabled)}
         aria-label={step.disabled ? 'Enable this step' : 'Disable this step'}
@@ -592,6 +591,7 @@
     {/if}
     <button
       type="button"
+      class="icon"
       class:active={isPausedAt}
       onclick={togglePause}
       aria-label={isPausedAt ? 'Show the whole pipeline' : 'Pause the records after this step'}
@@ -599,15 +599,17 @@
       >{isPausedAt ? '●︎' : '◎︎'}</button
     >
     {#if !readOnly}
-      <button type="button" class="fold" onclick={moveUp} aria-label="Move up" title="Move up"
+      <button type="button" class="icon fold" onclick={moveUp} aria-label="Move up" title="Move up"
         >↑︎</button
       >
-      <button type="button" class="fold" onclick={moveDown} aria-label="Move down" title="Move down"
-        >↓︎</button
+      <button
+        type="button"
+        class="icon fold"
+        onclick={moveDown}
+        aria-label="Move down"
+        title="Move down">↓︎</button
       >
-      <button type="button" class="fold remove" onclick={remove} aria-label="Delete" title="Delete"
-        >✕︎</button
-      >
+      <span class="fold"><CrossButton removes label="Delete" onclick={remove} /></span>
       {@render more()}
     {/if}
   </div>
@@ -797,13 +799,11 @@
                     />
                   </Locked>
                   {#if !readOnly}
-                    <button
-                      type="button"
-                      class="ctl remove"
+                    <CrossButton
+                      removes
+                      label="Remove assignment"
                       onclick={() => removeAssignment(i)}
-                      aria-label="Remove assignment"
-                      title="Remove assignment">✕︎</button
-                    >
+                    />
                   {/if}
                 </div>
               {/each}
@@ -866,13 +866,11 @@
                     />
                   </Locked>
                   {#if !readOnly}
-                    <button
-                      type="button"
-                      class="ctl remove"
+                    <CrossButton
+                      removes
+                      label="Remove pair"
                       onclick={() => step.pairs.splice(i, 1)}
-                      aria-label="Remove pair"
-                      title="Remove pair">✕︎</button
-                    >
+                    />
                   {/if}
                 </div>
               {/each}
@@ -948,13 +946,11 @@
                         />
                       </Locked>
                       {#if !readOnly}
-                        <button
-                          type="button"
-                          class="ctl remove"
+                        <CrossButton
+                          removes
+                          label="Remove pattern"
                           onclick={() => grokKind.patterns.splice(i, 1)}
-                          aria-label="Remove pattern"
-                          title="Remove pattern">✕︎</button
-                        >
+                        />
                       {/if}
                     </div>
                   {/each}
@@ -1191,13 +1187,11 @@
                             bind:value={grokKind.customPatterns[i].name}
                           />
                           {#if !readOnly}
-                            <button
-                              type="button"
-                              class="ctl remove"
+                            <CrossButton
+                              removes
+                              label="Remove pattern definition"
                               onclick={() => grokKind.customPatterns.splice(i, 1)}
-                              aria-label="Remove pattern definition"
-                              title="Remove pattern definition">✕︎</button
-                            >
+                            />
                           {/if}
                         </div>
                         <Locked>
@@ -1466,13 +1460,11 @@
                       bind:value={step.outputs[i].default}
                     />
                     {#if !readOnly}
-                      <button
-                        type="button"
-                        class="ctl remove"
+                      <CrossButton
+                        removes
+                        label="Remove output"
                         onclick={() => step.outputs.splice(i, 1)}
-                        aria-label="Remove output"
-                        title="Remove output">✕︎</button
-                      >
+                      />
                     {/if}
                   </div>
                   {#if o.ty.kind === 'datetime'}
@@ -1547,8 +1539,8 @@
     --card-surface: var(--field);
     background: var(--card-surface);
     container: step / inline-size;
-    --control-width: 1.6rem;
-    --control-height: 1.4rem;
+    --control-width: 1.5rem;
+    --control-height: 1.5rem;
   }
 
   /* `:where` keeps this below an error's edge and a comment's border, which
@@ -1651,7 +1643,7 @@
     display: none;
   }
 
-  /* Five controls take 9.4rem and never shrink, and the summary needs room
+  /* Five controls take 7.5rem and never shrink, and the summary needs room
      beside them. At 18.75rem and under, ◎ stays out and the rest fold into
      the More menu, the badge shows its glyph and keeps its name only for a
      screen reader. In
@@ -1730,9 +1722,10 @@
     white-space: nowrap;
   }
 
+  /* Each control's box is the 24px target, so the boxes touch and the glyphs keep their spacing without a gap. */
   .controls {
     display: flex;
-    gap: 0.35rem;
+    gap: 0;
     flex-shrink: 0;
   }
 
@@ -1761,7 +1754,7 @@
     .card:not(.open, .if-card)
       > .card-head:is(:hover, :has(:focus-visible, [aria-expanded='true']))
       > .counts {
-      margin-right: 10.6rem;
+      margin-right: 8.7rem;
     }
 
     .card:not(.open, .if-card) > .card-head > .controls {
@@ -1772,34 +1765,25 @@
     }
   }
 
-  /* Every control in a step looks like a control, wherever it sits: the
-     head's controls, and each row's delete, marked `.ctl`. Without this a row
-     delete fell through to the browser's own button chrome wearing an error
-     color. */
-  .controls button,
-  .ctl {
-    background: none;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    color: var(--dim);
-    font-size: var(--text-note);
-    cursor: pointer;
-    /* A fixed box, centered on its glyph, rather than padding around
-       whatever width that glyph happens to render at: "◎︎" and "●︎" are
-       not the same width in the font, and sizing to content made the
-       button -- and everything after it in the row -- shift when this one
-       toggled. */
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
+  /* A fixed box, centered on its glyph: "◎︎" and "●︎" are not the same
+     width in the font, and a box sized to its glyph shifts the row when
+     this one toggles. */
+  .controls button {
     width: var(--control-width);
     height: var(--control-height);
     padding: 0;
+    font-size: var(--text-note);
   }
 
+  /* A drawn glyph centers on its box; a text glyph's ink sits lower in its line. */
+  .controls :global(svg) {
+    transform: translateY(0.1em);
+  }
+
+  /* Not the color alone: a backdrop marks it on. */
   .controls button.active {
-    border-color: var(--ink);
     color: var(--ink);
+    background: color-mix(in srgb, var(--ink) 10%, transparent);
     font-weight: 600;
   }
 

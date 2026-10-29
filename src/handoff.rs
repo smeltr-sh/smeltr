@@ -175,6 +175,11 @@ impl Handoff {
         }
     }
 
+    /// What this queue's arrivals are announced on.
+    pub fn ready(&self) -> &Arc<Ready> {
+        &self.ready
+    }
+
     /// Hand a batch over, waiting up to `timeout` for room. A batch larger than the whole budget goes in alone: the cap
     /// stops a second joining it, the same rule `Source::poll_batch` follows for an oversized record.
     pub fn push(&self, batch: Handed, timeout: Duration) -> Result<(), Unsent> {

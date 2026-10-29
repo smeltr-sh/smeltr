@@ -27,6 +27,7 @@
   leader keeps no series for `smeltr_rows_errored_total`.
 -->
 <script lang="ts">
+  import ChevronIcon from './ChevronIcon.svelte';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import { store, storedJson } from './stored';
@@ -36,6 +37,7 @@
   import PageHeader from './PageHeader.svelte';
   import Help from './Help.svelte';
   import Panel from './Panel.svelte';
+  import CrossButton from './CrossButton.svelte';
   import FlowChart from './FlowChart.svelte';
   import Sparkline from './Sparkline.svelte';
   import StateMark from './StateMark.svelte';
@@ -750,9 +752,7 @@
       <div class="rollout" role="status">
         <Panel title={`${done ? 'Deployed' : 'Deploying'} ${commitOrNone(deploying)}`}>
           {#snippet actions()}
-            <a class="rollout-close" href="#/status" aria-label="Stop following this deploy"
-              >&times;</a
-            >
+            <CrossButton label="Stop following this deploy" href="#/status" />
           {/snippet}
           <div class="rollout-body">
             {#if deployingSubject}<strong>{deployingSubject}</strong>{/if}
@@ -825,12 +825,12 @@
               class:selected={selectedGroupId === group && selectedWorkerId === null}
             >
               <button
-                class="group-toggle"
+                class="icon group-toggle"
                 aria-label={isExpanded(group) ? `Collapse ${group}` : `Expand ${group}`}
                 aria-expanded={isExpanded(group)}
                 onclick={() => toggleGroup(group)}
               >
-                <span class="group-caret" class:expanded={isExpanded(group)}>▶</span>
+                <ChevronIcon open={isExpanded(group)} />
               </button>
               <button
                 class="group-select"
@@ -890,12 +890,13 @@
 
       {#if selectedWorker}
         <aside class="worker-detail">
-          <button
-            class="detail-close"
-            aria-label="Close worker details"
-            onclick={() => {
-              selectedWorkerId = null;
-            }}>×</button
+          <span class="detail-close"
+            ><CrossButton
+              label="Close worker details"
+              onclick={() => {
+                selectedWorkerId = null;
+              }}
+            /></span
           >
           <h2>{selectedWorker.workerId}</h2>
           <p class="detail-group">
@@ -1025,11 +1026,11 @@
                   <tr>
                     <td>
                       <button
-                        class="group-toggle part-toggle"
+                        class="icon group-toggle part-toggle"
                         aria-label={runtimeOpen ? 'Collapse runtime' : 'Expand runtime'}
                         aria-expanded={runtimeOpen}
                         onclick={() => (runtimeOpen = !runtimeOpen)}
-                        ><span class="group-caret" class:expanded={runtimeOpen}>▶</span></button
+                        ><ChevronIcon open={runtimeOpen} /></button
                       >runtime
                     </td>
                     <td class="num" class:over={isOver(selectedMemory.runtime.whole)}>
@@ -1238,11 +1239,6 @@
   .rollout-body meter {
     flex: 1;
   }
-  .rollout-close {
-    color: var(--dim);
-    text-decoration: none;
-    font-size: 1.1rem;
-  }
   .behind {
     color: var(--warn);
   }
@@ -1402,7 +1398,6 @@
   .group-row.selected {
     background: color-mix(in oklab, var(--ink) 10%, var(--panel));
   }
-  .group-toggle,
   .group-select {
     border: 0;
     background: transparent;
@@ -1413,15 +1408,6 @@
   .group-toggle {
     align-self: stretch;
     padding: 0 0.3rem 0 1rem;
-  }
-  .group-caret {
-    display: inline-block;
-    color: var(--dim);
-    font-size: 0.7rem;
-    transition: transform 120ms ease;
-  }
-  .group-caret.expanded {
-    transform: rotate(90deg);
   }
   .group-select {
     min-width: 0;
@@ -1490,13 +1476,6 @@
     position: absolute;
     right: 1rem;
     top: 1rem;
-    border: 0;
-    background: none;
-    color: var(--dim);
-    /* The browser's own, which placed the glyph before the shared button padding. */
-    padding: 1px 6px;
-    font-size: 1.6rem;
-    cursor: pointer;
   }
   .worker-detail h2 {
     max-width: 100%;

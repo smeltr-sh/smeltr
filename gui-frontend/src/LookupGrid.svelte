@@ -8,7 +8,7 @@
   import InlineError from './InlineError.svelte';
   import { count } from './time';
   import { tick } from 'svelte';
-  import TrashIcon from './TrashIcon.svelte';
+  import CrossButton from './CrossButton.svelte';
   import Locked from './Locked.svelte';
   import { editable } from './access';
 
@@ -91,11 +91,12 @@
               <span class="cell">
                 <input aria-label="column name" bind:value={headers[c]} oninput={onedit} />
                 {#if !readOnly}
-                  <button
-                    type="button"
-                    class="icon"
-                    aria-label="Remove column {headers[c]}"
-                    onclick={() => column(c)}><TrashIcon /></button
+                  <span class="reveal"
+                    ><CrossButton
+                      removes
+                      label="Remove column {headers[c]}"
+                      onclick={() => column(c)}
+                    /></span
                   >
                 {/if}
               </span>
@@ -109,11 +110,12 @@
             <td class="rn">
               {r + 1}
               {#if !readOnly}
-                <button
-                  type="button"
-                  class="icon"
-                  aria-label="Remove row {r + 1}"
-                  onclick={() => edit(() => rows.splice(r, 1))}><TrashIcon /></button
+                <span class="reveal"
+                  ><CrossButton
+                    removes
+                    label="Remove row {r + 1}"
+                    onclick={() => edit(() => rows.splice(r, 1))}
+                  /></span
                 >
               {/if}
             </td>
@@ -225,20 +227,10 @@
   }
 
   /* Remove controls appear on hover; a touch screen has none, so it shows them. */
-  /* A bare glyph that turns red only on hover. */
-  .icon {
+  .reveal {
     display: inline-grid;
     vertical-align: middle;
-    padding: 0;
-    border-color: transparent;
-    background: none;
-    color: var(--dim);
-    font-size: var(--text-note);
     opacity: 0;
-  }
-
-  .icon:hover {
-    color: var(--error);
   }
 
   /* A text action beside a row's error, quiet so the error leads. */
@@ -250,14 +242,14 @@
     font-size: var(--text-note);
   }
 
-  tr:hover .icon,
-  th:hover .icon,
-  .icon:focus-visible {
+  tr:hover .reveal,
+  th:hover .reveal,
+  .reveal:focus-within {
     opacity: 1;
   }
 
   @media (hover: none) {
-    .icon {
+    .reveal {
       opacity: 1;
     }
   }

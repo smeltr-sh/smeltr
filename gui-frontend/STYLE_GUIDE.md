@@ -54,9 +54,11 @@ A glyph is drawn once and used wherever its operation is offered, so the sign
 and the operation stay one thing: `src/PencilIcon.svelte` is edit -- open this
 object's editor -- and `src/ColumnsIcon.svelte` is stats, how much went each
 way. `src/GearIcon.svelte` is view -- how the records are drawn,
-the reader's own choice. `src/TrashIcon.svelte` is remove -- take this object out of the list
-it is in. `src/DisableIcon.svelte` is disable -- keep a step in its pipeline but
-out of play. Renaming is not its own sign: it is the editor a worker group happens to
+the reader's own choice. `src/CrossIcon.svelte` is remove or close -- take this item out
+of the list it is in, or close or clear what is on screen -- and `src/CrossButton.svelte` is the control that
+offers it. Only remove reddens on hover: it is the one Save makes stick. `src/DisableIcon.svelte` is disable -- keep a step in its pipeline but
+out of play. `src/ChevronIcon.svelte` is fold -- it points right while what it folds is
+closed and down while it is open; a button that is only the chevron is an `icon` control. Renaming is not its own sign: it is the editor a worker group happens to
 have, having nothing else to change in place.
 
 A state has a sign, `src/StateMark.svelte`: a dot for info, a check for ok,
@@ -265,6 +267,9 @@ definition, not a page's own rule.
   - `danger` -- the answer that destroys something, filled `--error`. A
     button that only opens the question is a plain button.
   - `compact` -- an action inside a row of a list.
+  - `icon` -- a control that is only a glyph (✕, ✎, ‹, ƒ), named by its
+    `aria-label`: bare and dim until hovered, on a 24px target, with an
+    accent ring on keyboard focus.
   - `large` -- a call to action on a page of the website.
 - **Text field.** Every text `input`, `select` and `textarea`: `--field`
   on a 1px `--border`, `--text-body`, 1rem on a phone so it does not zoom.

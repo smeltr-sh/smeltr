@@ -1210,12 +1210,23 @@ pub type BatchId = u64;
 
 /// One batch a destination has finished with, and what it refused. The rejections travel with the completion because
 /// their indices are into that batch's documents.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BatchCompletion {
     pub batch: BatchId,
     pub rejections: Vec<Rejection>,
     /// The destination asked to be sent less while delivering it: the pacing model cuts what it may hold.
     pub throttled: bool,
+    /// Rows that did not land, for the caller to send again; the rest of the batch landed or was refused. `None` is
+    /// a batch wholly answered for.
+    pub undelivered: Option<Undelivered>,
+}
+
+/// What of a batch did not land, and why.
+#[derive(Debug)]
+pub struct Undelivered {
+    pub error: IoError,
+    /// Positions in the batch's rows, as a [`Rejection`]'s `doc` is.
+    pub rows: Vec<usize>,
 }
 
 /// What [`Destination::deliver`] did with a batch.
@@ -1246,8 +1257,9 @@ pub enum Dispatched {
 /// delivery failure: it comes back against its position in the rows handed over, from `deliver` if it is known then
 /// and with the batch's completion if not.
 ///
-/// A delivery failure loses no document: whatever was not acknowledged goes again. The re-send can carry a document
-/// the destination already holds, so a document may arrive more than once -- at-least-once.
+/// A delivery failure loses no document: whatever was not acknowledged goes again, and where a completion names the
+/// rows that did not land, only they do. The re-send can carry a document the destination already holds, so a
+/// document may arrive more than once -- at-least-once.
 pub trait Destination: Send {
     /// Hand over `batch`'s rows here and start delivering them without waiting. A destination ignores whichever of
     /// `OwnedRecord`'s fields it has no notion of. `rows` is owned by a caller that has no further use for them, and
@@ -1266,8 +1278,8 @@ pub trait Destination: Send {
     /// committed.
     fn flush(&mut self) -> Result<(), IoError>;
 
-    /// Batches acknowledged since the last call, in any order. `Err` means a delivery failed: nothing in flight may be
-    /// committed.
+    /// Batches answered for since the last call, in any order. A completion naming rows `undelivered` landed the rest:
+    /// only those rows go again. `Err` means a delivery failed: nothing in flight may be committed.
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
         Ok(Vec::new())
     }
@@ -1330,7 +1342,7 @@ impl Rejection {
 pub mod fake {
     use super::{
         BatchCompletion, BatchId, CommitMap, Destination, Dispatched, IoError, OwnedRecord, Payload, Rejection, Source,
-        SourceRecord, TopicPartition,
+        SourceRecord, TopicPartition, Undelivered,
     };
     use std::borrow::Cow;
     use std::collections::VecDeque;
@@ -1535,6 +1547,22 @@ pub mod fake {
                 batch,
                 rejections,
                 throttled: false,
+                undelivered: None,
+            });
+        }
+
+        /// Answer `batch` with `rows` of it undelivered, for `why`, and `rejections` refused: the rest landed.
+        pub fn fail_rows(&self, batch: BatchId, rows: Vec<usize>, rejections: Vec<Rejection>, why: &str) {
+            let mut st = self.0.lock().unwrap();
+            st.dispatched.retain(|b| *b != batch);
+            st.ready.push(BatchCompletion {
+                batch,
+                rejections,
+                throttled: false,
+                undelivered: Some(Undelivered {
+                    error: IoError::transient(why),
+                    rows,
+                }),
             });
         }
 
@@ -1583,6 +1611,7 @@ pub mod fake {
                 batch,
                 rejections: Vec::new(),
                 throttled: false,
+                undelivered: None,
             }));
             Ok(())
         }

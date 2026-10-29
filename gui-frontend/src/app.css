@@ -74,9 +74,12 @@ body {
    that also draws other bars leaves these properties to them with
    :not(.callout). */
 .callout {
+  padding: 0.5rem 0.75rem;
   border-left: 3px solid var(--callout);
+  border-radius: var(--radius);
   background: color-mix(in oklab, var(--callout) 10%, var(--field));
   color: var(--ink);
+  font-size: var(--text-label);
 }
 
 .callout.warn {

@@ -553,7 +553,7 @@
   {#if functions && !resting}
     <button
       type="button"
-      class="fn-toggle"
+      class="icon fn-toggle"
       tabindex="-1"
       onmousedown={(e) => e.preventDefault()}
       onclick={toggleBrowse}
@@ -855,25 +855,15 @@
     border-color: transparent;
   }
 
+  /* Inside the field's border, in the 1.5rem its text leaves free. */
   .fn-toggle {
     position: absolute;
-    right: 3px;
+    right: 1px;
     top: 50%;
     transform: translateY(-50%);
-    background: none;
+    /* Over the field's text, which runs under it. */
     background-color: var(--field);
-    line-height: 1;
-    border: none;
-    color: var(--dim);
     font-style: italic;
-    font-size: var(--text-label);
-    padding: 0.1rem 0.3rem;
-    cursor: pointer;
-    border-radius: var(--radius);
-  }
-
-  .fn-toggle:hover {
-    color: var(--ink);
   }
 
   .multiline .fn-toggle {
