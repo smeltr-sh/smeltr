@@ -160,7 +160,6 @@ catalog's volume entry both wait on it.
 - **A non-worker leader keeps its own logs only in its own store.** Nothing ships them anywhere else: no syslog emitter, and no worker to run a smeltr logs source.
 - **A tree confirmed dead by its pipe's end-of-file assumes every member still holds that pipe.** A descendant that closed its copy before wedging is not waited on, so `kill_and_confirm` can report a tree gone while it remains. No runtime spawns a descendant today.
 - **A capture invitation can be routed to a runtime about to be replaced.** `route_invitations` acts before the same beat's redeploy decision, so a capture racing a redeploy can be lost.
-- **A worker's bare clone is never repacked.** `gix` has no maintenance primitive, so a worker redeployed often accumulates packs without bound.
 - **A runtime releases a capture session once it writes the report to its own pipe, not once the leader has it,** so a slow upload can see the session re-admitted and re-captured. Closing it needs an acknowledgment frame back from the supervisor.
 - **A runtime confirmed dead with a descendant holding its output pipe is reported as still running.** `RuntimeHandle::exited` does not tell "alive" from "gone, tree unconfirmed".
 - **A heartbeat's state has no share of the body limit.** Each part of a window does, and counters past theirs spread over beats, but a beat's state -- its threads, their gauges and facts -- grows with the sources and destinations deployed, which have no ceiling.

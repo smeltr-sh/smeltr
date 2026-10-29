@@ -3294,6 +3294,69 @@ pub fn push(
     )))
 }
 
+/// The loose objects past which a repository is packed: git's own `gc.auto` default.
+pub const LOOSE_LIMIT: usize = 6700;
+
+/// The packs past which a repository's packs are merged: git's own `gc.autoPackLimit` default. A fetch adds one.
+pub const PACK_LIMIT: usize = 50;
+
+/// How many loose objects and how many packs the repository at `repo_path` holds.
+pub fn object_files(repo_path: &Path) -> (usize, usize) {
+    let objects = repo_path.join("objects");
+    let count = |dir: &Path, wanted: &dyn Fn(&str) -> bool| {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_name().to_str().is_some_and(wanted))
+            .count()
+    };
+    let fan_out = std::fs::read_dir(&objects)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().len() == 2 && e.path().is_dir());
+    let loose = fan_out.map(|dir| count(&dir.path(), &|_| true)).sum();
+    (loose, count(&objects.join("pack"), &|n| n.ends_with(".idx")))
+}
+
+/// Pack the objects gix writes loose, and merge packs, once [`LOOSE_LIMIT`] or [`PACK_LIMIT`] is passed. Nothing is
+/// dropped: a deploy-log or change marker names a commit by a trailer git cannot follow, so an object no ref reaches
+/// may still be one a rollback needs.
+pub fn pack(repo_path: &Path) -> Result<(), GitError> {
+    let (loose, packs) = object_files(repo_path);
+    if loose <= LOOSE_LIMIT && packs <= PACK_LIMIT {
+        return Ok(());
+    }
+    // Not `gc --auto`: it leaves an object no ref reaches loose when nothing may be pruned, so it would run again on
+    // every call and pack nothing more. A cruft pack is where `gc` keeps such an object instead, and before git 2.40
+    // it has to be asked for.
+    let output = Command::new("git")
+        .arg("--git-dir")
+        .arg(repo_path)
+        .args([
+            "-c",
+            "gc.cruftPacks=true",
+            // Refs are gix's to write, and packing them would hold their lock against a save.
+            "-c",
+            "gc.packRefs=false",
+            "-c",
+            "gc.pruneExpire=never",
+            "gc",
+            "--quiet",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| GitError::failed(format!("spawning git gc: {e}")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(GitError::failed(format!(
+        "git gc did not work: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    )))
+}
+
 /// Where `branch` is on the host at `url`, or `None` when the host has no such branch.
 pub fn host_branch(
     repo_path: &Path,
@@ -3566,6 +3629,34 @@ mod tests {
     fn git_ok(args: &[&str], cwd: &Path) {
         let status = Command::new("git").args(args).current_dir(cwd).status().unwrap();
         assert!(status.success(), "git {args:?} failed");
+    }
+
+    /// Past the limit, what gix wrote loose is packed, and an object no ref reaches is kept: a marker's trailer may
+    /// name it.
+    #[test]
+    fn packing_packs_what_is_loose_and_drops_nothing() {
+        let data = temp_dir("pack");
+        let repo = repo_path(&data);
+        init_bare_repo(&repo).unwrap();
+        ensure_main_commit(&repo).unwrap();
+        pack(&repo).unwrap();
+        assert!(object_files(&repo).0 > 0, "under the limit, nothing is packed");
+
+        // Twice: the second time, what no ref reaches is already in a pack, which the new one replaces.
+        let mut unreached = Vec::new();
+        for round in 0..2 {
+            let odb = open(&repo).unwrap();
+            unreached.extend((0..=LOOSE_LIMIT).map(|n| odb.write_blob(format!("{round} {n}")).unwrap().detach()));
+            pack(&repo).unwrap();
+            assert_eq!(object_files(&repo).0, 0, "past it, everything is packed");
+        }
+        let odb = open(&repo).unwrap();
+        assert!(
+            unreached.iter().all(|id| odb.find_object(*id).is_ok()),
+            "an object no ref reaches is kept"
+        );
+        assert!(main_head(&repo).is_some(), "and so is what one does");
+        std::fs::remove_dir_all(&data).ok();
     }
 
     /// A leader stopped while it created the repository left `HEAD` and no `config` beside it. The next start builds

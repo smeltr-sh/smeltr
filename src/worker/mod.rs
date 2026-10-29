@@ -744,6 +744,100 @@ fn fetched_reads(repo_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Merge the clone's packs once they pass the leader's own limit (`leader::git::PACK_LIMIT`): every fetch adds one,
+/// and gix has no gc to merge them. Everything the fetched and the running commit reach, their history with them, is
+/// written as one pack, and every other pack goes: those two are all a worker reads.
+fn merge_packs(repo_dir: &Path) -> Result<(), String> {
+    use gix_pack::data::output;
+    if crate::leader::git::object_files(repo_dir).1 <= crate::leader::git::PACK_LIMIT {
+        return Ok(());
+    }
+    let failed = |e: &dyn std::fmt::Display| format!("merging the packs of {}: {e}", repo_dir.display());
+    let repo = gix::open(repo_dir).map_err(|e| failed(&e))?;
+    let mut tips = Vec::new();
+    for name in [FETCHED_REF, RUNNING_REF] {
+        if let Some(reference) = repo.try_find_reference(name).map_err(|e| failed(&e))? {
+            tips.push(reference.into_fully_peeled_id().map_err(|e| failed(&e))?.detach());
+        }
+    }
+    if tips.is_empty() {
+        return Ok(());
+    }
+    let commits: Vec<_> = repo
+        .rev_walk(tips)
+        .all()
+        .map_err(|e| failed(&e))?
+        .map(|info| info.map(|info| info.id).map_err(|e| failed(&e)))
+        .collect::<Result<_, _>>()?;
+
+    let hash = repo.object_hash();
+    let mut odb = gix::odb::at(repo_dir.join("objects"), hash).map_err(|e| failed(&e))?;
+    // The packs this reads from are the ones it replaces, and must stay readable until it is done.
+    odb.prevent_pack_unload();
+    odb.ignore_replacements = true;
+    let interrupt = std::sync::atomic::AtomicBool::new(false);
+    let (counts, _) = output::count::objects(
+        odb.clone(),
+        Box::new(commits.into_iter().map(Ok)),
+        &gix::progress::Discard,
+        &interrupt,
+        output::count::objects::Options {
+            input_object_expansion: output::count::objects::ObjectExpansion::TreeContents,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| failed(&e))?;
+    let entries = u32::try_from(counts.len()).map_err(|e| failed(&e))?;
+    let chunks = output::entry::iter_from_counts(counts, odb, Box::new(gix::progress::Discard), Default::default());
+    // In memory: a clone holds configuration and the pointers to lookup files, never their bytes.
+    let mut bytes = output::bytes::FromEntriesIter::new(
+        chunks.map(|chunk| chunk.map(|(_, entries)| entries)),
+        Vec::new(),
+        entries,
+        gix_pack::data::Version::V2,
+        hash,
+    );
+    for written in bytes.by_ref() {
+        written.map_err(|e| failed(&e))?;
+    }
+    let pack = bytes.into_write();
+
+    let dir = repo_dir.join("objects/pack");
+    let old = packs_in(&dir)?;
+    let written = gix_pack::Bundle::write_to_directory(
+        &mut pack.as_slice(),
+        Some(&dir),
+        &mut gix::progress::Discard,
+        &interrupt,
+        None::<gix::objs::find::Never>,
+        hash,
+        Default::default(),
+    )
+    .map_err(|e| failed(&e))?;
+    if let Some(keep) = &written.keep_path {
+        std::fs::remove_file(keep).map_err(|e| failed(&e))?;
+    }
+    let kept = written.data_path.ok_or_else(|| failed(&"no pack was written"))?;
+    for old in old.iter().filter(|p| **p != kept) {
+        // The index first: a pack without one is not looked in, and an index without its pack would be. A pack the
+        // runtime still maps cannot go on Windows, and goes with the next merge.
+        let _ = std::fs::remove_file(old.with_extension("idx"))
+            .and_then(|()| std::fs::remove_file(old))
+            .map(|()| std::fs::remove_file(old.with_extension("rev")));
+    }
+    Ok(())
+}
+
+/// The `.pack` files in `dir`.
+fn packs_in(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("reading {}: {e}", dir.display()))?;
+    Ok(entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "pack"))
+        .collect())
+}
+
 /// Hold `commit` against garbage collection for as long as the deployment built from it runs.
 fn hold_running(repo_dir: &Path, commit: &str) {
     let held = gix::open(repo_dir)
@@ -3558,6 +3652,14 @@ impl Supervisor {
                         supervising.discovered_ms = Some(now_ms());
                         supervising.desired_commit = Some(head.clone());
                         drop(supervising);
+                        if let Err(e) = merge_packs(&self.repo_dir) {
+                            tracing::warn!(
+                                target: "worker.packs_not_merged",
+                                error = %e,
+                                "the clone's packs could not be merged, so it is tried again after the next fetch"
+                            );
+                        }
+                        // Before the build that reads the clone starts, so no pack goes from under it.
                         self.publish(head);
                     }
                     Err(e) => {
@@ -5138,6 +5240,43 @@ mod tests {
             stranger.lookup_file(&pointer.oid).is_err(),
             "only an enrolled worker is served"
         );
+
+        // Every fetch adds a pack, and past the limit they are merged into one. A rollback then leaves the worker
+        // running a commit the history it fetched does not hold.
+        let actor = crate::leader::store::Actor::system();
+        let mut running = deployed.clone();
+        while crate::leader::git::object_files(&clone_dir).1 <= crate::leader::git::PACK_LIMIT {
+            let edit = crate::leader::git::FileEdit {
+                path: "groups/west/system.json".to_string(),
+                content: Some(format!(r#"{{"version":1,"name":"{running}"}}"#).into_bytes()),
+            };
+            let main = crate::leader::git::MAIN_BRANCH;
+            let crate::leader::git::Committed::At(next) =
+                crate::leader::git::commit_edits(&repo, main, &running, Some(&running), &[edit], "deploy", &actor)
+                    .unwrap()
+            else {
+                panic!("the commit landed")
+            };
+            crate::leader::git::deploy_commit(&data_dir, &next, &actor).unwrap();
+            running = fetch_deployed(&clone_dir, &base, token, public_roots()).unwrap();
+            hold_running(&clone_dir, &running);
+        }
+        crate::leader::git::deploy_commit(&data_dir, &deployed, &actor).unwrap();
+        assert_eq!(
+            fetch_deployed(&clone_dir, &base, token, public_roots()).unwrap(),
+            deployed
+        );
+        merge_packs(&clone_dir).expect("the packs merge");
+        assert_eq!(crate::leader::git::object_files(&clone_dir).1, 1, "into one");
+        fetched_reads(&clone_dir).expect("what was fetched still reads");
+        let clone = gix::open(&clone_dir).unwrap();
+        let commit = |id: &str| {
+            clone
+                .find_commit(gix::ObjectId::from_hex(id.as_bytes()).unwrap())
+                .map(|_| ())
+        };
+        commit(&running).expect("what runs still reads");
+        commit(&deployed).expect("and so does the history of what was fetched");
     }
 
     /// The whole reason a worker's fetch runs on curl rather than `gix-transport`'s own `reqwest` backend
