@@ -707,16 +707,14 @@ fn run(
             // Borrowed: the unit is kept until acknowledged, to send again or to hand a refused row back.
             let delivered = destination.deliver(local, Cow::Borrowed(&unit.rows));
             // Once the destination has taken it: a Kafka producer at its bound holds `deliver` until it has room,
-            // and that wait is this side's, not the link's round trip.
-            let paced = pacer.as_mut().map(|p| p.dispatched(unit.bytes, app_limited));
+            // and that wait is this side's, not the link's round trip. A batch it did not take was never in flight.
+            let taken = matches!(delivered, Ok((Dispatched::Complete | Dispatched::InFlight, _)));
+            let paced = pacer.as_mut().filter(|_| taken).map(|p| p.dispatched(unit.bytes, app_limited));
             match delivered {
                 Err(e) => {
                     note_stall(metrics, id, name, &e, &mut stalled);
                     cut_off = false;
                     // This unit alone: the ones in flight are answered for by `poll_completions`.
-                    if let (Some(p), Some(c)) = (&mut pacer, paced) {
-                        p.abandoned(c);
-                    }
                     send_again(&mut redo, unit);
                     queue.sleep_unless_closed(backoff);
                     backoff = (backoff * 2).min(RETRY_MAX);
@@ -751,9 +749,6 @@ fn run(
                     let e = IoError::transient("destination client would not take the batch");
                     note_stall(metrics, id, name, &e, &mut stalled);
                     cut_off = false;
-                    if let (Some(p), Some(c)) = (&mut pacer, paced) {
-                        p.abandoned(c);
-                    }
                     send_again(&mut redo, unit);
                     queue.sleep_unless_closed(backoff);
                     backoff = (backoff * 2).min(RETRY_MAX);
