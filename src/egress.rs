@@ -706,8 +706,9 @@ fn run(
             // Borrowed: the unit is kept until acknowledged, to send again or to hand a refused row back.
             let delivered = destination.deliver(local, Cow::Borrowed(&unit.rows));
             // Once the destination has taken it: a Kafka producer at its bound holds `deliver` until it has room,
-            // and that wait is this side's, not the link's round trip.
-            let paced = pacer.as_mut().map(|p| p.dispatched(unit.bytes, app_limited));
+            // and that wait is this side's, not the link's round trip. A batch it did not take was never in flight.
+            let taken = matches!(delivered, Ok((Dispatched::Complete | Dispatched::InFlight, _)));
+            let paced = pacer.as_mut().filter(|_| taken).map(|p| p.dispatched(unit.bytes, app_limited));
             match delivered {
                 Err(e) => {
                     note_stall(metrics, id, name, &e, &mut stalled);
@@ -769,6 +770,9 @@ fn run(
                     if let Some(undelivered) = c.undelivered.filter(|u| !u.rows.is_empty()) {
                         note_stall(metrics, id, name, &undelivered.error, &mut stalled);
                         failed = true;
+                        if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
+                            p.abandoned(paced);
+                        }
                         let rest = remainder(queue, metrics, id, owed.unit, owed.rejections, &undelivered.rows);
                         send_again(&mut redo, rest);
                         continue;
@@ -796,7 +800,7 @@ fn run(
             Err(e) => {
                 note_stall(metrics, id, name, &e, &mut stalled);
                 cut_off = false;
-                take_back_all(&mut owner, &mut redo);
+                take_back_all(&mut owner, &mut redo, &mut pacer);
                 queue.sleep_unless_closed(backoff);
                 backoff = (backoff * 2).min(RETRY_MAX);
             }
@@ -994,9 +998,17 @@ fn send_again(redo: &mut VecDeque<Unit>, unit: Unit) {
     redo.make_contiguous().sort_by_key(|u| u.seq);
 }
 
-/// Take every sent-but-unacknowledged batch back for re-sending, in acceptance order.
-fn take_back_all(owner: &mut HashMap<BatchId, Owed>, redo: &mut VecDeque<Unit>) {
-    let mut all: Vec<Unit> = owner.drain().map(|(_, o)| o.unit).chain(redo.drain(..)).collect();
+/// Take every sent-but-unacknowledged batch back for re-sending, in acceptance order. The pacing model is told of each,
+/// so it no longer counts it in flight.
+fn take_back_all(owner: &mut HashMap<BatchId, Owed>, redo: &mut VecDeque<Unit>, pacer: &mut Option<Pacer>) {
+    let mut all: Vec<Unit> = Vec::new();
+    for (_, o) in owner.drain() {
+        if let (Some(p), Some(paced)) = (pacer.as_mut(), o.paced) {
+            p.abandoned(paced);
+        }
+        all.push(o.unit);
+    }
+    all.extend(redo.drain(..));
     all.sort_by_key(|u| u.seq);
     redo.extend(all);
 }
