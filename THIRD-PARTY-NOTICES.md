@@ -9773,7 +9773,7 @@ Used by:
 - [rcgen 0.14.10](https://github.com/rustls/rcgen)
 - [russh-cryptovec 0.62.0](https://github.com/warp-tech/russh)
 - [russh-util 0.52.0](https://github.com/warp-tech/russh)
-- [russh 0.64.1](https://github.com/warp-tech/russh)
+- [russh 0.65.0](https://github.com/warp-tech/russh)
 - [rustversion 1.0.23](https://github.com/dtolnay/rustversion)
 - [ryu 1.0.23](https://github.com/dtolnay/ryu)
 - [sasl2-sys 0.1.22+2.1.28](https://github.com/MaterializeInc/rust-sasl)
