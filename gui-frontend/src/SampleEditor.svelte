@@ -10,7 +10,7 @@
 <script lang="ts">
   import { reported } from './errors.svelte';
   import Field from './Field.svelte';
-  import RemoveButton from './RemoveButton.svelte';
+  import CrossButton from './CrossButton.svelte';
   import Clamped from './Clamped.svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import FindBox, { type FindFilter } from './FindBox.svelte';
@@ -301,7 +301,8 @@
                   {/if}
                 {/each}
                 <td class="right pin end">
-                  <RemoveButton
+                  <CrossButton
+                    removes
                     label={`Remove record ${r.key + 1}`}
                     onclick={(e) => {
                       e.stopPropagation();

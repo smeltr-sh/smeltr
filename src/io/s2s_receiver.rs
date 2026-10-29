@@ -378,6 +378,7 @@ impl Handler {
         // The events, until the stream ends. A block, so that a `?` in it ends the events rather than the connection,
         // and the channels are flushed below however they end.
         let events: Result<std::convert::Infallible, End> = async {
+            // Borrowed, not moved: the flush below reads the channels, the acks and what is held once the events end.
             let (v4, channels, acks, held) = (&mut v4, &mut channels, &mut acks, &mut held);
             let mut read = vec![0; READ_STEP];
             let mut last_beat: Option<Instant> = None;

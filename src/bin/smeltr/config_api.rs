@@ -1966,27 +1966,25 @@ pub async fn get_sample(
 /// Create-or-replace by the `:id` in the path, which is the sample's id whatever the body says.
 pub async fn put_sample(
     Extension(actor): Extension<Actor>,
-    AxPath((area, id)): AxPath<(String, String)>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    AxPath((_, id)): AxPath<(String, String)>,
+    at: Addressed,
     Json(mut sample): Json<config_file::SampleDto>,
 ) -> Envelope<Save> {
     sample.id = id;
     if let Err(message) = config_file::refuse_sample_size(sample.records.len()) {
         return Envelope::refused(Refusal::invalid(message));
     }
-    let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         let message = format!("save sample {}", sample.name);
-        write_sample_file(
-            &branch,
-            base,
-            &area,
-            &sample.id,
-            Some(config_file::sample_bytes(&sample)),
-            &message,
-            &actor,
-        )
+        at.open().map_or_else(Save::refused, |writing| {
+            write_sample_file(
+                writing,
+                &sample.id,
+                Some(config_file::sample_bytes(&sample)),
+                &message,
+                &actor,
+            )
+        })
     })
     .await
 }
@@ -1994,14 +1992,14 @@ pub async fn put_sample(
 /// Removing it from the branch. The blob stays reachable in history, which is what makes a rollback restore it.
 pub async fn delete_sample(
     Extension(actor): Extension<Actor>,
-    AxPath((area, id)): AxPath<(String, String)>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    AxPath((_, id)): AxPath<(String, String)>,
+    at: Addressed,
 ) -> Envelope<Save> {
-    let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         let message = format!("delete sample {id}");
-        write_sample_file(&branch, base, &area, &id, None, &message, &actor)
+        at.open().map_or_else(Save::refused, |writing| {
+            write_sample_file(writing, &id, None, &message, &actor)
+        })
     })
     .await
 }
@@ -2072,18 +2070,12 @@ fn refuse_slug_collision(
 
 /// One commit setting `samples/<slug>.json` to `content`, or removing it when that is `None`.
 fn write_sample_file(
-    branch: &str,
-    base: Option<String>,
-    scope: &str,
+    writing: Writing,
     id: &str,
     content: Option<Vec<u8>>,
     message: &str,
     author: &Actor,
 ) -> Envelope<Save> {
-    let writing = match Writing::open(branch, base.as_deref(), scope) {
-        Ok(writing) => writing,
-        Err(e) => return Save::refused(e),
-    };
     match config_file::sample_path(id) {
         Ok(path) => write_one_file(writing, path, id, content, message, author, refuse_sample_collision),
         Err(e) => Envelope::refused(Refusal::invalid(e.to_string())),
@@ -2092,18 +2084,12 @@ fn write_sample_file(
 
 /// One commit setting `tests/<slug>.json` to `content`, or removing it when that is `None`.
 pub fn write_test_file(
-    branch: &str,
-    base: Option<String>,
-    scope: &str,
+    writing: Writing,
     id: &str,
     content: Option<Vec<u8>>,
     message: &str,
     author: &Actor,
 ) -> Envelope<Save> {
-    let writing = match Writing::open(branch, base.as_deref(), scope) {
-        Ok(writing) => writing,
-        Err(e) => return Save::refused(e),
-    };
     match config_file::test_path(id) {
         Ok(path) => write_one_file(writing, path, id, content, message, author, refuse_test_collision),
         Err(e) => Envelope::refused(Refusal::invalid(e.to_string())),
@@ -2297,46 +2283,37 @@ pub async fn get_file(
 
 pub async fn put_file(
     Extension(actor): Extension<Actor>,
-    AxPath((area, within)): AxPath<(String, String)>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    AxPath((_, within)): AxPath<(String, String)>,
+    at: Addressed,
     Json(body): Json<FileBody>,
 ) -> Envelope<Save> {
-    let base = base_commit(&headers);
     blocking_save(move || {
         let content = Some(body.text.into_bytes());
-        write_listed_file(&leader_data_dir(), q.name(), base, &area, &within, content, &actor)
+        at.open().map_or_else(Save::refused, |writing| {
+            write_listed_file(writing, &within, content, &actor)
+        })
     })
     .await
 }
 
 pub async fn delete_file(
     Extension(actor): Extension<Actor>,
-    AxPath((area, within)): AxPath<(String, String)>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    AxPath((_, within)): AxPath<(String, String)>,
+    at: Addressed,
 ) -> Envelope<Save> {
-    let base = base_commit(&headers);
-    blocking_save(move || write_listed_file(&leader_data_dir(), q.name(), base, &area, &within, None, &actor)).await
+    blocking_save(move || {
+        at.open().map_or_else(Save::refused, |writing| {
+            write_listed_file(writing, &within, None, &actor)
+        })
+    })
+    .await
 }
 
-/// One commit setting `within`, a path in `area`'s bundle, to `content`, or removing it when that is `None`, if the
-/// branch's read lists it as a file that does not load.
-fn write_listed_file(
-    data_dir: &Path,
-    branch: &str,
-    base: Option<String>,
-    area: &str,
-    within: &str,
-    content: Option<Vec<u8>>,
-    author: &Actor,
-) -> Envelope<Save> {
-    let writing = match Writing::open_in(data_dir, branch, base.as_deref(), area) {
-        Ok(writing) => writing,
-        Err(e) => return Save::refused(e),
-    };
+/// One commit setting `within`, a path in `writing`'s bundle, to `content`, or removing it when that is `None`, if
+/// the branch's read lists it as a file that does not load.
+fn write_listed_file(writing: Writing, within: &str, content: Option<Vec<u8>>, author: &Actor) -> Envelope<Save> {
     let path = &format!("{}/{within}", writing.prefix);
-    if let Err(e) = refuse_unlisted(&mut writing.files(), within, path, branch) {
+    if let Err(e) = refuse_unlisted(&mut writing.files(), within, path, &writing.branch) {
         return Envelope::refused(e);
     }
     if content.is_none()
@@ -2658,28 +2635,12 @@ mod tests {
         })
         .unwrap();
         let stale = Some("0".repeat(40));
-        let response = write_listed_file(
-            &data,
-            "work",
-            stale,
-            "west",
-            within,
-            Some(fixed.clone().into_bytes()),
-            &Actor::system(),
-        );
+        let response = write_listed(&data, stale, "west", within, Some(fixed.clone().into_bytes()));
         assert!(
             !response.succeeded(),
             "a write against a commit the branch is not at is refused"
         );
-        let response = write_listed_file(
-            &data,
-            "work",
-            Some(commit),
-            "west",
-            within,
-            Some(fixed.into_bytes()),
-            &Actor::system(),
-        );
+        let response = write_listed(&data, Some(commit), "west", within, Some(fixed.into_bytes()));
         assert!(response.succeeded(), "saved: {response:?}");
 
         let still: Vec<String> = listed(&data, "west").into_iter().map(|(p, _)| p).collect();
@@ -2711,7 +2672,7 @@ mod tests {
                 .0
                 .contains(r#"["x"]"#)
         );
-        let response = write_listed_file(&data, "work", None, "west", within, None, &Actor::system());
+        let response = write_listed(&data, None, "west", within, None);
         assert!(response.succeeded(), "deleted: {response:?}");
         assert!(!listed(&data, "west").iter().any(|(p, _)| p == path));
         std::fs::remove_dir_all(&data).ok();
@@ -2722,7 +2683,7 @@ mod tests {
     #[test]
     fn a_listed_file_other_than_a_group_s_manifest_can_be_deleted() {
         let data = a_repo_with_files_that_do_not_load("unreadable-delete");
-        let response = write_listed_file(&data, "work", None, "shared", "system.json", None, &Actor::system());
+        let response = write_listed(&data, None, "shared", "system.json", None);
         assert!(response.succeeded(), "deleted: {response:?}");
         assert_eq!(
             listed(&data, "shared"),
@@ -2730,7 +2691,7 @@ mod tests {
             "shared/ has no manifest left to fail"
         );
 
-        let response = write_listed_file(&data, "work", None, "west", "system.json", None, &Actor::system());
+        let response = write_listed(&data, None, "west", "system.json", None);
         assert!(!response.succeeded(), "a group's manifest is what makes it a group");
         assert!(
             listed(&data, "west")
@@ -2752,7 +2713,7 @@ mod tests {
         ] {
             assert!(read_listed_file(&data, "work", area, within).is_err(), "{within} read");
             for content in [Some(b"[]".to_vec()), None] {
-                let response = write_listed_file(&data, "work", None, area, within, content, &Actor::system());
+                let response = write_listed(&data, None, area, within, content);
                 assert!(!response.succeeded(), "{within} written: {response:?}");
             }
         }
@@ -4099,6 +4060,19 @@ mod tests {
             ],
         );
         data
+    }
+
+    /// `write_listed_file` as the handlers call it: on `work` at `base`, in `area`.
+    fn write_listed(
+        data: &Path,
+        base: Option<String>,
+        area: &str,
+        within: &str,
+        content: Option<Vec<u8>>,
+    ) -> Envelope<Save> {
+        Writing::open_in(data, "work", base.as_deref(), area).map_or_else(Save::refused, |writing| {
+            write_listed_file(writing, within, content, &Actor::system())
+        })
     }
 
     fn save_work(data: &Path, touches: Touches, mutate: impl FnOnce(&mut FileConfig)) {

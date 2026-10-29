@@ -260,7 +260,7 @@
 
 <MapPanel kind={node.kind} group={node.group} title={node.name} mono {onclose}>
   {#snippet actions()}
-    <a class="icon" href={editHash} onclick={onedit} title="Edit {node.name}"><PencilIcon /></a>
+    <a class="btn icon" href={editHash} onclick={onedit} title="Edit {node.name}"><PencilIcon /></a>
   {/snippet}
   <div class="sub dim">
     {#if node.system}<span>{node.system}</span>{/if}
@@ -544,6 +544,7 @@
           <div class="pager">
             <button
               type="button"
+              class="icon"
               disabled={workers.page === 0}
               onclick={() => (page = workers.page - 1)}
               aria-label="Previous workers">&lsaquo;</button
@@ -551,6 +552,7 @@
             <span class="small">{workers.start}&ndash;{workers.end} of {workers.total}</span>
             <button
               type="button"
+              class="icon"
               disabled={workers.page === workers.pages - 1}
               onclick={() => (page = workers.page + 1)}
               aria-label="Next workers">&rsaquo;</button

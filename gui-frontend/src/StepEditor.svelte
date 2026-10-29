@@ -32,7 +32,7 @@
   import ChipPicker from './ChipPicker.svelte';
   import MoreIcon from './MoreIcon.svelte';
   import DisableIcon from './DisableIcon.svelte';
-  import RemoveButton from './RemoveButton.svelte';
+  import CrossButton from './CrossButton.svelte';
   import { glideTo } from './glide';
   import FieldRow from './FieldRow.svelte';
   import TypePicker from './TypePicker.svelte';
@@ -541,9 +541,7 @@
           onclick={() => addable.forEach((s) => addSuggestion(ps, s))}>Add all</button
         >
       {/if}
-      <button type="button" class="compact" aria-label="Done" title="Done" onclick={open.onClose}
-        >✕︎</button
-      >
+      <CrossButton label="Done" onclick={open.onClose} />
     </div>
     <InlineError message={p.error} />
     {#each shown as s (s.row.name)}
@@ -584,7 +582,7 @@
     {#if !readOnly && step.type !== 'if' && step.type !== 'comment'}
       <button
         type="button"
-        class="fold"
+        class="icon fold"
         class:active={step.disabled}
         onclick={() => (step.disabled = !step.disabled)}
         aria-label={step.disabled ? 'Enable this step' : 'Disable this step'}
@@ -593,6 +591,7 @@
     {/if}
     <button
       type="button"
+      class="icon"
       class:active={isPausedAt}
       onclick={togglePause}
       aria-label={isPausedAt ? 'Show the whole pipeline' : 'Pause the records after this step'}
@@ -600,13 +599,17 @@
       >{isPausedAt ? '●︎' : '◎︎'}</button
     >
     {#if !readOnly}
-      <button type="button" class="fold" onclick={moveUp} aria-label="Move up" title="Move up"
+      <button type="button" class="icon fold" onclick={moveUp} aria-label="Move up" title="Move up"
         >↑︎</button
       >
-      <button type="button" class="fold" onclick={moveDown} aria-label="Move down" title="Move down"
-        >↓︎</button
+      <button
+        type="button"
+        class="icon fold"
+        onclick={moveDown}
+        aria-label="Move down"
+        title="Move down">↓︎</button
       >
-      <span class="fold"><RemoveButton label="Delete" onclick={remove} /></span>
+      <span class="fold"><CrossButton removes label="Delete" onclick={remove} /></span>
       {@render more()}
     {/if}
   </div>
@@ -796,7 +799,11 @@
                     />
                   </Locked>
                   {#if !readOnly}
-                    <RemoveButton label="Remove assignment" onclick={() => removeAssignment(i)} />
+                    <CrossButton
+                      removes
+                      label="Remove assignment"
+                      onclick={() => removeAssignment(i)}
+                    />
                   {/if}
                 </div>
               {/each}
@@ -859,7 +866,11 @@
                     />
                   </Locked>
                   {#if !readOnly}
-                    <RemoveButton label="Remove pair" onclick={() => step.pairs.splice(i, 1)} />
+                    <CrossButton
+                      removes
+                      label="Remove pair"
+                      onclick={() => step.pairs.splice(i, 1)}
+                    />
                   {/if}
                 </div>
               {/each}
@@ -935,7 +946,8 @@
                         />
                       </Locked>
                       {#if !readOnly}
-                        <RemoveButton
+                        <CrossButton
+                          removes
                           label="Remove pattern"
                           onclick={() => grokKind.patterns.splice(i, 1)}
                         />
@@ -1175,7 +1187,8 @@
                             bind:value={grokKind.customPatterns[i].name}
                           />
                           {#if !readOnly}
-                            <RemoveButton
+                            <CrossButton
+                              removes
                               label="Remove pattern definition"
                               onclick={() => grokKind.customPatterns.splice(i, 1)}
                             />
@@ -1447,7 +1460,8 @@
                       bind:value={step.outputs[i].default}
                     />
                     {#if !readOnly}
-                      <RemoveButton
+                      <CrossButton
+                        removes
                         label="Remove output"
                         onclick={() => step.outputs.splice(i, 1)}
                       />
@@ -1751,25 +1765,14 @@
     }
   }
 
-  /* Bare glyphs, as `RemoveButton` beside them is. */
+  /* A fixed box, centered on its glyph: "◎︎" and "●︎" are not the same
+     width in the font, and a box sized to its glyph shifts the row when
+     this one toggles. */
   .controls button {
-    background: none;
-    border: 1px solid transparent;
-    border-radius: var(--radius);
-    color: var(--dim);
-    font-size: var(--text-note);
-    cursor: pointer;
-    /* A fixed box, centered on its glyph, rather than padding around
-       whatever width that glyph happens to render at: "◎︎" and "●︎" are
-       not the same width in the font, and sizing to content made the
-       button -- and everything after it in the row -- shift when this one
-       toggled. */
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
     width: var(--control-width);
     height: var(--control-height);
     padding: 0;
+    font-size: var(--text-note);
   }
 
   /* A drawn glyph centers on its box; a text glyph's ink sits lower in its line. */
@@ -1777,13 +1780,9 @@
     transform: translateY(0.1em);
   }
 
-  .controls button:hover,
-  .controls button.active {
-    color: var(--ink);
-  }
-
   /* Not the color alone: a backdrop marks it on. */
   .controls button.active {
+    color: var(--ink);
     background: color-mix(in srgb, var(--ink) 10%, transparent);
     font-weight: 600;
   }

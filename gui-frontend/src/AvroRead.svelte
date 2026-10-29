@@ -60,7 +60,7 @@
 
 <script lang="ts">
   import Field from './Field.svelte';
-  import RemoveButton from './RemoveButton.svelte';
+  import CrossButton from './CrossButton.svelte';
   import SchemaRegistryFields from './SchemaRegistryFields.svelte';
   import CaptureFlow from './CaptureFlow.svelte';
   import { FIELD_TYPES, type SecretDto, type SourceDto } from './api';
@@ -141,7 +141,11 @@
             <!-- A type the list has no name for, such as an array a fill declared, is still shown. -->
             {#if !FIELD_TYPES.includes(f.type)}<option value={f.type}>{f.type}</option>{/if}
           </select>
-          <RemoveButton label="remove field {i + 1}" onclick={() => value.fields?.splice(i, 1)} />
+          <CrossButton
+            removes
+            label="remove field {i + 1}"
+            onclick={() => value.fields?.splice(i, 1)}
+          />
         </div>
       {/each}
       <div class="actions">
