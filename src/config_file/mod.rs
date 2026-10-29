@@ -134,6 +134,12 @@ impl LoadedSystem {
             .iter()
             .map(|d| (d.id, d.kind.payload()))
             .collect();
+        compiled.id_fields = self
+            .topology
+            .destinations
+            .iter()
+            .filter_map(|d| d.kind.id_field().map(|f| (d.id, f.to_string())))
+            .collect();
         errors.extend(refused);
         if errors.is_empty() { Ok(compiled) } else { Err(errors) }
     }
