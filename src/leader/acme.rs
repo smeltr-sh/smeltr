@@ -385,24 +385,8 @@ pub fn list(store: &dyn Store, issued: &Issued) -> Result<tls::Entry, String> {
     })
 }
 
-/// Serves `entry`, the version `issued` was stored as, where `serve` says to: at once under the root in force, else
-/// as the rotation a certificate under another root begins. Records when to renew either way.
-#[allow(clippy::too_many_arguments)]
-pub fn take(
-    tls_dir: &Path,
-    settings: &Settings,
-    issued: &Issued,
-    entry: &tls::Entry,
-    serve: bool,
-    names: &[String],
-    required: &[String],
-    now_ms: i64,
-) -> Result<(), String> {
-    if serve && issued.rotates {
-        tls::begin_supplied_rotation(tls_dir, entry, names, required, now_ms)?;
-    } else if serve {
-        tls::serve(tls_dir, entry, names, required)?;
-    }
+/// Records that an attempt at `now_ms` issued `issued`, and when to renew it, whether or not it is served.
+pub fn succeeded(tls_dir: &Path, settings: &Settings, issued: &Issued, now_ms: i64) -> Result<(), String> {
     let life = issued.certificate.not_after_millis - issued.certificate.not_before_millis;
     write_state(
         tls_dir,
@@ -782,7 +766,12 @@ mod tests {
     /// Lists `issued` in `dir`'s list and serves it, as an order from the administrator does.
     fn took(dir: &Path, settings: &Settings, issued: &Issued, now_ms: i64) -> Result<(), String> {
         let entry = list(tls::tests::list_in(dir).as_ref(), issued)?;
-        take(dir, settings, issued, &entry, true, &names(), &[], now_ms)
+        if issued.rotates {
+            tls::begin_supplied_rotation(dir, &entry, &names(), &[], now_ms)?;
+        } else {
+            tls::serve(dir, &entry, &names(), &[])?;
+        }
+        succeeded(dir, settings, issued, now_ms)
     }
 
     /// A certificate authority of somebody else's, signing what it is asked to.
