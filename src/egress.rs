@@ -759,7 +759,9 @@ fn run(
         // Every pass, idle or not -- see `POLL_INTERVAL`.
         match destination.poll_completions() {
             Ok(done) => {
-                let mut failed = false;
+                // A batch that landed beside one that failed in the same pass does not clear the stall: one route that
+                // always fails would never show as stalled, nor its backoff grow.
+                let (mut failed, mut landed) = (false, false);
                 for c in done {
                     let Some(mut owed) = owner.remove(&c.batch) else {
                         continue;
@@ -773,7 +775,7 @@ fn run(
                         redo.make_contiguous().sort_by_key(|u| u.seq);
                         continue;
                     }
-                    clear_stall(metrics, id, name, &mut stalled, &mut backoff);
+                    landed = true;
                     if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
                         p.completed(
                             queue,
@@ -789,6 +791,8 @@ fn run(
                     cut_off = false;
                     queue.sleep_unless_closed(backoff);
                     backoff = (backoff * 2).min(RETRY_MAX);
+                } else if landed {
+                    clear_stall(metrics, id, name, &mut stalled, &mut backoff);
                 }
             }
             Err(e) => {
