@@ -722,19 +722,22 @@ fn deliver(d: &mut dyn Destination, batches: &[Vec<Sent>]) -> Result<(Vec<Vec<Re
 fn write(d: &mut dyn Destination, batches: &[Vec<Sent>], deadline: Duration) -> Result<Vec<Vec<Rejection>>, String> {
     let (mut refused, mut pending) = deliver(d, batches).map_err(|e| format!("not delivered: {e:?}"))?;
     let until = Instant::now() + deadline;
-    // A flush that times out leaves its rows in flight, as the next tick's flush finds them; one that fails a row
-    // has dropped the batches, and they never complete.
+    // A flush that times out leaves its rows in flight, as the next tick's flush finds them.
     loop {
         match d.flush() {
             Ok(()) => break,
-            Err(e) if e.message.contains("failed to deliver") || Instant::now() > until => {
-                return Err(format!("not flushed: {e:?}"));
-            }
+            Err(e) if Instant::now() > until => return Err(format!("not flushed: {e:?}")),
             Err(_) => {}
         }
     }
     while !pending.is_empty() {
         for done in d.poll_completions().map_err(|e| format!("not landed: {e:?}"))? {
+            if let Some(u) = done.undelivered {
+                return Err(format!(
+                    "rows {:?} of batch {} not landed: {}",
+                    u.rows, done.batch, u.error
+                ));
+            }
             refused[done.batch as usize].extend(done.rejections);
             pending.retain(|b| *b != done.batch);
         }
