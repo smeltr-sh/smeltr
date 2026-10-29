@@ -424,17 +424,8 @@ struct Dest<'a> {
     merge: bool,
 }
 
-/// A parse `Compiler::parse_call` has checked: how it reads its input, the time formats it reads with, and the fields
-/// it declares.
-struct Parser {
-    kind: ParserKind,
-    matcher: Option<std::sync::Arc<crate::format::grok_scan::Matcher>>,
-    formats: Vec<(String, String)>,
-    declared: Vec<DeclaredField>,
-}
-
-/// Where the compiler is emitting: the rows what it emits is for, as `Instr::guard`, and the function it belongs to,
-/// as `Instr::function`.
+/// Where the compiler is emitting: the rows what it emits runs on, as `Instr::guard`, and the function it belongs to,
+/// as `Instr::function`. A function that opens a region of its own takes the guard around it apart, as `outer`.
 #[derive(Clone, Copy)]
 struct Here {
     guard: Option<SlotId>,
@@ -2739,20 +2730,57 @@ impl Compiler<'_> {
         }
     }
 
-    /// Parse `in_slot` with `parser` into `dest`: each field the parser declares, a name under the target, is a write
-    /// of its name under `here`'s guard, and a dynamic parse lays every other key into the unclaimed fields of the
-    /// deepest object at its name. A parse that merges, into the record or by `Object.assign` into a name, leaves a
-    /// key the row lacks alone: what was bound there, or else the record's key, converted to the declared type. Any
-    /// other parse into a name replaces it, and the name is unbound before.
-    fn parse_into(&mut self, parser: Parser, in_slot: SlotId, dest: Dest, here: Here) {
-        let Parser {
-            kind,
-            matcher,
-            formats,
-            declared,
-        } = parser;
-        let Dest { target, merge, .. } = dest;
+    /// Parse `in_slot` as `call` says into `dest`, once the call is checked against its input and the target: each
+    /// field the parser declares, a name under the target, is a write of its name under `here`'s guard, and a dynamic
+    /// parse lays every other key into the unclaimed fields of the deepest object at its name. A parse that merges,
+    /// into the record or by `Object.assign` into a name, leaves a key the row lacks alone: what was bound there, or
+    /// else the record's key, converted to the declared type. Any other parse into a name replaces it, and the name is
+    /// unbound before.
+    fn parse_into(&mut self, call: &ParseCall, in_slot: SlotId, dest: Dest, here: Here) {
+        let Dest { target, ty, merge } = dest;
         let Here { guard, id } = here;
+        let (kind, matcher) = match call.kind(self.grok_patterns) {
+            Ok(k) => k,
+            Err(message) => return self.err(Some(id), message),
+        };
+        match self.syms.type_of(in_slot) {
+            DataType::Variant if kind == ParserKind::Variant => {}
+            // Bytes are not text until a `decode` says how to read them.
+            DataType::Str | DataType::Null => {}
+            DataType::Variant => {
+                return self.err(
+                    Some(id),
+                    format!("`{}` {}", describe_expr(call.input), variant_use(None)),
+                );
+            }
+            t => {
+                let mut message = format!(
+                    "`{}` parses text, and `{}` is {}",
+                    call.name,
+                    describe_expr(call.input),
+                    t.spell()
+                );
+                if *t == DataType::Bytes {
+                    message.push_str(", which `decode(value, encoding)` reads as text");
+                }
+                return self.err(Some(id), message);
+            }
+        }
+        let keys = matcher_keys(&kind, &matcher);
+        if let Some(k) = keys.iter().flatten().find(|k| tree::is_internal(tree::head(k))) {
+            return self.err(
+                Some(id),
+                format!("`{k}` is the engine's own field; give the capture or column another name"),
+            );
+        }
+        if self.writes_a_local(target, keys.iter().flatten(), id) {
+            return;
+        }
+        let formats = match call.formats() {
+            Ok(f) => f,
+            Err(message) => return self.err(Some(id), message),
+        };
+        let declared = self.parse_fields(target, &kind, keys, ty);
         // A name is a value or an object, so a parser declares one or the other.
         for d in &declared {
             if let Some(e) = declared.iter().find(|e| binding::is_under(&e.name, &d.name)) {
@@ -2772,7 +2800,7 @@ impl Compiler<'_> {
         // parse writes, and the object takes the keys under its name that no leaf takes.
         let (mut leaves, declared_objects) = match kind.is_dynamic() {
             true => lower_objects(&declared),
-            false => (declared.to_vec(), Vec::new()),
+            false => (declared, Vec::new()),
         };
         let fields = leaves.iter_mut().map(|d| (d.name.as_str(), &d.ty, &mut d.time_source));
         if let Err(message) = read_formats(target, formats, fields) {
@@ -2843,7 +2871,7 @@ impl Compiler<'_> {
                 guard,
                 outputs: fields,
                 call: Call::Parse {
-                    kind: kind.clone(),
+                    kind,
                     matcher,
                     objects: objects.clone(),
                 },
@@ -2912,7 +2940,7 @@ impl Compiler<'_> {
         }
     }
 
-    /// `try { body } catch (var: kinds) { catch } ... finally { finally }` under `guard`. The body is a region a
+    /// `try { body } catch (var: kinds) { catch } ... finally { finally }` under `here`'s guard. The body is a region a
     /// exception leaves (Language); each `catch` runs on the rows holding one of its `kinds`, every kind a `try`
     /// catches where none is named, after their exceptions are cleared, with `var.kind` the first such kind and
     /// `var.message` their text. A row's other exceptions go back on it after the `catch`, in a `try` of their own that
@@ -3024,8 +3052,8 @@ impl Compiler<'_> {
         copy
     }
 
-    /// `throw e` on the rows `guard` selects. The exceptions go back on the rows they were cleared from, so a loop opened
-    /// inside the `catch`, whose trips number their rows afresh, cannot hold one.
+    /// `throw e` on the rows `here`'s guard selects. The exceptions go back on the rows they were cleared from, so a
+    /// loop opened inside the `catch`, whose trips number their rows afresh, cannot hold one.
     fn throw(&mut self, e: &Expr, here: Here) {
         let Here { guard, id } = here;
         let ExprKind::Field(name) = &e.kind else {
@@ -3088,8 +3116,8 @@ impl Compiler<'_> {
         self.end(mask, id);
     }
 
-    /// `break`, `continue` or an inlined `return`: the rows `guard` selects leave every region out to the nearest
-    /// `to`.
+    /// `break`, `continue` or an inlined `return`: the rows `here`'s guard selects leave every region out to the
+    /// nearest `to`.
     fn leave(&mut self, to: Region, here: Here) {
         let Here { guard, id } = here;
         match guard {
@@ -3180,66 +3208,16 @@ impl Compiler<'_> {
     /// Write what the parse function `call` gives to `dest`, as `parse_into` does. Without a declared type, an object
     /// one, a field the target holds keeps its type, and a new one is open.
     fn parse_call(&mut self, call: &ParseCall, input: Option<SlotId>, dest: Dest, here: Here) {
-        let Here { id, .. } = here;
-        let Dest { target, ty, .. } = dest;
         let Some(in_slot) = input.or_else(|| self.input_slot(call.input, here)) else {
             return;
         };
         if call.name == "lookup" {
             return self.lookup_call(call, in_slot, dest, here);
         }
-        let (kind, matcher) = match call.kind(self.grok_patterns) {
-            Ok(k) => k,
-            Err(message) => return self.err(Some(id), message),
-        };
-        match self.syms.type_of(in_slot) {
-            DataType::Variant if kind == ParserKind::Variant => {}
-            // Bytes are not text until a `decode` says how to read them.
-            DataType::Str | DataType::Null => {}
-            DataType::Variant => {
-                return self.err(
-                    Some(id),
-                    format!("`{}` {}", describe_expr(call.input), variant_use(None)),
-                );
-            }
-            t => {
-                let mut message = format!(
-                    "`{}` parses text, and `{}` is {}",
-                    call.name,
-                    describe_expr(call.input),
-                    t.spell()
-                );
-                if *t == DataType::Bytes {
-                    message.push_str(", which `decode(value, encoding)` reads as text");
-                }
-                return self.err(Some(id), message);
-            }
-        }
-        let keys = matcher_keys(&kind, &matcher);
-        if let Some(k) = keys.iter().flatten().find(|k| tree::is_internal(tree::head(k))) {
-            return self.err(
-                Some(id),
-                format!("`{k}` is the engine's own field; give the capture or column another name"),
-            );
-        }
-        if self.writes_a_local(target, keys.iter().flatten(), id) {
-            return;
-        }
-        let formats = match call.formats() {
-            Ok(f) => f,
-            Err(message) => return self.err(Some(id), message),
-        };
-        let declared = self.parse_fields(target, &kind, keys, ty);
-        let parser = Parser {
-            kind,
-            matcher,
-            formats,
-            declared,
-        };
-        self.parse_into(parser, in_slot, dest, here);
+        self.parse_into(call, in_slot, dest, here);
     }
 
-    /// The slot holding `e`'s value: a field's own, or one `e` is computed into under `guard`.
+    /// The slot holding `e`'s value: a field's own, or one `e` is computed into under `here`'s guard.
     fn input_slot(&mut self, e: &Expr, here: Here) -> Option<SlotId> {
         let Here { guard, id } = here;
         let input = self.expr_ast(e, id)?;
@@ -3406,7 +3384,7 @@ impl Compiler<'_> {
     }
 
     /// Look `in_slot`, the key `input` names, up in a table as `spec` says, each output a write of its name under
-    /// `guard`.
+    /// `here`'s guard.
     fn lookup_into(&mut self, input: &str, in_slot: SlotId, spec: &LookupSpec, here: Here) {
         let Here { guard, id } = here;
         // A key is read, so a variant one needs its declaration. A `null` one belongs to every type, and
@@ -3621,7 +3599,7 @@ impl Compiler<'_> {
         }
     }
 
-    /// `slot`, a call's output, written for `name` under `guard`, over `prior` on the rows it holds null:
+    /// `slot`, a call's output, written for `name` under `here`'s guard, over `prior` on the rows it holds null:
     /// `slot ?? prior`. The call leaves a row the guard masks null, so over a prior the blend keeps the prior there
     /// already and the guard is not needed. `false` means an error was recorded.
     fn write_over(&mut self, name: &str, slot: SlotId, prior: Option<Ir>, here: Here) -> bool {
@@ -3758,9 +3736,9 @@ impl Compiler<'_> {
         self.bind_writes(field, write, false, Here { guard: None, ..here });
     }
 
-    /// Compile one statement list under `guard`. A name this list `let`s is a local from its `let` to the end of the
-    /// list: bound inside a scope that hides every `name.*` from outside and takes every `name.*` bound inside with it
-    /// when the block ends. A write to the name before its `let` is a write to the name outside.
+    /// Compile one statement list under `here`'s guard. A name this list `let`s is a local from its `let` to the end of
+    /// the list: bound inside a scope that hides every `name.*` from outside and takes every `name.*` bound inside with
+    /// it when the block ends. A write to the name before its `let` is a write to the name outside.
     fn code_block(&mut self, stmts: &[Stmt], here: Here) {
         let Here { id, .. } = here;
         // By the name the user wrote: two `let`s of one name are two locals once the inliner renames them.
@@ -3792,7 +3770,7 @@ impl Compiler<'_> {
         self.scope_marks.pop();
     }
 
-    /// Compile one statement under `guard`.
+    /// Compile one statement under `here`'s guard.
     fn statement(&mut self, stmt: &Stmt, here: Here) {
         let Here { guard, id } = here;
         // A caught exception is read, never written: `throw` gives back what its `catch` took.
@@ -4008,7 +3986,7 @@ impl Compiler<'_> {
         });
     }
 
-    /// Compile an `if` or a loop statement under `guard`.
+    /// Compile an `if` or a loop statement under `here`'s guard.
     fn construct_stmt(&mut self, stmt: &Stmt, here: Here) {
         let Here { guard, id } = here;
         match stmt {
@@ -4157,9 +4135,9 @@ impl Compiler<'_> {
         true
     }
 
-    /// The write `target = value` of an accumulator of the vectorized loop being compiled: its value into a slot of
-    /// its own, with the elements `guard` selects, where it ran. The value takes the accumulator's type as the general
-    /// loop's write does; one with no fold kernel refuses the fold.
+    /// The write `target = value` of an accumulator of the vectorized loop being compiled: its value into a slot of its
+    /// own, with the elements `here`'s guard selects, where it ran. The value takes the accumulator's type as the
+    /// general loop's write does; one with no fold kernel refuses the fold.
     fn fold_write(&mut self, target: &str, value: &Expr, here: Here) {
         let Here { guard, id } = here;
         let (op, e) = fold_shape(target, value).expect("`independent` shaped every accumulator's write");
@@ -4336,7 +4314,7 @@ impl Compiler<'_> {
         }
     }
 
-    /// `if (cond) { then } else { else_ }` under `guard`, `what` naming the condition where it is not a Bool. A
+    /// `if (cond) { then } else { else_ }` under `here`'s guard, `what` naming the condition where it is not a Bool. A
     /// condition with no branch still runs, for what it notes.
     fn if_stmt(&mut self, cond: &Expr, arms: [&[Stmt]; 2], what: &str, here: Here) {
         let Here { guard, id } = here;
@@ -4436,8 +4414,8 @@ impl Compiler<'_> {
         }
     }
 
-    /// Compile the step `kind` as the code it lowers to: its own statements under `guard`, its filter and the guard
-    /// around it, and what comes after it under `outer`, the guard around it alone.
+    /// Compile the step `kind` as the code it lowers to: its own statements under `here`'s guard, its filter and the
+    /// guard around it, and what comes after it under `outer`, the guard around it alone.
     fn function(&mut self, kind: &FunctionKind, here: Here, outer: Option<SlotId>) {
         let Here { id, .. } = here;
         let kind = match lower::names(kind) {
@@ -4525,7 +4503,7 @@ impl Compiler<'_> {
         });
     }
 
-    /// Compile the code `stmts` under `guard`, each function it calls expanded.
+    /// Compile the code `stmts` under `here`'s guard, each function it calls expanded.
     fn code(&mut self, stmts: &[Stmt], here: Here) {
         let Here { id, .. } = here;
         match crate::expr::inline::expand(stmts) {
