@@ -223,7 +223,7 @@ impl Session {
 
     /// Where this session would be shown rows a block keeps: the source it taps, or the destination it captures.
     fn held_at(&self) -> Option<HeldAt> {
-        match (self.tapped(), &self.invitation.destination) {
+        match (self.invitation.tapped(), &self.invitation.destination) {
             (Some(source), _) => Some(HeldAt::Source(source.id.clone())),
             (None, Some(destination)) => Some(HeldAt::Destination(destination.clone())),
             (None, None) => None,
@@ -243,20 +243,9 @@ impl Session {
         true
     }
 
-    /// The source this session captures, when it captures one.
-    fn source(&self) -> Option<&crate::config_file::SourceDto> {
-        self.invitation.source.as_ref()
-    }
-
-    /// The source a deployment reading it serves this session from, by tapping its records. None for a session that
-    /// reads its source itself wherever it is deployed.
-    fn tapped(&self) -> Option<&crate::config_file::SourceDto> {
-        self.source().filter(|_| !self.invitation.reads_source_itself())
-    }
-
     /// Whether this session takes the records a deployment reads from the source named `source`.
     fn reads(&self, source: &str) -> bool {
-        self.tapped().is_some_and(|s| s.id == source)
+        self.invitation.tapped().is_some_and(|s| s.id == source)
     }
 
     /// Whether this session captures the destination named `destination`.
@@ -471,7 +460,13 @@ impl Captures {
     /// else is going to produce it, and the session it belongs to may expire before a replacement could.
     pub fn set_deployed(&self, deployed: &Arc<crate::metrics::Subjects>) {
         let mut sessions = self.sessions.lock().unwrap();
-        sessions.retain(|_, s| !s.open() || !s.tapped().is_some_and(|source| deployed.sources.contains(&source.id)));
+        sessions.retain(|_, s| {
+            !s.open()
+                || !s
+                    .invitation
+                    .tapped()
+                    .is_some_and(|source| deployed.sources.contains(&source.id))
+        });
         self.recount(&sessions);
         *self.deployed.lock().unwrap() = deployed.clone();
     }
@@ -631,8 +626,7 @@ impl Captures {
     /// deployment reading its source serves it, as one does any session that does not read its source itself.
     pub fn served(&self, admitted: &Admitted) -> bool {
         let invitation = &admitted.invitation;
-        (invitation.source.as_ref())
-            .is_none_or(|source| !invitation.reads_source_itself() && self.is_deployed(&source.id))
+        invitation.source.is_none() || invitation.tapped().is_some_and(|source| self.is_deployed(&source.id))
     }
 
     /// Whether any session is watching `source`, by the name the author gave it. Checked before a batch's text is

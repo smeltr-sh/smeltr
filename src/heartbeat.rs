@@ -889,6 +889,12 @@ impl CaptureInvitation {
     pub fn reads_source_itself(&self) -> bool {
         self.start.is_some() || self.source.as_ref().is_some_and(|s| s.kind.runs_its_own_query())
     }
+
+    /// The source a deployment reading it serves this capture from, by tapping its records. None for a capture that
+    /// names no source, or that reads its source itself wherever it is deployed.
+    pub fn tapped(&self) -> Option<&crate::config_file::SourceDto> {
+        self.source.as_ref().filter(|_| !self.reads_source_itself())
+    }
 }
 
 /// One entry of [`HeartbeatResponse::captures`] as this build reads it. An invitation this build cannot read -- a
