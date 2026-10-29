@@ -285,7 +285,8 @@ impl Pki {
 
 // -- delivering ---------------------------------------------------------------------------------------------------
 
-/// Hands `batches` to `d` one after another, flushes, waits for every one, and answers what each refused, by batch.
+/// Hands `batches` to `d` one after another, flushes, waits for every one, and answers what each refused, by batch. A
+/// batch some of whose rows did not land is an error.
 pub fn write(
     d: &mut dyn Destination,
     batches: &[Vec<OwnedRecord>],
@@ -306,6 +307,9 @@ pub fn write(
     let until = Instant::now() + deadline;
     while !pending.is_empty() {
         for done in d.poll_completions().map_err(|e| format!("not landed: {e}"))? {
+            if let Some(u) = done.undelivered {
+                return Err(format!("not landed: {}", u.error));
+            }
             refused[done.batch as usize].extend(done.rejections);
             pending.retain(|b| *b != done.batch);
         }

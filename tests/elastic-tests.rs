@@ -661,7 +661,7 @@ fn a_document_id_is_not_a_partition_key() {
 }
 
 #[test]
-fn completions_a_flush_collected_survive_a_failed_poll() {
+fn a_failed_batch_comes_back_beside_the_batch_a_flush_collected() {
     let (sender, _) = scripted(&[Ok(r#"{"errors":false}"#), Err("cluster said no")]);
     let mut d = HttpDestination::new(scripted(&[]).0, Elastic::new("logs")).with_senders(vec![sender], 1);
     let row = [OwnedRecord::from(&OutgoingRecord::new(br#"{"a":1}"#))];
@@ -669,9 +669,13 @@ fn completions_a_flush_collected_survive_a_failed_poll() {
     d.flush().unwrap();
     d.deliver(2, Cow::Borrowed(&row)).unwrap();
     std::thread::sleep(Duration::from_millis(200));
-    let done = d.poll_completions().expect("the landed batch comes first");
-    assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![1]);
-    d.poll_completions().expect_err("then the second batch's failure");
+    let mut done = d.poll_completions().expect("the landed batch comes first");
+    done.extend(d.poll_completions().expect("and the failed one beside it"));
+    let got: Vec<_> = done
+        .iter()
+        .map(|c| (c.batch, c.undelivered.as_ref().map(|u| u.rows.clone())))
+        .collect();
+    assert_eq!(got, vec![(1, None), (2, Some(vec![0]))]);
 }
 
 /// The answer lists a status per document unless the request filters it, and a bulk of many small documents would

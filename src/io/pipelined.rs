@@ -18,7 +18,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::io::{BatchCompletion, BatchId, IoError, Rejection};
+use crate::io::{BatchCompletion, BatchId, IoError, Rejection, Undelivered};
 
 /// What one delivery attempt produced.
 pub struct Delivered {
@@ -27,6 +27,9 @@ pub struct Delivered {
     /// The destination asked to be sent less (429, 503, a per-item `es_rejected_execution_exception`). Reported rather
     /// than inferred from timing: a slow cluster and a throttled one call for opposite responses.
     pub throttled: bool,
+    /// The batch's rows the job did not land, so only they are sent again. The refusals seen before the failure are in
+    /// `rejections`, so none is lost.
+    pub undelivered: Option<Undelivered>,
 }
 
 /// One blocking delivery. Implementors do a single round trip and say what the destination refused; retrying a
@@ -35,7 +38,7 @@ pub trait Sender: Send + 'static {
     /// Everything one batch needs to be delivered, owned -- it crosses a thread boundary.
     type Job: Send + 'static;
 
-    fn send_one(&mut self, job: Self::Job) -> Result<Delivered, IoError>;
+    fn send_one(&mut self, job: Self::Job) -> Delivered;
 }
 
 /// How long a sender waits for a job before handing its free pages back, so what the last request freed has had its
@@ -91,10 +94,10 @@ impl<J> Jobs<J> {
 /// Runs several [`Sender`]s concurrently, keyed by batch.
 pub struct Pool<S: Sender> {
     jobs: Arc<Jobs<S::Job>>,
-    done: Receiver<(BatchId, Result<Delivered, IoError>)>,
+    done: Receiver<(BatchId, Delivered)>,
     /// What a sender spawned later reports on. Dropped once every sender is spawned, so the channel closes when they
     /// have all stopped.
-    done_tx: Option<SyncSender<(BatchId, Result<Delivered, IoError>)>>,
+    done_tx: Option<SyncSender<(BatchId, Delivered)>>,
     handles: Vec<JoinHandle<()>>,
     /// Senders not yet given a thread: none has been busy enough to need them.
     parked: Vec<S>,
@@ -109,8 +112,6 @@ pub struct Pool<S: Sender> {
     batches: HashMap<BatchId, Answers>,
     /// Completions collected while `submit` was waiting for room, held for the next `poll`.
     stashed: Vec<BatchCompletion>,
-    /// A failure `poll` took off the channel beside completions it returned first, held for the next call.
-    failed: Option<IoError>,
 }
 
 impl<S: Sender> Pool<S> {
@@ -139,7 +140,6 @@ impl<S: Sender> Pool<S> {
             outstanding: 0,
             batches: HashMap::new(),
             stashed: Vec::new(),
-            failed: None,
         };
         for _ in 0..start.max(1) {
             pool.spawn_one();
@@ -191,19 +191,16 @@ impl<S: Sender> Pool<S> {
         match self.done.recv() {
             Ok((batch, outcome)) => {
                 self.answered(batch, outcome);
-                self.failed.take().map_or(Ok(()), Err)
+                Ok(())
             }
             Err(_) => Err(IoError::transient("every destination sender thread has stopped")),
         }
     }
 
     /// Hand `jobs` over as `batch`, each to a sender of its own. The batch completes once, when the last of them is
-    /// answered: with every refusal they report, or with the first failure. Blocks while every sender is busy and no
-    /// more may be spawned. `jobs` is never empty: no answer would complete a batch of none.
+    /// answered: with every refusal they report, and the rows of any that failed as undelivered. Blocks while every
+    /// sender is busy and no more may be spawned. `jobs` is never empty: no answer would complete a batch of none.
     pub fn submit(&mut self, batch: BatchId, jobs: Vec<S::Job>) -> Result<(), IoError> {
-        if let Some(e) = self.failed.take() {
-            return Err(e);
-        }
         debug_assert!(!jobs.is_empty(), "a batch of no requests is never answered");
         // Counted before any is sent: an answer that comes while a later one waits for a sender must not complete it.
         let count = jobs.len();
@@ -235,62 +232,44 @@ impl<S: Sender> Pool<S> {
         Ok(())
     }
 
-    /// One request of `batch` answered. Its batch completes, into `stashed` or `failed`, once none is left open.
-    fn answered(&mut self, batch: BatchId, outcome: Result<Delivered, IoError>) {
+    /// One request of `batch` answered. Its batch completes into `stashed` once none is left open.
+    fn answered(&mut self, batch: BatchId, outcome: Delivered) {
         self.outstanding -= 1;
         let answers = self.batches.entry(batch).or_default();
         answers.open = answers.open.saturating_sub(1);
-        match outcome {
-            Ok(d) => {
-                answers.rejections.extend(d.rejections);
-                answers.throttled |= d.throttled;
-            }
-            Err(e) => {
-                answers.failed.get_or_insert(e);
+        answers.rejections.extend(outcome.rejections);
+        answers.throttled |= outcome.throttled;
+        if let Some(more) = outcome.undelivered {
+            match &mut answers.undelivered {
+                Some(u) => u.rows.extend(more.rows),
+                None => answers.undelivered = Some(more),
             }
         }
         if answers.open > 0 {
             return;
         }
         let answers = self.batches.remove(&batch).unwrap_or_default();
-        match answers.failed {
-            // Keep reading: a batch that landed behind the failure is reported now too.
-            Some(e) => {
-                self.failed.get_or_insert(e);
-            }
-            None => self.stashed.push(BatchCompletion {
-                batch,
-                rejections: answers.rejections,
-                throttled: answers.throttled,
-            }),
-        }
+        self.stashed.push(BatchCompletion {
+            batch,
+            rejections: answers.rejections,
+            throttled: answers.throttled,
+            undelivered: answers.undelivered,
+        });
     }
 
-    /// Completions that have arrived, without waiting. A failure is returned as `Err` once the completions that arrived
-    /// before it have been returned: a batch that landed is reported whatever became of the others.
+    /// Completions that have arrived, without waiting. `Err` only once every sender has stopped: a failed request is
+    /// its batch's completion, naming what did not land.
     pub fn poll(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
-        if self.stashed.is_empty()
-            && let Some(e) = self.failed.take()
-        {
-            return Err(e);
-        }
         let open = self.take_arrived();
         let out = std::mem::take(&mut self.stashed);
         if !open {
             self.stashed = out;
             return Err(IoError::transient("every destination sender thread has stopped"));
         }
-        match self.failed.take() {
-            Some(e) if out.is_empty() => Err(e),
-            held => {
-                self.failed = held;
-                Ok(out)
-            }
-        }
+        Ok(out)
     }
 
-    /// Take every answer that has arrived, without waiting: completions into `stashed`, the first failure into
-    /// `failed`. False once every sender has stopped.
+    /// Take every answer that has arrived, without waiting, into `stashed`. False once every sender has stopped.
     fn take_arrived(&mut self) -> bool {
         loop {
             match self.done.try_recv() {
@@ -301,24 +280,16 @@ impl<S: Sender> Pool<S> {
         }
     }
 
-    /// Wait for everything outstanding: the barrier, for `Destination::flush`.
-    pub fn drain(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
+    /// Wait for everything outstanding: the barrier, for `Destination::flush`. The completions are held for the next
+    /// `poll`.
+    pub fn drain(&mut self) -> Result<(), IoError> {
         while self.outstanding > 0 {
             match self.done.recv() {
-                // Keep draining past a failure: results left in the channel would be reported against the next batch.
                 Ok((batch, outcome)) => self.answered(batch, outcome),
                 Err(_) => return Err(IoError::transient("every destination sender thread has stopped")),
             }
         }
-        let out = std::mem::take(&mut self.stashed);
-        match self.failed.take() {
-            // Kept for the next `poll`.
-            Some(e) => {
-                self.stashed = out;
-                Err(e)
-            }
-            None => Ok(out),
-        }
+        Ok(())
     }
 
     pub fn outstanding(&self) -> usize {
@@ -332,7 +303,8 @@ struct Answers {
     open: usize,
     rejections: Vec<Rejection>,
     throttled: bool,
-    failed: Option<IoError>,
+    /// Every failed request's rows, under the first one's error.
+    undelivered: Option<Undelivered>,
 }
 
 impl<S: Sender> Drop for Pool<S> {
