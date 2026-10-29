@@ -2383,35 +2383,39 @@ mod tests {
         let levels = ["warn".to_string(), "error".to_string()];
         let mut rows = store.latest_log_by_site(&levels, 100, 1_000).unwrap();
         rows.sort_by(|a, b| (&a.worker_id, &a.site).cmp(&(&b.worker_id, &b.site)));
-        #[allow(clippy::type_complexity)]
-        let read: Vec<(&str, &str, Option<&str>, &str, &str, i64, i64)> = rows
-            .iter()
-            .map(|r| {
-                (
-                    r.worker_id.as_str(),
-                    r.site.as_str(),
-                    r.group_id.as_deref(),
-                    r.level.as_str(),
-                    r.message.as_str(),
-                    r.at_ms,
-                    r.first_ms,
-                )
-            })
-            .collect();
         assert_eq!(
-            read,
+            rows,
             vec![
-                ("w-1", "worker.fetch_failed", Some("east"), "error", "latest", 300, 100),
-                (
-                    "w-1",
-                    "worker.heartbeat_failed",
-                    Some("west"),
-                    "warn",
-                    "other site",
-                    200,
-                    200
-                ),
-                ("w-2", "worker.fetch_failed", None, "warn", "another worker", 250, 250),
+                LoggedSite {
+                    worker_id: "w-1".to_string(),
+                    site: "worker.fetch_failed".to_string(),
+                    group_id: Some("east".to_string()),
+                    level: "error".to_string(),
+                    message: "latest".to_string(),
+                    fields_json: "[]".to_string(),
+                    at_ms: 300,
+                    first_ms: 100,
+                },
+                LoggedSite {
+                    worker_id: "w-1".to_string(),
+                    site: "worker.heartbeat_failed".to_string(),
+                    group_id: Some("west".to_string()),
+                    level: "warn".to_string(),
+                    message: "other site".to_string(),
+                    fields_json: "[]".to_string(),
+                    at_ms: 200,
+                    first_ms: 200,
+                },
+                LoggedSite {
+                    worker_id: "w-2".to_string(),
+                    site: "worker.fetch_failed".to_string(),
+                    group_id: None,
+                    level: "warn".to_string(),
+                    message: "another worker".to_string(),
+                    fields_json: "[]".to_string(),
+                    at_ms: 250,
+                    first_ms: 250,
+                },
             ]
         );
         assert!(store.latest_log_by_site(&[], 0, 1_000).unwrap().is_empty());
