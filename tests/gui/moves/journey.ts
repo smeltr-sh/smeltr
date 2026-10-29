@@ -1355,7 +1355,7 @@ const declareFromProduction: Move = {
     await goto(page, leader, '#/build/pipelines');
     await page.getByRole('link', { name: pipeline, exact: true }).click();
     // The editor opens on the steps it opened last, so the Parser may be open already.
-    const parser = page.getByRole('button', { name: /as JSON/ });
+    const parser = page.getByRole('button', { name: /^Parser .*as JSON/ });
     // At its start: on a narrow page the step's controls, arriving on hover, cover the head's middle.
     if ((await parser.getAttribute('aria-expanded')) !== 'true')
       await parser.click({ position: { x: 8, y: 8 } });
@@ -1412,7 +1412,8 @@ const writeInto: Move = {
     const pipeline = rng.pick(parsing(world));
     await goto(page, leader, '#/build/pipelines');
     await page.getByRole('link', { name: pipeline, exact: true }).click();
-    const parser = page.getByRole('button', { name: /as JSON/ });
+    // The step's head: once records show, each field's step glyph names the step too.
+    const parser = page.getByRole('button', { name: /^Parser .*as JSON/ });
     if ((await parser.getAttribute('aria-expanded')) !== 'true')
       await parser.click({ position: { x: 8, y: 8 } });
     const box = page.getByRole('textbox', { name: 'write into' });
