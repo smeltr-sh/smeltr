@@ -1141,6 +1141,12 @@ impl Transform {
                 self.note_held(dest, held);
             }
             for c in self.destinations[i].destination.poll_completions()? {
+                // Egress sends undelivered rows again and reports the batch once they land; this is never handed them.
+                debug_assert!(
+                    c.undelivered.is_none(),
+                    "batch {} reached the runtime with rows undelivered",
+                    c.batch
+                );
                 // A completion names only its batch, so the lane comes from what this thread dispatched.
                 let owed = self.owed.get(&c.batch).filter(|o| o.outstanding.contains_key(&dest));
                 let Some(lane) = owed.map(|o| o.lane) else {
