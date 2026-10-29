@@ -4,6 +4,7 @@
 -->
 <script lang="ts">
   import Field from './Field.svelte';
+  import Toggle from './Toggle.svelte';
   import type { RoleDto } from './api';
 
   let {
@@ -17,7 +18,7 @@
   }
 </script>
 
-<label class="check"><input type="checkbox" bind:checked={administrator} /> Administrator</label>
+<label class="check"><Toggle bind:checked={administrator} /> Administrator</label>
 {#if !administrator}
   <Field label="Roles" group>
     {#snippet help()}It holds what these roles give.{/snippet}

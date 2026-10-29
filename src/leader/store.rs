@@ -256,8 +256,8 @@ pub struct UserRecord {
     pub auth_source: AuthSource,
     pub display_name: String,
     pub enabled: bool,
-    /// A local account always is. An OIDC account never is by this flag: what it holds comes from its roles
-    /// (`access::Access::of`).
+    /// A local account always is, and a key account is when it is made one. An OIDC account never is by this flag:
+    /// what it holds comes from its roles (`access::Access::of`).
     pub administrator: bool,
     /// Bumped by a password change, a reset and an explicit revocation. A session quoting an older one is refused,
     /// which is what makes those three take effect on the next request rather than at the next sweep.

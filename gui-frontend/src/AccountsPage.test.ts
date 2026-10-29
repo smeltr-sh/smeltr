@@ -207,6 +207,36 @@ describe('the Accounts tab', () => {
     expect(target.querySelector('table[aria-label="Keys"]')?.textContent).toContain('nightly');
   });
 
+  it('stops at a refused change of access, the form still open', async () => {
+    await accountsTab();
+    const answer = globalThis.fetch;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (init?.method !== 'PATCH') return answer(url, init);
+        calls.push({ method: 'PATCH', url, body: JSON.parse(String(init.body)) });
+        return new Response(JSON.stringify({ ok: false, errors: [{ message: 'refused' }] }), {
+          status: 409,
+          headers: { 'content-type': 'application/json' },
+        });
+      }),
+    );
+    await manage('exporter');
+    button('Change access')!.click();
+    flushSync();
+    // A role dropped and the administrator switched on: two changes, sent one at a time.
+    form().querySelector<HTMLInputElement>('.roles input')!.click();
+    form().querySelector<HTMLInputElement>('input[role="switch"]')!.click();
+    flushSync();
+    button('Save access')!.click();
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await settle();
+    expect(calls).toEqual([
+      { method: 'PATCH', url: '/api/accounts/u-exp', body: { administrator: true } },
+    ]);
+    expect(button('Save access')).toBeDefined();
+  });
+
   it('adds an account that signs in with a key', async () => {
     await accountsTab();
     button('+ Add account')!.click();

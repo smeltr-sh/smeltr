@@ -50,32 +50,35 @@
     draftLabel = '';
   }
 
-  /** One change, answered with the account as it now stands. */
-  async function change(what: AccountChange, done: string) {
-    if (busy) return;
+  /** One change, answered with the account as it now stands. Whether it was made. */
+  async function change(what: AccountChange, done: string): Promise<boolean> {
+    if (busy) return false;
     busy = true;
     try {
       const result = await changeAccount(account.id, what);
-      if (refused(result)) return;
+      if (refused(result)) return false;
       form = null;
       await onchanged(done);
+      return true;
     } catch (e) {
       reported(e);
     } finally {
       busy = false;
     }
+    return false;
   }
 
   async function saveRoles(event: SubmitEvent) {
     event.preventDefault();
-    // One field per request: the administrator flag first, then the roles, each only when it changed.
+    // One field per request: the administrator flag first, then the roles, each only when it changed. A
+    // refused one stops there, and the form stays open.
     if (draftAdministrator !== account.administrator) {
-      await change({ administrator: draftAdministrator }, 'access updated');
+      if (!(await change({ administrator: draftAdministrator }, 'access updated'))) return;
     }
     const same =
       draftRoles.length === account.roles.length &&
       draftRoles.every((r) => account.roles.includes(r));
-    if (!same) await change({ roles: draftRoles }, 'access updated');
+    if (!same && !(await change({ roles: draftRoles }, 'access updated'))) return;
     form = null;
   }
 

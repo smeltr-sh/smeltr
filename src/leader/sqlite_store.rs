@@ -346,8 +346,6 @@ pub(crate) const STEPS: &[&str] = &[
          auth_source   TEXT NOT NULL CHECK (auth_source = 'key'),
          -- The roles an administrator gave it, by name, as a JSON array: what an OIDC account's groups are to it.
          roles         TEXT NOT NULL DEFAULT '[]',
-         -- Its own, since the account's says whether a local account is one, and a key account is never local.
-         administrator INTEGER NOT NULL DEFAULT 0 CHECK (administrator IN (0, 1)),
          FOREIGN KEY (user_id, auth_source) REFERENCES users (id, auth_source)
      );
      -- A revoked key is marked rather than removed, so it stays refused, and what it did stays answerable.
@@ -1883,12 +1881,12 @@ impl Store for SqliteStore {
         }
         tx.execute(
             "INSERT INTO users (id, auth_source, display_name, enabled, administrator, generation, created_at, updated_at)
-             VALUES (?1, 'key', ?2, 1, 0, 1, ?3, ?3)",
-            rusqlite::params![account.id, account.display_name, event.at],
+             VALUES (?1, 'key', ?2, 1, ?3, 1, ?4, ?4)",
+            rusqlite::params![account.id, account.display_name, account.administrator as i64, event.at],
         )?;
         tx.execute(
-            "INSERT INTO key_accounts (user_id, auth_source, roles, administrator) VALUES (?1, 'key', ?2, ?3)",
-            rusqlite::params![account.id, roles, account.administrator as i64],
+            "INSERT INTO key_accounts (user_id, auth_source, roles) VALUES (?1, 'key', ?2)",
+            (account.id, roles),
         )?;
         insert_event(&tx, event)?;
         tx.commit()?;
@@ -1931,7 +1929,7 @@ impl Store for SqliteStore {
             }
             KeyAccountChange::Administrator(administrator) => {
                 tx.execute(
-                    "UPDATE key_accounts SET administrator = ?2 WHERE user_id = ?1",
+                    "UPDATE users SET administrator = ?2 WHERE id = ?1",
                     rusqlite::params![id, *administrator as i64],
                 )?;
             }
@@ -1982,7 +1980,7 @@ impl Store for SqliteStore {
         // Read in the transaction, so a disable landing beside it revokes this key too or refuses it.
         let enabled: Option<bool> = tx
             .query_row(
-                "SELECT u.enabled != 0 FROM users u JOIN key_accounts i ON i.user_id = u.id WHERE u.id = ?1",
+                "SELECT u.enabled != 0 FROM users u JOIN key_accounts k ON k.user_id = u.id WHERE u.id = ?1",
                 (id,),
                 |row| row.get(0),
             )
@@ -2384,7 +2382,7 @@ fn key_account_exists(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<bool, 
 /// Whether a key account other than `id` is called `name`, disabled or not.
 fn key_account_name_taken(tx: &rusqlite::Transaction<'_>, name: &str, id: &str) -> Result<bool, StoreError> {
     let n: i64 = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM users u JOIN key_accounts i ON i.user_id = u.id
+        "SELECT EXISTS (SELECT 1 FROM users u JOIN key_accounts k ON k.user_id = u.id
                          WHERE u.display_name = ?1 AND u.id <> ?2)",
         (name, id),
         |row| row.get(0),
@@ -2399,8 +2397,8 @@ fn encode_roles(roles: &[String]) -> Result<String, StoreError> {
 /// Every key account, or only `id`, each with its keys in force.
 fn read_key_accounts(conn: &Connection, id: Option<&str>) -> Result<Vec<KeyAccountRecord>, StoreError> {
     let mut stmt = conn.prepare(
-        "SELECT u.id, u.display_name, u.enabled, i.roles, i.administrator, u.created_at, u.updated_at
-           FROM users u JOIN key_accounts i ON i.user_id = u.id
+        "SELECT u.id, u.display_name, u.enabled, k.roles, u.administrator, u.created_at, u.updated_at
+           FROM users u JOIN key_accounts k ON k.user_id = u.id
           WHERE ?1 IS NULL OR u.id = ?1
           ORDER BY u.created_at, u.id",
     )?;
@@ -4832,8 +4830,8 @@ mod tests {
         assert_eq!(account.roles, vec!["writers".to_string()]);
         assert!(account.administrator);
         assert!(
-            !s.get_user("i_1").unwrap().unwrap().administrator,
-            "the account's own flag is a local one's"
+            s.get_user("i_1").unwrap().unwrap().administrator,
+            "a key account's flag is not the account's own"
         );
         let actions: Vec<_> = s
             .list_security_events(10)

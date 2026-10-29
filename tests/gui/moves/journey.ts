@@ -1939,7 +1939,7 @@ const addKeyAccount: Move = {
     const dialog = page.getByRole('dialog', { name: 'new account' });
     await dialog.getByRole('button', { name: 'Key' }).click();
     await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill(name);
-    if (administrator) await dialog.getByRole('checkbox', { name: 'Administrator' }).check();
+    if (administrator) await dialog.getByRole('switch', { name: 'Administrator' }).check();
     await dialog.getByRole('button', { name: 'Add' }).click();
     await expect(dialog).toHaveCount(0);
 
