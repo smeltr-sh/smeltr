@@ -224,7 +224,7 @@ pub async fn require_principal(
             return refuse(StatusCode::BAD_REQUEST, "send a key or a session, not both");
         }
         if person_only(&path) {
-            return refuse(StatusCode::FORBIDDEN, "a key cannot be used here -- sign in instead");
+            return refuse(StatusCode::FORBIDDEN, "a key cannot be used here: sign in instead");
         }
         return match integration_of(&auth, key).await {
             Ok((actor, access)) => admit(req, next, &method, &path, actor, access).await,

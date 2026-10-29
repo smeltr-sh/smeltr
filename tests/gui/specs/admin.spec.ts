@@ -573,7 +573,7 @@ test('an integration made under Accounts calls with its key until the key is rev
 
   await admin.getByRole('button', { name: '+ New key' }).click();
   await admin.getByRole('textbox', { name: /^Label\b/ }).fill('ci');
-  await admin.getByRole('button', { name: 'Make key' }).click();
+  await admin.getByRole('button', { name: 'Create key' }).click();
   const handover = admin.locator('section.handover');
   await expect(handover.getByText('Copy the key below now: it is shown only once.')).toBeVisible();
   const key = (await handover.locator('.secret code').innerText()).trim();

@@ -1948,7 +1948,7 @@ const addIntegration: Move = {
     // The new integration's row opens on its own, and a key is made there.
     await page.getByRole('button', { name: '+ New key' }).click();
     await page.getByRole('textbox', { name: /^Label\b/ }).fill('journey');
-    await page.getByRole('button', { name: 'Make key' }).click();
+    await page.getByRole('button', { name: 'Create key' }).click();
     const handover = page.locator('section.handover').filter({ hasText: name });
     await expect(handover.getByText('it is shown only once')).toBeVisible();
     const key = (await handover.locator('.secret code').innerText()).trim();

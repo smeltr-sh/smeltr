@@ -139,7 +139,7 @@
       !enabled &&
       !(await ask({
         title: 'disable integration',
-        body: `Revoke every key ${row.name} holds and stop it calling. Enabling it again brings no key back.`,
+        body: `Disabling "${row.name}" revokes every key it holds and stops it calling. Enabling it again does not bring them back.`,
         action: 'Disable integration',
         danger: true,
       }))
@@ -161,9 +161,10 @@
     try {
       const result = await createIntegrationKey(row.id, draftLabel);
       if (refused(result)) return;
-      handovers = [...handovers, { ...result, integration: row.name }];
       form = null;
+      // Read again first, so the key is shown beside the row that lists it.
       await refresh();
+      handovers = [...handovers, { ...result, integration: row.name }];
     } catch (e) {
       reported(e);
     } finally {
@@ -175,7 +176,7 @@
     if (busy) return;
     const ok = await ask({
       title: 'revoke key',
-      body: `Revoke ${key.label ? `the key ${key.label}` : 'this key'} of ${row.name}. A script calling with it is refused from its next request.`,
+      body: `${key.label ? `The key "${key.label}"` : 'This key'} of "${row.name}" stops working: a script calling with it is refused from its next request.`,
       action: 'Revoke key',
       danger: true,
     });
@@ -208,7 +209,7 @@
     <h2>A new key for {pending.integration}</h2>
     <p class="critical">Copy the key below now: it is shown only once.</p>
     <p class="secret"><code>{pending.key}</code></p>
-    <p>Send it as <code>Authorization: Bearer</code> and the key.</p>
+    <p>Send it as <code>Authorization: Bearer &lt;key&gt;</code>.</p>
     <button type="button" onclick={() => (handovers = handovers.filter((h) => h.id !== pending.id))}
       >Done</button
     >
@@ -223,7 +224,7 @@
 >
   <div class="fields">
     <Field required label="Name">
-      {#snippet help()}What its changes are recorded under, in the audit and in history.{/snippet}
+      {#snippet help()}The name its changes are recorded under, in the audit and in history.{/snippet}
       <input bind:value={draftName} autocomplete="off" required />
     </Field>
     {@render access()}
@@ -350,7 +351,7 @@
                   </Field>
                   <div class="actions">
                     <button type="button" onclick={() => (form = null)}>Cancel</button>
-                    <button class="primary" type="submit" disabled={busy}>Make key</button>
+                    <button class="primary" type="submit" disabled={busy}>Create key</button>
                   </div>
                 </form>
               {/if}
@@ -362,7 +363,7 @@
                   <thead>
                     <tr>
                       <th>Key</th>
-                      <th>Made</th>
+                      <th>Created</th>
                       <th>Last used</th>
                       <th></th>
                     </tr>

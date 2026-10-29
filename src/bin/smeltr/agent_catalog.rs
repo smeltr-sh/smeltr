@@ -1,7 +1,7 @@
 //! The routes the AI agent can call, as its system prompt describes them (`leader::agent`).
 //!
 //! Every gated route is here or in [`LEFT_OUT`], which a test holds to the router. What is left out is what an agent
-//! cannot send as a JSON request, what is the person's own: signing in and out, and their conversations, or what
+//! cannot send as a JSON request; what is the person's own (signing in and out, their conversations); and what
 //! answers a key, which only the person is shown.
 
 use smeltr::leader::agent::Route;
@@ -589,7 +589,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/integrations",
-        what: "Every integration with its roles, access and keys in force, never a key itself, as `integrations`. No query.",
+        what: "Every integration with its roles, whether it is an administrator, and its keys in force, never a key itself, as `integrations`. No query.",
         body: "",
     },
     Route {
