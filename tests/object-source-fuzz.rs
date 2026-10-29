@@ -1496,12 +1496,10 @@ impl Announcer for FakeAnnouncer {
     }
 }
 
-/// What a seed's objects are put in and read from: the stores by bucket, the announcer a queue kind announces them
-/// with, none for a listing, the runtime the stores run on, and the pace they are read at. In memory offline; the
-/// service or its emulator live.
+/// What a seed's objects are put in and read from: the stores by bucket, the runtime they run on, and the pace they
+/// are read at. In memory offline; the service or its emulator live.
 struct Backend<'a> {
     stores: BTreeMap<String, Arc<dyn ObjectStore>>,
-    announcer: Option<&'a mut dyn Announcer>,
     runtime: &'a tokio::runtime::Runtime,
     pace: Pace,
 }
@@ -1527,18 +1525,22 @@ impl Backend<'_> {
     }
 }
 
-/// Reads drawn objects through `backend` from the source `open` makes: by its announcer's notifications where it has
-/// one, else by listing.
+/// Reads drawn objects in `backend` from the source `open` makes, as `c` reads them: by listing, or by the
+/// notifications `announcer` sends for its queue.
 fn read(
     rng: &mut Rng,
     cov: &mut Reached,
     c: &ObjectSourceConfig,
     backend: Backend,
+    announcer: Option<&mut dyn Announcer>,
     open: impl FnOnce() -> Result<Box<dyn Source>, String>,
 ) -> Result<(), String> {
-    match backend.announcer {
-        Some(_) => read_queue(rng, cov, c, backend, open),
-        None => read_listing(rng, cov, c, backend, open),
+    match &c.queue {
+        ObjectQueue::List { .. } => read_listing(rng, cov, c, backend, open),
+        _ => {
+            let announcer = announcer.expect("a queue kind's draw makes its announcer");
+            read_queue(rng, cov, c, backend, announcer, open)
+        }
     }
 }
 
@@ -1548,7 +1550,8 @@ fn read_queue(
     rng: &mut Rng,
     cov: &mut Reached,
     c: &ObjectSourceConfig,
-    mut backend: Backend,
+    backend: Backend,
+    announcer: &mut dyn Announcer,
     open: impl FnOnce() -> Result<Box<dyn Source>, String>,
 ) -> Result<(), String> {
     let kind = match &c.queue {
@@ -1556,9 +1559,6 @@ fn read_queue(
         ObjectQueue::StorageQueue { .. } => Kind::AzureBlobQueue,
         ObjectQueue::PubSub { .. } => Kind::GcsPubSub,
         ObjectQueue::List { .. } => unreachable!("a listing reads by listing"),
-    };
-    let Some(announcer) = backend.announcer.take() else {
-        unreachable!("a queue reads what it is announced");
     };
     let pace = backend.pace;
     let buckets: Vec<&str> = backend.stores.keys().map(String::as_str).collect();
@@ -1842,11 +1842,10 @@ fn offline_seed(seed: u64, reached: &mut Reached, runtime: &Arc<tokio::runtime::
         };
         let backend = Backend {
             stores: BTreeMap::from([(list_root(place), store.clone() as Arc<dyn ObjectStore>)]),
-            announcer: None,
             runtime,
             pace: OFFLINE,
         };
-        read(&mut rng, reached, &c, backend, open)
+        read(&mut rng, reached, &c, backend, None, open)
     } else {
         let stores: BTreeMap<String, Arc<dyn ObjectStore>> = ["logs", "other"]
             .iter()
@@ -1871,11 +1870,10 @@ fn offline_seed(seed: u64, reached: &mut Reached, runtime: &Arc<tokio::runtime::
         };
         let backend = Backend {
             stores,
-            announcer: Some(&mut announcer),
             runtime,
             pace: OFFLINE,
         };
-        read(&mut rng, reached, &c, backend, open)
+        read(&mut rng, reached, &c, backend, Some(&mut announcer), open)
     };
     read.map_err(|e| format!("{e}\n{json}"))
 }
@@ -1955,11 +1953,11 @@ fn live_fuzz(
         let open = || smeltr::io::object_source::open(&c, &secrets).map_err(|e| format!("does not build: {e:?}"));
         let backend = Backend {
             stores,
-            announcer: made.announcer.as_mut().map(|a| &mut **a as &mut dyn Announcer),
             runtime: &runtime,
             pace: LIVE,
         };
-        read(&mut rng, &mut reached, &c, backend, open).map_err(|e| format!("{e}\n{json}"))?;
+        let announcer = made.announcer.as_mut().map(|a| &mut **a as &mut dyn Announcer);
+        read(&mut rng, &mut reached, &c, backend, announcer, open).map_err(|e| format!("{e}\n{json}"))?;
         reached.credit(&mut cov);
         Ok(())
     });
