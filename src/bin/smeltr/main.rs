@@ -24,6 +24,7 @@ mod cluster;
 mod config_api;
 mod docs_api;
 mod gate;
+mod integrations_api;
 mod oidc_api;
 mod policy;
 mod roles_api;
@@ -2055,6 +2056,13 @@ async fn run_leader() {
                 "/api/me/agent-permissions",
                 get(agents_api::get_permissions).put(agents_api::put_permissions),
             )
+            .route(
+                "/api/integrations",
+                get(integrations_api::list_integrations).post(integrations_api::create_integration),
+            )
+            .route("/api/integrations/:id", patch(integrations_api::patch_integration))
+            .route("/api/integrations/:id/keys", post(integrations_api::create_key))
+            .route("/api/integrations/:id/keys/:key", delete(integrations_api::revoke_key))
             .route("/api/roles", get(roles_api::list_roles))
             .route(
                 "/api/roles/:name",

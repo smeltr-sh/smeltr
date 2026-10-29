@@ -26,12 +26,12 @@ use axum::extract::State;
 use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use smeltr::leader::access::{Access, AgentPermissions, ByAgent, Level};
+use smeltr::leader::access::{Access, AgentPermissions, ByAgent, Level, Role};
 use smeltr::leader::auth::hash_secret;
 use smeltr::leader::blocking;
 use smeltr::leader::envelope::Refusal;
 use smeltr::leader::sessions::{Refused, Sessions};
-use smeltr::leader::store::{Actor, AuthSource, Store, StoreError, UserRecord};
+use smeltr::leader::store::{Actor, AuthSource, IntegrationRecord, Store, StoreError, UserRecord};
 use smeltr::leader::throttle::LoginThrottle;
 use smeltr::leader::warnings::now_millis;
 
@@ -463,13 +463,22 @@ pub fn access_of(store: &dyn Store, user: &UserRecord) -> Result<Access, StoreEr
             .oidc_identity_of(&user.id)?
             .map(|identity| identity.groups)
             .unwrap_or_default(),
-        AuthSource::Integration => match store.integration(&user.id)? {
-            Some(integration) if integration.administrator => return Ok(Access::Administrator),
-            Some(integration) => integration.roles,
-            None => Vec::new(),
-        },
+        AuthSource::Integration => {
+            return Ok(match store.integration(&user.id)? {
+                Some(integration) => integration_access(&integration, &store.list_roles()?),
+                None => Access::of(AuthSource::Integration, &[], &[]),
+            });
+        }
     };
     Ok(Access::of(user.auth_source, &groups, &store.list_roles()?))
+}
+
+/// What `integration` holds: everything when it is an administrator, else what its roles give.
+pub fn integration_access(integration: &IntegrationRecord, roles: &[Role]) -> Access {
+    match integration.administrator {
+        true => Access::Administrator,
+        false => Access::of(AuthSource::Integration, &integration.roles, roles),
+    }
 }
 
 /// `access`, as a session and the roster report it: `areas` is empty for an administrator, who holds everything.

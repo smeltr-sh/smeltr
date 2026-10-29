@@ -1,7 +1,8 @@
 //! The routes the AI agent can call, as its system prompt describes them (`leader::agent`).
 //!
 //! Every gated route is here or in [`LEFT_OUT`], which a test holds to the router. What is left out is what an agent
-//! cannot send as a JSON request, or what is the person's own: signing in and out, and their conversations.
+//! cannot send as a JSON request, what is the person's own: signing in and out, and their conversations, or what
+//! answers a key, which only the person is shown.
 
 use smeltr::leader::agent::Route;
 
@@ -585,6 +586,30 @@ pub const CATALOG: &[Route] = &[
         what: "Delete a role. No query.",
         body: "",
     },
+    Route {
+        method: "GET",
+        path: "/api/integrations",
+        what: "Every integration with its roles, access and keys in force, never a key itself, as `integrations`. No query.",
+        body: "",
+    },
+    Route {
+        method: "POST",
+        path: "/api/integrations",
+        what: "Create an enabled integration, holding no key yet. No query.",
+        body: "{ name: string, roles?: string[], administrator?: boolean }",
+    },
+    Route {
+        method: "PATCH",
+        path: "/api/integrations/:id",
+        what: "Change one integration's name, roles, administrator or enabled state, one field per request. Disabling revokes every key it holds. No query.",
+        body: "{ name?: string, roles?: string[], administrator?: boolean, enabled?: boolean } (exactly one)",
+    },
+    Route {
+        method: "DELETE",
+        path: "/api/integrations/:id/keys/:key",
+        what: "Revoke one of an integration's keys. No query.",
+        body: "",
+    },
     // -- settings --
     Route {
         method: "GET",
@@ -826,6 +851,7 @@ pub const LEFT_OUT: &[(&str, &str)] = &[
     ("POST", "/api/agent/conversations/:id/context"),
     ("POST", "/api/areas/:area/lookups/upload"),
     ("PUT", "/api/me/agent-permissions"),
+    ("POST", "/api/integrations/:id/keys"),
 ];
 
 #[cfg(test)]
