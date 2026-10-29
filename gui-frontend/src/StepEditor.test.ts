@@ -179,7 +179,7 @@ describe('a parser step’s fields', () => {
     const auto = render_(
       parser({ type: 'json' }, [{ name: 't', ty: { kind: 'datetime', format: '' } }]),
     );
-    expect(auto).toContain('auto ▸︎');
+    expect(auto).toMatch(/aria-expanded="false"[^>]*>auto </);
     expect(auto).not.toContain('aria-label="format"');
     const set = render_(
       parser({ type: 'json' }, [{ name: 't', ty: { kind: 'datetime', format: '%Y' } }]),

@@ -23,6 +23,7 @@
 </script>
 
 <script lang="ts">
+  import ChevronIcon from './ChevronIcon.svelte';
   import { untrack, type Snippet } from 'svelte';
   import StateMark from './StateMark.svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
@@ -786,10 +787,10 @@
                     <td class="fold-cell">
                       <button
                         type="button"
-                        class="fold"
+                        class="icon"
                         aria-expanded={open}
                         aria-label={`row ${row.row}`}
-                        onclick={() => toggleRow(row.row)}>{open ? '▾︎' : '▸︎'}</button
+                        onclick={() => toggleRow(row.row)}><ChevronIcon {open} /></button
                       >
                     </td>
                     <td class="index-cell"
@@ -1064,15 +1065,6 @@
 
   .grid-row.dropped .cell {
     opacity: 0.55;
-  }
-
-  .fold {
-    border: none;
-    background: none;
-    padding: 0;
-    color: var(--dim);
-    font: inherit;
-    cursor: pointer;
   }
 
   .index-cell {

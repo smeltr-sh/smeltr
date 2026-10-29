@@ -3476,35 +3476,34 @@ pub fn preview_memory_budget() -> MemoryBudget {
 /// as UTF-8.
 pub fn preview_routes(
     topology: &CompiledTopology,
-    destinations: &[crate::plan::topology::DestinationConfig],
-    source: SourceId,
-    source_name: &str,
+    source: &crate::plan::topology::SourceConfig,
     records: &[SourceRecord],
     budget: MemoryBudget,
 ) -> Vec<PreviewedRow> {
-    let meta = topology.meta_for(source);
+    let meta = topology.meta_for(source.id);
     let texts: Vec<String> = records
         .iter()
         .map(|r| String::from_utf8_lossy(meta.read_bytes(r).unwrap_or_default()).into_owned())
         .collect();
-    preview_routes_at(
-        topology,
-        destinations,
+    let sample = Sample {
         source,
-        source_name,
         records,
-        &texts,
-        budget,
-        crate::core::ctx::wall_clock_micros(),
-    )
+        texts: &texts,
+    };
+    preview_routes_at(topology, &sample, budget, crate::core::ctx::wall_clock_micros())
 }
 
-/// Route `records` as if they had arrived through `source`, named `source_name` in the deployment, and say where each
-/// would go.
-///
-/// `texts` are the records' `_raw`, one per record, as a sample holds it (`config_file::sample`): a paste arrives as
-/// text and a capture decodes with its source's encoding, so nothing decodes here and no row can pick up a decode
-/// exception the real ingest would not have given it. A record's bytes are its payload as read.
+/// Records as if they had arrived through `source`, and each one's `_raw`, one per record, as a sample holds it
+/// (`config_file::sample`): a paste arrives as text and a capture decodes with its source's encoding, so a preview
+/// decodes nothing and no row can pick up a decode exception the real ingest would not have given it. A record's
+/// bytes are its payload as read.
+pub struct Sample<'a> {
+    pub source: &'a crate::plan::topology::SourceConfig,
+    pub records: &'a [SourceRecord],
+    pub texts: &'a [String],
+}
+
+/// Route `sample`'s records as if they had arrived through its source, and say where each would go.
 ///
 /// **One record at a time.** A pipeline does not preserve row identity -- `Op::Unroll` replaces the batch with one
 /// row per array element -- so a batch's output rows cannot be attributed back to the records that produced them.
@@ -3521,22 +3520,15 @@ pub fn preview_routes(
 /// than a preview may hold is reported on that record and the rest of the sample still previews. A live batch
 /// splits on a refusal and retries; a preview cannot, because halving a record's output would answer a question
 /// nobody asked.
-#[allow(clippy::too_many_arguments)]
 pub fn preview_routes_at(
     topology: &CompiledTopology,
-    destinations: &[crate::plan::topology::DestinationConfig],
-    source: SourceId,
-    source_name: &str,
-    records: &[SourceRecord],
-    texts: &[String],
+    sample: &Sample,
     budget: MemoryBudget,
     now_micros: i64,
 ) -> Vec<PreviewedRow> {
+    let Sample { source, records, texts } = *sample;
+    let (source_name, source) = (source.name.as_str(), source.id);
     let meta = topology.meta_for(source);
-    let id_fields: Vec<(DestId, String)> = destinations
-        .iter()
-        .filter_map(|d| d.kind.id_field().map(|f| (d.id, f.to_string())))
-        .collect();
 
     // Counters this run produces are thrown away with it: a preview is not traffic, and adding it to the process
     // registry would put it in the leader's own metrics and in anything reading them.
@@ -3618,7 +3610,7 @@ pub fn preview_routes_at(
                         &metrics,
                         Egress {
                             route,
-                            id_fields: &id_fields,
+                            id_fields: &topology.id_fields,
                             dlq_of: &topology.dlq_of,
                             columns: None,
                             taps: &[],
@@ -3888,7 +3880,6 @@ mod tests {
         }"#;
         let system = config_file::load_str(json).unwrap_or_else(|e| panic!("load: {e}"));
         let compiled = system.compile_topology().unwrap_or_else(|e| panic!("compile: {e:?}"));
-        let source = system.topology.sources[0].id;
         let records = [SourceRecord {
             chunk: crate::io::RecordChunk::of_bytes(b"{}"),
             row: 0,
@@ -3898,19 +3889,15 @@ mod tests {
             headers: None,
         }];
 
-        let pinned = 1_700_000_000_000_000i64;
-        let run = || {
-            preview_routes_at(
-                &compiled,
-                &system.topology.destinations,
-                source,
-                "orders",
-                &records,
-                &["{}".to_string()],
-                preview_memory_budget(),
-                pinned,
-            )
+        let texts = ["{}".to_string()];
+        let sample = Sample {
+            source: &system.topology.sources[0],
+            records: &records,
+            texts: &texts,
         };
+
+        let pinned = 1_700_000_000_000_000i64;
+        let run = || preview_routes_at(&compiled, &sample, preview_memory_budget(), pinned);
         let doc = |rows: Vec<PreviewedRow>| -> String {
             let row = rows.into_iter().next().expect("one record in, one row out");
             let route = row.through.into_iter().next().expect("the route kept the record");
@@ -3957,7 +3944,7 @@ mod tests {
         }"#;
         let system = config_file::load_str(json).unwrap_or_else(|e| panic!("load: {e}"));
         let compiled = system.compile_topology().unwrap_or_else(|e| panic!("compile: {e:?}"));
-        let source = system.topology.sources[0].id;
+        let source = &system.topology.sources[0];
         let record = |raw: &[u8], offset: i64| SourceRecord {
             chunk: crate::io::RecordChunk::of_bytes(raw),
             row: 0,
@@ -3968,14 +3955,7 @@ mod tests {
         };
         let records = [record(br#"{"status":0}"#, 0), record(br#"{"status":2}"#, 1)];
 
-        let rows = preview_routes(
-            &compiled,
-            &system.topology.destinations,
-            source,
-            "orders",
-            &records,
-            preview_memory_budget(),
-        );
+        let rows = preview_routes(&compiled, source, &records, preview_memory_budget());
 
         let row = &rows[0];
         assert_eq!(row.matched.len(), 2, "both routes took it");
@@ -4023,7 +4003,7 @@ mod tests {
             );
             let system = config_file::load_str(&json).unwrap_or_else(|e| panic!("load: {e}"));
             let compiled = system.compile_topology().unwrap_or_else(|e| panic!("compile: {e:?}"));
-            let source = system.topology.sources[0].id;
+            let source = &system.topology.sources[0];
             let records = [SourceRecord {
                 chunk: crate::io::RecordChunk::of_bytes(b"y"),
                 row: 0,
@@ -4032,14 +4012,7 @@ mod tests {
                 topic: Arc::from("orders"),
                 headers: None,
             }];
-            let rows = preview_routes(
-                &compiled,
-                &system.topology.destinations,
-                source,
-                "orders",
-                &records,
-                preview_memory_budget(),
-            );
+            let rows = preview_routes(&compiled, source, &records, preview_memory_budget());
             let route = &rows[0].through[0];
             assert_eq!(route.answer, answer, "{unmatched}");
             match answer {
@@ -4078,11 +4051,11 @@ mod tests {
           ]
         }"#;
         let system = config_file::load_str(json).unwrap_or_else(|e| panic!("load: {e}"));
-        let source = system.topology.sources[0].id;
+        let source = &system.topology.sources[0];
         let meta = SourceMeta::KAFKA
             .declaring(vec![("id".into(), DataType::I64), ("name".into(), DataType::Str)])
             .unwrap();
-        let metas = crate::plan::topology::SourceMetas::from([(source, meta.clone())]);
+        let metas = crate::plan::topology::SourceMetas::from([(source.id, meta.clone())]);
         let compiled = crate::plan::topology::compile_topology_with(
             &system.topology.routes,
             &system.pipelines,
@@ -4100,14 +4073,7 @@ mod tests {
         let stored: Vec<_> = objects.iter().map(|o| (o, &fields)).collect();
         let records = meta.read_stored(&stored).unwrap();
 
-        let rows = preview_routes(
-            &compiled,
-            &system.topology.destinations,
-            source,
-            "orders",
-            &records,
-            preview_memory_budget(),
-        );
+        let rows = preview_routes(&compiled, source, &records, preview_memory_budget());
 
         let doc = |row: &PreviewedRow| -> serde_json::Value {
             serde_json::from_str(&row.through[0].documents[0].document).unwrap()
@@ -4175,7 +4141,7 @@ mod tests {
         }"#;
         let system = config_file::load_str(json).unwrap_or_else(|e| panic!("load: {e}"));
         let compiled = system.compile_topology().unwrap_or_else(|e| panic!("compile: {e:?}"));
-        let source = system.topology.sources[0].id;
+        let source = &system.topology.sources[0];
         let record = |offset: i64| SourceRecord {
             chunk: crate::io::RecordChunk::of_bytes(b"{}"),
             row: 0,
@@ -4185,14 +4151,7 @@ mod tests {
             headers: None,
         };
 
-        let rows = preview_routes(
-            &compiled,
-            &system.topology.destinations,
-            source,
-            "orders",
-            &[record(0), record(1)],
-            preview_memory_budget(),
-        );
+        let rows = preview_routes(&compiled, source, &[record(0), record(1)], preview_memory_budget());
 
         assert_eq!(rows[0].matched.len(), 1);
         assert!(rows[0].through.is_empty(), "held with the unmatched record");
