@@ -1135,11 +1135,9 @@ fn spawn_reader(
         source_id,
         Some(source_name.to_string()),
         topology.meta_for(source_id),
-        kind.encoding(),
+        crate::handoff::Handoff::watched(shared.ready.clone(), depth.lane * depth.batch_bytes),
         destinations.clone(),
         reports,
-        shared.ready.clone(),
-        depth.lane * depth.batch_bytes,
     ));
     let reader = Reader::new(
         source_id,
@@ -1655,13 +1653,16 @@ fn thread_reports(
 }
 
 /// Attach facts to the thread that knows them first-hand -- a reader's block, a destination's refusals. The registry
-/// never saw these, so the leader can only read a subject from the thread reporting it.
+/// never saw these, so the leader can only read a subject from the thread reporting it. Each is labeled by position,
+/// as its owner wrote it, and goes on resolved against `subjects`.
 fn attach_owned_facts(
     by_thread: &mut std::collections::HashMap<String, Vec<crate::heartbeat::MetricSampleDto>>,
+    subjects: &crate::metrics::Subjects,
     owned: impl IntoIterator<Item = (String, Vec<crate::heartbeat::MetricSampleDto>)>,
 ) {
-    for (thread_id, facts) in owned {
+    for (thread_id, mut facts) in owned {
         if !facts.is_empty() {
+            resolve_subject_labels(&mut facts, subjects);
             by_thread.entry(thread_id).or_default().extend(facts);
         }
     }
@@ -1995,18 +1996,21 @@ fn build_heartbeat_request(
                 .collect();
             attach_owned_facts(
                 &mut by_thread,
+                &d.subjects,
                 d.readers
                     .iter()
                     .map(|r| (r.thread_id.clone(), r.held.clone().into_iter().collect())),
             );
             attach_owned_facts(
                 &mut by_thread,
+                &d.subjects,
                 d.readers
                     .iter()
                     .map(|r| (r.thread_id.clone(), r.connection_error.clone().into_iter().collect())),
             );
             attach_owned_facts(
                 &mut by_thread,
+                &d.subjects,
                 d.egress_refusals
                     .iter()
                     .map(|(id, facts)| (format!("egress-{id}"), facts.clone())),
@@ -4811,14 +4815,7 @@ fn serve_capture(
             }
             continue;
         }
-        // A session naming no source was admitted finished, with why. One on a deployed source is served by the
-        // deployment's own reader, but for one that reads the source itself.
-        if admitted
-            .invitation
-            .source
-            .as_ref()
-            .is_none_or(|source| !admitted.invitation.reads_source_itself() && captures.is_deployed(&source.id))
-        {
+        if captures.served(&admitted) {
             continue;
         }
         let session = admitted.invitation.session.clone();
@@ -5458,6 +5455,68 @@ mod tests {
         assert_eq!(reader_depth(&topology, &destinations, 5, |d| d.kind.queue_bytes()), 0);
     }
 
+    /// A fact goes to the leader under its subject's name, as every sample does: its owner labels it by position,
+    /// and the Issues page names a blocked source or a refusing destination by what the leader is told.
+    #[test]
+    fn a_fact_names_its_subject_as_the_author_did() {
+        let fact = |label: &str, metric: &str| heartbeat::MetricSampleDto {
+            metric: metric.to_string(),
+            labels: vec![(label.to_string(), "0".to_string())],
+            value: heartbeat::MetricValueDto::text("refusing"),
+        };
+        let deployed = child::RuntimeReport {
+            readers: vec![child::ReaderReport {
+                thread_id: "reader-0".to_string(),
+                partitions: vec![],
+                held: Some(fact("source", "smeltr_source_blocked_reason")),
+                connection_error: Some(fact("source", "smeltr_source_connection_error")),
+            }],
+            egress_ids: vec![0],
+            egress_refusals: vec![(0, vec![fact("destination", "smeltr_destination_last_refusal")])],
+            subjects: crate::metrics::Subjects {
+                sources: vec!["own-metrics".to_string()],
+                destinations: vec!["es-prod".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (req, _) = beat_from(
+            Reporting {
+                worker_id: "w1",
+                group_id: "g",
+                commit: None,
+                supervising: None,
+                resources: None,
+                stop_after_unreachable_secs: None,
+                authority_expires_millis: None,
+                authority_fingerprints: Vec::new(),
+                takes_authority: true,
+                stopping: false,
+                accepts: Vec::new(),
+                took: None,
+                heartbeat_interval: None,
+            },
+            Some(&deployed),
+            &Metrics::new(),
+        );
+        let named: Vec<(String, String)> = req
+            .threads
+            .iter()
+            .flat_map(|t| &t.metrics)
+            .filter(|m| matches!(m.value, heartbeat::MetricValueDto::Text(_)))
+            .map(|m| (m.metric.clone(), m.labels[0].1.clone()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("smeltr_source_blocked_reason".to_string(), "own-metrics".to_string()),
+                ("smeltr_source_connection_error".to_string(), "own-metrics".to_string()),
+                ("smeltr_destination_last_refusal".to_string(), "es-prod".to_string()),
+            ],
+            "a fact went to the leader under its position"
+        );
+    }
+
     /// A block and a refusal are known only to the thread holding the source or dispatching to the destination, so
     /// they reach the leader by riding that thread's report rather than the registry.
     #[test]
@@ -5472,6 +5531,7 @@ mod tests {
 
         attach_owned_facts(
             &mut by_thread,
+            &Default::default(),
             [
                 ("reader-0".to_string(), vec![text("smeltr_source_blocked_reason")]),
                 // A reader that is not blocked offers nothing, and must not create an entry.

@@ -122,6 +122,8 @@ pub struct SourceMeta {
     kind: &'static str,
     record: RecordFields,
     source: &'static [(&'static str, DataType)],
+    /// How a byte source's payload becomes `_raw`'s text (`format::encoding`).
+    encoding: Encoding,
 }
 
 /// The fields of a source's record, each with its type, in slot order. A source's own kinds declare theirs in a
@@ -396,6 +398,7 @@ impl SourceMeta {
         kind: "kafka",
         record: PAYLOAD_RECORD,
         source: KAFKA_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an Event Hubs record carries: a Kafka record's fields, with the event hub as its topic.
@@ -403,6 +406,7 @@ impl SourceMeta {
         kind: "eventHubs",
         record: PAYLOAD_RECORD,
         source: KAFKA_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a metrics record carries: its source's name and kind, and the topic it is stamped with.
@@ -410,6 +414,7 @@ impl SourceMeta {
         kind: "metrics",
         record: PAYLOAD_RECORD,
         source: METRICS_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a logs record carries, which is the same.
@@ -417,6 +422,7 @@ impl SourceMeta {
         kind: "logs",
         record: PAYLOAD_RECORD,
         source: LOGS_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an SQS/S3 record carries: the object it was read from, and its record number there.
@@ -424,6 +430,7 @@ impl SourceMeta {
         kind: "s3Sqs",
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a Listing/S3 record carries: the same as an SQS/S3 record.
@@ -431,6 +438,7 @@ impl SourceMeta {
         kind: "s3List",
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a Listing/GCS record carries: the same as an SQS/S3 record.
@@ -438,6 +446,7 @@ impl SourceMeta {
         kind: "gcsList",
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a Listing/Azure Blob record carries: the same, with the container as its bucket.
@@ -445,6 +454,7 @@ impl SourceMeta {
         kind: "azureBlobList",
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an SFTP record carries: the same, with the directory as its bucket and the path under it as its key.
@@ -452,6 +462,7 @@ impl SourceMeta {
         kind: "sftp",
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a Queue/Azure Blob record carries: the same, with the container as its bucket.
@@ -459,6 +470,7 @@ impl SourceMeta {
         kind: "azureBlobQueue",
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a Pub/Sub/GCS record carries: the same.
@@ -466,6 +478,7 @@ impl SourceMeta {
         kind: "gcsPubSub",
         record: PAYLOAD_RECORD,
         source: OBJECT_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an HTTP API record carries: the address of the page it was read from.
@@ -473,6 +486,7 @@ impl SourceMeta {
         kind: "httpApi",
         record: PAYLOAD_RECORD,
         source: API_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an Okta System Log record carries: the same.
@@ -480,6 +494,7 @@ impl SourceMeta {
         kind: "oktaLogs",
         record: PAYLOAD_RECORD,
         source: API_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a PostgreSQL source's record carries before it declares its fields, which every one does.
@@ -487,6 +502,7 @@ impl SourceMeta {
         kind: "postgres",
         record: PAYLOAD_RECORD,
         source: SQL_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a MySQL or MariaDB source's record carries before it declares its fields, which every one does.
@@ -494,6 +510,7 @@ impl SourceMeta {
         kind: "mysql",
         record: PAYLOAD_RECORD,
         source: SQL_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an HTTP receiver's record carries: the address of the sender that delivered it.
@@ -501,6 +518,7 @@ impl SourceMeta {
         kind: "httpReceiver",
         record: PAYLOAD_RECORD,
         source: RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a HEC receiver's record carries: its sender's address, and what the sender filed its event under.
@@ -508,6 +526,7 @@ impl SourceMeta {
         kind: "hecReceiver",
         record: PAYLOAD_RECORD,
         source: HEC_RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an S2S receiver's record carries: its forwarder's address, and what the forwarder filed its event under.
@@ -515,6 +534,7 @@ impl SourceMeta {
         kind: "s2sReceiver",
         record: PAYLOAD_RECORD,
         source: HEC_RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an Elasticsearch receiver's record carries: a document, its sender's address, and what its action named.
@@ -522,6 +542,7 @@ impl SourceMeta {
         kind: "elasticReceiver",
         record: PAYLOAD_RECORD,
         source: ELASTIC_RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What a syslog receiver's record carries: a message, and its sender's address.
@@ -529,6 +550,7 @@ impl SourceMeta {
         kind: "syslogReceiver",
         record: PAYLOAD_RECORD,
         source: RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an OTLP receiver of logs carries: a log record, its sender's address, and its resource and scope.
@@ -536,6 +558,7 @@ impl SourceMeta {
         kind: "otlpReceiver",
         record: OTLP_LOG,
         source: OTLP_RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an OTLP receiver of traces carries: a span, its sender's address, and its resource and scope.
@@ -543,6 +566,7 @@ impl SourceMeta {
         kind: "otlpReceiver",
         record: OTLP_SPAN,
         source: OTLP_RECEIVER_FIELDS,
+        encoding: Encoding::Auto,
     };
 
     /// What an OTLP receiver of `signal` carries: a log record, a metric's data point or a span, its sender's address,
@@ -555,6 +579,7 @@ impl SourceMeta {
                 kind: "otlpReceiver",
                 record: otlp_metric_point(),
                 source: OTLP_RECEIVER_FIELDS,
+                encoding: Encoding::Auto,
             },
             Signal::Traces => SourceMeta::OTLP_TRACES,
         }
@@ -567,6 +592,7 @@ impl SourceMeta {
             kind: "prometheusReceiver",
             record: prometheus_record(),
             source: PROMETHEUS_RECEIVER_FIELDS,
+            encoding: Encoding::Auto,
         }
     }
 
@@ -605,6 +631,7 @@ impl SourceMeta {
         kind: "",
         record: PAYLOAD_RECORD,
         source: &[(SOURCE_BYTES, DataType::Bytes)],
+        encoding: Encoding::Auto,
     };
 
     /// This meta with `record` as its record's fields in place of `_raw`, and without `__source.bytes`. A field's name is a path, as a pipeline
@@ -715,10 +742,16 @@ impl SourceMeta {
         match encoding {
             Encoding::None if self.reads_bytes() => SourceMeta {
                 record: std::borrow::Cow::Borrowed(&[]),
+                encoding,
                 ..self
             },
-            _ => self,
+            _ => SourceMeta { encoding, ..self },
         }
+    }
+
+    /// How this source's payload becomes `_raw`'s text.
+    pub fn encoding(&self) -> Encoding {
+        self.encoding
     }
 
     /// Whether this source's record is its payload decoded, `_raw`: it reads bytes and decodes them.

@@ -9,6 +9,7 @@
   import { unreported } from './errors.svelte';
   import { onDestroy } from 'svelte';
   import Field from './Field.svelte';
+  import InlineError from './InlineError.svelte';
   import Nested from './Nested.svelte';
   import Advanced from './Advanced.svelte';
   import TlsFields from './TlsFields.svelte';
@@ -378,7 +379,7 @@
 
 {#snippet statement()}
   {#if statements && !statements.ok}
-    <p class="banner callout error">{errorText(statements.errors)}</p>
+    <InlineError callout message={errorText(statements.errors)} />
   {:else if !statements?.first}
     <p class="dim">Type a query.</p>
   {:else if !opened}
@@ -451,12 +452,12 @@
   </span>
 </div>
 {#if runError}
-  <div class="banner callout error" role="alert">
+  <InlineError callout>
     <strong>Run failed.</strong>
     {runError}{#if failedRun?.worker}{' '}(worker {failedRun.worker}{source.user
         ? `, as ${source.user}`
         : ''}){/if}. The query and the connection stay as they were; fix and run again.
-  </div>
+  </InlineError>
 {/if}
 
 {#if opened}
@@ -843,13 +844,13 @@
 
   .banner {
     margin: 0;
-    padding: 0.5rem 0.75rem;
-    border-radius: var(--radius);
-    font-size: var(--text-label);
   }
 
   .banner:not(.callout) {
+    padding: 0.5rem 0.75rem;
     border-left: 3px solid var(--border);
+    border-radius: var(--radius);
+    font-size: var(--text-label);
     background: var(--field);
   }
 

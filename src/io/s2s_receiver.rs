@@ -375,18 +375,81 @@ impl Handler {
         let mut channels = Channels::new(&self.sourcetypes, self.max_request_bytes);
         let mut acks = Acks::default();
         let mut held = inlet.held();
-        let Err(end) = self
-            .events(
-                wire,
-                &mut v4,
-                inlet,
-                forwarder,
-                &answers,
-                &mut channels,
-                &mut acks,
-                &mut held,
-            )
-            .await;
+        // The events, until the stream ends. A block, so that a `?` in it ends the events rather than the connection,
+        // and the channels are flushed below however they end.
+        let events: Result<std::convert::Infallible, End> = async {
+            let (v4, channels, acks, held) = (&mut v4, &mut channels, &mut acks, &mut held);
+            let mut read = vec![0; READ_STEP];
+            let mut last_beat: Option<Instant> = None;
+            loop {
+                while let Some(event) = v4.decoder.next_event().map_err(|e| v4.malformed(e.at, e.what))? {
+                    if forwarder_info(&event) {
+                        // A forwarder sends heartbeats close together while its ack window is full. With every answer
+                        // written, what holds the window is a line no ack covers until it ends: acking it now lets the
+                        // forwarder send the rest, so it arrives whole rather than cut at the window.
+                        let waiting = heartbeat(&event) && {
+                            let now = Instant::now();
+                            last_beat
+                                .replace(now)
+                                .is_some_and(|last| WAITING_BEATS.contains(&(now - last)))
+                        };
+                        if waiting
+                            && let Some(answering) = answers.as_ref().filter(|a| a.all_written())
+                            && let Some(range) = acks.early(acks.open(channels))
+                        {
+                            let (fired, answer) = oneshot::channel();
+                            let _ = fired.send(());
+                            answering.send((answer, Some(range))).await;
+                        }
+                        continue;
+                    }
+                    let id = event.id;
+                    if id == Some(u64::MAX) {
+                        return Err(v4.malformed(v4.decoder.offset(), "an event id no later id can follow".into()));
+                    }
+                    let filed = filed(&event).map_err(|what| v4.malformed(v4.decoder.offset(), what))?;
+                    let records = channels.take(event, filed, Instant::now());
+                    let range = acks.after(id, acks.open(channels));
+                    admit(inlet, held, records, range, answers.as_ref()).await?;
+                }
+                // Room for what it holds, each buffer as much again as it may grow to, and the step it takes next.
+                let buffers = v4.memory() + channels.memory();
+                held.hold(read.len() + 2 * buffers + STREAM_STEP).await?;
+                if v4.inflate_step()? {
+                    // A read can inflate a thousandfold; between steps the other connections on this thread are served.
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                let quiet = answers.as_ref().and(channels.next_quiet());
+                let n = tokio::select! {
+                    n = wire.reader.read(&mut read) => n,
+                    () = sleep_until(quiet) => {
+                        let records = channels.close_quiet(Instant::now());
+                        if !records.is_empty() {
+                            tracing::warn!(
+                                target: "worker.receiver_s2s_line_cut",
+                                subject = %inlet.remote,
+                                forwarder,
+                                "a forwarder sent no more of a line for 30 s, and it is cut where it stopped: its file \
+                                 stopped mid-line"
+                            );
+                        }
+                        let range = acks.after(None, acks.open(channels));
+                        admit(inlet, held, records, range, answers.as_ref()).await?;
+                        continue;
+                    }
+                };
+                match n {
+                    Ok(0) | Err(_) => return Err(End::Gone),
+                    Ok(n) => {
+                        wire.taken += n as u64;
+                        v4.push(&read[..n]);
+                    }
+                }
+            }
+        }
+        .await;
+        let Err(end) = events;
         // However the connection ended, a forwarder sends again only what it waits on acks for: without them, or past
         // them, what the channels hold is all of it there will be.
         let ended = match (&answers, acks.next) {
@@ -396,89 +459,6 @@ impl Handler {
         };
         admit(inlet, &mut held, ended, None, None).await?;
         Err(end)
-    }
-
-    /// The events of the v4 stream, until it ends.
-    #[allow(clippy::too_many_arguments)]
-    async fn events<R: AsyncRead + Unpin>(
-        &self,
-        wire: &mut Wire<R>,
-        v4: &mut V4,
-        inlet: &Inlet,
-        forwarder: &str,
-        answers: &Option<Answering>,
-        channels: &mut Channels<'_>,
-        acks: &mut Acks,
-        held: &mut Held,
-    ) -> Result<std::convert::Infallible, End> {
-        let mut read = vec![0; READ_STEP];
-        let mut last_beat: Option<Instant> = None;
-        loop {
-            while let Some(event) = v4.decoder.next_event().map_err(|e| v4.malformed(e.at, e.what))? {
-                if forwarder_info(&event) {
-                    // A forwarder sends heartbeats close together while its ack window is full. With every answer
-                    // written, what holds the window is a line no ack covers until it ends: acking it now lets the
-                    // forwarder send the rest, so it arrives whole rather than cut at the window.
-                    let waiting = heartbeat(&event) && {
-                        let now = Instant::now();
-                        last_beat
-                            .replace(now)
-                            .is_some_and(|last| WAITING_BEATS.contains(&(now - last)))
-                    };
-                    if waiting
-                        && let Some(answering) = answers.as_ref().filter(|a| a.all_written())
-                        && let Some(range) = acks.early(acks.open(channels))
-                    {
-                        let (fired, answer) = oneshot::channel();
-                        let _ = fired.send(());
-                        answering.send((answer, Some(range))).await;
-                    }
-                    continue;
-                }
-                let id = event.id;
-                if id == Some(u64::MAX) {
-                    return Err(v4.malformed(v4.decoder.offset(), "an event id no later id can follow".into()));
-                }
-                let filed = filed(&event).map_err(|what| v4.malformed(v4.decoder.offset(), what))?;
-                let records = channels.take(event, filed, Instant::now());
-                let range = acks.after(id, acks.open(channels));
-                admit(inlet, held, records, range, answers.as_ref()).await?;
-            }
-            // Room for what it holds, each buffer as much again as it may grow to, and the step it takes next.
-            let buffers = v4.memory() + channels.memory();
-            held.hold(read.len() + 2 * buffers + STREAM_STEP).await?;
-            if v4.inflate_step()? {
-                // A read can inflate a thousandfold; between steps the other connections on this thread are served.
-                tokio::task::yield_now().await;
-                continue;
-            }
-            let quiet = answers.as_ref().and(channels.next_quiet());
-            let n = tokio::select! {
-                n = wire.reader.read(&mut read) => n,
-                () = sleep_until(quiet) => {
-                    let records = channels.close_quiet(Instant::now());
-                    if !records.is_empty() {
-                        tracing::warn!(
-                            target: "worker.receiver_s2s_line_cut",
-                            subject = %inlet.remote,
-                            forwarder,
-                            "a forwarder sent no more of a line for 30 s, and it is cut where it stopped: its file \
-                             stopped mid-line"
-                        );
-                    }
-                    let range = acks.after(None, acks.open(channels));
-                    admit(inlet, held, records, range, answers.as_ref()).await?;
-                    continue;
-                }
-            };
-            match n {
-                Ok(0) | Err(_) => return Err(End::Gone),
-                Ok(n) => {
-                    wire.taken += n as u64;
-                    v4.push(&read[..n]);
-                }
-            }
-        }
     }
 }
 

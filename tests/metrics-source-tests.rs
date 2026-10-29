@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::id::FunctionId;
-use smeltr::format::encoding::Encoding;
 use smeltr::io::Source;
 use smeltr::io::fake::FakeDestination;
 use smeltr::metrics::{Metrics, MetricsHandle, MetricsSource, MetricsSourceConfig};
@@ -54,7 +53,6 @@ fn a_worker_around_a_metrics_source_ships_real_counters_as_ordinary_json_rows() 
             metrics.clone(),
             MetricsSourceConfig { bucket: Duration::ZERO },
         )),
-        Encoding::Auto,
         topology,
         Vec::new(),
         MemoryBudget::unlimited(),
