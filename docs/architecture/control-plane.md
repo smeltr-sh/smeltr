@@ -79,8 +79,8 @@ deployment names, so a rollback reaches as far back as that.
 Git itself stays compact on both sides. The leader packs its repository once
 git's own limits are passed, and drops nothing, since a deploy-log marker names
 a commit no ref may reach. A worker has no git binary and gains a pack per
-fetch, so past the same limit it fetches what the fleet runs afresh as one pack
-and removes each older pack that holds nothing more.
+fetch, so past the same limit it writes what its fetched and running commits
+reach as one pack and removes the rest.
 
 Every exchange with the leader gives up once it has stalled for a time budget,
 the first included: the fetch of the root an enrollment code names by

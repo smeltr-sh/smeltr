@@ -77,6 +77,9 @@ gix = { version = "0.88", default-features = false, features = [
     "auto-chain-error",
     "blocking-http-transport-curl-rustls",
 ] }
+# The worker's merge of its clone's packs writes one pack in-process (`generate`), as `gix` itself cannot. The same
+# version `gix` builds, so no crate is added.
+gix-pack = { version = "0.75", default-features = false, features = ["generate"] }
 # Pinned to rustls and to vendoring: `curl-sys` links a system libcurl when `pkg-config` finds one, which would make
 # what a worker's fetch is built against a fact about the build host rather than about smeltr. `static-curl` builds
 # curl's own vendored source instead, the same shape `rdkafka`'s `curl-static` feature already commits this build to.

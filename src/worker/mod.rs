@@ -744,51 +744,88 @@ fn fetched_reads(repo_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Where a merge of the clone's packs fetches afresh, inside the clone: git leaves a folder it does not know alone.
-const MERGING_DIR: &str = "merging";
-
-/// How many packs the last merge left, inside the clone. The limit counts from there: packs a merge cannot remove
-/// would otherwise have every fetch after it fetch afresh again.
-const MERGED_FILE: &str = "merged";
-
 /// Merge the clone's packs once they pass the leader's own limit (`leader::git::PACK_LIMIT`): every fetch adds one,
-/// and gix has no gc to merge them. What the fleet runs is fetched afresh as one pack, moved in beside the others,
-/// and every pack it holds all of goes. A pack with anything it lacks stays, so the running commit, which a rollback
-/// leaves outside what is fetched, still reads.
-fn merge_packs(repo_dir: &Path, leader_url: &str, token: &str, git_roots: &Path) -> Result<(), String> {
-    let left: usize = std::fs::read_to_string(repo_dir.join(MERGED_FILE))
-        .ok()
-        .and_then(|n| n.trim().parse().ok())
-        .unwrap_or(0);
-    if crate::leader::git::object_files(repo_dir).1 <= left + crate::leader::git::PACK_LIMIT {
+/// and gix has no gc to merge them. Everything the fetched and the running commit reach, their history with them, is
+/// written as one pack, and every other pack goes: those two are all a worker reads.
+fn merge_packs(repo_dir: &Path) -> Result<(), String> {
+    use gix_pack::data::output;
+    if crate::leader::git::object_files(repo_dir).1 <= crate::leader::git::PACK_LIMIT {
         return Ok(());
     }
-    let merging = repo_dir.join(MERGING_DIR);
-    if merging.exists() {
-        std::fs::remove_dir_all(&merging).map_err(|e| format!("clearing {}: {e}", merging.display()))?;
-    }
-    let merged = fetch_deployed_with_budget(&merging, leader_url, token, git_roots, GIT_CLONE_BUDGET)
-        .and_then(|_| move_packs(&merging.join("objects/pack"), &repo_dir.join("objects/pack")));
-    let _ = std::fs::remove_dir_all(&merging);
-    let merged = merged?;
-    let hash = gix::open(repo_dir)
-        .map_err(|e| format!("opening {}: {e}", repo_dir.display()))?
-        .object_hash();
-    let index = |pack: &Path| gix::odb::pack::index::File::at(pack.with_extension("idx"), hash).ok();
-    let new: Vec<_> = merged.iter().filter_map(|pack| index(pack)).collect();
-    for old in packs_in(&repo_dir.join("objects/pack"))? {
-        let covered = !merged.contains(&old)
-            && index(&old).is_some_and(|held| held.iter().all(|e| new.iter().any(|n| n.lookup(e.oid).is_some())));
-        if covered {
-            // The index first: a pack without one is not looked in, and an index without its pack would be. A pack
-            // the runtime still maps cannot go on Windows, and goes with the next merge.
-            let _ = std::fs::remove_file(old.with_extension("idx"))
-                .and_then(|()| std::fs::remove_file(&old))
-                .map(|()| std::fs::remove_file(old.with_extension("rev")));
+    let failed = |e: &dyn std::fmt::Display| format!("merging the packs of {}: {e}", repo_dir.display());
+    let repo = gix::open(repo_dir).map_err(|e| failed(&e))?;
+    let mut tips = Vec::new();
+    for name in [FETCHED_REF, RUNNING_REF] {
+        if let Some(reference) = repo.try_find_reference(name).map_err(|e| failed(&e))? {
+            tips.push(reference.into_fully_peeled_id().map_err(|e| failed(&e))?.detach());
         }
     }
-    let left = crate::leader::git::object_files(repo_dir).1;
-    std::fs::write(repo_dir.join(MERGED_FILE), left.to_string()).map_err(|e| format!("recording the merge: {e}"))
+    if tips.is_empty() {
+        return Ok(());
+    }
+    let commits: Vec<_> = repo
+        .rev_walk(tips)
+        .all()
+        .map_err(|e| failed(&e))?
+        .map(|info| info.map(|info| info.id).map_err(|e| failed(&e)))
+        .collect::<Result<_, _>>()?;
+
+    let hash = repo.object_hash();
+    let mut odb = gix::odb::at(repo_dir.join("objects"), hash).map_err(|e| failed(&e))?;
+    // The packs this reads from are the ones it replaces, and must stay readable until it is done.
+    odb.prevent_pack_unload();
+    odb.ignore_replacements = true;
+    let interrupt = std::sync::atomic::AtomicBool::new(false);
+    let (counts, _) = output::count::objects(
+        odb.clone(),
+        Box::new(commits.into_iter().map(Ok)),
+        &gix::progress::Discard,
+        &interrupt,
+        output::count::objects::Options {
+            input_object_expansion: output::count::objects::ObjectExpansion::TreeContents,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| failed(&e))?;
+    let entries = u32::try_from(counts.len()).map_err(|e| failed(&e))?;
+    let chunks = output::entry::iter_from_counts(counts, odb, Box::new(gix::progress::Discard), Default::default());
+    // In memory: a clone holds configuration and the pointers to lookup files, never their bytes.
+    let mut bytes = output::bytes::FromEntriesIter::new(
+        chunks.map(|chunk| chunk.map(|(_, entries)| entries)),
+        Vec::new(),
+        entries,
+        gix_pack::data::Version::V2,
+        hash,
+    );
+    for written in bytes.by_ref() {
+        written.map_err(|e| failed(&e))?;
+    }
+    let pack = bytes.into_write();
+
+    let dir = repo_dir.join("objects/pack");
+    let old = packs_in(&dir)?;
+    let written = gix_pack::Bundle::write_to_directory(
+        &mut pack.as_slice(),
+        Some(&dir),
+        &mut gix::progress::Discard,
+        &interrupt,
+        None::<gix::objs::find::Never>,
+        hash,
+        Default::default(),
+    )
+    .map_err(|e| failed(&e))?;
+    if let Some(keep) = &written.keep_path {
+        std::fs::remove_file(keep).map_err(|e| failed(&e))?;
+    }
+    let kept = written.data_path.ok_or_else(|| failed(&"no pack was written"))?;
+    for old in old.iter().filter(|p| **p != kept) {
+        // The index first: a pack without one is not looked in, and an index without its pack would be. A pack the
+        // runtime still maps cannot go on Windows, and goes with the next merge.
+        let _ = std::fs::remove_file(old.with_extension("idx"))
+            .and_then(|()| std::fs::remove_file(old))
+            .map(|()| std::fs::remove_file(old.with_extension("rev")));
+    }
+    Ok(())
 }
 
 /// The `.pack` files in `dir`.
@@ -799,24 +836,6 @@ fn packs_in(dir: &Path) -> Result<Vec<PathBuf>, String> {
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "pack"))
         .collect())
-}
-
-/// Move every pack in `from` into `to`, each pack before its index, and answer where they landed.
-fn move_packs(from: &Path, to: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut moved = Vec::new();
-    for pack in packs_in(from)? {
-        let name = pack.file_name().expect("a pack has a file name");
-        let at = to.join(name);
-        for ext in ["pack", "rev", "idx"] {
-            let file = pack.with_extension(ext);
-            if file.exists() {
-                std::fs::rename(&file, at.with_extension(ext))
-                    .map_err(|e| format!("moving {} into {}: {e}", file.display(), to.display()))?;
-            }
-        }
-        moved.push(at);
-    }
-    Ok(moved)
 }
 
 /// Hold `commit` against garbage collection for as long as the deployment built from it runs.
@@ -3633,8 +3652,7 @@ impl Supervisor {
                         supervising.discovered_ms = Some(now_ms());
                         supervising.desired_commit = Some(head.clone());
                         drop(supervising);
-                        let merged = merge_packs(&self.repo_dir, &self.config.leader_url, &self.token, &self.git_roots);
-                        if let Err(e) = merged {
+                        if let Err(e) = merge_packs(&self.repo_dir) {
                             tracing::warn!(
                                 target: "worker.packs_not_merged",
                                 error = %e,
@@ -5223,17 +5241,29 @@ mod tests {
             "only an enrolled worker is served"
         );
 
-        // Every fetch adds a pack, and past the limit they are merged into one fetched afresh. A pack holding what
-        // the fleet no longer runs stands for a rollback's running commit, and stays.
+        // Every fetch adds a pack, and past the limit they are merged into one. A commit the fleet's history does
+        // not hold, in a pack of its own, stands for what a rollback leaves running.
         let other = temp_dir("fetch-e2e-other");
         git_ok(
             &["init", "-q", "--bare", other.to_str().unwrap()],
             &std::env::temp_dir(),
         );
-        let kept = git_with_input(&["hash-object", "-w", "--stdin"], &other, b"what a rollback runs");
-        git_with_input(&["pack-objects", "-q", "objects/pack/pack"], &other, kept.as_bytes());
-        move_packs(&other.join("objects/pack"), &clone_dir.join("objects/pack")).unwrap();
-        let mut head = deployed;
+        let tree = git_with_input(&["mktree"], &other, b"");
+        let running = git_with_input(&["commit-tree", tree.trim(), "-m", "what a rollback runs"], &other, b"");
+        let running = running.trim().to_string();
+        git_with_input(
+            &["pack-objects", "-q", "--revs", "objects/pack/pack"],
+            &other,
+            running.as_bytes(),
+        );
+        for pack in packs_in(&other.join("objects/pack")).unwrap() {
+            for ext in ["pack", "idx"] {
+                let from = pack.with_extension(ext);
+                std::fs::copy(&from, clone_dir.join("objects/pack").join(from.file_name().unwrap())).unwrap();
+            }
+        }
+        hold_running(&clone_dir, &running);
+        let mut head = deployed.clone();
         while crate::leader::git::object_files(&clone_dir).1 <= crate::leader::git::PACK_LIMIT {
             let edit = crate::leader::git::FileEdit {
                 path: "groups/west/system.json".to_string(),
@@ -5250,25 +5280,17 @@ mod tests {
             head = fetch_deployed(&clone_dir, &base, token, public_roots()).unwrap();
             assert_eq!(head, next);
         }
-        merge_packs(&clone_dir, &base, token, public_roots()).expect("the packs merge");
-        assert_eq!(
-            crate::leader::git::object_files(&clone_dir).1,
-            2,
-            "the one fetched afresh, and the one it lacks some of"
-        );
-        assert!(!clone_dir.join(MERGING_DIR).exists());
-        assert_eq!(
-            std::fs::read_to_string(clone_dir.join(MERGED_FILE)).unwrap(),
-            "2",
-            "the next merge waits for as many fetches again"
-        );
+        merge_packs(&clone_dir).expect("the packs merge");
+        assert_eq!(crate::leader::git::object_files(&clone_dir).1, 1, "into one");
         fetched_reads(&clone_dir).expect("what was fetched still reads");
         let clone = gix::open(&clone_dir).unwrap();
-        assert!(
+        let commit = |id: &str| {
             clone
-                .find_object(gix::ObjectId::from_hex(kept.trim().as_bytes()).unwrap())
-                .is_ok()
-        );
+                .find_commit(gix::ObjectId::from_hex(id.as_bytes()).unwrap())
+                .map(|_| ())
+        };
+        commit(&running).expect("what runs still reads");
+        commit(&deployed).expect("and so does the history of what was fetched");
         std::fs::remove_dir_all(&other).ok();
     }
 
