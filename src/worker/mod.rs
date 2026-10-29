@@ -1530,7 +1530,6 @@ fn pool_targets(
             destination: Box::new(e.handle()),
             on_reject: d.on_reject.clone(),
             wants_doc_id: d.kind.wants_doc_id(),
-            id_field: d.kind.id_field().map(str::to_string),
             placement: d.kind.placement(),
         });
     }

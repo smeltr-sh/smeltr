@@ -19,7 +19,7 @@ use smeltr::metrics::{MetricValue, Metrics, MetricsHandle};
 use smeltr::plan::compile::compile;
 use smeltr::plan::config::{Answer, OnException, Payload, PipelineConfig, Step};
 use smeltr::plan::topology::{
-    DeliverRule, RouteConfig, SourceMeta, SourceMetas, compile_topology, compile_topology_with,
+    CompiledTopology, DeliverRule, RouteConfig, SourceMeta, SourceMetas, compile_topology, compile_topology_with,
 };
 use smeltr::runtime::{
     DROPPED_REJECTED, DROPPED_UNPROCESSABLE, DestinationTarget, MAX_IN_FLIGHT, MAX_TRACKED, Polled, Reader, Worker,
@@ -266,12 +266,11 @@ fn target_with(id: DestId, dest: impl Destination + 'static, on_reject: Answer) 
         on_reject,
         wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
-        id_field: None,
     }
 }
 
-/// A destination that keys documents on `__destination.id`, or on `id_field`.
-fn keyed(id: DestId, dest: impl Destination + 'static, id_field: Option<&str>) -> DestinationTarget {
+/// A destination that keys documents on `__destination.id`, or on the field its topology's `id_fields` names.
+fn keyed(id: DestId, dest: impl Destination + 'static) -> DestinationTarget {
     DestinationTarget {
         id,
         name: format!("dest-{id}"),
@@ -279,7 +278,6 @@ fn keyed(id: DestId, dest: impl Destination + 'static, id_field: Option<&str>) -
         on_reject: Answer::Block,
         wants_doc_id: true,
         placement: Some(smeltr::plan::topology::Placement::Index),
-        id_field: id_field.map(str::to_string),
     }
 }
 
@@ -935,7 +933,7 @@ fn pipeline_set_placement_and_id_reach_the_destination_unserialized() {
     let src = FakeSource::new([record("a", 0, 0), record("b", 1, 0)]);
     let mut w = worker(plain_route(), pipelines, &src);
     let dest = FakeDestination::new();
-    w.add_destination(keyed(0, dest.clone(), None));
+    w.add_destination(keyed(0, dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -962,7 +960,7 @@ fn a_literal_placement_and_id_reach_the_destination_on_every_row() {
     let src = FakeSource::new([record("a", 0, 0), record("b", 1, 0)]);
     let mut w = worker(plain_route(), pipelines, &src);
     let dest = FakeDestination::new();
-    w.add_destination(keyed(0, dest.clone(), None));
+    w.add_destination(keyed(0, dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -990,7 +988,7 @@ fn a_records_source_coordinates_make_a_unique_id() {
     let src = FakeSource::new([record(r#"{"a":1}"#, 7, 0), record(r#"{"a":1}"#, 7, 1)]);
     let mut w = worker(plain_route(), pipelines, &src);
     let dest = FakeDestination::new();
-    w.add_destination(keyed(0, dest.clone(), None));
+    w.add_destination(keyed(0, dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -1122,11 +1120,13 @@ fn document_identity_resolves_per_destination() {
         record(r#"{"event":{"id":"e-1"},"seq":7}"#, 1, 0),
         record(r#"{"other":1}"#, 2, 0),
     ]);
-    let mut w = worker(routes, pipelines, &src);
+    let mut topology = compile_topology(&routes, &pipelines).expect("compiles");
+    topology.id_fields = vec![(0, "event.id".to_string()), (1, "seq".to_string())];
+    let mut w = worker_of(topology, &src);
     let dests: Vec<FakeDestination> = (0..4).map(|_| FakeDestination::new()).collect();
-    w.add_destination(keyed(0, dests[0].clone(), Some("event.id")));
-    w.add_destination(keyed(1, dests[1].clone(), Some("seq")));
-    w.add_destination(keyed(2, dests[2].clone(), None));
+    w.add_destination(keyed(0, dests[0].clone()));
+    w.add_destination(keyed(1, dests[1].clone()));
+    w.add_destination(keyed(2, dests[2].clone()));
     w.add_destination(target(3, dests[3].clone()));
 
     tick(&mut w).unwrap();
@@ -2282,7 +2282,7 @@ fn an_unmatched_row_to_a_keyed_destination_is_counted_as_having_no_identity() {
     let src = FakeSource::new([record("x", 0, 0), record("y", 1, 0)]);
     let mut w = worker_with_unmatched(vec![], vec![], &src, deliver(&[0]));
     let dlq = FakeDestination::new();
-    w.add_destination(keyed(0, dlq.clone(), None));
+    w.add_destination(keyed(0, dlq.clone()));
 
     tick(&mut w).unwrap();
 
@@ -3625,12 +3625,11 @@ fn a_dlq_set_to_drop_loses_a_salvaged_row_it_refuses() {
 #[test]
 fn a_dlq_that_refuses_sends_the_row_on_to_its_own_dlq() {
     let src = FakeSource::new([record("a", 10, 0)]);
-    let mut w = worker_with_dlqs(
-        plain_route(),
-        vec![pipeline(0, vec![code(0, r#"k = "key-1";"#)])],
-        &src,
-        &[(0, vec![1, 2]), (1, vec![2])],
-    );
+    let mut topology =
+        compile_topology(&plain_route(), &[pipeline(0, vec![code(0, r#"k = "key-1";"#)])]).expect("compiles");
+    topology.dlq_of = [(0, vec![1, 2]), (1, vec![2])].into_iter().collect();
+    topology.id_fields = vec![(2, "k".to_string())];
+    let mut w = worker_of(topology, &src);
     let (main, first, last) = (
         AsyncDestination::new(),
         AsyncDestination::new(),
@@ -3638,7 +3637,7 @@ fn a_dlq_that_refuses_sends_the_row_on_to_its_own_dlq() {
     );
     w.add_destination(target_with(0, main.clone(), salvage_to(&[1])));
     w.add_destination(target_with(1, first.clone(), salvage_to(&[2])));
-    w.add_destination(keyed(2, last.clone(), Some("k")));
+    w.add_destination(keyed(2, last.clone()));
     tick(&mut w).unwrap();
     let batch = main.outstanding()[0];
     main.complete_with(batch, vec![refusal(0)]);
@@ -3752,6 +3751,11 @@ fn worker_with_dlqs(
 ) -> Worker {
     let mut topology = compile_topology(&routes, &pipelines).expect("compiles");
     topology.dlq_of = dlq_of.iter().cloned().collect();
+    worker_of(topology, source)
+}
+
+/// A worker running `topology` over `source`, with no destinations yet.
+fn worker_of(topology: CompiledTopology, source: &FakeSource) -> Worker {
     Worker::new(
         0,
         Box::new(source.clone()),
@@ -3807,19 +3811,18 @@ fn a_dlq_owed_two_units_of_a_batch_acknowledges_it_after_both() {
 #[test]
 fn each_dlq_keys_a_salvaged_row_on_its_own_identity() {
     let src = FakeSource::new([record("a", 10, 0)]);
-    let mut w = worker_with_dlqs(
-        plain_route(),
-        vec![pipeline(0, vec![code(0, r#"k = "key-1";"#)])],
-        &src,
-        &[(0, vec![1, 2])],
-    );
+    let mut topology =
+        compile_topology(&plain_route(), &[pipeline(0, vec![code(0, r#"k = "key-1";"#)])]).expect("compiles");
+    topology.dlq_of = [(0, vec![1, 2])].into_iter().collect();
+    topology.id_fields = vec![(1, "k".to_string())];
+    let mut w = worker_of(topology, &src);
     let (main, keyed_dlq, plain_dlq) = (
         AsyncDestination::new(),
         AsyncDestination::new(),
         AsyncDestination::new(),
     );
     w.add_destination(target_with(0, main.clone(), salvage_to(&[1, 2])));
-    w.add_destination(keyed(1, keyed_dlq.clone(), Some("k")));
+    w.add_destination(keyed(1, keyed_dlq.clone()));
     w.add_destination(target(2, plain_dlq.clone()));
     tick(&mut w).unwrap();
     main.complete_with(main.outstanding()[0], vec![refusal(0)]);

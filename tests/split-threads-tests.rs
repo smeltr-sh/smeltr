@@ -71,7 +71,6 @@ fn worker(source: &FakeSource, dest: &AsyncDestination) -> Worker {
         on_reject: Answer::Drop,
         wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
-        id_field: None,
     });
     w
 }
@@ -144,7 +143,6 @@ fn async_target(id: DestId, dest: &AsyncDestination) -> DestinationTarget {
         on_reject: Answer::Drop,
         wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
-        id_field: None,
     }
 }
 
@@ -279,7 +277,6 @@ fn a_lane_waiting_on_a_full_destination_leaves_the_pool_to_the_others() {
         on_reject: Answer::Drop,
         wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
-        id_field: None,
     };
     let (mut transform, lanes, acks) = two_lanes_to(vec![slow_handle, async_target(1, &fast)], [vec![0], vec![1]]);
 

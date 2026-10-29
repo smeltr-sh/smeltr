@@ -66,7 +66,6 @@ fn a_worker_around_a_metrics_source_ships_real_counters_as_ordinary_json_rows() 
         on_reject: Answer::Block,
         wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
-        id_field: None,
     });
 
     // Beside it ride the worker's own counters for source 9, started at 0.
