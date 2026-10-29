@@ -765,7 +765,7 @@ fn a_pipeline_maps_as_it_compiled_and_as_its_sample_shows() {
         } } } },
         "status": { "type": "long" },
         "took": { "type": "double" },
-        "url": { "properties": { "path": { "type": "wildcard" } } },
+        "url": { "properties": { "path": { "type": "keyword", "ignore_above": 8191 } } },
     });
     assert_eq!(mapping(&record), json!({ "mappings": { "properties": compiled } }));
 
