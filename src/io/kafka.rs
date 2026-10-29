@@ -914,9 +914,8 @@ struct Completion {
 /// What a sequence's records that did not land said.
 #[derive(Default)]
 struct Failed {
-    /// The first failure that may pass: every row in `rows` goes again under it.
-    error: Option<String>,
-    rows: Vec<usize>,
+    /// The rows that may land if sent again, under the first such failure.
+    undelivered: Option<Undelivered>,
     /// The records the broker refuses however often they are sent, for the destination's answer to `Refused`.
     refused: Vec<Rejection>,
 }
@@ -935,10 +934,14 @@ impl Completion {
         if let Some(failure) = failure.filter(|_| !self.abandoned.contains(&seq)) {
             let failed = self.failed.entry(seq).or_default();
             match failure {
-                Failure::Undelivered(why) => {
-                    failed.error.get_or_insert(why);
-                    failed.rows.push(row);
-                }
+                Failure::Undelivered(why) => failed
+                    .undelivered
+                    .get_or_insert_with(|| Undelivered {
+                        error: IoError::transient(format!("a produced message failed to deliver: {why}")),
+                        rows: Vec::new(),
+                    })
+                    .rows
+                    .push(row),
                 Failure::Refused(reason) => failed.refused.push(Rejection {
                     doc: row,
                     reason,
@@ -969,10 +972,7 @@ impl Completion {
                 batch,
                 rejections: failed.refused,
                 throttled: false,
-                undelivered: failed.error.map(|why| Undelivered {
-                    error: IoError::transient(format!("a produced message failed to deliver: {why}")),
-                    rows: failed.rows,
-                }),
+                undelivered: failed.undelivered,
             });
         }
     }

@@ -1266,8 +1266,9 @@ pub trait Destination: Send {
     /// borrowed by one that keeps them to send again: a destination that queues them takes them without a copy.
     ///
     /// Answers the refusals known now, each carrying its row. Under `Complete` that is every one; under `InFlight`
-    /// the rest come with the completion. `Err` is a delivery failure: nothing of this batch may be committed, and the
-    /// caller hands it over again.
+    /// the rest come with the completion. `Err` is a delivery failure of this batch alone: nothing of it may be
+    /// committed, and the caller hands it over again. What is already in flight is still answered for by
+    /// `poll_completions`, by a completion or by its `Err`.
     fn deliver(
         &mut self,
         batch: BatchId,

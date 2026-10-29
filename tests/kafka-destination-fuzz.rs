@@ -94,6 +94,8 @@ const OPTIONS: &[&str] = &[
     "row.tooLarge",
     "batches.several",
     "fault.produceRetried",
+    "fault.produceFailed",
+    "fault.produceRefused",
     "fault.brokersDown",
     "broken.brokers",
     "broken.defaultTopic",
@@ -718,35 +720,58 @@ fn deliver(d: &mut dyn Destination, batches: &[Vec<Sent>]) -> Result<(Vec<Vec<Re
     Ok((refused, pending))
 }
 
-/// Hands every batch to `d`, flushes, and waits for each to complete. Answers each batch's refused rows.
-fn write(d: &mut dyn Destination, batches: &[Vec<Sent>], deadline: Duration) -> Result<Vec<Vec<Rejection>>, String> {
-    let (mut refused, mut pending) = deliver(d, batches).map_err(|e| format!("not delivered: {e:?}"))?;
+/// Hands every batch to `d`, flushes, and waits for each to complete, sending again the rows a completion names
+/// undelivered, as egress does. Answers each batch's refused rows, by its own positions, and how many rows went again.
+fn write(
+    d: &mut dyn Destination,
+    batches: &[Vec<Sent>],
+    deadline: Duration,
+) -> Result<(Vec<Vec<Rejection>>, usize), String> {
+    let (mut refused, pending) = deliver(d, batches).map_err(|e| format!("not delivered: {e:?}"))?;
+    // Each batch in flight: the batch it carries rows of, and which, in its own order.
+    let mut pending: BTreeMap<u64, (usize, Vec<usize>)> = (pending.into_iter())
+        .map(|b| (b, (b as usize, (0..batches[b as usize].len()).collect())))
+        .collect();
+    let mut next = batches.len() as u64;
+    let mut sent_again = 0;
     let until = Instant::now() + deadline;
     // A flush that times out leaves its rows in flight, as the next tick's flush finds them.
-    loop {
+    let flush = |d: &mut dyn Destination| loop {
         match d.flush() {
-            Ok(()) => break,
+            Ok(()) => return Ok(()),
             Err(e) if Instant::now() > until => return Err(format!("not flushed: {e:?}")),
             Err(_) => {}
         }
-    }
+    };
+    flush(d)?;
     while !pending.is_empty() {
         for done in d.poll_completions().map_err(|e| format!("not landed: {e:?}"))? {
-            if let Some(u) = done.undelivered {
-                return Err(format!(
-                    "rows {:?} of batch {} not landed: {}",
-                    u.rows, done.batch, u.error
-                ));
+            let Some((batch, rows)) = pending.remove(&done.batch) else {
+                return Err(format!("batch {} completed, and none was in flight", done.batch));
+            };
+            refused[batch].extend(done.rejections.into_iter().map(|r| Rejection { doc: rows[r.doc], ..r }));
+            let Some(u) = done.undelivered else { continue };
+            let again: Vec<usize> = u.rows.iter().map(|&i| rows[i]).collect();
+            let owned: Vec<OwnedRecord> = again.iter().map(|&i| batches[batch][i].row.clone()).collect();
+            sent_again += again.len();
+            let (dispatched, now) = (d.deliver(next, Cow::Owned(owned)))
+                .map_err(|e| format!("rows {again:?} of batch {batch} not sent again: {e:?}"))?;
+            refused[batch].extend(now.into_iter().map(|r| Rejection { doc: again[r.doc], ..r }));
+            if dispatched == Dispatched::InFlight {
+                pending.insert(next, (batch, again));
             }
-            refused[done.batch as usize].extend(done.rejections);
-            pending.retain(|b| *b != done.batch);
+            next += 1;
+            flush(d)?;
         }
         if Instant::now() > until {
-            return Err(format!("batches {pending:?} never completed"));
+            return Err(format!(
+                "batches {:?} never completed",
+                pending.keys().collect::<Vec<_>>()
+            ));
         }
         std::thread::sleep(Duration::from_millis(2));
     }
-    Ok(refused)
+    Ok((refused, sent_again))
 }
 
 /// One message read back: its topic, key and value.
@@ -1012,14 +1037,54 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
             &vec![RDKafkaRespErr::RD_KAFKA_RESP_ERR_NOT_LEADER_FOR_PARTITION; n],
         );
     }
+    // One produce request the broker fails past any retry: its rows come back with their batch, to send again where
+    // they may land, refused where they never will.
+    let failed = (taken > 0 && !retried && rng.chance(5)).then(|| rng.chance(2));
+    if let Some(refusing) = failed {
+        let error = match refusing {
+            true => RDKafkaRespErr::RD_KAFKA_RESP_ERR_MSG_SIZE_TOO_LARGE,
+            false => RDKafkaRespErr::RD_KAFKA_RESP_ERR_POLICY_VIOLATION,
+        };
+        mock.request_errors(RDKafkaApiKey::Produce, &[error]);
+    }
     let fail = |e: String| format!("{e}\n{json}");
-    let refused = write(d.as_mut(), &sent, Duration::from_secs(30)).map_err(fail)?;
+    let (refused, sent_again) = write(d.as_mut(), &sent, Duration::from_secs(30)).map_err(fail)?;
     drop(d);
-    destination::check_refused(&sent, &refused, |s| s.topic.is_none()).map_err(fail)?;
+    // A row the failed request refused is held nowhere.
+    let mut held = sent;
+    if failed == Some(true) {
+        for (batch, refusals) in refused.iter().enumerate() {
+            for r in refusals {
+                let row = &mut held[batch][r.doc];
+                if row.topic.is_none() {
+                    continue;
+                }
+                if !r.reason.contains("TooLarge") {
+                    return Err(fail(format!("row {} of batch {batch} refused for {}", r.doc, r.reason)));
+                }
+                row.topic = None;
+            }
+        }
+    }
+    destination::check_refused(&held, &refused, |s| s.topic.is_none()).map_err(fail)?;
+    if failed == Some(false) && sent_again == 0 && c.acks != Acks::None {
+        return Err(fail("a produce request failed, and no row was sent again".to_string()));
+    }
     let read = read_back(&bootstrap, &[DEFAULT_TOPIC, OTHER_TOPIC], &marker).map_err(fail)?;
-    check_held(&sent, &read, retried && c.acks == Acks::None, retried).map_err(fail)?;
+    check_held(
+        &held,
+        &read,
+        (retried || failed.is_some()) && c.acks == Acks::None,
+        retried,
+    )
+    .map_err(fail)?;
     if retried {
         reached.reach("fault.produceRetried");
+    }
+    match failed {
+        Some(true) => reached.reach("fault.produceRefused"),
+        Some(false) => reached.reach("fault.produceFailed"),
+        None => {}
     }
     Ok(())
 }
@@ -1128,7 +1193,7 @@ fn live_seed(seed: u64, brokers: &str, reached: &mut Reached, pki: &Pki) -> Resu
             .map_err(|e| format!("does not build: {e:?}"))?;
         let marker = format!("{run}:");
         let sent = batches(&mut rng, reached, &c, &marker, &other_topic);
-        let refused = write(d.as_mut(), &sent, Duration::from_secs(60))?;
+        let (refused, _) = write(d.as_mut(), &sent, Duration::from_secs(60))?;
         drop(d);
         destination::check_refused(&sent, &refused, |s| s.topic.is_none())?;
         let read = read_back(brokers, &[&default_topic, &other_topic], &marker)?;

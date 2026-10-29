@@ -1232,3 +1232,44 @@ fn only_the_rows_that_did_not_land_are_sent_again() {
     );
     assert_eq!(dest.units().len(), 3, "nothing else was sent again");
 }
+
+/// A batch the destination would not take is sent again alone: the batch already in flight stays with the destination
+/// and is answered for once, not sent again.
+#[test]
+fn a_batch_the_destination_would_not_take_is_sent_again_alone() {
+    let dest = AsyncDestination::new();
+    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut h = egress.handle();
+    let units_within = |n: usize| {
+        let deadline = std::time::Instant::now() + timeout();
+        loop {
+            let units = dest.units();
+            if units.len() >= n || std::time::Instant::now() >= deadline {
+                return units;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    hand(&mut h, 1, &[OutgoingRecord::new(b"in flight")]);
+    assert_eq!(units_within(1).len(), 1);
+    dest.fail_next_deliver("the producer's queue stayed full");
+    hand(&mut h, 2, &[OutgoingRecord::new(b"refused once")]);
+    let units = units_within(2);
+    let values: Vec<_> = units.iter().map(|(_, rows)| rows.clone()).collect();
+    assert_eq!(
+        values,
+        vec![vec![b"in flight".to_vec()], vec![b"refused once".to_vec()]]
+    );
+    for (batch, _) in &units {
+        dest.complete(*batch);
+    }
+    let mut done = Vec::new();
+    while done.len() < 2 {
+        let more = completions_within(&mut h, timeout());
+        assert!(!more.is_empty(), "both batches complete: {done:?}");
+        done.extend(more.into_iter().map(|c| c.batch));
+    }
+    done.sort();
+    assert_eq!(done, vec![1, 2]);
+    assert_eq!(dest.units().len(), 2, "the one in flight was not sent again");
+}
