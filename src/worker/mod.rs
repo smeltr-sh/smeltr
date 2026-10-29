@@ -771,7 +771,10 @@ fn merge_packs(repo_dir: &Path, leader_url: &str, token: &str, git_roots: &Path)
         .and_then(|_| move_packs(&merging.join("objects/pack"), &repo_dir.join("objects/pack")));
     let _ = std::fs::remove_dir_all(&merging);
     let merged = merged?;
-    let index = |pack: &Path| gix::odb::pack::index::File::at(pack.with_extension("idx"), gix::hash::Kind::Sha1).ok();
+    let hash = gix::open(repo_dir)
+        .map_err(|e| format!("opening {}: {e}", repo_dir.display()))?
+        .object_hash();
+    let index = |pack: &Path| gix::odb::pack::index::File::at(pack.with_extension("idx"), hash).ok();
     let new: Vec<_> = merged.iter().filter_map(|pack| index(pack)).collect();
     for old in packs_in(&repo_dir.join("objects/pack"))? {
         let covered = !merged.contains(&old)
@@ -3630,7 +3633,6 @@ impl Supervisor {
                         supervising.discovered_ms = Some(now_ms());
                         supervising.desired_commit = Some(head.clone());
                         drop(supervising);
-                        self.publish(head);
                         let merged = merge_packs(&self.repo_dir, &self.config.leader_url, &self.token, &self.git_roots);
                         if let Err(e) = merged {
                             tracing::warn!(
@@ -3639,6 +3641,8 @@ impl Supervisor {
                                 "the clone's packs could not be merged, so it is tried again after the next fetch"
                             );
                         }
+                        // Before the build that reads the clone starts, so no pack goes from under it.
+                        self.publish(head);
                     }
                     Err(e) => {
                         let cause = without_timings(&e);

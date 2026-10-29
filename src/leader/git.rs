@@ -3329,11 +3329,17 @@ pub fn pack(repo_path: &Path) -> Result<(), GitError> {
         return Ok(());
     }
     // Not `gc --auto`: it leaves an object no ref reaches loose when nothing may be pruned, so it would run again on
-    // every call and pack nothing more.
+    // every call and pack nothing more. A cruft pack is where `gc` keeps such an object instead, and before git 2.40
+    // it has to be asked for.
     let output = Command::new("git")
         .arg("--git-dir")
         .arg(repo_path)
         .args([
+            "-c",
+            "gc.cruftPacks=true",
+            // Refs are gix's to write, and packing them would hold their lock against a save.
+            "-c",
+            "gc.packRefs=false",
             "-c",
             "gc.pruneExpire=never",
             "-c",
@@ -3640,12 +3646,14 @@ mod tests {
         pack(&repo).unwrap();
         assert!(object_files(&repo).0 > 0, "under the limit, nothing is packed");
 
-        let odb = open(&repo).unwrap();
-        let unreached: Vec<_> = (0..=LOOSE_LIMIT)
-            .map(|n| odb.write_blob(format!("blob {n}")).unwrap().detach())
-            .collect();
-        pack(&repo).unwrap();
-        assert_eq!(object_files(&repo).0, 0, "past it, everything is packed");
+        // Twice: the second time, what no ref reaches is already in a pack, which the new one replaces.
+        let mut unreached = Vec::new();
+        for round in 0..2 {
+            let odb = open(&repo).unwrap();
+            unreached.extend((0..=LOOSE_LIMIT).map(|n| odb.write_blob(format!("{round} {n}")).unwrap().detach()));
+            pack(&repo).unwrap();
+            assert_eq!(object_files(&repo).0, 0, "past it, everything is packed");
+        }
         let odb = open(&repo).unwrap();
         assert!(
             unreached.iter().all(|id| odb.find_object(*id).is_ok()),
