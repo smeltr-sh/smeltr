@@ -348,6 +348,14 @@ impl Actor {
         }
     }
 
+    /// An integration, by its name as an administrator gave it.
+    pub fn integration(id: &str, name: &str) -> Actor {
+        Actor {
+            id: id.to_string(),
+            display_name: name.to_string(),
+        }
+    }
+
     /// A person's agent acting for them: their account, named as theirs.
     pub fn persons_agent(id: &str, display_name: &str) -> Actor {
         Actor {
@@ -898,6 +906,9 @@ pub trait Store: Send + Sync {
     //
     // A password hash is written and compared, never listed: only `local_credential_by_username` returns one, so
     // the roster the GUI and the audit read cannot carry a verifier by accident.
+    //
+    // `get_user` reads an integration's account as well, since the gate reads every caller. No write here changes
+    // one: an integration changes only as an integration.
 
     /// Whether any account exists at all. What bootstrap asks before creating the first administrator; the answer
     /// is only ever a hint, since [`Store::bootstrap_administrator`] re-checks it inside its own transaction.
@@ -917,6 +928,7 @@ pub trait Store: Send + Sync {
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError>;
 
+    /// Every person's account. An integration is an account too, and `list_integrations` lists it.
     fn list_users(&self) -> Result<Vec<UserRecord>, StoreError>;
 
     fn get_user(&self, id: &str) -> Result<Option<UserRecord>, StoreError>;

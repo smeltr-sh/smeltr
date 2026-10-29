@@ -1582,7 +1582,7 @@ impl Store for SqliteStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, auth_source, display_name, enabled, administrator, generation, created_at, updated_at
-               FROM users ORDER BY created_at, id",
+               FROM users WHERE auth_source <> 'integration' ORDER BY created_at, id",
         )?;
         let rows = stmt.query_map([], read_user)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1679,9 +1679,10 @@ impl Store for SqliteStore {
     fn revoke_sessions(&self, user_id: &str, event: &SecurityEvent) -> Result<Result<(), AccountError>, StoreError> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        if bump_generation(&tx, user_id)? == 0 {
+        if !person_exists(&tx, user_id)? {
             return Ok(Err(AccountError::NoSuchUser));
         }
+        bump_generation(&tx, user_id)?;
         insert_event(&tx, event)?;
         tx.commit()?;
         Ok(Ok(()))
@@ -1695,7 +1696,7 @@ impl Store for SqliteStore {
     ) -> Result<Result<(), AccountError>, StoreError> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        if !user_exists(&tx, user_id)? {
+        if !person_exists(&tx, user_id)? {
             return Ok(Err(AccountError::NoSuchUser));
         }
         // Counted inside the transaction and excluding this account, so two disables running at once serialize
@@ -1722,7 +1723,7 @@ impl Store for SqliteStore {
     fn set_display_name(&self, user_id: &str, display_name: &str) -> Result<Result<(), AccountError>, StoreError> {
         let conn = self.conn.lock().unwrap();
         let n = conn.execute(
-            "UPDATE users SET display_name = ?2, updated_at = ?3 WHERE id = ?1",
+            "UPDATE users SET display_name = ?2, updated_at = ?3 WHERE id = ?1 AND auth_source <> 'integration'",
             rusqlite::params![user_id, display_name, super::warnings::now_millis()],
         )?;
         match n {
@@ -2067,7 +2068,7 @@ impl Store for SqliteStore {
             .map_err(|e| StoreError::failed(format!("encoding agent permissions: {e}")))?;
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        if !user_exists(&tx, user_id)? {
+        if !person_exists(&tx, user_id)? {
             return Ok(Err(AccountError::NoSuchUser));
         }
         tx.execute(
@@ -2334,10 +2335,13 @@ fn username_taken(tx: &rusqlite::Transaction<'_>, username: &str) -> Result<bool
     Ok(n != 0)
 }
 
-fn user_exists(tx: &rusqlite::Transaction<'_>, user_id: &str) -> Result<bool, StoreError> {
-    let n: i64 = tx.query_row("SELECT EXISTS (SELECT 1 FROM users WHERE id = ?1)", (user_id,), |row| {
-        row.get(0)
-    })?;
+/// A person's account: an integration's is none, and is changed only as an integration.
+fn person_exists(tx: &rusqlite::Transaction<'_>, user_id: &str) -> Result<bool, StoreError> {
+    let n: i64 = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE id = ?1 AND auth_source <> 'integration')",
+        (user_id,),
+        |row| row.get(0),
+    )?;
     Ok(n != 0)
 }
 
@@ -4700,6 +4704,48 @@ mod tests {
         assert_eq!(integration.roles, roles);
         assert!(integration.enabled && !integration.administrator && integration.keys.is_empty());
         assert_eq!(s.list_integrations().unwrap(), vec![integration]);
+    }
+
+    #[test]
+    fn an_integration_is_changed_only_as_an_integration() {
+        let s = store();
+        s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
+        s.create_integration(
+            new_integration("i_1", "export", &[]),
+            &integration_event("integration-create"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            s.list_users().unwrap().len(),
+            1,
+            "an integration was listed among people"
+        );
+        assert_eq!(
+            s.set_user_enabled("i_1", false, &integration_event("account-disable"))
+                .unwrap(),
+            Err(AccountError::NoSuchUser)
+        );
+        assert_eq!(
+            s.set_display_name("i_1", "renamed").unwrap(),
+            Err(AccountError::NoSuchUser)
+        );
+        assert_eq!(
+            s.revoke_sessions("i_1", &integration_event("revoke-sessions")).unwrap(),
+            Err(AccountError::NoSuchUser)
+        );
+        assert_eq!(
+            s.put_agent_permissions(
+                "i_1",
+                &AgentPermissions::Everything,
+                &integration_event("agent-permissions")
+            )
+            .unwrap(),
+            Err(AccountError::NoSuchUser)
+        );
+        let integration = s.integration("i_1").unwrap().unwrap();
+        assert!(integration.enabled);
+        assert_eq!(integration.name, "export");
     }
 
     #[test]

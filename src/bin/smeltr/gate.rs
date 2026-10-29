@@ -347,12 +347,19 @@ pub async fn shape(req: axum::extract::Request, next: axum::middleware::Next) ->
 }
 
 /// Whether `user` may hold a session at all. A local account must still be an administrator, which it always is;
-/// an OIDC account is let in whatever it holds, and what it may then do is the policy's to decide.
+/// an OIDC account is let in whatever it holds, and what it may then do is the policy's to decide. An integration
+/// never holds one: it calls with a key.
 pub fn admitted(user: &UserRecord) -> bool {
-    user.enabled && (user.auth_source != AuthSource::Local || user.administrator)
+    user.enabled
+        && match user.auth_source {
+            AuthSource::Local => user.administrator,
+            AuthSource::Oidc => true,
+            AuthSource::Integration => false,
+        }
 }
 
-/// What `user` holds now: its groups as of its last sign-in, against the roles as they are.
+/// What `user` holds now: its groups as of its last sign-in, or an integration's roles, against the roles as they
+/// are.
 pub fn access_of(store: &dyn Store, user: &UserRecord) -> Result<Access, StoreError> {
     let groups = match user.auth_source {
         // Holds everything whatever the roles say, so neither is read.
@@ -361,6 +368,11 @@ pub fn access_of(store: &dyn Store, user: &UserRecord) -> Result<Access, StoreEr
             .oidc_identity_of(&user.id)?
             .map(|identity| identity.groups)
             .unwrap_or_default(),
+        AuthSource::Integration => match store.integration(&user.id)? {
+            Some(integration) if integration.administrator => return Ok(Access::Administrator),
+            Some(integration) => integration.roles,
+            None => Vec::new(),
+        },
     };
     Ok(Access::of(user.auth_source, &groups, &store.list_roles()?))
 }

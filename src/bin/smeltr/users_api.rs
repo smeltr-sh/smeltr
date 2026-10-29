@@ -51,7 +51,7 @@ impl UserDto {
         let username = store.username_of(&user.id)?;
         let identity = match user.auth_source {
             AuthSource::Oidc => store.oidc_identity_of(&user.id)?,
-            AuthSource::Local => None,
+            AuthSource::Local | AuthSource::Integration => None,
         };
         let groups = identity.as_ref().map(|i| i.groups.clone()).unwrap_or_default();
         let held = roles
@@ -86,9 +86,12 @@ pub fn provider_login_of(store: &dyn Store, user: &UserRecord) -> Result<Option<
 }
 
 /// Turn a refused account operation into the status that describes it.
-fn account_error(e: AccountError) -> Response {
+pub fn account_error(e: AccountError) -> Response {
     let status = match e {
-        AccountError::UsernameTaken | AccountError::LastAdministrator => StatusCode::CONFLICT,
+        AccountError::UsernameTaken
+        | AccountError::LastAdministrator
+        | AccountError::NameTaken
+        | AccountError::Disabled => StatusCode::CONFLICT,
         AccountError::NoSuchUser => StatusCode::NOT_FOUND,
         AccountError::WrongAuthSource | AccountError::Superseded => StatusCode::CONFLICT,
     };
