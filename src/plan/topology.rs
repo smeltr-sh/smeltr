@@ -737,10 +737,12 @@ impl SourceMeta {
     }
 
     /// This meta for a source that declares `encoding`. A source that reads bytes and declares `none` decodes
-    /// nothing, so its record has no `_raw`.
+    /// nothing, so its record has no `_raw`. A source that reads no bytes has nothing to decode, so its meta keeps
+    /// none.
     pub fn with_encoding(self, encoding: Encoding) -> SourceMeta {
         match encoding {
-            Encoding::None if self.reads_bytes() => SourceMeta {
+            _ if !self.reads_bytes() => self,
+            Encoding::None => SourceMeta {
                 record: std::borrow::Cow::Borrowed(&[]),
                 encoding,
                 ..self
@@ -3476,8 +3478,9 @@ pub fn compile_topology_with(
 
     // What a plan depends on is the names in scope, which is the source's metadata -- not the source. Two Kafka sources
     // routed to one pipeline would compile it to the same instructions, the same slots and the same loaded lookup
-    // tables, so they share one plan. Route order, deduped, so the errors a config produces stay in the same order from
-    // run to run.
+    // tables, so they share one plan. The metadata carries the encoding, so two that differ only there compile apart,
+    // to the same plan twice. Route order, deduped, so the errors a config produces stay in the same order from run
+    // to run.
     let mut seen = std::collections::HashSet::new();
     let pairs: Vec<(SourceMeta, usize)> = routes
         .iter()
@@ -3965,6 +3968,11 @@ mod tests {
         assert_eq!(meta.field_type("_raw"), None);
         assert_eq!(meta.field_type(SOURCE_BYTES), Some(DataType::Bytes));
         assert_eq!(SourceMeta::KAFKA.with_encoding(Encoding::Auto), SourceMeta::KAFKA);
+        // A source that reads no bytes keeps no encoding, so the meta it declares and the meta it runs with are one.
+        assert_eq!(
+            SourceMeta::MYSQL.with_encoding(Encoding::Fixed(encoding_rs::UTF_8)),
+            SourceMeta::MYSQL
+        );
 
         let layout: Vec<DataType> = crate::plan::compile::ingest_fields(&meta)
             .into_iter()
