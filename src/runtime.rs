@@ -795,7 +795,7 @@ impl Reader {
                 ("source".to_string(), self.source_id.to_string()),
                 ("cause".to_string(), cause.name().to_string()),
             ],
-            value: crate::heartbeat::MetricValueDto::Text(reason),
+            value: crate::heartbeat::MetricValueDto::text(&reason),
         })
     }
 
@@ -808,7 +808,7 @@ impl Reader {
         Some(crate::heartbeat::MetricSampleDto {
             metric: "smeltr_source_connection_error".to_string(),
             labels: vec![("source".to_string(), self.source_id.to_string())],
-            value: crate::heartbeat::MetricValueDto::Text(reason),
+            value: crate::heartbeat::MetricValueDto::text(&reason),
         })
     }
 }
@@ -2254,7 +2254,7 @@ impl RefusalRing {
                     ("destination".to_string(), dest.to_string()),
                     ("at_millis".to_string(), r.at_millis.to_string()),
                 ],
-                value: crate::heartbeat::MetricValueDto::Text(r.message),
+                value: crate::heartbeat::MetricValueDto::text(&r.message),
             })
             .collect()
     }
@@ -4426,6 +4426,23 @@ mod tests {
             &fact.value,
             crate::heartbeat::MetricValueDto::Text(t) if t == &reason
         ));
+
+        let rambling = Reader::new(
+            7,
+            Box::new(FlakySource {
+                error: Some("x".repeat(10 * MAX_TEXT_LEN)),
+            }),
+            vec![],
+            MAX_IN_FLIGHT,
+            MetricsHandle::new(Arc::new(crate::metrics::Metrics::new()), "reader-7"),
+        );
+        assert!(
+            matches!(
+                rambling.connection_error_fact().map(|f| f.value),
+                Some(crate::heartbeat::MetricValueDto::Text(t)) if t.chars().count() <= MAX_TEXT_LEN + 1
+            ),
+            "a source's error rode the heartbeat whole"
+        );
     }
 
     /// A source that cannot be read, until it can.
