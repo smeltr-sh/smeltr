@@ -68,7 +68,6 @@ fn target(id: DestId, dest: &FakeDestination) -> DestinationTarget {
         on_reject: Answer::Drop,
         wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
-        id_field: None,
     }
 }
 

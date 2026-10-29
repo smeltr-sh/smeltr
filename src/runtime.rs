@@ -142,8 +142,6 @@ pub struct DestinationTarget {
     /// Whether this destination keys documents on the row's `__destination.id`, so a row without one is counted
     /// (`smeltr_rows_without_doc_id_total`).
     pub wants_doc_id: bool,
-    /// The row field that supplies the document identity when the pipeline set no `__destination.id`.
-    pub id_field: Option<String>,
     /// The `__destination` field that places a row in it, if it reads one.
     pub placement: Option<Placement>,
 }
@@ -1384,11 +1382,9 @@ impl Transform {
     /// single record, and only a record that will not fit alone leaves the pipeline. Backing off would retry the same
     /// allocation forever; diverting the batch would punish a whole poll for one oversized record.
     fn process_batch(&mut self, lane: &Lane, records: &[SourceRecord], out: &mut Output) -> Result<(), IoError> {
-        let id_fields: Vec<(DestId, String)> = self
-            .destinations
-            .iter()
-            .filter_map(|d| d.id_field.clone().map(|f| (d.id, f)))
-            .collect();
+        // A handle of its own, so `self` stays free to be borrowed mutably below.
+        let topology = Arc::clone(&self.topology);
+        let id_fields = &topology.id_fields;
 
         // Each split strictly shrinks its range, so this reaches single records at worst. Later ranges pushed first, so
         // delivery follows source order.
@@ -1408,7 +1404,7 @@ impl Transform {
             attempt
                 .now_micros
                 .get_or_insert_with(crate::core::ctx::wall_clock_micros);
-            let Refused { resume_from, over } = match self.run_attempt(lane, records, &attempt, &id_fields, out)? {
+            let Refused { resume_from, over } = match self.run_attempt(lane, records, &attempt, id_fields, out)? {
                 None => continue,
                 Some(refused) => refused,
             };

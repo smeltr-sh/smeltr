@@ -67,7 +67,6 @@ fn transform_answering(streams: &Arc<Streams>, answer: Answer) -> (Transform, Ar
         on_reject: Answer::Drop,
         wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
-        id_field: None,
     };
     let transform = Transform::new(
         vec![lane.clone()],

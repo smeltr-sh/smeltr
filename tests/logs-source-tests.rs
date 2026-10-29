@@ -77,7 +77,6 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
         on_reject: Answer::Block,
         wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
-        id_field: None,
     });
 
     // The drain thread is what fills the queue, so poll for it rather than race it.
