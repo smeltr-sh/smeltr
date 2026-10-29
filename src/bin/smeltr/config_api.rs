@@ -1235,15 +1235,19 @@ pub struct LookupTableEdit {
 }
 
 pub async fn put_lookup_tables(
+    State(state): State<smeltr::leader::AppState>,
     Extension(actor): Extension<Actor>,
     at: Addressed,
     Json(tables): Json<Vec<LookupTableEdit>>,
 ) -> Envelope<Save> {
-    blocking_save(move || {
+    let saved = blocking_save(move || {
         at.open()
             .map_or_else(Save::refused, |writing| save_lookup_tables(writing, tables, &actor))
     })
-    .await
+    .await;
+    // A table's contents are stored as an upload is, so retention runs after it as after an upload.
+    smeltr::leader::prune_lookups(&state).await;
+    saved
 }
 
 fn save_lookup_tables(mut writing: Writing, edits: Vec<LookupTableEdit>, author: &Actor) -> Envelope<Save> {
