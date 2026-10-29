@@ -358,10 +358,11 @@ async fn integration_of(auth: &Auth, key: String) -> Result<(Actor, Access), Box
         };
         // A minute at most behind, which is all a roster that asks whether a key is in use needs. Its failing to be
         // written refuses nothing: the key is good.
-        if access.is_some() && presented.last_used_at.is_none_or(|at| now - at >= LAST_USED_EVERY) {
-            if let Err(e) = store.mark_api_key_used(&presented.id, now) {
-                tracing::warn!(target: "leader.identity_unavailable", error = %e, "a key's last use could not be written");
-            }
+        if access.is_some()
+            && presented.last_used_at.is_none_or(|at| now - at >= LAST_USED_EVERY)
+            && let Err(e) = store.mark_api_key_used(&presented.id, now)
+        {
+            tracing::warn!(target: "leader.identity_unavailable", error = %e, "a key's last use could not be written");
         }
         Ok::<_, StoreError>(Some((user, access)))
     })
@@ -579,6 +580,41 @@ mod tests {
             aliases: vec!["http://localhost:4000".into()],
             secure: false,
             proxied: false,
+        }
+    }
+
+    /// An integration calls with a key, so no session of one is admitted, whatever its account says.
+    #[test]
+    fn an_integration_holds_no_session() {
+        let account = |auth_source, administrator| UserRecord {
+            id: "u_1".into(),
+            auth_source,
+            display_name: "exporter".into(),
+            enabled: true,
+            administrator,
+            generation: 1,
+            created_at: 0,
+            updated_at: 0,
+        };
+        assert!(admitted(&account(AuthSource::Local, true)));
+        assert!(admitted(&account(AuthSource::Oidc, false)));
+        assert!(!admitted(&account(AuthSource::Integration, false)));
+        assert!(!admitted(&account(AuthSource::Integration, true)));
+    }
+
+    #[test]
+    fn a_key_reaches_no_persons_route() {
+        for path in [
+            "/api/auth/password",
+            "/api/me/agent-permissions",
+            "/api/agent/models",
+            "/api/integrations",
+            "/api/integrations/u_1/keys",
+        ] {
+            assert!(person_only(path), "{path}");
+        }
+        for path in ["/api/integrationsx", "/api/users", "/api/areas/shared"] {
+            assert!(!person_only(path), "{path}");
         }
     }
 

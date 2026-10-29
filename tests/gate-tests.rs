@@ -577,7 +577,7 @@ fn a_human_cookie_does_not_open_a_worker_route() {
     assert_eq!(status, 401, "a browser session reached the worker protocol");
 }
 
-/// A bearer token is not a session either: the header the old gate accepted is no longer read at all.
+/// A bearer token is not a session either: one that is no integration's key lets nobody in.
 #[test]
 fn a_bearer_token_is_not_a_session() {
     let leader = start("bearer");
@@ -2078,6 +2078,270 @@ fn an_idle_timeout_past_the_absolute_one_is_refused() {
         30 * 60,
         "a refused pair changed something: {settings}"
     );
+}
+
+// -- integrations ---------------------------------------------------------------
+
+/// `method path` with `key` and nothing a browser sends: no cookie, no `Origin`, no CSRF value.
+fn with_key(
+    leader: &Leader,
+    key: &str,
+    method: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> (u16, serde_json::Value) {
+    let request = ureq::http::Request::builder()
+        .method(method)
+        .uri(format!("{}{path}", leader.base))
+        .header("authorization", format!("Bearer {key}"))
+        .header("content-type", "application/json")
+        .body(body.map(|b| b.to_string()).unwrap_or_default())
+        .unwrap();
+    let response = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .new_agent()
+        .run(request)
+        .expect("the call was answered");
+    let status = response.status().as_u16();
+    (
+        status,
+        response.into_body().read_json().unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// An integration made by `op`, and its id.
+fn integration(leader: &Leader, op: &Operator, body: serde_json::Value) -> String {
+    let (status, created) = leader.post_as(op, "/api/integrations", body);
+    assert_eq!(status, 201, "{created}");
+    created["id"].as_str().unwrap().to_string()
+}
+
+/// A new key for the integration `id`, and the key's id.
+fn key_for(leader: &Leader, op: &Operator, id: &str) -> (String, String) {
+    let (status, created) = leader.post_as(
+        op,
+        &format!("/api/integrations/{id}/keys"),
+        serde_json::json!({ "label": "ci" }),
+    );
+    assert_eq!(status, 201, "{created}");
+    (
+        created["key"].as_str().unwrap().to_string(),
+        created["id"].as_str().unwrap().to_string(),
+    )
+}
+
+/// A key holds what its integration's roles give, and nothing it does not.
+#[test]
+fn a_key_calls_the_api_with_what_its_integrations_roles_give() {
+    let leader = start("integration-roles");
+    let op = operator(&leader);
+    let (status, body) = leader.put_as(
+        &op,
+        "/api/roles/smeltr-readers",
+        serde_json::json!({ "areas": { "shared": "viewer" } }),
+    );
+    assert_eq!(status, 200, "{body}");
+    let id = integration(
+        &leader,
+        &op,
+        serde_json::json!({ "name": "nightly export", "roles": ["smeltr-readers"] }),
+    );
+    let (key, _) = key_for(&leader, &op, &id);
+
+    let (status, body) = with_key(&leader, &key, "GET", "/api/areas/shared", None);
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = with_key(
+        &leader,
+        &key,
+        "PUT",
+        "/api/areas/shared/grok-patterns?branch=work",
+        Some(serde_json::json!([])),
+    );
+    assert_eq!(status, 403, "a viewer's key edited: {body}");
+    let (status, _) = with_key(&leader, &key, "GET", "/api/users", None);
+    assert_eq!(status, 403, "a viewer's key read the roster");
+
+    let (_, roster) = leader.get_as(&op.session, "/api/integrations");
+    let listed = &roster["integrations"][0];
+    assert_eq!(listed["name"], "nightly export");
+    assert!(
+        listed["keys"][0]["lastUsedAt"].is_i64(),
+        "a used key reads as never used: {listed}"
+    );
+    assert!(!roster.to_string().contains(&key), "the roster carried a key");
+    let (_, users) = leader.get_as(&op.session, "/api/users");
+    assert_eq!(
+        users["users"].as_array().unwrap().len(),
+        1,
+        "an integration is listed among people: {users}"
+    );
+}
+
+/// An administrator's key needs no browser protection, since no browser attaches it, and what it does is its
+/// integration's in the audit.
+#[test]
+fn an_administrators_key_changes_things_as_its_integration() {
+    let leader = start("integration-administrator");
+    let op = operator(&leader);
+    let id = integration(
+        &leader,
+        &op,
+        serde_json::json!({ "name": "provisioner", "administrator": true }),
+    );
+    let (key, _) = key_for(&leader, &op, &id);
+
+    let (status, body) = with_key(
+        &leader,
+        &key,
+        "PUT",
+        "/api/roles/smeltr-editors",
+        Some(serde_json::json!({ "areas": { "shared": "editor" } })),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (_, events) = leader.get_as(&op.session, "/api/security-events");
+    let put = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "role-put")
+        .expect("the role was audited");
+    assert_eq!(put["actor"], id.as_str());
+}
+
+/// The three answers a worker's token has, and for the same reasons: never made, revoked, and a store that could
+/// not say, which this cannot provoke.
+#[test]
+fn a_revoked_key_and_a_disabled_integrations_keys_are_refused() {
+    let leader = start("integration-revoked");
+    let op = operator(&leader);
+    let id = integration(
+        &leader,
+        &op,
+        serde_json::json!({ "name": "exporter", "administrator": true }),
+    );
+    let (first, first_id) = key_for(&leader, &op, &id);
+    let (second, _) = key_for(&leader, &op, &id);
+
+    let (status, _) = with_key(&leader, &"0".repeat(64), "GET", "/api/health", None);
+    assert_eq!(status, 401, "a key never made");
+
+    assert_eq!(
+        leader.delete_as(&op, &format!("/api/integrations/{id}/keys/{first_id}")),
+        200
+    );
+    assert_eq!(
+        leader.delete_as(&op, &format!("/api/integrations/{id}/keys/{first_id}")),
+        404
+    );
+    let (status, _) = with_key(&leader, &first, "GET", "/api/health", None);
+    assert_eq!(status, 403, "a revoked key");
+    let (status, _) = with_key(&leader, &second, "GET", "/api/health", None);
+    assert_eq!(status, 200, "revoking one key revoked another");
+
+    let (status, body) = leader.patch_as(
+        &op,
+        &format!("/api/integrations/{id}"),
+        serde_json::json!({ "enabled": false }),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (status, _) = with_key(&leader, &second, "GET", "/api/health", None);
+    assert_eq!(status, 403, "a disabled integration's key");
+    let (status, body) = leader.patch_as(
+        &op,
+        &format!("/api/integrations/{id}"),
+        serde_json::json!({ "enabled": true }),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["keys"], serde_json::json!([]), "enabling brought keys back");
+    let (status, _) = with_key(&leader, &second, "GET", "/api/health", None);
+    assert_eq!(status, 403, "enabling brought a key back");
+
+    let (_, events) = leader.get_as(&op.session, "/api/security-events");
+    let actions: Vec<&str> = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["action"].as_str())
+        .collect();
+    for expected in [
+        "integration-create",
+        "key-create",
+        "key-revoke",
+        "integration-disable",
+        "integration-change",
+    ] {
+        assert!(actions.contains(&expected), "{expected} is not in {actions:?}");
+    }
+    assert!(!events.to_string().contains(&second), "an audit row carried a key");
+}
+
+/// A key is not a way into signing in, a person's own settings, or integrations, so no key makes another.
+#[test]
+fn a_key_reaches_no_persons_route() {
+    let leader = start("integration-person-only");
+    let op = operator(&leader);
+    let id = integration(
+        &leader,
+        &op,
+        serde_json::json!({ "name": "provisioner", "administrator": true }),
+    );
+    let (key, _) = key_for(&leader, &op, &id);
+    for (method, path) in [
+        ("GET", "/api/integrations"),
+        ("POST", "/api/integrations/x/keys"),
+        ("GET", "/api/me/agent-permissions"),
+        ("GET", "/api/agent/conversations"),
+    ] {
+        let (status, body) = with_key(&leader, &key, method, path, Some(serde_json::json!({})));
+        assert_eq!(status, 403, "{method} {path}: {body}");
+    }
+}
+
+/// One caller, one credential: a request carrying both a key and a session is neither's.
+#[test]
+fn a_key_and_a_session_together_are_refused() {
+    let leader = start("integration-both");
+    let op = operator(&leader);
+    let id = integration(&leader, &op, serde_json::json!({ "name": "exporter" }));
+    let (key, _) = key_for(&leader, &op, &id);
+    let status = status_of(
+        ureq::get(format!("{}/api/health", leader.base))
+            .header("cookie", &op.session.cookie)
+            .header("authorization", format!("Bearer {key}"))
+            .call(),
+        "health",
+    );
+    assert_eq!(status, 400);
+}
+
+/// Names are unique among integrations, and a role an integration is given must exist.
+#[test]
+fn an_integration_is_refused_a_taken_name_or_an_unknown_role() {
+    let leader = start("integration-refusals");
+    let op = operator(&leader);
+    integration(&leader, &op, serde_json::json!({ "name": "exporter" }));
+    let (status, body) = leader.post_as(&op, "/api/integrations", serde_json::json!({ "name": "exporter" }));
+    assert_eq!(status, 409, "{body}");
+    let (status, body) = leader.post_as(
+        &op,
+        "/api/integrations",
+        serde_json::json!({ "name": "importer", "roles": ["nobody"] }),
+    );
+    assert_eq!(status, 422, "{body}");
+    let id = integration(&leader, &op, serde_json::json!({ "name": "importer" }));
+    let (status, body) = leader.patch_as(
+        &op,
+        &format!("/api/integrations/{id}"),
+        serde_json::json!({ "name": "renamed", "enabled": false }),
+    );
+    assert_eq!(status, 422, "{body}");
+    let (status, body) = leader.patch_as(
+        &op,
+        &format!("/api/users/{id}"),
+        serde_json::json!({ "enabled": false }),
+    );
+    assert_eq!(status, 404, "an integration was changed as a person: {body}");
 }
 
 // -- OIDC sign-in --------------------------------------------------------------
