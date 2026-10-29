@@ -121,6 +121,14 @@ pub struct LoadedSystem {
     pub compiled: Option<CompiledTopology>,
 }
 
+/// A route as `LoadedSystem::checked_routes` walks it.
+struct CheckedRoute<'a> {
+    route: &'a crate::plan::topology::CompiledRoute,
+    pipeline: String,
+    produces: &'a [Arc<crate::schema::Schema>],
+    misfits: Option<(&'a crate::plan::compile::Plan, Vec<crate::schema::Finding>)>,
+}
+
 impl LoadedSystem {
     /// Compile every pipeline and route. Expression errors surface here, as a `CompileError` naming the function.
     pub fn compile_topology(&self) -> Result<CompiledTopology, Vec<CompileError>> {
@@ -235,22 +243,36 @@ impl LoadedSystem {
 
     /// Each field of a pipeline's rows that breaks a schema it produces, by the pipeline's id.
     pub fn schema_misfits(&self, compiled: &CompiledTopology) -> Vec<(String, crate::schema::Finding)> {
-        let mut out = Vec::new();
-        for route in &compiled.routes {
-            let pipeline = self.pipeline_ids.get(route.pipeline).cloned().unwrap_or_default();
-            let produces = self.produced_by(route.pipeline);
-            if let Some(plan) = compiled.plan_for(route.source, route.pipeline)
-                && !produces.is_empty()
-            {
-                let record = crate::plan::dictionary::record_type(plan, &route.on_exception.tag_field);
-                for f in crate::schema::check(produces, &record) {
-                    if !out.iter().any(|(p, o)| *p == pipeline && *o == f) {
-                        out.push((pipeline.clone(), f));
-                    }
+        let mut out: Vec<(String, crate::schema::Finding)> = Vec::new();
+        for checked in self.checked_routes(compiled) {
+            for f in checked.misfits.into_iter().flat_map(|(_, misfits)| misfits) {
+                if !out.iter().any(|(p, o)| *p == checked.pipeline && *o == f) {
+                    out.push((checked.pipeline.clone(), f));
                 }
             }
         }
         out
+    }
+
+    /// Each route `compiled` runs, with its pipeline's id and, where the pipeline produces a schema, the plan its
+    /// rows come from and where they break what it produces. The one walk `schema_misfits` and
+    /// `schema_findings_beyond` share.
+    fn checked_routes<'a>(&'a self, compiled: &'a CompiledTopology) -> impl Iterator<Item = CheckedRoute<'a>> {
+        compiled.routes.iter().map(move |route| {
+            let produces = self.produced_by(route.pipeline);
+            let misfits = (compiled.plan_for(route.source, route.pipeline))
+                .filter(|_| !produces.is_empty())
+                .map(|plan| {
+                    let record = crate::plan::dictionary::record_type(plan, &route.on_exception.tag_field);
+                    (plan, crate::schema::check(produces, &record))
+                });
+            CheckedRoute {
+                route,
+                pipeline: self.pipeline_ids.get(route.pipeline).cloned().unwrap_or_default(),
+                produces,
+                misfits,
+            }
+        })
     }
 
     /// `schema_findings`, leaving out the misfits `known` holds (`schema_misfits`), so a finding that names several
@@ -266,13 +288,14 @@ impl LoadedSystem {
                 out.push(f);
             }
         };
-        for route in &compiled.routes {
-            let pipeline = self.pipeline_ids.get(route.pipeline).cloned().unwrap_or_default();
-            let produces = self.produced_by(route.pipeline);
-            if let Some(plan) = compiled.plan_for(route.source, route.pipeline)
-                && !produces.is_empty()
-            {
-                let record = crate::plan::dictionary::record_type(plan, &route.on_exception.tag_field);
+        for CheckedRoute {
+            route,
+            pipeline,
+            produces,
+            misfits,
+        } in self.checked_routes(compiled)
+        {
+            if let Some((plan, mut findings)) = misfits {
                 // A field the source gave is the first step's to fix, which the record enters through.
                 let first = (self.pipelines.iter().find(|p| p.id == route.pipeline))
                     .and_then(|p| p.body.first())
@@ -280,7 +303,6 @@ impl LoadedSystem {
                         crate::plan::config::Step::Function(f) => f.id,
                         crate::plan::config::Step::If { id, .. } => *id,
                     });
-                let mut findings = crate::schema::check(produces, &record);
                 findings.retain(|f| !known.iter().any(|(p, k)| *p == pipeline && k == f));
                 for (keys, message) in crate::schema::told(produces, &findings) {
                     let at = keys.and_then(|keys| crate::plan::dictionary::writer(plan, &keys).or(first));
