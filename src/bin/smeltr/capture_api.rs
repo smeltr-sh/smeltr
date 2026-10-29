@@ -96,6 +96,12 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Envelope<Star
     // every column the query returns and reads every poll (`worker::capture::run_sql_capture`).
     if source.kind.undeclared() {
         invalid.retain(|e| e.field != Some("fields"));
+        // Nor does it refuse the query's own ORDER BY, which only orders the rows Run shows; a save still does.
+        if let Some((kind, sql)) = source.kind.sql()
+            && smeltr::io::sql::Query::parse_for_run(&sql.query, kind.dialect()).is_ok()
+        {
+            invalid.retain(|e| e.field != Some("query"));
+        }
     }
     if !invalid.is_empty() {
         return Envelope::refused(Refusal::invalid(
