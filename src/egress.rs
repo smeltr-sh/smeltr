@@ -238,7 +238,6 @@ impl QueuePool {
             return false;
         }
         self.lent.fetch_add(bytes, Ordering::Relaxed);
-        f.wanting.remove(&who);
         if held + bytes > 0 {
             f.holding.insert(who);
         }
