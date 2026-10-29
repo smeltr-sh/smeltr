@@ -25,7 +25,7 @@
 
 <script lang="ts" generics="K extends string">
   import Field from './Field.svelte';
-  import RemoveButton from './RemoveButton.svelte';
+  import CrossButton from './CrossButton.svelte';
   import { untrack, type Snippet } from 'svelte';
   import SecretRefInput from './SecretRefInput.svelte';
   import { editable } from './access';
@@ -112,7 +112,8 @@
 {/snippet}
 
 {#snippet remove(drop: () => void)}
-  {#if !readOnly}<RemoveButton
+  {#if !readOnly}<CrossButton
+      removes
       label="remove"
       onclick={() => {
         drop();

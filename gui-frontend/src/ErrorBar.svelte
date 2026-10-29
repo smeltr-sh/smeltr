@@ -11,6 +11,7 @@
   import { tell } from './Confirm.svelte';
   import { keepClear } from './keepClear';
   import StateMark from './StateMark.svelte';
+  import CrossButton from './CrossButton.svelte';
 
   let { since }: { since?: number } = $props();
 
@@ -64,13 +65,7 @@
             <li>{error.message}</li>
           {/each}
         </ul>
-        <button
-          type="button"
-          class="dismiss"
-          aria-label="Dismiss"
-          title="Dismiss"
-          onclick={() => errors.dismiss(entry)}>&times;</button
-        >
+        <CrossButton label="Dismiss" onclick={() => errors.dismiss(entry)} />
       </div>
     {/each}
   </div>
@@ -135,16 +130,5 @@
   .where {
     font-family: var(--mono);
     font-weight: 600;
-  }
-
-  .dismiss {
-    flex: none;
-    padding: 0 0.35rem;
-    border: none;
-    background: none;
-    color: var(--dim);
-    font-size: 1.1rem;
-    line-height: 1;
-    cursor: pointer;
   }
 </style>

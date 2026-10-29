@@ -32,7 +32,7 @@
   import ChipPicker from './ChipPicker.svelte';
   import MoreIcon from './MoreIcon.svelte';
   import DisableIcon from './DisableIcon.svelte';
-  import RemoveButton from './RemoveButton.svelte';
+  import CrossButton from './CrossButton.svelte';
   import { glideTo } from './glide';
   import FieldRow from './FieldRow.svelte';
   import TypePicker from './TypePicker.svelte';
@@ -541,9 +541,7 @@
           onclick={() => addable.forEach((s) => addSuggestion(ps, s))}>Add all</button
         >
       {/if}
-      <button type="button" class="compact" aria-label="Done" title="Done" onclick={open.onClose}
-        >✕︎</button
-      >
+      <CrossButton label="Done" onclick={open.onClose} />
     </div>
     <InlineError message={p.error} />
     {#each shown as s (s.row.name)}
@@ -606,7 +604,7 @@
       <button type="button" class="fold" onclick={moveDown} aria-label="Move down" title="Move down"
         >↓︎</button
       >
-      <span class="fold"><RemoveButton label="Delete" onclick={remove} /></span>
+      <span class="fold"><CrossButton removes label="Delete" onclick={remove} /></span>
       {@render more()}
     {/if}
   </div>
@@ -796,7 +794,11 @@
                     />
                   </Locked>
                   {#if !readOnly}
-                    <RemoveButton label="Remove assignment" onclick={() => removeAssignment(i)} />
+                    <CrossButton
+                      removes
+                      label="Remove assignment"
+                      onclick={() => removeAssignment(i)}
+                    />
                   {/if}
                 </div>
               {/each}
@@ -859,7 +861,11 @@
                     />
                   </Locked>
                   {#if !readOnly}
-                    <RemoveButton label="Remove pair" onclick={() => step.pairs.splice(i, 1)} />
+                    <CrossButton
+                      removes
+                      label="Remove pair"
+                      onclick={() => step.pairs.splice(i, 1)}
+                    />
                   {/if}
                 </div>
               {/each}
@@ -935,7 +941,8 @@
                         />
                       </Locked>
                       {#if !readOnly}
-                        <RemoveButton
+                        <CrossButton
+                          removes
                           label="Remove pattern"
                           onclick={() => grokKind.patterns.splice(i, 1)}
                         />
@@ -1175,7 +1182,8 @@
                             bind:value={grokKind.customPatterns[i].name}
                           />
                           {#if !readOnly}
-                            <RemoveButton
+                            <CrossButton
+                              removes
                               label="Remove pattern definition"
                               onclick={() => grokKind.customPatterns.splice(i, 1)}
                             />
@@ -1447,7 +1455,8 @@
                       bind:value={step.outputs[i].default}
                     />
                     {#if !readOnly}
-                      <RemoveButton
+                      <CrossButton
+                        removes
                         label="Remove output"
                         onclick={() => step.outputs.splice(i, 1)}
                       />
@@ -1751,7 +1760,7 @@
     }
   }
 
-  /* Bare glyphs, as `RemoveButton` beside them is. */
+  /* Bare glyphs, as `CrossButton` beside them is. */
   .controls button {
     background: none;
     border: 1px solid transparent;

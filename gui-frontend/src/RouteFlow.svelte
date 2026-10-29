@@ -18,7 +18,7 @@
   import { tick, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import Help from './Help.svelte';
-  import RemoveButton from './RemoveButton.svelte';
+  import CrossButton from './CrossButton.svelte';
   import CrossIcon from './CrossIcon.svelte';
   import { float } from './float';
   import PickOrNew from './PickOrNew.svelte';
@@ -820,7 +820,7 @@
       />
     </div>
     {#if !readOnly}
-      <RemoveButton label="remove this condition" onclick={() => dropCondition(route)} />
+      <CrossButton removes label="remove this condition" onclick={() => dropCondition(route)} />
     {/if}
   </div>
 {/snippet}
@@ -892,7 +892,7 @@
       />
     </div>
     {#if !readOnly}
-      <RemoveButton label="remove this condition" onclick={() => dropWhen(route, rule)} />
+      <CrossButton removes label="remove this condition" onclick={() => dropWhen(route, rule)} />
     {/if}
     {#if !line}
       <button
@@ -963,7 +963,7 @@
             )}>&#8943;</button
         >
       {:else if !readOnly}
-        <RemoveButton label="stop sending to {dest}" onclick={() => takeOff(spot)} />
+        <CrossButton removes label="stop sending to {dest}" onclick={() => takeOff(spot)} />
       {/if}
     </div>
     {#if !destinationIds.includes(dest)}

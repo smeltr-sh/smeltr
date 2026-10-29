@@ -8,7 +8,7 @@
   import InlineError from './InlineError.svelte';
   import { count } from './time';
   import { tick } from 'svelte';
-  import RemoveButton from './RemoveButton.svelte';
+  import CrossButton from './CrossButton.svelte';
   import Locked from './Locked.svelte';
   import { editable } from './access';
 
@@ -92,7 +92,8 @@
                 <input aria-label="column name" bind:value={headers[c]} oninput={onedit} />
                 {#if !readOnly}
                   <span class="reveal"
-                    ><RemoveButton
+                    ><CrossButton
+                      removes
                       label="Remove column {headers[c]}"
                       onclick={() => column(c)}
                     /></span
@@ -110,7 +111,8 @@
               {r + 1}
               {#if !readOnly}
                 <span class="reveal"
-                  ><RemoveButton
+                  ><CrossButton
+                    removes
                     label="Remove row {r + 1}"
                     onclick={() => edit(() => rows.splice(r, 1))}
                   /></span
