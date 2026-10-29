@@ -539,20 +539,16 @@ struct UploadQuery {
 async fn upload_lookup(
     axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
     axum::extract::Extension(actor): axum::extract::Extension<smeltr::leader::store::Actor>,
-    axum::extract::Path(area): axum::extract::Path<String>,
-    axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
+    at: config_api::Addressed,
     axum::extract::Query(upload): axum::extract::Query<UploadQuery>,
-    headers: axum::http::HeaderMap,
     mut multipart: Multipart,
 ) -> Envelope<Upload> {
-    let branch = q.name().to_string();
-    let base = config_api::base_commit(&headers);
     let delimiter = match config_file::to_byte(upload.delimiter.as_deref().unwrap_or(","), "delimiter") {
         Ok(delimiter) => delimiter,
         Err(e) => return Envelope::refused(Refusal::invalid(e)),
     };
     // Opened before anything is stored: the store sits inside the repository, which a first save creates.
-    let writing = match blocking(move || config_api::Writing::open(&branch, base.as_deref(), &area)).await {
+    let writing = match blocking(move || at.open()).await {
         Ok(writing) => writing,
         Err(e) => return Envelope::refused(e),
     };
