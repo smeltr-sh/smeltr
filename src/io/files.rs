@@ -775,6 +775,7 @@ impl Writer {
                         batch,
                         rejections: Vec::new(),
                         throttled: false,
+                        undelivered: None,
                     })
                     .collect())
             }

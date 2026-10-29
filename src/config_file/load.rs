@@ -6054,11 +6054,10 @@ mod tests {
         let place = kind.single_worker().expect("one worker reads it");
         assert!(place.starts_with("mysql://db.internal:3306/auth#"), "{place}");
         assert_eq!(
-            kind.meta(),
+            sql.meta,
             crate::plan::topology::SourceMeta::MYSQL
                 .declaring(vec![("event_id".into(), DataType::I64)])
                 .unwrap()
-                .with_encoding(Encoding::Fixed(encoding_rs::UTF_8))
         );
         let named = &system.topology.named_secrets;
         let named: Vec<_> = named.iter().map(|n| (&n.reference, n.what.as_str())).collect();

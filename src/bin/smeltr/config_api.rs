@@ -21,7 +21,10 @@ use axum::extract::Extension;
 use axum::extract::Path as AxPath;
 use axum::extract::Query;
 use axum::extract::State;
+use axum::extract::{FromRequestParts, RawPathParams};
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
 
 use smeltr::config_file::{
     self, DestinationDto, FileConfig, LookupSourceDto, LookupTableDto, PipelineDto, RawBundle, RouteDto, SourceDto,
@@ -79,6 +82,62 @@ pub fn base_commit(headers: &HeaderMap) -> Option<String> {
         .get(BASE_COMMIT_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string)
+}
+
+/// Where a request writes: the area in its path, the branch its query names and the commit its headers say the
+/// editor read. One extractor, so a handler takes the three together and opens its `Writing` from them.
+pub struct Addressed {
+    pub area: String,
+    pub branch: String,
+    pub base: Option<String>,
+}
+
+#[axum::async_trait]
+impl<S: Send + Sync> FromRequestParts<S> for Addressed {
+    type Rejection = axum::response::Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let params = RawPathParams::from_request_parts(parts, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let area = params
+            .iter()
+            .find(|(name, _)| *name == "area")
+            .map(|(_, area)| area.to_string());
+        // A route under `/api/areas/:area` always has one; its absence is the router's mistake, not the caller's.
+        let area = area
+            .ok_or_else(|| Envelope::<Save>::refused(Refusal::internal("this route names no area")).into_response())?;
+        let Query(q) = Query::<BranchQuery>::from_request_parts(parts, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        Ok(Addressed {
+            area,
+            branch: q.name().to_string(),
+            base: base_commit(&parts.headers),
+        })
+    }
+}
+
+impl Addressed {
+    /// The `Writing` this request's save goes through. Spawns git, so it runs under `blocking`.
+    pub fn open(&self) -> Result<Writing, NotWritten> {
+        Writing::open(&self.branch, self.base.as_deref(), &self.area)
+    }
+
+    /// One section's save on the branch and area this request names, as `Writing::save` makes it.
+    async fn save(
+        self,
+        actor: Actor,
+        touches: Touches,
+        message: String,
+        mutate: impl FnOnce(&mut FileConfig) + Send + 'static,
+    ) -> Envelope<Save> {
+        blocking_save(move || {
+            self.open()
+                .map_or_else(Save::refused, |writing| writing.save(touches, &message, &actor, mutate))
+        })
+        .await
+    }
 }
 
 /// The bundle a request reads: a commit, and where in it the edited group's bundle sits. A commit is immutable, so
@@ -367,6 +426,8 @@ impl Writing {
     /// Sets the files the next `save` commits beside the config. Lookup files are read from the parent with them laid
     /// over it, a commit no branch names, so a table is checked against a file this save adds.
     fn stage(&mut self, files: Vec<git::FileEdit>) -> Result<(), Refusal> {
+        // Once per Writing: a second staging would lay its files over the parent, not over the first.
+        debug_assert!(self.staged.is_empty(), "a Writing stages once");
         if files.is_empty() {
             return Ok(());
         }
@@ -978,9 +1039,7 @@ pub(crate) async fn blocking_save(f: impl FnOnce() -> Envelope<Save> + Send + 's
 pub async fn put_sources(
     State(state): State<smeltr::leader::AppState>,
     Extension(actor): Extension<Actor>,
-    AxPath(area): AxPath<String>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    at: Addressed,
     Json(sources): Json<Vec<SourceDto>>,
 ) -> Envelope<Save> {
     let named = (sources.iter())
@@ -989,11 +1048,8 @@ pub async fn put_sources(
     if let Some(refused) = refuse_unlisted_certificates(&state, named).await {
         return refused;
     }
-    let (branch, base) = (q.name().to_string(), base_commit(&headers));
-    blocking_save(move || {
-        Writing::open(&branch, base.as_deref(), &area).map_or_else(Save::refused, |writing| {
-            writing.save(Touches::Sources, "edit sources", &actor, |file| file.sources = sources)
-        })
+    at.save(actor, Touches::Sources, "edit sources".into(), |file| {
+        file.sources = sources
     })
     .await
 }
@@ -1001,9 +1057,7 @@ pub async fn put_sources(
 pub async fn put_destinations(
     State(state): State<smeltr::leader::AppState>,
     Extension(actor): Extension<Actor>,
-    AxPath(area): AxPath<String>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    at: Addressed,
     Json(destinations): Json<Vec<DestinationDto>>,
 ) -> Envelope<Save> {
     let named = (destinations.iter())
@@ -1012,13 +1066,8 @@ pub async fn put_destinations(
     if let Some(refused) = refuse_unlisted_certificates(&state, named).await {
         return refused;
     }
-    let (branch, base) = (q.name().to_string(), base_commit(&headers));
-    blocking_save(move || {
-        Writing::open(&branch, base.as_deref(), &area).map_or_else(Save::refused, |writing| {
-            writing.save(Touches::Destinations, "edit destinations", &actor, |file| {
-                file.destinations = destinations
-            })
-        })
+    at.save(actor, Touches::Destinations, "edit destinations".into(), |file| {
+        file.destinations = destinations
     })
     .await
 }
@@ -1082,34 +1131,22 @@ pub async fn describe_certificates(Json(req): Json<DescribeRequest>) -> Envelope
 
 pub async fn put_routes(
     Extension(actor): Extension<Actor>,
-    AxPath(area): AxPath<String>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    at: Addressed,
     Json(routes): Json<Vec<RouteDto>>,
 ) -> Envelope<Save> {
-    let (branch, base) = (q.name().to_string(), base_commit(&headers));
-    blocking_save(move || {
-        Writing::open(&branch, base.as_deref(), &area).map_or_else(Save::refused, |writing| {
-            writing.save(Touches::Routes, "edit routes", &actor, |file| file.routes = routes)
-        })
+    at.save(actor, Touches::Routes, "edit routes".into(), |file| {
+        file.routes = routes
     })
     .await
 }
 
 pub async fn put_grok_patterns(
     Extension(actor): Extension<Actor>,
-    AxPath(area): AxPath<String>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    at: Addressed,
     Json(patterns): Json<Vec<config_file::GrokPatternDto>>,
 ) -> Envelope<Save> {
-    let (branch, base) = (q.name().to_string(), base_commit(&headers));
-    blocking_save(move || {
-        Writing::open(&branch, base.as_deref(), &area).map_or_else(Save::refused, |writing| {
-            writing.save(Touches::GrokPatterns, "edit grokPatterns", &actor, |file| {
-                file.grok_patterns = patterns
-            })
-        })
+    at.save(actor, Touches::GrokPatterns, "edit grokPatterns".into(), |file| {
+        file.grok_patterns = patterns
     })
     .await
 }
@@ -1132,21 +1169,16 @@ impl ManifestBody {
 /// every group draws on `shared/` and each answers for its own rows.
 pub async fn put_manifest(
     Extension(actor): Extension<Actor>,
-    AxPath(area): AxPath<String>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    at: Addressed,
     Json(body): Json<ManifestBody>,
 ) -> Envelope<Save> {
-    let (branch, base) = (q.name().to_string(), base_commit(&headers));
-    if area == config_file::SHARED_DIR {
+    if at.area == config_file::SHARED_DIR {
         return Envelope::refused(Refusal::invalid(
             "shared/ has no manifest: each group answers for its own rows",
         ));
     }
-    blocking_save(move || {
-        Writing::open(&branch, base.as_deref(), &area).map_or_else(Save::refused, |writing| {
-            writing.save(Touches::OnlyManifest, "edit manifest", &actor, |file| body.apply(file))
-        })
+    at.save(actor, Touches::OnlyManifest, "edit manifest".into(), |file| {
+        body.apply(file)
     })
     .await
 }
@@ -1162,14 +1194,11 @@ pub struct LookupTableEdit {
 
 pub async fn put_lookup_tables(
     Extension(actor): Extension<Actor>,
-    AxPath(area): AxPath<String>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    at: Addressed,
     Json(tables): Json<Vec<LookupTableEdit>>,
 ) -> Envelope<Save> {
-    let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
-        Writing::open(&branch, base.as_deref(), &area)
+        at.open()
             .map_or_else(Save::refused, |writing| save_lookup_tables(writing, tables, &actor))
     })
     .await
@@ -1505,20 +1534,14 @@ pub async fn get_pipeline(
 /// Create-or-replace by the stable `:id`. Display names may repeat or change; the path owns the identity.
 pub async fn put_pipeline(
     Extension(actor): Extension<Actor>,
-    AxPath((area, id)): AxPath<(String, String)>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    AxPath((_, id)): AxPath<(String, String)>,
+    at: Addressed,
     Json(pipeline): Json<PipelineDto>,
 ) -> Envelope<Save> {
-    let (branch, base) = (q.name().to_string(), base_commit(&headers));
-    blocking_save(move || {
-        // The History page shows this; a person knows a pipeline by its name, not its id.
-        let message = format!("edit pipeline {}", pipeline.name);
-        Writing::open(&branch, base.as_deref(), &area).map_or_else(Save::refused, |writing| {
-            writing.save(Touches::OnlyPipelines, &message, &actor, |file| {
-                replace_pipeline(file, &id, pipeline)
-            })
-        })
+    // The History page shows this; a person knows a pipeline by its name, not its id.
+    let message = format!("edit pipeline {}", pipeline.name);
+    at.save(actor, Touches::OnlyPipelines, message, move |file| {
+        replace_pipeline(file, &id, pipeline)
     })
     .await
 }
@@ -1534,14 +1557,12 @@ fn replace_pipeline(file: &mut FileConfig, id: &str, mut pipeline: PipelineDto) 
 
 pub async fn delete_pipeline(
     Extension(actor): Extension<Actor>,
-    AxPath((area, id)): AxPath<(String, String)>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    AxPath((_, id)): AxPath<(String, String)>,
+    at: Addressed,
 ) -> Envelope<Save> {
-    let (branch, base) = (q.name().to_string(), base_commit(&headers));
     blocking_save(move || {
         // The history names what was deleted, and a pipeline's id is not shown to its author.
-        let name = open_for_read(&branch, &area)
+        let name = open_for_read(&at.branch, &at.area)
             .ok()
             .and_then(|r| {
                 r.raw()
@@ -1553,7 +1574,7 @@ pub async fn delete_pipeline(
             })
             .unwrap_or_else(|| id.clone());
         let message = format!("delete pipeline {name}");
-        Writing::open(&branch, base.as_deref(), &area).map_or_else(Save::refused, |writing| {
+        at.open().map_or_else(Save::refused, |writing| {
             writing.save(Touches::OnlyPipelines, &message, &actor, |file| {
                 file.pipelines.retain(|p| p.id != id);
             })
@@ -1615,15 +1636,8 @@ pub enum UndoRequest {
 
 /// Puts one object, or one file no section owns, back the way it was where the branch left `main`, as one save on
 /// the branch.
-pub async fn undo(
-    Extension(actor): Extension<Actor>,
-    AxPath(area): AxPath<String>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
-    Json(req): Json<UndoRequest>,
-) -> Envelope<Save> {
-    let (branch, base) = (q.name().to_string(), base_commit(&headers));
-    blocking_save(move || undo_in(&leader_data_dir(), &branch, base, &area, req, &actor)).await
+pub async fn undo(Extension(actor): Extension<Actor>, at: Addressed, Json(req): Json<UndoRequest>) -> Envelope<Save> {
+    blocking_save(move || undo_in(&leader_data_dir(), &at.branch, at.base, &at.area, req, &actor)).await
 }
 
 /// `now` with the object `id` as `was` holds it, after the object it followed there, or removed when `was` has
@@ -3812,10 +3826,10 @@ mod tests {
         )
     }
 
-    /// A lookup-table save to a scope that is not one is refused as every save is, before its contents are read:
-    /// no commit, the scope's reason, and nothing moved to carry a change over from.
+    /// A lookup-table save to an area that is not one is refused as every save is, before its contents are read:
+    /// no commit, the area's reason, and nothing moved to carry a change over from.
     #[test]
-    fn a_lookup_table_save_to_no_scope_is_refused_like_any_save() {
+    fn a_lookup_table_save_to_an_area_that_is_not_one_is_refused_like_any_save() {
         let data = a_repo("lookup-no-scope");
         let edit = serde_json::json!({ "id": "hosts", "type": "csv", "path": "", "delimiter": ";", "contents": "x" });
         // As `put_lookup_tables` answers it.
@@ -4103,8 +4117,8 @@ mod tests {
         undo_in(data, "work", None, "shared", req, &Actor::system())
     }
 
-    /// Undo reads and saves on one `Writing`, so a save that lands on the branch between the two is not
-    /// overwritten: the swap on the commit that was read refuses it and names both commits.
+    /// A save on a `Writing` whose branch moved since it was opened is not written: the swap on the commit that was
+    /// read refuses it and names both commits. Undo relies on this, reading and saving on one `Writing`.
     #[test]
     fn a_save_on_a_writing_the_branch_moved_past_is_refused_with_both_commits() {
         let data = main_with_routes("undo-moved");
