@@ -2625,11 +2625,11 @@ pub fn branch_base(repo_path: &Path, branch: &str) -> Result<String, GitError> {
     Ok(base.to_string())
 }
 
-/// Whether `commit` is in `branch`'s history, `branch`'s tip included.
-pub fn reachable_from(repo_path: &Path, commit: &str, branch: &str) -> Result<bool, GitError> {
+/// Whether `commit` is in `tip`'s history, `tip` included. `tip` is a branch, or a commit id a branch stood at.
+pub fn reachable_from(repo_path: &Path, commit: &str, tip: &str) -> Result<bool, GitError> {
     check_commit_id(commit)?;
-    check_branch_name(branch)?;
-    is_ancestor(repo_path, commit, branch)
+    check_branch_name(tip)?;
+    is_ancestor(repo_path, commit, tip)
 }
 
 /// Where `branch` left `main`, and where it is now. A branch is read against the commit it started from rather
@@ -4135,6 +4135,10 @@ mod tests {
         );
         assert!(reachable_from(&repo, &left_at, "work").unwrap());
         assert!(reachable_from(&repo, &tip, "work").unwrap());
+        assert!(
+            reachable_from(&repo, &left_at, &tip).unwrap(),
+            "a commit the branch stood at is a tip too"
+        );
         assert!(
             !reachable_from(&repo, &deployed, "work").unwrap(),
             "main's later commit is not the branch's"

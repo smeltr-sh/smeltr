@@ -238,7 +238,6 @@ impl QueuePool {
             return false;
         }
         self.lent.fetch_add(bytes, Ordering::Relaxed);
-        f.wanting.remove(&who);
         if held + bytes > 0 {
             f.holding.insert(who);
         }
@@ -713,8 +712,8 @@ fn run(
                 Err(e) => {
                     note_stall(metrics, id, name, &e, &mut stalled);
                     cut_off = false;
-                    // Everything sent and unacknowledged is suspect too.
-                    take_back(&mut owner, &mut redo, unit);
+                    // This unit alone: the ones in flight are answered for by `poll_completions`.
+                    send_again(&mut redo, unit);
                     queue.sleep_unless_closed(backoff);
                     backoff = (backoff * 2).min(RETRY_MAX);
                     continue;
@@ -748,7 +747,7 @@ fn run(
                     let e = IoError::transient("destination client would not take the batch");
                     note_stall(metrics, id, name, &e, &mut stalled);
                     cut_off = false;
-                    take_back(&mut owner, &mut redo, unit);
+                    send_again(&mut redo, unit);
                     queue.sleep_unless_closed(backoff);
                     backoff = (backoff * 2).min(RETRY_MAX);
                     continue;
@@ -771,8 +770,7 @@ fn run(
                         note_stall(metrics, id, name, &undelivered.error, &mut stalled);
                         failed = true;
                         let rest = remainder(queue, metrics, id, owed.unit, owed.rejections, &undelivered.rows);
-                        redo.push_back(rest);
-                        redo.make_contiguous().sort_by_key(|u| u.seq);
+                        send_again(&mut redo, rest);
                         continue;
                     }
                     landed = true;
@@ -990,12 +988,13 @@ fn remainder(
     Unit { rows, bytes, ..unit }
 }
 
-/// Take every sent-but-unacknowledged batch back for re-sending, plus the one that just failed, in acceptance order.
-fn take_back(owner: &mut HashMap<BatchId, Owed>, redo: &mut VecDeque<Unit>, failed: Unit) {
-    redo.push_front(failed);
-    take_back_all(owner, redo);
+/// `unit` to be sent again, in acceptance order among the others.
+fn send_again(redo: &mut VecDeque<Unit>, unit: Unit) {
+    redo.push_back(unit);
+    redo.make_contiguous().sort_by_key(|u| u.seq);
 }
 
+/// Take every sent-but-unacknowledged batch back for re-sending, in acceptance order.
 fn take_back_all(owner: &mut HashMap<BatchId, Owed>, redo: &mut VecDeque<Unit>) {
     let mut all: Vec<Unit> = owner.drain().map(|(_, o)| o.unit).chain(redo.drain(..)).collect();
     all.sort_by_key(|u| u.seq);

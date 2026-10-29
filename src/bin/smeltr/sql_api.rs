@@ -5,7 +5,7 @@
 use axum::Json;
 
 use smeltr::config_file::SourceDto;
-use smeltr::io::sql::{Bind, Query, Statement};
+use smeltr::io::sql::{Bind, Query, Refused, Statement};
 use smeltr::io::sql_source::{Mode, SqlSourceConfig, Start};
 use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::plan::topology::SourceKind;
@@ -27,7 +27,15 @@ pub struct Statements {
     /// What Run executes: the poll from the beginning, its first [`RUN_ROWS`] rows.
     #[serde(skip_serializing_if = "Option::is_none")]
     run: Option<StatementDto>,
+    /// What Run reads but a save refuses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
 }
+
+/// Run reads a query's own ORDER BY (`io::sql::Query::parse_for_run`), so its author can reach the choice that
+/// replaces it.
+const OWN_ORDER: &str = "Take the ORDER BY out before you save: Run reads it, but smeltr orders the rows itself, \
+                         by the column you choose under how rows are found.";
 
 /// How many rows Run reads, as the Sources page asks for them.
 const RUN_ROWS: u32 = 20;
@@ -51,11 +59,19 @@ pub enum BindDto {
 /// every poll, as Run reads it.
 pub async fn sql_statement(Json(request): Json<StatementRequest>) -> Envelope<Statements> {
     statements(request.source)
-        .map(|Shown { first, later, run }| Statements {
-            first: Some(first),
-            later,
-            run: Some(run),
-        })
+        .map(
+            |Shown {
+                 first,
+                 later,
+                 run,
+                 warning,
+             }| Statements {
+                first: Some(first),
+                later,
+                run: Some(run),
+                warning,
+            },
+        )
         .map_err(Refusal::invalid)
         .into()
 }
@@ -64,12 +80,21 @@ struct Shown {
     first: StatementDto,
     later: Option<StatementDto>,
     run: StatementDto,
+    warning: Option<String>,
 }
 
 fn statements(source: SourceDto) -> Result<Shown, String> {
+    let mut warning = None;
     let config = match source.kind.sql() {
         Some((kind, sql)) if sql.fields.is_empty() => SqlSourceConfig {
-            query: Query::parse(&sql.query, kind.dialect()).map_err(|why| format!("the query: {why}"))?,
+            query: match Query::parse(&sql.query, kind.dialect()) {
+                Err(Refused::Ordered) => {
+                    warning = Some(OWN_ORDER.to_string());
+                    Query::parse_for_run(&sql.query, kind.dialect())
+                }
+                parsed => parsed,
+            }
+            .map_err(|why| format!("the query: {why}"))?,
             mode: Mode::EveryPoll,
             fields: Vec::new().into(),
             poll_interval: std::time::Duration::from_secs(sql.poll_interval_secs.0),
@@ -106,7 +131,12 @@ fn statements(source: SourceDto) -> Result<Shown, String> {
         },
     };
     let run = shown(&run, run.statement(false, false));
-    Ok(Shown { first, later, run })
+    Ok(Shown {
+        first,
+        later,
+        run,
+        warning,
+    })
 }
 
 /// A statement with each bind named by the column it reads.
@@ -142,7 +172,7 @@ mod tests {
     /// Before its fields are declared a source reads every poll, the whole query, nothing bound. Run reads its first rows.
     #[test]
     fn a_source_with_no_fields_shows_the_whole_query() {
-        let Shown { first, later, run } =
+        let Shown { first, later, run, .. } =
             statements(source(serde_json::json!({"mode": {"type": "everyPoll"}, "fields": []}))).expect("a statement");
         assert!(first.sql.contains("SELECT id, at FROM t"), "{}", first.sql);
         assert!(!first.sql.contains("ORDER BY"), "{}", first.sql);
@@ -155,7 +185,7 @@ mod tests {
     /// each bind named by its column.
     #[test]
     fn a_position_mode_shows_its_first_and_later_polls() {
-        let Shown { first, later, run } = statements(source(serde_json::json!({
+        let Shown { first, later, run, .. } = statements(source(serde_json::json!({
             "mode": {"type": "incrementing", "position": ["id"], "start": "from", "startFrom": 10},
             "fields": [{"name": "id", "type": "i64"}, {"name": "at", "type": "str"}]
         })))
@@ -166,6 +196,25 @@ mod tests {
         assert!(later.sql.contains("ORDER BY q.\"id\""), "{}", later.sql);
         assert!(run.binds.is_empty(), "Run reads from the beginning: {}", run.sql);
         assert!(run.sql.ends_with("LIMIT 20"), "{}", run.sql);
+    }
+
+    /// Run reads a query with its own ORDER BY, so its author can reach the position that replaces it; the page warns
+    /// that a save will not take it. Once fields are declared, the query is checked as a save checks it.
+    #[test]
+    fn a_query_with_its_own_order_runs_with_a_warning_until_its_fields_are_declared() {
+        let query = "SELECT id, at FROM t ORDER BY id";
+        let Shown { run, warning, .. } = statements(source(
+            serde_json::json!({"query": query, "mode": {"type": "everyPoll"}, "fields": []}),
+        ))
+        .expect("Run reads it");
+        assert!(run.sql.contains(query), "{}", run.sql);
+        assert_eq!(warning.as_deref(), Some(OWN_ORDER));
+        let declared = statements(source(serde_json::json!({
+            "query": query,
+            "mode": {"type": "everyPoll"},
+            "fields": [{"name": "id", "type": "i64"}, {"name": "at", "type": "str"}]
+        })));
+        assert!(declared.is_err());
     }
 
     #[test]

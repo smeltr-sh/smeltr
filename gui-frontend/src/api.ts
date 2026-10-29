@@ -465,6 +465,8 @@ export interface SqlStatementsResult {
   later?: SqlStatement;
   /** What Run runs: the result from the beginning, a few rows. */
   run?: SqlStatement;
+  /** What Run reads but a save refuses. */
+  warning?: string;
 }
 
 /** The statements an SQL source runs, built by the leader as a poll builds them. Nothing connects. */

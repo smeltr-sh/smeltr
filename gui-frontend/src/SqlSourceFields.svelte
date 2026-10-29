@@ -383,6 +383,7 @@
   {:else if !statements?.first}
     <p class="dim">Type a query.</p>
   {:else if !opened}
+    {#if statements.warning}<p class="banner callout warn">{statements.warning}</p>{/if}
     {#if statements.run}<pre class="statement">{@html highlightSql(
           statements.run.sql,
           source.type,
