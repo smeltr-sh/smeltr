@@ -56,7 +56,7 @@ pub fn classify_response(body: &[u8], count: usize, policy: DocIdPolicy) -> Resu
 /// [`classify_response`]'s outcome, and how many documents a data stream's failure store took: each answered as
 /// written, though not to the index it was sent to.
 fn classify(body: &[u8], count: usize, policy: DocIdPolicy) -> Result<(Outcome, usize), IoError> {
-    let (errors, items) = bulk(body).map_err(|_| IoError::transient("bulk response was not JSON"))?;
+    let Bulk { errors, items } = bulk(body).map_err(|_| IoError::transient("bulk response was not JSON"))?;
     let failure_stored = items.iter().flatten().flatten().filter(|a| a.failure_stored).count();
 
     if errors == Some(false) {
@@ -114,10 +114,16 @@ struct Answered {
     failure_stored: bool,
 }
 
-/// A bulk answer's `errors`, where it is true or false, and its `items`, where it is a list: each item's answer, or
-/// `None` for one that is no object holding one.
-#[allow(clippy::type_complexity)]
-fn bulk(body: &[u8]) -> Result<(Option<bool>, Option<Vec<Option<Answered>>>), Malformed> {
+/// What a bulk answer says of the whole request.
+struct Bulk {
+    /// Its `errors`, where it is true or false.
+    errors: Option<bool>,
+    /// Its `items`, where it is a list: each item's answer, or `None` for one that is no object holding one.
+    items: Option<Vec<Option<Answered>>>,
+}
+
+/// Reads a bulk answer.
+fn bulk(body: &[u8]) -> Result<Bulk, Malformed> {
     let mut r = Reader::new(body)?;
     let top = r.value()?;
     if top != Next::Object {
@@ -151,7 +157,7 @@ fn bulk(body: &[u8]) -> Result<(Option<bool>, Option<Vec<Option<Answered>>>), Ma
         }
     }
     match r.end() {
-        true => Ok((errors, items)),
+        true => Ok(Bulk { errors, items }),
         false => Err(Malformed),
     }
 }
