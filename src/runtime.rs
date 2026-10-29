@@ -795,7 +795,7 @@ impl Reader {
                 ("source".to_string(), self.source_id.to_string()),
                 ("cause".to_string(), cause.name().to_string()),
             ],
-            value: crate::heartbeat::MetricValueDto::Text(reason),
+            value: crate::heartbeat::MetricValueDto::text(&reason),
         })
     }
 
@@ -808,8 +808,7 @@ impl Reader {
         Some(crate::heartbeat::MetricSampleDto {
             metric: "smeltr_source_connection_error".to_string(),
             labels: vec![("source".to_string(), self.source_id.to_string())],
-            // A source's error is whatever its client said, and rides every heartbeat while it stands.
-            value: crate::heartbeat::MetricValueDto::Text(truncate(&reason, MAX_TEXT_LEN)),
+            value: crate::heartbeat::MetricValueDto::text(&reason),
         })
     }
 }
@@ -2255,7 +2254,7 @@ impl RefusalRing {
                     ("destination".to_string(), dest.to_string()),
                     ("at_millis".to_string(), r.at_millis.to_string()),
                 ],
-                value: crate::heartbeat::MetricValueDto::Text(r.message),
+                value: crate::heartbeat::MetricValueDto::text(&r.message),
             })
             .collect()
     }
