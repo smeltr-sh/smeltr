@@ -1173,22 +1173,11 @@ pub async fn put_grok_patterns(
 
 pub async fn put_schemas(
     Extension(actor): Extension<Actor>,
-    AxPath(area): AxPath<String>,
-    Query(q): Query<BranchQuery>,
-    headers: HeaderMap,
+    at: Addressed,
     Json(schemas): Json<Vec<config_file::SchemaDto>>,
 ) -> Envelope<Save> {
-    let (branch, base) = (q.name().to_string(), base_commit(&headers));
-    blocking_save(move || {
-        save_on_branch(
-            &branch,
-            base,
-            &area,
-            Touches::Schemas,
-            "edit schemas".into(),
-            &actor,
-            |file| file.schemas = schemas,
-        )
+    at.save(actor, Touches::Schemas, "edit schemas".into(), |file| {
+        file.schemas = schemas
     })
     .await
 }
