@@ -5241,45 +5241,31 @@ mod tests {
             "only an enrolled worker is served"
         );
 
-        // Every fetch adds a pack, and past the limit they are merged into one. A commit the fleet's history does
-        // not hold, in a pack of its own, stands for what a rollback leaves running.
-        let other = temp_dir("fetch-e2e-other");
-        git_ok(
-            &["init", "-q", "--bare", other.to_str().unwrap()],
-            &std::env::temp_dir(),
-        );
-        let tree = git_with_input(&["mktree"], &other, b"");
-        let running = git_with_input(&["commit-tree", tree.trim(), "-m", "what a rollback runs"], &other, b"");
-        let running = running.trim().to_string();
-        git_with_input(
-            &["pack-objects", "-q", "--revs", "objects/pack/pack"],
-            &other,
-            running.as_bytes(),
-        );
-        for pack in packs_in(&other.join("objects/pack")).unwrap() {
-            for ext in ["pack", "idx"] {
-                let from = pack.with_extension(ext);
-                std::fs::copy(&from, clone_dir.join("objects/pack").join(from.file_name().unwrap())).unwrap();
-            }
-        }
-        hold_running(&clone_dir, &running);
-        let mut head = deployed.clone();
+        // Every fetch adds a pack, and past the limit they are merged into one. A rollback then leaves the worker
+        // running a commit the history it fetched does not hold.
+        let actor = crate::leader::store::Actor::system();
+        let mut running = deployed.clone();
         while crate::leader::git::object_files(&clone_dir).1 <= crate::leader::git::PACK_LIMIT {
             let edit = crate::leader::git::FileEdit {
                 path: "groups/west/system.json".to_string(),
-                content: Some(format!(r#"{{"version":1,"name":"{head}"}}"#).into_bytes()),
+                content: Some(format!(r#"{{"version":1,"name":"{running}"}}"#).into_bytes()),
             };
-            let actor = crate::leader::store::Actor::system();
             let main = crate::leader::git::MAIN_BRANCH;
             let crate::leader::git::Committed::At(next) =
-                crate::leader::git::commit_edits(&repo, main, &head, Some(&head), &[edit], "deploy", &actor).unwrap()
+                crate::leader::git::commit_edits(&repo, main, &running, Some(&running), &[edit], "deploy", &actor)
+                    .unwrap()
             else {
                 panic!("the commit landed")
             };
             crate::leader::git::deploy_commit(&data_dir, &next, &actor).unwrap();
-            head = fetch_deployed(&clone_dir, &base, token, public_roots()).unwrap();
-            assert_eq!(head, next);
+            running = fetch_deployed(&clone_dir, &base, token, public_roots()).unwrap();
+            hold_running(&clone_dir, &running);
         }
+        crate::leader::git::deploy_commit(&data_dir, &deployed, &actor).unwrap();
+        assert_eq!(
+            fetch_deployed(&clone_dir, &base, token, public_roots()).unwrap(),
+            deployed
+        );
         merge_packs(&clone_dir).expect("the packs merge");
         assert_eq!(crate::leader::git::object_files(&clone_dir).1, 1, "into one");
         fetched_reads(&clone_dir).expect("what was fetched still reads");
@@ -5291,7 +5277,6 @@ mod tests {
         };
         commit(&running).expect("what runs still reads");
         commit(&deployed).expect("and so does the history of what was fetched");
-        std::fs::remove_dir_all(&other).ok();
     }
 
     /// The whole reason a worker's fetch runs on curl rather than `gix-transport`'s own `reqwest` backend
@@ -8173,21 +8158,6 @@ mod tests {
     fn git_ok(args: &[&str], cwd: &Path) {
         let status = Command::new("git").args(args).current_dir(cwd).status().unwrap();
         assert!(status.success(), "git {args:?} failed");
-    }
-
-    /// What git answers to `input` on its stdin.
-    fn git_with_input(args: &[&str], cwd: &Path, input: &[u8]) -> String {
-        let mut git = Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        std::io::Write::write_all(&mut git.stdin.take().unwrap(), input).unwrap();
-        let output = git.wait_with_output().unwrap();
-        assert!(output.status.success(), "git {args:?} failed");
-        String::from_utf8(output.stdout).unwrap()
     }
 
     /// A fixture's own `HEAD`, read through `gix` rather than the git binary -- these fixtures are still built with

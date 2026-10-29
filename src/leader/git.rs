@@ -3342,10 +3342,6 @@ pub fn pack(repo_path: &Path) -> Result<(), GitError> {
             "gc.packRefs=false",
             "-c",
             "gc.pruneExpire=never",
-            "-c",
-            "gc.reflogExpire=never",
-            "-c",
-            "gc.reflogExpireUnreachable=never",
             "gc",
             "--quiet",
         ])

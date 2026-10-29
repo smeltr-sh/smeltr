@@ -727,9 +727,6 @@ pub async fn prune_lookups(state: &AppState) {
 /// unpacked they cost a file each.
 async fn pack_repo(state: &AppState) {
     let repo = git::repo_path(&state.data_dir);
-    if !repo.exists() {
-        return;
-    }
     if let Err(e) = blocking(move || git::pack(&repo).map_err(|e| e.message)).await {
         tracing::warn!(
             target: "leader.repo_not_packed",
