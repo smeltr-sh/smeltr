@@ -824,7 +824,7 @@ fn a_beat_the_store_will_not_take_is_refused_and_counted_once_when_it_comes_agai
         .unwrap();
     let (base, _) = start_leader_with_registry(registry.clone());
     let token = enroll_worker(&base, "w1");
-    let send = || match ureq::post(format!("{base}/api/heartbeat"))
+    let send = || match ureq::post(format!("{base}/api/worker/heartbeat"))
         .header("Authorization", &format!("Bearer {token}"))
         .send_json(serde_json::json!({
             "workerId": "w1",
