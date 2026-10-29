@@ -23,7 +23,7 @@ const ROLES = [
   },
 ];
 
-const USERS = [
+const ACCOUNTS = [
   {
     id: 'u-ada',
     username: 'ada',
@@ -49,6 +49,19 @@ const USERS = [
     roles: ['smeltr-payments', 'smeltr-search'],
     groups: ['everyone', 'smeltr-payments', 'smeltr-search'],
     access: {},
+  },
+  {
+    id: 'u-exp',
+    displayName: 'exporter',
+    enabled: true,
+    administrator: false,
+    authSource: 'integration',
+    createdAt: 1,
+    updatedAt: 1,
+    roles: ['smeltr-payments'],
+    groups: [],
+    access: {},
+    keys: [{ id: 'key_1', label: 'nightly', createdAt: 0, lastUsedAt: null }],
   },
 ];
 
@@ -84,11 +97,13 @@ function stubFetch() {
           temporaryPassword: `pw-${resets}`,
         });
       }
-      if (url.startsWith('/api/users/') && method === 'PATCH')
-        return json({ ok: true, errors: [], ...USERS[0] });
+      if (url.startsWith('/api/accounts/') && method === 'PATCH')
+        return json({ ok: true, errors: [], ...ACCOUNTS[0] });
       if (url === '/api/agents') return json({ ok: true, errors: [], userId: 'u-new' });
       if (url.startsWith('/api/agents/')) return json({ ok: true, errors: [], roles: [] });
-      if (url === '/api/users') return json({ ok: true, errors: [], users: USERS });
+      if (url === '/api/accounts' && method === 'POST')
+        return json({ ok: true, errors: [], ...ACCOUNTS[2] });
+      if (url === '/api/accounts') return json({ ok: true, errors: [], accounts: ACCOUNTS });
       throw new Error(`unexpected ${url}`);
     }),
   );
@@ -100,9 +115,9 @@ async function rolesTab() {
   await vi.waitFor(() => expect(target.querySelector('tbody tr')).not.toBeNull());
 }
 
-async function usersTab() {
+async function accountsTab() {
   stubFetch();
-  page = mount(AccountsPage, { target, props: { section: 'users' } });
+  page = mount(AccountsPage, { target, props: { section: 'accounts' } });
   await vi.waitFor(() => expect(target.querySelector('tbody tr')).not.toBeNull());
 }
 
@@ -170,20 +185,51 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('the Users tab', () => {
+describe('the Accounts tab', () => {
   it('shows each account its roles, a local one as administrator', async () => {
-    await usersTab();
+    await accountsTab();
     const pills = (name: string) =>
       [...row(name).querySelectorAll('td:nth-child(4) span.pill')].map((p) =>
         p.textContent?.trim(),
       );
     expect(pills('Ada')).toEqual(['administrator']);
     expect(pills('Bo')).toEqual(['smeltr-payments', 'smeltr-search']);
+    expect(pills('exporter')).toEqual(['smeltr-payments']);
+  });
+
+  it('lists an integration among the accounts, by its key, with its own actions', async () => {
+    await accountsTab();
+    expect(row('exporter').textContent).toContain('Key');
+    expect(row('exporter').textContent).toContain('1 key');
+    await manage('exporter');
+    expect(button('+ New key')).toBeDefined();
+    expect(button('Reset password')).toBeUndefined();
+    expect(target.querySelector('table[aria-label="Keys"]')?.textContent).toContain('nightly');
+  });
+
+  it('adds an integration as an account that signs in with a key', async () => {
+    await accountsTab();
+    button('+ Add account')!.click();
+    flushSync();
+    button('Key')!.click();
+    flushSync();
+    expect(target.querySelector('dialog input[autocomplete="off"]')).not.toBeNull();
+    const name = target.querySelector<HTMLInputElement>('dialog input')!;
+    name.value = 'exporter';
+    name.dispatchEvent(new Event('input'));
+    flushSync();
+    button('Add')!.click();
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual({
+      method: 'POST',
+      url: '/api/accounts',
+      body: { authSource: 'integration', displayName: 'exporter', roles: [], administrator: false },
+    });
   });
 
   it('offers a role for each group an account holds that no role names', async () => {
     history.replaceState(null, '', '/#/admin/accounts');
-    await usersTab();
+    await accountsTab();
     expect(button('+ smeltr-payments', row('Bo'))).toBeUndefined();
     button('+ everyone', row('Bo'))!.click();
     await settle();
@@ -191,7 +237,7 @@ describe('the Users tab', () => {
   });
 
   it('resets a password only once it is confirmed', async () => {
-    await usersTab();
+    await accountsTab();
     await manage('Ada');
     ask.mockResolvedValueOnce(false);
     button('Reset password')!.click();
@@ -202,11 +248,13 @@ describe('the Users tab', () => {
     ask.mockResolvedValueOnce(true);
     button('Reset password')!.click();
     await vi.waitFor(() => expect(target.querySelector('.handover')).not.toBeNull());
-    expect(calls).toEqual([{ method: 'POST', url: '/api/users/u-ada/reset-password', body: null }]);
+    expect(calls).toEqual([
+      { method: 'POST', url: '/api/accounts/u-ada/reset-password', body: null },
+    ]);
   });
 
   it('disables an account only once it is confirmed', async () => {
-    await usersTab();
+    await accountsTab();
     await manage('Ada');
     ask.mockResolvedValueOnce(false);
     button('Disable account')!.click();
@@ -219,13 +267,13 @@ describe('the Users tab', () => {
     await vi.waitFor(() => expect(calls).toHaveLength(1));
     expect(calls[0]).toEqual({
       method: 'PATCH',
-      url: '/api/users/u-ada',
+      url: '/api/accounts/u-ada',
       body: { enabled: false },
     });
   });
 
   it('shows only the newest password when one account is reset twice', async () => {
-    await usersTab();
+    await accountsTab();
     await manage('Ada');
     ask.mockResolvedValue(true);
     button('Reset password')!.click();

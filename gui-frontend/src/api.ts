@@ -4614,25 +4614,30 @@ export function deployCommit(commit: string, confirm = false): Promise<BranchMut
 // a session alone is not enough to create an administrator or end somebody's
 // access, which is what stands between a walked-away-from browser and either.
 
-/** An account as the roster shows it. No verifier, and no password state
- * beyond whether one must be changed. */
-export interface UserDto {
+/** An account as the roster shows it. No verifier, no password state beyond
+ * whether one must be changed, and never a key. */
+export interface AccountDto {
   id: string;
   username?: string;
   displayName: string;
   enabled: boolean;
+  /** Whether the account itself makes it an administrator, as a local account always does and an
+   * integration may. What it holds, from this or its roles, is `access`. */
   administrator: boolean;
-  /** How the account signs in: `local` (a password) or `oidc` (the provider). */
-  authSource: 'local' | 'oidc';
+  /** How the account signs in: `local` (a password), `oidc` (the provider) or `integration` (a key). */
+  authSource: 'local' | 'oidc' | 'integration';
   /** What the provider last called an OIDC account: its email, else its preferred username. */
   providerLogin?: string;
   createdAt: number;
   updatedAt: number;
-  /** The roles this account holds: its provider groups a role exists for. Empty for a local account. */
+  /** The roles this account holds: an OIDC account's provider groups a role exists for, or the roles an
+   * integration was given. Empty for a local account. */
   roles: string[];
-  /** Every group the provider named at the last sign-in or refresh, exactly as named. Empty for a local account. */
+  /** Every group the provider named at the last sign-in or refresh, exactly as named. Empty for any other account. */
   groups: string[];
   access: AccessDto;
+  /** An integration's keys in force. Absent for any other account. */
+  keys?: IntegrationKeyDto[];
 }
 
 /** A generated password, shown once and never retrievable. */
@@ -4646,8 +4651,9 @@ export interface TemporaryPasswordDto {
  * that something went wrong. */
 export type AccountRefusal = { status: number; error: string };
 
-export async function listUsers(): Promise<UserDto[]> {
-  return (await readJson<{ users: UserDto[] }>('/api/users')).users;
+/** Every account, however it signs in, oldest first. */
+export async function listAccounts(): Promise<AccountDto[]> {
+  return (await readJson<{ accounts: AccountDto[] }>('/api/accounts')).accounts;
 }
 
 /** `POST`, `PATCH` and the two actions all answer the envelope, whose first error the
@@ -4685,39 +4691,53 @@ async function accountCall<T>(
   return body as T;
 }
 
-export function createUser(
+/** A local administrator, answered with the temporary password to hand over. */
+export function createLocalAccount(
   username: string,
   displayName: string,
 ): Promise<TemporaryPasswordDto | AccountRefusal> {
-  return accountCall('/api/users', {
+  return accountCall('/api/accounts', {
     method: 'POST',
-    body: JSON.stringify({ username, displayName }),
+    body: JSON.stringify({ authSource: 'local', username, displayName }),
   });
 }
 
-export function renameUser(id: string, displayName: string): Promise<UserDto | AccountRefusal> {
-  return accountCall(`/api/users/${encodeURIComponent(id)}`, {
+/** An enabled integration holding no key yet. */
+export function createIntegration(
+  displayName: string,
+  roles: string[],
+  administrator: boolean,
+): Promise<AccountDto | AccountRefusal> {
+  return accountCall('/api/accounts', {
+    method: 'POST',
+    body: JSON.stringify({ authSource: 'integration', displayName, roles, administrator }),
+  });
+}
+
+/** One change to an account: the leader takes one field per request, and roles and administrator
+ * only for an integration. */
+export type AccountChange =
+  { displayName: string } | { enabled: boolean } | { roles: string[] } | { administrator: boolean };
+
+export function changeAccount(
+  id: string,
+  change: AccountChange,
+): Promise<AccountDto | AccountRefusal> {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    body: JSON.stringify({ displayName }),
+    body: JSON.stringify(change),
   });
 }
 
-export function setUserEnabled(id: string, enabled: boolean): Promise<UserDto | AccountRefusal> {
-  return accountCall(`/api/users/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ enabled }),
-  });
-}
-
-export function resetUserPassword(id: string): Promise<TemporaryPasswordDto | AccountRefusal> {
-  return accountCall(`/api/users/${encodeURIComponent(id)}/reset-password`, {
+export function resetAccountPassword(id: string): Promise<TemporaryPasswordDto | AccountRefusal> {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}/reset-password`, {
     method: 'POST',
   });
 }
 
 /** `ended` is the wire field: how many sessions this ended. */
-export function revokeUserSessions(id: string): Promise<{ ended: number } | AccountRefusal> {
-  return accountCall(`/api/users/${encodeURIComponent(id)}/revoke-sessions`, {
+export function revokeAccountSessions(id: string): Promise<{ ended: number } | AccountRefusal> {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}/revoke-sessions`, {
     method: 'POST',
   });
 }
@@ -4773,20 +4793,6 @@ export interface IntegrationKeyDto {
   lastUsedAt: number | null;
 }
 
-export interface IntegrationDto {
-  id: string;
-  name: string;
-  enabled: boolean;
-  /** The roles it was given, by name. */
-  roles: string[];
-  /** Whether it was made an administrator. What it holds, from this or its roles, is `access`. */
-  administrator: boolean;
-  access: AccessDto;
-  keys: IntegrationKeyDto[];
-  createdAt: number;
-  updatedAt: number;
-}
-
 /** A key just made: the one answer that carries it. */
 export interface CreatedIntegrationKeyDto {
   id: string;
@@ -4795,50 +4801,20 @@ export interface CreatedIntegrationKeyDto {
   key: string;
 }
 
-/** One change to an integration: the leader takes one field per request. */
-export type IntegrationChange =
-  { name: string } | { roles: string[] } | { administrator: boolean } | { enabled: boolean };
-
-export async function listIntegrations(): Promise<IntegrationDto[]> {
-  return (await readJson<{ integrations: IntegrationDto[] }>('/api/integrations')).integrations;
-}
-
-export function createIntegration(
-  name: string,
-  roles: string[],
-  administrator: boolean,
-): Promise<IntegrationDto | AccountRefusal> {
-  return accountCall('/api/integrations', {
-    method: 'POST',
-    body: JSON.stringify({ name, roles, administrator }),
-  });
-}
-
-export function changeIntegration(
-  id: string,
-  change: IntegrationChange,
-): Promise<IntegrationDto | AccountRefusal> {
-  return accountCall(`/api/integrations/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    body: JSON.stringify(change),
-  });
-}
-
 export function createIntegrationKey(
   id: string,
   label: string,
 ): Promise<CreatedIntegrationKeyDto | AccountRefusal> {
-  return accountCall(`/api/integrations/${encodeURIComponent(id)}/keys`, {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}/keys`, {
     method: 'POST',
     body: JSON.stringify({ label }),
   });
 }
 
 export function revokeIntegrationKey(id: string, key: string): Promise<object | AccountRefusal> {
-  return accountCall(
-    `/api/integrations/${encodeURIComponent(id)}/keys/${encodeURIComponent(key)}`,
-    { method: 'DELETE' },
-  );
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}/keys/${encodeURIComponent(key)}`, {
+    method: 'DELETE',
+  });
 }
 
 // -- agents -------------------------------------------------------------------

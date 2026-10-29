@@ -33,7 +33,7 @@ export type WorkersSection = 'workers' | 'enrollment';
 
 /** The tabs of Admin -> Accounts: the people, the roles their provider's groups give them, the integrations
  * scripts call as, and the provider. */
-export type AccountsSection = 'users' | 'roles' | 'integrations' | 'oidc';
+export type AccountsSection = 'accounts' | 'roles' | 'oidc';
 
 /** The tabs of Admin -> Secrets: the secrets, and the key that encrypts the ones the leader stores. */
 export type SecretsSection = 'secrets' | 'key';
@@ -295,14 +295,13 @@ export const WORKERS_TABS: SectionItem[] = [
 
 /** The tabs of Admin -> Accounts. The first is where the bare `#/admin/accounts` lands. */
 export const ACCOUNTS_SECTIONS: { section: AccountsSection; label: string }[] = [
-  { section: 'users', label: 'Users' },
+  { section: 'accounts', label: 'Accounts' },
   { section: 'roles', label: 'Roles' },
-  { section: 'integrations', label: 'Integrations' },
   { section: 'oidc', label: 'Single sign-on' },
 ];
 
 export function accountsHash(section: AccountsSection): string {
-  return section === 'users' ? '#/admin/accounts' : `#/admin/accounts/${section}`;
+  return section === 'accounts' ? '#/admin/accounts' : `#/admin/accounts/${section}`;
 }
 
 /** Admin -> Secrets' tabs. The first is where the bare `#/admin/secrets` lands. */
@@ -605,7 +604,7 @@ export function parseRoute(hash: string): Route {
           : { tab: 'admin', page: 'certificates' };
       if (parts[1] === 'accounts') {
         const named = ACCOUNTS_SECTIONS.find((s) => s.section === parts[2]);
-        return { tab: 'admin', page: 'accounts', section: named?.section ?? 'users' };
+        return { tab: 'admin', page: 'accounts', section: named?.section ?? 'accounts' };
       }
       if (parts[1] === 'system') {
         const named = SYSTEM_SECTIONS.find((s) => s.section === parts[2]);

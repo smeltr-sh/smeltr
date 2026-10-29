@@ -77,7 +77,7 @@ describe('parseRoute', () => {
     expect(parseRoute('#/admin/accounts')).toEqual({
       tab: 'admin',
       page: 'accounts',
-      section: 'users',
+      section: 'accounts',
     });
     expect(parseRoute('#/admin/accounts/roles')).toEqual({
       tab: 'admin',

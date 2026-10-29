@@ -271,7 +271,7 @@ const OPERATOR_ROUTES: &[&str] = &[
     "/api/branches/work/timeline",
     "/api/main/history",
     "/api/worker-groups",
-    "/api/users",
+    "/api/accounts",
     "/api/security-events",
     "/api/areas/shared/pipeline-callers",
     "/api/areas/shared/pipelines/p1/connections",
@@ -797,7 +797,7 @@ fn a_refusal_the_framework_answers_wears_the_envelope() {
         ),
         (
             "a path that does not decode",
-            ("PATCH", "/api/users/%FF", json, br#"{"enabled": true}"#.to_vec()),
+            ("PATCH", "/api/accounts/%FF", json, br#"{"enabled": true}"#.to_vec()),
             400,
         ),
         (
@@ -921,8 +921,8 @@ fn an_administrator_creates_an_account_that_can_then_sign_in() {
 
     let (status, created) = leader.post_as(
         &op,
-        "/api/users",
-        serde_json::json!({ "username": "dana", "displayName": "Dana Okafor" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "username": "dana", "displayName": "Dana Okafor" }),
     );
     assert_eq!(status, 201, "{created}");
     let temporary = created["temporaryPassword"].as_str().expect("a temporary password");
@@ -1395,8 +1395,8 @@ fn a_username_cannot_be_taken_twice() {
     let create = |username: &str| {
         leader.post_as(
             &op,
-            "/api/users",
-            serde_json::json!({ "username": username, "displayName": "Someone" }),
+            "/api/accounts",
+            serde_json::json!({ "authSource": "local", "username": username, "displayName": "Someone" }),
         )
     };
     assert_eq!(create("dana").0, 201);
@@ -1412,13 +1412,13 @@ fn a_renamed_account_keeps_its_username() {
     let op = operator(&leader);
     let (_, created) = leader.post_as(
         &op,
-        "/api/users",
-        serde_json::json!({ "username": "dana", "displayName": "Dana" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "username": "dana", "displayName": "Dana" }),
     );
     let id = created["userId"].as_str().unwrap();
     let (status, patched) = leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "displayName": "Dana Okafor" }),
     );
     assert_eq!(status, 200);
@@ -1433,11 +1433,11 @@ fn a_renamed_account_keeps_its_username() {
 fn the_last_administrator_cannot_disable_themselves() {
     let leader = start("last-admin");
     let op = operator(&leader);
-    let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users["users"][0]["id"].as_str().unwrap();
+    let (_, users) = leader.get_as(&op.session, "/api/accounts");
+    let id = users["accounts"][0]["id"].as_str().unwrap();
     let (status, body) = leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "enabled": false }),
     );
     assert_eq!(status, 409, "{body}");
@@ -1450,8 +1450,8 @@ fn disabling_an_account_ends_its_session_at_once() {
     let op = operator(&leader);
     let (_, created) = leader.post_as(
         &op,
-        "/api/users",
-        serde_json::json!({ "username": "dana", "displayName": "Dana" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "username": "dana", "displayName": "Dana" }),
     );
     let id = created["userId"].as_str().unwrap().to_string();
     let temporary = created["temporaryPassword"].as_str().unwrap().to_string();
@@ -1478,7 +1478,7 @@ fn disabling_an_account_ends_its_session_at_once() {
 
     leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "enabled": false }),
     );
     assert_eq!(
@@ -1488,7 +1488,11 @@ fn disabling_an_account_ends_its_session_at_once() {
     );
 
     // And re-enabling does not revive it: the session is gone, not suspended.
-    leader.patch_as(&op, &format!("/api/users/{id}"), serde_json::json!({ "enabled": true }));
+    leader.patch_as(
+        &op,
+        &format!("/api/accounts/{id}"),
+        serde_json::json!({ "enabled": true }),
+    );
     assert_eq!(leader.get_as(&theirs, "/api/health").0, 401, "an old session came back");
 }
 
@@ -1498,10 +1502,14 @@ fn disabling_an_account_ends_its_session_at_once() {
 fn revoking_sessions_ends_them_and_leaves_the_password_alone() {
     let leader = start("revoke");
     let op = operator(&leader);
-    let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users["users"][0]["id"].as_str().unwrap().to_string();
+    let (_, users) = leader.get_as(&op.session, "/api/accounts");
+    let id = users["accounts"][0]["id"].as_str().unwrap().to_string();
 
-    let (status, _) = leader.post_as(&op, &format!("/api/users/{id}/revoke-sessions"), serde_json::json!({}));
+    let (status, _) = leader.post_as(
+        &op,
+        &format!("/api/accounts/{id}/revoke-sessions"),
+        serde_json::json!({}),
+    );
     assert_eq!(status, 200);
     assert_eq!(
         leader.get_as(&op.session, "/api/health").0,
@@ -1519,13 +1527,17 @@ fn resetting_a_password_ends_the_sessions_and_requires_a_new_choice() {
     let op = operator(&leader);
     let (_, created) = leader.post_as(
         &op,
-        "/api/users",
-        serde_json::json!({ "username": "dana", "displayName": "Dana" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "username": "dana", "displayName": "Dana" }),
     );
     let id = created["userId"].as_str().unwrap().to_string();
     let before = leader.sign_in("dana", created["temporaryPassword"].as_str().unwrap());
 
-    let (status, reset) = leader.post_as(&op, &format!("/api/users/{id}/reset-password"), serde_json::json!({}));
+    let (status, reset) = leader.post_as(
+        &op,
+        &format!("/api/accounts/{id}/reset-password"),
+        serde_json::json!({}),
+    );
     assert_eq!(status, 200, "{reset}");
     assert_eq!(reset["username"], "dana");
     // A session that survived would still be a must-change one and answer 403, so 401 is the session gone.
@@ -1576,8 +1588,8 @@ fn account_changes_are_audited_without_their_passwords() {
     let op = operator(&leader);
     leader.post_as(
         &op,
-        "/api/users",
-        serde_json::json!({ "username": "dana", "displayName": "Dana" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "username": "dana", "displayName": "Dana" }),
     );
 
     let (status, events) = leader.get_as(&op.session, "/api/security-events");
@@ -1607,8 +1619,9 @@ fn a_display_name_with_a_newline_is_refused() {
     let op = operator(&leader);
     let (status, _) = leader.post_as(
         &op,
-        "/api/users",
+        "/api/accounts",
         serde_json::json!({
+            "authSource": "local",
             "username": "dana",
             "displayName": "Dana\n<someone@else>",
         }),
@@ -1647,13 +1660,13 @@ fn deploy_something(leader: &Leader, op: &Operator) {
 fn a_renamed_person_keeps_the_commits_they_wrote() {
     let leader = start("attribution-rename");
     let op = operator(&leader);
-    let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users["users"][0]["id"].as_str().unwrap().to_string();
+    let (_, users) = leader.get_as(&op.session, "/api/accounts");
+    let id = users["accounts"][0]["id"].as_str().unwrap().to_string();
 
     deploy_something(&leader, &op);
     leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "displayName": "Someone Else" }),
     );
 
@@ -1830,19 +1843,19 @@ fn a_refused_sign_in_records_a_bounded_subject() {
 fn a_patch_changing_two_things_at_once_is_refused_before_anything_changes() {
     let leader = start("patch-atomic");
     let op = operator(&leader);
-    let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users["users"][0]["id"].as_str().unwrap().to_string();
-    let was = users["users"][0]["displayName"].as_str().unwrap().to_string();
+    let (_, users) = leader.get_as(&op.session, "/api/accounts");
+    let id = users["accounts"][0]["id"].as_str().unwrap().to_string();
+    let was = users["accounts"][0]["displayName"].as_str().unwrap().to_string();
 
     let (status, _) = leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "displayName": "Renamed", "enabled": false }),
     );
     assert_eq!(status, 422);
 
-    let (_, after) = leader.get_as(&op.session, "/api/users");
-    assert_eq!(after["users"][0]["displayName"], was, "the rename landed anyway");
+    let (_, after) = leader.get_as(&op.session, "/api/accounts");
+    assert_eq!(after["accounts"][0]["displayName"], was, "the rename landed anyway");
 }
 
 /// An origin carrying a path or a query can never equal what a browser sends, so accepting it would leave every
@@ -1877,8 +1890,8 @@ fn a_configured_origin_that_is_not_one_refuses_to_start() {
 fn second_operator(leader: &Leader, op: &Operator, username: &str, display_name: &str) -> Operator {
     let (status, created) = leader.post_as(
         op,
-        "/api/users",
-        serde_json::json!({ "username": username, "displayName": display_name }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "username": username, "displayName": display_name }),
     );
     assert_eq!(status, 201, "{created}");
     let temporary = created["temporaryPassword"].as_str().expect("a temporary password");
@@ -1965,22 +1978,22 @@ fn a_display_name_git_cannot_hold_is_refused() {
     let op = operator(&leader);
     let (status, body) = leader.post_as(
         &op,
-        "/api/users",
-        serde_json::json!({ "username": "dana", "displayName": "Dana <Ops>" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "username": "dana", "displayName": "Dana <Ops>" }),
     );
     assert_eq!(status, 422, "{body}");
 
     // And the same name cannot arrive by renaming afterward.
     let (status, created) = leader.post_as(
         &op,
-        "/api/users",
-        serde_json::json!({ "username": "dana", "displayName": "Dana Okafor" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "username": "dana", "displayName": "Dana Okafor" }),
     );
     assert_eq!(status, 201, "{created}");
     let id = created["userId"].as_str().expect("an id");
     let (status, renamed) = leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "displayName": "Dana <Ops>" }),
     );
     assert_eq!(status, 422, "{renamed}");
@@ -2111,8 +2124,9 @@ fn with_key(
 }
 
 /// An integration made by `op`, and its id.
-fn integration(leader: &Leader, op: &Operator, body: serde_json::Value) -> String {
-    let (status, created) = leader.post_as(op, "/api/integrations", body);
+fn integration(leader: &Leader, op: &Operator, mut body: serde_json::Value) -> String {
+    body["authSource"] = "integration".into();
+    let (status, created) = leader.post_as(op, "/api/accounts", body);
     assert_eq!(status, 201, "{created}");
     created["id"].as_str().unwrap().to_string()
 }
@@ -2121,7 +2135,7 @@ fn integration(leader: &Leader, op: &Operator, body: serde_json::Value) -> Strin
 fn key_for(leader: &Leader, op: &Operator, id: &str) -> (String, String) {
     let (status, created) = leader.post_as(
         op,
-        &format!("/api/integrations/{id}/keys"),
+        &format!("/api/accounts/{id}/keys"),
         serde_json::json!({ "label": "ci" }),
     );
     assert_eq!(status, 201, "{created}");
@@ -2145,7 +2159,7 @@ fn a_key_calls_the_api_with_what_its_integrations_roles_give() {
     let id = integration(
         &leader,
         &op,
-        serde_json::json!({ "name": "nightly export", "roles": ["smeltr-readers"] }),
+        serde_json::json!({ "displayName": "nightly export", "roles": ["smeltr-readers"] }),
     );
     let (key, _) = key_for(&leader, &op, &id);
 
@@ -2159,22 +2173,21 @@ fn a_key_calls_the_api_with_what_its_integrations_roles_give() {
         Some(serde_json::json!([])),
     );
     assert_eq!(status, 403, "a viewer's key edited: {body}");
-    let (status, _) = with_key(&leader, &key, "GET", "/api/users", None);
+    let (status, _) = with_key(&leader, &key, "GET", "/api/accounts", None);
     assert_eq!(status, 403, "a viewer's key read the roster");
 
-    let (_, roster) = leader.get_as(&op.session, "/api/integrations");
-    let listed = &roster["integrations"][0];
-    assert_eq!(listed["name"], "nightly export");
+    let (_, roster) = leader.get_as(&op.session, "/api/accounts");
+    let listed = &roster["accounts"][1];
+    assert_eq!(listed["authSource"], "integration", "{roster}");
+    assert_eq!(listed["displayName"], "nightly export");
     assert!(
         listed["keys"][0]["lastUsedAt"].is_i64(),
         "a used key reads as never used: {listed}"
     );
     assert!(!roster.to_string().contains(&key), "the roster carried a key");
-    let (_, users) = leader.get_as(&op.session, "/api/users");
-    assert_eq!(
-        users["users"].as_array().unwrap().len(),
-        1,
-        "an integration is listed among people: {users}"
+    assert!(
+        roster["accounts"][0].get("keys").is_none(),
+        "a person is listed with keys: {roster}"
     );
 }
 
@@ -2187,7 +2200,7 @@ fn an_administrators_key_changes_things_as_its_integration() {
     let id = integration(
         &leader,
         &op,
-        serde_json::json!({ "name": "provisioner", "administrator": true }),
+        serde_json::json!({ "displayName": "provisioner", "administrator": true }),
     );
     let (key, _) = key_for(&leader, &op, &id);
 
@@ -2218,7 +2231,7 @@ fn a_revoked_key_and_a_disabled_integrations_keys_are_refused() {
     let id = integration(
         &leader,
         &op,
-        serde_json::json!({ "name": "exporter", "administrator": true }),
+        serde_json::json!({ "displayName": "exporter", "administrator": true }),
     );
     let (first, first_id) = key_for(&leader, &op, &id);
     let (second, _) = key_for(&leader, &op, &id);
@@ -2227,11 +2240,11 @@ fn a_revoked_key_and_a_disabled_integrations_keys_are_refused() {
     assert_eq!(status, 401, "a key never made");
 
     assert_eq!(
-        leader.delete_as(&op, &format!("/api/integrations/{id}/keys/{first_id}")),
+        leader.delete_as(&op, &format!("/api/accounts/{id}/keys/{first_id}")),
         200
     );
     assert_eq!(
-        leader.delete_as(&op, &format!("/api/integrations/{id}/keys/{first_id}")),
+        leader.delete_as(&op, &format!("/api/accounts/{id}/keys/{first_id}")),
         404
     );
     let (status, _) = with_key(&leader, &first, "GET", "/api/health", None);
@@ -2241,7 +2254,7 @@ fn a_revoked_key_and_a_disabled_integrations_keys_are_refused() {
 
     let (status, body) = leader.patch_as(
         &op,
-        &format!("/api/integrations/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "enabled": false }),
     );
     assert_eq!(status, 200, "{body}");
@@ -2249,7 +2262,7 @@ fn a_revoked_key_and_a_disabled_integrations_keys_are_refused() {
     assert_eq!(status, 403, "a disabled integration's key");
     let (status, body) = leader.patch_as(
         &op,
-        &format!("/api/integrations/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "enabled": true }),
     );
     assert_eq!(status, 200, "{body}");
@@ -2284,12 +2297,12 @@ fn a_key_reaches_no_persons_route() {
     let id = integration(
         &leader,
         &op,
-        serde_json::json!({ "name": "provisioner", "administrator": true }),
+        serde_json::json!({ "displayName": "provisioner", "administrator": true }),
     );
     let (key, _) = key_for(&leader, &op, &id);
     for (method, path) in [
-        ("GET", "/api/integrations"),
-        ("POST", "/api/integrations/x/keys"),
+        ("GET", "/api/accounts"),
+        ("POST", "/api/accounts/x/keys"),
         ("GET", "/api/me/agent-permissions"),
         ("GET", "/api/agent/conversations"),
     ] {
@@ -2303,7 +2316,7 @@ fn a_key_reaches_no_persons_route() {
 fn a_key_and_a_session_together_are_refused() {
     let leader = start("integration-both");
     let op = operator(&leader);
-    let id = integration(&leader, &op, serde_json::json!({ "name": "exporter" }));
+    let id = integration(&leader, &op, serde_json::json!({ "displayName": "exporter" }));
     let (key, _) = key_for(&leader, &op, &id);
     let status = status_of(
         ureq::get(format!("{}/api/health", leader.base))
@@ -2320,28 +2333,34 @@ fn a_key_and_a_session_together_are_refused() {
 fn an_integration_is_refused_a_taken_name_or_an_unknown_role() {
     let leader = start("integration-refusals");
     let op = operator(&leader);
-    integration(&leader, &op, serde_json::json!({ "name": "exporter" }));
-    let (status, body) = leader.post_as(&op, "/api/integrations", serde_json::json!({ "name": "exporter" }));
+    integration(&leader, &op, serde_json::json!({ "displayName": "exporter" }));
+    let (status, body) = leader.post_as(
+        &op,
+        "/api/accounts",
+        serde_json::json!({ "authSource": "integration", "displayName": "exporter" }),
+    );
     assert_eq!(status, 409, "{body}");
     let (status, body) = leader.post_as(
         &op,
-        "/api/integrations",
-        serde_json::json!({ "name": "importer", "roles": ["nobody"] }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "integration", "displayName": "importer", "roles": ["nobody"] }),
     );
     assert_eq!(status, 422, "{body}");
-    let id = integration(&leader, &op, serde_json::json!({ "name": "importer" }));
+    let id = integration(&leader, &op, serde_json::json!({ "displayName": "importer" }));
     let (status, body) = leader.patch_as(
         &op,
-        &format!("/api/integrations/{id}"),
-        serde_json::json!({ "name": "renamed", "enabled": false }),
+        &format!("/api/accounts/{id}"),
+        serde_json::json!({ "displayName": "renamed", "enabled": false }),
     );
     assert_eq!(status, 422, "{body}");
+    let (_, roster) = leader.get_as(&op.session, "/api/accounts");
+    let person = roster["accounts"][0]["id"].as_str().unwrap().to_string();
     let (status, body) = leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
-        serde_json::json!({ "enabled": false }),
+        &format!("/api/accounts/{person}"),
+        serde_json::json!({ "roles": [] }),
     );
-    assert_eq!(status, 404, "an integration was changed as a person: {body}");
+    assert_eq!(status, 409, "a person was given roles: {body}");
 }
 
 // -- OIDC sign-in --------------------------------------------------------------
@@ -2699,16 +2718,16 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
     };
     let (status, body) = leader.post_as(
         &oidc_op,
-        "/api/users",
-        serde_json::json!({ "username": "grace", "displayName": "Grace" }),
+        "/api/accounts",
+        serde_json::json!({ "authSource": "local", "username": "grace", "displayName": "Grace" }),
     );
     assert_eq!(status, 201, "{body}");
 
     // Signing in again is the same account, not a second one.
     let (ended, _) = oidc_sign_in(&leader);
     assert_eq!(ended, "/");
-    let (_, users) = leader.get_as(&op.session, "/api/users");
-    let oidc: Vec<_> = users["users"]
+    let (_, users) = leader.get_as(&op.session, "/api/accounts");
+    let oidc: Vec<_> = users["accounts"]
         .as_array()
         .expect("a roster")
         .iter()
@@ -2729,7 +2748,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
     provider.becomes(ada());
     let (status, body) = leader.patch_as(
         &op,
-        &format!("/api/users/{id}"),
+        &format!("/api/accounts/{id}"),
         serde_json::json!({ "enabled": false }),
     );
     assert_eq!(status, 200, "{body}");
@@ -2737,7 +2756,11 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
     assert_eq!(oidc_sign_in(&leader), ("/?oidc=refused".to_string(), None));
 
     // Enabled again, it signs in afresh, and the session disabling ended stays ended.
-    let (status, body) = leader.patch_as(&op, &format!("/api/users/{id}"), serde_json::json!({ "enabled": true }));
+    let (status, body) = leader.patch_as(
+        &op,
+        &format!("/api/accounts/{id}"),
+        serde_json::json!({ "enabled": true }),
+    );
     assert_eq!(status, 200, "{body}");
     let (ended, again) = oidc_sign_in(&leader);
     assert_eq!(ended, "/");
@@ -2985,7 +3008,7 @@ fn a_viewer_reads_their_group_and_saves_nothing() {
 
     let (status, body) = leader.put_as(&viewer, "/api/areas/west/sources?branch=dana", a_source());
     assert_eq!(status, 403, "a viewer saved: {body}");
-    let (status, body) = leader.get_as(&viewer.session, "/api/users");
+    let (status, body) = leader.get_as(&viewer.session, "/api/accounts");
     assert_eq!(status, 403, "a viewer read the roster: {body}");
 }
 
@@ -3013,7 +3036,7 @@ fn an_editor_saves_in_their_group_and_does_not_deploy() {
     assert_eq!(status, 403, "an editor deployed a change: {body}");
     let (status, body) = leader.post_as(&editor, "/api/main/deploy", serde_json::json!({}));
     assert_eq!(status, 403, "an editor deployed a commit: {body}");
-    let (status, body) = leader.get_as(&editor.session, "/api/users");
+    let (status, body) = leader.get_as(&editor.session, "/api/accounts");
     assert_eq!(status, 403, "an editor read the roster: {body}");
 }
 

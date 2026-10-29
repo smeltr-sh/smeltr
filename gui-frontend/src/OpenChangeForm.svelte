@@ -14,7 +14,7 @@
     SAVED_EVENT,
     branchDiff,
     configAt,
-    listUsers,
+    listAccounts,
     openChange,
     runTests,
     type BranchDto,
@@ -120,10 +120,14 @@
 
   async function loadReviewers() {
     try {
-      reviewers = (await listUsers())
+      // A review is a person's: an integration never signs in to give one.
+      reviewers = (await listAccounts())
         .filter(
           (u) =>
-            u.enabled && deployBlocker(entry.touches, u.access) === '' && u.id !== session().userId,
+            u.authSource !== 'integration' &&
+            u.enabled &&
+            deployBlocker(entry.touches, u.access) === '' &&
+            u.id !== session().userId,
         )
         .map((u) => ({ id: u.id, name: u.displayName }));
     } catch {

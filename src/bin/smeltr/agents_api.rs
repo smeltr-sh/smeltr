@@ -17,8 +17,8 @@ use smeltr::leader::model::{self, Provider, Settings};
 use smeltr::leader::store::Actor;
 use smeltr::leader::{accounts, blocking};
 
+use crate::accounts_api::store_call;
 use crate::gate::{Auth, refuse};
-use crate::users_api::store_call;
 
 /// Why an agent is refused a change to what it may do: only a person sets that.
 const OWN_PERMISSIONS: &str = "an agent cannot change its own permissions";

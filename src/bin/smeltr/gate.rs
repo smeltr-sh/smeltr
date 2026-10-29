@@ -613,7 +613,7 @@ mod tests {
         ] {
             assert!(person_only(path), "{path}");
         }
-        for path in ["/api/integrationsx", "/api/users", "/api/areas/shared"] {
+        for path in ["/api/integrationsx", "/api/accounts", "/api/areas/shared"] {
             assert!(!person_only(path), "{path}");
         }
     }
@@ -814,7 +814,7 @@ mod tests {
             Router::new()
                 .route("/api/areas/:area", get(reached))
                 .route("/api/areas/:area/sources", put(reached))
-                .route("/api/users", get(reached))
+                .route("/api/accounts", get(reached))
                 .route_layer(axum::middleware::from_fn_with_state(auth, require_principal))
         }
 
@@ -894,7 +894,7 @@ mod tests {
             assert_eq!(status, 403, "{body}");
             assert!(body.contains("this needs viewer in search"), "{body}");
 
-            let (status, _) = ask(at, &auth, &viewer, "GET", "/api/users").await;
+            let (status, _) = ask(at, &auth, &viewer, "GET", "/api/accounts").await;
             assert_eq!(status, 403);
         }
 
@@ -922,7 +922,7 @@ mod tests {
             let auth = auth(store.clone());
             let at = serve(auth.clone()).await;
 
-            assert_eq!(ask(at, &auth, &person, "GET", "/api/users").await.0, 403);
+            assert_eq!(ask(at, &auth, &person, "GET", "/api/accounts").await.0, 403);
             let admins = Role {
                 name: "smeltr-admins".into(),
                 administrator: true,
@@ -931,7 +931,7 @@ mod tests {
             let event = accounts::event_for(&Actor::system(), "role-put", "smeltr-admins", "ok");
             store.put_role(&admins, &event).unwrap();
             assert_eq!(
-                ask(at, &auth, &person, "GET", "/api/users").await,
+                ask(at, &auth, &person, "GET", "/api/accounts").await,
                 (200, "reached".to_string())
             );
             assert_eq!(ask(at, &auth, &person, "PUT", "/api/areas/search/sources").await.0, 200);
@@ -1006,14 +1006,14 @@ mod tests {
             let auth = auth(store.clone());
             let agent = serve_by_agent(auth.clone()).await;
 
-            assert_eq!(ask(agent, &auth, &person, "GET", "/api/users").await.0, 403);
+            assert_eq!(ask(agent, &auth, &person, "GET", "/api/accounts").await.0, 403);
             assert_eq!(ask(agent, &auth, &person, "GET", "/api/areas/search").await.0, 200);
             let event = accounts::event_for(&Actor::system(), "agent-permissions-put", &person.id, "ok");
             store
                 .put_agent_permissions(&person.id, &AgentPermissions::Everything, &event)
                 .unwrap()
                 .unwrap();
-            assert_eq!(ask(agent, &auth, &person, "GET", "/api/users").await.0, 200);
+            assert_eq!(ask(agent, &auth, &person, "GET", "/api/accounts").await.0, 200);
         }
     }
 }

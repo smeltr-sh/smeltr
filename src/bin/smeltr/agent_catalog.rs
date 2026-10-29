@@ -516,32 +516,38 @@ pub const CATALOG: &[Route] = &[
     // -- accounts and roles --
     Route {
         method: "GET",
-        path: "/api/users",
-        what: "Every account with its roles, as `users`. No query.",
+        path: "/api/accounts",
+        what: "Every account, however it signs in (authSource local, oidc or integration), with its roles and, for an integration, its keys in force, never a key itself, as `accounts`. No query.",
         body: "",
     },
     Route {
         method: "POST",
-        path: "/api/users",
-        what: "Create a local administrator; returns a one-time temporary password. No query.",
-        body: "{ username: string, displayName: string }",
+        path: "/api/accounts",
+        what: "Create a local administrator, returning a one-time temporary password, or an enabled integration holding no key yet. No query.",
+        body: "{ authSource: 'local', username: string, displayName: string } | { authSource: 'integration', displayName: string, roles?: string[], administrator?: boolean }",
     },
     Route {
         method: "PATCH",
-        path: "/api/users/:id",
-        what: "Change one account's display name or enabled state, one field per request. No query.",
-        body: "{ displayName?: string, enabled?: boolean } (exactly one)",
+        path: "/api/accounts/:id",
+        what: "Change one account's display name or enabled state, or an integration's roles or administrator, one field per request. Disabling an integration revokes every key it holds. No query.",
+        body: "{ displayName?: string, enabled?: boolean, roles?: string[], administrator?: boolean } (exactly one)",
     },
     Route {
         method: "POST",
-        path: "/api/users/:id/reset-password",
-        what: "Give an account a new temporary password (returned) and end its sessions. No query.",
+        path: "/api/accounts/:id/reset-password",
+        what: "Give a local account a new temporary password (returned) and end its sessions. No query.",
         body: "",
     },
     Route {
         method: "POST",
-        path: "/api/users/:id/revoke-sessions",
+        path: "/api/accounts/:id/revoke-sessions",
         what: "End every session an account holds; answers { ended }. No query.",
+        body: "",
+    },
+    Route {
+        method: "DELETE",
+        path: "/api/accounts/:id/keys/:key",
+        what: "Revoke one of an integration's keys. No query.",
         body: "",
     },
     Route {
@@ -584,30 +590,6 @@ pub const CATALOG: &[Route] = &[
         method: "DELETE",
         path: "/api/roles/:name",
         what: "Delete a role. No query.",
-        body: "",
-    },
-    Route {
-        method: "GET",
-        path: "/api/integrations",
-        what: "Every integration with its roles, whether it is an administrator, and its keys in force, never a key itself, as `integrations`. No query.",
-        body: "",
-    },
-    Route {
-        method: "POST",
-        path: "/api/integrations",
-        what: "Create an enabled integration, holding no key yet. No query.",
-        body: "{ name: string, roles?: string[], administrator?: boolean }",
-    },
-    Route {
-        method: "PATCH",
-        path: "/api/integrations/:id",
-        what: "Change one integration's name, roles, administrator or enabled state, one field per request. Disabling revokes every key it holds. No query.",
-        body: "{ name?: string, roles?: string[], administrator?: boolean, enabled?: boolean } (exactly one)",
-    },
-    Route {
-        method: "DELETE",
-        path: "/api/integrations/:id/keys/:key",
-        what: "Revoke one of an integration's keys. No query.",
         body: "",
     },
     // -- settings --
@@ -851,7 +833,7 @@ pub const LEFT_OUT: &[(&str, &str)] = &[
     ("POST", "/api/agent/conversations/:id/context"),
     ("POST", "/api/areas/:area/lookups/upload"),
     ("PUT", "/api/me/agent-permissions"),
-    ("POST", "/api/integrations/:id/keys"),
+    ("POST", "/api/accounts/:id/keys"),
 ];
 
 #[cfg(test)]

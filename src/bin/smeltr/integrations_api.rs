@@ -1,45 +1,26 @@
-//! Managing integrations: the accounts scripts call the operator API as, and the keys they call with.
+//! What is an integration's own: the accounts scripts call the operator API as, and the keys they call with.
 //!
 //! An integration holds what its roles give, as an OIDC account holds what its groups give, or everything when it
 //! is an administrator. A key is answered once, when it is made, and kept only as its hash. Disabling an
 //! integration revokes every key it holds, so enabling it again brings none of them back.
 //!
-//! Behind the gate and needing an administrator, and never reached with a key (`gate`), so no key makes another.
+//! Reached through `/api/accounts` (`accounts_api`), behind the gate and needing an administrator.
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-use smeltr::leader::access::Role;
 use smeltr::leader::envelope::Envelope;
-use smeltr::leader::store::{
-    AccountError, Actor, ApiKeyRecord, IntegrationChange, IntegrationRecord, NewApiKey, NewIntegration, StoreError,
-};
+use smeltr::leader::store::{Actor, ApiKeyRecord, IntegrationChange, NewApiKey, NewIntegration};
 use smeltr::leader::warnings::now_millis;
 use smeltr::leader::{accounts, auth as tokens};
 
-use crate::gate::{AccessDto, Auth, integration_access, refuse};
-use crate::users_api::{account_error, display_name, store_call};
+use crate::accounts_api::{PatchRequest, account_error, current_account, display_name, store_call};
+use crate::gate::{Auth, refuse};
 
 /// The longest key label, in characters: room for what the key is for, and no more.
 const MAX_LABEL_CHARS: usize = 128;
-
-/// An integration as the API carries it. Never a key or its hash.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IntegrationDto {
-    pub id: String,
-    pub name: String,
-    pub enabled: bool,
-    pub roles: Vec<String>,
-    /// Whether an administrator made it one. What it holds, from this or its roles, is `access`.
-    pub administrator: bool,
-    pub access: AccessDto,
-    pub keys: Vec<KeyDto>,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
 
 /// A key in force, as the roster shows it.
 #[derive(serde::Serialize)]
@@ -72,70 +53,26 @@ impl From<ApiKeyRecord> for KeyDto {
     }
 }
 
-impl IntegrationDto {
-    /// `integration` as the roster shows it, given every role there is.
-    fn of(integration: IntegrationRecord, roles: &[Role]) -> IntegrationDto {
-        let access = integration_access(&integration, roles);
-        IntegrationDto {
-            id: integration.id,
-            name: integration.name,
-            enabled: integration.enabled,
-            roles: integration.roles,
-            administrator: integration.administrator,
-            access: AccessDto::from(&access),
-            keys: integration.keys.into_iter().map(KeyDto::from).collect(),
-            created_at: integration.created_at,
-            updated_at: integration.updated_at,
-        }
-    }
-}
-
-/// `GET /api/integrations`: every integration, oldest first.
-pub async fn list_integrations(State(auth): State<Auth>) -> Response {
-    let store = auth.store.clone();
-    let listed = store_call(move || {
-        let roles = store.list_roles()?;
-        Ok(store
-            .list_integrations()?
-            .into_iter()
-            .map(|integration| IntegrationDto::of(integration, &roles))
-            .collect::<Vec<_>>())
-    })
-    .await;
-    match listed {
-        Ok(integrations) => Envelope::ok(serde_json::json!({ "integrations": integrations })).into_response(),
-        Err(response) => *response,
-    }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CreateRequest {
-    pub name: String,
-    #[serde(default)]
-    pub roles: Vec<String>,
-    #[serde(default)]
-    pub administrator: bool,
-}
-
-/// `POST /api/integrations`: an enabled integration holding no key yet.
+/// An enabled integration holding no key yet, answered as the roster shows it.
 pub async fn create_integration(
-    State(auth): State<Auth>,
-    actor: axum::Extension<Actor>,
-    Json(request): Json<CreateRequest>,
+    auth: &Auth,
+    actor: &Actor,
+    display_name: &str,
+    roles: Vec<String>,
+    administrator: bool,
 ) -> Response {
-    let name = match name_of(&request.name) {
+    let name = match self::display_name(display_name) {
         Ok(name) => name,
-        Err(why) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, &why),
+        Err(why) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, why),
     };
-    let roles = match known_roles(&auth, request.roles).await {
+    let roles = match known_roles(auth, roles).await {
         Ok(roles) => roles,
         Err(response) => return *response,
     };
     let id = accounts::generate_user_id();
-    let event = accounts::event_for(&actor, "integration-create", &id, "ok");
+    let event = accounts::event_for(actor, "integration-create", &id, "ok");
     let store = auth.store.clone();
-    let (created, administrator) = (id.clone(), request.administrator);
+    let created = id.clone();
     let outcome = store_call(move || {
         store.create_integration(
             NewIntegration {
@@ -153,53 +90,20 @@ pub async fn create_integration(
         Ok(Err(e)) => {
             accounts::record(
                 auth.store.as_ref(),
-                &actor,
+                actor,
                 "integration-create",
-                &request.name,
+                display_name,
                 "refused",
             );
             return account_error(e);
         }
         Err(response) => return *response,
     }
-    match current(&auth, &id).await {
-        Ok(integration) => (StatusCode::CREATED, Envelope::ok(integration)).into_response(),
-        Err(response) => *response,
-    }
+    (StatusCode::CREATED, current_account(auth, &id).await).into_response()
 }
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PatchRequest {
-    pub name: Option<String>,
-    pub roles: Option<Vec<String>>,
-    pub administrator: Option<bool>,
-    pub enabled: Option<bool>,
-}
-
-/// `PATCH /api/integrations/:id`.
-///
-/// One field at a time, as an account is changed: each is its own write, and a request refused on its second
-/// field would already have landed its first.
-pub async fn patch_integration(
-    State(auth): State<Auth>,
-    actor: axum::Extension<Actor>,
-    Path(id): Path<String>,
-    Json(request): Json<PatchRequest>,
-) -> Response {
-    let named = [
-        request.name.is_some(),
-        request.roles.is_some(),
-        request.administrator.is_some(),
-        request.enabled.is_some(),
-    ];
-    if named.iter().filter(|&&n| n).count() != 1 {
-        return refuse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "change one of name, roles, administrator or enabled in each request",
-        );
-    }
-
+/// One field of the integration `id` changed, `request` naming exactly one.
+pub async fn patch_integration(auth: &Auth, actor: &Actor, id: &str, request: PatchRequest) -> Response {
     let store = auth.store.clone();
     let (action, outcome) = if let Some(enabled) = request.enabled {
         let action = if enabled {
@@ -207,28 +111,28 @@ pub async fn patch_integration(
         } else {
             "integration-disable"
         };
-        let event = accounts::event_for(&actor, action, &id, "ok");
-        let target = id.clone();
+        let event = accounts::event_for(actor, action, id, "ok");
+        let target = id.to_string();
         (
             action,
             store_call(move || store.set_integration_enabled(&target, enabled, &event)).await,
         )
     } else {
-        let change = if let Some(name) = &request.name {
-            match name_of(name) {
+        let change = if let Some(name) = &request.display_name {
+            match display_name(name) {
                 Ok(name) => IntegrationChange::Name(name),
-                Err(why) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, &why),
+                Err(why) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, why),
             }
         } else if let Some(roles) = request.roles {
-            match known_roles(&auth, roles).await {
+            match known_roles(auth, roles).await {
                 Ok(roles) => IntegrationChange::Roles(roles),
                 Err(response) => return *response,
             }
         } else {
             IntegrationChange::Administrator(request.administrator.unwrap_or_default())
         };
-        let event = accounts::event_for(&actor, "integration-change", &id, "ok");
-        let target = id.clone();
+        let event = accounts::event_for(actor, "integration-change", id, "ok");
+        let target = id.to_string();
         (
             "integration-change",
             store_call(move || store.change_integration(&target, &change, &event)).await,
@@ -237,15 +141,12 @@ pub async fn patch_integration(
     match outcome {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
-            accounts::record(auth.store.as_ref(), &actor, action, &id, "refused");
+            accounts::record(auth.store.as_ref(), actor, action, id, "refused");
             return account_error(e);
         }
         Err(response) => return *response,
     }
-    match current(&auth, &id).await {
-        Ok(integration) => Envelope::ok(integration).into_response(),
-        Err(response) => *response,
-    }
+    current_account(auth, id).await
 }
 
 #[derive(serde::Deserialize)]
@@ -255,7 +156,7 @@ pub struct CreateKeyRequest {
     pub label: String,
 }
 
-/// `POST /api/integrations/:id/keys`: a new key for an enabled integration, answered this once.
+/// `POST /api/accounts/:id/keys`: a new key for an enabled integration, answered this once.
 pub async fn create_key(
     State(auth): State<Auth>,
     actor: axum::Extension<Actor>,
@@ -315,7 +216,7 @@ pub async fn create_key(
         .into_response()
 }
 
-/// `DELETE /api/integrations/:id/keys/:key`: the key stops letting anyone in from the next request.
+/// `DELETE /api/accounts/:id/keys/:key`: the key stops letting anyone in from the next request.
 pub async fn revoke_key(
     State(auth): State<Auth>,
     actor: axum::Extension<Actor>,
@@ -332,18 +233,6 @@ pub async fn revoke_key(
         }
         Err(response) => *response,
     }
-}
-
-/// The integration as it stands, for a caller that just changed it.
-async fn current(auth: &Auth, id: &str) -> Result<IntegrationDto, Box<Response>> {
-    let store = auth.store.clone();
-    let target = id.to_string();
-    let looked_up = store_call(move || {
-        let roles = store.list_roles()?;
-        Ok::<_, StoreError>(store.integration(&target)?.map(|i| IntegrationDto::of(i, &roles)))
-    })
-    .await?;
-    looked_up.ok_or_else(|| Box::new(account_error(AccountError::NoSuchUser)))
 }
 
 /// `roles`, each named once, if every one is a role that exists.
@@ -364,28 +253,13 @@ async fn known_roles(auth: &Auth, mut roles: Vec<String>) -> Result<Vec<String>,
     }
 }
 
-/// An integration's name, checked as a display name is, since that is what it is.
-fn name_of(raw: &str) -> Result<String, String> {
-    display_name(raw).map_err(|why| why.replacen("a display name", "an integration's name", 1))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_name_is_refused_as_an_integrations() {
-        assert_eq!(name_of("  nightly export ").unwrap(), "nightly export");
-        assert_eq!(
-            name_of("").unwrap_err(),
-            "an integration's name is between 1 and 128 characters"
-        );
-        assert!(name_of("a<b").unwrap_err().starts_with("an integration's name"));
-    }
-
-    #[test]
-    fn a_change_names_what_it_changes() {
-        assert!(serde_json::from_str::<PatchRequest>(r#"{"enabled":false}"#).is_ok());
-        assert!(serde_json::from_str::<PatchRequest>(r#"{"admin":true}"#).is_err());
+    fn a_key_label_names_only_itself() {
+        assert!(serde_json::from_str::<CreateKeyRequest>(r#"{"label":"nightly"}"#).is_ok());
+        assert!(serde_json::from_str::<CreateKeyRequest>(r#"{"name":"nightly"}"#).is_err());
     }
 }

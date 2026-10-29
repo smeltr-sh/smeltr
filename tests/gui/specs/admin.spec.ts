@@ -560,16 +560,16 @@ test('an integration made under Accounts calls with its key until the key is rev
   // S5
   await api.put('/api/roles/smeltr-readers', { areas: { shared: 'viewer' } });
   await openAdmin(admin, 'Accounts');
-  await admin.getByRole('link', { name: 'Integrations', exact: true }).click();
-  await expect(admin.getByText('No integrations yet.')).toBeVisible();
 
-  await admin.getByRole('button', { name: '+ Add integration' }).click();
-  const dialog = admin.getByRole('dialog', { name: 'new integration' });
-  await dialog.getByRole('textbox', { name: /^Name\b/ }).fill('nightly export');
+  await admin.getByRole('button', { name: '+ Add account' }).click();
+  const dialog = admin.getByRole('dialog', { name: 'new account' });
+  await dialog.getByRole('button', { name: 'Key' }).click();
+  await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill('nightly export');
   await dialog.getByRole('checkbox', { name: 'smeltr-readers' }).check();
   await dialog.getByRole('button', { name: 'Add' }).click();
   const row = admin.getByRole('row').filter({ hasText: 'nightly export' });
   await expect(row.getByText('smeltr-readers')).toBeVisible();
+  await expect(row.getByRole('cell', { name: 'Key', exact: true })).toBeVisible();
 
   await admin.getByRole('button', { name: '+ New key' }).click();
   await admin.getByRole('textbox', { name: /^Label\b/ }).fill('ci');
@@ -581,7 +581,7 @@ test('an integration made under Accounts calls with its key until the key is rev
   await expect(handover).toHaveCount(0);
 
   expect(await withKey(leader, key, 'GET', '/api/areas/shared')).toBe(200);
-  expect(await withKey(leader, key, 'GET', '/api/users')).toBe(403);
+  expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(403);
   await admin.reload();
   await admin
     .getByRole('row')

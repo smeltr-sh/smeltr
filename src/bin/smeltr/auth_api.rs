@@ -121,7 +121,7 @@ pub async fn session(State(auth): State<Auth>, headers: HeaderMap) -> Response {
         let (username, provider_login, access) = match &user {
             Some(user) => (
                 store.username_of(&user.id)?,
-                crate::users_api::provider_login_of(store.as_ref(), user)?,
+                crate::accounts_api::provider_login_of(store.as_ref(), user)?,
                 Some(access_of(store.as_ref(), user)?),
             ),
             None => (None, None, None),

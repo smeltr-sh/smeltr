@@ -367,7 +367,7 @@ export async function addAccount(
   username: string,
   displayName: string,
 ): Promise<Api> {
-  const made = await api.post('/api/users', { username, displayName });
+  const made = await api.post('/api/accounts', { authSource: 'local', username, displayName });
   const first = await signedIn(leader, username, made.temporaryPassword);
   const password = `${username}-chosen-password`;
   await first.put('/api/auth/password', { username, newPassword: password });

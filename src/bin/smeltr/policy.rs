@@ -211,9 +211,9 @@ mod tests {
     #[test]
     fn administration_needs_an_administrator() {
         for (method, path) in [
-            (Method::GET, "/api/users"),
-            (Method::POST, "/api/users"),
-            (Method::PATCH, "/api/users/u_1"),
+            (Method::GET, "/api/accounts"),
+            (Method::POST, "/api/accounts"),
+            (Method::PATCH, "/api/accounts/u_1"),
             (Method::GET, "/api/roles"),
             (Method::PUT, "/api/roles/smeltr-payments"),
             (Method::DELETE, "/api/roles/smeltr-payments"),

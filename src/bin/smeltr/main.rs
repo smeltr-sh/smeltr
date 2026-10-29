@@ -11,6 +11,7 @@ use axum::Router;
 use axum::extract::{Json, Multipart};
 use axum::routing::{delete, get, patch, post, put};
 
+mod accounts_api;
 mod acme_api;
 mod agent_catalog;
 mod agents_api;
@@ -31,7 +32,6 @@ mod roles_api;
 mod service;
 mod sql_api;
 mod test_api;
-mod users_api;
 mod worker_groups_api;
 
 use smeltr::config_file;
@@ -2047,22 +2047,20 @@ async fn run_leader() {
     // config routes above -- and it must be inside the gate, which is what `route_layer` below covers.
     let app = app.merge(
         Router::new()
-            .route("/api/users", get(users_api::list_users).post(users_api::create_user))
-            .route("/api/users/:id", patch(users_api::patch_user))
-            .route("/api/users/:id/reset-password", post(users_api::reset_password))
-            .route("/api/users/:id/revoke-sessions", post(users_api::revoke_sessions))
-            .route("/api/security-events", get(users_api::list_security_events))
+            .route(
+                "/api/accounts",
+                get(accounts_api::list_accounts).post(accounts_api::create_account),
+            )
+            .route("/api/accounts/:id", patch(accounts_api::patch_account))
+            .route("/api/accounts/:id/reset-password", post(accounts_api::reset_password))
+            .route("/api/accounts/:id/revoke-sessions", post(accounts_api::revoke_sessions))
+            .route("/api/accounts/:id/keys", post(integrations_api::create_key))
+            .route("/api/accounts/:id/keys/:key", delete(integrations_api::revoke_key))
+            .route("/api/security-events", get(accounts_api::list_security_events))
             .route(
                 "/api/me/agent-permissions",
                 get(agents_api::get_permissions).put(agents_api::put_permissions),
             )
-            .route(
-                "/api/integrations",
-                get(integrations_api::list_integrations).post(integrations_api::create_integration),
-            )
-            .route("/api/integrations/:id", patch(integrations_api::patch_integration))
-            .route("/api/integrations/:id/keys", post(integrations_api::create_key))
-            .route("/api/integrations/:id/keys/:key", delete(integrations_api::revoke_key))
             .route("/api/roles", get(roles_api::list_roles))
             .route(
                 "/api/roles/:name",
@@ -2070,7 +2068,7 @@ async fn run_leader() {
             )
             .route(
                 "/api/settings/sessions",
-                get(users_api::get_session_settings).put(users_api::put_session_settings),
+                get(accounts_api::get_session_settings).put(accounts_api::put_session_settings),
             )
             .route(
                 "/api/settings/oidc",

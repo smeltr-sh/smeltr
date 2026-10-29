@@ -17,8 +17,8 @@ use smeltr::leader::access::{Level, Role};
 use smeltr::leader::accounts;
 use smeltr::leader::store::Actor;
 
+use crate::accounts_api::store_call;
 use crate::gate::{Auth, refuse};
-use crate::users_api::store_call;
 
 /// The longest role name, in characters. A provider group can be a distinguished name, which runs long; past this
 /// it is not one a person would type into a claim mapping.

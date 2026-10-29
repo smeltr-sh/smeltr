@@ -395,7 +395,7 @@ impl std::fmt::Display for AccountError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AccountError::UsernameTaken => write!(f, "that username is already taken"),
-            AccountError::NoSuchUser => write!(f, "no such user"),
+            AccountError::NoSuchUser => write!(f, "no such account"),
             AccountError::LastAdministrator => write!(f, "this is the last local administrator account"),
             AccountError::NameTaken => write!(f, "another integration has that name"),
             AccountError::Disabled => write!(f, "that integration is disabled"),

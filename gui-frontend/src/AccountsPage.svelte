@@ -1,12 +1,13 @@
 <!--
-  Who can use this leader, and what an administrator does to them: the roster
-  under Users, under Roles what each of the provider's groups gives, under
-  Integrations the accounts scripts call as, and under Single sign-on the
-  provider itself.
+  Who can use this leader, and what an administrator does to them: every
+  account under Accounts, however it signs in, under Roles what each role
+  gives, and under Single sign-on the provider itself.
 
   A local account is always an administrator. An SSO account holds what the
   roles named for its provider groups give it, so the roster shows those roles
-  and the Roles tab is where what they give is changed.
+  and the Roles tab is where what they give is changed. An integration, which
+  signs in with a key, holds the roles it is given, or everything as an
+  administrator.
 -->
 <script lang="ts">
   import { reported, unreported } from './errors.svelte';
@@ -14,13 +15,15 @@
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import OidcSettings from './OidcSettings.svelte';
-  import IntegrationsSettings from './IntegrationsSettings.svelte';
+  import IntegrationAccess from './IntegrationAccess.svelte';
+  import IntegrationFold from './IntegrationFold.svelte';
   import { toHash } from './logs';
   import Help from './Help.svelte';
   import Field from './Field.svelte';
   import Dialog from './Dialog.svelte';
   import SortButton from './SortButton.svelte';
   import SecondaryTabs from './SecondaryTabs.svelte';
+  import Segmented from './Segmented.svelte';
   import { ask, type Question } from './Confirm.svelte';
   import { TableSort } from './sort.svelte';
   import { ACCOUNTS_TABS, accountsHash, type AccountsSection } from './nav';
@@ -28,20 +31,21 @@
   import { scopeHue } from './scope';
   import {
     SHARED_SCOPE,
-    createUser,
+    changeAccount,
+    createIntegration,
+    createLocalAccount,
     deleteRole,
+    listAccounts,
     listRoles,
-    listUsers,
     listWorkerGroups,
     putRole,
     refused,
-    renameUser,
-    resetUserPassword,
-    revokeUserSessions,
-    setUserEnabled,
+    resetAccountPassword,
+    revokeAccountSessions,
+    type AccountDto,
+    type CreatedIntegrationKeyDto,
     type RoleDto,
     type TemporaryPasswordDto,
-    type UserDto,
   } from './api';
   import { session, type AccessLevel } from './session';
 
@@ -49,7 +53,13 @@
 
   type Action = 'reset' | 'revoke' | 'enable' | 'disable';
 
-  let people = $state<UserDto[]>([]);
+  /** What a new account can sign in with. An SSO account is made at its first sign-in. */
+  const SIGN_INS: { value: 'local' | 'integration'; label: string }[] = [
+    { value: 'local', label: 'Password' },
+    { value: 'integration', label: 'Key' },
+  ];
+
+  let accounts = $state<AccountDto[]>([]);
   let loading = $state(true);
 
   let open = $state<string | null>(null);
@@ -57,12 +67,14 @@
   let creating = $state(false);
 
   let renameTo = $state('');
+  let newSignIn = $state<'local' | 'integration'>('local');
   let newUsername = $state('');
   let newDisplayName = $state('');
+  let newAdministrator = $state(false);
+  let newRoles = $state<string[]>([]);
 
   let message = $state('');
   let busy = $state(false);
-  let addingIntegration = $state(false);
 
   /** Shown once, and not retrievable afterward -- so each stays on screen
    * until it is dismissed, and another account's is added rather than put in
@@ -70,21 +82,30 @@
    * somebody is still waiting to be given. A second reset of the same account
    * does replace its first: that password no longer signs anybody in. */
   let handovers = $state<TemporaryPasswordDto[]>([]);
+  /** Each new key, with the integration it is for, until it is dismissed: it is the only copy. */
+  let keyHandovers = $state<(CreatedIntegrationKeyDto & { integration: string })[]>([]);
 
   const me = $derived(session().userId);
 
-  function signIn(person: UserDto): string {
-    return person.authSource === 'oidc' ? 'SSO' : 'Password';
+  function keyCount(account: AccountDto): string {
+    const n = account.keys?.length ?? 0;
+    return n === 1 ? '1 key' : `${n} keys`;
   }
 
-  /** What the Roles column shows: a local account is an administrator by being local. */
-  function rolesOf(person: UserDto): string[] {
-    return person.authSource === 'local' ? ['administrator'] : person.roles;
+  function signIn(account: AccountDto): string {
+    return { local: 'Password', oidc: 'SSO', integration: 'Key' }[account.authSource];
   }
 
-  const peopleSort = new TableSort<'account' | 'state' | 'signIn' | 'roles'>();
-  const sortedPeople = $derived(
-    peopleSort.apply(people, {
+  /** What the Roles column shows: a local account is an administrator by being local, and an
+   * integration one by being made one. */
+  function rolesOf(account: AccountDto): string[] {
+    if (account.authSource === 'local') return ['administrator'];
+    return account.administrator ? ['administrator', ...account.roles] : account.roles;
+  }
+
+  const accountSort = new TableSort<'account' | 'state' | 'signIn' | 'roles'>();
+  const sortedAccounts = $derived(
+    accountSort.apply(accounts, {
       account: (p) => p.displayName,
       state: (p) => (p.enabled ? 'Enabled' : 'Disabled'),
       signIn: signIn,
@@ -94,7 +115,7 @@
 
   async function refresh() {
     try {
-      people = await listUsers();
+      accounts = await listAccounts();
     } catch (e) {
       reported(e);
     } finally {
@@ -102,37 +123,51 @@
     }
   }
 
-  // Read each time Users opens, so someone who signed in since shows without a reload.
+  // Read each time Accounts opens, so someone who signed in since shows without a reload. The roles
+  // are what an integration can be given.
   $effect(() => {
-    if (section !== 'users') return;
+    if (section !== 'accounts') return;
     void refresh();
+    void refreshRoles();
   });
 
   function reset() {
     renaming = false;
     creating = false;
     renameTo = '';
+    newSignIn = 'local';
     newUsername = '';
     newDisplayName = '';
+    newAdministrator = false;
+    newRoles = [];
   }
 
-  function startRename(person: UserDto) {
+  function startRename(account: AccountDto) {
     reset();
     message = '';
-    open = person.id;
+    open = account.id;
     renaming = true;
-    renameTo = person.displayName;
+    renameTo = account.displayName;
   }
 
-  const createReady = $derived(newDisplayName.trim() !== '' && newUsername.trim() !== '');
+  const createReady = $derived(
+    newDisplayName.trim() !== '' && (newSignIn === 'integration' || newUsername.trim() !== ''),
+  );
 
   async function create() {
     if (busy || !createReady) return;
     busy = true;
     try {
-      const result = await createUser(newUsername, newDisplayName);
-      if (refused(result)) return;
-      handovers = [...handovers, result];
+      if (newSignIn === 'local') {
+        const result = await createLocalAccount(newUsername, newDisplayName);
+        if (refused(result)) return;
+        handovers = [...handovers, result];
+      } else {
+        const result = await createIntegration(newDisplayName, newRoles, newAdministrator);
+        if (refused(result)) return;
+        // Opened, so the next thing it needs, a key, is one click away.
+        open = result.id;
+      }
       message = '';
       reset();
       await refresh();
@@ -143,13 +178,13 @@
     }
   }
 
-  async function rename(event: SubmitEvent, person: UserDto) {
+  async function rename(event: SubmitEvent, account: AccountDto) {
     event.preventDefault();
     if (busy) return;
     busy = true;
 
     try {
-      const result = await renameUser(person.id, renameTo);
+      const result = await changeAccount(account.id, { displayName: renameTo });
       if (refused(result)) return;
       message = 'display name updated';
       reset();
@@ -177,10 +212,10 @@
     }),
   };
 
-  async function perform(person: UserDto, action: Action) {
+  async function perform(account: AccountDto, action: Action) {
     if (busy) return;
     const question = ASKS[action];
-    if (question && !(await ask(question(person.displayName)))) return;
+    if (question && !(await ask(question(account.displayName)))) return;
     if (busy) return;
     reset();
     message = '';
@@ -188,16 +223,16 @@
 
     try {
       if (action === 'enable' || action === 'disable') {
-        const result = await setUserEnabled(person.id, action === 'enable');
+        const result = await changeAccount(account.id, { enabled: action === 'enable' });
         if (refused(result)) return;
         message =
           action === 'enable' ? 'account enabled' : 'account disabled; its sessions are over';
       } else if (action === 'reset') {
-        const result = await resetUserPassword(person.id);
+        const result = await resetAccountPassword(account.id);
         if (refused(result)) return;
         handovers = [...handovers.filter((h) => h.userId !== result.userId), result];
       } else {
-        const result = await revokeUserSessions(person.id);
+        const result = await revokeAccountSessions(account.id);
         if (refused(result)) return;
         message = `signed out everywhere (${result.ended} ${result.ended === 1 ? 'session' : 'sessions'})`;
       }
@@ -207,6 +242,12 @@
     } finally {
       busy = false;
     }
+  }
+
+  /** After an integration's fold changed it: the roster read again, then what it did said. */
+  async function integrationChanged(said: string) {
+    await refresh();
+    message = said;
   }
 
   // -- roles ---------------------------------------------------------------
@@ -399,10 +440,6 @@
     {#snippet beside()}
       {#if section === 'oidc'}
         <!-- The form saves itself. -->
-      {:else if section === 'integrations'}
-        <button class="primary" type="button" onclick={() => (addingIntegration = true)}
-          >+ Add integration</button
-        >
       {:else if section === 'roles'}
         <button class="primary" type="button" onclick={startNaming}>+ Add role</button>
         <button
@@ -420,7 +457,7 @@
             creating = true;
           }}
         >
-          + Add user
+          + Add account
         </button>
       {/if}
     {/snippet}
@@ -448,22 +485,40 @@
       </button>
     </section>
   {/each}
+  {#each keyHandovers as pending (pending.id)}
+    <section class="handover">
+      <h2>A new key for {pending.integration}</h2>
+      <p class="critical">Copy the key below now: it is shown only once.</p>
+      <p class="secret"><code>{pending.key}</code></p>
+      <p>Send it as <code>Authorization: Bearer &lt;key&gt;</code>.</p>
+      <button
+        type="button"
+        onclick={() => (keyHandovers = keyHandovers.filter((h) => h.id !== pending.id))}
+      >
+        Done
+      </button>
+    </section>
+  {/each}
 
-  <Dialog
-    open={creating}
-    title="new administrator"
-    oncancel={() => busy || reset()}
-    onsubmit={create}
-  >
+  <Dialog open={creating} title="new account" oncancel={() => busy || reset()} onsubmit={create}>
     <div class="fields">
-      <div class="pair">
+      <Segmented label="Signs in with" options={SIGN_INS} bind:value={newSignIn} />
+      {#if newSignIn === 'local'}
+        <div class="pair">
+          <Field required label="Display name">
+            <input bind:value={newDisplayName} required />
+          </Field>
+          <Field required label="Username">
+            <input bind:value={newUsername} autocomplete="off" required />
+          </Field>
+        </div>
+      {:else}
         <Field required label="Display name">
-          <input bind:value={newDisplayName} required />
+          {#snippet help()}The name its changes are recorded under, in the audit and in history.{/snippet}
+          <input bind:value={newDisplayName} autocomplete="off" required />
         </Field>
-        <Field required label="Username">
-          <input bind:value={newUsername} autocomplete="off" required />
-        </Field>
-      </div>
+        <IntegrationAccess {roles} bind:administrator={newAdministrator} bind:chosen={newRoles} />
+      {/if}
     </div>
     {#snippet actions()}
       <button type="button" onclick={reset} disabled={busy}>Cancel</button>
@@ -489,8 +544,6 @@
 
   {#if section === 'oidc'}
     <OidcSettings />
-  {:else if section === 'integrations'}
-    <IntegrationsSettings bind:adding={addingIntegration} />
   {:else if section === 'roles'}
     {#if rolesLoading}
       <p>Reading the roles…</p>
@@ -598,46 +651,50 @@
       <table>
         <thead>
           <tr>
-            <th aria-sort={peopleSort.aria('account')}
-              ><SortButton sort={peopleSort} key="account">User</SortButton></th
+            <th aria-sort={accountSort.aria('account')}
+              ><SortButton sort={accountSort} key="account">Account</SortButton></th
             >
-            <th aria-sort={peopleSort.aria('state')}
-              ><SortButton sort={peopleSort} key="state">State</SortButton></th
+            <th aria-sort={accountSort.aria('state')}
+              ><SortButton sort={accountSort} key="state">State</SortButton></th
             >
-            <th class="wide" aria-sort={peopleSort.aria('signIn')}
-              ><SortButton sort={peopleSort} key="signIn">Sign-in</SortButton></th
+            <th class="wide" aria-sort={accountSort.aria('signIn')}
+              ><SortButton sort={accountSort} key="signIn">Sign-in</SortButton></th
             >
-            <th aria-sort={peopleSort.aria('roles')}
-              ><SortButton sort={peopleSort} key="roles">Roles</SortButton></th
+            <th aria-sort={accountSort.aria('roles')}
+              ><SortButton sort={accountSort} key="roles">Roles</SortButton></th
             >
             <th></th>
           </tr>
         </thead>
         <tbody>
-          {#each sortedPeople as person (person.id)}
-            <tr class:expanded={open === person.id}>
+          {#each sortedAccounts as account (account.id)}
+            <tr class:expanded={open === account.id}>
               <td>
-                <div class="name">{person.displayName}{person.id === me ? ' · you' : ''}</div>
+                <div class="name">{account.displayName}{account.id === me ? ' · you' : ''}</div>
                 <!-- An OIDC account is known by its provider's login, which the
                    provider may not share. -->
-                {#if person.authSource === 'oidc'}
-                  {#if person.providerLogin}<div class="dim mono">{person.providerLogin}</div>{/if}
+                {#if account.authSource === 'oidc'}
+                  {#if account.providerLogin}<div class="dim mono">
+                      {account.providerLogin}
+                    </div>{/if}
+                {:else if account.authSource === 'integration'}
+                  <div class="dim">{keyCount(account)}</div>
                 {:else}
-                  <div class="dim mono">{person.username ?? '—'}</div>
+                  <div class="dim mono">{account.username ?? '—'}</div>
                 {/if}
               </td>
               <td
-                ><span class="pill" class:off={!person.enabled}
-                  >{person.enabled ? 'Enabled' : 'Disabled'}</span
+                ><span class="pill" class:off={!account.enabled}
+                  >{account.enabled ? 'Enabled' : 'Disabled'}</span
                 ></td
               >
-              <td class="wide dim">{signIn(person)}</td>
+              <td class="wide dim">{signIn(account)}</td>
               <td>
                 <div class="pills">
-                  {#each rolesOf(person) as role (role)}
-                    <span class="pill" class:mono={person.authSource !== 'local'}>{role}</span>
+                  {#each rolesOf(account) as role (role)}
+                    <span class="pill" class:mono={account.authSource !== 'local'}>{role}</span>
                   {/each}
-                  {#each person.groups.filter((g) => !person.roles.includes(g)) as group (group)}
+                  {#each account.groups.filter((g) => !account.roles.includes(g)) as group (group)}
                     <button type="button" class="pill ghost mono" onclick={() => roleFor(group)}
                       >+ {group}</button
                     >
@@ -647,64 +704,81 @@
               <td class="right">
                 <button
                   type="button"
-                  aria-expanded={open === person.id}
+                  aria-expanded={open === account.id}
                   onclick={() => {
-                    const closing = open === person.id;
+                    const closing = open === account.id;
                     reset();
                     message = '';
-                    open = closing ? null : person.id;
+                    open = closing ? null : account.id;
                   }}
                 >
-                  {open === person.id ? 'Close' : 'Manage'}
+                  {open === account.id ? 'Close' : 'Manage'}
                 </button>
               </td>
             </tr>
-            {#if open === person.id}
+            {#if open === account.id}
               <tr class="fold">
                 <td colspan="5">
-                  <div class="row">
-                    <button type="button" onclick={() => startRename(person)}>Rename</button>
-                    <!-- Not for your own account. A reset ends every session it
-                       belongs to, including this one, so the page holding the
-                       only copy of the new password would be gone before
-                       anybody could read it. Change password does this safely.
-                       Nor for an OIDC account, which has no password here. -->
-                    {#if person.id !== me && person.authSource !== 'oidc'}
-                      <button type="button" disabled={busy} onclick={() => perform(person, 'reset')}
-                        >Reset password</button
-                      >
-                    {/if}
-                    <button type="button" disabled={busy} onclick={() => perform(person, 'revoke')}
-                      >Revoke sessions</button
-                    >
-                    {#if person.enabled}
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onclick={() => perform(person, 'disable')}>Disable account</button
-                      >
-                    {:else}
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onclick={() => perform(person, 'enable')}>Enable account</button
-                      >
-                    {/if}
-                  </div>
-
-                  {#if renaming}
-                    <form class="panel" onsubmit={(e) => rename(e, person)}>
-                      <Field required label="Display name">
-                        {#snippet help()}Only the name shown in smeltr changes.{/snippet}
-                        <input bind:value={renameTo} required />
-                      </Field>
-                      <div class="actions">
-                        <button type="button" onclick={reset}>Cancel</button>
-                        <button class="primary" type="submit" disabled={busy}
-                          >Save display name</button
+                  {#if account.authSource === 'integration'}
+                    <IntegrationFold
+                      {account}
+                      {roles}
+                      onchanged={integrationChanged}
+                      onkey={(created) =>
+                        (keyHandovers = [
+                          ...keyHandovers,
+                          { ...created, integration: account.displayName },
+                        ])}
+                    />
+                  {:else}
+                    <div class="row">
+                      <button type="button" onclick={() => startRename(account)}>Rename</button>
+                      <!-- Not for your own account. A reset ends every session it
+                         belongs to, including this one, so the page holding the
+                         only copy of the new password would be gone before
+                         anybody could read it. Change password does this safely.
+                         Nor for an OIDC account, which has no password here. -->
+                      {#if account.id !== me && account.authSource !== 'oidc'}
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onclick={() => perform(account, 'reset')}>Reset password</button
                         >
-                      </div>
-                    </form>
+                      {/if}
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onclick={() => perform(account, 'revoke')}>Revoke sessions</button
+                      >
+                      {#if account.enabled}
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onclick={() => perform(account, 'disable')}>Disable account</button
+                        >
+                      {:else}
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onclick={() => perform(account, 'enable')}>Enable account</button
+                        >
+                      {/if}
+                    </div>
+
+                    {#if renaming}
+                      <form class="panel" onsubmit={(e) => rename(e, account)}>
+                        <Field required label="Display name">
+                          {#snippet help()}Only the name shown in smeltr changes.{/snippet}
+                          <input bind:value={renameTo} required />
+                        </Field>
+                        <div class="actions">
+                          <button type="button" onclick={reset}>Cancel</button>
+                          <button class="primary" type="submit" disabled={busy}
+                            >Save display name</button
+                          >
+                        </div>
+                      </form>
+                    {/if}
                   {/if}
                 </td>
               </tr>

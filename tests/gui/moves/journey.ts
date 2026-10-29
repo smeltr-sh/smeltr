@@ -1842,9 +1842,11 @@ type Account = {
   username?: string;
   displayName: string;
   enabled: boolean;
+  administrator: boolean;
   authSource: string;
   roles: string[];
   groups: string[];
+  keys?: { label: string }[];
 };
 
 const addAccount: Move = {
@@ -1855,8 +1857,8 @@ const addAccount: Move = {
     const { page, leader, browser, rng, world } = j;
     const username = `admin${world.made++}`;
     await openAdmin(page, 'Accounts');
-    await page.getByRole('button', { name: '+ Add user' }).click();
-    const dialog = page.getByRole('dialog', { name: 'new administrator' });
+    await page.getByRole('button', { name: '+ Add account' }).click();
+    const dialog = page.getByRole('dialog', { name: 'new account' });
     await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill(`Admin ${username}`);
     await dialog.getByRole('textbox', { name: /^Username\b/ }).fill(username);
     await dialog.getByRole('button', { name: 'Add' }).click();
@@ -1866,7 +1868,7 @@ const addAccount: Move = {
     await handover.getByRole('button', { name: 'Done' }).click();
     await expect(handover).toHaveCount(0);
     world.accounts.set(username, true);
-    const users: Account[] = await (await j.truth()).get('/api/users').then((a) => a.users);
+    const users: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
     expect(users.find((u) => u.username === username)).toMatchObject({
       enabled: true,
       authSource: 'local',
@@ -1911,22 +1913,17 @@ const disableAccount: Move = {
       .click();
     await expect(page.getByRole('status')).toHaveText('account disabled; its sessions are over');
     world.accounts.set(username, false);
-    const users: Account[] = await (await j.truth()).get('/api/users').then((a) => a.users);
+    const users: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
     expect(users.find((u) => u.username === username)?.enabled).toBe(false);
     return `disable ${username}`;
   },
 };
 
-type Integration = { name: string; administrator: boolean; keys: { label: string }[] };
-
-/** The Integrations row for `name`, by the cell that names it. */
+/** The roster's row for the integration `name`, by the name it is shown under. */
 function integrationRow(page: Page, name: string): Locator {
-  return page.getByRole('row').filter({ has: page.getByRole('cell', { name, exact: true }) });
-}
-
-async function openIntegrations(page: Page) {
-  await openAdmin(page, 'Accounts');
-  await page.getByRole('link', { name: 'Integrations', exact: true }).click();
+  return page
+    .getByRole('row')
+    .filter({ has: page.locator('.name').getByText(name, { exact: true }) });
 }
 
 const addIntegration: Move = {
@@ -1937,10 +1934,11 @@ const addIntegration: Move = {
     const { page, leader, rng, world } = j;
     const name = `integration-${world.made++}`;
     const administrator = rng.chance(2);
-    await openIntegrations(page);
-    await page.getByRole('button', { name: '+ Add integration' }).click();
-    const dialog = page.getByRole('dialog', { name: 'new integration' });
-    await dialog.getByRole('textbox', { name: /^Name\b/ }).fill(name);
+    await openAdmin(page, 'Accounts');
+    await page.getByRole('button', { name: '+ Add account' }).click();
+    const dialog = page.getByRole('dialog', { name: 'new account' });
+    await dialog.getByRole('button', { name: 'Key' }).click();
+    await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill(name);
     if (administrator) await dialog.getByRole('checkbox', { name: 'Administrator' }).check();
     await dialog.getByRole('button', { name: 'Add' }).click();
     await expect(dialog).toHaveCount(0);
@@ -1956,17 +1954,14 @@ const addIntegration: Move = {
     await expect(handover).toHaveCount(0);
     world.integrations.set(name, key);
 
-    const integrations: Integration[] = await (
-      await j.truth()
-    )
-      .get('/api/integrations')
-      .then((a) => a.integrations);
-    expect(integrations.find((i) => i.name === name)).toMatchObject({
+    const accounts: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
+    expect(accounts.find((a) => a.displayName === name)).toMatchObject({
+      authSource: 'integration',
       administrator,
       keys: [{ label: 'journey' }],
     });
     expect(await withKey(leader, key, 'GET', '/api/health')).toBe(administrator ? 200 : 403);
-    expect(await withKey(leader, key, 'GET', '/api/integrations')).toBe(403);
+    expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(403);
     return `add integration ${name}${administrator ? ', an administrator,' : ''} with a key`;
   },
 };
@@ -1978,7 +1973,7 @@ const revokeIntegrationKey: Move = {
     const { page, leader, rng, world } = j;
     const name = rng.pick([...world.integrations].filter(([, k]) => k).map(([n]) => n));
     const key = world.integrations.get(name)!;
-    await openIntegrations(page);
+    await openAdmin(page, 'Accounts');
     await integrationRow(page, name).getByRole('button', { name: 'Manage' }).click();
     await page
       .getByRole('table', { name: 'Keys' })
@@ -1992,12 +1987,8 @@ const revokeIntegrationKey: Move = {
       .click();
     await expect(page.getByRole('status')).toHaveText('key revoked');
     world.integrations.set(name, null);
-    const integrations: Integration[] = await (
-      await j.truth()
-    )
-      .get('/api/integrations')
-      .then((a) => a.integrations);
-    expect(integrations.find((i) => i.name === name)?.keys).toEqual([]);
+    const accounts: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
+    expect(accounts.find((a) => a.displayName === name)?.keys).toEqual([]);
     expect(await withKey(leader, key, 'GET', '/api/health')).toBe(403);
     return `revoke ${name}'s key`;
   },
@@ -2286,7 +2277,7 @@ const ssoSignIn: Move = {
       await context.close();
     }
     world.ssoSignedIn = true;
-    const users: Account[] = await (await j.truth()).get('/api/users').then((a) => a.users);
+    const users: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
     const person = users.find((u) => u.authSource === 'oidc');
     expect(person).toMatchObject({
       displayName: provider.person.name,
@@ -2338,7 +2329,10 @@ const roleFromGroup: Move = {
   run: async (j) => {
     const { page } = j;
     await openAdmin(page, 'Accounts');
-    await page.getByRole('link', { name: 'Users', exact: true }).click();
+    await page
+      .getByRole('navigation', { name: 'Accounts' })
+      .getByRole('link', { name: 'Accounts', exact: true })
+      .click();
     await page.getByRole('button', { name: `+ ${REVIEW_GROUP}` }).click();
     await expect(page.getByRole('link', { name: 'Roles', exact: true })).toHaveAttribute(
       'aria-current',
