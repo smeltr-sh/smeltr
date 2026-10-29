@@ -748,7 +748,7 @@ fn a_pipeline_maps_as_it_compiled_and_as_its_sample_shows() {
 
     let p = harness::pipeline(vec![harness::code(
         0,
-        "status: i64; url: {path: str}; Object.assign($, json(_raw)); took = 1.5;",
+        "status: i64; req: {path: str}; Object.assign($, json(_raw)); took = 1.5;",
     )]);
     let plan = smeltr::plan::compile::compile(&p, &smeltr::plan::topology::SourceMeta::NONE).unwrap();
     let record = record_type(&plan, "smeltr.exception");
@@ -765,12 +765,12 @@ fn a_pipeline_maps_as_it_compiled_and_as_its_sample_shows() {
         } } } },
         "status": { "type": "long" },
         "took": { "type": "double" },
-        "url": { "properties": { "path": { "type": "keyword", "ignore_above": 8191 } } },
+        "req": { "properties": { "path": { "type": "keyword", "ignore_above": 8191 } } },
     });
     assert_eq!(mapping(&record), json!({ "mappings": { "properties": compiled } }));
 
     let rows = [
-        json!({ "status": 200, "url": { "path": "/a" }, "user": "bob", "n": 1 }),
+        json!({ "status": 200, "req": { "path": "/a" }, "user": "bob", "n": 1 }),
         json!({ "n": "x" }),
     ];
     let mut sampled = compiled;
