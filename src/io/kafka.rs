@@ -1351,8 +1351,8 @@ impl KafkaDestination {
         let held = held_bytes(out.value.len(), out.key.map_or(0, <[u8]>::len));
         let sent = Box::new(Sent {
             seq: self.seq,
-            held: held as u32,
-            row: row as u32,
+            held: u32::try_from(held).expect("a record is under message.max.bytes"),
+            row: u32::try_from(row).expect("a batch has fewer rows than u32 counts"),
         });
         let mut record = BaseRecord::with_opaque_to(topic, sent).payload(out.value);
         if let Some(k) = out.key {
