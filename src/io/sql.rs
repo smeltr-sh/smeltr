@@ -82,10 +82,7 @@ impl fmt::Display for Refused {
             }
             Refused::MoreThanOneStatement => write!(f, "this is more than one statement; a source runs one query"),
             Refused::Unterminated(what) => write!(f, "a {what} is never closed"),
-            Refused::Ordered => write!(
-                f,
-                "leave the ORDER BY out: smeltr orders by the position you choose, and SQL Server refuses an ordered query inside another"
-            ),
+            Refused::Ordered => write!(f, "leave the ORDER BY out: smeltr orders by the position you choose"),
             Refused::Limited(word) => {
                 write!(
                     f,
