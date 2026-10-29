@@ -1317,7 +1317,8 @@ fn run_sql_capture(cold: &Cold, registry: &Arc<crate::metrics::Metrics>, secrets
     use crate::plan::topology::SqlDatabase;
     let invitation = &cold.admitted.invitation;
     let (kind, sql) = cold.config.kind.sql().expect("only an SQL source is run here");
-    let query = match crate::io::sql::Query::parse(&sql.query, kind.dialect()) {
+    // A source with fields declared is loaded as a save loads it, own order and all (`source_kind_of`, below).
+    let query = match crate::io::sql::Query::parse_for_run(&sql.query, kind.dialect()) {
         Ok(query) => query,
         Err(why) => return cold.fail(format!("the query: {why}")),
     };
