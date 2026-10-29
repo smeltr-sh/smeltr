@@ -38,7 +38,7 @@ test('a schema opens to its fields, and the search narrows them', async ({
   await declare(api);
   await goto(admin, leader, '#/build/schemas');
   await expect(admin.getByRole('heading', { name: 'Schemas' })).toBeVisible();
-  await admin.getByRole('button', { name: /Login$/ }).click();
+  await admin.getByRole('button', { name: 'login fields' }).click();
   await expect(admin.getByText('Edit it with Edit JSON.')).toBeVisible();
   await expect(admin.getByRole('cell', { name: /^time\*$/ })).toBeVisible();
   await expect(
@@ -57,7 +57,7 @@ test('a search finds a schema by a field it holds', async ({ admin, leader, api 
   await goto(admin, leader, '#/build/schemas');
   await admin.getByRole('searchbox', { name: 'Search schemas' }).fill('src_endpoint.port');
   await expect(admin.getByRole('cell').filter({ hasText: 'src_endpoint.port' })).toBeVisible();
-  await expect(admin.getByRole('button', { name: /Audit$/ })).toBeHidden();
+  await expect(admin.getByRole('button', { name: 'audit fields' })).toBeHidden();
   await admin.getByRole('searchbox', { name: 'Search schemas' }).fill('no-field-is-called-this');
   await expect(admin.getByText(/No schema or field matches/)).toBeVisible();
 });

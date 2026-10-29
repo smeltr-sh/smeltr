@@ -235,14 +235,18 @@
                     <input type="text" class="mono" bind:value={s.id} disabled={readOnly} />
                   </Field>
                 </td>
-                <td class="kind">{count(s.fields.length, 'field')}</td>
-                <td>
+                <td class="kind">
                   <button
                     type="button"
                     class="opener"
+                    aria-label="{s.id || 'unnamed'} fields"
+                    aria-expanded={opened.has(s.id)}
                     onclick={() => (opened = toggle(opened, s.id))}
-                    >{opened.has(s.id) ? '▾' : '▸'} {about(s) || 'fields'}</button
+                    >{opened.has(s.id) ? '▾' : '▸'} {count(s.fields.length, 'field')}</button
                   >
+                </td>
+                <td class="about">
+                  {about(s)}
                   {@render found(s.id)}
                 </td>
                 <td class="used">

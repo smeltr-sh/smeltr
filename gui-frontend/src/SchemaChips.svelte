@@ -4,6 +4,7 @@
 -->
 <script lang="ts">
   import type { SchemaDto } from './api';
+  import RemovableChip from './RemovableChip.svelte';
 
   let {
     ids = $bindable(),
@@ -28,16 +29,12 @@
 </script>
 
 {#each ids as id (id)}
-  <span class="chip">
+  <RemovableChip
+    removeLabel="remove {id}"
+    onremove={readOnly ? undefined : () => (ids = ids.filter((p) => p !== id))}
+  >
     <a class="mono" href="#/build/schemas?open={encodeURIComponent(id)}">{id}</a>
-    {#if !readOnly}
-      <button
-        type="button"
-        aria-label="Remove {id}"
-        onclick={() => (ids = ids.filter((p) => p !== id))}>×</button
-      >
-    {/if}
-  </span>
+  </RemovableChip>
 {/each}
 {#if !readOnly}
   <select aria-label={adding} bind:value={picking} onchange={() => add(picking)}>
@@ -49,24 +46,6 @@
 {/if}
 
 <style>
-  .chip {
-    display: inline-flex;
-    gap: 0.25rem;
-    align-items: center;
-    padding: 0.05rem 0.5rem;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--field);
-    font-size: var(--text-note);
-  }
-
-  .chip button {
-    padding: 0;
-    border: none;
-    background: none;
-    color: var(--dim);
-  }
-
   select {
     width: auto;
     border-color: transparent;
