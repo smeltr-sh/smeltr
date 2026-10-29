@@ -1,11 +1,22 @@
 //! `io::pipelined::Pool` — the shared machinery a blocking destination
 //! gets `dispatch`/`poll_completions` from.
 
-use smeltr::io::pipelined::{Delivered, Pool, Sender};
-use smeltr::io::{IoError, Rejection};
+use smeltr::io::pipelined::{Delivered, Failed, Pool, Sender};
+use smeltr::io::{Rejection, Undelivered};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+/// A request that failed, its batch's rows 3 and 4 undelivered.
+fn failed() -> Failed {
+    Failed {
+        undelivered: Undelivered {
+            error: smeltr::io::IoError::transient("cluster said no"),
+            rows: vec![3, 4],
+        },
+        rejections: Vec::new(),
+    }
+}
 
 /// A sender that sleeps, so overlap is observable as wall time.
 struct Slow {
@@ -16,7 +27,7 @@ struct Slow {
 
 impl Sender for Slow {
     type Job = u32;
-    fn send_one(&mut self, _job: u32) -> Result<Delivered, IoError> {
+    fn send_one(&mut self, _job: u32) -> Result<Delivered, Failed> {
         let now = self.concurrent.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(now, Ordering::SeqCst);
         std::thread::sleep(self.delay);
@@ -51,7 +62,7 @@ struct Meeting {
 
 impl Sender for Meeting {
     type Job = u32;
-    fn send_one(&mut self, _job: u32) -> Result<Delivered, IoError> {
+    fn send_one(&mut self, _job: u32) -> Result<Delivered, Failed> {
         let now = self.concurrent.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(now, Ordering::SeqCst);
         // Generous, so a loaded machine's late thread still arrives; a pool
@@ -114,7 +125,7 @@ fn one_sender_serializes() {
 struct Blocked(Arc<AtomicBool>);
 impl Sender for Blocked {
     type Job = ();
-    fn send_one(&mut self, _job: ()) -> Result<Delivered, IoError> {
+    fn send_one(&mut self, _job: ()) -> Result<Delivered, Failed> {
         while !self.0.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -159,9 +170,9 @@ fn submit_blocks_once_every_sender_is_busy() {
 struct Failing(bool);
 impl Sender for Failing {
     type Job = ();
-    fn send_one(&mut self, _job: ()) -> Result<Delivered, IoError> {
+    fn send_one(&mut self, _job: ()) -> Result<Delivered, Failed> {
         if self.0 {
-            Err(IoError::transient("cluster said no"))
+            Err(failed())
         } else {
             Ok(Delivered {
                 rejections: vec![Rejection {
@@ -176,11 +187,14 @@ impl Sender for Failing {
 }
 
 #[test]
-fn a_failure_surfaces_and_rejections_come_back_with_their_batch() {
+fn a_failure_and_rejections_come_back_with_their_batch() {
     let mut pool = Pool::new(vec![Failing(true)], 1);
     pool.submit(7, vec![()]).unwrap();
-    let err = pool.drain().expect_err("the failure must surface");
-    assert!(err.to_string().contains("cluster said no"));
+    let done = pool.drain().expect("a failed request is its batch's answer");
+    assert_eq!(done.len(), 1);
+    let undelivered = done[0].undelivered.as_ref().expect("the failure must surface");
+    assert!(undelivered.error.to_string().contains("cluster said no"));
+    assert_eq!(undelivered.rows, vec![3, 4], "naming the rows it did not land");
 
     let mut pool = Pool::new(vec![Failing(false)], 1);
     pool.submit(9, vec![()]).unwrap();
@@ -203,7 +217,7 @@ fn dropping_the_pool_does_not_hang() {
 struct Instant0;
 impl Sender for Instant0 {
     type Job = ();
-    fn send_one(&mut self, _job: ()) -> Result<Delivered, IoError> {
+    fn send_one(&mut self, _job: ()) -> Result<Delivered, Failed> {
         Ok(Delivered {
             rejections: Vec::new(),
             throttled: false,
@@ -283,10 +297,10 @@ fn a_start_above_the_sender_count_is_clamped_to_it() {
 struct FailsLate;
 impl Sender for FailsLate {
     type Job = u64;
-    fn send_one(&mut self, wait: u64) -> Result<Delivered, IoError> {
+    fn send_one(&mut self, wait: u64) -> Result<Delivered, Failed> {
         std::thread::sleep(Duration::from_millis(wait));
         if wait % 2 == 1 {
-            return Err(IoError::transient("cluster said no"));
+            return Err(failed());
         }
         Ok(Delivered {
             rejections: Vec::new(),
@@ -296,33 +310,34 @@ impl Sender for FailsLate {
 }
 
 #[test]
-fn a_batch_that_landed_is_reported_before_a_failure_beside_it() {
+fn a_failed_batch_is_reported_beside_the_batches_that_landed() {
     // Landed, failed, landed, in that order on the channel.
     let mut pool = Pool::new(vec![FailsLate, FailsLate, FailsLate], 3);
     pool.submit(1, vec![0]).unwrap();
     pool.submit(2, vec![51]).unwrap();
     pool.submit(3, vec![100]).unwrap();
     std::thread::sleep(Duration::from_millis(300));
-    let done = pool.poll().expect("the landed batches come first");
-    assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![1, 3]);
-    pool.poll().expect_err("then the failure");
+    let done = pool.poll().expect("a failure fails no poll");
+    let failed: Vec<(u64, bool)> = done.iter().map(|c| (c.batch, c.undelivered.is_some())).collect();
+    assert_eq!(failed, vec![(1, false), (2, true), (3, false)]);
 
     let mut pool = Pool::new(vec![FailsLate, FailsLate], 2);
     pool.submit(1, vec![0]).unwrap();
     pool.submit(2, vec![51]).unwrap();
-    pool.drain().expect_err("the barrier reports the failure");
-    let done = pool.poll().expect("and keeps the landed batch for the next poll");
-    assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![1]);
+    let mut done = pool.drain().expect("nor the barrier");
+    done.sort_by_key(|c| c.batch);
+    let failed: Vec<(u64, bool)> = done.iter().map(|c| (c.batch, c.undelivered.is_some())).collect();
+    assert_eq!(failed, vec![(1, false), (2, true)]);
 }
 
 /// Refuses the document its job names after waiting its milliseconds, or fails where it names none.
 struct Part;
 impl Sender for Part {
     type Job = (u64, Option<usize>);
-    fn send_one(&mut self, (wait, doc): (u64, Option<usize>)) -> Result<Delivered, IoError> {
+    fn send_one(&mut self, (wait, doc): (u64, Option<usize>)) -> Result<Delivered, Failed> {
         std::thread::sleep(Duration::from_millis(wait));
         let Some(doc) = doc else {
-            return Err(IoError::transient("cluster said no"));
+            return Err(failed());
         };
         Ok(Delivered {
             rejections: vec![Rejection {
@@ -356,8 +371,8 @@ fn a_batch_of_several_requests_completes_once_with_all_their_refusals() {
     assert!(done[0].throttled, "throttled when any of its requests was");
 }
 
-/// A failure in any request of a batch fails the batch, once every request of it is answered, and a batch beside it
-/// still lands.
+/// A failure in any request of a batch completes the batch as failed, once every request of it is answered, with what
+/// the others refused, and a batch beside it still lands.
 #[test]
 fn a_failed_request_fails_its_batch_and_no_other() {
     let mut pool = Pool::new((0..3).map(|_| Part).collect(), 3);
@@ -373,7 +388,11 @@ fn a_failed_request_fails_its_batch_and_no_other() {
     };
     assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![2]);
     assert!(pool.poll().unwrap().is_empty(), "not while a request of it is open");
-    pool.drain().expect_err("then the failure");
+    let done = pool.drain().unwrap();
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0].batch, 1);
+    assert!(done[0].undelivered.is_some(), "then the failure");
+    assert_eq!(done[0].rejections.iter().map(|r| r.doc).collect::<Vec<_>>(), vec![0]);
     assert_eq!(pool.outstanding(), 0);
 }
 
@@ -383,6 +402,9 @@ fn a_failed_request_fails_its_batch_and_no_other() {
 fn a_batch_waiting_on_one_sender_completes_once_after_its_last_request() {
     let mut pool = Pool::new(vec![Part], 1);
     pool.submit(7, vec![(10, Some(0)), (10, None), (10, Some(2))]).unwrap();
-    pool.drain().expect_err("its second request failed");
-    assert!(pool.poll().unwrap().is_empty(), "and it completed only as failed");
+    let done = pool.drain().unwrap();
+    assert_eq!(done.len(), 1, "once");
+    assert!(done[0].undelivered.is_some(), "its second request failed");
+    assert_eq!(done[0].rejections.iter().map(|r| r.doc).collect::<Vec<_>>(), vec![0, 2]);
+    assert!(pool.poll().unwrap().is_empty());
 }

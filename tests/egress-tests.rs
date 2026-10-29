@@ -1168,3 +1168,67 @@ fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neith
         "and carries at least half as much a second: {delivered_stalled:?} in one, {delivered:?} in three"
     );
 }
+
+/// A batch part of which did not land is sent again as only that part, while the batches beside it are not sent
+/// again, and its reader hears of it once, when the rest lands, with every refusal.
+#[test]
+fn only_the_rows_that_did_not_land_are_sent_again() {
+    let dest = AsyncDestination::new();
+    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut h = egress.handle();
+    hand(
+        &mut h,
+        1,
+        &[
+            OutgoingRecord::new(b"refused"),
+            OutgoingRecord::new(b"lost"),
+            OutgoingRecord::new(b"landed"),
+        ],
+    );
+    hand(&mut h, 2, &[OutgoingRecord::new(b"beside")]);
+    let units_within = |n: usize| {
+        let deadline = std::time::Instant::now() + timeout();
+        loop {
+            let units = dest.units();
+            if units.len() >= n || std::time::Instant::now() >= deadline {
+                return units;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let units = units_within(2);
+    assert_eq!(units.len(), 2, "both batches reached the destination");
+    let (first, beside) = (units[0].0, units[1].0);
+
+    let refused = smeltr::io::Rejection {
+        doc: 0,
+        reason: "refused it".into(),
+        record: None,
+    };
+    dest.fail_rows(first, vec![1], vec![refused], "the connection was reset");
+    dest.complete(beside);
+    let units = units_within(3);
+    assert_eq!(units.len(), 3, "the part that did not land went again");
+    assert_eq!(units[2].1, vec![b"lost".to_vec()], "and only it");
+    let done = completions_within(&mut h, timeout());
+    assert_eq!(
+        done.iter().map(|c| c.batch).collect::<Vec<_>>(),
+        vec![2],
+        "the batch beside it is done, and the one with a part outstanding is not"
+    );
+
+    dest.complete(units[2].0);
+    let done = completions_within(&mut h, timeout());
+    assert_eq!(done.len(), 1, "done once the rest landed");
+    assert_eq!(done[0].batch, 1);
+    assert_eq!(
+        done[0].rejections.len(),
+        1,
+        "with the refusal answered before the failure"
+    );
+    assert_eq!(
+        done[0].rejections[0].record.as_ref().map(|r| r.value.clone()),
+        Some(b"refused".to_vec())
+    );
+    assert_eq!(dest.units().len(), 3, "nothing else was sent again");
+}

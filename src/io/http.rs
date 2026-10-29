@@ -345,20 +345,12 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
 
     /// One round on this thread, with retries, against `group`: the refusals, each carrying its row out of `rows`.
     fn post(&mut self, rows: &[OwnedRecord], group: &mut Group<P::Item>) -> Result<Vec<Rejection>, IoError> {
-        let mut throttled = false;
-        let mut waited = Duration::ZERO;
         group.bytes = 0;
-        let delivered = deliver(
-            &self.protocol,
-            &mut self.transport,
-            group,
-            self.stall_after,
-            Instant::now() + self.stall_after,
-            &mut throttled,
-            &mut waited,
-        );
-        Throttle::note(&self.throttle, waited);
-        let mut refused = delivered?;
+        let mut round = Round::new(self.stall_after);
+        let delivered = deliver(&self.protocol, &mut self.transport, group, &mut round);
+        Throttle::note(&self.throttle, round.waited);
+        delivered?;
+        let mut refused = round.rejections;
         for r in &mut refused {
             r.record = rows.get(r.doc).cloned();
         }
@@ -366,17 +358,41 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
     }
 }
 
+/// One request's round, its retries and halves included: its bounds, and what it has learned so far.
+struct Round {
+    /// How `deadline` was set, for the error.
+    stall_after: Duration,
+    /// Bounds the whole round, not one attempt.
+    deadline: Instant,
+    /// The service asked to be sent less.
+    throttled: bool,
+    /// Every backoff a throttled answer cost, whether or not the round lands.
+    waited: Duration,
+    /// Refusals, as they are answered, so a failure keeps those already seen.
+    rejections: Vec<Rejection>,
+}
+
+impl Round {
+    fn new(stall_after: Duration) -> Round {
+        Round {
+            stall_after,
+            deadline: Instant::now() + stall_after,
+            throttled: false,
+            waited: Duration::ZERO,
+            rejections: Vec::new(),
+        }
+    }
+}
+
 /// `group` delivered as two halves, for a request the service would not take whole or an answer the worker could not
-/// hold whole. A group of one item has no halves: `None`, for the caller to refuse that item.
+/// hold whole. A group of one item has no halves: `None`, for the caller to refuse that item. On a failure `group`
+/// holds what of both halves did not land.
 fn in_halves<P: Protocol, T: Transport>(
     protocol: &P,
     transport: &mut T,
     group: &mut Group<P::Item>,
-    stall_after: Duration,
-    deadline: Instant,
-    throttled: &mut bool,
-    waited: &mut Duration,
-) -> Option<Result<Vec<Rejection>, IoError>> {
+    round: &mut Round,
+) -> Option<Result<(), IoError>> {
     if group.pending.len() < 2 {
         return None;
     }
@@ -388,34 +404,26 @@ fn in_halves<P: Protocol, T: Transport>(
         sent_index: group.sent_index.split_off(half),
         bytes: 0,
     };
-    let mut rejections = match deliver(protocol, transport, group, stall_after, deadline, throttled, waited) {
-        Ok(rejections) => rejections,
-        Err(e) => return Some(Err(e)),
-    };
-    match deliver(protocol, transport, &mut tail, stall_after, deadline, throttled, waited) {
-        Ok(more) => rejections.extend(more),
-        Err(e) => return Some(Err(e)),
-    }
-    Some(Ok(rejections))
+    let delivered =
+        deliver(protocol, transport, group, round).and_then(|()| deliver(protocol, transport, &mut tail, round));
+    group.pending.append(&mut tail.pending);
+    group.sent_index.append(&mut tail.sent_index);
+    Some(delivered)
 }
 
 /// One round, with retries, against `group`. Free because [`HttpSender`] runs it on a pool thread with its own
-/// transport. `deadline` bounds the whole thing, not one attempt; `stall_after` is how it was set, for the error.
-/// `waited` gains every backoff a throttled answer cost, whether or not the round lands.
+/// transport. On a failure `group` holds exactly what did not land.
 fn deliver<P: Protocol, T: Transport>(
     protocol: &P,
     transport: &mut T,
     group: &mut Group<P::Item>,
-    stall_after: Duration,
-    deadline: Instant,
-    throttled: &mut bool,
-    waited: &mut Duration,
-) -> Result<Vec<Rejection>, IoError> {
+    round: &mut Round,
+) -> Result<(), IoError> {
+    let deadline = round.deadline;
     let mut backoff = INITIAL_BACKOFF;
-    let mut rejections = Vec::new();
     loop {
         if group.pending.is_empty() {
-            return Ok(rejections);
+            return Ok(());
         }
         let budget = deadline.saturating_duration_since(Instant::now());
         if budget.is_zero() {
@@ -423,7 +431,7 @@ fn deliver<P: Protocol, T: Transport>(
                 "{}: {} document(s) still undelivered after {:?}",
                 protocol.name(),
                 group.pending.len(),
-                stall_after
+                round.stall_after
             )));
         }
 
@@ -435,12 +443,11 @@ fn deliver<P: Protocol, T: Transport>(
         let response = match transport.post(&group.route, &protocol.body(&group.pending), budget) {
             Ok(response) => response,
             Err(e) if e.is_oversized() => {
-                if let Some(halves) = in_halves(protocol, transport, group, stall_after, deadline, throttled, waited) {
-                    rejections.extend(halves?);
-                    return Ok(rejections);
+                if let Some(halves) = in_halves(protocol, transport, group, round) {
+                    return halves;
                 }
                 // One document whose answer alone is past the bound: refused, since asking again reads the same answer.
-                rejections.push(Rejection {
+                round.rejections.push(Rejection {
                     doc: group.sent_index[0],
                     reason: format!(
                         "{}: the answer to one document was larger than {} MiB",
@@ -451,21 +458,20 @@ fn deliver<P: Protocol, T: Transport>(
                 });
                 group.pending.clear();
                 group.sent_index.clear();
-                return Ok(rejections);
+                return Ok(());
             }
             Err(e) => return Err(named(e)),
         };
         let mut outcome = protocol.read(&response, &group.pending)?;
         if let Some(why) = outcome.split.take() {
-            if let Some(halves) = in_halves(protocol, transport, group, stall_after, deadline, throttled, waited) {
-                rejections.extend(halves?);
-                return Ok(rejections);
+            if let Some(halves) = in_halves(protocol, transport, group, round) {
+                return halves;
             }
             outcome.permanent.push((0, why));
         }
         if outcome.permanent.len() + outcome.retryable.len() < group.pending.len() {
-            *throttled |= protocol
-                .confirm(&response, transport, deadline, waited)
+            round.throttled |= protocol
+                .confirm(&response, transport, deadline, &mut round.waited)
                 .map_err(named)?;
         }
 
@@ -473,7 +479,7 @@ fn deliver<P: Protocol, T: Transport>(
         // flush would leave the whole batch uncommitted behind it. It comes back as a rejection, for the destination's
         // answer to `Refused` to decide.
         for (i, why) in &outcome.permanent {
-            rejections.push(Rejection {
+            round.rejections.push(Rejection {
                 doc: group.sent_index[*i],
                 reason: format!("{} refused it: {why}", protocol.name()),
                 record: None,
@@ -482,7 +488,7 @@ fn deliver<P: Protocol, T: Transport>(
         if outcome.retryable.is_empty() {
             group.pending.clear();
             group.sent_index.clear();
-            return Ok(rejections);
+            return Ok(());
         }
         // Only the ones that failed; resending the rest would duplicate them.
         let keep: Vec<P::Item> = outcome.retryable.iter().map(|&i| group.pending[i].clone()).collect();
@@ -494,7 +500,7 @@ fn deliver<P: Protocol, T: Transport>(
         if !outcome.throttled {
             continue;
         }
-        *throttled = true;
+        round.throttled = true;
 
         // The service's own `Retry-After`, where longer than the backoff, and never past the deadline.
         let nap = response
@@ -505,7 +511,7 @@ fn deliver<P: Protocol, T: Transport>(
             continue;
         }
         std::thread::sleep(nap);
-        *waited += nap;
+        round.waited += nap;
         backoff = (backoff * 2).min(Duration::from_secs(5));
     }
 }
@@ -547,20 +553,23 @@ impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
     /// One request.
     type Job = Group<P::Item>;
 
-    fn send_one(&mut self, mut group: Group<P::Item>) -> Result<pipelined::Delivered, IoError> {
-        let mut throttled = false;
-        let mut waited = Duration::ZERO;
-        let delivered = deliver(
-            &self.protocol,
-            &mut self.transport,
-            &mut group,
-            self.stall_after,
-            Instant::now() + self.stall_after,
-            &mut throttled,
-            &mut waited,
-        );
-        Throttle::note(&self.throttle, waited);
-        delivered.map(|rejections| pipelined::Delivered { rejections, throttled })
+    fn send_one(&mut self, mut group: Group<P::Item>) -> Result<pipelined::Delivered, pipelined::Failed> {
+        let mut round = Round::new(self.stall_after);
+        let delivered = deliver(&self.protocol, &mut self.transport, &mut group, &mut round);
+        Throttle::note(&self.throttle, round.waited);
+        match delivered {
+            Ok(()) => Ok(pipelined::Delivered {
+                rejections: round.rejections,
+                throttled: round.throttled,
+            }),
+            Err(error) => Err(pipelined::Failed {
+                undelivered: super::Undelivered {
+                    error,
+                    rows: group.sent_index,
+                },
+                rejections: round.rejections,
+            }),
+        }
     }
 }
 

@@ -55,15 +55,15 @@ struct Unit {
     /// Set on the rows of a batch this destination refused and keeps, being sent again. Boxed: a unit is offered by
     /// value, and most units are never held.
     held: Option<Box<Held>>,
+    /// Refusals of the batch's other rows, which are not sent again, reported with the batch once it completes: the
+    /// ones a held unit's transport kept no document for, and the ones answered before part of the batch failed.
+    carried: Vec<Rejection>,
 }
 
 /// What is known of a batch whose refusals are being sent again.
 struct Held {
     /// The wait before this attempt; the next one waits twice as long, up to `HELD_RETRY_MAX`.
     backoff: Duration,
-    /// Refusals that are not held -- ones whose document the transport kept none of -- reported with the batch once it
-    /// completes.
-    carried: Vec<Rejection>,
     /// Why the destination refused each of the unit's rows, in row order.
     why: Vec<String>,
     /// The capture admissions the rows have been shown to: a capture at this destination sees them once.
@@ -759,11 +759,20 @@ fn run(
         // Every pass, idle or not -- see `POLL_INTERVAL`.
         match destination.poll_completions() {
             Ok(done) => {
+                let mut failed = false;
                 for c in done {
                     let Some(mut owed) = owner.remove(&c.batch) else {
                         continue;
                     };
                     owed.rejections.extend(c.rejections);
+                    if let Some(undelivered) = c.undelivered.filter(|u| !u.rows.is_empty()) {
+                        note_stall(metrics, id, name, &undelivered.error, &mut stalled);
+                        failed = true;
+                        let rest = remainder(queue, metrics, id, owed.unit, owed.rejections, &undelivered.rows);
+                        redo.push_back(rest);
+                        redo.make_contiguous().sort_by_key(|u| u.seq);
+                        continue;
+                    }
                     clear_stall(metrics, id, name, &mut stalled, &mut backoff);
                     if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
                         p.completed(
@@ -775,6 +784,11 @@ fn run(
                         );
                     }
                     finish(queue, returns, metrics, id, owed.unit, owed.rejections, &mut waiting);
+                }
+                if failed {
+                    cut_off = false;
+                    queue.sleep_unless_closed(backoff);
+                    backoff = (backoff * 2).min(RETRY_MAX);
                 }
             }
             Err(e) => {
@@ -861,9 +875,10 @@ fn finish(
             r.record = unit.rows.get_mut(r.doc).map(std::mem::take);
         }
     }
-    let (backoff, mut carried, shown) = match unit.held.take() {
-        Some(h) => ((h.backoff * 2).min(HELD_RETRY_MAX), h.carried, h.shown),
-        None => (HELD_RETRY_MIN, Vec::new(), HashSet::new()),
+    let mut carried = std::mem::take(&mut unit.carried);
+    let (backoff, shown) = match unit.held.take() {
+        Some(h) => ((h.backoff * 2).min(HELD_RETRY_MAX), h.shown),
+        None => (HELD_RETRY_MIN, HashSet::new()),
     };
     let holds = queue.holds_refusals.load(Ordering::Relaxed);
     let (kept, passed): (Vec<Rejection>, Vec<Rejection>) =
@@ -877,6 +892,7 @@ fn finish(
                 batch: unit.batch,
                 rejections: carried,
                 throttled: false,
+                undelivered: None,
             }),
         );
         queue.release(unit.bytes);
@@ -909,12 +925,8 @@ fn finish(
             batch: unit.batch,
             rows,
             bytes,
-            held: Some(Box::new(Held {
-                backoff,
-                carried,
-                why,
-                shown,
-            })),
+            held: Some(Box::new(Held { backoff, why, shown })),
+            carried,
         },
     ));
 }
@@ -927,6 +939,51 @@ fn show_held<'a>(captures: &Captures, name: &str, units: impl Iterator<Item = &'
             captures.offer_held_at(name, &mut held.shown, &unit.rows, &held.why);
         }
     }
+}
+
+/// What of `unit` did not land, as a unit of its own to send again: the rows `undelivered` names, in the batch's order.
+/// The rows that landed are counted delivered and their bytes go back to the queue; the refusals answered so far are
+/// carried, with their documents, to the batch's completion.
+fn remainder(
+    queue: &Queue,
+    metrics: &MetricsHandle,
+    id: DestId,
+    mut unit: Unit,
+    rejections: Vec<Rejection>,
+    undelivered: &[usize],
+) -> Unit {
+    let mut kept: Vec<usize> = undelivered.to_vec();
+    kept.sort_unstable();
+    kept.dedup();
+    let mut landed = vec![true; unit.rows.len()];
+    for &i in kept.iter().chain(rejections.iter().map(|r| &r.doc)) {
+        if let Some(at) = landed.get_mut(i) {
+            *at = false;
+        }
+    }
+    let (count, bytes) = unit
+        .rows
+        .iter()
+        .zip(&landed)
+        .filter(|(_, landed)| **landed)
+        .fold((0u64, 0u64), |(n, b), (row, _)| (n + 1, b + row.sent_bytes() as u64));
+    note_delivered(metrics, id, count, bytes);
+    for mut r in rejections {
+        if r.record.is_none() {
+            r.record = unit.rows.get_mut(r.doc).map(std::mem::take);
+        }
+        unit.carried.push(r);
+    }
+    let rows: Vec<OwnedRecord> = kept
+        .iter()
+        .filter_map(|&i| unit.rows.get_mut(i).map(std::mem::take))
+        .collect();
+    if let Some(held) = &mut unit.held {
+        held.why = kept.iter().filter_map(|&i| held.why.get(i).cloned()).collect();
+    }
+    let bytes = crate::io::held_bytes(&rows);
+    queue.release(unit.bytes.saturating_sub(bytes));
+    Unit { rows, bytes, ..unit }
 }
 
 /// Take every sent-but-unacknowledged batch back for re-sending, plus the one that just failed, in acceptance order.
@@ -1212,6 +1269,7 @@ impl Destination for EgressHandle {
             bytes: crate::io::held_bytes(&rows),
             rows,
             held: None,
+            carried: Vec::new(),
         };
         let dispatched = match self.queue.offer(unit) {
             Ok(()) => {
@@ -1296,6 +1354,7 @@ mod tests {
             rows: Vec::new(),
             bytes,
             held: None,
+            carried: Vec::new(),
         }
     }
 
