@@ -4589,12 +4589,15 @@ fn liveness(plan: &mut Plan) {
         plan.instrs[i].constant_ok = last_read[out] == usize::MAX && out != plan.live_slot;
     }
 
+    // `__source.bytes` is the record as read, as large as the record. A destination reads it from the record a row
+    // came from, so it is held only while a step reads it: an unroll copies none of it into the rows it makes, and a
+    // preview or a capture shows none on them.
+    let payload = plan.tree.leaf(crate::plan::topology::SOURCE_BYTES);
     let runtime_filled = plan.ingest_slots;
-    for slot in last_read.iter_mut().take(runtime_filled) {
-        *slot = n;
-    }
-    for slot in plan.tree.slots() {
-        last_read[slot] = n;
+    for slot in plan.tree.slots().into_iter().chain(0..runtime_filled) {
+        if Some(slot) != payload {
+            last_read[slot] = n;
+        }
     }
 
     // An unroll copies each slot it keeps to every row it makes, so it releases one nothing reads after it: a local the
@@ -4985,7 +4988,25 @@ mod tests {
             below(&DataType::Duration).iter().all(|s| clear.contains(s)),
             "{clear:?}"
         );
-        assert!(below(&DataType::Bytes).iter().any(|s| !clear.contains(s)), "{clear:?}");
+        let payload = plan.tree.leaf(crate::plan::topology::SOURCE_BYTES).unwrap();
+        assert!(clear.contains(&payload), "{clear:?}");
+    }
+
+    /// `__source.bytes` is held for a step that reads it after an unroll, as any field is.
+    #[test]
+    fn an_unroll_keeps_the_payload_a_step_reads_after_it() {
+        let body = r#"a = [1, 2]; unroll(a, false); n = length(__source.bytes);"#;
+        let plan = compile(&code_pipeline(body), &SourceMeta::KAFKA).unwrap();
+        let clear = plan
+            .instrs
+            .iter()
+            .find_map(|i| match &i.op {
+                Op::Unroll { clear, .. } => Some(clear),
+                _ => None,
+            })
+            .unwrap();
+        let payload = plan.tree.leaf(crate::plan::topology::SOURCE_BYTES).unwrap();
+        assert!(!clear.contains(&payload), "{clear:?}");
     }
 
     /// `_raw` is the record's text, which a step may drop or replace: the runtime does not read it back.
