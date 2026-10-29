@@ -423,10 +423,6 @@ pub struct ThreadHeartbeat {
     pub kind: Option<ThreadKind>,
     pub partitions_owned: Vec<PartitionRef>,
     pub metrics: Vec<MetricSampleDto>,
-    /// Some of this thread's metrics wait for a later beat, which carries what they counted meanwhile: until then,
-    /// what it last reported of them stands.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub metrics_held: bool,
 }
 
 /// Worker → leader: the worker's id and one report per thread.
@@ -2010,7 +2006,6 @@ mod tests {
                     labels: vec![("source".to_string(), "0".to_string())],
                     value: MetricValueDto::Counter(12),
                 }],
-                metrics_held: false,
             }],
             accepts: Vec::new(),
             took: None,

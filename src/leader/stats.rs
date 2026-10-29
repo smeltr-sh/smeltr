@@ -972,7 +972,6 @@ mod tests {
                     at(DESTINATION_QUEUE_BYTES_METRIC, bytes),
                     at(DESTINATION_QUEUE_BUDGET_METRIC, budget),
                 ],
-                metrics_held: false,
             },
         }
     }

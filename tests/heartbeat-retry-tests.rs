@@ -104,7 +104,6 @@ fn beat() -> HeartbeatRequest {
             group_id: "g".to_string(),
             partitions_owned: vec![],
             metrics: vec![],
-            metrics_held: false,
         }],
         accepts: Vec::new(),
         took: None,
