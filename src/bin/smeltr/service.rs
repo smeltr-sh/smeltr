@@ -160,7 +160,7 @@ mod imp {
     }
 
     /// Where the service works: the directory of `SMELTR_CONFIG_FILE` when it names one, else
-    /// `%ProgramData%\Smeltr`. A service starts in System32, so without this every relative default -- `smeltr.toml`,
+    /// `%ProgramData%\Smeltr`. A service starts in `System32`, so without this every relative default -- `smeltr.toml`,
     /// the data directories, the secrets encryption key -- would resolve there.
     fn service_dir() -> PathBuf {
         let program_data = || std::env::var_os("ProgramData").map(|dir| Path::new(&dir).join("Smeltr"));
