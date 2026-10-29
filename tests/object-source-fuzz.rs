@@ -1525,25 +1525,6 @@ impl Backend<'_> {
     }
 }
 
-/// Reads drawn objects in `backend` from the source `open` makes, as `c` reads them: by listing, or by the
-/// notifications `announcer` sends for its queue.
-fn read(
-    rng: &mut Rng,
-    cov: &mut Reached,
-    c: &ObjectSourceConfig,
-    backend: Backend,
-    announcer: Option<&mut dyn Announcer>,
-    open: impl FnOnce() -> Result<Box<dyn Source>, String>,
-) -> Result<(), String> {
-    match &c.queue {
-        ObjectQueue::List { .. } => read_listing(rng, cov, c, backend, open),
-        _ => {
-            let announcer = announcer.expect("a queue kind's draw makes its announcer");
-            read_queue(rng, cov, c, backend, announcer, open)
-        }
-    }
-}
-
 /// Reads drawn objects in `backend`'s stores, by bucket, through the queue's notifications, each parsed as its kind
 /// parses it and sent with the announcer, and checks every message is deleted once its records are committed.
 fn read_queue(
@@ -1845,7 +1826,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, runtime: &Arc<tokio::runtime::
             runtime,
             pace: OFFLINE,
         };
-        read(&mut rng, reached, &c, backend, None, open)
+        read_listing(&mut rng, reached, &c, backend, open)
     } else {
         let stores: BTreeMap<String, Arc<dyn ObjectStore>> = ["logs", "other"]
             .iter()
@@ -1873,7 +1854,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, runtime: &Arc<tokio::runtime::
             runtime,
             pace: OFFLINE,
         };
-        read(&mut rng, reached, &c, backend, Some(&mut announcer), open)
+        read_queue(&mut rng, reached, &c, backend, &mut announcer, open)
     };
     read.map_err(|e| format!("{e}\n{json}"))
 }
@@ -1956,8 +1937,11 @@ fn live_fuzz(
             runtime: &runtime,
             pace: LIVE,
         };
-        let announcer = made.announcer.as_mut().map(|a| &mut **a as &mut dyn Announcer);
-        read(&mut rng, &mut reached, &c, backend, announcer, open).map_err(|e| format!("{e}\n{json}"))?;
+        match made.announcer.as_mut() {
+            Some(announcer) => read_queue(&mut rng, &mut reached, &c, backend, &mut **announcer, open),
+            None => read_listing(&mut rng, &mut reached, &c, backend, open),
+        }
+        .map_err(|e| format!("{e}\n{json}"))?;
         reached.credit(&mut cov);
         Ok(())
     });
