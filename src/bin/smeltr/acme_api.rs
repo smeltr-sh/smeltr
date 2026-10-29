@@ -375,16 +375,13 @@ async fn order_once(
     let entry = tokio::task::spawn_blocking(move || acme::list(store.as_ref(), &listed))
         .await
         .map_err(|e| e.to_string())??;
-    acme::take(
-        &serving.dir,
-        settings,
-        &issued,
-        &entry,
-        serve,
-        &serving.names,
-        required,
-        now_ms,
-    )?;
+    // At once under the root in force, else as the rotation a certificate under another root begins.
+    if issued.rotates {
+        tls::begin_supplied_rotation(&serving.dir, &entry, &serving.names, required, now_ms)?;
+    } else if serve {
+        tls::serve(&serving.dir, &entry, &serving.names, required)?;
+    }
+    acme::succeeded(&serving.dir, settings, &issued, now_ms)?;
     if serve && !issued.rotates {
         certificates_api::reload_socket(serving)?;
     }
