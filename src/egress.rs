@@ -708,7 +708,10 @@ fn run(
             // Once the destination has taken it: a Kafka producer at its bound holds `deliver` until it has room,
             // and that wait is this side's, not the link's round trip. A batch it did not take was never in flight.
             let taken = matches!(delivered, Ok((Dispatched::Complete | Dispatched::InFlight, _)));
-            let paced = pacer.as_mut().filter(|_| taken).map(|p| p.dispatched(unit.bytes, app_limited));
+            let paced = pacer
+                .as_mut()
+                .filter(|_| taken)
+                .map(|p| p.dispatched(unit.bytes, app_limited));
             match delivered {
                 Err(e) => {
                     note_stall(metrics, id, name, &e, &mut stalled);

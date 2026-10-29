@@ -1229,7 +1229,12 @@ test('◎ pauses the records after a step', async ({ admin, leader, api }) => {
   const dropped = grid.getByRole('row', { name: /^row 1 / });
   await expect(dropped).toHaveClass(/dropped/);
 
-  await admin.getByRole('button', { name: 'Pause the records after this step' }).first().click();
+  // A closed step's controls arrive on its head's hover, as a pointer brings them.
+  const pause = admin.getByRole('button', { name: 'Pause the records after this step' }).first();
+  await pause
+    .locator('xpath=ancestor::div[contains(@class, "card-head")][1]')
+    .hover({ position: { x: 4, y: 4 } });
+  await pause.click();
   const paused = admin.getByLabel('Paused');
   await expect(paused).toHaveText(/◉ After step 1 · PARSER/);
   await expect(dropped).not.toHaveClass(/dropped/);

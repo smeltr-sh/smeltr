@@ -470,17 +470,8 @@
     flex: 1;
   }
 
-  .icon {
-    display: inline-grid;
+  .used :global(.removes) {
     float: right;
-    padding: 0;
-    border-color: transparent;
-    background: none;
-    color: var(--dim);
-  }
-
-  .icon:hover {
-    color: var(--error);
   }
 
   .dim {
