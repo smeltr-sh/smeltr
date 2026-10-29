@@ -28,7 +28,7 @@ serde_json = { version = "1", features = ["raw_value"] }
 # `registeredDomain`'s public suffixes, compiled in, so two workers built from one commit read a host alike.
 psl = "2"
 # `lookup::mmdb` and `lookup::cidr`.
-maxminddb = "0.30.3"
+maxminddb = "0.32.0"
 ipnetwork = "0.21.1"
 # Integers in the JSON writer. `write!` costs a formatter per number; a document carries a dozen or more.
 itoa = "1"

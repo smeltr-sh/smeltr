@@ -11157,7 +11157,7 @@ third-party/chromium/LICENSE.
 
 Used by:
 
-- [maxminddb 0.30.3](https://github.com/oschwald/maxminddb-rust)
+- [maxminddb 0.32.0](https://github.com/oschwald/maxminddb-rust)
 
 ```
 ISC License
