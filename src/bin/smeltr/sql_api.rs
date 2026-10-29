@@ -34,8 +34,8 @@ pub struct Statements {
 
 /// Run reads a query's own ORDER BY (`io::sql::Query::parse_for_run`), so its author can reach the choice that
 /// replaces it.
-const OWN_ORDER: &str = "Run reads the query with its ORDER BY, but a save refuses it: smeltr orders the rows itself, \
-                         by the column you choose under how rows are found";
+const OWN_ORDER: &str = "Take the ORDER BY out before you save: Run reads it, but smeltr orders the rows itself, \
+                         by the column you choose under how rows are found.";
 
 /// How many rows Run reads, as the Sources page asks for them.
 const RUN_ROWS: u32 = 20;

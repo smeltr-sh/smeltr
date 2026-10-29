@@ -82,7 +82,10 @@ impl fmt::Display for Refused {
             }
             Refused::MoreThanOneStatement => write!(f, "this is more than one statement; a source runs one query"),
             Refused::Unterminated(what) => write!(f, "a {what} is never closed"),
-            Refused::Ordered => write!(f, "leave the ORDER BY out: smeltr orders by the position you choose"),
+            Refused::Ordered => write!(
+                f,
+                "remove its ORDER BY; smeltr adds its own, on the column you choose under how rows are found"
+            ),
             Refused::Limited(word) => {
                 write!(
                     f,
