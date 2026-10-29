@@ -1032,11 +1032,17 @@ const deploy: Move = {
 };
 
 /** The routes the fleet runs that carry rows to the sink: from a metrics source, which makes rows of its own,
- * unlike a receiver nothing sends to, into an Elasticsearch destination, which every one the moves add writes. */
-const flowing = (w: World) =>
-  w.deploys[w.running].config.routes.filter(
-    (r) => r.source.startsWith('src-') && r.to?.startsWith('dst-'),
+ * unlike a receiver nothing sends to, into an Elasticsearch destination, which every one the moves add writes. The
+ * moves' routes match every row, so only a source's first route takes its rows. */
+const flowing = (w: World) => {
+  const routes = w.deploys[w.running].config.routes;
+  return routes.filter(
+    (r) =>
+      r.source.startsWith('src-') &&
+      r.to?.startsWith('dst-') &&
+      routes.find((first) => first.source === r.source) === r,
   );
+};
 
 const rowsArrive: Move = {
   name: 'rows-arrive',
