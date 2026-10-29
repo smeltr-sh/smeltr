@@ -50,6 +50,12 @@ body or its branch needs a level in at least one area, and its handler checks
 the rest once it knows the area. Each route's need lives in the same row as the
 agent catalog's description of it, so the two cannot drift.
 
+A signed-in person's request may carry a body of up to 1 GiB: a bundle edited
+as JSON, a file to import or preview, a lookup table. The gate refuses a
+request before its body is read, so only a person the leader knows can make it
+hold that much. Sign-in, enrollment and the worker routes, which carry small
+messages, keep a small limit.
+
 ## The answer
 
 Every JSON route of the operator and open families answers
