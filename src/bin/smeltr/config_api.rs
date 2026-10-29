@@ -201,7 +201,8 @@ impl Reading {
         let reading = Reading::open_in(data_dir, branch, scope)?;
         let commit = commit.to_ascii_lowercase();
         let in_history = |rev: &str| git::reachable_from(&reading.repo, &commit, rev);
-        if !in_history(&reading.branch)? && !in_history(git::MAIN_BRANCH)? {
+        // The tip just read, not the branch's name: a deploy deletes the branch, and its commits outlive it.
+        if !in_history(&reading.commit)? && !in_history(git::MAIN_BRANCH)? {
             return Err(Refusal::not_found(format!(
                 "{commit} is not in the history of {branch:?} or of {}",
                 git::MAIN_BRANCH
