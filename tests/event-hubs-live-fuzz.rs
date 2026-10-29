@@ -240,11 +240,21 @@ fn write(
             in_flight.insert(batch);
         }
     }
-    // The emulator, like Event Hubs' Basic and Standard tiers, refuses gzip: nothing lands, and the error says why.
+    // The emulator, like Event Hubs' Basic and Standard tiers, refuses gzip: what was compressed comes back
+    // undelivered with its batch, and the error says why.
     if config.compression == Compression::Gzip {
-        match dest.flush() {
-            Err(e) if e.to_string().contains("does not take gzip") => {}
-            other => return Err(format!("gzip on the emulator flushed to {other:?}")),
+        dest.flush()
+            .map_err(|e| format!("gzip on the emulator did not flush: {e:?}"))?;
+        let done = dest
+            .poll_completions()
+            .map_err(|e| format!("gzip on the emulator: {e:?}"))?;
+        let errors: Vec<String> = done
+            .into_iter()
+            .filter_map(|c| c.undelivered)
+            .map(|u| u.error.message)
+            .collect();
+        if !errors.iter().any(|e| e.contains("does not take gzip")) {
+            return Err(format!("gzip on the emulator came back undelivered for {errors:?}"));
         }
         // A batch too small to shrink goes uncompressed, so a few rows may land: only on their own hub, once.
         for (hub, v) in read_back(source, &marker, 0)? {
