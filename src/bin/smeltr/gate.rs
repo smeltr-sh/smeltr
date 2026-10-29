@@ -13,6 +13,10 @@
 //! The browser protections are here too, because they are the same decision: a cookie is attached by the browser
 //! whoever caused the request, so an unsafe request must also prove it came from the GUI -- an exact `Origin` and
 //! a header carrying the session's own CSRF value, which a cross-site caller can read neither of.
+//!
+//! An integration calls with one of its keys instead, as `Authorization: Bearer`. No browser attaches that header
+//! on its own, so a key needs neither protection. A key names its integration, and the integration decides, as an
+//! account does.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,11 +27,13 @@ use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use smeltr::leader::access::{Access, AgentPermissions, ByAgent, Level};
+use smeltr::leader::auth::hash_secret;
 use smeltr::leader::blocking;
 use smeltr::leader::envelope::Refusal;
 use smeltr::leader::sessions::{Refused, Sessions};
 use smeltr::leader::store::{Actor, AuthSource, Store, StoreError, UserRecord};
 use smeltr::leader::throttle::LoginThrottle;
+use smeltr::leader::warnings::now_millis;
 
 use crate::policy;
 
@@ -176,6 +182,28 @@ pub fn presented_token(headers: &axum::http::HeaderMap, cookie_name: &str) -> Op
         .filter(|token| !token.is_empty())
 }
 
+/// The key this request carries, if any.
+pub fn presented_key(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_string)
+}
+
+/// What only a person reaches: signing in and out, their own settings and agent, and integrations themselves, so
+/// no key makes another or keeps its integration enabled.
+fn person_only(path: &str) -> bool {
+    ["/api/auth/", "/api/me/", "/api/agent/", "/api/integrations/"]
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+        || path == "/api/integrations"
+}
+
+/// How seldom a key's last use is written: often enough to tell a key in use from one forgotten, seldom enough that
+/// a busy integration does not write on every request.
+const LAST_USED_EVERY: i64 = 60_000;
+
 /// Whether a method changes anything. `GET` and `HEAD` do not, and there are no state-changing `GET`s here, so
 /// this is also the list of methods that skip the CSRF check.
 fn is_safe(method: &Method) -> bool {
@@ -185,11 +213,24 @@ fn is_safe(method: &Method) -> bool {
 /// The gate. Every operator route is behind it; the public auth routes are not.
 pub async fn require_principal(
     State(auth): State<Auth>,
-    mut req: axum::extract::Request,
+    req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
     let path = req.uri().path().to_string();
     let method = req.method().clone();
+
+    if let Some(key) = presented_key(req.headers()) {
+        if presented_token(req.headers(), auth.origin.cookie_name()).is_some() {
+            return refuse(StatusCode::BAD_REQUEST, "send a key or a session, not both");
+        }
+        if person_only(&path) {
+            return refuse(StatusCode::FORBIDDEN, "a key cannot be used here -- sign in instead");
+        }
+        return match integration_of(&auth, key).await {
+            Ok((actor, access)) => admit(req, next, &method, &path, actor, access).await,
+            Err(response) => *response,
+        };
+    }
 
     let Some(token) = presented_token(req.headers(), auth.origin.cookie_name()) else {
         return refuse(StatusCode::UNAUTHORIZED, "sign in to use this");
@@ -267,24 +308,78 @@ pub async fn require_principal(
         );
     }
 
-    let need = policy::need(&method, &path);
-    if !need.met_by(&access) {
-        return Refusal::from(need).into_response();
-    }
-
-    // An `Actor`, which is what an audit row and a git author both take: who is asking is one fact, and a second
-    // type for it would be a second fact to keep in step. Constructed here and nowhere else, so no field of a
-    // request body reaches it.
     // The agent acts as its person and says so wherever the name is shown, in history and on a change alike.
     let actor = if by_agent {
         Actor::persons_agent(&user.id, &user.display_name)
     } else {
         Actor::person(&user.id, &user.display_name)
     };
+    admit(req, next, &method, &path, actor, access).await
+}
+
+/// Let in a caller the gate has named, if what they hold meets what the route needs.
+///
+/// An `Actor` is what an audit row and a git author both take: who is asking is one fact, and a second type for it
+/// would be a second fact to keep in step. The gate constructs it and nothing else does, so no field of a request
+/// body reaches it.
+async fn admit(
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+    method: &Method,
+    path: &str,
+    actor: Actor,
+    access: Access,
+) -> Response {
+    let need = policy::need(method, path);
+    if !need.met_by(&access) {
+        return Refusal::from(need).into_response();
+    }
     req.extensions_mut().insert(actor);
     // Beside the actor, for a handler whose area is in the body or the branch and so could not be judged above.
     req.extensions_mut().insert(access);
     next.run(req).await
+}
+
+/// The integration a key names, and what it holds now, read from the store on every request as an account is.
+///
+/// Three refusals, as a worker's token has, because a caller acts on each differently: a key never made is `401`,
+/// a revoked key or a disabled integration `403`, and a store that could not say is `503`, never either of them.
+async fn integration_of(auth: &Auth, key: String) -> Result<(Actor, Access), Box<Response>> {
+    let store = auth.store.clone();
+    let now = now_millis();
+    let looked_up = blocking(move || {
+        let Some(presented) = store.api_key_by_hash(&hash_secret(&key))? else {
+            return Ok(None);
+        };
+        let user = store.get_user(&presented.user_id)?;
+        let access = match &user {
+            Some(user) if !presented.revoked && user.enabled => Some(access_of(store.as_ref(), user)?),
+            _ => None,
+        };
+        // A minute at most behind, which is all a roster that asks whether a key is in use needs. Its failing to be
+        // written refuses nothing: the key is good.
+        if access.is_some() && presented.last_used_at.is_none_or(|at| now - at >= LAST_USED_EVERY) {
+            if let Err(e) = store.mark_api_key_used(&presented.id, now) {
+                tracing::warn!(target: "leader.identity_unavailable", error = %e, "a key's last use could not be written");
+            }
+        }
+        Ok::<_, StoreError>(Some((user, access)))
+    })
+    .await;
+    match looked_up {
+        Ok(Some((Some(user), Some(access)))) if user.auth_source == AuthSource::Integration => {
+            Ok((Actor::integration(&user.id, &user.display_name), access))
+        }
+        Ok(Some(_)) => Err(Box::new(refuse(
+            StatusCode::FORBIDDEN,
+            "this key was revoked, or its integration is disabled",
+        ))),
+        Ok(None) => Err(Box::new(refuse(StatusCode::UNAUTHORIZED, "this key is not known"))),
+        Err(e) => {
+            tracing::error!(target: "leader.identity_unavailable", error = %e, "the account store could not be read");
+            Err(Box::new(store_unavailable()))
+        }
+    }
 }
 
 /// What every answer carries for the browser, GUI and API alike: a served body is never sniffed into a script, no
