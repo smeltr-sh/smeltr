@@ -502,7 +502,9 @@
 
   <Dialog open={creating} title="new account" oncancel={() => busy || reset()} onsubmit={create}>
     <div class="fields">
-      <Segmented label="Signs in with" options={SIGN_INS} bind:value={newSignIn} />
+      <div class="sign-in">
+        <Segmented label="Signs in with" options={SIGN_INS} bind:value={newSignIn} />
+      </div>
       {#if newSignIn === 'local'}
         <div class="pair">
           <Field required label="Display name">
@@ -947,6 +949,11 @@
 
   .panel p {
     margin: 0;
+  }
+
+  /* Only as wide as its choices, not the dialog. */
+  .sign-in {
+    justify-self: start;
   }
 
   .fields {

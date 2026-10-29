@@ -83,18 +83,16 @@
     if (
       !enabled &&
       !(await ask({
-        title: 'disable integration',
+        title: 'disable account',
         body: `Disabling "${account.displayName}" revokes every key it holds and stops it calling. Enabling it again does not bring them back.`,
-        action: 'Disable integration',
+        action: 'Disable account',
         danger: true,
       }))
     )
       return;
     await change(
       { enabled },
-      enabled
-        ? 'integration enabled; it needs a new key'
-        : 'integration disabled; its keys are revoked',
+      enabled ? 'account enabled; it needs a new key' : 'account disabled; its keys are revoked',
     );
   }
 
@@ -147,13 +145,9 @@
   <button type="button" onclick={() => startForm('roles')}>Change access</button>
   {#if account.enabled}
     <button type="button" onclick={() => startForm('key')}>+ New key</button>
-    <button type="button" disabled={busy} onclick={() => setEnabled(false)}
-      >Disable integration</button
-    >
+    <button type="button" disabled={busy} onclick={() => setEnabled(false)}>Disable account</button>
   {:else}
-    <button type="button" disabled={busy} onclick={() => setEnabled(true)}
-      >Enable integration</button
-    >
+    <button type="button" disabled={busy} onclick={() => setEnabled(true)}>Enable account</button>
   {/if}
 </div>
 
