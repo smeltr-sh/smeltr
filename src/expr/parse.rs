@@ -1753,41 +1753,29 @@ impl<'s> Parser<'s> {
 
     /// An arrow from its `=>`, its parameters read: `{ ... }` is a function body, and anything else is the one
     /// expression it returns.
-    fn arrow(
-        &mut self,
-        params: Vec<String>,
-        param_types: Vec<Option<DataType>>,
-        ret: Option<DataType>,
-        start: Span,
-    ) -> Result<Expr, ParseError> {
+    fn arrow(&mut self, mut function: Function, start: Span) -> Result<Expr, ParseError> {
         self.advance(); // `=>`
-        let body = if self.peek() == &Token::Punct(Punct::LBrace) {
+        function.body = if self.peek() == &Token::Punct(Punct::LBrace) {
             self.function_body()?
         } else {
             vec![Stmt::Return(self.expr_bp(0)?)]
         };
-        Ok(Expr::new(
-            start.join(self.last_span()),
-            ExprKind::Arrow(Function {
-                params,
-                param_types,
-                ret,
-                body,
-            }),
-        ))
+        Ok(Expr::new(start.join(self.last_span()), ExprKind::Arrow(function)))
     }
 
-    /// `(a, b: T): R` with `=>` after it, read from its `(`, or `None` with nothing read: `(a)` alone is a
-    /// parenthesized expression.
-    #[allow(clippy::type_complexity)]
-    fn arrow_head(&mut self) -> Option<(Vec<String>, Vec<Option<DataType>>, Option<DataType>)> {
+    /// `(a, b: T): R` with `=>` after it, read from its `(` as a function with no body yet, or `None` with nothing
+    /// read: `(a)` alone is a parenthesized expression.
+    fn arrow_head(&mut self) -> Option<Function> {
         let at = self.pos;
         let mark = self.shape.mark();
         self.advance(); // `(`
         let head = match (self.params(), self.return_type()) {
-            (Ok((params, types)), Ok(ret)) if self.peek() == &Token::Punct(Punct::FatArrow) => {
-                Some((params, types, ret))
-            }
+            (Ok((params, param_types)), Ok(ret)) if self.peek() == &Token::Punct(Punct::FatArrow) => Some(Function {
+                params,
+                param_types,
+                ret,
+                body: Vec::new(),
+            }),
             _ => None,
         };
         if head.is_none() {
@@ -1846,7 +1834,15 @@ impl<'s> Parser<'s> {
                             message: format!("a parameter is a plain name, found `{name}`"),
                         });
                     }
-                    return self.arrow(vec![name], vec![None], None, sp);
+                    return self.arrow(
+                        Function {
+                            params: vec![name],
+                            param_types: vec![None],
+                            ret: None,
+                            body: Vec::new(),
+                        },
+                        sp,
+                    );
                 }
                 Ok(Expr::new(sp, ExprKind::Field(name)))
             }
@@ -1863,8 +1859,8 @@ impl<'s> Parser<'s> {
                 Ok(Expr::new(sp, ExprKind::Literal(Value::Null)))
             }
             Token::Punct(Punct::LParen) => {
-                if let Some((params, types, ret)) = self.arrow_head() {
-                    return self.arrow(params, types, ret, sp);
+                if let Some(head) = self.arrow_head() {
+                    return self.arrow(head, sp);
                 }
                 self.advance();
                 let inner = self.expr_bp(0)?;
