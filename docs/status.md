@@ -162,7 +162,7 @@ catalog's volume entry both wait on it.
 - **A worker's bare clone is never repacked.** `gix` has no maintenance primitive, so a worker redeployed often accumulates packs without bound.
 - **A runtime releases a capture session once it writes the report to its own pipe, not once the leader has it,** so a slow upload can see the session re-admitted and re-captured. Closing it needs an acknowledgment frame back from the supervisor.
 - **A runtime confirmed dead with a descendant holding its output pipe is reported as still running.** `RuntimeHandle::exited` does not tell "alive" from "gone, tree unconfirmed".
-- **The heartbeat's body limit assumes a worst case nothing enforces.** `thread_limit` and the reader count have no ceiling, so a large deployment's report can outgrow `HEARTBEAT_BODY_LIMIT`. Closing it needs per-beat windowing for metrics.
+- **A heartbeat's state has no share of the body limit.** Each part of a window does, and counters past theirs spread over beats, but a beat's state -- its threads, their gauges and facts -- grows with the sources and destinations deployed, which have no ceiling.
 - **Capture sessions are retained without a cap; only the outbox (`CAPTURES_WAITING`) is capped.**
 - **The deployment warning's grace does not cover the stop it waits through.** The stop and startup budgets add up to exactly `NOT_DEPLOYING_AFTER_MS`, leaving no slack.
 - **A capture queued while its own upload is in flight is uploaded twice.**
