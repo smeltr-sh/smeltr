@@ -22,7 +22,7 @@
   import JsonEditPage from './JsonEditPage.svelte';
   import SchemaFields from './SchemaFields.svelte';
   import NewSchema, { type SchemaDraft } from './NewSchema.svelte';
-  import TrashIcon from './TrashIcon.svelte';
+  import CrossButton from './CrossButton.svelte';
   import { resourcesTabs } from './nav';
   import {
     fromJsonSchema,
@@ -253,12 +253,11 @@
                 <td class="used">
                   {@render usedBy(users.get(s.id))}
                   {#if !readOnly}
-                    <button
-                      type="button"
-                      class="icon"
-                      aria-label="Remove {s.id || 'unnamed'}"
-                      onclick={() => schemas.splice(n, 1)}><TrashIcon /></button
-                    >
+                    <CrossButton
+                      removes
+                      label="Remove {s.id || 'unnamed'}"
+                      onclick={() => schemas.splice(n, 1)}
+                    />
                   {/if}
                 </td>
               </tr>
