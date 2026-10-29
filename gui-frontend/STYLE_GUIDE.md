@@ -267,7 +267,8 @@ definition, not a page's own rule.
     button that only opens the question is a plain button.
   - `compact` -- an action inside a row of a list.
   - `icon` -- a control that is only a glyph (✕, ✎, ‹, ƒ), named by its
-    `aria-label`: bare and dim until hovered, on a 24px target.
+    `aria-label`: bare and dim until hovered, on a 24px target, with an
+    accent ring on keyboard focus.
   - `large` -- a call to action on a page of the website.
 - **Text field.** Every text `input`, `select` and `textarea`: `--field`
   on a 1px `--border`, `--text-body`, 1rem on a phone so it does not zoom.
