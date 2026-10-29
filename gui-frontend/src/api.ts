@@ -4759,6 +4759,88 @@ export function deleteRole(name: string): Promise<{ ok: boolean; errors: ApiErro
   return apiJson(`/api/roles/${encodeURIComponent(name)}`, { method: 'DELETE' }, 'quiet');
 }
 
+// -- integrations -------------------------------------------------------------
+//
+// An integration is an account a script calls the API as, with one of its keys (`integrations_api.rs`). It holds
+// what its roles give, or everything as an administrator. Administrators only, like the roster.
+
+/** A key in force. Never the key itself, which only `createIntegrationKey` answers. */
+export interface IntegrationKeyDto {
+  id: string;
+  label: string;
+  createdAt: number;
+  /** To the minute; absent for a key never used. */
+  lastUsedAt: number | null;
+}
+
+export interface IntegrationDto {
+  id: string;
+  name: string;
+  enabled: boolean;
+  /** The roles it was given, by name. */
+  roles: string[];
+  /** Whether it was made an administrator. What it holds, from this or its roles, is `access`. */
+  administrator: boolean;
+  access: AccessDto;
+  keys: IntegrationKeyDto[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** A key just made: the one answer that carries it. */
+export interface CreatedIntegrationKeyDto {
+  id: string;
+  label: string;
+  createdAt: number;
+  key: string;
+}
+
+/** One change to an integration: the leader takes one field per request. */
+export type IntegrationChange =
+  { name: string } | { roles: string[] } | { administrator: boolean } | { enabled: boolean };
+
+export async function listIntegrations(): Promise<IntegrationDto[]> {
+  return (await readJson<{ integrations: IntegrationDto[] }>('/api/integrations')).integrations;
+}
+
+export function createIntegration(
+  name: string,
+  roles: string[],
+  administrator: boolean,
+): Promise<IntegrationDto | AccountRefusal> {
+  return accountCall('/api/integrations', {
+    method: 'POST',
+    body: JSON.stringify({ name, roles, administrator }),
+  });
+}
+
+export function changeIntegration(
+  id: string,
+  change: IntegrationChange,
+): Promise<IntegrationDto | AccountRefusal> {
+  return accountCall(`/api/integrations/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(change),
+  });
+}
+
+export function createIntegrationKey(
+  id: string,
+  label: string,
+): Promise<CreatedIntegrationKeyDto | AccountRefusal> {
+  return accountCall(`/api/integrations/${encodeURIComponent(id)}/keys`, {
+    method: 'POST',
+    body: JSON.stringify({ label }),
+  });
+}
+
+export function revokeIntegrationKey(id: string, key: string): Promise<object | AccountRefusal> {
+  return accountCall(
+    `/api/integrations/${encodeURIComponent(id)}/keys/${encodeURIComponent(key)}`,
+    { method: 'DELETE' },
+  );
+}
+
 // -- agents -------------------------------------------------------------------
 //
 // The leader's agent, acting for a person within their agent permissions (`agents_api.rs`).

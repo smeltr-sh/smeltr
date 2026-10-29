@@ -31,8 +31,9 @@ export const SYSTEM_SECTIONS: { section: SystemSection; label: string }[] = [
 /** The tabs of Admin -> Workers: the fleet's workers, and the enrollment codes that bring them in. */
 export type WorkersSection = 'workers' | 'enrollment';
 
-/** The tabs of Admin -> Accounts: the people, the roles their provider's groups give them, and the provider. */
-export type AccountsSection = 'users' | 'roles' | 'oidc';
+/** The tabs of Admin -> Accounts: the people, the roles their provider's groups give them, the integrations
+ * scripts call as, and the provider. */
+export type AccountsSection = 'users' | 'roles' | 'integrations' | 'oidc';
 
 /** The tabs of Admin -> Secrets: the secrets, and the key that encrypts the ones the leader stores. */
 export type SecretsSection = 'secrets' | 'key';
@@ -296,6 +297,7 @@ export const WORKERS_TABS: SectionItem[] = [
 export const ACCOUNTS_SECTIONS: { section: AccountsSection; label: string }[] = [
   { section: 'users', label: 'Users' },
   { section: 'roles', label: 'Roles' },
+  { section: 'integrations', label: 'Integrations' },
   { section: 'oidc', label: 'Single sign-on' },
 ];
 

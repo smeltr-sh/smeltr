@@ -1,7 +1,8 @@
 <!--
   Who can use this leader, and what an administrator does to them: the roster
-  under Users, under Roles what each of the provider's groups gives, and under
-  Single sign-on the provider itself.
+  under Users, under Roles what each of the provider's groups gives, under
+  Integrations the accounts scripts call as, and under Single sign-on the
+  provider itself.
 
   A local account is always an administrator. An SSO account holds what the
   roles named for its provider groups give it, so the roster shows those roles
@@ -13,6 +14,7 @@
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import OidcSettings from './OidcSettings.svelte';
+  import IntegrationsSettings from './IntegrationsSettings.svelte';
   import { toHash } from './logs';
   import Help from './Help.svelte';
   import Field from './Field.svelte';
@@ -60,6 +62,7 @@
 
   let message = $state('');
   let busy = $state(false);
+  let addingIntegration = $state(false);
 
   /** Shown once, and not retrievable afterward -- so each stays on screen
    * until it is dismissed, and another account's is added rather than put in
@@ -396,6 +399,10 @@
     {#snippet beside()}
       {#if section === 'oidc'}
         <!-- The form saves itself. -->
+      {:else if section === 'integrations'}
+        <button class="primary" type="button" onclick={() => (addingIntegration = true)}
+          >+ Add integration</button
+        >
       {:else if section === 'roles'}
         <button class="primary" type="button" onclick={startNaming}>+ Add role</button>
         <button
@@ -482,6 +489,8 @@
 
   {#if section === 'oidc'}
     <OidcSettings />
+  {:else if section === 'integrations'}
+    <IntegrationsSettings bind:adding={addingIntegration} />
   {:else if section === 'roles'}
     {#if rolesLoading}
       <p>Reading the roles…</p>

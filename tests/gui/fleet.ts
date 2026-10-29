@@ -341,6 +341,25 @@ export async function signedIn(leader: Leader, username: string, password: strin
   return new Api(ctx, (await res.json()).csrf);
 }
 
+/** What `method path` answers for a script calling with `key`: no cookie, no `Origin`, no CSRF value. */
+export async function withKey(
+  leader: Leader,
+  key: string,
+  method: string,
+  path: string,
+): Promise<number> {
+  const ctx = await request.newContext({
+    baseURL: leader.url,
+    ignoreHTTPSErrors: true,
+    extraHTTPHeaders: { Authorization: `Bearer ${key}` },
+  });
+  try {
+    return (await ctx.fetch(path, { method })).status();
+  } finally {
+    await ctx.dispose();
+  }
+}
+
 /** A second administrator, past their first-sign-in password change, signed in over the API. */
 export async function addAccount(
   leader: Leader,

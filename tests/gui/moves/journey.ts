@@ -13,6 +13,7 @@ import {
   type Api,
   type Fleet,
   type Leader,
+  withKey,
 } from '../fleet';
 import type { Rng } from '../fuzz';
 import { MODEL_CONTEXT, MODEL_KEY, request, say, type FakeModel } from '../model';
@@ -104,6 +105,8 @@ export type World = {
   accounts: Map<string, boolean>;
   /** Each role, by the provider group it names. */
   roles: Set<string>;
+  /** Each integration, by name, and the key it holds in force. */
+  integrations: Map<string, string | null>;
   /** AI agents are turned on, against the journey's model endpoint. */
   agentsOn: boolean;
   /** The administrator's conversations with their agent, by title. */
@@ -145,6 +148,7 @@ export function newWorld(): World {
     signIns: [],
     accounts: new Map(),
     roles: new Set(),
+    integrations: new Map(),
     agentsOn: false,
     conversations: [],
     restarted: [],
@@ -1913,6 +1917,92 @@ const disableAccount: Move = {
   },
 };
 
+type Integration = { name: string; administrator: boolean; keys: { label: string }[] };
+
+/** The Integrations row for `name`, by the cell that names it. */
+function integrationRow(page: Page, name: string): Locator {
+  return page.getByRole('row').filter({ has: page.getByRole('cell', { name, exact: true }) });
+}
+
+async function openIntegrations(page: Page) {
+  await openAdmin(page, 'Accounts');
+  await page.getByRole('link', { name: 'Integrations', exact: true }).click();
+}
+
+const addIntegration: Move = {
+  name: 'add-integration',
+  leadsTo: ['revoke-integration-key'],
+  weight: (w) => (w.password && w.integrations.size < 2 ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const name = `integration-${world.made++}`;
+    const administrator = rng.chance(2);
+    await openIntegrations(page);
+    await page.getByRole('button', { name: '+ Add integration' }).click();
+    const dialog = page.getByRole('dialog', { name: 'new integration' });
+    await dialog.getByRole('textbox', { name: /^Name\b/ }).fill(name);
+    if (administrator) await dialog.getByRole('checkbox', { name: 'Administrator' }).check();
+    await dialog.getByRole('button', { name: 'Add' }).click();
+    await expect(dialog).toHaveCount(0);
+
+    // The new integration's row opens on its own, and a key is made there.
+    await page.getByRole('button', { name: '+ New key' }).click();
+    await page.getByRole('textbox', { name: /^Label\b/ }).fill('journey');
+    await page.getByRole('button', { name: 'Make key' }).click();
+    const handover = page.locator('section.handover').filter({ hasText: name });
+    await expect(handover.getByText('it is shown only once')).toBeVisible();
+    const key = (await handover.locator('.secret code').innerText()).trim();
+    await handover.getByRole('button', { name: 'Done' }).click();
+    await expect(handover).toHaveCount(0);
+    world.integrations.set(name, key);
+
+    const integrations: Integration[] = await (
+      await j.truth()
+    )
+      .get('/api/integrations')
+      .then((a) => a.integrations);
+    expect(integrations.find((i) => i.name === name)).toMatchObject({
+      administrator,
+      keys: [{ label: 'journey' }],
+    });
+    expect(await withKey(leader, key, 'GET', '/api/health')).toBe(administrator ? 200 : 403);
+    expect(await withKey(leader, key, 'GET', '/api/integrations')).toBe(403);
+    return `add integration ${name}${administrator ? ', an administrator,' : ''} with a key`;
+  },
+};
+
+const revokeIntegrationKey: Move = {
+  name: 'revoke-integration-key',
+  weight: (w) => ([...w.integrations.values()].some((k) => k) ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const name = rng.pick([...world.integrations].filter(([, k]) => k).map(([n]) => n));
+    const key = world.integrations.get(name)!;
+    await openIntegrations(page);
+    await integrationRow(page, name).getByRole('button', { name: 'Manage' }).click();
+    await page
+      .getByRole('table', { name: 'Keys' })
+      .getByRole('row')
+      .filter({ hasText: 'journey' })
+      .getByRole('button', { name: 'Revoke' })
+      .click();
+    await page
+      .getByRole('dialog', { name: 'revoke key' })
+      .getByRole('button', { name: 'Revoke key' })
+      .click();
+    await expect(page.getByRole('status')).toHaveText('key revoked');
+    world.integrations.set(name, null);
+    const integrations: Integration[] = await (
+      await j.truth()
+    )
+      .get('/api/integrations')
+      .then((a) => a.integrations);
+    expect(integrations.find((i) => i.name === name)?.keys).toEqual([]);
+    expect(await withKey(leader, key, 'GET', '/api/health')).toBe(403);
+    return `revoke ${name}'s key`;
+  },
+};
+
 /** The group the journey's provider puts the one person it signs in into. */
 export const PROVIDER_GROUP = 'journey-people';
 /** Their other group, which no role names until an administrator makes one from it on the roster. */
@@ -2595,6 +2685,8 @@ export const MOVES: readonly Move[] = [
   addAccount,
   disableAccount,
   addRole,
+  addIntegration,
+  revokeIntegrationKey,
   turnOnAgents,
   setAgentPermissions,
   askAgent,

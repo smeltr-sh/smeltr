@@ -1,7 +1,7 @@
 // What a system administrator does to smeltr itself: bring workers in and take them out, see what each runs,
 // configure the service, and hold its credentials. Each test drives the Admin and Status pages of a fleet of
 // its own; the API only arranges what a test is not about.
-import { test, expect, goto, type Api } from '../fleet';
+import { test, expect, goto, withKey, type Api } from '../fleet';
 import { FakeModel, MODEL_KEY, request, say } from '../model';
 import {
   described,
@@ -550,6 +550,58 @@ test('AI agents turned on under System offer the agent screens', async ({ admin 
   } finally {
     await model.stop();
   }
+});
+
+test('an integration made under Accounts calls with its key until the key is revoked', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  // S5
+  await api.put('/api/roles/smeltr-readers', { areas: { shared: 'viewer' } });
+  await openAdmin(admin, 'Accounts');
+  await admin.getByRole('link', { name: 'Integrations', exact: true }).click();
+  await expect(admin.getByText('No integrations yet.')).toBeVisible();
+
+  await admin.getByRole('button', { name: '+ Add integration' }).click();
+  const dialog = admin.getByRole('dialog', { name: 'new integration' });
+  await dialog.getByRole('textbox', { name: /^Name\b/ }).fill('nightly export');
+  await dialog.getByRole('checkbox', { name: 'smeltr-readers' }).check();
+  await dialog.getByRole('button', { name: 'Add' }).click();
+  const row = admin.getByRole('row').filter({ hasText: 'nightly export' });
+  await expect(row.getByText('smeltr-readers')).toBeVisible();
+
+  await admin.getByRole('button', { name: '+ New key' }).click();
+  await admin.getByRole('textbox', { name: /^Label\b/ }).fill('ci');
+  await admin.getByRole('button', { name: 'Make key' }).click();
+  const handover = admin.locator('section.handover');
+  await expect(handover.getByText('Copy the key below now: it is shown only once.')).toBeVisible();
+  const key = (await handover.locator('.secret code').innerText()).trim();
+  await handover.getByRole('button', { name: 'Done' }).click();
+  await expect(handover).toHaveCount(0);
+
+  expect(await withKey(leader, key, 'GET', '/api/areas/shared')).toBe(200);
+  expect(await withKey(leader, key, 'GET', '/api/users')).toBe(403);
+  await admin.reload();
+  await admin
+    .getByRole('row')
+    .filter({ hasText: 'nightly export' })
+    .getByRole('button', { name: 'Manage' })
+    .click();
+  const keyRow = admin
+    .getByRole('table', { name: 'Keys' })
+    .getByRole('row')
+    .filter({ hasText: 'ci' });
+  await expect(keyRow.getByRole('cell').nth(2)).toHaveText(/ago$/);
+
+  await keyRow.getByRole('button', { name: 'Revoke' }).click();
+  await admin
+    .getByRole('dialog', { name: 'revoke key' })
+    .getByRole('button', { name: 'Revoke key' })
+    .click();
+  await expect(admin.getByRole('status')).toHaveText('key revoked');
+  await expect(admin.getByText('No keys.')).toBeVisible();
+  expect(await withKey(leader, key, 'GET', '/api/areas/shared')).toBe(403);
 });
 
 test('a person sets what their agent may use from their name', async ({ admin, api }) => {
