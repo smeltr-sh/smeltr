@@ -23,7 +23,7 @@ use std::time::Duration;
 use axum::Json;
 use axum::extract::State;
 
-use crate::leader::envelope::Envelope;
+use crate::leader::envelope::{Envelope, Refusal};
 use crate::leader::registry::ThreadHealth;
 use crate::leader::store::{Actor, Store, WorkerCredentialRecord, WorkerKind};
 use crate::leader::{AppState, run_store};
@@ -122,7 +122,7 @@ pub async fn sweep(state: &AppState, now_ms: i64) {
         return;
     }
     let read = run_store(state.store.clone(), |s| {
-        let forget_after = forget_after(s).map_err(crate::leader::store::StoreError)?;
+        let forget_after = forget_after(s).map_err(crate::leader::store::StoreError::failed)?;
         Ok((forget_after, s.list_worker_credentials()?))
     })
     .await;
@@ -240,8 +240,8 @@ pub struct WorkerSettings {
 }
 
 impl WorkerSettings {
-    fn answer(forget_after: Result<Duration, String>) -> Json<Envelope<WorkerSettings>> {
-        Json(match forget_after {
+    fn answer(forget_after: Result<Duration, Refusal>) -> Envelope<WorkerSettings> {
+        match forget_after {
             Ok(forget_after) => Envelope::ok(WorkerSettings {
                 settings: Some(WorkerSettingsDto {
                     ephemeral_forget_after_seconds: forget_after.as_secs(),
@@ -250,8 +250,8 @@ impl WorkerSettings {
                     max_seconds: MAX_FORGET_AFTER.as_secs(),
                 }),
             }),
-            Err(error) => Envelope::failed_one(error),
-        })
+            Err(refusal) => Envelope::refused(refusal),
+        }
     }
 }
 
@@ -262,9 +262,10 @@ pub struct PutWorkerSettings {
 }
 
 /// `GET /api/settings/workers`.
-pub async fn get_settings(State(state): State<AppState>) -> Json<Envelope<WorkerSettings>> {
-    let read = run_store(state.store, |s| Ok(forget_after(s))).await;
-    WorkerSettings::answer(read.unwrap_or_else(|e| Err(e.to_string())))
+pub async fn get_settings(State(state): State<AppState>) -> Envelope<WorkerSettings> {
+    // A stored setting the bounds no longer allow is the form's to correct.
+    let read = run_store(state.store, |s| Ok(forget_after(s).map_err(Refusal::invalid))).await;
+    WorkerSettings::answer(read.unwrap_or_else(|e| Err(e.into())))
 }
 
 /// `PUT /api/settings/workers`. Recorded with who set it, in the transaction that sets it.
@@ -274,18 +275,18 @@ pub async fn put_settings(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Json(request): Json<PutWorkerSettings>,
-) -> Json<Envelope<WorkerSettings>> {
+) -> Envelope<WorkerSettings> {
     let actor = actor.map(|a| a.0).unwrap_or_else(Actor::system);
     let forget_after = match checked(Duration::from_secs(request.ephemeral_forget_after_seconds)) {
         Ok(forget_after) => forget_after,
-        Err(e) => return WorkerSettings::answer(Err(e)),
+        Err(e) => return WorkerSettings::answer(Err(Refusal::invalid(e))),
     };
     let event = super::accounts::event_for(&actor, "worker-settings-change", "", "ok");
     let written = run_store(state.store, move |s| {
         s.put_settings(&[(FORGET_AFTER_KEY, forget_after.as_secs().to_string())], Some(&event))
     })
     .await;
-    WorkerSettings::answer(written.map(|()| forget_after).map_err(|e| e.to_string()))
+    WorkerSettings::answer(written.map(|()| forget_after).map_err(Refusal::from))
 }
 
 #[cfg(test)]

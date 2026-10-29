@@ -261,20 +261,20 @@ const OPERATOR_ROUTES: &[&str] = &[
     "/api/cluster",
     "/api/map",
     "/api/map/measurements",
-    "/api/stats",
-    "/api/config",
-    "/api/pipelines",
-    "/api/sources",
-    "/api/samples",
-    "/api/tests",
+    "/api/areas/shared/stats",
+    "/api/areas/shared",
+    "/api/areas/shared/pipelines",
+    "/api/areas/shared/sources",
+    "/api/areas/shared/samples",
+    "/api/areas/shared/tests",
     "/api/branches",
-    "/api/changes",
-    "/api/history",
+    "/api/branches/work/timeline",
+    "/api/main/history",
     "/api/worker-groups",
     "/api/users",
     "/api/security-events",
-    "/api/pipeline-callers",
-    "/api/connections?kind=pipeline&id=p1",
+    "/api/areas/shared/pipeline-callers",
+    "/api/areas/shared/pipelines/p1/connections",
     "/api/settings/oidc",
 ];
 
@@ -378,7 +378,7 @@ fn choosing_a_password_opens_the_rest_of_the_api() {
     })
     .to_string();
     let status = status_of(
-        ureq::post(format!("{}/api/auth/password", leader.base))
+        ureq::put(format!("{}/api/auth/password", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &first.cookie)
             .header("x-smeltr-csrf", &first.csrf)
@@ -566,7 +566,7 @@ fn a_human_cookie_does_not_open_a_worker_route() {
     let leader = start("worker-boundary");
     let session = signed_in_and_settled(&leader);
     let status = status_of(
-        ureq::post(format!("{}/api/heartbeat", leader.base))
+        ureq::post(format!("{}/api/worker/heartbeat", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &session.cookie)
             .header("x-smeltr-csrf", &session.csrf)
@@ -609,11 +609,11 @@ fn signing_out_ends_the_session() {
     let leader = start("logout");
     let session = signed_in_and_settled(&leader);
     let status = status_of(
-        ureq::post(format!("{}/api/auth/logout", leader.base))
+        ureq::delete(format!("{}/api/auth/session", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &session.cookie)
             .header("x-smeltr-csrf", &session.csrf)
-            .send_empty(),
+            .call(),
         "logout",
     );
     assert_eq!(status, 200);
@@ -638,7 +638,7 @@ fn signed_in_and_settled(leader: &Leader) -> Session {
         "newPassword": chosen,
     })
     .to_string();
-    ureq::post(format!("{}/api/auth/password", leader.base))
+    ureq::put(format!("{}/api/auth/password", leader.base))
         .header("origin", &leader.origin)
         .header("cookie", &first.cookie)
         .header("x-smeltr-csrf", &first.csrf)
@@ -737,6 +737,90 @@ impl Leader {
     }
 }
 
+/// What the framework refuses before a handler runs -- a body, query or path that cannot be read, a wrong method,
+/// a path nobody serves -- is answered in the envelope at its status, its own text the one error, and uncached like
+/// every answer under `/api/`.
+#[test]
+fn a_refusal_the_framework_answers_wears_the_envelope() {
+    let leader = start("framework-refusals");
+    let op = operator(&leader);
+    let send = |method: &str, path: &str, content_type: &str, body: Vec<u8>| -> (u16, serde_json::Value) {
+        let url = format!("{}{path}", leader.base);
+        let request = ureq::http::Request::builder()
+            .method(method)
+            .uri(&url)
+            .header("origin", &leader.origin)
+            .header("cookie", &op.session.cookie)
+            .header("x-smeltr-csrf", &op.session.csrf)
+            .header("content-type", content_type)
+            .body(body)
+            .unwrap();
+        let response = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .allow_non_standard_methods(true)
+            .build()
+            .new_agent()
+            .run(request)
+            .expect("the call was answered");
+        assert_eq!(response.headers()["cache-control"], "no-store", "{method} {path}");
+        let status = response.status().as_u16();
+        (
+            status,
+            response.into_body().read_json().unwrap_or(serde_json::Value::Null),
+        )
+    };
+    let json = "application/json";
+    let groups = "/api/worker-groups?branch=work";
+    let cases = [
+        ("a body that is not JSON", ("POST", groups, json, b"{".to_vec()), 400),
+        (
+            "a body of the wrong shape",
+            ("POST", groups, json, br#"{"id": 5}"#.to_vec()),
+            422,
+        ),
+        (
+            "a body that is not said to be JSON",
+            ("POST", groups, "text/plain", b"{}".to_vec()),
+            415,
+        ),
+        // Just past axum's 2 MiB: the leader reads up to the limit before it refuses, so no more of the body is
+        // left to send when it closes, which would break the pipe under the client.
+        (
+            "a body past the limit",
+            ("POST", groups, json, vec![b' '; (2 << 20) + 1]),
+            413,
+        ),
+        (
+            "a query that does not parse",
+            ("GET", "/api/warnings?info=often", json, vec![]),
+            400,
+        ),
+        (
+            "a path that does not decode",
+            ("PATCH", "/api/users/%FF", json, br#"{"enabled": true}"#.to_vec()),
+            400,
+        ),
+        (
+            "a method the route does not answer",
+            ("DELETE", "/api/health", json, vec![]),
+            405,
+        ),
+    ];
+    for (what, (method, path, content_type, body), want) in cases {
+        let (status, answer) = send(method, path, content_type, body);
+        assert_eq!(status, want, "{what}: {answer}");
+        assert_eq!(answer["ok"], false, "{what}: {answer}");
+        let message = answer["errors"][0]["message"].as_str().unwrap_or_default();
+        assert!(!message.is_empty(), "{what} says why: {answer}");
+    }
+    let (status, answer) = send("GET", "/api/nothing-here", json, vec![]);
+    assert_eq!(
+        (status, &answer["ok"]),
+        (404, &serde_json::Value::Bool(false)),
+        "{answer}"
+    );
+}
+
 /// A self-signed certificate for `name` and its private key, in PEM.
 fn certificate_and_key(name: &str) -> (String, String) {
     let key = rcgen::KeyPair::generate().unwrap();
@@ -763,7 +847,7 @@ fn a_connector_names_only_a_certificate_the_list_holds() {
     let receiver = serde_json::json!([{"id": "hook", "type": "httpReceiver", "port": 9443, "certificate": "receiver",
                                               "tokens": {"t": "HOOK_TOKEN"}}]);
 
-    let (_, refused) = leader.put_as(&op, "/api/sources?scope=west&branch=work", receiver.clone());
+    let (_, refused) = leader.put_as(&op, "/api/areas/west/sources?branch=work", receiver.clone());
     assert_eq!(refused["ok"], false, "{refused}");
     assert!(
         refused["errors"][0]["message"]
@@ -773,10 +857,10 @@ fn a_connector_names_only_a_certificate_the_list_holds() {
     );
 
     let (certificate, private_key) = certificate_and_key("receiver.example.com");
-    let upload = serde_json::json!({"name": "receiver", "certificate": certificate, "privateKey": private_key});
+    let upload = serde_json::json!({"kind": "supplied", "name": "receiver", "certificate": certificate, "privateKey": private_key});
     let (_, listed) = leader.post_as(&op, "/api/certificates", upload);
     assert_eq!(listed["ok"], true, "{listed}");
-    let (_, saved) = leader.put_as(&op, "/api/sources?scope=west&branch=work", receiver);
+    let (_, saved) = leader.put_as(&op, "/api/areas/west/sources?branch=work", receiver);
     assert_eq!(saved["ok"], true, "{saved}");
 }
 
@@ -789,7 +873,7 @@ fn an_administrator_keeps_certificates_in_the_list() {
     let (certificate, private_key) = certificate_and_key("receiver.example.com");
     let (_, other_key) = certificate_and_key("other.example.com");
 
-    let upload = |key: &str| serde_json::json!({"name": "receiver", "certificate": certificate, "privateKey": key});
+    let upload = |key: &str| serde_json::json!({"kind": "supplied", "name": "receiver", "certificate": certificate, "privateKey": key});
     let (_, refused) = leader.post_as(&op, "/api/certificates", upload(&other_key));
     assert_eq!(refused["ok"], false, "a key that is not the certificate's: {refused}");
     let (_, created) = leader.post_as(&op, "/api/certificates", upload(&private_key));
@@ -797,15 +881,18 @@ fn an_administrator_keeps_certificates_in_the_list() {
 
     let (status, listed) = leader.get_as(&op.session, "/api/certificates");
     assert_eq!(status, 200);
-    assert_eq!(listed[0]["name"], "receiver");
-    assert_eq!(listed[0]["chain"][0]["subject"], "rcgen self signed cert");
-    assert_eq!(listed[0]["served"], false);
+    assert_eq!(listed["certificates"][0]["name"], "receiver");
+    assert_eq!(
+        listed["certificates"][0]["chain"][0]["subject"],
+        "rcgen self signed cert"
+    );
+    assert_eq!(listed["certificates"][0]["served"], false);
     let (_, secrets) = leader.get_as(&op.session, "/api/secrets");
     assert!(
         !secrets.to_string().contains("receiver"),
         "a certificate is not listed with the secrets: {secrets}"
     );
-    let (_, value) = leader.put_as(&op, "/api/secrets/receiver", serde_json::json!({"value": "x"}));
+    let (_, value) = leader.post_as(&op, "/api/secrets/receiver/versions", serde_json::json!({"value": "x"}));
     assert_eq!(
         value["ok"], false,
         "a certificate's value is not set as a secret's: {value}"
@@ -819,11 +906,11 @@ fn an_administrator_keeps_certificates_in_the_list() {
     let (_, replaced) = leader.put_as(&op, "/api/certificates/receiver", body);
     assert_eq!(replaced["ok"], true, "{replaced}");
     let (_, listed) = leader.get_as(&op.session, "/api/certificates");
-    assert_eq!(listed[0]["versions"].as_array().map(Vec::len), Some(2));
+    assert_eq!(listed["certificates"][0]["versions"].as_array().map(Vec::len), Some(2));
 
     assert_eq!(leader.delete_as(&op, "/api/secrets/receiver"), 200);
     let (_, listed) = leader.get_as(&op.session, "/api/certificates");
-    assert_eq!(listed, serde_json::json!([]));
+    assert_eq!(listed["certificates"], serde_json::json!([]));
 }
 
 /// The whole account lifecycle, from an administrator creating one to the new person using it.
@@ -1007,10 +1094,10 @@ impl FakeModel {
         }
         let input = match asked.contains("write") {
             true => serde_json::json!({
-                "method": "PUT", "path": "/api/pipelines/p1", "query": {"scope": "shared", "branch": "agent-work"},
+                "method": "PUT", "path": "/api/areas/shared/pipelines/p1", "query": {"branch": "agent-work"},
                 "body": {"id": "p1", "name": "p1", "steps": []},
             }),
-            false => serde_json::json!({"method": "GET", "path": "/api/pipelines", "query": {"scope": "shared"}}),
+            false => serde_json::json!({"method": "GET", "path": "/api/areas/shared/pipelines"}),
         };
         serde_json::json!({
             "content": [{"type": "tool_use", "id": "tu_1", "name": "request", "input": input}],
@@ -1024,7 +1111,7 @@ impl FakeModel {
 fn agents_on(leader: &Leader, op: &Operator, model: &FakeModel) {
     let (status, body) = leader.put_as(
         op,
-        "/api/settings/agents",
+        "/api/settings/agent",
         serde_json::json!({
             "enabled": true, "provider": "anthropic", "endpoint": model.base, "model": "claude-opus-5-5",
             "apiKey": MODEL_KEY,
@@ -1046,7 +1133,7 @@ fn the_agent_apis_wait_until_ai_agents_are_turned_on() {
         serde_json::json!({ "kind": "everything" }),
     );
     assert_eq!(status, 409, "{body}");
-    assert_eq!(body["error"], "AI agents are not turned on");
+    assert_eq!(body["errors"][0]["message"], "AI agents are not turned on");
     let (status, _) = leader.get_as(&op.session, "/api/me/agent-permissions");
     assert_eq!(status, 200);
 
@@ -1062,7 +1149,7 @@ fn ai_agents_turn_on_only_with_an_endpoint_that_answers() {
     let leader = start("agents-settings");
     let op = operator(&leader);
     let model = FakeModel::start();
-    let put = |body: serde_json::Value| leader.put_as(&op, "/api/settings/agents", body).1;
+    let put = |body: serde_json::Value| leader.put_as(&op, "/api/settings/agent", body).1;
 
     let body = put(serde_json::json!({
         "enabled": true, "provider": "anthropic", "endpoint": model.base, "model": "claude-opus-5-5",
@@ -1086,7 +1173,7 @@ fn ai_agents_turn_on_only_with_an_endpoint_that_answers() {
     assert_eq!(body["settings"]["apiKeySet"], false);
 
     agents_on(&leader, &op, &model);
-    let (_, read) = leader.get_as(&op.session, "/api/settings/agents");
+    let (_, read) = leader.get_as(&op.session, "/api/settings/agent");
     assert_eq!(read["settings"]["apiKeySet"], true, "{read}");
     // Anthropic says how much its model holds.
     assert_eq!(read["settings"]["contextTokens"], MODEL_CONTEXT, "{read}");
@@ -1136,7 +1223,7 @@ fn a_person_sets_what_their_agent_may_use() {
     assert_eq!(status, 200);
     assert_eq!(
         permissions,
-        serde_json::json!({ "kind": "upto", "default": "viewer", "areas": {} })
+        serde_json::json!({ "ok": true, "errors": [], "kind": "upto", "default": "viewer", "areas": {} })
     );
     let (status, _) = leader.put_as(
         &op,
@@ -1145,13 +1232,16 @@ fn a_person_sets_what_their_agent_may_use() {
     );
     assert_eq!(status, 200);
     let (_, permissions) = leader.get_as(&op.session, "/api/me/agent-permissions");
-    assert_eq!(permissions, serde_json::json!({ "kind": "everything" }));
+    assert_eq!(
+        permissions,
+        serde_json::json!({ "ok": true, "errors": [], "kind": "everything" })
+    );
     let (status, _) = leader.put_as(
         &op,
         "/api/me/agent-permissions",
         serde_json::json!({ "kind": "upto", "default": "viewer", "areas": { "../x": "editor" } }),
     );
-    assert_eq!(status, 400);
+    assert_eq!(status, 422);
 }
 
 /// The conversation `id` once its turn has ended.
@@ -1344,7 +1434,7 @@ fn the_last_administrator_cannot_disable_themselves() {
     let leader = start("last-admin");
     let op = operator(&leader);
     let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users[0]["id"].as_str().unwrap();
+    let id = users["users"][0]["id"].as_str().unwrap();
     let (status, body) = leader.patch_as(
         &op,
         &format!("/api/users/{id}"),
@@ -1369,7 +1459,7 @@ fn disabling_an_account_ends_its_session_at_once() {
     // Get them a working session first, so what is being withdrawn is real access rather than a restricted one.
     let theirs = leader.sign_in("dana", &temporary);
     let chosen = "another perfectly ordinary passphrase";
-    leader.post_as(
+    leader.put_as(
         &Operator {
             session: Session {
                 cookie: theirs.cookie.clone(),
@@ -1409,7 +1499,7 @@ fn revoking_sessions_ends_them_and_leaves_the_password_alone() {
     let leader = start("revoke");
     let op = operator(&leader);
     let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users[0]["id"].as_str().unwrap().to_string();
+    let id = users["users"][0]["id"].as_str().unwrap().to_string();
 
     let (status, _) = leader.post_as(&op, &format!("/api/users/{id}/revoke-sessions"), serde_json::json!({}));
     assert_eq!(status, 200);
@@ -1493,7 +1583,7 @@ fn account_changes_are_audited_without_their_passwords() {
     let (status, events) = leader.get_as(&op.session, "/api/security-events");
     assert_eq!(status, 200);
     let rendered = events.to_string();
-    let actions: Vec<&str> = events
+    let actions: Vec<&str> = events["events"]
         .as_array()
         .unwrap()
         .iter()
@@ -1523,7 +1613,7 @@ fn a_display_name_with_a_newline_is_refused() {
             "displayName": "Dana\n<someone@else>",
         }),
     );
-    assert_eq!(status, 400);
+    assert_eq!(status, 422);
 }
 
 // -- attribution ------------------------------------------------------------
@@ -1541,13 +1631,13 @@ fn deploy_something(leader: &Leader, op: &Operator) {
 
     let (status, opened) = leader.post_as(
         op,
-        "/api/changes",
-        serde_json::json!({ "branch": "work", "title": "Add the West group", "description": "" }),
+        "/api/branches/work/open",
+        serde_json::json!({ "title": "Add the West group", "description": "" }),
     );
     assert_eq!(status, 200, "{opened}");
     assert_eq!(opened["ok"], serde_json::Value::Bool(true), "{opened}");
 
-    let (status, deployed) = leader.post_as(op, "/api/changes/work/deploy", serde_json::json!({}));
+    let (status, deployed) = leader.post_as(op, "/api/branches/work/deploy", serde_json::json!({}));
     assert_eq!(status, 200, "{deployed}");
     assert_eq!(deployed["ok"], serde_json::Value::Bool(true), "{deployed}");
 }
@@ -1558,7 +1648,7 @@ fn a_renamed_person_keeps_the_commits_they_wrote() {
     let leader = start("attribution-rename");
     let op = operator(&leader);
     let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users[0]["id"].as_str().unwrap().to_string();
+    let id = users["users"][0]["id"].as_str().unwrap().to_string();
 
     deploy_something(&leader, &op);
     leader.patch_as(
@@ -1567,7 +1657,7 @@ fn a_renamed_person_keeps_the_commits_they_wrote() {
         serde_json::json!({ "displayName": "Someone Else" }),
     );
 
-    let (_, history) = leader.get_as(&op.session, "/api/history?limit=5");
+    let (_, history) = leader.get_as(&op.session, "/api/main/history?limit=5");
     let newest = &history["commits"][0];
     assert_eq!(
         newest["author"], "Administrator",
@@ -1582,7 +1672,7 @@ fn a_renamed_person_keeps_the_commits_they_wrote() {
 fn what_the_leader_did_for_itself_names_no_person() {
     let leader = start("attribution-system");
     let op = operator(&leader);
-    let (status, history) = leader.get_as(&op.session, "/api/history?limit=20");
+    let (status, history) = leader.get_as(&op.session, "/api/main/history?limit=20");
     assert_eq!(status, 200, "{history}");
     let seeded = history["commits"]
         .as_array()
@@ -1614,12 +1704,12 @@ fn a_client_cannot_name_the_author() {
     assert_eq!(status, 200, "{created}");
     leader.post_as(
         &op,
-        "/api/changes",
-        serde_json::json!({ "branch": "work", "title": "Add the West group", "description": "" }),
+        "/api/branches/work/open",
+        serde_json::json!({ "title": "Add the West group", "description": "" }),
     );
-    leader.post_as(&op, "/api/changes/work/deploy", serde_json::json!({}));
+    leader.post_as(&op, "/api/branches/work/deploy", serde_json::json!({}));
 
-    let (_, history) = leader.get_as(&op.session, "/api/history?limit=5");
+    let (_, history) = leader.get_as(&op.session, "/api/main/history?limit=5");
     let newest = &history["commits"][0];
     assert_eq!(newest["author"], "Administrator", "{history}");
     assert_ne!(newest["authorId"], "u_someone_else", "{history}");
@@ -1632,7 +1722,7 @@ fn a_client_cannot_name_the_author() {
 #[test]
 fn an_unknown_session_cookie_is_cleared_when_activity_is_reported() {
     let leader = start("stale-cookie");
-    let response = ureq::post(format!("{}/api/auth/activity", leader.base))
+    let response = ureq::post(format!("{}/api/auth/session/activity", leader.base))
         .header("origin", &leader.origin)
         .header("cookie", "smeltr_session=not-a-token-this-leader-issued")
         .config()
@@ -1649,7 +1739,7 @@ fn an_unknown_session_cookie_is_cleared_when_activity_is_reported() {
     assert!(cleared.contains("Max-Age=0"), "{cleared}");
     let body: serde_json::Value = response.into_body().read_json().expect("a JSON refusal");
     assert_eq!(body["ok"], serde_json::Value::Bool(false), "{body}");
-    assert!(body["error"].is_string(), "{body}");
+    assert!(body["errors"][0]["message"].is_string(), "{body}");
 }
 
 /// A required change is not asked for the password it replaces, and a settled session is: the first was issued
@@ -1660,7 +1750,7 @@ fn only_a_required_change_skips_the_current_password() {
     let session = signed_in_and_settled(&leader);
     let body = serde_json::json!({ "username": "admin", "newPassword": "a perfectly fine replacement" }).to_string();
     let status = status_of(
-        ureq::post(format!("{}/api/auth/password", leader.base))
+        ureq::put(format!("{}/api/auth/password", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &session.cookie)
             .header("x-smeltr-csrf", &session.csrf)
@@ -1668,7 +1758,7 @@ fn only_a_required_change_skips_the_current_password() {
             .send(&body),
         "password",
     );
-    assert_eq!(status, 400);
+    assert_eq!(status, 422);
     assert_eq!(
         leader.get_as(&session, "/api/health").0,
         200,
@@ -1716,7 +1806,7 @@ fn a_refused_sign_in_records_a_bounded_subject() {
     let (_, events) = leader.get_as(&op.session, "/api/security-events");
     let recorded = |sent: &str| {
         let head = &sent[..4];
-        events
+        events["events"]
             .as_array()
             .unwrap()
             .iter()
@@ -1741,18 +1831,18 @@ fn a_patch_changing_two_things_at_once_is_refused_before_anything_changes() {
     let leader = start("patch-atomic");
     let op = operator(&leader);
     let (_, users) = leader.get_as(&op.session, "/api/users");
-    let id = users[0]["id"].as_str().unwrap().to_string();
-    let was = users[0]["displayName"].as_str().unwrap().to_string();
+    let id = users["users"][0]["id"].as_str().unwrap().to_string();
+    let was = users["users"][0]["displayName"].as_str().unwrap().to_string();
 
     let (status, _) = leader.patch_as(
         &op,
         &format!("/api/users/{id}"),
         serde_json::json!({ "displayName": "Renamed", "enabled": false }),
     );
-    assert_eq!(status, 400);
+    assert_eq!(status, 422);
 
     let (_, after) = leader.get_as(&op.session, "/api/users");
-    assert_eq!(after[0]["displayName"], was, "the rename landed anyway");
+    assert_eq!(after["users"][0]["displayName"], was, "the rename landed anyway");
 }
 
 /// An origin carrying a path or a query can never equal what a browser sends, so accepting it would leave every
@@ -1800,7 +1890,7 @@ fn second_operator(leader: &Leader, op: &Operator, username: &str, display_name:
         "newPassword": chosen,
     })
     .to_string();
-    ureq::post(format!("{}/api/auth/password", leader.base))
+    ureq::put(format!("{}/api/auth/password", leader.base))
         .header("origin", &leader.origin)
         .header("cookie", &first.cookie)
         .header("x-smeltr-csrf", &first.csrf)
@@ -1829,14 +1919,14 @@ fn a_deploy_records_the_author_and_the_deployer_separately() {
     assert_eq!(status, 200, "{created}");
     let (status, opened) = leader.post_as(
         &dana,
-        "/api/changes",
-        serde_json::json!({ "branch": "work", "title": "Add the West group", "description": "" }),
+        "/api/branches/work/open",
+        serde_json::json!({ "title": "Add the West group", "description": "" }),
     );
     assert_eq!(status, 200, "{opened}");
-    let (status, deployed) = leader.post_as(&admin, "/api/changes/work/deploy", serde_json::json!({}));
+    let (status, deployed) = leader.post_as(&admin, "/api/branches/work/deploy", serde_json::json!({}));
     assert_eq!(status, 200, "{deployed}");
 
-    let (_, history) = leader.get_as(&admin.session, "/api/history?limit=5");
+    let (_, history) = leader.get_as(&admin.session, "/api/main/history?limit=5");
     let newest = &history["commits"][0];
     assert_eq!(
         newest["author"], "Dana Okafor",
@@ -1860,7 +1950,7 @@ fn deploying_your_own_change_names_you_as_both() {
     let op = operator(&leader);
     deploy_something(&leader, &op);
 
-    let (_, history) = leader.get_as(&op.session, "/api/history?limit=5");
+    let (_, history) = leader.get_as(&op.session, "/api/main/history?limit=5");
     let newest = &history["commits"][0];
     assert_eq!(newest["author"], "Administrator", "{history}");
     assert_eq!(newest["deployer"], "Administrator", "{history}");
@@ -1878,7 +1968,7 @@ fn a_display_name_git_cannot_hold_is_refused() {
         "/api/users",
         serde_json::json!({ "username": "dana", "displayName": "Dana <Ops>" }),
     );
-    assert_eq!(status, 400, "{body}");
+    assert_eq!(status, 422, "{body}");
 
     // And the same name cannot arrive by renaming afterward.
     let (status, created) = leader.post_as(
@@ -1893,7 +1983,7 @@ fn a_display_name_git_cannot_hold_is_refused() {
         &format!("/api/users/{id}"),
         serde_json::json!({ "displayName": "Dana <Ops>" }),
     );
-    assert_eq!(status, 400, "{renamed}");
+    assert_eq!(status, 422, "{renamed}");
 }
 
 /// Changing a password is throttled, and the caller is told how long to wait. A session is not a license to guess
@@ -1907,7 +1997,7 @@ fn a_throttled_caller_is_told_how_long_to_wait() {
 
     let mut seen = None;
     for _ in 0..14 {
-        let response = ureq::post(format!("{}/api/auth/password", leader.base))
+        let response = ureq::put(format!("{}/api/auth/password", leader.base))
             .header("origin", &leader.origin)
             .header("cookie", &session.cookie)
             .header("x-smeltr-csrf", &session.csrf)
@@ -1980,7 +2070,7 @@ fn an_idle_timeout_past_the_absolute_one_is_refused() {
         "/api/settings/sessions",
         serde_json::json!({ "idleSeconds": 86400, "absoluteSeconds": 3600 }),
     );
-    assert_eq!(status, 400, "{body}");
+    assert_eq!(status, 422, "{body}");
 
     let (_, settings) = leader.get_as(&op.session, "/api/settings/sessions");
     assert_eq!(
@@ -2354,7 +2444,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
     let (ended, _) = oidc_sign_in(&leader);
     assert_eq!(ended, "/");
     let (_, users) = leader.get_as(&op.session, "/api/users");
-    let oidc: Vec<_> = users
+    let oidc: Vec<_> = users["users"]
         .as_array()
         .expect("a roster")
         .iter()
@@ -2392,7 +2482,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
 
     // Every refusal is on the record, and so is what the settings change touched.
     let (_, events) = leader.get_as(&op.session, "/api/security-events");
-    let rows = events.as_array().unwrap();
+    let rows = events["events"].as_array().unwrap();
     let refused = rows
         .iter()
         .filter(|e| e["action"] == "login" && e["outcome"] == "refused")
@@ -2624,12 +2714,12 @@ fn a_viewer_reads_their_group_and_saves_nothing() {
     let (leader, _op, provider) = with_west_roles("oidc-viewer");
     let viewer = provider_account(&leader, &provider, &["smeltr-west-view"]);
 
-    let (status, body) = leader.get_as(&viewer.session, "/api/config?scope=west");
+    let (status, body) = leader.get_as(&viewer.session, "/api/areas/west");
     assert_eq!(status, 200, "{body}");
-    let (status, body) = leader.get_as(&viewer.session, "/api/config?scope=east");
+    let (status, body) = leader.get_as(&viewer.session, "/api/areas/east");
     assert_eq!(status, 403, "read a group no role gives: {body}");
 
-    let (status, body) = leader.put_as(&viewer, "/api/sources?scope=west&branch=dana", a_source());
+    let (status, body) = leader.put_as(&viewer, "/api/areas/west/sources?branch=dana", a_source());
     assert_eq!(status, 403, "a viewer saved: {body}");
     let (status, body) = leader.get_as(&viewer.session, "/api/users");
     assert_eq!(status, 403, "a viewer read the roster: {body}");
@@ -2641,23 +2731,23 @@ fn an_editor_saves_in_their_group_and_does_not_deploy() {
     let (leader, _op, provider) = with_west_roles("oidc-editor");
     let editor = provider_account(&leader, &provider, &["smeltr-west-edit"]);
 
-    let (status, body) = leader.put_as(&editor, "/api/sources?scope=west&branch=dana", a_source());
+    let (status, body) = leader.put_as(&editor, "/api/areas/west/sources?branch=dana", a_source());
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["ok"], true, "{body}");
-    let (status, body) = leader.put_as(&editor, "/api/sources?scope=east&branch=dana", a_source());
+    let (status, body) = leader.put_as(&editor, "/api/areas/east/sources?branch=dana", a_source());
     assert_eq!(status, 403, "saved in a group no role gives: {body}");
 
     let (status, body) = leader.post_as(
         &editor,
-        "/api/changes",
-        serde_json::json!({ "branch": "dana", "title": "A storefront source", "description": "" }),
+        "/api/branches/dana/open",
+        serde_json::json!({ "title": "A storefront source", "description": "" }),
     );
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["ok"], true, "{body}");
 
-    let (status, body) = leader.post_as(&editor, "/api/changes/dana/deploy", serde_json::json!({}));
+    let (status, body) = leader.post_as(&editor, "/api/branches/dana/deploy", serde_json::json!({}));
     assert_eq!(status, 403, "an editor deployed a change: {body}");
-    let (status, body) = leader.post_as(&editor, "/api/deploy", serde_json::json!({}));
+    let (status, body) = leader.post_as(&editor, "/api/main/deploy", serde_json::json!({}));
     assert_eq!(status, 403, "an editor deployed a commit: {body}");
     let (status, body) = leader.get_as(&editor.session, "/api/users");
     assert_eq!(status, 403, "an editor read the roster: {body}");
@@ -2685,16 +2775,16 @@ fn signed_in(leader: &Leader, session: &Session) -> bool {
 fn a_group_change_at_the_provider_reaches_a_signed_in_person() {
     let (leader, _op, provider) = with_west_roles_and("oidc-refresh-groups", &[QUICK_REFRESH]);
     let dana_now = provider_account(&leader, &provider, &["smeltr-west-view"]);
-    assert_eq!(leader.get_as(&dana_now.session, "/api/config?scope=west").0, 200);
+    assert_eq!(leader.get_as(&dana_now.session, "/api/areas/west").0, 200);
 
     provider.becomes(dana(&[]));
     eventually("the viewer role going", || {
-        leader.get_as(&dana_now.session, "/api/config?scope=west").0 == 403
+        leader.get_as(&dana_now.session, "/api/areas/west").0 == 403
     });
     provider.becomes(dana(&["smeltr-west-edit"]));
     eventually("the editor role arriving", || {
         leader
-            .put_as(&dana_now, "/api/sources?scope=west&branch=dana", a_source())
+            .put_as(&dana_now, "/api/areas/west/sources?branch=dana", a_source())
             .0
             == 200
     });
@@ -2748,7 +2838,7 @@ fn an_account_holding_no_role_reaches_no_operator_route() {
         let (status, body) = leader.get_as(&nobody.session, route);
         assert_eq!(status, 403, "{route} answered someone holding nothing: {body}");
     }
-    let (status, body) = leader.put_as(&nobody, "/api/sources?scope=west&branch=dana", a_source());
+    let (status, body) = leader.put_as(&nobody, "/api/areas/west/sources?branch=dana", a_source());
     assert_eq!(status, 403, "{body}");
 }
 

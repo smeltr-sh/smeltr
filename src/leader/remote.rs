@@ -21,7 +21,7 @@ use axum::extract::State;
 
 use crate::lookup::store::{self, Pointer};
 
-use super::envelope::Envelope;
+use super::envelope::{Envelope, Refusal};
 use super::store::{Actor, Store, StoreError};
 use super::{AppState, git, run_store, tree};
 
@@ -75,7 +75,7 @@ pub fn configured(store: &dyn Store) -> Result<Option<Remote>, StoreError> {
         None => Some(DEFAULT_POLL),
         Some(Ok(0)) => None,
         Some(Ok(seconds)) => Some(Duration::from_secs(seconds)),
-        Some(Err(e)) => return Err(StoreError(format!("{POLL_KEY}: {e}"))),
+        Some(Err(e)) => return Err(StoreError::failed(format!("{POLL_KEY}: {e}"))),
     };
     Ok(Some(Remote {
         url,
@@ -164,10 +164,10 @@ pub fn sync(repo: &Path, roots: &Path, remote: &Remote) -> Result<Option<String>
         fetch_lookup_files(repo, &running, remote).map_err(refused)?;
     }
     if git::main_head(repo).as_deref() != Some(head.as_str()) {
-        git::follow(repo, &head).map_err(|e| refused(e.0))?;
+        git::follow(repo, &head).map_err(|e| refused(e.message))?;
     }
     // Asked on every sync, not only the one that moved `main`: the fleet stays held until the remote mends it.
-    if let Some(why) = git::worse_than_running(repo, &head).map_err(|e| refused(e.0))?
+    if let Some(why) = git::worse_than_running(repo, &head).map_err(|e| refused(e.message))?
         && git::deployed(repo).as_deref() != Some(head.as_str())
     {
         return Err(refused(format!(
@@ -306,7 +306,7 @@ fn fetch_lookup_files(repo: &Path, commit: &str, remote: &Remote) -> Result<(), 
 /// Every lookup file `commit` names, in `shared/` and in every group, with the path it is committed at.
 fn lookup_pointers(repo: &Path, commit: &str) -> Result<std::collections::HashMap<Pointer, String>, String> {
     let mut prefixes = vec![crate::config_file::SHARED_DIR.to_string()];
-    for group in tree::groups_at(repo, commit).map_err(|e| e.0)? {
+    for group in tree::groups_at(repo, commit).map_err(|e| e.message)? {
         prefixes.extend(crate::config_file::group_subtree(&group));
     }
     tree::lookup_pointers(repo, commit, &prefixes)
@@ -384,7 +384,7 @@ struct Action {
 /// remote's URL as a `.git` repository, then `info/lfs`.
 fn lfs_endpoint(repo: &Path, commit: &str, remote: &Remote) -> Result<String, String> {
     let config = git::read_blobs(repo, commit, &[".lfsconfig".to_string()])
-        .map_err(|e| e.0)?
+        .map_err(|e| e.message)?
         .pop()
         .flatten();
     if let Some(config) = config {
@@ -639,13 +639,10 @@ impl Syncing {
 }
 
 /// Sync now, after any sync already running. Answers what it found; with no remote set, nothing is done.
-pub async fn sync_now(state: &AppState) -> Result<SyncState, String> {
+pub async fn sync_now(state: &AppState) -> Result<SyncState, Refusal> {
     let _turn = state.remote.turn.lock().await;
-    let Some(remote) = run_store(state.store.clone(), configured)
-        .await
-        .map_err(|e| e.to_string())?
-    else {
-        return Err("no remote is set".to_string());
+    let Some(remote) = run_store(state.store.clone(), configured).await? else {
+        return Err(Refusal::conflict("no remote is set"));
     };
     let repo = git::repo_path(&state.data_dir);
     let roots = roots_path(&state.data_dir);
@@ -752,8 +749,8 @@ pub fn push_all(
     now: i64,
     retry: i64,
 ) -> Result<std::collections::HashMap<String, PushFailure>, String> {
-    let local = git::branch_tips(repo).map_err(|e| e.0)?;
-    let pushed = git::host_branches(repo).map_err(|e| e.0)?;
+    let local = git::branch_tips(repo).map_err(|e| e.message)?;
+    let pushed = git::host_branches(repo).map_err(|e| e.message)?;
     let mut branches: Vec<&String> = local.keys().chain(pushed.keys()).collect();
     branches.sort();
     branches.dedup();
@@ -782,13 +779,13 @@ pub fn push_all(
             Ok(git::Pushed::Done) => {}
             // A deletion the host's branch moved past leaves that branch to whoever moved it.
             Ok(git::Pushed::Refused) if tip.is_none() => {
-                git::record_host_branch(repo, branch, None).map_err(|e| e.0)?;
+                git::record_host_branch(repo, branch, None).map_err(|e| e.message)?;
             }
             // Refused only once the host has said where its branch is: that is what an overwrite leases on.
             Ok(git::Pushed::Refused) => {
                 let failure = match git::host_branch(repo, &remote.url, remote.authorization().as_deref(), branch) {
                     Ok(host_tip) => failed(refused_message(branch), true, host_tip),
-                    Err(e) => failed(e.0, false, None),
+                    Err(e) => failed(e.message, false, None),
                 };
                 still.insert(branch.clone(), failure);
             }
@@ -818,9 +815,9 @@ fn push_branch(
         upload_lookup_files(repo, tip, branch, remote)?;
     }
     let pushed =
-        git::push(repo, &remote.url, remote.authorization().as_deref(), branch, tip, lease).map_err(|e| e.0)?;
+        git::push(repo, &remote.url, remote.authorization().as_deref(), branch, tip, lease).map_err(|e| e.message)?;
     if pushed == git::Pushed::Done {
-        git::record_host_branch(repo, branch, tip).map_err(|e| e.0)?;
+        git::record_host_branch(repo, branch, tip).map_err(|e| e.message)?;
     }
     Ok(pushed)
 }
@@ -840,33 +837,35 @@ pub async fn overwrite(
     State(state): State<AppState>,
     axum::extract::Path(branch): axum::extract::Path<String>,
     Json(request): Json<Overwrite>,
-) -> Json<Envelope> {
+) -> Envelope {
     if branch == git::MAIN_BRANCH {
-        return Json(Envelope::failed_one("main is the remote's, and comes back by fetching"));
+        return Envelope::refused(Refusal::invalid("main is the remote's, and comes back by fetching"));
     }
     let _pushing = state.remote.pushing.lock().await;
     let remote = match run_store(state.store.clone(), configured).await {
         Ok(Some(remote)) => remote,
-        Ok(None) => return Json(Envelope::failed_one("no remote is set")),
-        Err(e) => return Json(Envelope::failed_one(e)),
+        Ok(None) => return Envelope::refused(Refusal::conflict("no remote is set")),
+        Err(e) => return Envelope::refused(e),
     };
     let repo = git::repo_path(&state.data_dir);
     let name = branch.clone();
     let pushed = tokio::task::spawn_blocking(move || {
         if git::branch_tip(&repo, &name).as_deref() != Some(request.tip.as_str()) {
-            return Err(format!(
+            return Err(Refusal::conflict(format!(
                 "{name} was saved again since it was shown: look at it again before overwriting"
-            ));
+            )));
         }
-        match push_branch(&repo, &remote, &name, Some(&request.tip), request.host_tip.as_deref())? {
+        match push_branch(&repo, &remote, &name, Some(&request.tip), request.host_tip.as_deref())
+            .map_err(Refusal::internal)?
+        {
             git::Pushed::Done => Ok(None),
             git::Pushed::Refused => git::host_branch(&repo, &remote.url, remote.authorization().as_deref(), &name)
                 .map(|host_tip| Some((request.tip, host_tip)))
-                .map_err(|e| e.0),
+                .map_err(Refusal::from),
         }
     })
     .await
-    .unwrap_or_else(|e| Err(e.to_string()));
+    .unwrap_or_else(|e| Err(Refusal::internal(e.to_string())));
     match pushed {
         Ok(None) => {
             state
@@ -875,7 +874,7 @@ pub async fn overwrite(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&branch);
-            Json(Envelope::done())
+            Envelope::done()
         }
         Ok(Some((tip, host_tip))) => {
             let failed = PushFailure {
@@ -891,11 +890,11 @@ pub async fn overwrite(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(branch.clone(), failed);
-            Json(Envelope::failed_one(format!(
+            Envelope::refused(Refusal::conflict(format!(
                 "{branch} on the remote has moved again since it was shown: look at it again before overwriting it"
             )))
         }
-        Err(e) => Json(Envelope::failed_one(e)),
+        Err(e) => Envelope::refused(e),
     }
 }
 
@@ -904,23 +903,29 @@ pub async fn overwrite(
 /// Approve `branch` onto the host's `main`: squash it as Approve does, push the squash by a lease on the `main` last
 /// fetched, and only once the host has taken it, move `main` and the fleet. Answers the deployed commit. A host that
 /// refuses, its branch protection or a `main` that moved, leaves everything where it was.
-pub fn approve(data_dir: &Path, remote: &Remote, branch: &str, author: &Actor) -> Result<String, String> {
-    let tip =
-        git::branch_tip(&git::repo_path(data_dir), branch).ok_or_else(|| format!("there is no branch {branch:?}"))?;
+pub fn approve(data_dir: &Path, remote: &Remote, branch: &str, author: &Actor) -> Result<String, Refusal> {
+    let tip = git::branch_tip(&git::repo_path(data_dir), branch)
+        .ok_or_else(|| Refusal::not_found(format!("there is no branch {branch:?}")))?;
     approve_at(data_dir, remote, branch, &tip, author)
 }
 
 /// [`approve`] of `branch` at `tip`, the tip the caller judged, refused once the branch has moved from it
 /// (`git::squash_change_at`).
-pub fn approve_at(data_dir: &Path, remote: &Remote, branch: &str, tip: &str, author: &Actor) -> Result<String, String> {
+pub fn approve_at(
+    data_dir: &Path,
+    remote: &Remote,
+    branch: &str,
+    tip: &str,
+    author: &Actor,
+) -> Result<String, Refusal> {
     if !remote.approve_pushes {
-        return Err(format!(
+        return Err(Refusal::conflict(format!(
             "this leader follows {}'s main: merge the change there, and the leader follows it",
             remote.url
-        ));
+        )));
     }
     let repo = git::repo_path(data_dir);
-    let squash = git::squash_change_at(data_dir, branch, tip, author).map_err(|e| e.0)?;
+    let squash = git::squash_change_at(data_dir, branch, tip, author)?;
     // Leased on the `main` the squash is onto: the host takes it only on top of what this leader runs, so nothing on
     // the host's `main` is ever dropped, whether the host moved or the leader did not follow it.
     match push_branch(
@@ -929,22 +934,23 @@ pub fn approve_at(data_dir: &Path, remote: &Remote, branch: &str, tip: &str, aut
         git::MAIN_BRANCH,
         Some(&squash.commit),
         Some(&squash.head),
-    )? {
+    )
+    .map_err(Refusal::internal)?
+    {
         git::Pushed::Done => {}
         git::Pushed::Refused => {
-            return Err(
-                "the remote's main is not the one this leader runs: sync, bring the change current and approve again"
-                    .to_string(),
-            );
+            return Err(Refusal::conflict(
+                "the remote's main is not the one this leader runs: sync, bring the change current and approve again",
+            ));
         }
     }
     // The host has it, so the change is merged whatever happens here; a sync follows it.
     if let Err(e) = git::deploy_squash(data_dir, &squash, author) {
         let _ = git::delete_branch(data_dir, branch, Some(&squash.tip));
-        return Err(format!(
+        return Err(Refusal::internal(format!(
             "{branch} is on the remote's main, but this leader did not deploy it ({}); the next sync follows it",
-            e.0
-        ));
+            e.message
+        )));
     }
     Ok(squash.commit)
 }
@@ -972,8 +978,8 @@ pub struct RemoteSettings {
 }
 
 impl RemoteSettings {
-    fn answer(state: &AppState, remote: Result<Option<Remote>, String>) -> Json<Envelope<RemoteSettings>> {
-        Json(match remote {
+    fn answer(state: &AppState, remote: Result<Option<Remote>, Refusal>) -> Envelope<RemoteSettings> {
+        match remote {
             Ok(remote) => Envelope::ok(RemoteSettings {
                 settings: Some(RemoteSettingsDto {
                     url: remote.as_ref().map(|r| r.url.clone()).unwrap_or_default(),
@@ -989,8 +995,8 @@ impl RemoteSettings {
                     sync: state.remote.state(),
                 }),
             }),
-            Err(error) => Envelope::failed_one(error),
-        })
+            Err(refusal) => Envelope::refused(refusal),
+        }
     }
 }
 
@@ -1009,10 +1015,8 @@ pub struct PutRemoteSettings {
 }
 
 /// `GET /api/settings/git-remote`.
-pub async fn get_settings(State(state): State<AppState>) -> Json<Envelope<RemoteSettings>> {
-    let read = run_store(state.store.clone(), configured)
-        .await
-        .map_err(|e| e.to_string());
+pub async fn get_settings(State(state): State<AppState>) -> Envelope<RemoteSettings> {
+    let read = run_store(state.store.clone(), configured).await.map_err(Refusal::from);
     RemoteSettings::answer(&state, read)
 }
 
@@ -1022,23 +1026,23 @@ pub async fn put_settings(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Json(request): Json<PutRemoteSettings>,
-) -> Json<Envelope<RemoteSettings>> {
+) -> Envelope<RemoteSettings> {
     let actor = actor.map(|a| a.0).unwrap_or_else(Actor::system);
     let url = request.url.trim().to_string();
     if !url.is_empty()
         && let Err(e) = check_url(&url, true)
     {
-        return RemoteSettings::answer(&state, Err(e));
+        return RemoteSettings::answer(&state, Err(Refusal::invalid(e)));
     }
     let poll = Duration::from_secs(request.poll_seconds);
     if !poll.is_zero() && !(MIN_POLL..=MAX_POLL).contains(&poll) {
         return RemoteSettings::answer(
             &state,
-            Err(format!(
+            Err(Refusal::invalid(format!(
                 "the remote is fetched every {} to {} seconds, or 0 for Sync now only",
                 MIN_POLL.as_secs(),
                 MAX_POLL.as_secs()
-            )),
+            ))),
         );
     }
     let event = super::accounts::event_for(&actor, "git-remote-change", &url, "ok");
@@ -1070,7 +1074,7 @@ pub async fn put_settings(
         Ok((url != was, configured(s)?))
     })
     .await
-    .map_err(|e| e.to_string());
+    .map_err(Refusal::from);
     if let Ok((moved, _)) = &written {
         if *moved {
             forget(&state).await;
@@ -1088,13 +1092,13 @@ pub async fn forget(state: &AppState) {
     state.remote.pushes.lock().unwrap_or_else(|e| e.into_inner()).clear();
     let repo = git::repo_path(&state.data_dir);
     if let Ok(Err(e)) = tokio::task::spawn_blocking(move || git::forget_host(&repo)).await {
-        tracing::warn!(target: "remote.forget", error = %e.0, "the old remote's branches could not be forgotten");
+        tracing::warn!(target: "remote.forget", error = %e.message, "the old remote's branches could not be forgotten");
     }
     state.remote.settings_changed.notify_one();
 }
 
 /// `POST /api/settings/git-remote/sync`: fetch and follow now, without waiting for the timer.
-pub async fn post_sync(State(state): State<AppState>) -> Json<Envelope<RemoteSettings>> {
+pub async fn post_sync(State(state): State<AppState>) -> Envelope<RemoteSettings> {
     if let Err(e) = sync_now(&state).await {
         return RemoteSettings::answer(&state, Err(e));
     }
@@ -1761,7 +1765,7 @@ mod tests {
             )],
         );
         let refused = approve_at(data_dir(&repo), &remote, "al/more", &judged, &Actor::system()).unwrap_err();
-        assert!(refused.contains("moved"), "{refused}");
+        assert!(refused.message().contains("moved"), "{refused:?}");
         assert_eq!(git::main_head(&host.repo), head);
         assert_eq!(git::main_head(&repo), head);
         assert!(git::branch_exists(&repo, "al/more").unwrap());
@@ -1773,7 +1777,7 @@ mod tests {
         let (repo, _) = approving(&host, "approve-off");
         let head = git::main_head(&repo);
         let refused = approve(data_dir(&repo), &host.remote(), "al/more", &Actor::system()).unwrap_err();
-        assert!(refused.contains("merge the change there"), "{refused}");
+        assert!(refused.message().contains("merge the change there"), "{refused:?}");
         assert_eq!(git::main_head(&repo), head);
         assert_eq!(git::main_head(&host.repo), head);
     }
@@ -1791,7 +1795,10 @@ mod tests {
             "again",
         );
         let refused = approve(data_dir(&repo), &remote, "al/more", &Actor::system()).unwrap_err();
-        assert!(refused.contains("not the one this leader runs"), "{refused}");
+        assert!(
+            refused.message().contains("not the one this leader runs"),
+            "{refused:?}"
+        );
         assert_eq!(git::main_head(&host.repo), Some(moved));
         assert_eq!(git::main_head(&repo), head);
         assert_eq!(git::deployed(&repo), head);
@@ -1814,7 +1821,10 @@ mod tests {
         sync(&repo, roots(), &remote).unwrap_err();
         // The lease is on `bad`, so a squash onto `head` would pass it and drop `bad` from the host.
         let refused = approve(data_dir(&repo), &remote, "al/more", &Actor::system()).unwrap_err();
-        assert!(refused.contains("not the one this leader runs"), "{refused}");
+        assert!(
+            refused.message().contains("not the one this leader runs"),
+            "{refused:?}"
+        );
         assert_eq!(git::main_head(&host.repo), Some(bad));
         assert_eq!(git::main_head(&repo), head);
     }
@@ -1833,7 +1843,7 @@ mod tests {
             std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let refused = approve(data_dir(&repo), &remote, "al/more", &Actor::system()).unwrap_err();
-        assert!(refused.contains("main is protected"), "{refused}");
+        assert!(refused.message().contains("main is protected"), "{refused:?}");
         assert_eq!(git::main_head(&host.repo), head);
         assert_eq!(git::main_head(&repo), head);
         assert_eq!(git::deployed(&repo), head);
@@ -2092,7 +2102,7 @@ mod tests {
         assert!(
             put_settings(State(state.clone()), None, put(&host.url, Some(TOKEN), 0))
                 .await
-                .ok
+                .succeeded()
         );
         let repo = git::repo_path(&state.data_dir);
         let host_main = git::main_head(&host.repo).unwrap();
@@ -2131,14 +2141,14 @@ mod tests {
         );
 
         let stale_host = overwrite_with(&ours, &host_main).await;
-        assert!(!stale_host.ok);
+        assert!(!stale_host.succeeded());
         assert_eq!(
             state.remote.push_failures()["al/fix"].host_tip.as_deref(),
             Some(theirs.as_str())
         );
         assert_eq!(git::branch_tip(&host.repo, "al/fix"), Some(theirs.clone()));
 
-        assert!(overwrite_with(&ours, &theirs).await.ok);
+        assert!(overwrite_with(&ours, &theirs).await.succeeded());
         assert_eq!(git::branch_tip(&host.repo, "al/fix"), Some(ours));
         assert!(state.remote.push_failures().is_empty());
     }
@@ -2151,7 +2161,7 @@ mod tests {
         assert!(
             put_settings(State(state.clone()), None, put(&host.url, Some(TOKEN), 0))
                 .await
-                .ok
+                .succeeded()
         );
         let body = Json(Overwrite {
             tip: "0".repeat(40),
@@ -2176,12 +2186,12 @@ mod tests {
             put("ssh://git@git.example.com/c.git", Some(TOKEN), 0),
         )
         .await;
-        assert!(!refused.ok && refused.errors[0].message.contains("SSH"));
+        assert!(!refused.succeeded() && refused.errors[0].message.contains("SSH"));
 
         let saved = put_settings(State(state.clone()), None, put(&host.url, Some(TOKEN), 0)).await;
-        let settings = saved.0.settings.as_ref().unwrap();
+        let settings = saved.settings.as_ref().unwrap();
         assert!(settings.token_set && settings.poll_seconds == 0);
-        assert!(!serde_json::to_string(&saved.0).unwrap().contains(TOKEN));
+        assert!(!saved.to_json().to_string().contains(TOKEN));
 
         // The timer is off, so the host's commit is followed on Sync now, and only then.
         let commit = host.commit(&LOADS, "orders");
@@ -2189,7 +2199,7 @@ mod tests {
         assert_ne!(git::main_head(&repo).as_deref(), Some(commit.as_str()));
         let synced = post_sync(State(state.clone())).await;
         assert_eq!(
-            synced.0.body.settings.unwrap().sync.remote_head.as_deref(),
+            synced.body.settings.unwrap().sync.remote_head.as_deref(),
             Some(commit.as_str())
         );
         assert_eq!(git::main_head(&repo).as_deref(), Some(commit.as_str()));
@@ -2197,7 +2207,7 @@ mod tests {
         // A commit that does not load is a warning until a sync succeeds.
         host.commit(&[("groups/standalone/sources.json", b"[{")], "break it");
         assert!(
-            post_sync(State(state.clone())).await.ok,
+            post_sync(State(state.clone())).await.succeeded(),
             "a sync that reached the remote answers"
         );
         let warnings = crate::leader::warnings_snapshot(&state).await.unwrap();
@@ -2210,19 +2220,18 @@ mod tests {
 
         // Mended on the host: the warning clears on the next sync.
         let mended = host.commit(&LOADS, "mend it");
-        let synced = post_sync(State(state.clone())).await.0.body.settings.unwrap().sync;
+        let synced = post_sync(State(state.clone())).await.body.settings.unwrap().sync;
         assert_eq!((synced.remote_head, synced.failure), (Some(mended), None));
 
         // Saving with no token keeps the stored one for the same URL, and forgets it for another.
         assert!(
             put_settings(State(state.clone()), None, put(&host.url, None, 0))
                 .await
-                .ok
+                .succeeded()
         );
         assert!(
             get_settings(State(state.clone()))
                 .await
-                .0
                 .body
                 .settings
                 .unwrap()
@@ -2231,7 +2240,6 @@ mod tests {
         assert!(
             !get_settings(State(state.clone()))
                 .await
-                .0
                 .body
                 .settings
                 .unwrap()
@@ -2241,11 +2249,14 @@ mod tests {
             approve_pushes: true,
             ..put(&host.url, None, 0).0
         };
-        assert!(put_settings(State(state.clone()), None, Json(approving)).await.ok);
+        assert!(
+            put_settings(State(state.clone()), None, Json(approving))
+                .await
+                .succeeded()
+        );
         assert!(
             get_settings(State(state.clone()))
                 .await
-                .0
                 .body
                 .settings
                 .unwrap()
@@ -2255,18 +2266,21 @@ mod tests {
         assert!(
             put_settings(State(state.clone()), None, put(&elsewhere, None, 0))
                 .await
-                .ok
+                .succeeded()
         );
         assert!(
             !get_settings(State(state.clone()))
                 .await
-                .0
                 .body
                 .settings
                 .unwrap()
                 .token_set
         );
-        assert!(put_settings(State(state.clone()), None, put("", None, 0)).await.ok);
+        assert!(
+            put_settings(State(state.clone()), None, put("", None, 0))
+                .await
+                .succeeded()
+        );
         assert_eq!(run_store(state.store.clone(), configured).await.unwrap(), None);
         assert_eq!(state.store.opened_setting(TOKEN_KEY).unwrap(), None);
     }

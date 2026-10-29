@@ -14,6 +14,7 @@
 
 <script lang="ts" generics="R extends { key: string }">
   import Field from './Field.svelte';
+  import RemoveButton from './RemoveButton.svelte';
   import type { Snippet } from 'svelte';
   import { editable } from './access';
 
@@ -72,15 +73,13 @@
           aria-label={keyLabel}
         />
         {@render cells(row)}
-        {#if !readOnly}<button
-            type="button"
-            class="compact"
-            title="remove"
+        {#if !readOnly}<RemoveButton
+            label="remove"
             onclick={() => {
               rows.splice(i, 1);
               onchange();
-            }}>&#10005;</button
-          >{/if}
+            }}
+          />{/if}
       </div>
       {@const refused = refusal(i)}
       {#if refused}

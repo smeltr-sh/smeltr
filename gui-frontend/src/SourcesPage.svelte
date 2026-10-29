@@ -1,6 +1,6 @@
 <!--
-  Sources page: `sources.json`, read through `GET /api/config` and written
-  with `PUT /api/sources`, plus the raw-JSON page.
+  Sources page: `sources.json`, read through `GET /api/areas/:area` and written
+  with `PUT /api/areas/:area/sources`, plus the raw-JSON page.
 -->
 <script lang="ts">
   import Connections from './Connections.svelte';

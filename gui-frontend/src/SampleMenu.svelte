@@ -174,7 +174,7 @@
           autofocus
         />
         <div class="list" role="listbox" aria-label="Sources">
-          {#each foundSources as c (`${c.scope}/${c.id}`)}
+          {#each foundSources as c (`${c.area}/${c.id}`)}
             <button
               type="button"
               class="item"

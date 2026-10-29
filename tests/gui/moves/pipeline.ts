@@ -13,7 +13,7 @@ export const PIPELINE = 'edited';
 /** Pipelines arranged beside it for a Call step to inline. Each can be called once: a second call repeats its
  * step ids, which the leader refuses. */
 export const CALLEES = ['callee-a', 'callee-b'];
-export const ON = '?branch=work&scope=shared';
+export const ON = '?branch=work';
 /** The sample the editor previews on, arranged beside the pipeline: a record for each `_raw` a condition can name. */
 export const SAMPLE = 'rows';
 export const RAWS = ['1', '2', '3'];
@@ -114,7 +114,7 @@ async function control(
 ) {
   const head = card.locator(':scope > .card-head');
   const own = head.locator(
-    `:scope > .controls > button.fold${label === 'Disable' ? '[aria-label$="this step"]' : `[aria-label="${label}"]`}`,
+    `:scope > .controls button${label === 'Disable' ? '.fold[aria-label$="this step"]' : `[aria-label="${label}"]`}`,
   );
   await head.hover({ position: { x: 4, y: 4 } });
   if (await own.isVisible()) {
@@ -460,7 +460,7 @@ export async function savedSteps(api: Api): Promise<StepModel[]> {
         };
     }
   };
-  const res = await api.get(`/api/pipelines/${PIPELINE}${ON}`);
+  const res = await api.get(`/api/areas/shared/pipelines/${PIPELINE}${ON}`);
   return (res.pipeline.steps as Dto[]).map(of);
 }
 
@@ -542,9 +542,7 @@ export async function strayCards(page: Page): Promise<string[]> {
 /** What the Paused chip says, or null where there is none. */
 export async function pauseOnScreen(page: Page): Promise<string | null> {
   const chip = page.getByText(/^◉/);
-  return (await chip.count())
-    ? (await chip.first().textContent())!.replace(/[✕\uFE0E]/g, '').trim()
-    : null;
+  return (await chip.count()) ? (await chip.first().textContent())!.trim() : null;
 }
 
 /** The steps on screen, read from the editor's cards. */

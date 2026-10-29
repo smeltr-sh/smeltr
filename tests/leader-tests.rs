@@ -247,7 +247,7 @@ struct EnrollResult {
 }
 
 fn try_enroll(base: &str, code: &str, worker_id: &str) -> EnrollResult {
-    ureq::post(format!("{base}/api/enroll"))
+    ureq::post(format!("{base}/api/worker/enroll"))
         .send_json(serde_json::json!({ "code": code, "workerId": worker_id }))
         .expect("request succeeds")
         .body_mut()
@@ -262,8 +262,14 @@ fn enroll_worker(base: &str, worker_id: &str) -> String {
     r.token.expect("ok implies a token")
 }
 
+/// An agent that reads the answer at any status: a refusal carries its errors in the body, as a success does.
+fn lenient() -> ureq::Agent {
+    ureq::Agent::config_builder().http_status_as_error(false).build().into()
+}
+
 fn revoke_worker(base: &str, worker_id: &str) -> MutationResult {
-    ureq::post(format!("{base}/api/workers/{worker_id}/revoke"))
+    lenient()
+        .post(format!("{base}/api/workers/{worker_id}/revoke"))
         .send_json(serde_json::json!({}))
         .expect("request succeeds")
         .body_mut()
@@ -276,7 +282,7 @@ fn revoke_worker(base: &str, worker_id: &str) -> MutationResult {
 /// find; `worker_id` is a parameter because the leader now checks it against
 /// the token.
 fn heartbeat_status(base: &str, token: &str, worker_id: &str) -> u16 {
-    match ureq::post(format!("{base}/api/heartbeat"))
+    match ureq::post(format!("{base}/api/worker/heartbeat"))
         .header("Authorization", &format!("Bearer {token}"))
         .send_json(serde_json::json!({
             "workerId": worker_id,
@@ -420,7 +426,7 @@ fn a_worker_trusting_the_authority_reaches_the_leader_it_signed_for() {
 
     let code = mint_code_with(&agent, &base, serde_json::json!({}));
     let enrolled: EnrollResult = agent
-        .post(format!("{base}/api/enroll"))
+        .post(format!("{base}/api/worker/enroll"))
         .send_json(serde_json::json!({ "code": code, "workerId": "w1" }))
         .expect("enroll request succeeds over the authority's TLS")
         .body_mut()
@@ -513,7 +519,7 @@ fn a_capture_report_over_tls_trusts_the_same_pinned_cert() {
     let agent = ureq::Agent::new_with_config(ureq::Agent::config_builder().tls_config(tls_config).build());
     let code = mint_code_with(&agent, &base, serde_json::json!({}));
     let enrolled: EnrollResult = agent
-        .post(format!("{base}/api/enroll"))
+        .post(format!("{base}/api/worker/enroll"))
         .send_json(serde_json::json!({ "code": code, "workerId": "w1" }))
         .expect("enroll request succeeds over pinned TLS")
         .body_mut()
@@ -661,7 +667,7 @@ fn clone_and_read_deployed(base: &str, token: &str, dest: &std::path::Path) -> S
             &build_header(),
             "clone",
             "--quiet",
-            &format!("{base}/repo"),
+            &format!("{base}/api/worker/repo"),
             dest.to_str().unwrap(),
         ])
         .status()
@@ -793,7 +799,7 @@ fn a_capture_report_larger_than_a_framework_default_body_is_accepted() {
         sql: None,
         avro: Vec::new(),
     };
-    let status = ureq::post(format!("{base}/api/capture-report"))
+    let status = ureq::post(format!("{base}/api/worker/capture-report"))
         .header("Authorization", &format!("Bearer {token}"))
         .send_json(&report)
         .map(|r| r.status().as_u16())
@@ -862,7 +868,7 @@ fn a_beat_the_store_will_not_take_is_refused_and_counted_once_when_it_comes_agai
 #[test]
 fn heartbeat_without_a_token_is_rejected() {
     let base = start_leader();
-    let status = ureq::post(format!("{base}/api/heartbeat"))
+    let status = ureq::post(format!("{base}/api/worker/heartbeat"))
         .send_json(serde_json::json!({ "workerId": "w1", "threads": [] }))
         .unwrap_err();
     assert!(matches!(status, ureq::Error::StatusCode(401)));
@@ -871,7 +877,7 @@ fn heartbeat_without_a_token_is_rejected() {
 #[test]
 fn heartbeat_with_a_garbage_token_is_rejected() {
     let base = start_leader();
-    let status = ureq::post(format!("{base}/api/heartbeat"))
+    let status = ureq::post(format!("{base}/api/worker/heartbeat"))
         .header("Authorization", "Bearer not-a-real-token")
         .send_json(serde_json::json!({ "workerId": "w1", "threads": [] }))
         .unwrap_err();
@@ -924,7 +930,8 @@ fn enrolling_an_existing_worker_id_is_refused_and_the_original_keeps_its_token()
 
 /// What `POST /api/enrollment-codes` answers `body` with.
 fn mint_answer(base: &str, body: serde_json::Value) -> serde_json::Value {
-    ureq::post(format!("{base}/api/enrollment-codes"))
+    lenient()
+        .post(format!("{base}/api/enrollment-codes"))
         .send_json(body)
         .expect("request succeeds")
         .body_mut()
@@ -950,19 +957,14 @@ fn an_ephemeral_enrollment_code_has_no_cap_and_no_expiry() {
     for n in 0..60 {
         assert!(try_enroll(&base, code, &format!("pod-{n}")).ok, "pod-{n}");
     }
-    let workers: Vec<smeltr::leader::WorkerOut> = ureq::get(format!("{base}/api/workers"))
-        .call()
-        .unwrap()
-        .body_mut()
-        .read_json()
-        .unwrap();
+    let workers = roster(&base);
     assert_eq!(workers.len(), 60);
     assert!(workers.iter().all(|w| w.kind == "ephemeral"));
 }
 
 /// A heartbeat from `worker_id`, saying it is stopping or not, answered with its status.
 fn beat_status(base: &str, token: &str, worker_id: &str, stopping: bool) -> u16 {
-    match ureq::post(format!("{base}/api/heartbeat"))
+    match ureq::post(format!("{base}/api/worker/heartbeat"))
         .header("Authorization", &format!("Bearer {token}"))
         .send_json(serde_json::json!({
             "workerId": worker_id,
@@ -976,12 +978,13 @@ fn beat_status(base: &str, token: &str, worker_id: &str, stopping: bool) -> u16 
 }
 
 fn roster(base: &str) -> Vec<smeltr::leader::WorkerOut> {
-    ureq::get(format!("{base}/api/workers"))
+    let mut listed: serde_json::Value = ureq::get(format!("{base}/api/workers"))
         .call()
         .unwrap()
         .body_mut()
         .read_json()
-        .unwrap()
+        .unwrap();
+    serde_json::from_value(listed["workers"].take()).expect("the workers are listed")
 }
 
 fn health_threads(base: &str) -> Vec<serde_json::Value> {
@@ -1044,7 +1047,8 @@ fn how_long_an_ephemeral_worker_may_be_silent_is_a_setting_with_bounds() {
             .unwrap()
     };
     let put = |seconds: u64| -> serde_json::Value {
-        ureq::put(format!("{base}/api/settings/workers"))
+        lenient()
+            .put(format!("{base}/api/settings/workers"))
             .send_json(serde_json::json!({ "ephemeralForgetAfterSeconds": seconds }))
             .unwrap()
             .body_mut()
@@ -1144,12 +1148,7 @@ fn a_revoked_worker_id_cannot_re_enroll() {
     assert!(again.token.is_none());
     assert_eq!(heartbeat_status(&base, &token, "w1"), 403);
 
-    let workers: Vec<smeltr::leader::WorkerOut> = ureq::get(format!("{base}/api/workers"))
-        .call()
-        .unwrap()
-        .body_mut()
-        .read_json()
-        .unwrap();
+    let workers = roster(&base);
     assert_eq!(workers.len(), 1);
     assert!(workers[0].revoked);
 }
@@ -1159,12 +1158,7 @@ fn list_workers_shows_a_worker_that_enrolled_but_never_heartbeated() {
     let base = start_leader();
     enroll_worker(&base, "w1");
 
-    let workers: Vec<smeltr::leader::WorkerOut> = ureq::get(format!("{base}/api/workers"))
-        .call()
-        .expect("request succeeds")
-        .body_mut()
-        .read_json()
-        .expect("valid JSON response");
+    let workers = roster(&base);
     assert_eq!(workers.len(), 1);
     assert_eq!(workers[0].worker_id, "w1");
     assert!(!workers[0].revoked);
@@ -1203,7 +1197,7 @@ fn committing_one_group_leaves_another_groups_subtree_alone() {
             &build_header(),
             "clone",
             "--quiet",
-            &format!("{base}/repo"),
+            &format!("{base}/api/worker/repo"),
             dest.to_str().unwrap(),
         ])
         .status()
@@ -1223,7 +1217,12 @@ fn a_git_clone_without_a_token_is_rejected() {
 
     let dest = scratch_dir("smeltr-leader-test-clone-unauth");
     let status = git_without_prompting()
-        .args(["clone", "--quiet", &format!("{base}/repo"), dest.to_str().unwrap()])
+        .args([
+            "clone",
+            "--quiet",
+            &format!("{base}/api/worker/repo"),
+            dest.to_str().unwrap(),
+        ])
         .status()
         .expect("git clone runs");
     assert!(!status.success(), "an unauthenticated clone must fail");

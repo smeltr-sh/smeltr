@@ -569,7 +569,7 @@ pub struct SourceProgress {
 }
 
 /// A single-worker source the leader holds for this worker, and where it resumes. The ledger is fetched on its
-/// own (`/api/ledger`), since it can be far larger than a heartbeat.
+/// own (`/api/worker/ledger`), since it can be far larger than a heartbeat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Hold {
@@ -1434,13 +1434,13 @@ mod client {
                 .map_err(|e| HeartbeatError::other(format!("the leader's certificate authority: {e}")))?;
             let base = leader_url.as_ref().trim_end_matches('/');
             Ok(HeartbeatClient {
-                heartbeat_url: format!("{base}/api/heartbeat"),
-                capture_url: format!("{base}/api/capture-report"),
+                heartbeat_url: format!("{base}/api/worker/heartbeat"),
+                capture_url: format!("{base}/api/worker/capture-report"),
                 token: token.into(),
                 agent: agent_with(tls_config.clone(), REQUEST_BUDGET),
                 capture_agent: agent_with(tls_config.clone(), CAPTURE_BUDGET),
-                lookup_url: format!("{base}/api/lookup-store"),
-                ledger_url: format!("{base}/api/ledger"),
+                lookup_url: format!("{base}/api/worker/lookup-store"),
+                ledger_url: format!("{base}/api/worker/ledger"),
                 lookup_agent: agent_with(tls_config, LOOKUP_FILE_BUDGET),
             })
         }

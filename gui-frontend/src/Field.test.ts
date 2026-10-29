@@ -15,7 +15,9 @@ async function signInAs(areas: Record<string, string>) {
     vi.fn(async (url: string) =>
       // The certificate picker asks for the list; everything else here is the session.
       String(url).includes('/api/certificates')
-        ? new Response('[]', { headers: { 'content-type': 'application/json' } })
+        ? new Response('{"ok":true,"errors":[],"certificates":[]}', {
+            headers: { 'content-type': 'application/json' },
+          })
         : new Response(
             JSON.stringify({
               authenticated: true,

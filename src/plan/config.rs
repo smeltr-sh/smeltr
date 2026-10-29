@@ -478,7 +478,7 @@ fn commit_pointer(
 ) -> Result<crate::lookup::store::Pointer, crate::lookup::LookupError> {
     let failed = |e: String| crate::lookup::LookupError(format!("couldn't read lookup file `{named}`: {e}"));
     let blob = crate::leader::git::read_blobs(repo, commit, &[path.to_string()])
-        .map_err(|e| failed(e.0))?
+        .map_err(|e| failed(e.message))?
         .pop()
         .flatten()
         .ok_or_else(|| crate::lookup::LookupError(format!("lookup file `{named}` is not in commit {commit}")))?;

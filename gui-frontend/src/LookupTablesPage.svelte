@@ -1,6 +1,6 @@
 <!--
-  Lookup tables page: `lookup-tables.json`, read through `GET /api/config`
-  and written with `PUT /api/lookup-tables`, plus the raw-JSON page. A
+  Lookup tables page: `lookup-tables.json`, read through `GET /api/areas/:area`
+  and written with `PUT /api/areas/:area/lookups`, plus the raw-JSON page. A
   table is a CSV or MMDB upload, or a small table authored by hand, shared
   by id across every `lookup` step. Every table sits in the list; the one
   chosen opens beside it.

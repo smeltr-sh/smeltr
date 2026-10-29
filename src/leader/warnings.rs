@@ -231,10 +231,10 @@ pub struct Warning {
     /// so condition and subject alone do not name one warning; with this they do. `None` on every other condition.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub site: Option<String>,
-    /// The scope whose bundle declares the subject: `shared`, or the group. Set only on a pipeline, which the page
+    /// The area whose bundle declares the subject: `shared`, or the group. Set only on a pipeline, which the page
     /// links to its editor, and only where the deployed commit says.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
+    pub area: Option<String>,
 }
 
 impl Warning {
@@ -384,7 +384,7 @@ fn authority_expiring(snapshot: &[ThreadHealth], credentials: &[WorkerCredential
         .map(|(worker_id, (expires, group))| {
             let expired = expires <= now_ms;
             Warning {
-                scope: None,
+                area: None,
                 condition: Condition::AuthorityExpiring,
                 subject_kind: SubjectKind::Worker,
                 site: None,
@@ -534,7 +534,7 @@ fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Vec<Wa
             };
             let id = &certificate.subject_id;
             Some(Warning {
-                scope: None,
+                area: None,
                 condition: Condition::CertificateExpiring,
                 subject_kind: certificate.subject_kind,
                 site: None,
@@ -622,7 +622,7 @@ fn authority_aging(signing: Option<&crate::leader::tls::Described>, rotating: &R
     let expired = remaining <= 0;
     let days = remaining / (24 * 60 * 60 * 1000);
     vec![Warning {
-        scope: None,
+        area: None,
         condition: Condition::AuthorityAging,
         subject_kind: SubjectKind::Leader,
         site: None,
@@ -735,7 +735,7 @@ pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
         }
     };
     vec![Warning {
-        scope: None,
+        area: None,
         condition,
         subject_kind: SubjectKind::Leader,
         site: None,
@@ -786,7 +786,7 @@ fn enrollment_code_names_outgoing_authority(
         .iter()
         .filter(|code| presenting.standing_of(&code.fingerprint) == Standing::UntilCutover)
         .map(|code| Warning {
-            scope: None,
+            area: None,
             condition: Condition::EnrollmentCodeNamesOutgoingAuthority,
             subject_kind: SubjectKind::EnrollmentCode,
             site: None,
@@ -1255,7 +1255,7 @@ fn workers_on_another_build(
             )
         })
         .map(|(worker_id, t)| Warning {
-            scope: None,
+            area: None,
             condition: Condition::WorkerOnAnotherBuild,
             subject_kind: SubjectKind::Worker,
             site: None,
@@ -1293,7 +1293,7 @@ fn workers_on_another_release(
             let release = t.release.as_deref().filter(|r| *r != leader_release)?;
             let commit = crate::version::commit_of(&t.smeltr_version);
             crate::version::compatible(leader_commit, Some(leader_release), commit, Some(release)).then(|| Warning {
-                scope: None,
+                area: None,
                 condition: Condition::WorkerOnAnotherRelease,
                 subject_kind: SubjectKind::Worker,
                 site: None,
@@ -1327,7 +1327,7 @@ fn workers_memory_high(snapshot: &[ThreadHealth], heartbeat_interval: Duration) 
             let used = resources.memory_used_bytes;
             // Widened, so a limit near u64::MAX cannot overflow the comparison.
             (u128::from(used) * 100 >= u128::from(limit) * u128::from(MEMORY_HIGH_PERCENT)).then(|| Warning {
-                scope: None,
+                area: None,
                 condition: Condition::WorkerMemoryHigh,
                 subject_kind: SubjectKind::Worker,
                 site: None,
@@ -1398,7 +1398,7 @@ fn worker_silent(
             !revoked.contains(worker_id) && !stopped.contains(worker_id) && *ago as i64 > stale_after
         })
         .map(|(worker_id, ago)| Warning {
-            scope: None,
+            area: None,
             condition: Condition::WorkerSilent,
             subject_kind: SubjectKind::Worker,
             site: None,
@@ -1425,7 +1425,7 @@ fn enrolled_never_heartbeating(snapshot: &[ThreadHealth], credentials: &[WorkerC
         .iter()
         .filter(|c| !c.revoked && !known.contains(c.worker_id.as_str()))
         .map(|c| Warning {
-            scope: None,
+            area: None,
             condition: Condition::WorkerNeverHeartbeated,
             subject_kind: SubjectKind::Worker,
             site: None,
@@ -1459,7 +1459,7 @@ fn source_blocked(snapshot: &[ThreadHealth], starts: &HashMap<FactKey, i64>) -> 
             let reporting = blocked.len();
             let running = workers_running(snapshot, &group, "source", &source_id).len();
             Warning {
-                scope: None,
+                area: None,
                 condition,
                 subject_kind: SubjectKind::Source,
                 site: None,
@@ -1501,7 +1501,7 @@ fn source_unreachable(snapshot: &[ThreadHealth], starts: &HashMap<FactKey, i64>)
             let reporting = workers_reporting(snapshot, &group, SOURCE_CONNECTION_ERROR, "source", &source_id).len();
             let running = workers_running(snapshot, &group, "source", &source_id).len();
             Warning {
-                scope: None,
+                area: None,
                 condition: Condition::SourceUnreachable,
                 subject_kind: SubjectKind::Source,
                 site: None,
@@ -1570,7 +1570,7 @@ fn destination_refusing(
             let reporting = workers_refusing(snapshot, &group, &dest_id, now_ms, stale_after).len();
             let running = workers_running(snapshot, &group, "destination", &dest_id).len();
             Warning {
-                scope: None,
+                area: None,
                 condition: Condition::DestinationRefusing,
                 subject_kind: SubjectKind::Destination,
                 site: None,
@@ -1673,7 +1673,7 @@ fn destination_unreachable(
             let reporting = workers_destination_unhealthy(snapshot, &group, &dest_id, stale_after).len();
             let running = workers_running_destination(snapshot, &group, &dest_id, stale_after).len();
             Warning {
-                scope: None,
+                area: None,
                 condition: Condition::DestinationUnreachable,
                 subject_kind: SubjectKind::Destination,
                 site: None,
@@ -1710,7 +1710,7 @@ fn group_not_deployed(
             let since_millis = starts
                 .get(&FactKey::new(GROUP_NOT_DEPLOYED, worker_id.clone()))
                 .copied();
-            Warning { scope: None,
+            Warning { area: None,
                 condition: Condition::GroupNotDeployed,
                 subject_kind: SubjectKind::Worker,
                 site: None,
@@ -1798,7 +1798,7 @@ fn destinations_memory_bound(store: Option<&RegistryStore>, now_ms: i64) -> Vec<
                 return None;
             }
             Some(Warning {
-                scope: None,
+                area: None,
                 condition: Condition::DestinationMemoryBound,
                 subject_kind: SubjectKind::Destination,
                 site: None,
@@ -1943,7 +1943,7 @@ pub fn outside_normal_warnings(
                 throughput::Outside::Above => Condition::SourceRowsAbove,
             };
             Warning {
-                scope: None,
+                area: None,
                 condition,
                 subject_kind: SubjectKind::Source,
                 site: None,
@@ -2114,7 +2114,7 @@ fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
             continue; // climbing, but by less than a minute of what this source reads
         }
         out.push(Warning {
-            scope: None,
+            area: None,
             condition: Condition::LagClimbing,
             subject_kind: SubjectKind::Source,
             site: None,
@@ -2286,7 +2286,7 @@ fn worker_logged_warnings(logged: &[Logged]) -> Vec<Warning> {
             let what = if row.level == "error" { "an error" } else { "a warning" };
             let fields = crate::logs::render_fields(l.fields.iter().map(|(k, v)| (k.as_str(), v.clone())));
             Warning {
-                scope: None,
+                area: None,
                 condition: Condition::WorkerLoggedWarnings,
                 subject_kind: SubjectKind::Worker,
                 subject_id: row.worker_id.clone(),
@@ -2390,7 +2390,7 @@ fn worker_not_deploying_its_target(
                 return None;
             }
             Some(Warning {
-                scope: None,
+                area: None,
                 condition: Condition::WorkerNotDeployingItsTarget,
                 subject_kind: SubjectKind::Worker,
                 site: None,
@@ -2495,7 +2495,7 @@ pub fn derive(
 fn deploy_held(held: &crate::leader::git::Hold) -> Warning {
     let short = super::git::short;
     Warning {
-        scope: None,
+        area: None,
         condition: Condition::DeployHeld,
         subject_kind: SubjectKind::Leader,
         site: None,
@@ -2519,7 +2519,7 @@ fn deploy_held(held: &crate::leader::git::Hold) -> Warning {
 /// commit the fleet does not run is one a person merged on the host and expects to be running.
 fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning {
     Warning {
-        scope: None,
+        area: None,
         condition: Condition::RemoteNotFollowed,
         subject_kind: SubjectKind::Leader,
         site: None,
@@ -2534,7 +2534,7 @@ fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning {
 /// A published release newer than this leader's own (`leader::updates`). Info: running an older release is no fault.
 fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
     Warning {
-        scope: None,
+        area: None,
         condition: Condition::NewerRelease,
         subject_kind: SubjectKind::Leader,
         site: None,
@@ -2598,7 +2598,7 @@ pub fn issued_certificates_not_renewed(issued: &[IssuedChain], signing: &str, no
             format!("expires in {} days", remaining / (24 * 60 * 60 * 1000))
         };
         out.push(Warning {
-            scope: None,
+            area: None,
             condition: Condition::IssuedCertificateNotRenewed,
             subject_kind: SubjectKind::Certificate,
             site: None,
@@ -2644,7 +2644,7 @@ pub fn encryption_key_warnings(
     starts: &HashMap<FactKey, i64>,
 ) -> Vec<Warning> {
     let leader = |condition, subject_id: String, severity, message| Warning {
-        scope: None,
+        area: None,
         condition,
         subject_kind: SubjectKind::Leader,
         site: None,
@@ -2742,7 +2742,7 @@ fn deploy_does_not_load(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Ve
         .not_loading
         .iter()
         .map(|n| Warning {
-            scope: None,
+            area: None,
             condition: Condition::DeployDoesNotLoad,
             subject_kind: SubjectKind::Group,
             site: None,
@@ -2826,7 +2826,7 @@ fn declared_fields_drifted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Wa
             let many = named.len() > 1;
             let named = named.join(", ");
             Warning {
-                scope: None,
+                area: None,
                 condition: if gone {
                     Condition::DeclaredFieldGone
                 } else {
@@ -2872,7 +2872,7 @@ fn streams_unrouted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> 
     sources
         .into_iter()
         .map(|s| Warning {
-            scope: None,
+            area: None,
             condition: Condition::StreamUnrouted,
             subject_kind: SubjectKind::Source,
             site: None,
@@ -2930,7 +2930,7 @@ fn deploy_fails_tests(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Vec<
             };
             let each: Vec<String> = tests.iter().map(|t| format!("{:?}: {}", t.name, t.why)).collect();
             Warning {
-                scope: None,
+                area: None,
                 condition: Condition::DeployFailsTests,
                 subject_kind,
                 site: None,
@@ -4829,7 +4829,7 @@ mod tests {
     /// A catalog warning as its own function would raise it, for [`fold_logged_details`] to tell a log on.
     fn catalog(condition: Condition, subject_kind: SubjectKind, subject_id: &str, group: &str) -> Warning {
         Warning {
-            scope: None,
+            area: None,
             condition,
             subject_kind,
             subject_id: subject_id.to_string(),
@@ -6637,7 +6637,7 @@ mod tests {
     #[test]
     fn a_warning_serializes_to_the_wire_spelling() {
         let w = Warning {
-            scope: None,
+            area: None,
             condition: Condition::SourceBlocked,
             subject_kind: SubjectKind::Source,
             site: None,

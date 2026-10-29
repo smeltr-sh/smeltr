@@ -668,7 +668,7 @@ mod tests {
     #[test]
     fn warnings_attach_to_their_node() {
         let warning = |condition, subject_kind, id: &str| Warning {
-            scope: None,
+            area: None,
             condition,
             subject_kind,
             site: None,
@@ -713,7 +713,7 @@ mod tests {
     #[test]
     fn a_viewer_reads_only_their_groups() {
         let warning = |group: &str| Warning {
-            scope: None,
+            area: None,
             condition: Condition::WorkerSilent,
             subject_kind: SubjectKind::Worker,
             site: None,
@@ -770,7 +770,7 @@ mod tests {
         ]
         .into();
         let warnings = [Warning {
-            scope: None,
+            area: None,
             condition: Condition::SourceBlocked,
             subject_kind: SubjectKind::Source,
             site: None,

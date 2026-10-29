@@ -553,7 +553,8 @@ pub struct RegistryStore {
     /// Every method here answers a `Result`, and this lock is the only way any of them could panic instead; a
     /// caller already has the error path. A panic under the lock is reported where it happened, and poisoning is
     /// only its aftermath: refusing to work afterward would turn one bug into a leader that has permanently
-    /// stopped answering `/api/health`, `/api/warnings`, `/api/flow` and `/api/stats`, none of which it touched.
+    /// stopped answering `/api/health`, `/api/warnings`, `/api/flow` and `/api/areas/:area/stats`, none of which it
+    /// touched.
     /// Recovery is sound because a `Transaction` rolls back as it drops, so what comes back is consistent.
     conn: Mutex<Connection>,
     /// When [`RegistryStore::maybe_maintain`] should next actually run `maintain` -- epoch milliseconds. Rollup and
@@ -640,7 +641,7 @@ fn set_aside(path: &Path) -> Result<std::path::PathBuf, StoreError> {
         match std::fs::rename(&from, &to) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !sidecar.is_empty() => {}
-            Err(e) => return Err(StoreError(format!("setting aside {}: {e}", from.display()))),
+            Err(e) => return Err(StoreError::failed(format!("setting aside {}: {e}", from.display()))),
         }
     }
     Ok(kept)
@@ -671,7 +672,7 @@ impl RegistryStore {
         // `auto_vacuum` first: it is fixed once page 1 is written, and the switch to WAL writes it. Asked for
         // after the switch, it is refused without a word and `incremental_vacuum` reclaims nothing.
         conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-        super::steps::upgrade_sqlite(&mut conn, "registry.db", STEPS).map_err(StoreError)?;
+        super::steps::upgrade_sqlite(&mut conn, "registry.db", STEPS).map_err(StoreError::failed)?;
         Ok(RegistryStore {
             conn: Mutex::new(conn),
             next_maintenance_due_ms: AtomicI64::new(0),

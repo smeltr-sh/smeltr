@@ -1,6 +1,6 @@
 <!--
-  Routes page: `routes.json`, read through `GET /api/config` and written
-  with `PUT /api/routes`, plus the raw-JSON page. Routes are unordered: each
+  Routes page: `routes.json`, read through `GET /api/areas/:area` and written
+  with `PUT /api/areas/:area/routes`, plus the raw-JSON page. Routes are unordered: each
   sees every row of its source (`plan::topology::route_masks`), so a row two
   routes match runs both.
 
@@ -53,6 +53,7 @@
     type ExceptionsDto,
   } from './exceptions';
   import Help from './Help.svelte';
+  import RemoveButton from './RemoveButton.svelte';
   import {
     sharedConfig,
     currentScope,
@@ -603,13 +604,7 @@
                   .length}
               />
               {#if !readOnly}
-                <button
-                  type="button"
-                  class="compact"
-                  aria-label="Remove"
-                  title="Remove"
-                  onclick={() => removeCard(card)}>&#10005;</button
-                >
+                <RemoveButton label="Remove" onclick={() => removeCard(card)} />
               {/if}
             {/snippet}
             <RouteFlow

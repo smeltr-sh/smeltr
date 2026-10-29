@@ -438,14 +438,16 @@ fn a_worker_that_says_it_is_stopping_is_not_reported_silent() {
 
         // Past what this leader counts as silent: three of its own heartbeat intervals, at the default.
         std::thread::sleep(Duration::from_secs(6));
-        let warnings: Vec<serde_json::Value> = agent
+        let listed: serde_json::Value = agent
             .get(format!("{base}/api/warnings"))
             .call()
             .map_err(|e| e.to_string())?
             .body_mut()
             .read_json()
             .map_err(|e| e.to_string())?;
-        let silent: Vec<&str> = warnings
+        let silent: Vec<&str> = listed["warnings"]
+            .as_array()
+            .ok_or("the warnings are listed")?
             .iter()
             .filter(|w| w["condition"] == "workerSilent")
             .filter_map(|w| w["subjectId"].as_str())
@@ -495,14 +497,16 @@ fn a_forgotten_ephemeral_worker_enrolls_again_as_a_new_one() {
     let state = temp_dir("pod-state");
     let id = || std::fs::read_to_string(state.join("worker_id")).ok();
     let roster = || -> Vec<String> {
-        let workers: Vec<serde_json::Value> = agent
+        let listed: serde_json::Value = agent
             .get(format!("{base}/api/workers"))
             .call()
             .unwrap()
             .body_mut()
             .read_json()
             .unwrap();
-        workers
+        listed["workers"]
+            .as_array()
+            .expect("the workers are listed")
             .iter()
             .map(|w| w["workerId"].as_str().unwrap().to_string())
             .collect()
@@ -594,13 +598,15 @@ fn an_enrollment_code_naming_an_undeployed_group_is_refused() {
     let _alone = alone();
     let (base, ca_pem) = start_leader_tls();
     let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
-    let response: serde_json::Value = agent
+    let mut response = agent
         .post(format!("{base}/api/enrollment-codes"))
+        .config()
+        .http_status_as_error(false)
+        .build()
         .send_json(serde_json::json!({ "groupId": "west" }))
-        .expect("ask to mint an enrollment code")
-        .body_mut()
-        .read_json()
-        .unwrap();
+        .expect("ask to mint an enrollment code");
+    assert_eq!(response.status(), 422);
+    let response: serde_json::Value = response.body_mut().read_json().unwrap();
     assert_eq!(response["ok"], false, "{response}");
     assert!(
         response["errors"][0]["message"]
@@ -877,7 +883,7 @@ fn the_authority_is_served_to_a_caller_with_no_credential() {
     let (base, ca_pem) = start_leader_tls();
     let agent = smeltr::heartbeat::agent_trusting(Some(&ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let served = agent
-        .get(format!("{base}/api/authority"))
+        .get(format!("{base}/api/worker/authority"))
         .call()
         .expect("no credential needed")
         .body_mut()
@@ -901,7 +907,7 @@ fn the_authority_is_withheld_while_the_socket_has_not_taken_what_is_on_disk() {
         &["localhost".to_string(), "127.0.0.1".to_string()],
     );
     let refused = agent
-        .get(format!("{base}/api/authority"))
+        .get(format!("{base}/api/worker/authority"))
         .call()
         .expect_err("a file that vouches for nothing this leader presents");
     // Put back before asserting: these are two numbers for the whole process, shared with every test here.
@@ -909,7 +915,7 @@ fn the_authority_is_withheld_while_the_socket_has_not_taken_what_is_on_disk() {
     assert!(matches!(refused, ureq::Error::StatusCode(503)), "{refused}");
 
     agent
-        .get(format!("{base}/api/authority"))
+        .get(format!("{base}/api/worker/authority"))
         .call()
         .expect("served again once the two agree");
 }
@@ -953,7 +959,7 @@ fn an_enrollment_code_says_it_names_an_authority_that_was_replaced_under_it() {
     // Refused at the point of use, not only described on a page. Spent, it would buy a credential for a leader
     // this worker pins a retired root for: an enrollment that reports success and a worker that never beats.
     let answered: serde_json::Value = agent
-        .post(format!("{base}/api/enroll"))
+        .post(format!("{base}/api/worker/enroll"))
         .send_json(serde_json::json!({ "code": pinned["value"], "workerId": "w-after-the-replacement" }))
         .expect("the enrollment was answered")
         .body_mut()
@@ -1071,7 +1077,7 @@ fn an_enrollment_code_naming_the_platforms_roots_puts_aside_a_kept_private_autho
 }
 
 /// A rotation is the leader promising its fleet a new root before signing under it, and the promise travels on the
-/// heartbeat. While the socket serves a certificate the disk does not describe, `/api/authority` is withheld and no
+/// heartbeat. While the socket serves a certificate the disk does not describe, `/api/worker/authority` is withheld and no
 /// worker can be handed anything -- so a deadline reached in that state would sign under a root the fleet has never
 /// been offered, stranding every worker at once. Neither end of a rotation runs there.
 #[test]

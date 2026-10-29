@@ -380,7 +380,7 @@
   function anchorOf(c: SectionChange, step?: string): CommentAnchor {
     const anchor: CommentAnchor = {
       kind: 'object',
-      scope: c.scope,
+      area: c.scope,
       section: c.section,
       objectId: c.id,
     };
