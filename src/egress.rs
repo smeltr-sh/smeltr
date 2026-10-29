@@ -770,10 +770,10 @@ fn run(
                     if let Some(undelivered) = c.undelivered.filter(|u| !u.rows.is_empty()) {
                         note_stall(metrics, id, name, &undelivered.error, &mut stalled);
                         failures = true;
-                        if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
-                            p.abandoned(paced);
-                        }
                         let rest = remainder(queue, metrics, id, owed.unit, owed.rejections, &undelivered.rows);
+                        if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
+                            p.abandoned(paced, paced.bytes.saturating_sub(rest.bytes));
+                        }
                         again.push(failed(rest));
                         continue;
                     }
@@ -1015,7 +1015,7 @@ fn failing(owner: &HashMap<BatchId, Owed>, again: &[(Instant, Unit)]) -> bool {
 fn take_back_all(owner: &mut HashMap<BatchId, Owed>, again: &mut Vec<(Instant, Unit)>, pacer: &mut Option<Pacer>) {
     for (_, o) in owner.drain() {
         if let (Some(p), Some(paced)) = (pacer.as_mut(), o.paced) {
-            p.abandoned(paced);
+            p.abandoned(paced, 0);
         }
         again.push(failed(o.unit));
     }
