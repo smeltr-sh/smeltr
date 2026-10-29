@@ -844,13 +844,13 @@
 
   .banner {
     margin: 0;
-    padding: 0.5rem 0.75rem;
-    border-radius: var(--radius);
-    font-size: var(--text-label);
   }
 
   .banner:not(.callout) {
+    padding: 0.5rem 0.75rem;
     border-left: 3px solid var(--border);
+    border-radius: var(--radius);
+    font-size: var(--text-label);
     background: var(--field);
   }
 

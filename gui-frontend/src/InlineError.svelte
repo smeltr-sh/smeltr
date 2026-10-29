@@ -35,12 +35,6 @@
     margin: 0;
   }
 
-  .callout {
-    padding: 0.5rem 0.75rem;
-    border-radius: var(--radius);
-    font-size: var(--text-label);
-  }
-
   /* A link in an error is part of what it says. */
   .error :global(a) {
     color: inherit;
