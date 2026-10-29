@@ -46,8 +46,6 @@ struct Owed {
 
 /// One reader's batch, as far as one destination is concerned. Owned rows: they cross a thread boundary.
 struct Unit {
-    /// Acceptance order across every reader; a re-send keeps it.
-    seq: u64,
     reader: ReaderId,
     batch: BatchId,
     rows: Vec<OwnedRecord>,
@@ -58,6 +56,9 @@ struct Unit {
     /// Refusals of the batch's other rows, which are not sent again, reported with the batch once it completes: the
     /// ones a held unit's transport kept no document for, and the ones answered before part of the batch failed.
     carried: Vec<Rejection>,
+    /// Set once the unit failed to land: the wait before this attempt, doubling up to [`RETRY_MAX`]. The destination
+    /// is not recovered while any unit has one.
+    retry: Option<Duration>,
 }
 
 /// What is known of a batch whose refusals are being sent again.
@@ -94,7 +95,6 @@ struct QueueState {
     /// Borrowed besides, for the senders the destination spawned past those it started with
     /// ([`Egress::charging_senders`]). Held while the destination lives: a spawned sender is kept.
     senders: usize,
-    next_seq: u64,
     closed: bool,
 }
 
@@ -388,9 +388,6 @@ impl Queue {
             st.borrowed = borrowed;
         }
         st.bytes += unit.bytes;
-        let mut unit = unit;
-        unit.seq = st.next_seq;
-        st.next_seq += 1;
         st.units.push_back(unit);
         drop(st);
         self.work.notify_one();
@@ -638,10 +635,8 @@ fn run(
     // The destination's own batch ids, mapped back to the reader's.
     let mut owner: HashMap<BatchId, Owed> = HashMap::new();
     let mut next_local: BatchId = 0;
-    // Units to send again, oldest first.
-    let mut redo: VecDeque<Unit> = VecDeque::new();
-    // Refused rows kept to send again, each with when.
-    let mut waiting: Vec<(Instant, Unit)> = Vec::new();
+    // Units to send again, each with when: ones that failed to land, and refused rows kept.
+    let mut again: Vec<(Instant, Unit)> = Vec::new();
     let mut backoff = RETRY_MIN;
     // When the stall was last logged; `None` while the destination is healthy.
     let mut stalled: Option<Instant> = None;
@@ -680,21 +675,18 @@ fn run(
         // At the top, so the passes that `continue` on a delivery failure report it too. Those are the passes a full
         // queue is most worth seeing.
         note_queue(metrics, id, queue, &mut held_reported, &mut held_reported_at);
-        // A re-send before anything new: it is older.
+        // A re-send that is due before anything new: it is older.
         let now = Instant::now();
         let mut pressing = true;
-        let next = match redo.pop_front() {
-            Some(u) => Some(u),
-            None => match waiting.iter().position(|(at, _)| *at <= now) {
-                Some(i) => Some(waiting.swap_remove(i).1),
-                None => match queue.pop(POLL_INTERVAL) {
-                    Popped::Closed => break,
-                    Popped::Idle => None,
-                    Popped::Work(u, pressed) => {
-                        pressing = pressed;
-                        Some(u)
-                    }
-                },
+        let next = match again.iter().position(|(at, _)| *at <= now) {
+            Some(i) => Some(again.swap_remove(i).1),
+            None => match queue.pop(POLL_INTERVAL) {
+                Popped::Closed => break,
+                Popped::Idle => None,
+                Popped::Work(u, pressed) => {
+                    pressing = pressed;
+                    Some(u)
+                }
             },
         };
 
@@ -717,18 +709,23 @@ fn run(
                     note_stall(metrics, id, name, &e, &mut stalled);
                     cut_off = false;
                     // This unit alone: the ones in flight are answered for by `poll_completions`.
-                    send_again(&mut redo, unit);
+                    again.push(failed(unit));
                     queue.sleep_unless_closed(backoff);
                     backoff = (backoff * 2).min(RETRY_MAX);
                     continue;
                 }
                 // Nothing will report it later, so report it now.
                 Ok((Dispatched::Complete, rejections)) => {
-                    clear_stall(metrics, id, name, &mut stalled, &mut backoff);
+                    // The destination is up, if not yet for every unit.
+                    if failing(&owner, &again) {
+                        backoff = RETRY_MIN;
+                    } else {
+                        clear_stall(metrics, id, name, &mut stalled, &mut backoff);
+                    }
                     if let (Some(p), Some(c)) = (&mut pacer, paced) {
                         p.completed(queue, c);
                     }
-                    finish(queue, returns, metrics, id, unit, rejections, &mut waiting);
+                    finish(queue, returns, metrics, id, unit, rejections, &mut again);
                 }
                 // Refusals seen at hand-over wait for the acknowledgment, so one completion carries every refusal
                 // against a batch. Handed to the transport is not delivered: `Dispatched::InFlight` means only that, so
@@ -751,7 +748,7 @@ fn run(
                     let e = IoError::transient("destination client would not take the batch");
                     note_stall(metrics, id, name, &e, &mut stalled);
                     cut_off = false;
-                    send_again(&mut redo, unit);
+                    again.push(failed(unit));
                     queue.sleep_unless_closed(backoff);
                     backoff = (backoff * 2).min(RETRY_MAX);
                     continue;
@@ -762,9 +759,9 @@ fn run(
         // Every pass, idle or not -- see `POLL_INTERVAL`.
         match destination.poll_completions() {
             Ok(done) => {
-                // A batch that landed beside one that failed in the same pass does not clear the stall: one route that
-                // always fails would never show as stalled, nor its backoff grow.
-                let (mut failed, mut landed) = (false, false);
+                // A batch that landed beside one that failed does not clear the stall, nor does it wait on the failed
+                // one: that waits its own `retry`. The destination recovers once every unit that failed has landed.
+                let (mut failures, mut landed) = (false, false);
                 for c in done {
                     let Some(mut owed) = owner.remove(&c.batch) else {
                         continue;
@@ -772,12 +769,12 @@ fn run(
                     owed.rejections.extend(c.rejections);
                     if let Some(undelivered) = c.undelivered.filter(|u| !u.rows.is_empty()) {
                         note_stall(metrics, id, name, &undelivered.error, &mut stalled);
-                        failed = true;
+                        failures = true;
                         if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
                             p.abandoned(paced);
                         }
                         let rest = remainder(queue, metrics, id, owed.unit, owed.rejections, &undelivered.rows);
-                        send_again(&mut redo, rest);
+                        again.push(failed(rest));
                         continue;
                     }
                     landed = true;
@@ -790,20 +787,28 @@ fn run(
                             },
                         );
                     }
-                    finish(queue, returns, metrics, id, owed.unit, owed.rejections, &mut waiting);
+                    finish(queue, returns, metrics, id, owed.unit, owed.rejections, &mut again);
                 }
-                if failed {
+                if failures {
                     cut_off = false;
+                }
+                if landed {
+                    // The destination is up, if not yet for every unit.
+                    if failures || failing(&owner, &again) {
+                        backoff = RETRY_MIN;
+                    } else {
+                        clear_stall(metrics, id, name, &mut stalled, &mut backoff);
+                    }
+                } else if failures {
+                    // Nothing landed: the destination is down as a whole, so it backs off as a whole.
                     queue.sleep_unless_closed(backoff);
                     backoff = (backoff * 2).min(RETRY_MAX);
-                } else if landed {
-                    clear_stall(metrics, id, name, &mut stalled, &mut backoff);
                 }
             }
             Err(e) => {
                 note_stall(metrics, id, name, &e, &mut stalled);
                 cut_off = false;
-                take_back_all(&mut owner, &mut redo, &mut pacer);
+                take_back_all(&mut owner, &mut again, &mut pacer);
                 queue.sleep_unless_closed(backoff);
                 backoff = (backoff * 2).min(RETRY_MAX);
             }
@@ -821,7 +826,7 @@ fn run(
         note_concurrency(metrics, id, destination.concurrency(), &mut reported);
         note_open(metrics, id, destination.open_bytes(), &mut open_reported);
         if queue.holds_refusals.load(Ordering::Relaxed) {
-            note_kept(metrics, id, &owner, &redo, &waiting, &mut kept_reported);
+            note_kept(metrics, id, &owner, &again, &mut kept_reported);
         }
         if let Some(captures) = queue.captures.get() {
             let keeps = kept_reported.is_some_and(|kept| kept > 0);
@@ -830,11 +835,10 @@ fn run(
                 holding = Some(captures.holding(HeldAt::Destination(name.to_string())));
             }
             if keeps {
-                let units = waiting
+                let units = again
                     .iter_mut()
                     .map(|(_, u)| u)
-                    .chain(owner.values_mut().map(|o| &mut o.unit))
-                    .chain(redo.iter_mut());
+                    .chain(owner.values_mut().map(|o| &mut o.unit));
                 show_held(captures, name, units);
             } else {
                 holding = None;
@@ -843,8 +847,7 @@ fn run(
     }
 
     // Rows nobody will deliver. None of it was committed, so it is redelivered when the deployment comes back.
-    redo.extend(waiting.into_iter().map(|(_, u)| u));
-    abandon(returns, &mut owner, &mut redo);
+    abandon(returns, &owner, &again);
 }
 
 /// A unit the destination has answered for. Each refusal gets its document back. A destination set to block keeps the
@@ -857,7 +860,7 @@ fn finish(
     id: DestId,
     mut unit: Unit,
     mut rejections: Vec<Rejection>,
-    waiting: &mut Vec<(Instant, Unit)>,
+    again: &mut Vec<(Instant, Unit)>,
 ) {
     // Refused, not delivered: a rejection is the destination answering, not the row arriving.
     let mut refused = vec![false; unit.rows.len()];
@@ -926,22 +929,22 @@ fn finish(
             rejections: refusals,
         }),
     );
-    waiting.push((
+    again.push((
         Instant::now() + backoff,
         Unit {
-            seq: unit.seq,
             reader: unit.reader,
             batch: unit.batch,
             rows,
             bytes,
             held: Some(Box::new(Held { backoff, why, shown })),
             carried,
+            retry: None,
         },
     ));
 }
 
-/// Show each capture at this destination the rows it refused and keeps, once per capture: waiting, or being sent
-/// again.
+/// Show each capture at this destination the rows it refused and keeps, once per capture: waiting to be sent again, or
+/// sent.
 fn show_held<'a>(captures: &Captures, name: &str, units: impl Iterator<Item = &'a mut Unit>) {
     for unit in units {
         if let Some(held) = &mut unit.held {
@@ -995,33 +998,35 @@ fn remainder(
     Unit { rows, bytes, ..unit }
 }
 
-/// `unit` to be sent again, in acceptance order among the others.
-fn send_again(redo: &mut VecDeque<Unit>, unit: Unit) {
-    redo.push_back(unit);
-    redo.make_contiguous().sort_by_key(|u| u.seq);
+/// `unit`, which failed to land, to be sent again once its own wait is over. Each failure doubles the wait.
+fn failed(mut unit: Unit) -> (Instant, Unit) {
+    let retry = unit.retry.map_or(RETRY_MIN, |r| (r * 2).min(RETRY_MAX));
+    unit.retry = Some(retry);
+    (Instant::now() + retry, unit)
 }
 
-/// Take every sent-but-unacknowledged batch back for re-sending, in acceptance order. The pacing model is told of each,
-/// so it no longer counts it in flight.
-fn take_back_all(owner: &mut HashMap<BatchId, Owed>, redo: &mut VecDeque<Unit>, pacer: &mut Option<Pacer>) {
-    let mut all: Vec<Unit> = Vec::new();
+/// Whether a unit that failed to land is still out or waiting to be sent again.
+fn failing(owner: &HashMap<BatchId, Owed>, again: &[(Instant, Unit)]) -> bool {
+    owner.values().any(|o| o.unit.retry.is_some()) || again.iter().any(|(_, u)| u.retry.is_some())
+}
+
+/// Take every sent-but-unacknowledged batch back to be sent again. The pacing model is told of each, so it no longer
+/// counts it in flight.
+fn take_back_all(owner: &mut HashMap<BatchId, Owed>, again: &mut Vec<(Instant, Unit)>, pacer: &mut Option<Pacer>) {
     for (_, o) in owner.drain() {
         if let (Some(p), Some(paced)) = (pacer.as_mut(), o.paced) {
             p.abandoned(paced);
         }
-        all.push(o.unit);
+        again.push(failed(o.unit));
     }
-    all.extend(redo.drain(..));
-    all.sort_by_key(|u| u.seq);
-    redo.extend(all);
 }
 
 /// Tell each reader with work outstanding that it will not be delivered.
-fn abandon(returns: &Returns, owner: &mut HashMap<BatchId, Owed>, redo: &mut VecDeque<Unit>) {
+fn abandon(returns: &Returns, owner: &HashMap<BatchId, Owed>, again: &[(Instant, Unit)]) {
     let mut readers: Vec<ReaderId> = owner
         .values()
         .map(|o| o.unit.reader)
-        .chain(redo.iter().map(|u| u.reader))
+        .chain(again.iter().map(|(_, u)| u.reader))
         .collect();
     readers.sort_unstable();
     readers.dedup();
@@ -1113,14 +1118,13 @@ fn note_open(metrics: &MetricsHandle, id: DestId, now: Option<usize>, reported: 
     );
 }
 
-/// Publish how many rows the destination refused and keeps, wherever each is: waiting, or being sent again. The leader
-/// reads it to know which workers a capture at this destination has held rows to wait for.
+/// Publish how many rows the destination refused and keeps, wherever each is: waiting to be sent again, or sent. The
+/// leader reads it to know which workers a capture at this destination has held rows to wait for.
 fn note_kept(
     metrics: &MetricsHandle,
     id: DestId,
     owner: &HashMap<BatchId, Owed>,
-    redo: &VecDeque<Unit>,
-    waiting: &[(Instant, Unit)],
+    again: &[(Instant, Unit)],
     reported: &mut Option<u64>,
 ) {
     // A DLQ's carrier stands for its riders too: each is a row of its own.
@@ -1128,9 +1132,7 @@ fn note_kept(
         Some(_) => u.rows.iter().map(OwnedRecord::rows).sum(),
         None => 0,
     };
-    let kept = waiting.iter().map(|(_, u)| held(u)).sum::<u64>()
-        + owner.values().map(|o| held(&o.unit)).sum::<u64>()
-        + redo.iter().map(held).sum::<u64>();
+    let kept = again.iter().map(|(_, u)| held(u)).sum::<u64>() + owner.values().map(|o| held(&o.unit)).sum::<u64>();
     if *reported == Some(kept) {
         return;
     }
@@ -1280,14 +1282,13 @@ impl Destination for EgressHandle {
         }
         let rows = rows.into_owned();
         let unit = Unit {
-            // Assigned under the queue's lock.
-            seq: 0,
             reader: self.reader,
             batch,
             bytes: crate::io::held_bytes(&rows),
             rows,
             held: None,
             carried: Vec::new(),
+            retry: None,
         };
         let dispatched = match self.queue.offer(unit) {
             Ok(()) => {
@@ -1366,13 +1367,13 @@ mod tests {
 
     fn unit(bytes: usize) -> Unit {
         Unit {
-            seq: 0,
             reader: 0,
             batch: 0,
             rows: Vec::new(),
             bytes,
             held: None,
             carried: Vec::new(),
+            retry: None,
         }
     }
 
