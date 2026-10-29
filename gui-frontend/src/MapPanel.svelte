@@ -96,7 +96,8 @@
     margin-left: auto;
   }
 
-  .actions :global(.icon) {
+  .actions :global(.icon),
+  .actions :global(.cross) {
     width: 24px;
     height: 24px;
     display: flex;
@@ -109,7 +110,8 @@
     cursor: pointer;
   }
 
-  .actions :global(.icon:hover) {
+  .actions :global(.icon:hover),
+  .actions :global(.cross:hover) {
     color: var(--ink);
     background: color-mix(in oklch, var(--ink) 12%, transparent);
   }
