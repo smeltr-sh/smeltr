@@ -18,6 +18,8 @@ pub struct TreeFiles<'a> {
     commit: &'a str,
     /// Where the bundle sits in the commit, without a trailing slash. Empty is the repository root.
     prefix: String,
+    /// The commit's tree, opened on the first read and kept for the rest.
+    opened: Option<git::OpenTree>,
 }
 
 impl<'a> TreeFiles<'a> {
@@ -26,7 +28,15 @@ impl<'a> TreeFiles<'a> {
             repo,
             commit,
             prefix: prefix.into().trim_end_matches('/').to_string(),
+            opened: None,
         }
+    }
+
+    fn tree(&mut self) -> std::io::Result<&git::OpenTree> {
+        if self.opened.is_none() {
+            self.opened = Some(git::open_tree(self.repo, self.commit).map_err(TreeFiles::as_io)?);
+        }
+        Ok(self.opened.as_ref().expect("opened above"))
     }
 
     fn at(&self, path: &str) -> String {
@@ -45,12 +55,12 @@ impl<'a> TreeFiles<'a> {
 impl FileSet for TreeFiles<'_> {
     fn read(&mut self, path: &str) -> std::io::Result<Option<Vec<u8>>> {
         let asked = self.at(path);
-        let mut read = git::read_blobs(self.repo, self.commit, &[asked]).map_err(TreeFiles::as_io)?;
-        Ok(read.pop().flatten())
+        self.tree()?.read(&asked).map_err(TreeFiles::as_io)
     }
 
     fn json_paths_under(&mut self, dir: &str) -> std::io::Result<Vec<String>> {
-        let entries = git::list_tree(self.repo, self.commit, &self.at(dir)).map_err(TreeFiles::as_io)?;
+        let asked = self.at(dir);
+        let entries = self.tree()?.list(&asked).map_err(TreeFiles::as_io)?;
         Ok(entries
             .into_iter()
             // A config file is a file. A directory named `x.json` is not one, and a symlink reads as its target
