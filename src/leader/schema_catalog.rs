@@ -110,17 +110,39 @@ pub fn from_rows(id: &str, title: &str, rows: &[crate::leader::preview::RowOut])
 }
 
 /// What breaks a schema in `file`, a group's bundle merged with `shared/`: each pipeline's rows against the schemas it
-/// produces, and each destination's accepts against what reaches it. `Err` when the bundle does not load.
+/// produces, and each destination's accepts against what reaches it. With `base`, only what `file` adds to what breaks
+/// there, field by field; a `base` that does not load takes nothing away. `Err` when `file` does not load.
 pub fn findings(
     file: crate::config_file::FileConfig,
     declared_at: &crate::config_file::DeclaredAt,
+    base: Option<(crate::config_file::FileConfig, crate::config_file::DeclaredAt)>,
 ) -> Result<Vec<crate::config_file::SchemaFinding>, String> {
+    let (misfits, was) = match base.map(|(file, declared_at)| compiled(file, &declared_at)) {
+        Some(Ok((system, compiled))) => (system.schema_misfits(&compiled), system.schema_findings(&compiled)),
+        _ => Default::default(),
+    };
+    let (system, compiled) = compiled(file, declared_at)?;
+    Ok((system.schema_findings_beyond(&compiled, &misfits).into_iter())
+        .filter(|f| !was.contains(f))
+        .collect())
+}
+
+fn compiled(
+    file: crate::config_file::FileConfig,
+    declared_at: &crate::config_file::DeclaredAt,
+) -> Result<
+    (
+        crate::config_file::LoadedSystem,
+        crate::plan::topology::CompiledTopology,
+    ),
+    String,
+> {
     let system = crate::config_file::validate_at(file, declared_at).map_err(|e| e.to_string())?;
     // Validating compiled it, so this compile does not fail.
     let compiled = system
         .compile_topology()
         .map_err(|_| "the bundle does not compile".to_string())?;
-    Ok(system.schema_findings(&compiled))
+    Ok((system, compiled))
 }
 
 #[cfg(test)]

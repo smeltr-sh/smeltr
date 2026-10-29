@@ -417,9 +417,10 @@ fn branch_findings(data_dir: &Path, name: &str) -> Result<SchemaFindings, Refusa
         if group == config_file::SHARED_DIR {
             continue;
         }
-        let was = findings_at(&repo, &base, &group);
+        let (misfits, was) = findings_at(&repo, &base, &group, &[]);
         findings.extend(
-            findings_at(&repo, name, &group)
+            findings_at(&repo, name, &group, &misfits)
+                .1
                 .into_iter()
                 .filter(|f| !was.contains(f))
                 .map(|f| SchemaFindingOut {
@@ -433,16 +434,24 @@ fn branch_findings(data_dir: &Path, name: &str) -> Result<SchemaFindings, Refusa
     Ok(SchemaFindings { findings })
 }
 
-/// The schema findings of `group` at `rev`; none where it does not load there.
-fn findings_at(repo: &Path, rev: &str, group: &str) -> Vec<config_file::SchemaFinding> {
+/// The misfits of `group` at `rev`, and its schema findings beyond `known`; none where it does not load there.
+fn findings_at(
+    repo: &Path,
+    rev: &str,
+    group: &str,
+    known: &[(String, smeltr::schema::Finding)],
+) -> (Vec<(String, smeltr::schema::Finding)>, Vec<config_file::SchemaFinding>) {
     let Ok(system) = tree::load_group_at(repo, rev, group) else {
-        return Vec::new();
+        return Default::default();
     };
     // Loading compiled it, so this compile does not fail.
-    system
-        .compile_topology()
-        .map(|compiled| system.schema_findings(&compiled))
-        .unwrap_or_default()
+    let Ok(compiled) = system.compile_topology() else {
+        return Default::default();
+    };
+    (
+        system.schema_misfits(&compiled),
+        system.schema_findings_beyond(&compiled, known),
+    )
 }
 
 // -- POST /api/branches, DELETE /api/branches/:name -----------------------
@@ -1294,6 +1303,54 @@ mod tests {
         let found = branch_findings(&data, "work").unwrap().findings;
         let pipelines: Vec<_> = found.iter().map(|f| (f.group.as_str(), f.pipeline.as_str())).collect();
         assert_eq!(pipelines, [("west", "q")], "main's own finding for p is left out");
+    }
+
+    #[test]
+    fn a_finding_naming_several_fields_names_only_those_the_branch_adds() {
+        let data = temp_dir("schema-findings-fields");
+        let schema = |fields: &[&str]| -> Vec<u8> {
+            let each: Vec<String> = (fields.iter())
+                .map(|f| format!(r#"{{"field":"{f}","type":"str","required":true}}"#))
+                .collect();
+            format!(r#"{{"id":"login","title":"Login","fields":[{}]}}"#, each.join(",")).into_bytes()
+        };
+        const SOURCES: &[u8] = br#"[{"id":"k","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}]"#;
+        const ROUTES: &[u8] = br#"[{"id":"r","source":"k","pipeline":"p","deliver":[]}]"#;
+        const P: &[u8] = br#"{"id":"p","name":"p","produces":["login"],"steps":[]}"#;
+        save(
+            &data,
+            git::MAIN_BRANCH,
+            &[
+                ("shared/system.json", MANIFEST),
+                ("groups/west/system.json", MANIFEST),
+                ("groups/west/schemas/login.json", &schema(&["host", "user"])),
+                ("groups/west/pipelines/p.json", P),
+                ("groups/west/sources.json", SOURCES),
+                ("groups/west/routes.json", ROUTES),
+            ],
+            "seed main",
+        );
+        git::create_branch(&data, "work").unwrap();
+        // The branch writes `user`, which main lacked, and requires `ip` besides.
+        let p = br#"{"id":"p","name":"p","produces":["login"],
+                     "steps":[{"id":"s","type":"code","body":"$.user = \"u\";"}]}"#;
+        save(
+            &data,
+            "work",
+            &[
+                ("groups/west/pipelines/p.json", p),
+                ("groups/west/schemas/login.json", &schema(&["host", "ip", "user"])),
+            ],
+            "user and ip",
+        );
+
+        let found = branch_findings(&data, "work").unwrap().findings;
+        let messages: Vec<_> = found.iter().map(|f| f.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            ["Login requires `ip`; the rows lack it."],
+            "main already lacked `host`"
+        );
     }
 
     /// The reported case: two branches off one `main` each add a source. Once one deploys, the other is brought

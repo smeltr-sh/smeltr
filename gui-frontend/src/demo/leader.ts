@@ -519,19 +519,16 @@ export class DemoLeader {
     const groups = new Set(
       branch.touches.flatMap((file) => /^groups\/([^/]+)\//.exec(file)?.[1] ?? []),
     );
-    const findingsOf = async (b: Branch, group: string): Promise<object[]> => {
-      const own = b.bundles[group] ?? { version: 1 };
-      const answer = await this.ask('/schema-findings', this.bundleOf(b, group, own));
-      const body = answer.body as { ok?: boolean; findings?: object[] };
-      return body.ok ? (body.findings ?? []) : [];
-    };
+    const own = (b: Branch, group: string) =>
+      this.bundleOf(b, group, b.bundles[group] ?? { version: 1 });
     const findings: object[] = [];
     for (const group of groups) {
-      const was = new Set((await findingsOf(main, group)).map((f) => JSON.stringify(f)));
-      const now = await findingsOf(branch, group);
-      findings.push(
-        ...now.filter((f) => !was.has(JSON.stringify(f))).map((f) => ({ group, ...f })),
-      );
+      const answer = await this.ask('/schema-findings', {
+        ...own(branch, group),
+        base: own(main, group),
+      });
+      const body = answer.body as { ok?: boolean; findings?: object[] };
+      if (body.ok) findings.push(...(body.findings ?? []).map((f) => ({ group, ...f })));
     }
     return ok({ findings });
   }

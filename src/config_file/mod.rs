@@ -227,6 +227,36 @@ impl LoadedSystem {
     /// Where a pipeline's rows break the schemas it produces, and where it delivers to a destination that accepts
     /// none of them, over every route `compiled` runs it on. A finding never refuses the system.
     pub fn schema_findings(&self, compiled: &CompiledTopology) -> Vec<SchemaFinding> {
+        self.schema_findings_beyond(compiled, &[])
+    }
+
+    /// Each field of a pipeline's rows that breaks a schema it produces, by the pipeline's id.
+    pub fn schema_misfits(&self, compiled: &CompiledTopology) -> Vec<(String, crate::schema::Finding)> {
+        let mut out = Vec::new();
+        for route in &compiled.routes {
+            let pipeline = self.pipeline_ids.get(route.pipeline).cloned().unwrap_or_default();
+            let produces = self.produced_by(route.pipeline);
+            if let Some(plan) = compiled.plan_for(route.source, route.pipeline)
+                && !produces.is_empty()
+            {
+                let record = crate::plan::dictionary::record_type(plan, &route.on_exception.tag_field);
+                for f in crate::schema::check(produces, &record) {
+                    if !out.iter().any(|(p, o)| *p == pipeline && *o == f) {
+                        out.push((pipeline.clone(), f));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// `schema_findings`, leaving out the misfits `known` holds (`schema_misfits`), so a finding that names several
+    /// fields names only the others.
+    pub fn schema_findings_beyond(
+        &self,
+        compiled: &CompiledTopology,
+        known: &[(String, crate::schema::Finding)],
+    ) -> Vec<SchemaFinding> {
         let mut out: Vec<SchemaFinding> = Vec::new();
         let mut push = |f: SchemaFinding| {
             if !out.contains(&f) {
@@ -247,7 +277,8 @@ impl LoadedSystem {
                         crate::plan::config::Step::Function(f) => f.id,
                         crate::plan::config::Step::If { id, .. } => *id,
                     });
-                let findings = crate::schema::check(produces, &record);
+                let mut findings = crate::schema::check(produces, &record);
+                findings.retain(|f| !known.iter().any(|(p, k)| *p == pipeline && k == f));
                 for (keys, message) in crate::schema::told(produces, &findings) {
                     let at = keys.and_then(|keys| crate::plan::dictionary::writer(plan, &keys).or(first));
                     push(SchemaFinding {

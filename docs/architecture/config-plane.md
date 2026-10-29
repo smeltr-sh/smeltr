@@ -72,7 +72,8 @@ flowchart LR
 
 A finding never refuses a save or a deploy: it says where the rows do not fit.
 Review shows the findings a change adds, not those main already had where the
-branch left it.
+branch left it, field by field: a finding that names several fields names only
+those the change adds.
 The record's type is held to the table path by path: a field whose type only
 the row knows keeps any, an object keeps any object type, and a required field
 is missing where the object it sits in is there and does not declare it. A

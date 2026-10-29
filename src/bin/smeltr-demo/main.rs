@@ -546,17 +546,31 @@ struct SchemaFindingOut {
     message: String,
 }
 
-/// What breaks a schema in a group's bundle.
-async fn schema_findings(State(service): State<Service>, Json(bundle): Json<Bundle>) -> Envelope<SchemaFindings> {
-    if let Err(e) = refuse_oversized(bundle.files(), []) {
+#[derive(serde::Deserialize)]
+struct FindingsBody {
+    #[serde(flatten)]
+    bundle: Bundle,
+    /// The bundle as main had it where the branch left it, whose findings are not the branch's.
+    #[serde(default)]
+    base: Option<Bundle>,
+}
+
+/// What breaks a schema in a group's bundle, beyond what already broke in `base`.
+async fn schema_findings(State(service): State<Service>, Json(body): Json<FindingsBody>) -> Envelope<SchemaFindings> {
+    let FindingsBody { bundle, base } = body;
+    if let Err(e) = refuse_oversized(bundle.files().chain(base.iter().flat_map(Bundle::files)), []) {
         return Envelope::refused(e);
     }
     let s = service.clone();
     service
         .run(unavailable, move || {
+            let base = base.and_then(|b| b.merged().ok()).map(|(file, _)| {
+                let declared_at = s.declared_at(&file);
+                (file, declared_at)
+            });
             let found = bundle.merged().and_then(|(file, _)| {
                 let declared_at = s.declared_at(&file);
-                catalog::findings(file, &declared_at)
+                catalog::findings(file, &declared_at, base)
             });
             found
                 .map(|found| SchemaFindings {
