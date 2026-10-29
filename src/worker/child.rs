@@ -152,6 +152,16 @@ pub enum ToRuntime {
     Stop,
 }
 
+/// What one runtime process holds for as long as it runs, shared by the deployment it starts and the supervisor's
+/// commands it obeys: the captures it serves, the secrets it was sent, its metrics registry and the sources it holds.
+#[derive(Clone, Default)]
+pub struct Runtime {
+    pub captures: Arc<super::capture::Captures>,
+    pub secrets: crate::plan::topology::HeldSecrets,
+    pub registry: Arc<crate::metrics::Metrics>,
+    pub held: Arc<super::held::Held>,
+}
+
 /// Everything a runtime needs to become one. No path to a working tree: a commit is read out of the object store.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StartSpec {
@@ -465,11 +475,14 @@ pub fn run_runtime_child() -> ! {
         }
     };
 
-    let registry = Arc::new(crate::metrics::Metrics::new());
-    let captures = Arc::new(super::capture::Captures::default());
-    let held = Arc::new(super::held::Held::default());
-    let mut secrets = crate::plan::topology::HeldSecrets::default();
-    secrets.take(spec.secrets.clone());
+    let mut runtime = Runtime::default();
+    runtime.secrets.take(spec.secrets.clone());
+    let Runtime {
+        captures,
+        registry,
+        held,
+        ..
+    } = &runtime;
 
     // Started before the deployment it serves, not after: a supervisor that dies while startup is stalled shows
     // up only as end of file on the pipe this thread reads, and nothing else arms the deadline that ends an
@@ -477,16 +490,10 @@ pub fn run_runtime_child() -> ! {
     // never finishes leaves running forever.
     let stopping = Arc::new(AtomicBool::new(false));
     {
-        let (stopping, captures, registry, secrets, held) = (
-            stopping.clone(),
-            captures.clone(),
-            registry.clone(),
-            secrets.clone(),
-            held.clone(),
-        );
+        let (stopping, runtime) = (stopping.clone(), runtime.clone());
         std::thread::spawn(move || {
             for frame in incoming {
-                if !obey(frame, &captures, &registry, &secrets, &held) {
+                if !obey(frame, &runtime) {
                     stopping.store(true, Ordering::Relaxed);
                     return;
                 }
@@ -511,7 +518,7 @@ pub fn run_runtime_child() -> ! {
     }
 
     let out = std::io::stdout();
-    let deployment = match super::start_deployment(&spec, &captures, &secrets, &registry, &held) {
+    let deployment = match super::start_deployment(&spec, &runtime) {
         Ok(d) => d,
         Err(reason) => {
             let _ = send(&mut out.lock(), &FromRuntime::Failed { incarnation, reason });
@@ -539,22 +546,22 @@ pub fn run_runtime_child() -> ! {
         deployment.relog_memory_warning();
         deployment.note_pools();
         let mut locked = out.lock();
-        let pending = collect_report(&facts, &registry, &held);
+        let pending = collect_report(&facts, registry, held);
         let owed = Pending {
             report: RuntimeReport::default(),
             peeked: pending.peeked,
             logs: pending.logs,
         };
         let streams = pending.report.gathered.streams.clone();
-        match send_report(&mut locked, incarnation, pending.report, &held) {
-            Ok(()) => owed.committed(&registry),
+        match send_report(&mut locked, incarnation, pending.report, held) {
+            Ok(()) => owed.committed(registry),
             // A window nothing can carry is dropped rather than kept: the same collection would build the same
             // frame on every interval, and holding it would stop this runtime ever reporting again. Metrics are
             // where this system trades durability for simplicity, and losing a window of them is that trade;
             // never reporting is not.
             // Progress is not part of that trade: it goes back for the next report, which a cap keeps it inside.
             Err(Refused::TooLarge { bytes, limit }) => {
-                owed.committed(&registry);
+                owed.committed(registry);
                 tracing::warn!(
                     target: "runtime.report_too_large",
                     bytes,
@@ -629,15 +636,15 @@ pub fn run_runtime_child() -> ! {
     // more as the progress it yielded needs.
     // A report that does not go hands its progress back, so a last report too large for its logs leaves the
     // progress to the reports that carry nothing else.
-    let pending = collect_report(&facts, &registry, &held);
-    let _ = send_report(&mut locked, incarnation, pending.report, &held);
+    let pending = collect_report(&facts, registry, held);
+    let _ = send_report(&mut locked, incarnation, pending.report, held);
     loop {
         let progress = held.take_progress(LEDGER_PER_REPORT, PROGRESS_BYTES_PER_REPORT);
         if progress.is_empty() {
             break;
         }
         let report = RuntimeReport {
-            state: held_state(&held),
+            state: held_state(held),
             gathered: Gathered {
                 progress,
                 ..Default::default()
@@ -645,7 +652,7 @@ pub fn run_runtime_child() -> ! {
         };
         // A report that does not go keeps its progress, though a pipe that refused a frame of this size will take
         // nothing more: the supervisor is gone.
-        if send_report(&mut locked, incarnation, report, &held).is_err() {
+        if send_report(&mut locked, incarnation, report, held).is_err() {
             break;
         }
     }
@@ -656,13 +663,13 @@ pub fn run_runtime_child() -> ! {
 }
 
 /// Act on one frame from the supervisor. `false` is a stop: the caller stops reading and drains.
-fn obey(
-    frame: ToRuntime,
-    captures: &Arc<super::capture::Captures>,
-    registry: &Arc<crate::metrics::Metrics>,
-    secrets: &crate::plan::topology::HeldSecrets,
-    held: &super::held::Held,
-) -> bool {
+fn obey(frame: ToRuntime, runtime: &Runtime) -> bool {
+    let Runtime {
+        captures,
+        secrets,
+        registry,
+        held,
+    } = runtime;
     match frame {
         ToRuntime::Stop => return false,
         ToRuntime::Capture(invitation) => super::serve_capture(captures, *invitation, registry, secrets),
@@ -1568,27 +1575,20 @@ mod tests {
             }))
             .expect("an invitation")
         };
-        let captures = Arc::new(super::super::capture::Captures::default());
+        let runtime = Runtime::default();
+        let captures = &runtime.captures;
         captures.admit(&[invitation("s1"), invitation("s2")]);
-        let registry = Arc::new(crate::metrics::Metrics::new());
-        let secrets = crate::plan::topology::HeldSecrets::default();
 
         assert!(obey(
             ToRuntime::Listed {
                 sessions: vec!["s1".into()]
             },
-            &captures,
-            &registry,
-            &secrets,
-            &Default::default()
+            &runtime
         ));
         assert!(captures.holds("s1"), "a listed session was let go");
         assert!(!captures.holds("s2"), "an unlisted session still filling was kept");
 
-        assert!(
-            !obey(ToRuntime::Stop, &captures, &registry, &secrets, &Default::default()),
-            "a stop did not end the read"
-        );
+        assert!(!obey(ToRuntime::Stop, &runtime), "a stop did not end the read");
     }
 
     fn key(source: &str) -> crate::heartbeat::SourceKey {
@@ -1626,27 +1626,16 @@ mod tests {
         };
         assert_eq!(holds, &vec![holding]);
 
-        let held = super::super::held::Held::default();
+        let runtime = Runtime::default();
         let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut source = held.source(key("listing"), {
+        let mut source = runtime.held.source(key("listing"), {
             let opened = opened.clone();
             Box::new(move || {
                 opened.fetch_add(1, Ordering::Relaxed);
                 Ok(Box::new(crate::io::fake::FakeSource::default()) as Box<dyn crate::io::Source>)
             })
         });
-        let (captures, registry, secrets) = (
-            Arc::new(super::super::capture::Captures::default()),
-            Arc::new(crate::metrics::Metrics::new()),
-            crate::plan::topology::HeldSecrets::default(),
-        );
-        assert!(obey(
-            read.into_iter().next().unwrap(),
-            &captures,
-            &registry,
-            &secrets,
-            &held
-        ));
+        assert!(obey(read.into_iter().next().unwrap(), &runtime));
         crate::io::Source::poll_batch(&mut source, 1, 1, Duration::from_millis(1)).expect("a poll");
         assert_eq!(opened.load(Ordering::Relaxed), 1, "a granted source was not opened");
     }
@@ -1692,9 +1681,8 @@ mod tests {
     fn obeying_a_mirror_fills_the_registrys_mirror_and_the_logs_readers_only() {
         let _taps = crate::logs::TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let reader = crate::logs::tap();
-        let captures = Arc::new(super::super::capture::Captures::default());
-        let registry = Arc::new(crate::metrics::Metrics::new());
-        let secrets = crate::plan::topology::HeldSecrets::default();
+        let runtime = Runtime::default();
+        let registry = &runtime.registry;
         let sample = MetricSampleDto {
             metric: "smeltr_logs_dropped_total".into(),
             labels: vec![("process".into(), "supervisor".into())],
@@ -1719,10 +1707,7 @@ mod tests {
                     fields: vec![("subject".into(), crate::heartbeat::FieldValueDto::Str("w1".into()))],
                 }],
             },
-            &captures,
-            &registry,
-            &secrets,
-            &Default::default()
+            &runtime
         ));
         let mirrored = registry.take_mirrored_delta(&mut Default::default());
         assert_eq!(mirrored.len(), 1, "{mirrored:?}");
