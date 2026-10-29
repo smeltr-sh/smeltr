@@ -502,9 +502,11 @@
 
   <Dialog open={creating} title="new account" oncancel={() => busy || reset()} onsubmit={create}>
     <div class="fields">
-      <div class="sign-in">
-        <Segmented label="Signs in with" options={SIGN_INS} bind:value={newSignIn} />
-      </div>
+      <Field label="Signs in with" group>
+        <div class="sign-in">
+          <Segmented label="Signs in with" options={SIGN_INS} bind:value={newSignIn} />
+        </div>
+      </Field>
       {#if newSignIn === 'local'}
         <div class="pair">
           <Field required label="Display name">
