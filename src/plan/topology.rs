@@ -3323,6 +3323,14 @@ pub struct CompiledTopology {
     pub payloads: HashMap<DestId, Payload>,
 }
 
+impl std::fmt::Debug for CompiledTopology {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompiledTopology")
+            .field("routes", &self.routes.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl CompiledTopology {
     /// What `dest` writes of a row. One no destination config names, a worker's built by hand, writes the record.
     pub fn payload(&self, dest: DestId) -> Payload {

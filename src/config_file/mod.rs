@@ -86,10 +86,11 @@ pub fn validate(file: FileConfig) -> Result<LoadedSystem, LoadError> {
 /// `validate` for a bundle read from a directory: `declared_at` says where each lookup table was declared, which is
 /// what a relative lookup path resolves against.
 pub fn validate_at(file: FileConfig, declared_at: &load::DeclaredAt) -> Result<LoadedSystem, LoadError> {
-    let system = load::from_file_config_at(file, declared_at)?;
-    system
+    let mut system = load::from_file_config_at(file, declared_at)?;
+    let compiled = system
         .compile_topology()
         .map_err(|errs| LoadError::Validation(errs.into_iter().map(|e| system.to_validation_error(e)).collect()))?;
+    system.compiled = Some(compiled);
     Ok(system)
 }
 
@@ -116,6 +117,8 @@ pub struct LoadedSystem {
     pub produces: Vec<Vec<Arc<crate::schema::Schema>>>,
     /// The schemas each destination accepts, for the destinations that name any.
     pub accepts: HashMap<DestId, Vec<Arc<crate::schema::Schema>>>,
+    /// What `validate` compiled; `None` for a system loaded without validating it.
+    pub compiled: Option<CompiledTopology>,
 }
 
 impl LoadedSystem {

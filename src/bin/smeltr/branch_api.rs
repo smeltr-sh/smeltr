@@ -444,13 +444,12 @@ fn findings_at(
     let Ok(system) = tree::load_group_at(repo, rev, group) else {
         return Default::default();
     };
-    // Loading compiled it, so this compile does not fail.
-    let Ok(compiled) = system.compile_topology() else {
+    let Some(compiled) = &system.compiled else {
         return Default::default();
     };
     (
-        system.schema_misfits(&compiled),
-        system.schema_findings_beyond(&compiled, known),
+        system.schema_misfits(compiled),
+        system.schema_findings_beyond(compiled, known),
     )
 }
 

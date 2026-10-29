@@ -140,15 +140,9 @@ fn checked(repo: &Path, commit: &str) -> Result<(Vec<NotLoading>, GroupFindings)
                 group,
                 why: e.to_string(),
             }),
-            // Loading compiled it, so this compile does not fail.
             Ok(system) => {
-                if let Ok(compiled) = system.compile_topology() {
-                    schemas.extend(
-                        system
-                            .schema_findings(&compiled)
-                            .into_iter()
-                            .map(|f| (group.clone(), f)),
-                    );
+                if let Some(compiled) = &system.compiled {
+                    schemas.extend(system.schema_findings(compiled).into_iter().map(|f| (group.clone(), f)));
                 }
             }
         }

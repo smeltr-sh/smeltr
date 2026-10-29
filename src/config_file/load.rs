@@ -415,6 +415,7 @@ pub(crate) fn from_file_config_at(
             .map(|(d, a)| (maps.destinations[&d.id], a))
             .filter(|(_, a)| !a.is_empty())
             .collect(),
+        compiled: None,
     })
 }
 

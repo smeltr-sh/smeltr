@@ -117,32 +117,19 @@ pub fn findings(
     declared_at: &crate::config_file::DeclaredAt,
     base: Option<(crate::config_file::FileConfig, crate::config_file::DeclaredAt)>,
 ) -> Result<Vec<crate::config_file::SchemaFinding>, String> {
-    let (misfits, was) = match base.map(|(file, declared_at)| compiled(file, &declared_at)) {
-        Some(Ok((system, compiled))) => (system.schema_misfits(&compiled), system.schema_findings(&compiled)),
-        _ => Default::default(),
+    let base = base.and_then(|(file, declared_at)| crate::config_file::validate_at(file, &declared_at).ok());
+    let (misfits, was) = match base
+        .as_ref()
+        .and_then(|system| Some((system, system.compiled.as_ref()?)))
+    {
+        Some((system, compiled)) => (system.schema_misfits(compiled), system.schema_findings(compiled)),
+        None => Default::default(),
     };
-    let (system, compiled) = compiled(file, declared_at)?;
-    Ok((system.schema_findings_beyond(&compiled, &misfits).into_iter())
+    let system = crate::config_file::validate_at(file, declared_at).map_err(|e| e.to_string())?;
+    let compiled = system.compiled.as_ref().ok_or("the bundle does not compile")?;
+    Ok((system.schema_findings_beyond(compiled, &misfits).into_iter())
         .filter(|f| !was.contains(f))
         .collect())
-}
-
-fn compiled(
-    file: crate::config_file::FileConfig,
-    declared_at: &crate::config_file::DeclaredAt,
-) -> Result<
-    (
-        crate::config_file::LoadedSystem,
-        crate::plan::topology::CompiledTopology,
-    ),
-    String,
-> {
-    let system = crate::config_file::validate_at(file, declared_at).map_err(|e| e.to_string())?;
-    // Validating compiled it, so this compile does not fail.
-    let compiled = system
-        .compile_topology()
-        .map_err(|_| "the bundle does not compile".to_string())?;
-    Ok((system, compiled))
 }
 
 #[cfg(test)]
