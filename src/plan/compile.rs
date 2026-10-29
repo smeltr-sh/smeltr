@@ -2731,10 +2731,11 @@ impl Compiler<'_> {
     }
 
     /// Parse `in_slot` as `call` says into `dest`, once the call is checked against its input and the target: each
-    /// field the parser declares, a name under the target, is a write of its name under `here`'s guard, and a dynamic parse lays every other key into the unclaimed fields of the
-    /// deepest object at its name. A parse that merges, into the record or by `Object.assign` into a name, leaves a
-    /// key the row lacks alone: what was bound there, or else the record's key, converted to the declared type. Any
-    /// other parse into a name replaces it, and the name is unbound before.
+    /// field the parser declares, a name under the target, is a write of its name under `here`'s guard, and a dynamic
+    /// parse lays every other key into the unclaimed fields of the deepest object at its name. A parse that merges,
+    /// into the record or by `Object.assign` into a name, leaves a key the row lacks alone: what was bound there, or
+    /// else the record's key, converted to the declared type. Any other parse into a name replaces it, and the name is
+    /// unbound before.
     fn parse_into(&mut self, call: &ParseCall, in_slot: SlotId, dest: Dest, here: Here) {
         let Dest { target, ty, merge } = dest;
         let Here { guard, id } = here;
@@ -3051,8 +3052,8 @@ impl Compiler<'_> {
         copy
     }
 
-    /// `throw e` on the rows `here`'s guard selects. The exceptions go back on the rows they were cleared from, so a loop opened
-    /// inside the `catch`, whose trips number their rows afresh, cannot hold one.
+    /// `throw e` on the rows `here`'s guard selects. The exceptions go back on the rows they were cleared from, so a
+    /// loop opened inside the `catch`, whose trips number their rows afresh, cannot hold one.
     fn throw(&mut self, e: &Expr, here: Here) {
         let Here { guard, id } = here;
         let ExprKind::Field(name) = &e.kind else {
@@ -3115,8 +3116,8 @@ impl Compiler<'_> {
         self.end(mask, id);
     }
 
-    /// `break`, `continue` or an inlined `return`: the rows `here`'s guard selects leave every region out to the nearest
-    /// `to`.
+    /// `break`, `continue` or an inlined `return`: the rows `here`'s guard selects leave every region out to the
+    /// nearest `to`.
     fn leave(&mut self, to: Region, here: Here) {
         let Here { guard, id } = here;
         match guard {
@@ -3735,9 +3736,9 @@ impl Compiler<'_> {
         self.bind_writes(field, write, false, Here { guard: None, ..here });
     }
 
-    /// Compile one statement list under `here`'s guard. A name this list `let`s is a local from its `let` to the end of the
-    /// list: bound inside a scope that hides every `name.*` from outside and takes every `name.*` bound inside with it
-    /// when the block ends. A write to the name before its `let` is a write to the name outside.
+    /// Compile one statement list under `here`'s guard. A name this list `let`s is a local from its `let` to the end of
+    /// the list: bound inside a scope that hides every `name.*` from outside and takes every `name.*` bound inside with
+    /// it when the block ends. A write to the name before its `let` is a write to the name outside.
     fn code_block(&mut self, stmts: &[Stmt], here: Here) {
         let Here { id, .. } = here;
         // By the name the user wrote: two `let`s of one name are two locals once the inliner renames them.
@@ -4134,9 +4135,9 @@ impl Compiler<'_> {
         true
     }
 
-    /// The write `target = value` of an accumulator of the vectorized loop being compiled: its value into a slot of
-    /// its own, with the elements `here`'s guard selects, where it ran. The value takes the accumulator's type as the general
-    /// loop's write does; one with no fold kernel refuses the fold.
+    /// The write `target = value` of an accumulator of the vectorized loop being compiled: its value into a slot of its
+    /// own, with the elements `here`'s guard selects, where it ran. The value takes the accumulator's type as the
+    /// general loop's write does; one with no fold kernel refuses the fold.
     fn fold_write(&mut self, target: &str, value: &Expr, here: Here) {
         let Here { guard, id } = here;
         let (op, e) = fold_shape(target, value).expect("`independent` shaped every accumulator's write");
@@ -4413,8 +4414,8 @@ impl Compiler<'_> {
         }
     }
 
-    /// Compile the step `kind` as the code it lowers to: its own statements under `here`'s guard, its filter and the guard
-    /// around it, and what comes after it under `outer`, the guard around it alone.
+    /// Compile the step `kind` as the code it lowers to: its own statements under `here`'s guard, its filter and the
+    /// guard around it, and what comes after it under `outer`, the guard around it alone.
     fn function(&mut self, kind: &FunctionKind, here: Here, outer: Option<SlotId>) {
         let Here { id, .. } = here;
         let kind = match lower::names(kind) {
