@@ -356,8 +356,8 @@ impl Actor {
         }
     }
 
-    /// A person's agent acting for them: their account, named as theirs.
-    pub fn persons_agent(id: &str, display_name: &str) -> Actor {
+    /// An account's agent acting for it: its account, named as its.
+    pub fn agent_of(id: &str, display_name: &str) -> Actor {
         Actor {
             id: id.to_string(),
             display_name: format!("{display_name} (agent)"),

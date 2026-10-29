@@ -191,15 +191,6 @@ pub fn presented_key(headers: &axum::http::HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
-/// What only a person reaches: signing in and out, their own settings and agent, and integrations themselves, so
-/// no key makes another or keeps its integration enabled.
-fn person_only(path: &str) -> bool {
-    ["/api/auth/", "/api/me/", "/api/agent/", "/api/integrations/"]
-        .iter()
-        .any(|prefix| path.starts_with(prefix))
-        || path == "/api/integrations"
-}
-
 /// How seldom a key's last use is written: often enough to tell a key in use from one forgotten, seldom enough that
 /// a busy integration does not write on every request.
 const LAST_USED_EVERY: i64 = 60_000;
@@ -223,10 +214,8 @@ pub async fn require_principal(
         if presented_token(req.headers(), auth.origin.cookie_name()).is_some() {
             return refuse(StatusCode::BAD_REQUEST, "send a key or a session, not both");
         }
-        if person_only(&path) {
-            return refuse(StatusCode::FORBIDDEN, "a key cannot be used here: sign in instead");
-        }
-        return match integration_of(&auth, key).await {
+        let by_agent = req.extensions().get::<ByAgent>().is_some();
+        return match integration_of(&auth, key, by_agent).await {
             Ok((actor, access)) => admit(req, next, &method, &path, actor, access).await,
             Err(response) => *response,
         };
@@ -310,7 +299,7 @@ pub async fn require_principal(
 
     // The agent acts as its person and says so wherever the name is shown, in history and on a change alike.
     let actor = if by_agent {
-        Actor::persons_agent(&user.id, &user.display_name)
+        Actor::agent_of(&user.id, &user.display_name)
     } else {
         Actor::person(&user.id, &user.display_name)
     };
@@ -340,11 +329,12 @@ async fn admit(
     next.run(req).await
 }
 
-/// The integration a key names, and what it holds now, read from the store on every request as an account is.
+/// The integration a key names, and what it holds now, read from the store on every request as an account is:
+/// for its agent, what it lets its agent use.
 ///
 /// Three refusals, as a worker's token has, because a caller acts on each differently: a key never made is `401`,
 /// a revoked key or a disabled integration `403`, and a store that could not say is `503`, never either of them.
-async fn integration_of(auth: &Auth, key: String) -> Result<(Actor, Access), Box<Response>> {
+async fn integration_of(auth: &Auth, key: String, by_agent: bool) -> Result<(Actor, Access), Box<Response>> {
     let store = auth.store.clone();
     let now = now_millis();
     let looked_up = blocking(move || {
@@ -353,7 +343,13 @@ async fn integration_of(auth: &Auth, key: String) -> Result<(Actor, Access), Box
         };
         let user = store.get_user(&presented.user_id)?;
         let access = match &user {
-            Some(user) if !presented.revoked && user.enabled => Some(access_of(store.as_ref(), user)?),
+            Some(user) if !presented.revoked && user.enabled => {
+                let access = access_of(store.as_ref(), user)?;
+                Some(match by_agent {
+                    true => access.for_agent(store.agent_permissions_of(&user.id)?),
+                    false => access,
+                })
+            }
             _ => None,
         };
         // A minute at most behind, which is all a roster that asks whether a key is in use needs. Its failing to be
@@ -368,9 +364,13 @@ async fn integration_of(auth: &Auth, key: String) -> Result<(Actor, Access), Box
     })
     .await;
     match looked_up {
-        Ok(Some((Some(user), Some(access)))) if user.auth_source == AuthSource::Integration => {
-            Ok((Actor::integration(&user.id, &user.display_name), access))
-        }
+        Ok(Some((Some(user), Some(access)))) if user.auth_source == AuthSource::Integration => Ok((
+            match by_agent {
+                true => Actor::agent_of(&user.id, &user.display_name),
+                false => Actor::integration(&user.id, &user.display_name),
+            },
+            access,
+        )),
         Ok(Some(_)) => Err(Box::new(refuse(
             StatusCode::FORBIDDEN,
             "this key was revoked, or its integration is disabled",
@@ -602,22 +602,6 @@ mod tests {
         assert!(!admitted(&account(AuthSource::Integration, true)));
     }
 
-    #[test]
-    fn a_key_reaches_no_persons_route() {
-        for path in [
-            "/api/auth/password",
-            "/api/me/agent-permissions",
-            "/api/agent/models",
-            "/api/integrations",
-            "/api/integrations/u_1/keys",
-        ] {
-            assert!(person_only(path), "{path}");
-        }
-        for path in ["/api/integrationsx", "/api/accounts", "/api/areas/shared"] {
-            assert!(!person_only(path), "{path}");
-        }
-    }
-
     /// `__Host-` is a promise the browser enforces, and it requires `Secure`. Used without it the cookie is
     /// dropped entirely, so a leader reached over plain HTTP takes the bare name instead.
     #[test]
@@ -753,7 +737,7 @@ mod tests {
         use smeltr::leader::access::Role;
         use smeltr::leader::accounts;
         use smeltr::leader::sqlite_store::SqliteStore;
-        use smeltr::leader::store::OidcSignIn;
+        use smeltr::leader::store::{NewApiKey, NewIntegration, OidcSignIn};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         const ORIGIN: &str = "http://127.0.0.1:4000";
@@ -854,6 +838,19 @@ mod tests {
                 .map(|(_, b)| b.to_string())
                 .unwrap_or_default();
             (status, body)
+        }
+
+        /// One request carrying `key` and nothing a browser sends; the status.
+        async fn ask_with_key(at: std::net::SocketAddr, key: &str, method: &str, target: &str) -> u16 {
+            let request = format!(
+                "{method} {target} HTTP/1.1\r\nHost: {at}\r\nAuthorization: Bearer {key}\r\n\
+                 Content-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            let mut stream = tokio::net::TcpStream::connect(at).await.unwrap();
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut answer = String::new();
+            stream.read_to_string(&mut answer).await.unwrap();
+            answer.split(' ').nth(1).unwrap().parse().unwrap()
         }
 
         fn auth(store: Arc<dyn Store>) -> Auth {
@@ -989,6 +986,38 @@ mod tests {
                 403,
                 "agent permissions never reach past their person"
             );
+        }
+
+        /// An integration's agent holds what the integration lets its agent use, as a person's does, and calls with
+        /// its key.
+        #[tokio::test]
+        async fn an_integrations_agent_holds_no_more_than_its_permissions() {
+            let store = store();
+            let created = accounts::event_for(&Actor::system(), "integration-create", "u_int", "ok");
+            let integration = NewIntegration {
+                id: "u_int",
+                name: "provisioner",
+                roles: &[],
+                administrator: true,
+            };
+            store.create_integration(integration, &created).unwrap().unwrap();
+            let key = smeltr::leader::auth::generate_secret();
+            let made = accounts::event_for(&Actor::system(), "key-create", "key_1", "ok");
+            let hash = hash_secret(&key);
+            let new_key = NewApiKey {
+                id: "key_1",
+                label: "",
+                token_hash: &hash,
+                created_at: 0,
+            };
+            store.create_api_key("u_int", new_key, &made).unwrap().unwrap();
+            let auth = auth(store.clone());
+            let direct = serve(auth.clone()).await;
+            let agent = serve_by_agent(auth.clone()).await;
+
+            assert_eq!(ask_with_key(direct, &key, "GET", "/api/accounts").await, 200);
+            assert_eq!(ask_with_key(agent, &key, "GET", "/api/accounts").await, 403);
+            assert_eq!(ask_with_key(agent, &key, "GET", "/api/areas/search").await, 200);
         }
 
         /// An administrator's agent is no administrator until they give it everything.

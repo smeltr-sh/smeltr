@@ -37,9 +37,7 @@ envelope: a failure is a status, with at most a line of text.
 **Operator.** Everything else under `/api/`, outside `/api/worker/`. A person
 calls with a session cookie, and an unsafe method also carries a matching
 Origin and the CSRF header. An integration calls with one of its keys as a
-Bearer token, and no request carries both a key and a session cookie. A key is refused on what is a person's own,
-`/api/auth/`, `/api/me/` and `/api/agent/`, and on `/api/integrations`
-itself.
+Bearer token, and no request carries both a key and a session cookie.
 
 ## Who may call what
 

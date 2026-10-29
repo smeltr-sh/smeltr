@@ -1954,14 +1954,18 @@ const addIntegration: Move = {
     await expect(handover).toHaveCount(0);
     world.integrations.set(name, key);
 
-    const accounts: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
+    const accounts: Account[] = await (
+      await j.truth()
+    )
+      .get('/api/accounts')
+      .then((a) => a.accounts);
     expect(accounts.find((a) => a.displayName === name)).toMatchObject({
       authSource: 'integration',
       administrator,
       keys: [{ label: 'journey' }],
     });
     expect(await withKey(leader, key, 'GET', '/api/health')).toBe(administrator ? 200 : 403);
-    expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(403);
+    expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(administrator ? 200 : 403);
     return `add integration ${name}${administrator ? ', an administrator,' : ''} with a key`;
   },
 };
@@ -1987,7 +1991,11 @@ const revokeIntegrationKey: Move = {
       .click();
     await expect(page.getByRole('status')).toHaveText('key revoked');
     world.integrations.set(name, null);
-    const accounts: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
+    const accounts: Account[] = await (
+      await j.truth()
+    )
+      .get('/api/accounts')
+      .then((a) => a.accounts);
     expect(accounts.find((a) => a.displayName === name)?.keys).toEqual([]);
     expect(await withKey(leader, key, 'GET', '/api/health')).toBe(403);
     return `revoke ${name}'s key`;

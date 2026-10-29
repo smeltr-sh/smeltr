@@ -31,7 +31,7 @@ use smeltr::leader::warnings::now_millis;
 use crate::accounts_api::store_call;
 use crate::agent_catalog::CATALOG;
 use crate::agents_api::refused_while_off;
-use crate::gate::{Auth, CSRF_HEADER, presented_token, refuse};
+use crate::gate::{Auth, CSRF_HEADER, presented_key, presented_token, refuse};
 
 /// The most of a request's answer read back from the router. Far beyond any JSON answer the API gives; the model
 /// reads only [`agent::MAX_RESULT`] of it.
@@ -376,8 +376,11 @@ async fn begin(
         auth: auth.clone(),
         conversation: id.to_string(),
         slot,
-        // The gate let this request through on it, so it is there.
-        token: presented_token(headers, auth.origin.cookie_name()).unwrap_or_default(),
+        // The gate let this request through on one of them, so it is there.
+        credential: match presented_key(headers) {
+            Some(key) => Credential::Key(key),
+            None => Credential::Session(presented_token(headers, auth.origin.cookie_name()).unwrap_or_default()),
+        },
         stop,
         person: smeltr::leader::auth::hash_secret(&actor.id),
         picked,
@@ -479,12 +482,18 @@ fn last_answer(turns: &[Turn]) -> Option<&model::Reply> {
     })
 }
 
-/// A running turn's way into the leader: its conversation, and the person's session its calls carry.
+/// What a turn's calls carry: what its caller called with, so ending that ends the turn's calls too.
+enum Credential {
+    Session(String),
+    Key(String),
+}
+
+/// A running turn's way into the leader: its conversation, and the caller's credential its calls carry.
 struct Turned {
     auth: Auth,
     conversation: String,
     slot: Slot,
-    token: String,
+    credential: Credential,
     stop: Arc<AtomicBool>,
     /// The person's account id, hashed.
     person: String,
@@ -547,26 +556,28 @@ impl Host for Turned {
                 .collect();
             uri = format!("{uri}?{}", query.join("&"));
         }
-        // An expired session sends no CSRF value, and the gate refuses it as it would the GUI's.
-        let csrf = self
-            .auth
-            .sessions
-            .resolve(&self.token, Instant::now())
-            .map(|s| s.csrf)
-            .unwrap_or_default();
         let body = match &call.body {
             Some(body) => Body::from(body.to_string()),
             None => Body::empty(),
         };
-        let request = axum::http::Request::builder()
-            .method(call.method.as_str())
-            .uri(uri)
-            .header(
-                header::COOKIE,
-                format!("{}={}", self.auth.origin.cookie_name(), self.token),
-            )
-            .header(header::ORIGIN, &self.auth.origin.value)
-            .header(CSRF_HEADER, csrf)
+        let request = axum::http::Request::builder().method(call.method.as_str()).uri(uri);
+        let request = match &self.credential {
+            Credential::Session(token) => {
+                // An expired session sends no CSRF value, and the gate refuses it as it would the GUI's.
+                let csrf = self
+                    .auth
+                    .sessions
+                    .resolve(token, Instant::now())
+                    .map(|s| s.csrf)
+                    .unwrap_or_default();
+                request
+                    .header(header::COOKIE, format!("{}={token}", self.auth.origin.cookie_name()))
+                    .header(header::ORIGIN, &self.auth.origin.value)
+                    .header(CSRF_HEADER, csrf)
+            }
+            Credential::Key(key) => request.header(header::AUTHORIZATION, format!("Bearer {key}")),
+        };
+        let request = request
             .header(header::CONTENT_TYPE, "application/json")
             .extension(ByAgent)
             .body(body);

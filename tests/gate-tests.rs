@@ -2289,10 +2289,11 @@ fn a_revoked_key_and_a_disabled_integrations_keys_are_refused() {
     assert!(!events.to_string().contains(&second), "an audit row carried a key");
 }
 
-/// A key is not a way into signing in, a person's own settings, or integrations, so no key makes another.
+/// A key is a sign-in like a password or a provider's: what it reaches is what its account holds, accounts and
+/// keys among them.
 #[test]
-fn a_key_reaches_no_persons_route() {
-    let leader = start("integration-person-only");
+fn an_administrators_key_manages_accounts() {
+    let leader = start("integration-accounts");
     let op = operator(&leader);
     let id = integration(
         &leader,
@@ -2300,15 +2301,26 @@ fn a_key_reaches_no_persons_route() {
         serde_json::json!({ "displayName": "provisioner", "administrator": true }),
     );
     let (key, _) = key_for(&leader, &op, &id);
-    for (method, path) in [
-        ("GET", "/api/accounts"),
-        ("POST", "/api/accounts/x/keys"),
-        ("GET", "/api/me/agent-permissions"),
-        ("GET", "/api/agent/conversations"),
-    ] {
-        let (status, body) = with_key(&leader, &key, method, path, Some(serde_json::json!({})));
-        assert_eq!(status, 403, "{method} {path}: {body}");
-    }
+    let (status, body) = with_key(
+        &leader,
+        &key,
+        "POST",
+        "/api/accounts",
+        Some(serde_json::json!({ "authSource": "integration", "displayName": "exporter" })),
+    );
+    assert_eq!(status, 201, "{body}");
+    let made = body["id"].as_str().unwrap().to_string();
+    let (status, body) = with_key(
+        &leader,
+        &key,
+        "POST",
+        &format!("/api/accounts/{made}/keys"),
+        Some(serde_json::json!({ "label": "made by a key" })),
+    );
+    assert_eq!(status, 201, "{body}");
+    let second = body["key"].as_str().unwrap().to_string();
+    let (status, body) = with_key(&leader, &second, "GET", "/api/me/agent-permissions", None);
+    assert_eq!(status, 200, "{body}");
 }
 
 /// One caller, one credential: a request carrying both a key and a session is neither's.

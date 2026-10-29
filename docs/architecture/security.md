@@ -177,7 +177,8 @@ what was set before is kept. Turning them on asks the endpoint for a short answe
 setting that cannot work is refused when it is saved. What an agent reads to
 do its work is sent to that endpoint.
 An agent works by requests to the leader's own API, sent through the gate with
-its person's session, so each is judged as the GUI's would be. It reaches only
+its person's session, or an integration's key, so each is judged as the GUI's
+would be. It reaches only
 the routes its catalog names, which leave out signing in and out and its
 person's conversations. What a request answers is data the agent reads, never
 an instruction to it: its permissions bound what an instruction written into
@@ -189,20 +190,20 @@ that data could do. A conversation is its person's alone.
   agent permissions ┘
 ```
 
-An integration is a principal of the same kind as a person, for a script
-outside the leader that calls its API. It is an account of its own that never signs in and
-holds no session. It calls with one of its **keys**, sent as a Bearer token,
-and needs no Origin or CSRF check, since no browser sends a key on its own. The
-leader keeps a key's hash and returns the key once, when it is made, as it does
-a worker's token. An administrator names an integration and gives it roles by
-name, which it holds as an OIDC account holds the roles of its groups, or makes
-it an administrator. It holds any number of keys, so one is replaced without a
-gap. A revoked key stays out, and disabling an integration revokes every key it
-holds.
+An integration is an account, for a script outside the leader that calls its
+API. A person signs in with a password or through a provider and holds a
+session; an integration calls with one of its **keys**, sent as a Bearer token
+on every request, and holds no session. It needs no Origin or CSRF check, since
+no browser sends a key on its own. The leader keeps a key's hash and returns the
+key once, when it is made, as it does a worker's token. An administrator names
+an integration and gives it roles by name, which it holds as an OIDC account
+holds the roles of its groups, or makes it an administrator. It holds any number
+of keys, so one is replaced without a gap. A revoked key stays out, and
+disabling an integration revokes every key it holds.
 
-A key reaches no route that is a person's own, nor integrations
-themselves, so no key makes another. What an integration does is recorded as
-its own, under its name, in the audit and in git.
+What a key reaches is what its integration holds, as a session reaches what
+its person holds. What an integration does is recorded as its own, under its
+display name, in the audit and in git.
 
 A disable, a password reset or a revocation that lands while a sign-in is
 checking the password refuses that sign-in. Changing a

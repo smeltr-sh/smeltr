@@ -2,8 +2,7 @@
 //! out.
 //!
 //! Behind the gate, so every handler has an [`Actor`] the server built. Who is acting is taken from that and
-//! never from the body: a caller naming themselves in JSON is naming nothing. Never reached with a key (`gate`),
-//! so no key makes another credential.
+//! never from the body: a caller naming themselves in JSON is naming nothing.
 //!
 //! An account signs in with a password, through an OpenID provider, or with a key, as an integration
 //! (`integrations_api`). A local account is an administrator. An OIDC account holds what its roles give
@@ -328,7 +327,7 @@ pub async fn patch_account(
     if request.roles.is_some() || request.administrator.is_some() {
         return refuse(
             StatusCode::CONFLICT,
-            "only an account that signs in with a key is given roles or made an administrator here",
+            "roles and administrator can be set here only for an account that signs in with a key",
         );
     }
 
