@@ -321,14 +321,7 @@ fn a_previewed_record_names_its_source() {
     let source = &system.topology.sources[0];
 
     let records = sample_records(&[("t", "{}")]);
-    let rows = smeltr::runtime::preview_routes(
-        &compiled,
-        &system.topology.destinations,
-        source.id,
-        &source.name,
-        &records,
-        budget(),
-    );
+    let rows = smeltr::runtime::preview_routes(&compiled, source, &records, budget());
     let doc = &rows[0].through[0].documents[0];
     assert!(doc.document.contains(r#""from":"s/kafka""#), "{}", doc.document);
 }
@@ -347,17 +340,10 @@ fn a_routing_field_set_before_a_parser_survives_it() {
     let compiled = system
         .compile_topology()
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
-    let source = system.topology.sources[0].id;
+    let source = &system.topology.sources[0];
 
     let records = sample_records(&[("t", r#"{"a":1}"#)]);
-    let rows = smeltr::runtime::preview_routes(
-        &compiled,
-        &system.topology.destinations,
-        source,
-        "orders",
-        &records,
-        budget(),
-    );
+    let rows = smeltr::runtime::preview_routes(&compiled, source, &records, budget());
     let doc = &rows[0].through[0].documents[0];
     assert_eq!(
         doc.destination.get("topic").map(String::as_str),
@@ -1654,17 +1640,10 @@ fn a_route_delivers_to_every_one_of_many_destinations() {
     let compiled = system
         .compile_topology()
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
-    let source = system.topology.sources[0].id;
+    let source = &system.topology.sources[0];
 
     let records = sample_records(&[("t", "{}")]);
-    let rows = smeltr::runtime::preview_routes(
-        &compiled,
-        &system.topology.destinations,
-        source,
-        "orders",
-        &records,
-        budget(),
-    );
+    let rows = smeltr::runtime::preview_routes(&compiled, source, &records, budget());
     let mut every: Vec<u32> = system.topology.destinations.iter().map(|d| d.id).collect();
     every.sort_unstable();
     assert_eq!(rows[0].through[0].documents[0].destinations, every);
@@ -2220,17 +2199,10 @@ fn a_route_preview_says_where_each_record_would_go() {
     let compiled = system
         .compile_topology()
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
-    let source = system.topology.sources[0].id;
+    let source = &system.topology.sources[0];
 
     let records = sample_records(&[("orders", r#"{"total":250}"#), ("other", r#"{"total":40}"#)]);
-    let rows = smeltr::runtime::preview_routes(
-        &compiled,
-        &system.topology.destinations,
-        source,
-        "orders",
-        &records,
-        budget(),
-    );
+    let rows = smeltr::runtime::preview_routes(&compiled, source, &records, budget());
     assert_eq!(rows.len(), 2);
 
     // On `orders`, so the first route matches -- and it is not final, so the catch-all sees the row too.
@@ -2276,14 +2248,7 @@ fn a_route_preview_reports_each_routes_exceptions_and_answer() {
             .find(|d| d.name == "kafka-audit")
             .unwrap()
             .id;
-        let rows = smeltr::runtime::preview_routes(
-            &compiled,
-            &system.topology.destinations,
-            system.topology.sources[0].id,
-            "orders",
-            &records,
-            budget(),
-        );
+        let rows = smeltr::runtime::preview_routes(&compiled, &system.topology.sources[0], &records, budget());
         (rows, audit)
     };
 
@@ -2334,7 +2299,7 @@ fn a_record_that_asks_past_the_preview_budget_is_refused_and_the_rest_still_prev
     let compiled = system
         .compile_topology()
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
-    let source = system.topology.sources[0].id;
+    let source = &system.topology.sources[0];
 
     // One record carrying an array that unrolls to a column far larger than the ceiling it is previewed under.
     let big = format!(
@@ -2343,14 +2308,7 @@ fn a_record_that_asks_past_the_preview_budget_is_refused_and_the_rest_still_prev
     );
     let records = sample_records(&[("orders", big.as_str()), ("orders", r#"{"items":[9]}"#)]);
     let tight = smeltr::core::buffer::MemoryBudget::new(64 * 1024);
-    let rows = smeltr::runtime::preview_routes(
-        &compiled,
-        &system.topology.destinations,
-        source,
-        "orders",
-        &records,
-        tight,
-    );
+    let rows = smeltr::runtime::preview_routes(&compiled, source, &records, tight);
 
     assert_eq!(rows.len(), 2, "one entry per input record");
     let refused = rows[0].refused.as_deref().expect("the big record was refused");
@@ -2390,18 +2348,11 @@ fn a_pipeline_that_unrolls_attributes_every_document_to_the_record_it_came_from(
     let compiled = system
         .compile_topology()
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
-    let source = system.topology.sources[0].id;
+    let source = &system.topology.sources[0];
 
     // Two records with different fan-out, so a positional mapping would both overrun and misattribute.
     let records = sample_records(&[("orders", r#"{"items":[1,2,3]}"#), ("orders", r#"{"items":[9]}"#)]);
-    let rows = smeltr::runtime::preview_routes(
-        &compiled,
-        &system.topology.destinations,
-        source,
-        "orders",
-        &records,
-        budget(),
-    );
+    let rows = smeltr::runtime::preview_routes(&compiled, source, &records, budget());
 
     assert_eq!(rows.len(), 2, "one entry per input record, whatever the pipeline did");
     assert_eq!(rows[0].through.len(), 1, "one route kept it");
@@ -2427,17 +2378,13 @@ fn a_record_no_route_matches_is_distinguishable_from_a_dropped_one() {
         .compile_topology()
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
     // A source no route names: nothing can match.
-    let unrouted = smeltr::core::id::SourceId::MAX;
+    let unrouted = smeltr::plan::topology::SourceConfig {
+        id: smeltr::core::id::SourceId::MAX,
+        ..system.topology.sources[0].clone()
+    };
     let records = sample_records(&[("orders", r#"{"total":250}"#)]);
 
-    let rows = smeltr::runtime::preview_routes(
-        &compiled,
-        &system.topology.destinations,
-        unrouted,
-        "orders",
-        &records,
-        budget(),
-    );
+    let rows = smeltr::runtime::preview_routes(&compiled, &unrouted, &records, budget());
     assert_eq!(rows.len(), 1);
     assert!(rows[0].matched.is_empty(), "no route selected it");
     assert!(rows[0].through.is_empty());

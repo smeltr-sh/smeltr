@@ -5402,6 +5402,7 @@ mod tests {
             dlq_of: std::collections::HashMap::from([(1, vec![2])]),
             records: std::collections::HashMap::new(),
             payloads: std::collections::HashMap::new(),
+            id_fields: Vec::new(),
         };
         let destinations = [elastic, kafka_dlq];
 
@@ -7156,7 +7157,12 @@ mod tests {
         assert_eq!(counted(&first, "capture"), 2);
         assert_eq!(first.counters_held.iter().collect::<Vec<_>>(), ["pool-0"]);
         assert_eq!(
-            runtime.gathered.metrics.iter().map(|m| m.metric.as_str()).collect::<Vec<_>>(),
+            runtime
+                .gathered
+                .metrics
+                .iter()
+                .map(|m| m.metric.as_str())
+                .collect::<Vec<_>>(),
             ["smeltr_rows_in_total"],
             "the runtime's counter that waits was not kept, or its gauge waited with it"
         );

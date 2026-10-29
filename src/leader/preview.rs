@@ -547,7 +547,6 @@ pub fn run_route_preview(
             "this sample stands for source {source_name:?}, which this config does not declare"
         )));
     };
-    let source_id = source.id;
 
     let compiled = match system.compile_topology() {
         Ok(compiled) => compiled,
@@ -568,18 +567,18 @@ pub fn run_route_preview(
         records,
         texts,
         warnings,
-    } = match read_sample(&compiled.meta_for(source_id), &sample.columns, &sample.records) {
+    } = match read_sample(&compiled.meta_for(source.id), &sample.columns, &sample.records) {
         Ok(read) => read,
         Err(e) => return Envelope::refused(Refusal::invalid(e)),
     };
 
     let previewed = crate::runtime::preview_routes_at(
         &compiled,
-        &system.topology.destinations,
-        source_id,
-        &source_name,
-        &records,
-        &texts,
+        &crate::runtime::Sample {
+            source,
+            records: &records,
+            texts: &texts,
+        },
         crate::runtime::preview_memory_budget(),
         at_micros.unwrap_or_else(crate::core::ctx::wall_clock_micros),
     );

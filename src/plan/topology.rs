@@ -3356,6 +3356,9 @@ pub struct CompiledTopology {
     /// What each destination writes of a row (`DestinationKind::payload`). Filled with `dlq_of`; one missing writes the
     /// record.
     pub payloads: HashMap<DestId, Payload>,
+    /// Each destination that names its documents by a field of the row, and that field
+    /// (`DestinationKind::id_field`). Filled with `dlq_of`.
+    pub id_fields: Vec<(DestId, String)>,
 }
 
 impl CompiledTopology {
@@ -3597,6 +3600,7 @@ pub fn compile_topology_with(
             dlq_of: HashMap::new(),
             records: HashMap::new(),
             payloads: HashMap::new(),
+            id_fields: Vec::new(),
         })
     } else {
         Err(errors)
@@ -4667,6 +4671,7 @@ mod tests {
             dlq_of: std::collections::HashMap::from([(2, vec![5]), (8, vec![3])]),
             records: HashMap::new(),
             payloads: HashMap::new(),
+            id_fields: Vec::new(),
         };
 
         // Source 0: its own delivery target plus the DLQ that target salvages to -- a source can write to a
