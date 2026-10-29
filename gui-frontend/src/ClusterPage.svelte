@@ -27,6 +27,7 @@
   leader keeps no series for `smeltr_rows_errored_total`.
 -->
 <script lang="ts">
+  import ChevronIcon from './ChevronIcon.svelte';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import { store, storedJson } from './stored';
@@ -824,12 +825,12 @@
               class:selected={selectedGroupId === group && selectedWorkerId === null}
             >
               <button
-                class="group-toggle"
+                class="icon group-toggle"
                 aria-label={isExpanded(group) ? `Collapse ${group}` : `Expand ${group}`}
                 aria-expanded={isExpanded(group)}
                 onclick={() => toggleGroup(group)}
               >
-                <span class="group-caret" class:expanded={isExpanded(group)}>▶</span>
+                <ChevronIcon open={isExpanded(group)} />
               </button>
               <button
                 class="group-select"
@@ -1025,11 +1026,11 @@
                   <tr>
                     <td>
                       <button
-                        class="group-toggle part-toggle"
+                        class="icon group-toggle part-toggle"
                         aria-label={runtimeOpen ? 'Collapse runtime' : 'Expand runtime'}
                         aria-expanded={runtimeOpen}
                         onclick={() => (runtimeOpen = !runtimeOpen)}
-                        ><span class="group-caret" class:expanded={runtimeOpen}>▶</span></button
+                        ><ChevronIcon open={runtimeOpen} /></button
                       >runtime
                     </td>
                     <td class="num" class:over={isOver(selectedMemory.runtime.whole)}>
@@ -1397,7 +1398,6 @@
   .group-row.selected {
     background: color-mix(in oklab, var(--ink) 10%, var(--panel));
   }
-  .group-toggle,
   .group-select {
     border: 0;
     background: transparent;
@@ -1408,15 +1408,6 @@
   .group-toggle {
     align-self: stretch;
     padding: 0 0.3rem 0 1rem;
-  }
-  .group-caret {
-    display: inline-block;
-    color: var(--dim);
-    font-size: 0.7rem;
-    transition: transform 120ms ease;
-  }
-  .group-caret.expanded {
-    transform: rotate(90deg);
   }
   .group-select {
     min-width: 0;

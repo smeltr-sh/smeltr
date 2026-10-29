@@ -3,6 +3,7 @@
   list where any item is folded. As `icon`, it is the chevron its items fold by, at the head of their column.
 -->
 <script lang="ts">
+  import ChevronIcon from './ChevronIcon.svelte';
   let {
     allOpen,
     what,
@@ -28,7 +29,7 @@
     {disabled}
     {onclick}
     title={text}
-    aria-label={what ? `${text} ${what}` : text}>{allOpen ? '▾︎' : '▸︎'}</button
+    aria-label={what ? `${text} ${what}` : text}><ChevronIcon open={allOpen} /></button
   >
 {:else}
   <!-- The spoken name starts with the shown text, so voice control finds the button by what it says. -->

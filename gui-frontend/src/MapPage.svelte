@@ -13,6 +13,7 @@
   a fetch, a search box, the group filter and a click.
 -->
 <script lang="ts">
+  import ChevronIcon from './ChevronIcon.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import { store, stored } from './stored';
@@ -949,11 +950,11 @@
               <div class="band-head">
                 <button
                   type="button"
-                  class="fold"
+                  class="icon"
                   aria-expanded={open}
                   aria-label={groupLabel(band.group)}
                   onclick={() => (folded = { ...folded, [band.group]: open })}
-                  >{open ? '▾' : '▸'}</button
+                  ><ChevronIcon {open} /></button
                 >
                 <h2 class="band-title" id="{uid}-band-{bandIndex}">{groupLabel(band.group)}</h2>
                 {#if summary?.first}
@@ -1342,14 +1343,6 @@
       4px 4px 0 -1px var(--bg), 4px 4px 0 0 var(--border), 8px 8px 0 -1px var(--bg),
       8px 8px 0 0 var(--border);
     box-shadow: var(--behind);
-  }
-
-  .fold {
-    border: 0;
-    background: none;
-    padding: 0 0.2rem;
-    color: var(--dim);
-    cursor: pointer;
   }
 
   .summary {

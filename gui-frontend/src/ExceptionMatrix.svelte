@@ -10,6 +10,7 @@
   A category folds its kinds away. It starts open where this layer answers one of its kinds.
 -->
 <script lang="ts">
+  import ChevronIcon from './ChevronIcon.svelte';
   import { untrack } from 'svelte';
   import Help from './Help.svelte';
   import Locked from './Locked.svelte';
@@ -109,11 +110,11 @@
       <span class="mx-name"
         >{#if level === 'category'}{@const isOpen = open.includes(row)}<button
             type="button"
-            class="fold"
+            class="icon"
             aria-expanded={isOpen}
             aria-label={row}
             onclick={() => (open = isOpen ? open.filter((c) => c !== row) : [...open, row])}
-            >{isOpen ? '▾' : '▸'}</button
+            ><ChevronIcon open={isOpen} /></button
           >{/if}{row}{#if level === 'kind'}<Help label={row}>{KIND_HELP[row]}</Help>{/if}</span
       >
       <!-- The answers are read-only where the page is not the person's to change (`access.ts`); the folds are not. -->
@@ -225,15 +226,6 @@
     overflow-wrap: anywhere;
     font-family: var(--mono);
     font-size: var(--text-label);
-  }
-  .fold {
-    border: 0;
-    background: none;
-    padding: 0;
-    width: 1rem;
-    height: auto;
-    color: var(--dim);
-    cursor: pointer;
   }
   /* Under the category's name, past its caret. */
   .kind .mx-name {
