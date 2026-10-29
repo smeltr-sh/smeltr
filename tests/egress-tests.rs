@@ -1273,3 +1273,104 @@ fn a_batch_the_destination_would_not_take_is_sent_again_alone() {
     assert_eq!(done, vec![1, 2]);
     assert_eq!(dest.units().len(), 2, "the one in flight was not sent again");
 }
+
+/// Wait for `dest` to have taken `n` batches, and answer when the last arrived.
+fn taken_within(dest: &AsyncDestination, n: usize) -> std::time::Instant {
+    let deadline = std::time::Instant::now() + timeout();
+    loop {
+        let units = dest.units();
+        if units.len() >= n {
+            return std::time::Instant::now();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{n} batches taken, not {}",
+            units.len()
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// A route that keeps failing beside ones that land: what lands does not clear the stall, and the rows that fail are
+/// sent again on their own backoff, which grows, while the batches that land do not wait on them.
+#[test]
+fn a_route_that_keeps_failing_holds_the_stall_and_backs_off_alone() {
+    let registry = Arc::new(Metrics::new());
+    let dest = AsyncDestination::new();
+    let mut egress = Egress::start(
+        0,
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        MetricsHandle::new(registry.clone(), "egress-0"),
+    );
+    let mut h = egress.handle();
+    let healthy = || {
+        registry.snapshot().into_iter().find_map(|s| match s.value {
+            smeltr::metrics::MetricValue::Gauge(v) if s.key.name == "smeltr_destination_healthy" => Some(v),
+            _ => None,
+        })
+    };
+
+    hand(&mut h, 1, &[OutgoingRecord::new(b"bad")]);
+    taken_within(&dest, 1);
+    let mut bad = dest.units()[0].0;
+    let mut waits = Vec::new();
+    for round in 0..4u64 {
+        dest.fail_rows(bad, vec![0], vec![], "that route is down");
+        let failed_at = std::time::Instant::now();
+        // A batch on a route that works, handed while the bad one waits: it lands without waiting on it.
+        hand(&mut h, 10 + round, &[OutgoingRecord::new(b"good")]);
+        taken_within(&dest, dest.units().len() + 1);
+        let units = dest.units();
+        let (good, rows) = units.last().unwrap().clone();
+        assert_eq!(
+            rows,
+            vec![b"good".to_vec()],
+            "the good batch went before the bad one's wait was over"
+        );
+        dest.complete(good);
+        assert_eq!(completions_within(&mut h, timeout()).len(), 1);
+        assert_eq!(
+            healthy(),
+            Some(0.0),
+            "a batch that landed beside the failing route did not clear the stall"
+        );
+        let again_at = taken_within(&dest, units.len() + 1);
+        let (next, rows) = dest.units().last().unwrap().clone();
+        assert_eq!(rows, vec![b"bad".to_vec()]);
+        bad = next;
+        waits.push(again_at - failed_at);
+    }
+    assert!(
+        waits[3] >= Duration::from_millis(400) && waits[3] > waits[0] * 4,
+        "each failure doubles the bad rows' wait: {waits:?}"
+    );
+
+    dest.complete(bad);
+    assert_eq!(completions_within(&mut h, timeout()).len(), 1);
+    assert_eq!(healthy(), Some(1.0), "recovered once the rows that failed landed");
+}
+
+/// A destination where nothing lands backs off as a whole: each failure waits longer before the next attempt.
+#[test]
+fn a_destination_where_nothing_lands_backs_off_as_a_whole() {
+    let dest = AsyncDestination::new();
+    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut h = egress.handle();
+    hand(&mut h, 1, &[OutgoingRecord::new(b"row")]);
+    taken_within(&dest, 1);
+    let mut waits = Vec::new();
+    for n in 1..5 {
+        dest.fail_rows(dest.units()[n - 1].0, vec![0], vec![], "down");
+        let failed_at = std::time::Instant::now();
+        waits.push(taken_within(&dest, n + 1) - failed_at);
+    }
+    assert!(
+        waits[3] >= Duration::from_millis(400) && waits[3] > waits[0] * 4,
+        "the waits grow: {waits:?}"
+    );
+    dest.complete(dest.units()[4].0);
+    assert_eq!(completions_within(&mut h, timeout()).len(), 1);
+}
