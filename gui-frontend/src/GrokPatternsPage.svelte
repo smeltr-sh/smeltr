@@ -29,7 +29,7 @@
   import JsonEditPage from './JsonEditPage.svelte';
   import { resourcesTabs } from './nav';
   import { sharedConfig, putGrokPatterns, type GrokPatternDto } from './api';
-  import RemoveButton from './RemoveButton.svelte';
+  import CrossButton from './CrossButton.svelte';
   import { count } from './time';
   import {
     builtinRegex,
@@ -229,7 +229,8 @@
                 </td>
                 <td class="act">
                   {#if !readOnly}
-                    <RemoveButton
+                    <CrossButton
+                      removes
                       label="Remove {p.id || 'unnamed'}"
                       onclick={() => patterns.splice(n, 1)}
                     />

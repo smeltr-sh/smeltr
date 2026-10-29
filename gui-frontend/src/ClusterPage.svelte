@@ -36,6 +36,7 @@
   import PageHeader from './PageHeader.svelte';
   import Help from './Help.svelte';
   import Panel from './Panel.svelte';
+  import CrossButton from './CrossButton.svelte';
   import FlowChart from './FlowChart.svelte';
   import Sparkline from './Sparkline.svelte';
   import StateMark from './StateMark.svelte';
@@ -750,9 +751,7 @@
       <div class="rollout" role="status">
         <Panel title={`${done ? 'Deployed' : 'Deploying'} ${commitOrNone(deploying)}`}>
           {#snippet actions()}
-            <a class="rollout-close" href="#/status" aria-label="Stop following this deploy"
-              >&times;</a
-            >
+            <CrossButton label="Stop following this deploy" href="#/status" />
           {/snippet}
           <div class="rollout-body">
             {#if deployingSubject}<strong>{deployingSubject}</strong>{/if}
@@ -890,12 +889,13 @@
 
       {#if selectedWorker}
         <aside class="worker-detail">
-          <button
-            class="detail-close"
-            aria-label="Close worker details"
-            onclick={() => {
-              selectedWorkerId = null;
-            }}>×</button
+          <span class="detail-close"
+            ><CrossButton
+              label="Close worker details"
+              onclick={() => {
+                selectedWorkerId = null;
+              }}
+            /></span
           >
           <h2>{selectedWorker.workerId}</h2>
           <p class="detail-group">
@@ -1238,11 +1238,6 @@
   .rollout-body meter {
     flex: 1;
   }
-  .rollout-close {
-    color: var(--dim);
-    text-decoration: none;
-    font-size: 1.1rem;
-  }
   .behind {
     color: var(--warn);
   }
@@ -1490,13 +1485,6 @@
     position: absolute;
     right: 1rem;
     top: 1rem;
-    border: 0;
-    background: none;
-    color: var(--dim);
-    /* The browser's own, which placed the glyph before the shared button padding. */
-    padding: 1px 6px;
-    font-size: 1.6rem;
-    cursor: pointer;
   }
   .worker-detail h2 {
     max-width: 100%;

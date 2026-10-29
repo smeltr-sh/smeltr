@@ -53,7 +53,7 @@
     type ExceptionsDto,
   } from './exceptions';
   import Help from './Help.svelte';
-  import RemoveButton from './RemoveButton.svelte';
+  import CrossButton from './CrossButton.svelte';
   import {
     sharedConfig,
     currentScope,
@@ -604,7 +604,7 @@
                   .length}
               />
               {#if !readOnly}
-                <RemoveButton label="Remove" onclick={() => removeCard(card)} />
+                <CrossButton removes label="Remove" onclick={() => removeCard(card)} />
               {/if}
             {/snippet}
             <RouteFlow

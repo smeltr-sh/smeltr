@@ -20,6 +20,7 @@
     type Route,
   } from './nav';
   import AuthScreen from './AuthScreen.svelte';
+  import CrossIcon from './CrossIcon.svelte';
   import { store, stored } from './stored';
   import ErrorBar from './ErrorBar.svelte';
   import { isAdministrator, settleScope } from './access';
@@ -585,7 +586,7 @@
       {/each}
       {#if exit}
         <kbd class="key">Esc</kbd>
-        <a class="btn close" href={exit}>&times; Close</a>
+        <a class="btn close" href={exit}><CrossIcon /> Close</a>
       {/if}
     </nav>
   {/if}

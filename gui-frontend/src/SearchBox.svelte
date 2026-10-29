@@ -6,6 +6,7 @@
 <script lang="ts" generics="T extends { section?: string }">
   import type { Snippet } from 'svelte';
   import { float } from './float';
+  import CrossButton from './CrossButton.svelte';
 
   let {
     query = $bindable(),
@@ -111,15 +112,13 @@
     />
     {@render after?.()}
     {#if query}
-      <button
-        type="button"
-        class="clear"
-        aria-label="Clear the search"
+      <CrossButton
+        label="Clear the search"
         onclick={() => {
           query = '';
           input?.focus();
-        }}>&times;</button
-      >
+        }}
+      />
     {/if}
   </label>
   {#if shown}
@@ -192,17 +191,6 @@
 
   input.mono {
     font-family: var(--mono);
-  }
-
-  .clear {
-    flex: none;
-    border: 0;
-    background: none;
-    padding: 0 0.3rem;
-    color: var(--dim);
-    font-size: 1.1rem;
-    line-height: 1;
-    cursor: pointer;
   }
 
   /* Placed by `float`, over whatever box holds the search. */

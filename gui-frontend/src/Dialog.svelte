@@ -89,7 +89,9 @@
     >
       <h2 id={titleId}>
         {#if onback}
-          <button type="button" class="back" aria-label="Back" onclick={onback}>&lsaquo;</button>
+          <button type="button" class="icon back" aria-label="Back" onclick={onback}
+            >&lsaquo;</button
+          >
         {/if}
         {title}
       </h2>
@@ -143,17 +145,7 @@
   }
 
   .back {
-    padding: 0 0.3rem;
-    border: none;
-    background: none;
     font-size: var(--text-body);
-    line-height: 1;
-    color: var(--dim);
-    cursor: pointer;
-  }
-
-  .back:hover {
-    color: var(--ink);
   }
 
   /* Its own scroll region, rather than the dialog's: the header rule and the footer stay reachable
