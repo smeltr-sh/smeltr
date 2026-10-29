@@ -29,7 +29,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 
 use super::store::StoreError;
 
@@ -410,8 +410,7 @@ pub(crate) const STEPS: &[&str] = &[
      );
      CREATE INDEX fact_history_subject ON fact_history (subject, ended_ms);
      CREATE INDEX fact_history_ended ON fact_history (ended_ms);",
-    // 10 -- the window a beat is now numbers its points as well as its streams, so the table is named for the
-    // window.
+    // 10 -- the last window recorded from each worker, which numbers a beat's points and its streams.
     "ALTER TABLE stream_windows RENAME TO windows;",
 ];
 
@@ -554,7 +553,8 @@ pub struct RegistryStore {
     /// Every method here answers a `Result`, and this lock is the only way any of them could panic instead; a
     /// caller already has the error path. A panic under the lock is reported where it happened, and poisoning is
     /// only its aftermath: refusing to work afterward would turn one bug into a leader that has permanently
-    /// stopped answering `/api/health`, `/api/warnings`, `/api/flow` and `/api/stats`, none of which it touched.
+    /// stopped answering `/api/health`, `/api/warnings`, `/api/flow` and `/api/areas/:area/stats`, none of which it
+    /// touched.
     /// Recovery is sound because a `Transaction` rolls back as it drops, so what comes back is consistent.
     conn: Mutex<Connection>,
     /// When [`RegistryStore::maybe_maintain`] should next actually run `maintain` -- epoch milliseconds. Rollup and
@@ -641,7 +641,7 @@ fn set_aside(path: &Path) -> Result<std::path::PathBuf, StoreError> {
         match std::fs::rename(&from, &to) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !sidecar.is_empty() => {}
-            Err(e) => return Err(StoreError(format!("setting aside {}: {e}", from.display()))),
+            Err(e) => return Err(StoreError::failed(format!("setting aside {}: {e}", from.display()))),
         }
     }
     Ok(kept)
@@ -672,7 +672,7 @@ impl RegistryStore {
         // `auto_vacuum` first: it is fixed once page 1 is written, and the switch to WAL writes it. Asked for
         // after the switch, it is refused without a word and `incremental_vacuum` reclaims nothing.
         conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-        super::steps::upgrade_sqlite(&mut conn, "registry.db", STEPS).map_err(StoreError)?;
+        super::steps::upgrade_sqlite(&mut conn, "registry.db", STEPS).map_err(StoreError::failed)?;
         Ok(RegistryStore {
             conn: Mutex::new(conn),
             next_maintenance_due_ms: AtomicI64::new(0),
@@ -866,13 +866,17 @@ impl RegistryStore {
     ///
     /// One transaction rather than one per row. A commit is what costs -- the statements inside it are a few
     /// microseconds each -- so a fleet's write load is its heartbeat rate, not its sample rate. It is also the
-    /// truthful unit: a half-written heartbeat is a claim about a window that never held. So a beat whose streams
-    /// will not write writes none of its state either, and is counted when it comes again.
+    /// truthful unit: a half-written heartbeat is a claim about a window that never held. An error is the whole
+    /// beat unwritten, which the worker sends again under the same window.
+    ///
+    /// Streams that will not write are the exception, left out and said: they fail on what they hold, so the same
+    /// window sent again would fail again, and the worker could never be heard.
     pub fn record_heartbeat(&self, beat: &HeartbeatRows<'_>) -> Result<(), StoreError> {
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let tx = conn.transaction()?;
+        let mut tx = conn.transaction()?;
+        let unseen;
         {
-            let unseen = match beat.window.seq {
+            unseen = match beat.window.seq {
                 Some(seq) => claim_window(&tx, beat.worker_id, beat.window.boot_id, seq)?,
                 None => true,
             };
@@ -917,9 +921,35 @@ impl RegistryStore {
                 for point in beat.points {
                     write_point(&tx, point, beat.now_ms)?;
                 }
-                if let Some(streams) = &beat.window.streams {
-                    write_streams(&tx, streams, beat.now_ms)?;
+            }
+        }
+        if unseen && let Some(streams) = &beat.window.streams {
+            let apart = tx.savepoint()?;
+            match write_streams(&apart, streams, beat.now_ms) {
+                Ok(()) => apart.commit()?,
+                // The store's own trouble, not the streams': the window goes again.
+                Err(e)
+                    if matches!(
+                        e.sqlite_error_code(),
+                        Some(
+                            ErrorCode::DatabaseBusy
+                                | ErrorCode::DatabaseLocked
+                                | ErrorCode::DiskFull
+                                | ErrorCode::SystemIoFailure
+                        )
+                    ) =>
+                {
+                    return Err(e.into());
                 }
+                // Dropped, the savepoint rolls back.
+                Err(e) => tracing::warn!(
+                    target: "series.streams_not_recorded",
+                    subject = %beat.worker_id,
+                    group = %streams.group_id,
+                    error = %e,
+                    "a heartbeat's streams could not be recorded, so its window is missing from what the group's \
+                     streams counted; the rest of the heartbeat was recorded"
+                ),
             }
         }
         tx.commit()?;
@@ -2129,6 +2159,67 @@ mod tests {
         assert_eq!(store.streams().unwrap().parsers[0].rows, 30);
     }
 
+    /// Streams that will not write are left out, wholly, and the rest of the beat is recorded: they fail on what
+    /// they hold, so refusing the beat would refuse the same window every time it came again.
+    #[test]
+    fn streams_that_will_not_write_leave_the_rest_of_the_beat_recorded() {
+        let store = memory_store();
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER refused BEFORE INSERT ON stream_fields BEGIN SELECT RAISE(ABORT, 'refused'); END",
+            )
+            .unwrap();
+        let report = stream_report(&["a"], &["k1"]);
+        let points = [SeriesPoint {
+            metric: "smeltr_rows_polled_total",
+            subject_key: "src".to_string(),
+            counter: true,
+            value: 5.0,
+        }];
+        store
+            .record_heartbeat(&HeartbeatRows {
+                worker_id: "w1",
+                threads: &[LatestRow {
+                    thread_id: "t1",
+                    report_json: r#"{"a":1}"#.to_string(),
+                }],
+                points: &points,
+                window: Window {
+                    boot_id: 7,
+                    seq: Some(1),
+                    streams: Some(Streams {
+                        group_id: "prod",
+                        report: &report,
+                        deployed: true,
+                    }),
+                },
+                stop_after_unreachable_secs: None,
+                commit: None,
+                smeltr_version: "",
+                release: None,
+                supervising_json: None,
+                authority_expires_millis: None,
+                stopped_at_ms: None,
+                now_ms: 1_000,
+            })
+            .expect("a beat whose streams will not write is still recorded");
+
+        assert!(
+            store.streams().unwrap().parsers.is_empty(),
+            "half of the streams were written"
+        );
+        assert_eq!(
+            store
+                .points("smeltr_rows_polled_total", "src", Tier::TenSeconds)
+                .unwrap(),
+            vec![(0, 5.0)]
+        );
+        assert_eq!(store.load_latest_state().unwrap()[0].report_json, r#"{"a":1}"#);
+    }
+
     /// The tables grow with the configuration, never the traffic: a name past the cap is counted, not kept.
     #[test]
     fn a_stream_table_holds_the_caps_worth_of_names_and_counts_the_rest() {
@@ -3292,6 +3383,7 @@ mod tests {
             )
             .unwrap();
         }
+        assert!(!super::super::steps::is_additive(STEPS[9]), "a rename is breaking");
         let store = RegistryStore::open(&path).unwrap();
         let conn = store.conn.lock().unwrap();
         assert!(!claim_window(&conn, "w1", 7, 1).unwrap());

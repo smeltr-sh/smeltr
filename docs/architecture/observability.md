@@ -101,7 +101,7 @@ about to exit prints and goes, since a buffer has nothing to offer a process
 that will not outlive the handoff; an orderly exit empties the buffer first,
 bounded so that logs delay an exit no more than they may block a write.
 
-## Logs reach the leader
+## What a heartbeat carries
 
 A heartbeat is fresh state and one window. The state -- what each thread is
 doing, what the supervisor holds, the commit it runs -- is read again for every
@@ -128,9 +128,12 @@ sequenceDiagram
 
 A beat past the leader's limit is refused, and its window is dropped rather
 than kept, since sent again it would be refused again; its progress goes back
-for the next window. One loud worker can fill the leader's cap at the expense
-of the rest. The last heartbeat is the notice that the worker is stopping, and
-nothing is held past it: a notice that does not land costs what it carried.
+for the next window. A beat the leader cannot record is refused too, and its
+window goes again; only streams that will not write are left out and the rest
+recorded, since they would fail the same way every time the window came. One
+loud worker can fill the leader's cap at the expense of the rest. The last
+heartbeat is the notice that the worker is stopping, and nothing is held past
+it: a notice that does not land costs what it carried.
 
 A log raised while logs are being delivered reaches the console and stops
 there. Otherwise a delivery that fails reports that it failed, and that report
@@ -211,8 +214,8 @@ named. A field name is data, not structure, and without the cap a source
 inventing names would grow a heartbeat without one.
 
 The worker keeps no baseline. It reports a window and forgets it once the
-leader has it: the heartbeat's window ([Logs reach the
-leader](#logs-reach-the-leader)), so a beat whose answer was lost counts
+leader has it: the heartbeat's window ([What a heartbeat
+carries](#what-a-heartbeat-carries)), so a beat whose answer was lost counts
 nothing twice. The leader sums every window from every worker
 of a group into one row per field and per key, each with when it was first
 and last seen. The same caps hold there, so the

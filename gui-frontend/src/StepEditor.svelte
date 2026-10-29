@@ -32,6 +32,7 @@
   import ChipPicker from './ChipPicker.svelte';
   import MoreIcon from './MoreIcon.svelte';
   import DisableIcon from './DisableIcon.svelte';
+  import RemoveButton from './RemoveButton.svelte';
   import { glideTo } from './glide';
   import FieldRow from './FieldRow.svelte';
   import TypePicker from './TypePicker.svelte';
@@ -67,6 +68,7 @@
   import { parsePath, pushKey } from './names';
   import { SvelteMap } from 'svelte/reactivity';
   import StepGlyph from './StepGlyph.svelte';
+  import StateMark from './StateMark.svelte';
   import { errorText, grokCaptures, type GrokPatternDto, type LookupTableDto } from './api';
   import { sharedGrokSuggestions } from './grokPatterns';
   import { beginReconcile, endReconcile } from './grokFields';
@@ -463,7 +465,7 @@
 
 {#snippet stepErrorList()}
   {#if listedErrors.length > 0 || stepWarningMessages.length > 0}
-    <div class="step-errors" class:warn={listedErrors.length === 0}>
+    <div class="step-errors callout {listedErrors.length > 0 ? 'error' : 'warn'}">
       {#each listedErrors as message}
         {@render stepMessage(message, false)}
       {/each}
@@ -476,17 +478,9 @@
 
 {#snippet stepMessage(message: string, warn: boolean)}
   <div class="step-error-msg" class:warn>
-    {@render glyph(warn)}
+    <StateMark state={warn ? 'warning' : 'error'} size={15} />
     <span>{message}</span>
   </div>
-{/snippet}
-
-{#snippet glyph(warn: boolean)}
-  <svg class="error-glyph" class:warn viewBox="0 0 24 24" fill="none" aria-hidden="true">
-    <path d="M12 3.5 L22 20.5 H2 Z" fill="currentColor" />
-    <rect x="11" y="9" width="2" height="6" rx="1" class="cutout" />
-    <rect x="11" y="16.5" width="2" height="2" rx="1" class="cutout" />
-  </svg>
 {/snippet}
 
 {#snippet more()}
@@ -612,9 +606,7 @@
       <button type="button" class="fold" onclick={moveDown} aria-label="Move down" title="Move down"
         >↓︎</button
       >
-      <button type="button" class="fold remove" onclick={remove} aria-label="Delete" title="Delete"
-        >✕︎</button
-      >
+      <span class="fold"><RemoveButton label="Delete" onclick={remove} /></span>
       {@render more()}
     {/if}
   </div>
@@ -721,7 +713,7 @@
         </span>
         <span class="summary">{stepSummary(step)}</span>
         {#if stepErrors.length > 0 || stepWarningMessages.length > 0}
-          {@render glyph(stepErrors.length === 0)}
+          <StateMark state={stepErrors.length === 0 ? 'warning' : 'error'} size={15} />
         {/if}
       </button>
       {#if stepCounts && (stepCounts.dropped > 0 || stepCounts.failed > 0)}
@@ -804,13 +796,7 @@
                     />
                   </Locked>
                   {#if !readOnly}
-                    <button
-                      type="button"
-                      class="ctl remove"
-                      onclick={() => removeAssignment(i)}
-                      aria-label="Remove assignment"
-                      title="Remove assignment">✕︎</button
-                    >
+                    <RemoveButton label="Remove assignment" onclick={() => removeAssignment(i)} />
                   {/if}
                 </div>
               {/each}
@@ -873,13 +859,7 @@
                     />
                   </Locked>
                   {#if !readOnly}
-                    <button
-                      type="button"
-                      class="ctl remove"
-                      onclick={() => step.pairs.splice(i, 1)}
-                      aria-label="Remove pair"
-                      title="Remove pair">✕︎</button
-                    >
+                    <RemoveButton label="Remove pair" onclick={() => step.pairs.splice(i, 1)} />
                   {/if}
                 </div>
               {/each}
@@ -955,13 +935,10 @@
                         />
                       </Locked>
                       {#if !readOnly}
-                        <button
-                          type="button"
-                          class="ctl remove"
+                        <RemoveButton
+                          label="Remove pattern"
                           onclick={() => grokKind.patterns.splice(i, 1)}
-                          aria-label="Remove pattern"
-                          title="Remove pattern">✕︎</button
-                        >
+                        />
                       {/if}
                     </div>
                   {/each}
@@ -1198,13 +1175,10 @@
                             bind:value={grokKind.customPatterns[i].name}
                           />
                           {#if !readOnly}
-                            <button
-                              type="button"
-                              class="ctl remove"
+                            <RemoveButton
+                              label="Remove pattern definition"
                               onclick={() => grokKind.customPatterns.splice(i, 1)}
-                              aria-label="Remove pattern definition"
-                              title="Remove pattern definition">✕︎</button
-                            >
+                            />
                           {/if}
                         </div>
                         <Locked>
@@ -1473,13 +1447,10 @@
                       bind:value={step.outputs[i].default}
                     />
                     {#if !readOnly}
-                      <button
-                        type="button"
-                        class="ctl remove"
+                      <RemoveButton
+                        label="Remove output"
                         onclick={() => step.outputs.splice(i, 1)}
-                        aria-label="Remove output"
-                        title="Remove output">✕︎</button
-                      >
+                      />
                     {/if}
                   </div>
                   {#if o.ty.kind === 'datetime'}
@@ -1554,8 +1525,8 @@
     --card-surface: var(--field);
     background: var(--card-surface);
     container: step / inline-size;
-    --control-width: 1.6rem;
-    --control-height: 1.4rem;
+    --control-width: 1.5rem;
+    --control-height: 1.5rem;
   }
 
   /* `:where` keeps this below an error's edge and a comment's border, which
@@ -1658,7 +1629,7 @@
     display: none;
   }
 
-  /* Five controls take 9.4rem and never shrink, and the summary needs room
+  /* Five controls take 7.5rem and never shrink, and the summary needs room
      beside them. At 18.75rem and under, ◎ stays out and the rest fold into
      the More menu, the badge shows its glyph and keeps its name only for a
      screen reader. In
@@ -1699,22 +1670,6 @@
     width: auto;
   }
 
-  /* The same cutout technique the logo itself uses (STYLE_GUIDE.md, Logo):
-     a background-colored shape punched through a filled one, so the mark
-     reads without a second color. In the header it sits on the card's own
-     panel; in the message band below it sits on that band's own tint, which
-     is close enough to the panel color for the cutout to still read clean. */
-  .error-glyph {
-    width: 15px;
-    height: 15px;
-    flex-shrink: 0;
-    color: var(--error);
-  }
-
-  .error-glyph .cutout {
-    fill: var(--field);
-  }
-
   .comment-badge {
     color: var(--comment-ink);
   }
@@ -1753,9 +1708,10 @@
     white-space: nowrap;
   }
 
+  /* Each control's box is the 24px target, so the boxes touch and the glyphs keep their spacing without a gap. */
   .controls {
     display: flex;
-    gap: 0.35rem;
+    gap: 0;
     flex-shrink: 0;
   }
 
@@ -1784,7 +1740,7 @@
     .card:not(.open, .if-card)
       > .card-head:is(:hover, :has(:focus-visible, [aria-expanded='true']))
       > .counts {
-      margin-right: 10.6rem;
+      margin-right: 8.7rem;
     }
 
     .card:not(.open, .if-card) > .card-head > .controls {
@@ -1795,14 +1751,10 @@
     }
   }
 
-  /* Every control in a step looks like a control, wherever it sits: the
-     head's controls, and each row's delete, marked `.ctl`. Without this a row
-     delete fell through to the browser's own button chrome wearing an error
-     color. */
-  .controls button,
-  .ctl {
+  /* Bare glyphs, as `RemoveButton` beside them is. */
+  .controls button {
     background: none;
-    border: 1px solid var(--border);
+    border: 1px solid transparent;
     border-radius: var(--radius);
     color: var(--dim);
     font-size: var(--text-note);
@@ -1820,9 +1772,19 @@
     padding: 0;
   }
 
+  /* A drawn glyph centers on its box; a text glyph's ink sits lower in its line. */
+  .controls :global(svg) {
+    transform: translateY(0.1em);
+  }
+
+  .controls button:hover,
   .controls button.active {
-    border-color: var(--ink);
     color: var(--ink);
+  }
+
+  /* Not the color alone: a backdrop marks it on. */
+  .controls button.active {
+    background: color-mix(in srgb, var(--ink) 10%, transparent);
     font-weight: 600;
   }
 
@@ -1840,7 +1802,6 @@
     gap: 0.4rem;
     margin: 0 0.7rem 0.7rem;
     padding: 0.55rem 0.7rem;
-    background: color-mix(in oklab, var(--error) 12%, var(--panel));
     border-radius: var(--radius);
   }
 
@@ -1849,21 +1810,11 @@
     gap: 0.5rem;
     align-items: flex-start;
     font-size: var(--text-note);
-    color: var(--error);
     line-height: 1.45;
   }
 
-  .step-error-msg .error-glyph {
+  .step-error-msg :global(.state-mark) {
     margin-top: 0.1rem;
-  }
-
-  .step-errors.warn {
-    background: color-mix(in oklab, var(--warn) 12%, var(--panel));
-  }
-
-  .step-error-msg.warn,
-  .error-glyph.warn {
-    color: var(--warn);
   }
 
   .body {

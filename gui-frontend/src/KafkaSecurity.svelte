@@ -35,7 +35,7 @@
      * connector's own property maps, and the page's Save is what commits. */
     value: KafkaProps;
     secrets?: SecretDto[];
-    /** What this leader's build can select, from `GET /api/system/info`.
+    /** What this leader's build can select, from `GET /api/system`.
      * Empty is that answer not arrived, or a leader older than the field;
      * the section then shows what the file says and offers no menu, rather
      * than reading as a build that carries nothing. */

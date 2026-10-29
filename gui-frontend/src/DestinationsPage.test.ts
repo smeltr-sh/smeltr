@@ -73,7 +73,8 @@ describe('the HTTP Advanced marker', () => {
     expect(httpModified({ ...http(), certificate: 'acme' })).toBe(true);
     expect(httpModified({ ...http(), trustPublic: false })).toBe(true);
     expect(httpModified({ ...http(), compression: 'gzip' })).toBe(true);
-    expect(httpModified({ ...http(), maxRequestBytes: '4 MiB' })).toBe(true);
+    expect(httpModified({ ...http(), maxRequestBytes: '1 MiB' })).toBe(true);
+    expect(httpModified({ ...http(), maxRequestBytes: '4 MiB' })).toBe(false);
     expect(httpModified({ ...http(), stallAfterSecs: 5 })).toBe(true);
   });
 });

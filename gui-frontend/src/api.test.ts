@@ -156,11 +156,9 @@ describe('needsBranch', () => {
   });
 });
 
-// The query string a review's test calls actually send. `test_api::TestScopeQuery` reads `ownScopes`
-// as a `bool`, and serde takes only `true` or `false` there -- `1` deserializes to an HTTP 400, which
-// reaches the reviewer as no test results at all. Neither side's own tests can see the other's, so the
-// literal is pinned here and in `test_api::the_query_a_review_sends_parses`.
-describe('a review names the branch under review and asks for its own scopes', () => {
+// A review's test calls name the branch under review in the path, so the leader reads that change's own areas
+// rather than the chip's.
+describe('a review names the branch under review', () => {
   const calls: string[] = [];
 
   afterEach(() => {
@@ -175,16 +173,16 @@ describe('a review names the branch under review and asks for its own scopes', (
     });
   }
 
-  it('spells ownScopes true when listing', async () => {
+  it('when listing', async () => {
     captureFetch();
     await listTests('al/vendor-returns');
-    expect(calls).toEqual(['/api/tests?branch=al%2Fvendor-returns&ownScopes=true']);
+    expect(calls).toEqual(['/api/branches/al%2Fvendor-returns/tests']);
   });
 
-  it('spells ownScopes true when running', async () => {
+  it('when running', async () => {
     captureFetch();
     await runTests({ touched: true }, 'al/vendor-returns');
-    expect(calls).toEqual(['/api/tests/run?branch=al%2Fvendor-returns&ownScopes=true']);
+    expect(calls).toEqual(['/api/branches/al%2Fvendor-returns/test-runs']);
   });
 });
 

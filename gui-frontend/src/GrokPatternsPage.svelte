@@ -1,6 +1,6 @@
 <!--
-  Grok patterns page: `grok-patterns.json`, read through `GET /api/config`
-  and written with `PUT /api/grok-patterns`, plus the raw-JSON page. A
+  Grok patterns page: `grok-patterns.json`, read through `GET /api/areas/:area`
+  and written with `PUT /api/areas/:area/grok-patterns`, plus the raw-JSON page. A
   pattern is declared once for the bundle and named as `%{NAME}` from any
   grok in its group, the way a lookup table is named by id.
 
@@ -29,7 +29,7 @@
   import JsonEditPage from './JsonEditPage.svelte';
   import { resourcesTabs } from './nav';
   import { sharedConfig, putGrokPatterns, type GrokPatternDto } from './api';
-  import TrashIcon from './TrashIcon.svelte';
+  import RemoveButton from './RemoveButton.svelte';
   import { count } from './time';
   import {
     builtinRegex,
@@ -229,12 +229,10 @@
                 </td>
                 <td class="act">
                   {#if !readOnly}
-                    <button
-                      type="button"
-                      class="icon"
-                      aria-label="Remove {p.id || 'unnamed'}"
-                      onclick={() => patterns.splice(n, 1)}><TrashIcon /></button
-                    >
+                    <RemoveButton
+                      label="Remove {p.id || 'unnamed'}"
+                      onclick={() => patterns.splice(n, 1)}
+                    />
                   {/if}
                 </td>
               </tr>
@@ -349,19 +347,6 @@
 
   .grow {
     flex: 1;
-  }
-
-  /* A bare glyph that turns red only on hover. */
-  .icon {
-    display: inline-grid;
-    padding: 0;
-    border-color: transparent;
-    background: none;
-    color: var(--dim);
-  }
-
-  .icon:hover {
-    color: var(--error);
   }
 
   /* Names a column whose head would otherwise be an empty cell. */

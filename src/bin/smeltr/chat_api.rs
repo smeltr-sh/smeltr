@@ -31,7 +31,7 @@ use smeltr::leader::warnings::now_millis;
 use crate::agent_catalog::CATALOG;
 use crate::agents_api::refused_while_off;
 use crate::gate::{Auth, CSRF_HEADER, presented_token, refuse};
-use crate::users_api::{no_store, store_call};
+use crate::users_api::store_call;
 
 /// The most of a request's answer read back from the router. Far beyond any JSON answer the API gives; the model
 /// reads only [`agent::MAX_RESULT`] of it.
@@ -195,7 +195,10 @@ async fn refused(auth: &Auth, by_agent: &Option<Extension<ByAgent>>) -> Option<R
 fn said(request: &Message) -> Result<String, Box<Response>> {
     let message = request.message.trim().to_string();
     match message.is_empty() {
-        true => Err(Box::new(refuse(StatusCode::BAD_REQUEST, "a message says something"))),
+        true => Err(Box::new(refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a message says something",
+        ))),
         false => Ok(message),
     }
 }
@@ -253,11 +256,7 @@ pub async fn start(
     if let Err(refused) = begin(&auth, &actor, &headers, &conversation.id, job, request.picked(), any).await {
         return *refused;
     }
-    (
-        StatusCode::ACCEPTED,
-        no_store(Envelope::ok(json!({"id": conversation.id}))),
-    )
-        .into_response()
+    (StatusCode::ACCEPTED, Envelope::ok(json!({"id": conversation.id}))).into_response()
 }
 
 /// `POST /api/agent/conversations/:id/messages`: say something more, once the turn before has ended.
@@ -283,7 +282,7 @@ pub async fn add_message(
     if let Err(refused) = begin(&auth, &actor, &headers, &id, job, request.picked(), any).await {
         return *refused;
     }
-    (StatusCode::ACCEPTED, no_store(Envelope::done())).into_response()
+    (StatusCode::ACCEPTED, Envelope::done()).into_response()
 }
 
 /// `POST /api/agent/conversations/:id/context`: begin the model's reading of the conversation again, from a summary
@@ -312,7 +311,7 @@ pub async fn context(
     if let Err(refused) = begin(&auth, &actor, &headers, &id, job, Picked::default(), said_nothing).await {
         return *refused;
     }
-    (StatusCode::ACCEPTED, no_store(Envelope::done())).into_response()
+    (StatusCode::ACCEPTED, Envelope::done()).into_response()
 }
 
 /// No refusal: any conversation can take a message.
@@ -618,7 +617,7 @@ pub async fn list(State(auth): State<Auth>, actor: Extension<Actor>, by_agent: O
                     summary(c, running)
                 })
                 .collect();
-            no_store(Envelope::ok(json!({"conversations": conversations})))
+            Envelope::ok(json!({"conversations": conversations})).into_response()
         }
         Err(response) => *response,
     }
@@ -637,7 +636,7 @@ pub async fn models(State(auth): State<Auth>, by_agent: Option<Extension<ByAgent
         Err(response) => return *response,
     };
     match model::models(&endpoint).await {
-        Ok(models) => no_store(Envelope::ok(json!({"models": models, "default": endpoint.model}))),
+        Ok(models) => Envelope::ok(json!({"models": models, "default": endpoint.model})).into_response(),
         Err(why) => refuse(StatusCode::BAD_GATEWAY, &why),
     }
 }
@@ -681,7 +680,7 @@ pub async fn read(
         effort: last.and_then(|r| r.effort),
         context: filled(&parsed),
     };
-    no_store(Envelope::ok(json!({"conversation": body})))
+    Envelope::ok(json!({"conversation": body})).into_response()
 }
 
 /// One stored turn as what the GUI shows: the person's messages, the agent's answers, its calls and their results.
@@ -733,7 +732,7 @@ pub async fn stop(
     if let Some(run) = slot.as_ref().and_then(|slot| hold(slot).clone()) {
         run.stop.store(true, Ordering::SeqCst);
     }
-    no_store(Envelope::done())
+    Envelope::done().into_response()
 }
 
 /// `DELETE /api/agent/conversations/:id`: delete a conversation and its turns, stopping one that runs.
@@ -762,7 +761,7 @@ pub async fn delete(
         Ok(deleted)
     });
     match deleted.await {
-        Ok(_) => no_store(Envelope::done()),
+        Ok(_) => Envelope::done().into_response(),
         Err(response) => *response,
     }
 }

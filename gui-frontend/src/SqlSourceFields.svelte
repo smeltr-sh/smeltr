@@ -9,6 +9,7 @@
   import { unreported } from './errors.svelte';
   import { onDestroy } from 'svelte';
   import Field from './Field.svelte';
+  import InlineError from './InlineError.svelte';
   import Nested from './Nested.svelte';
   import Advanced from './Advanced.svelte';
   import TlsFields from './TlsFields.svelte';
@@ -378,7 +379,7 @@
 
 {#snippet statement()}
   {#if statements && !statements.ok}
-    <p class="banner bad">{errorText(statements.errors)}</p>
+    <InlineError callout message={errorText(statements.errors)} />
   {:else if !statements?.first}
     <p class="dim">Type a query.</p>
   {:else if !opened}
@@ -451,12 +452,12 @@
   </span>
 </div>
 {#if runError}
-  <div class="banner bad" role="alert">
+  <InlineError callout>
     <strong>Run failed.</strong>
     {runError}{#if failedRun?.worker}{' '}(worker {failedRun.worker}{source.user
         ? `, as ${source.user}`
         : ''}){/if}. The query and the connection stay as they were; fix and run again.
-  </div>
+  </InlineError>
 {/if}
 
 {#if opened}
@@ -730,7 +731,7 @@
         and reads only the rows past the last one sent.
       </p>
     {:else}
-      <p class="banner warn">
+      <p class="banner callout warn">
         <strong>Each poll scans all of <code>{ran.verdict.relation}</code></strong>, about
         {ran.verdict.rows.toLocaleString()} rows. Index the position, or filter inside your query with
         <code>:last.{positionColumn}</code>.
@@ -843,26 +844,19 @@
 
   .banner {
     margin: 0;
+  }
+
+  .banner:not(.callout) {
     padding: 0.5rem 0.75rem;
     border-left: 3px solid var(--border);
     border-radius: var(--radius);
-    background: var(--field);
     font-size: var(--text-label);
+    background: var(--field);
   }
 
   .banner.good {
     border-left-color: var(--added);
     background: color-mix(in srgb, var(--added) 10%, var(--field));
-  }
-
-  .banner.warn {
-    border-left-color: var(--warn);
-    background: color-mix(in srgb, var(--warn) 14%, var(--field));
-  }
-
-  .banner.bad {
-    border-left-color: var(--error);
-    background: color-mix(in srgb, var(--error) 10%, var(--field));
   }
 
   .cheapest {

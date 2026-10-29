@@ -90,6 +90,7 @@ Fields are camelCase.
 |---|---|
 | GET | reads |
 | PUT | replaces whole |
+| PATCH | changes the fields it names |
 | DELETE | removes |
 | POST | creates, acts, or reads with a body |
 

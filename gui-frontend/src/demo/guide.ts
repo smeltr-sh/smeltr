@@ -204,13 +204,13 @@ async function get<T>(path: string, q: Record<string, string>): Promise<T | null
 
 /** What the guide needs of `branch`, read through the API. */
 export async function look(branch: string, seen: boolean): Promise<World> {
-  const scope = GROUP;
+  const area = `/api/areas/${GROUP}`;
   const [config, mainConfig, samples, tests, mainTests] = await Promise.all([
-    get<{ config?: World['config'] }>('/api/config', { branch, scope }),
-    get<{ config?: World['config'] }>('/api/config', { branch: MAIN, scope }),
-    get<{ samples?: World['samples'] }>('/api/samples', { branch, scope }),
-    get<{ tests?: { id: string }[] }>('/api/tests', { branch, scope }),
-    get<{ tests?: { id: string }[] }>('/api/tests', { branch: MAIN, scope }),
+    get<{ config?: World['config'] }>(area, { branch }),
+    get<{ config?: World['config'] }>(area, { branch: MAIN }),
+    get<{ samples?: World['samples'] }>(`${area}/samples`, { branch }),
+    get<{ tests?: { id: string }[] }>(`${area}/tests`, { branch }),
+    get<{ tests?: { id: string }[] }>(`${area}/tests`, { branch: MAIN }),
   ]);
   return {
     sawStatus: seen,

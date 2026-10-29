@@ -194,12 +194,19 @@ pub enum MetricValueDto {
     FloatCounter(f64),
     Gauge(f64),
     /// A fact with no natural number -- a reason, a destination's own words -- carried as text. A metric sample never
-    /// produces this from a registry value; a caller builds one directly when a thread has a string fact to report
-    /// alongside its numbers.
+    /// produces this from a registry value; a caller builds one with [`MetricValueDto::text`] when a thread has a
+    /// string fact to report alongside its numbers.
     Text(String),
     /// A kind from a newer build, which this one does not read, kept as it arrived.
     #[serde(untagged)]
     Unknown(serde_json::Value),
+}
+
+impl MetricValueDto {
+    /// A text fact, cut to [`MAX_TEXT_LEN`]: a fact rides every heartbeat while it stands, so none is longer.
+    pub fn text(fact: &str) -> MetricValueDto {
+        MetricValueDto::Text(crate::runtime::truncate(fact, MAX_TEXT_LEN))
+    }
 }
 
 impl From<MetricSample> for MetricSampleDto {
@@ -565,7 +572,7 @@ pub struct SourceProgress {
 }
 
 /// A single-worker source the leader holds for this worker, and where it resumes. The ledger is fetched on its
-/// own (`/api/ledger`), since it can be far larger than a heartbeat.
+/// own (`/api/worker/ledger`), since it can be far larger than a heartbeat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Hold {
@@ -889,6 +896,12 @@ impl CaptureInvitation {
     /// that starts somewhere other than the latest.
     pub fn reads_source_itself(&self) -> bool {
         self.start.is_some() || self.source.as_ref().is_some_and(|s| s.kind.runs_its_own_query())
+    }
+
+    /// The source a deployment reading it serves this capture from, by tapping its records. None for a capture that
+    /// names no source, or that reads its source itself wherever it is deployed.
+    pub fn tapped(&self) -> Option<&crate::config_file::SourceDto> {
+        self.source.as_ref().filter(|_| !self.reads_source_itself())
     }
 }
 
@@ -1430,13 +1443,13 @@ mod client {
                 .map_err(|e| HeartbeatError::other(format!("the leader's certificate authority: {e}")))?;
             let base = leader_url.as_ref().trim_end_matches('/');
             Ok(HeartbeatClient {
-                heartbeat_url: format!("{base}/api/heartbeat"),
-                capture_url: format!("{base}/api/capture-report"),
+                heartbeat_url: format!("{base}/api/worker/heartbeat"),
+                capture_url: format!("{base}/api/worker/capture-report"),
                 token: token.into(),
                 agent: agent_with(tls_config.clone(), REQUEST_BUDGET),
                 capture_agent: agent_with(tls_config.clone(), CAPTURE_BUDGET),
-                lookup_url: format!("{base}/api/lookup-store"),
-                ledger_url: format!("{base}/api/ledger"),
+                lookup_url: format!("{base}/api/worker/lookup-store"),
+                ledger_url: format!("{base}/api/worker/ledger"),
                 lookup_agent: agent_with(tls_config, LOOKUP_FILE_BUDGET),
             })
         }

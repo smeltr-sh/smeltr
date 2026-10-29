@@ -214,7 +214,7 @@ test('System and Cluster show the build each machine runs', async ({
   api,
 }) => {
   // S7
-  const info = await api.get('/api/system/info');
+  const info = await api.get('/api/system');
   const shown: string = info.release ?? info.smeltrVersion;
   expect(shown).toBeTruthy();
 
@@ -262,7 +262,7 @@ test('a secret is set once, checked without being shown, and never read back', a
   await admin.reload();
   await expect(row).toBeVisible();
   expect(await admin.content()).not.toContain(value);
-  expect(JSON.stringify(await api.get('/api/secrets'))).not.toContain(value);
+  expect(JSON.stringify(await api.get('/api/secrets').then((a) => a.secrets))).not.toContain(value);
 });
 
 test('rotating a secret points what uses it at the new version, and deploying it runs that', async ({
@@ -277,7 +277,7 @@ test('rotating a secret points what uses it at the new version, and deploying it
     value: 'first-value',
   });
   const using = 'use-es-key';
-  await api.put(`/api/destinations?branch=${using}&scope=default`, [
+  await api.put(`/api/areas/default/destinations?branch=${using}`, [
     {
       id: 'es-out',
       type: 'elasticsearch',
@@ -349,16 +349,16 @@ test('a receiver names a certificate from the list, and replacing the certificat
 }) => {
   const pki = fleet.externalPki();
   await api.post('/api/certificates', {
+    kind: 'supplied',
     name: 'receiver-tls',
     description: '',
     certificate: fullChain(pki),
     privateKey: pki.privateKey,
   });
-  await api.put('/api/sources?branch=work&scope=shared', [
+  await api.put('/api/areas/shared/sources?branch=work', [
     { id: 'firewalls', type: 'syslogReceiver', port: 6514, allowFrom: ['10.0.0.0/8'] },
   ]);
-  const sources = async () =>
-    (await api.get('/api/config?branch=work&scope=shared')).config.sources;
+  const sources = async () => (await api.get('/api/areas/shared?branch=work')).config.sources;
 
   await goto(admin, leader, '#/build/sources');
   await admin.getByRole('button', { name: /^firewalls\b/ }).click();
@@ -391,8 +391,9 @@ test('a receiver names a certificate from the list, and replacing the certificat
   await replace.getByRole('button', { name: 'Replace', exact: true }).click();
   await expect(replace).toBeHidden();
   const versions = async () =>
-    (await api.get('/api/certificates')).find((c: { name: string }) => c.name === 'receiver-tls')
-      .versions.length;
+    (await api.get('/api/certificates').then((a) => a.certificates)).find(
+      (c: { name: string }) => c.name === 'receiver-tls',
+    ).versions.length;
   await expect.poll(versions).toBe(2);
   await admin.screenshot({ path: test.info().outputPath('certificate-replaced.png') });
   expect((await sources())[0].certificate).toBe('receiver-tls');
@@ -401,6 +402,7 @@ test('a receiver names a certificate from the list, and replacing the certificat
 test('a new version without a purpose the newest has is refused', async ({ admin, api }) => {
   const server = issuedFor(['events.example.com'], 'server');
   await api.post('/api/certificates', {
+    kind: 'supplied',
     name: 'events-tls',
     description: '',
     certificate: fullChain(server),
@@ -422,7 +424,7 @@ test('a new version without a purpose the newest has is refused', async ({ admin
     }),
   ).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('certificate-refused.png') });
-  const versions = (await api.get('/api/certificates')).find(
+  const versions = (await api.get('/api/certificates').then((a) => a.certificates)).find(
     (c: { name: string }) => c.name === 'events-tls',
   ).versions.length;
   expect(versions).toBe(1);
@@ -451,7 +453,7 @@ test('the leader issues a certificate for the names given, and a receiver presen
   await expect(row.getByRole('cell', { name: 'Server and client', exact: true })).toBeVisible();
   await expect(row.getByRole('button', { name: 'Replace' })).toHaveCount(0);
   await admin.screenshot({ path: test.info().outputPath('certificate-issued.png') });
-  const listed = (await api.get('/api/certificates')) as {
+  const listed = (await api.get('/api/certificates').then((a) => a.certificates)) as {
     name: string;
     kept?: string;
     chain: { notBeforeMillis: number; notAfterMillis: number }[];
@@ -461,7 +463,7 @@ test('the leader issues a certificate for the names given, and a receiver presen
   const leaf = issued!.chain[0];
   expect(Math.floor((leaf.notAfterMillis - leaf.notBeforeMillis) / 86_400_000)).toBe(730);
 
-  await api.put('/api/sources?branch=work&scope=shared', [
+  await api.put('/api/areas/shared/sources?branch=work', [
     { id: 'hook', type: 'httpReceiver', port: 8088, tokens: { ci: 'HOOK_TOKEN' } },
   ]);
   await goto(admin, leader, '#/build/sources');
@@ -507,7 +509,7 @@ test.fixme('System → License shows the bytes this leader read this year', asyn
 async function agentsOn(api: Api, model?: FakeModel) {
   const endpoint = model ?? (await FakeModel.start());
   try {
-    await api.put('/api/settings/agents', {
+    await api.put('/api/settings/agent', {
       enabled: true,
       provider: 'anthropic',
       endpoint: endpoint.base,
@@ -563,6 +565,8 @@ test('a person sets what their agent may use from their name', async ({ admin, a
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByRole('status')).toHaveText('agent permissions saved');
   expect(await api.get('/api/me/agent-permissions')).toEqual({
+    ok: true,
+    errors: [],
     kind: 'upto',
     default: 'viewer',
     areas: { shared: 'editor' },
@@ -571,7 +575,11 @@ test('a person sets what their agent may use from their name', async ({ admin, a
   await admin.getByRole('button', { name: 'Everything you hold' }).click();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByRole('status')).toHaveText('agent permissions saved');
-  expect(await api.get('/api/me/agent-permissions')).toEqual({ kind: 'everything' });
+  expect(await api.get('/api/me/agent-permissions')).toEqual({
+    ok: true,
+    errors: [],
+    kind: 'everything',
+  });
 });
 
 test('a person asks their agent, sees what it asked the leader, and deletes the conversation', async ({
@@ -583,7 +591,7 @@ test('a person asks their agent, sees what it asked the leader, and deletes the 
   try {
     await agentsOn(api, model);
     model.answer(
-      [request('GET', '/api/pipelines', { scope: 'shared' })],
+      [request('GET', '/api/areas/shared/pipelines')],
       [say('You have **no pipelines** yet.')],
     );
     await admin.reload();
@@ -597,7 +605,7 @@ test('a person asks their agent, sees what it asked the leader, and deletes the 
     await expect(admin.locator('strong', { hasText: 'no pipelines' })).toBeVisible();
     await expect(conversationLink(admin, 'What pipelines do I have')).toBeVisible();
 
-    const call = admin.getByRole('button', { name: /GET \/api\/pipelines\?scope=shared/ });
+    const call = admin.getByRole('button', { name: /GET \/api\/areas\/shared\/pipelines/ });
     await expect(call).toContainText('200');
     await call.click();
     await expect(admin.getByRole('heading', { name: 'Answered' })).toBeVisible();

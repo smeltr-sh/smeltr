@@ -282,7 +282,7 @@ fn a_leader_seeds_pushes_to_and_follows_a_real_git_host() {
     );
     more("al/protected");
     let refused = remote::approve(&data_dir, &remote, "al/protected", &Actor::system()).unwrap_err();
-    assert!(refused.contains("protected"), "{refused}");
+    assert!(refused.message().contains("protected"), "{refused}");
     assert_eq!(api.branches(&name)["main"], approved);
     assert_eq!(git::main_head(&repo), Some(approved));
 }

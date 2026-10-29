@@ -2624,7 +2624,7 @@ fn a_minimal_http_destination_loads_with_the_defaults() {
     assert_eq!(h.payload, smeltr::plan::config::Payload::Record);
     assert_eq!(h.compression, Compression::None);
     assert!(h.headers.is_empty() && h.credentials.is_empty());
-    assert_eq!(h.max_request_bytes, 1024 * 1024);
+    assert_eq!(h.max_request_bytes, 4 * 1024 * 1024);
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     assert_eq!(
         system.topology.destinations[0].kind.placement(),
@@ -4985,7 +4985,7 @@ fn a_minimal_http_api_source_loads_with_the_defaults() {
     let SourceKind::Api(a) = kind else { unreachable!() };
     assert_eq!(a.poll_interval, std::time::Duration::from_secs(60));
     assert!(a.tls.is_none());
-    assert_eq!(kind.meta(), SourceMeta::HTTP_API);
+    assert_eq!(kind.meta(), SourceMeta::HTTP_API.with_encoding(kind.encoding()));
     assert_eq!(
         kind.single_worker().as_deref(),
         Some("https://api.example/v1/status"),
@@ -5169,7 +5169,7 @@ fn an_okta_source_loads_with_the_defaults() {
     assert_eq!(o.org, "https://acme.okta.com");
     assert_eq!(o.start, ListStart::Everything);
     assert_eq!(*poll_interval, std::time::Duration::from_secs(60));
-    assert_eq!(kind.meta(), SourceMeta::OKTA_LOGS);
+    assert_eq!(kind.meta(), SourceMeta::OKTA_LOGS.with_encoding(kind.encoding()));
     assert_eq!(
         kind.single_worker().as_deref(),
         Some("okta:https://acme.okta.com/api/v1/logs")

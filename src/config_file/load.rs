@@ -43,9 +43,9 @@ use super::dto::*;
 
 /// Structural resolution only: every reference resolves, every id is unique, every bound holds. Expression text
 /// passes through verbatim and is never compiled here, so a pipeline whose expressions don't compile still loads —
-/// on purpose, so `/api/preview` can list which pipeline that is rather than refuse the whole file. Reach for
-/// [`super::validate`] instead when the question is "does this bundle actually run": that is what compiles every
-/// pipeline and is what every save path goes through.
+/// on purpose, so `/api/areas/:area/preview/pipeline` can list which pipeline that is rather than refuse the whole
+/// file. Reach for [`super::validate`] instead when the question is "does this bundle actually run": that is what
+/// compiles every pipeline and is what every save path goes through.
 pub fn load_str(json: &str) -> Result<super::LoadedSystem, LoadError> {
     load_str_at(json, &DeclaredAt::new())
 }
@@ -6054,7 +6054,7 @@ mod tests {
         let place = kind.single_worker().expect("one worker reads it");
         assert!(place.starts_with("mysql://db.internal:3306/auth#"), "{place}");
         assert_eq!(
-            sql.meta,
+            kind.meta(),
             crate::plan::topology::SourceMeta::MYSQL
                 .declaring(vec![("event_id".into(), DataType::I64)])
                 .unwrap()

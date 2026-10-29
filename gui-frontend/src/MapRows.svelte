@@ -1,6 +1,6 @@
 <!--
   Rows of map objects, each a link that opens where it points: an object's name, a note in its
-  level's color, and a line under them. Shared by Needs attention (`MapPage.svelte`) and a
+  level's color and sign, and a line under them. Shared by Needs attention (`MapPage.svelte`) and a
   stack's members (`StackView.svelte`), so the two lists read alike.
 -->
 <script module lang="ts">
@@ -15,6 +15,8 @@
 </script>
 
 <script lang="ts">
+  import StateMark from './StateMark.svelte';
+
   let { rows, onpick }: { rows: MapRow[]; onpick?: () => void } = $props();
 </script>
 
@@ -23,7 +25,12 @@
     <li>
       <a href={r.href} onclick={onpick}>
         <span class="mono">{r.subject}</span>
-        <span class="note {r.level ?? 'dim'}">{r.note ?? ''}</span>
+        <span class="note {r.level ?? 'dim'}"
+          >{#if r.level === 'alarm' || r.level === 'warn'}<StateMark
+              state={r.level === 'alarm' ? 'error' : 'warning'}
+            />
+          {/if}{r.note ?? ''}</span
+        >
         {#if r.under}<span class="dim under">{r.under}</span>{/if}
       </a>
     </li>
@@ -59,6 +66,10 @@
   .dim,
   .note.dim {
     color: var(--dim);
+  }
+
+  .note :global(.state-mark) {
+    margin-right: 0.3em;
   }
 
   .note.alarm {

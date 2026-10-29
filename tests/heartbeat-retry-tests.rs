@@ -168,17 +168,19 @@ fn a_beat_the_leader_recorded_and_sent_again_counts_once() {
             labels: vec![("source".to_string(), "in".to_string())],
             value: MetricValueDto::Counter(rows),
         }];
-        registry.record_heartbeat(
-            &req.worker_id,
-            req.threads,
-            smeltr::leader::registry::WorkerFacts::default(),
-            Window {
-                boot_id: 7,
-                seq: Some(seq),
-                streams: None,
-            },
-            1_000,
-        );
+        registry
+            .record_heartbeat(
+                &req.worker_id,
+                req.threads,
+                smeltr::leader::registry::WorkerFacts::default(),
+                Window {
+                    boot_id: 7,
+                    seq: Some(seq),
+                    streams: None,
+                },
+                1_000,
+            )
+            .unwrap();
     };
     send(1, 5);
     send(1, 5);

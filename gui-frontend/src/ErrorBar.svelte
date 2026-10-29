@@ -10,6 +10,7 @@
   import { errors, pageOf } from './errors.svelte';
   import { tell } from './Confirm.svelte';
   import { keepClear } from './keepClear';
+  import StateMark from './StateMark.svelte';
 
   let { since }: { since?: number } = $props();
 
@@ -45,7 +46,7 @@
   >
     {#each shown as entry (entry.seq)}
       <div class="entry">
-        <span class="mark" aria-hidden="true">!</span>
+        <span class="mark"><StateMark state="error" size={16} /></span>
         <!-- The alert is the messages alone, without the mark and the dismiss beside them. -->
         <ul role="alert">
           {#each entry.placed?.() ?? [] as error, i (i)}
@@ -111,16 +112,8 @@
 
   .mark {
     flex: none;
-    display: inline-grid;
-    place-items: center;
-    width: 1.1rem;
-    height: 1.1rem;
-    margin-top: 0.1rem;
-    border-radius: 50%;
-    background: var(--error);
-    color: var(--bg);
-    font-size: var(--text-micro);
-    font-weight: 700;
+    display: flex;
+    margin-top: 0.15rem;
   }
 
   ul {

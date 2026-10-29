@@ -225,7 +225,7 @@ async function configOn(api: Api, branch: string): Promise<Config> {
   const names = new Map<string, string>();
   const routes: { source: string; pipeline: string; deliver?: { to: string[] }[] }[] = [];
   for (const scope of ['shared', 'default']) {
-    const res = await api.get(`/api/config?branch=${on}&scope=${scope}`);
+    const res = await api.get(`/api/areas/${scope}?branch=${on}`);
     c.sources.push(...res.config.sources.map((s: { id: string }) => s.id));
     c.destinations.push(...res.config.destinations.map((d: { id: string }) => d.id));
     for (const p of res.config.pipelines as {
@@ -241,7 +241,7 @@ async function configOn(api: Api, branch: string): Promise<Config> {
     routes.push(...res.config.routes);
     c.lookups.push(...(res.config.lookupTables ?? []).map((t: { id: string }) => t.id));
     c.grokPatterns.push(...(res.config.grokPatterns ?? []).map((p: { id: string }) => p.id));
-    const samples: { name: string }[] = (await api.get(`/api/samples?branch=${on}&scope=${scope}`))
+    const samples: { name: string }[] = (await api.get(`/api/areas/${scope}/samples?branch=${on}`))
       .samples;
     c.samples.push(...samples.map((s) => s.name));
   }
@@ -434,7 +434,9 @@ const enrollWorker: Move = {
     world.workers.set(name, { state: 'heartbeating', group: 'default' });
     const workers: { workerId: string; revoked: boolean }[] = await (
       await j.truth()
-    ).get('/api/workers');
+    )
+      .get('/api/workers')
+      .then((a) => a.workers);
     expect(workers.find((w) => w.workerId === name)?.revoked).toBe(false);
     return `enroll ${name}`;
   },
@@ -458,7 +460,9 @@ const revokeWorker: Move = {
     world.workers.set(name, { ...world.workers.get(name)!, state: 'revoked' });
     const workers: { workerId: string; revoked: boolean }[] = await (
       await j.truth()
-    ).get('/api/workers');
+    )
+      .get('/api/workers')
+      .then((a) => a.workers);
     expect(workers.find((w) => w.workerId === name)?.revoked).toBe(true);
     // A revoked worker keeps running what it has, a receiver's port with it, so the administrator shuts it down.
     await j.fleet.stopWorker(name);
@@ -472,7 +476,11 @@ const revokeWorker: Move = {
       .click();
     await expect(workerRowOf(page, name)).toHaveCount(0);
     world.workers.delete(name);
-    const after: { workerId: string }[] = await (await j.truth()).get('/api/workers');
+    const after: { workerId: string }[] = await (
+      await j.truth()
+    )
+      .get('/api/workers')
+      .then((a) => a.workers);
     expect(after.map((w) => w.workerId)).not.toContain(name);
     return `revoke ${name}, and remove it`;
   },
@@ -584,7 +592,7 @@ const routeStream: Move = {
     const on = encodeURIComponent(world.branch ?? 'main');
     const routes: { source: string; condition?: string }[] = [];
     for (const scope of ['shared', 'default'])
-      routes.push(...(await api.get(`/api/config?branch=${on}&scope=${scope}`)).config.routes);
+      routes.push(...(await api.get(`/api/areas/${scope}?branch=${on}`)).config.routes);
     expect(routes.find((r) => r.source === source)?.condition).toBe(condition);
     return `route ${source}'s stream ${METRICS_STREAM} from the map, its pipeline from a capture as ${sample}`;
   },
@@ -715,7 +723,7 @@ const fillAvro: Move = {
     world.editing.sources.push(id);
     await editingIsSaved(j);
     const on = encodeURIComponent(world.branch!);
-    const res = await (await j.truth()).get(`/api/config?branch=${on}&scope=shared`);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${on}`);
     const saved = res.config.sources.find((s: { id: string }) => s.id === id);
     expect(saved.fields, `${id} declares the file's fields`).toEqual(fields);
     return `add Avro source ${id}, its fields filled from a message${typed ? ', total typed str first' : ''}`;
@@ -907,8 +915,8 @@ const blastRadius: Move = {
     const on = encodeURIComponent(world.branch ?? 'main');
     const reached: string[] = [];
     for (const scope of ['shared', 'default']) {
-      const q = `kind=source&id=${encodeURIComponent(route.source)}&branch=${on}&scope=${scope}`;
-      const res = await api.get(`/api/connections?${q}`);
+      const source = encodeURIComponent(route.source);
+      const res = await api.get(`/api/areas/${scope}/sources/${source}/connections?branch=${on}`);
       reached.push(...res.downstream.map((o: { id: string }) => o.id));
     }
     expect(reached).toContain(to);
@@ -949,7 +957,7 @@ const comment: Move = {
     await expect(page.getByText(text)).toBeVisible();
     await page.reload();
     await expect(page.getByText(text)).toBeVisible();
-    const timeline = await (await j.truth()).get(`/api/changes/${world.branch}/timeline`);
+    const timeline = await (await j.truth()).get(`/api/branches/${world.branch}/timeline`);
     expect(JSON.stringify(timeline)).toContain(text);
     return `comment on "${world.change}"`;
   },
@@ -990,7 +998,7 @@ const deploy: Move = {
     }
     await expect(page).not.toHaveURL(/#\/changes\/review/);
     const api = await j.truth();
-    const history: History = await api.get('/api/history');
+    const history: History = await api.get('/api/main/history');
     expect(history.commits[0].subject).toBe(title);
     // A deploy leaves out the samples no test names, and the journey writes no tests: main keeps its own.
     const main = world.deploys[world.deploys.length - 1].config;
@@ -1058,7 +1066,7 @@ const rollBack: Move = {
       .click();
     await expect(page).toHaveURL(/#\/status\?deploying=/);
     const api = await j.truth();
-    const history: History = await api.get('/api/history');
+    const history: History = await api.get('/api/main/history');
     expect(history.held).toBeDefined();
     expect(history.commits.find((c) => c.commit === history.deployed)?.subject).toBe(subject);
     // Until a worker has taken the rollback, it still reports the commit a release returns to, and a capture after
@@ -1102,7 +1110,7 @@ const release: Move = {
       .getByRole('button', { name: 'Release' })
       .click();
     await expect(page).toHaveURL(/#\/status\?deploying=/);
-    const history: History = await (await j.truth()).get('/api/history');
+    const history: History = await (await j.truth()).get('/api/main/history');
     expect(history.held).toBeUndefined();
     expect(history.deployed).toBe(history.commits[0].commit);
     world.held = false;
@@ -1132,7 +1140,7 @@ const addSecret: Move = {
       .filter({ has: page.getByRole('cell', { name, exact: true }) });
     await expect(row.getByRole('cell', { name: 'v1', exact: true })).toBeVisible();
     world.secrets.set(name, 1);
-    const secrets: Secret[] = await (await j.truth()).get('/api/secrets');
+    const secrets: Secret[] = await (await j.truth()).get('/api/secrets').then((a) => a.secrets);
     expect(secrets.find((s) => s.name === name)?.versions).toHaveLength(1);
     expect(JSON.stringify(secrets)).not.toContain(value);
     expect(await page.content()).not.toContain(value);
@@ -1161,7 +1169,7 @@ const rotateSecret: Move = {
     await expect(page.getByRole('dialog', { name: 'branch required' })).toHaveCount(0);
     await expect(row.getByRole('cell', { name: `v${version}`, exact: true })).toBeVisible();
     world.secrets.set(name, version);
-    const secrets: Secret[] = await (await j.truth()).get('/api/secrets');
+    const secrets: Secret[] = await (await j.truth()).get('/api/secrets').then((a) => a.secrets);
     expect(secrets.find((s) => s.name === name)?.versions).toHaveLength(version);
     expect(JSON.stringify(secrets)).not.toContain(value);
     return `rotate ${name} to v${version}`;
@@ -1223,7 +1231,7 @@ const regenerateKey: Move = {
     const unopenable = async () => {
       const key: { state: string; unopenable: { name: string }[] } = await (
         await j.truth()
-      ).get('/api/encryption-key');
+      ).get('/api/settings/encryption-key');
       expect(key.state).toBe('held');
       // One in force may be ordered again at once, so it may be sealed or not.
       return key.unopenable
@@ -1358,7 +1366,7 @@ const declareFromProduction: Move = {
     const declared: { name: string; type: unknown }[] = [];
     for (const scope of ['shared', 'default']) {
       const res = await truth.get(
-        `/api/config?branch=${encodeURIComponent(world.branch!)}&scope=${scope}`,
+        `/api/areas/${scope}?branch=${encodeURIComponent(world.branch!)}`,
       );
       for (const p of res.config.pipelines as {
         name: string;
@@ -1405,7 +1413,7 @@ const writeInto: Move = {
     const written: string[] = [];
     for (const scope of ['shared', 'default']) {
       const res = await truth.get(
-        `/api/config?branch=${encodeURIComponent(world.branch!)}&scope=${scope}`,
+        `/api/areas/${scope}?branch=${encodeURIComponent(world.branch!)}`,
       );
       for (const p of res.config.pipelines as {
         name: string;
@@ -1497,7 +1505,7 @@ const addLookup: Move = {
     await save(j, unsaved(page));
     world.editing.lookups.push(id);
     await editingIsSaved(j);
-    const res = await (await j.truth()).get(`/api/config?branch=${world.branch}&scope=shared`);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${world.branch}`);
     const table = res.config.lookupTables.find((t: { id: string }) => t.id === id);
     expect(table.rows).toHaveLength(rows);
     return `add lookup table ${id} of ${rows} row(s)`;
@@ -1519,7 +1527,7 @@ const addGrokPattern: Move = {
     await save(j, unsaved(page));
     world.editing.grokPatterns.push(id);
     await editingIsSaved(j);
-    const res = await (await j.truth()).get(`/api/config?branch=${world.branch}&scope=shared`);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${world.branch}`);
     const saved = res.config.grokPatterns.find((p: { id: string }) => p.id === id);
     expect(saved.pattern).toBe(pattern);
     return `add grok pattern ${id}`;
@@ -1583,17 +1591,16 @@ const editSample: Move = {
     const name = rng.pick(world.editing.samples);
     const api = await j.truth();
     // Read where the GUI edits: main until a save names a branch. A capture made in a group's scope is saved there.
-    const on = (scope: string) =>
-      `branch=${encodeURIComponent(world.branch ?? 'main')}&scope=${scope}`;
+    const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
     let scope = 'shared';
     let id: string | undefined;
     for (scope of ['shared', 'default']) {
-      const { samples } = await api.get(`/api/samples?${on(scope)}`);
+      const { samples } = await api.get(`/api/areas/${scope}/samples?${on}`);
       id = samples.find((s: { name: string }) => s.name === name)?.id;
       if (id) break;
     }
     const read = async () =>
-      (await api.get(`/api/samples/${encodeURIComponent(id!)}?${on(scope)}`)).sample
+      (await api.get(`/api/areas/${scope}/samples/${encodeURIComponent(id!)}?${on}`)).sample
         .records as Record<string, unknown>[];
     // Each record by the number the editor gives it, which it keeps while others go.
     let draft = (await read()).map((record, i) => ({ n: i + 1, record }));
@@ -1819,7 +1826,9 @@ const enrollInGroup: Move = {
     world.workers.set(name, { state: 'heartbeating', group });
     const workers: { workerId: string; revoked: boolean }[] = await (
       await j.truth()
-    ).get('/api/workers');
+    )
+      .get('/api/workers')
+      .then((a) => a.workers);
     expect(workers.find((w) => w.workerId === name)?.revoked).toBe(false);
     return `enroll ${name} in ${group}`;
   },
@@ -1853,7 +1862,7 @@ const addAccount: Move = {
     await handover.getByRole('button', { name: 'Done' }).click();
     await expect(handover).toHaveCount(0);
     world.accounts.set(username, true);
-    const users: Account[] = await (await j.truth()).get('/api/users');
+    const users: Account[] = await (await j.truth()).get('/api/users').then((a) => a.users);
     expect(users.find((u) => u.username === username)).toMatchObject({
       enabled: true,
       authSource: 'local',
@@ -1898,7 +1907,7 @@ const disableAccount: Move = {
       .click();
     await expect(page.getByRole('status')).toHaveText('account disabled; its sessions are over');
     world.accounts.set(username, false);
-    const users: Account[] = await (await j.truth()).get('/api/users');
+    const users: Account[] = await (await j.truth()).get('/api/users').then((a) => a.users);
     expect(users.find((u) => u.username === username)?.enabled).toBe(false);
     return `disable ${username}`;
   },
@@ -1921,7 +1930,9 @@ async function saveRole(j: Journey, name: string): Promise<string> {
   world.roles.add(name);
   const roles: { name: string; administrator: boolean; areas: Record<string, string> }[] = await (
     await j.truth()
-  ).get('/api/roles');
+  )
+    .get('/api/roles')
+    .then((a) => a.roles);
   expect(roles.find((r) => r.name === name)).toMatchObject({
     administrator: false,
     areas: { shared: level },
@@ -1963,7 +1974,7 @@ const turnOnAgents: Move = {
     await expect(page.getByRole('button', { name: 'replace the API key' })).toBeVisible();
     world.agentsOn = true;
     const truth = await j.truth();
-    expect((await truth.get('/api/settings/agents')).settings).toEqual({
+    expect((await truth.get('/api/settings/agent')).settings).toEqual({
       enabled: true,
       provider: 'anthropic',
       endpoint: model.base,
@@ -1999,7 +2010,11 @@ const setAgentPermissions: Move = {
     }
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByRole('status')).toHaveText('agent permissions saved');
-    expect(await (await j.truth()).get('/api/me/agent-permissions')).toEqual(expected);
+    expect(await (await j.truth()).get('/api/me/agent-permissions')).toEqual({
+      ok: true,
+      errors: [],
+      ...expected,
+    });
     return `set my agent's permissions to ${JSON.stringify(expected)}`;
   },
 };
@@ -2181,7 +2196,7 @@ const ssoSignIn: Move = {
       await context.close();
     }
     world.ssoSignedIn = true;
-    const users: Account[] = await (await j.truth()).get('/api/users');
+    const users: Account[] = await (await j.truth()).get('/api/users').then((a) => a.users);
     const person = users.find((u) => u.authSource === 'oidc');
     expect(person).toMatchObject({
       displayName: provider.person.name,
@@ -2299,7 +2314,7 @@ const uploadCertificate: Move = {
     const pki = j.fleet.externalPki();
     j.world.certificates.set(await switchToUploaded(j.page, pki), pki);
     j.world.supplied = true;
-    const { supplied, rotation } = await (await j.truth()).get('/api/settings/certificates');
+    const { supplied, rotation } = await (await j.truth()).get('/api/settings/tls');
     expect({ supplied, rotation }).toEqual({ supplied: true, rotation: null });
     await fleetStillHeard(j);
     return `switch to an uploaded certificate, with ${heartbeating(j.world).length} workers following`;
@@ -2313,7 +2328,7 @@ const withdrawCertificate: Move = {
     await switchToLeaderIssued(j.page);
     j.world.supplied = false;
     j.world.acme = false;
-    const { supplied, rotation } = await (await j.truth()).get('/api/settings/certificates');
+    const { supplied, rotation } = await (await j.truth()).get('/api/settings/tls');
     expect({ supplied, rotation }).toEqual({ supplied: false, rotation: null });
     await fleetStillHeard(j);
     return `switch back to the leader's own certificate, with ${heartbeating(j.world).length} workers following`;
@@ -2332,7 +2347,7 @@ const orderAcme: Move = {
     j.world.supplied = true;
     j.world.acme = true;
     j.world.ordered = true;
-    const { source, rotation, served } = await (await j.truth()).get('/api/settings/certificates');
+    const { source, rotation, served } = await (await j.truth()).get('/api/settings/tls');
     expect({ source, rotation }).toEqual({ source: 'acme', rotation: null });
     expect(served.names).toContain(LEADER_NAME);
     await fleetStillHeard(j);
@@ -2345,9 +2360,9 @@ const renewAcmeCertificate: Move = {
   weight: (w) => (w.acme ? 1 : 0),
   run: async (j) => {
     const challenge = j.rng.pick(['TLS-ALPN-01', 'HTTP-01'] as const);
-    const before = await (await j.truth()).get('/api/settings/certificates');
+    const before = await (await j.truth()).get('/api/settings/tls');
     await renewAcme(j.page, challenge);
-    const after = await (await j.truth()).get('/api/settings/certificates');
+    const after = await (await j.truth()).get('/api/settings/tls');
     expect(after.source).toBe('acme');
     expect(after.served.fingerprint).not.toBe(before.served.fingerprint);
     expect(after.authority.fingerprint).toBe(before.authority.fingerprint);
@@ -2360,10 +2375,10 @@ const acmeDns01Refused: Move = {
   name: 'acme-dns-01-refused',
   weight: (w) => (w.acme ? 1 : 0),
   run: async (j) => {
-    const before = await (await j.truth()).get('/api/settings/acme');
+    const before = await (await j.truth()).get('/api/settings/tls/acme');
     await refuseDns01(j.page, `cf-${j.rng.below(1_000_000)}`, LEADER_NAME);
     // Refused whole: neither the challenge nor the token was stored.
-    expect(await (await j.truth()).get('/api/settings/acme')).toEqual(before);
+    expect(await (await j.truth()).get('/api/settings/tls/acme')).toEqual(before);
     return `DNS-01 refused for ${LEADER_NAME}, an IP address`;
   },
 };
@@ -2372,9 +2387,9 @@ const acmeUnderNewRoot: Move = {
   name: 'acme-new-root',
   weight: (w) => (w.acme ? 1 : 0),
   run: async (j) => {
-    const before = await (await j.truth()).get('/api/settings/certificates');
+    const before = await (await j.truth()).get('/api/settings/tls');
     await acmeNewRoot(j.page, j.authority);
-    const after = await (await j.truth()).get('/api/settings/certificates');
+    const after = await (await j.truth()).get('/api/settings/tls');
     expect({ source: after.source, rotation: after.rotation }).toEqual({
       source: 'acme',
       rotation: null,
@@ -2466,7 +2481,7 @@ async function setFirstValue(j: Journey, branch: string, id: string, value: stri
   await page.getByLabel('row 1 value').fill(value);
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await unsaved(page)();
-  const res = await (await j.truth()).get(`/api/config?branch=${branch}&scope=shared`);
+  const res = await (await j.truth()).get(`/api/areas/shared?branch=${branch}`);
   const table = res.config.lookupTables.find((t: { id: string }) => t.id === id);
   expect(table.rows[0][1], `${id} on ${branch}`).toBe(value);
 }
@@ -2528,7 +2543,7 @@ const bringCurrent: Move = {
     await page.getByLabel('Keep').selectOption(keep);
     await page.getByRole('button', { name: 'Apply' }).click();
     await expect(page.getByText('Current with main', { exact: true })).toBeVisible();
-    const res = await (await j.truth()).get(`/api/config?branch=${mine}&scope=shared`);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${mine}`);
     const table = res.config.lookupTables.find((t: { id: string }) => t.id === id);
     expect(table.rows[0][1]).toBe(keep === 'main' ? `theirs-${n}` : `mine-${n}`);
     await editingIsSaved(j);

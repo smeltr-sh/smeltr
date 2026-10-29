@@ -1223,9 +1223,7 @@ fn live_a_partition_assigned_while_blocked_supplies_nothing() {
     // Two single-partition topics, created empty, so each of two members holds one.
     let topics = [unique("blocked-a"), unique("blocked-b")];
     for topic in &topics {
-        let mut dest = dest_for(&brokers, topic);
-        hand(&mut dest, &[]);
-        dest.flush().unwrap();
+        make_topic(&brokers, topic, 1);
         let mut probe = KafkaSource::new(
             &KafkaSourceConfig {
                 service: smeltr::plan::topology::KafkaService::Kafka,
@@ -1246,11 +1244,11 @@ fn live_a_partition_assigned_while_blocked_supplies_nothing() {
             &Default::default(),
         )
         .unwrap();
-        // Subscribing to a topic that does not exist yet asks the broker to create it.
+        // A topic just created is assigned once its partition has a leader.
         let deadline = Instant::now() + Duration::from_secs(30);
         while probe.assigned_partitions().is_empty() {
             probe.poll_batch(1, 1 << 20, Duration::from_millis(100)).unwrap();
-            assert!(Instant::now() < deadline, "{topic} was never created");
+            assert!(Instant::now() < deadline, "{topic} was never assigned");
         }
     }
     let config = KafkaSourceConfig {

@@ -90,7 +90,7 @@ export class Api {
     const text = await res.text();
     expect(res.ok(), `${method} ${url} -> ${res.status()}: ${text}`).toBe(true);
     const body = text ? JSON.parse(text) : undefined;
-    // Many routes answer a refusal with 200 and `ok: false`; arranging never expects one.
+    // The status alone says a refusal (docs/architecture/api.md); this catches a route that answers one at 200.
     expect(body?.ok, `${method} ${url}: ${text}`).not.toBe(false);
     return body as T;
   }
@@ -101,12 +101,12 @@ export class Api {
 
   /** Opens `branch` for review as `title`. */
   openChange(branch: string, title: string, description = '') {
-    return this.post('/api/changes', { branch, title, description });
+    return this.post(`/api/branches/${encodeURIComponent(branch)}/open`, { title, description });
   }
 
   /** Approves the change open on `branch`, which merges it to main and deploys it. */
   deploy(branch: string) {
-    return this.post(`/api/changes/${encodeURIComponent(branch)}/deploy`, {});
+    return this.post(`/api/branches/${encodeURIComponent(branch)}/deploy`, {});
   }
 }
 
@@ -351,7 +351,7 @@ export async function addAccount(
   const made = await api.post('/api/users', { username, displayName });
   const first = await signedIn(leader, username, made.temporaryPassword);
   const password = `${username}-chosen-password`;
-  await first.post('/api/auth/password', { username, newPassword: password });
+  await first.put('/api/auth/password', { username, newPassword: password });
   await first.ctx.dispose();
   return signedIn(leader, username, password);
 }
@@ -421,7 +421,7 @@ export async function settled(page: Page) {
  * `ADMIN_PASSWORD`; changing it ends that session. */
 export async function claimAdmin(leader: Leader): Promise<Api> {
   const first = await signedIn(leader, leader.username, leader.oneTimePassword);
-  await first.post('/api/auth/password', {
+  await first.put('/api/auth/password', {
     username: leader.username,
     newPassword: ADMIN_PASSWORD,
   });

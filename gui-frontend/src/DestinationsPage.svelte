@@ -1,6 +1,6 @@
 <!--
-  Destinations page: `destinations.json`, read through `GET /api/config`
-  and written with `PUT /api/destinations`, plus the raw-JSON page.
+  Destinations page: `destinations.json`, read through `GET /api/areas/:area`
+  and written with `PUT /api/areas/:area/destinations`, plus the raw-JSON page.
 -->
 <script lang="ts">
   import Connections from './Connections.svelte';

@@ -251,7 +251,7 @@ fn unresolved(e: &ureq::Error, leader_url: &str) -> Unresolved {
             Unresolved::Unreachable(format!("{leader_url} is not answering yet: {e}"))
         }
         ureq::Error::StatusCode(code) => Unresolved::Refused(format!(
-            "{leader_url} answered {code}. A leader answers a worker at /api/authority and /api/enroll, neither \
+            "{leader_url} answered {code}. A leader answers a worker at /api/worker/authority and /api/worker/enroll, neither \
              of them gated -- check the address, and anything routing to it."
         )),
         // The connection was made and the certificate was not accepted, which is a different thing from a leader
@@ -424,7 +424,7 @@ fn holds(pem: &[u8], fingerprint: &str) -> bool {
 fn fetch_pinned_authority(leader_url: &str, fingerprint: &str) -> Result<Vec<u8>, Unresolved> {
     let agent = heartbeat::agent_without_verification(crate::heartbeat::REQUEST_BUDGET);
     let mut response = agent
-        .get(format!("{}/api/authority", leader_url.trim_end_matches('/')))
+        .get(format!("{}/api/worker/authority", leader_url.trim_end_matches('/')))
         .call()
         .map_err(|e| unresolved(&e, leader_url))?;
     let pem = response
@@ -489,7 +489,7 @@ fn certificate_blocks(pem: &str) -> Vec<String> {
     blocks
 }
 
-/// `POST /api/enroll`: an enrollment code for a persistent Bearer token. Enrollment happens before a `HeartbeatClient`
+/// `POST /api/worker/enroll`: an enrollment code for a persistent Bearer token. Enrollment happens before a `HeartbeatClient`
 /// exists, so it builds its own agent over the same trust and the same budget.
 fn enroll(
     leader_url: &str,
@@ -501,13 +501,13 @@ fn enroll(
     let agent = heartbeat::agent_trusting(leader_ca_pem, trust_public, crate::heartbeat::REQUEST_BUDGET)
         .map_err(Unresolved::Refused)?;
     let mut response = agent
-        .post(format!("{}/api/enroll", leader_url.trim_end_matches('/')))
+        .post(format!("{}/api/worker/enroll", leader_url.trim_end_matches('/')))
         .send_json(serde_json::json!({ "code": code, "workerId": worker_id }))
         .map_err(|e| unresolved(&e, leader_url))?;
     let parsed: EnrollResponse = response.body_mut().read_json().map_err(|e| {
         Unresolved::Unreachable(format!(
             "{leader_url} answered something this worker could not read as an enrollment: {e}. A leader answers \
-                 /api/enroll with JSON, so anything else is something else at that address."
+                 /api/worker/enroll with JSON, so anything else is something else at that address."
         ))
     })?;
     if parsed.ok {
@@ -641,7 +641,7 @@ fn fetch_deployed_with_budget(
 
     // The url is built fresh on every call rather than kept in the repository's own remote config, so where the
     // leader keeps its repository is never something a worker remembers wrongly.
-    let url = format!("{}/repo", leader_url.trim_end_matches('/'));
+    let url = format!("{}/api/worker/repo", leader_url.trim_end_matches('/'));
     // Straight into `FETCHED_REF`: `refs/smeltr/` is local on a worker, and what it fetched is all it needs to name.
     let refspec = format!("+{DEPLOYED_REF}:{FETCHED_REF}");
     let remote = repo
@@ -1135,11 +1135,9 @@ fn spawn_reader(
         source_id,
         Some(source_name.to_string()),
         topology.meta_for(source_id),
-        kind.encoding(),
+        crate::handoff::Handoff::watched(shared.ready.clone(), depth.lane * depth.batch_bytes),
         destinations.clone(),
         reports,
-        shared.ready.clone(),
-        depth.lane * depth.batch_bytes,
     ));
     let reader = Reader::new(
         source_id,
@@ -1653,13 +1651,16 @@ fn thread_reports(
 }
 
 /// Attach facts to the thread that knows them first-hand -- a reader's block, a destination's refusals. The registry
-/// never saw these, so the leader can only read a subject from the thread reporting it.
+/// never saw these, so the leader can only read a subject from the thread reporting it. Each is labeled by position,
+/// as its owner wrote it, and goes on resolved against `subjects`.
 fn attach_owned_facts(
     by_thread: &mut std::collections::HashMap<String, Vec<crate::heartbeat::MetricSampleDto>>,
+    subjects: &crate::metrics::Subjects,
     owned: impl IntoIterator<Item = (String, Vec<crate::heartbeat::MetricSampleDto>)>,
 ) {
-    for (thread_id, facts) in owned {
+    for (thread_id, mut facts) in owned {
         if !facts.is_empty() {
+            resolve_subject_labels(&mut facts, subjects);
             by_thread.entry(thread_id).or_default().extend(facts);
         }
     }
@@ -1743,10 +1744,10 @@ struct Window {
     progress: Vec<heartbeat::SourceProgress>,
 }
 
-/// The windows this process has numbered, and the one the leader has not answered.
+/// The number of the last window this process took, and that window while the leader has not answered it.
 #[derive(Default)]
 struct Owed {
-    numbered: u64,
+    seq: u64,
     window: Option<Window>,
 }
 
@@ -1754,8 +1755,6 @@ struct Owed {
 /// runtime's report, has gathered. The runtime's logs take whatever room this process's leave, and its progress
 /// the oldest ledger entries' worth; the rest of each waits in `held` for the windows that follow.
 fn take_window(registry: &Metrics, held: Option<&mut child::RuntimeReport>) -> Window {
-    record_log_counts(registry, "supervisor");
-    record_memory_gauge(registry, "supervisor");
     // The process's registry, read whether or not anything is deployed: what a capture recorded, and what a
     // deployment that has since stopped left owed, travel either way.
     let own = heartbeat::peek_for_heartbeat(registry);
@@ -1897,18 +1896,21 @@ fn build_heartbeat_request(
                 .collect();
             attach_owned_facts(
                 &mut by_thread,
+                &d.subjects,
                 d.readers
                     .iter()
                     .map(|r| (r.thread_id.clone(), r.held.clone().into_iter().collect())),
             );
             attach_owned_facts(
                 &mut by_thread,
+                &d.subjects,
                 d.readers
                     .iter()
                     .map(|r| (r.thread_id.clone(), r.connection_error.clone().into_iter().collect())),
             );
             attach_owned_facts(
                 &mut by_thread,
+                &d.subjects,
                 d.egress_refusals
                     .iter()
                     .map(|(id, facts)| (format!("egress-{id}"), facts.clone())),
@@ -2944,49 +2946,64 @@ impl Supervisor {
     /// The beat to send next: the window still owed, or else a new one under the next number, with what this
     /// worker and its runtime say of themselves now.
     fn next_beat(&self, stopping: bool) -> HeartbeatRequest {
-        // The window still owed, or a new one. What the runtime last said is read under the lock; the
-        // deployment it describes is another process, so nothing here can be waiting on one that is
-        // stopping.
+        // On every beat, whether or not it takes a new window: a scrape reads these too.
+        record_log_counts(&self.registry, "supervisor");
+        record_memory_gauge(&self.registry, "supervisor");
+        // Read before the window's lock, which the supervisor's loop takes too: sampling reads files.
+        let commit = self.commit.lock().unwrap().clone();
+        let supervising = self.supervising.lock().unwrap().clone();
+        let resources = self.resources.lock().unwrap().sample();
+        let authority_fingerprints = self
+            .trusting
+            .lock()
+            .unwrap()
+            .as_deref()
+            .map(fingerprints)
+            .unwrap_or_default();
+        let about = Reporting {
+            worker_id: &self.worker_id,
+            group_id: &self.config.group_id,
+            commit: commit.as_deref(),
+            supervising: Some(supervising),
+            resources: Some(heartbeat::ResourceReport::from(resources)),
+            stop_after_unreachable_secs: self.config.stop_after_unreachable_secs,
+            authority_expires_millis: *self.authority_expires_millis.lock().unwrap(),
+            authority_fingerprints,
+            // The leader is this worker's source of trust: it is handed what the leader rotates to, or, inside the
+            // leader's own process, reads it off the leader's disk each beat.
+            takes_authority: self.config.leader_ca_pem.is_none() || self.config.leader_authority_dir.is_some(),
+            stopping,
+            accepts: self.accepts(),
+            took: self.took.lock().unwrap().clone(),
+            heartbeat_interval: Some(self.config.heartbeat_interval),
+        };
+        // The window still owed, or a new one. What the runtime last said is read under the lock; the deployment
+        // it describes is another process, so nothing here can be waiting on one that is stopping.
         let mut owed = self.owed.lock().unwrap();
         let mut runtime = self.runtime.lock().unwrap();
-        if owed.window.is_none() {
+        if let Some(window) = owed.window.as_mut() {
+            // Nothing follows the notice, so the progress the drain committed since the window was taken goes with
+            // it. The leader applies progress by item, so a window it already recorded takes this too.
+            if stopping && let Some(held) = runtime.as_mut() {
+                window.progress.extend(held::take_ledger(
+                    &mut held.gathered.progress,
+                    heartbeat::LEDGER_PER_HEARTBEAT,
+                    PROGRESS_BYTES_PER_HEARTBEAT,
+                ));
+            }
+        } else {
             owed.window = Some(take_window(&self.registry, runtime.as_mut()));
-            owed.numbered += 1;
+            owed.seq += 1;
         }
         let deployed = runtime.as_ref().map(|held| held.state.clone());
         drop(runtime);
-        let commit = self.commit.lock().unwrap();
-        let supervising = self.supervising.lock().unwrap().clone();
-        let resources = self.resources.lock().unwrap().sample();
-        let secrets = self.secrets.lock().unwrap();
+        let seq = owed.seq;
         build_heartbeat_request(
-            Reporting {
-                worker_id: &self.worker_id,
-                group_id: &self.config.group_id,
-                commit: commit.as_deref(),
-                supervising: Some(supervising),
-                resources: Some(heartbeat::ResourceReport::from(resources)),
-                stop_after_unreachable_secs: self.config.stop_after_unreachable_secs,
-                authority_expires_millis: *self.authority_expires_millis.lock().unwrap(),
-                authority_fingerprints: self
-                    .trusting
-                    .lock()
-                    .unwrap()
-                    .as_deref()
-                    .map(fingerprints)
-                    .unwrap_or_default(),
-                // The leader is this worker's source of trust: it is handed what the leader rotates to,
-                // or, inside the leader's own process, reads it off the leader's disk each beat.
-                takes_authority: self.config.leader_ca_pem.is_none() || self.config.leader_authority_dir.is_some(),
-                stopping,
-                accepts: self.accepts(),
-                took: self.took.lock().unwrap().clone(),
-                heartbeat_interval: Some(self.config.heartbeat_interval),
-            },
+            about,
             deployed.as_ref(),
             owed.window.as_ref().expect("taken above"),
-            owed.numbered,
-            &secrets,
+            seq,
+            &self.secrets.lock().unwrap(),
         )
     }
 
@@ -4340,21 +4357,14 @@ impl Supervisor {
     ///
     /// `true` is a control pipe that would not take the frame, as for [`Supervisor::route_invitations`].
     fn route_backlog(&self, running: Option<&mut child::RuntimeHandle>) -> bool {
-        // What the owed window took waits for the leader as much as what the runtime's report still holds.
-        let owed = self
-            .owed
-            .lock()
-            .unwrap()
-            .window
-            .as_ref()
-            .map_or(0, |w| held::backlog(&w.progress));
-        let weight = owed
-            + self
-                .runtime
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map_or(0, |r| held::backlog(&r.gathered.progress));
+        // What the owed window took waits for the leader as much as what the runtime's report still holds. Both
+        // under the window's lock, taken first as `next_beat` takes it, so no progress moves between the two reads.
+        let weight = {
+            let owed = self.owed.lock().unwrap();
+            let runtime = self.runtime.lock().unwrap();
+            owed.window.as_ref().map_or(0, |w| held::backlog(&w.progress))
+                + runtime.as_ref().map_or(0, |r| held::backlog(&r.gathered.progress))
+        };
         let full = {
             let mut holds = self.holds.lock().unwrap();
             let full = held::backlogged(holds.backlogged, weight);
@@ -4689,14 +4699,7 @@ fn serve_capture(
             }
             continue;
         }
-        // A session naming no source was admitted finished, with why. One on a deployed source is served by the
-        // deployment's own reader, but for one that reads the source itself.
-        if admitted
-            .invitation
-            .source
-            .as_ref()
-            .is_none_or(|source| !admitted.invitation.reads_source_itself() && captures.is_deployed(&source.id))
-        {
+        if captures.served(&admitted) {
             continue;
         }
         let session = admitted.invitation.session.clone();
@@ -4970,7 +4973,7 @@ mod tests {
         assert!(code["ok"].as_bool().unwrap_or(false), "{code}");
         let code = code["code"]["value"].as_str().expect("ok implies an enrollment code");
 
-        let enrolled: serde_json::Value = ureq::post(format!("{base}/api/enroll"))
+        let enrolled: serde_json::Value = ureq::post(format!("{base}/api/worker/enroll"))
             .send_json(serde_json::json!({ "code": code, "workerId": "w1" }))
             .expect("enroll request succeeds")
             .body_mut()
@@ -5023,7 +5026,7 @@ mod tests {
 
         // A worker built from another commit, or one that does not say, is handed nothing.
         for named in [Some("0000000"), None] {
-            let mut request = ureq::get(format!("{base}/repo/info/refs?service=git-upload-pack"))
+            let mut request = ureq::get(format!("{base}/api/worker/repo/info/refs?service=git-upload-pack"))
                 .header("Authorization", format!("Bearer {token}"));
             if let Some(commit) = named {
                 request = request.header(crate::leader::BUILD_HEADER, commit);
@@ -5141,7 +5144,7 @@ mod tests {
         let code = code["code"]["value"].as_str().expect("ok implies an enrollment code");
 
         let enrolled: serde_json::Value = agent
-            .post(format!("{base}/api/enroll"))
+            .post(format!("{base}/api/worker/enroll"))
             .send_json(serde_json::json!({ "code": code, "workerId": "w1" }))
             .expect("enroll request succeeds")
             .body_mut()
@@ -5336,6 +5339,71 @@ mod tests {
         assert_eq!(reader_depth(&topology, &destinations, 5, |d| d.kind.queue_bytes()), 0);
     }
 
+    /// A fact goes to the leader under its subject's name, as every sample does: its owner labels it by position,
+    /// and the Issues page names a blocked source or a refusing destination by what the leader is told.
+    #[test]
+    fn a_fact_names_its_subject_as_the_author_did() {
+        let fact = |label: &str, metric: &str| heartbeat::MetricSampleDto {
+            metric: metric.to_string(),
+            labels: vec![(label.to_string(), "0".to_string())],
+            value: heartbeat::MetricValueDto::text("refusing"),
+        };
+        let deployed = child::RuntimeReport {
+            state: child::RuntimeState {
+                readers: vec![child::ReaderReport {
+                    thread_id: "reader-0".to_string(),
+                    partitions: vec![],
+                    held: Some(fact("source", "smeltr_source_blocked_reason")),
+                    connection_error: Some(fact("source", "smeltr_source_connection_error")),
+                }],
+                egress_ids: vec![0],
+                egress_refusals: vec![(0, vec![fact("destination", "smeltr_destination_last_refusal")])],
+                subjects: crate::metrics::Subjects {
+                    sources: vec!["own-metrics".to_string()],
+                    destinations: vec!["es-prod".to_string()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (req, _) = beat_from(
+            Reporting {
+                worker_id: "w1",
+                group_id: "g",
+                commit: None,
+                supervising: None,
+                resources: None,
+                stop_after_unreachable_secs: None,
+                authority_expires_millis: None,
+                authority_fingerprints: Vec::new(),
+                takes_authority: true,
+                stopping: false,
+                accepts: Vec::new(),
+                took: None,
+                heartbeat_interval: None,
+            },
+            Some(&deployed),
+            &Metrics::new(),
+        );
+        let named: Vec<(String, String)> = req
+            .threads
+            .iter()
+            .flat_map(|t| &t.metrics)
+            .filter(|m| matches!(m.value, heartbeat::MetricValueDto::Text(_)))
+            .map(|m| (m.metric.clone(), m.labels[0].1.clone()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("smeltr_source_blocked_reason".to_string(), "own-metrics".to_string()),
+                ("smeltr_source_connection_error".to_string(), "own-metrics".to_string()),
+                ("smeltr_destination_last_refusal".to_string(), "es-prod".to_string()),
+            ],
+            "a fact went to the leader under its position"
+        );
+    }
+
     /// A block and a refusal are known only to the thread holding the source or dispatching to the destination, so
     /// they reach the leader by riding that thread's report rather than the registry.
     #[test]
@@ -5350,6 +5418,7 @@ mod tests {
 
         attach_owned_facts(
             &mut by_thread,
+            &Default::default(),
             [
                 ("reader-0".to_string(), vec![text("smeltr_source_blocked_reason")]),
                 // A reader that is not blocked offers nothing, and must not create an entry.
@@ -5421,6 +5490,8 @@ mod tests {
         deployed: Option<&child::RuntimeReport>,
         registry: &Metrics,
     ) -> (HeartbeatRequest, Window) {
+        record_log_counts(registry, "supervisor");
+        record_memory_gauge(registry, "supervisor");
         let mut held = deployed.cloned();
         let window = take_window(registry, held.as_mut());
         let state = held.as_ref().map(|held| held.state.clone());
@@ -6784,7 +6855,20 @@ mod tests {
                 keys_dropped: 0,
             }],
         };
-        let report = |rows, cursor| child::RuntimeReport {
+        let said = |seqs: std::ops::Range<u64>| {
+            seqs.map(|seq| heartbeat::LogDto {
+                seq,
+                timestamp_ms: 0,
+                level: "INFO".to_string(),
+                site: "runtime".to_string(),
+                message: format!("log {seq}"),
+                thread: None,
+                boot_id: Some(7),
+                fields: Vec::new(),
+            })
+            .collect::<Vec<_>>()
+        };
+        let report = |rows, cursor, logs| child::RuntimeReport {
             state: child::RuntimeState {
                 pool_thread_ids: vec!["pool-0".to_string()],
                 ..Default::default()
@@ -6795,11 +6879,21 @@ mod tests {
                     labels: vec![("thread".to_string(), "pool-0".to_string())],
                     value: crate::heartbeat::MetricValueDto::Counter(rows),
                 }],
+                logs,
                 progress: vec![progress_of("a", 1, cursor)],
                 streams: Some(unmatched(rows)),
-                ..Default::default()
             },
         };
+        // The runtime's logs a beat carried, by number: its own process's carry no boot id.
+        let runtime_logs = |req: &HeartbeatRequest| {
+            req.logs
+                .iter()
+                .filter(|l| l.boot_id.is_some())
+                .map(|l| l.seq)
+                .collect::<Vec<_>>()
+        };
+        // More than a beat has room for, so the first window leaves some for the next.
+        let first_said = heartbeat::LOGS_PER_HEARTBEAT as u64 + 2;
         // What a beat says that accumulates: the part the leader records once.
         let window = |req: &HeartbeatRequest| {
             serde_json::to_string(&(
@@ -6812,26 +6906,42 @@ mod tests {
             .unwrap()
         };
         let inbox = child::RuntimeInbox::default();
-        *inbox.report.lock().unwrap() = Some(report(2, "a1"));
+        *inbox.report.lock().unwrap() = Some(report(2, "a1", said(0..first_said)));
         supervisor.absorb(&inbox);
         let first = supervisor.next_beat(false);
         assert_eq!(first.streams_window, Some(1));
         assert_eq!(first.streams, Some(unmatched(2)));
+        let carried = runtime_logs(&first);
+        assert_eq!(
+            carried,
+            (0..carried.len() as u64).collect::<Vec<_>>(),
+            "the runtime's logs did not fill the room its own left, oldest first"
+        );
+        assert_eq!(
+            first.logs.len(),
+            heartbeat::LOGS_PER_HEARTBEAT,
+            "the window left room unused"
+        );
 
         // Unanswered; the runtime says more before the next beat, and more again before the one after.
-        *inbox.report.lock().unwrap() = Some(report(3, "a2"));
+        *inbox.report.lock().unwrap() = Some(report(3, "a2", said(first_said..first_said + 1)));
         supervisor.absorb(&inbox);
         assert_eq!(
             window(&supervisor.next_beat(false)),
             window(&first),
             "the owed window changed"
         );
-        *inbox.report.lock().unwrap() = Some(report(4, "a3"));
+        *inbox.report.lock().unwrap() = Some(report(4, "a3", said(first_said + 1..first_said + 2)));
         supervisor.absorb(&inbox);
         supervisor.window_answered();
 
         let next = supervisor.next_beat(false);
         assert_eq!(next.streams_window, Some(2));
+        assert_eq!(
+            runtime_logs(&next),
+            (carried.len() as u64..first_said + 2).collect::<Vec<_>>(),
+            "what waited was lost"
+        );
         assert_eq!(next.streams, Some(unmatched(7)), "what waited was lost");
         assert_eq!(
             next.progress,
@@ -6843,6 +6953,42 @@ mod tests {
             matches!(pool.metrics[0].value, crate::heartbeat::MetricValueDto::Counter(7)),
             "what waited was lost: {:?}",
             pool.metrics
+        );
+    }
+
+    /// The stopping beat is the last: it sends the window still owed, and with it the progress the drain
+    /// committed since, which no later beat would carry.
+    #[test]
+    fn a_stopping_beat_carries_the_drain_s_progress_with_the_owed_window() {
+        let supervisor = supervisor_for(temp_dir("window-stopping"));
+        let inbox = child::RuntimeInbox::default();
+        *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+            gathered: child::Gathered {
+                progress: vec![progress_of("a", 1, "a1")],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        supervisor.absorb(&inbox);
+        let owed = supervisor.next_beat(false);
+
+        *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+            gathered: child::Gathered {
+                progress: vec![progress_of("a", 1, "a2")],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        supervisor.absorb(&inbox);
+        let last = supervisor.next_beat(true);
+        assert_eq!(
+            last.streams_window, owed.streams_window,
+            "the stopping beat is not the owed window"
+        );
+        assert_eq!(
+            last.progress,
+            vec![progress_of("a", 1, "a1"), progress_of("a", 1, "a2")],
+            "the stopping beat held the drain's progress back"
         );
     }
 
@@ -7317,7 +7463,7 @@ mod tests {
                     use std::io::{Read, Write};
                     let mut buf = vec![0u8; 1 << 16];
                     let n = stream.read(&mut buf).unwrap_or(0);
-                    if String::from_utf8_lossy(&buf[..n]).contains("/api/ledger") {
+                    if String::from_utf8_lossy(&buf[..n]).contains("/api/worker/ledger") {
                         fetches.fetch_add(1, Ordering::SeqCst);
                     }
                     let body = "{\"item\":\"a.log\",\"entry\":\"v1\"}\n";
@@ -7412,6 +7558,18 @@ mod tests {
         supervisor.holds.lock().unwrap().restarted();
         assert!(!supervisor.route_backlog(Some(&mut handle)));
         assert_eq!(frames(4).len(), 4, "a runtime that started was not told");
+
+        // What the owed window took waits for the leader too.
+        supervisor.owed.lock().unwrap().window = Some(Window {
+            progress: vec![progress_of("a", held::BACKLOG_FULL, "a1")],
+            ..Default::default()
+        });
+        assert!(!supervisor.route_backlog(Some(&mut handle)));
+        assert_eq!(
+            frames(5)[4],
+            r#"{"kind":"backlogged","full":true}"#,
+            "the progress an unanswered window holds was not counted"
+        );
     }
 
     /// Each source's ledger has a file of its own per epoch, named by nothing an author wrote.
@@ -7482,6 +7640,29 @@ mod tests {
             vec![progress_of("a", 1, "a2")],
             "progress that came after it was not kept"
         );
+    }
+
+    /// A leader that refuses a beat for its size answers 413, and the worker must know that answer from any
+    /// other failure: it is the one on which the window is dropped rather than sent again.
+    #[test]
+    fn a_413_from_the_leader_is_a_beat_too_large() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a local port");
+        let port = listener.local_addr().expect("an address").port();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                use std::io::{Read, Write};
+                let mut buf = vec![0u8; 1 << 16];
+                let _ = stream.read(&mut buf);
+                let _ = stream
+                    .write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        let supervisor = supervisor_for(temp_dir("window-413"));
+        let client = HeartbeatClient::new(format!("http://127.0.0.1:{port}"), "t", None, true).unwrap();
+        let e = client
+            .send(&supervisor.next_beat(false))
+            .expect_err("a 413 was taken for an answer");
+        assert!(e.too_large(), "a 413 was not a beat too large: {e}");
     }
 
     /// The boundary `warn_if_heartbeat_body_large` acts on: nothing bounds metrics the way `LOGS_PER_HEARTBEAT`

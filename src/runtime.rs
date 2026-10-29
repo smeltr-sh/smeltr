@@ -20,7 +20,6 @@ use crate::core::column::{Column, DataType};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind, INGEST_FUNCTION, Read};
 use crate::core::id::{DestId, SlotId, SourceId};
-use crate::format::encoding::Encoding;
 use crate::format::json::scalar_text;
 use crate::format::record::RecordView;
 use crate::handoff::{Acks, BlockCause, Handed, Handoff, Ready, Report, Reports, Taken};
@@ -301,6 +300,30 @@ struct Salvage {
     left: Vec<DestId>,
 }
 
+/// Decode every record's `__source.bytes` with the source's encoding into its `_raw`; a row, which has none, has no
+/// text. One pass per batch:
+/// `_raw` is rebuilt per route, but from this text, so nothing decodes twice and a note is recorded once.
+pub(crate) fn decode_records<'a>(records: &'a [SourceRecord], meta: &SourceMeta) -> RawText<'a> {
+    let encoding = meta.encoding();
+    let mut text = Vec::with_capacity(records.len());
+    let mut notes = Vec::new();
+    for (row, read) in meta.read_bytes_each(records).enumerate() {
+        let Some(bytes) = read else {
+            text.push(Cow::Borrowed(""));
+            continue;
+        };
+        let decoded = encoding.decode(bytes);
+        if decoded.replaced {
+            notes.push((row as u32, ExceptionKind::InvalidUtf8));
+        }
+        if let Some(guess) = decoded.guessed {
+            notes.push((row as u32, ExceptionKind::GuessedEncoding { encoding: guess.name() }));
+        }
+        text.push(decoded.text);
+    }
+    RawText { text, notes }
+}
+
 /// One source's side of transform: the facts every batch of its records is run against, and what is parked waiting to
 /// be re-run. Shared, so more than one transform thread can serve the same source; the exclusive half -- the egress
 /// handles a batch's rows are handed to -- stays on [`Transform`].
@@ -309,10 +332,8 @@ pub struct Lane {
     /// The id the author gave this source, which is what a capture names. `None` on the single-source tick driver:
     /// that is not a deployment, and a capture only ever reaches one.
     pub source_name: Option<String>,
-    /// What this source's records carry; the ingest batch is built from it.
+    /// What this source's records carry, and how their bytes become `_raw`'s text; the ingest batch is built from it.
     pub meta: SourceMeta,
-    /// How this source's record bytes become `_raw`'s text (`format::encoding`).
-    pub encoding: Encoding,
     /// Batches this source's reader has polled and no transform thread has taken.
     pub batches: Handoff,
     /// Every destination reachable from this source: what its batches are dispatched to, and what its reader waits on.
@@ -321,36 +342,27 @@ pub struct Lane {
     destinations: Mutex<Vec<DestId>>,
     /// Where a batch's outcome goes: this source's reader, and no other.
     pub reports: Reports,
-    /// Woken when this lane has work, so a thread watching several of them need not poll each.
-    ready: Arc<Ready>,
     parked: Mutex<Parked>,
 }
 
 impl Lane {
-    /// A lane whose arrivals are announced on `ready`. Every lane one transform thread drains shares one.
-    ///
-    /// One argument per fact the lane holds, and every one of them is a different thing a batch of this source's
-    /// records is run against; grouping them into a struct would name a thing that only exists to be unpacked here.
-    #[allow(clippy::too_many_arguments)]
+    /// A lane fed through `batches`. Its parked batches are announced on the same `Ready` as its arrivals, which every
+    /// lane one transform thread drains shares.
     pub fn new(
         source_id: SourceId,
         source_name: Option<String>,
         meta: SourceMeta,
-        encoding: Encoding,
+        batches: Handoff,
         destinations: Vec<DestId>,
         reports: Reports,
-        ready: Arc<Ready>,
-        capacity: usize,
     ) -> Lane {
         Lane {
             source_id,
             source_name,
             meta,
-            encoding,
-            batches: Handoff::watched(ready.clone(), capacity),
+            batches,
             destinations: Mutex::new(destinations),
             reports,
-            ready,
             parked: Mutex::new(Parked::default()),
         }
     }
@@ -410,7 +422,7 @@ impl Lane {
             shown: HashSet::new(),
             _hold: None,
         });
-        self.ready.signal();
+        self.batches.ready().signal();
     }
 
     /// Show the records the held batch blocked on to each capture of `name` that has not been shown them. Under the
@@ -426,7 +438,7 @@ impl Lane {
         }
         let records: Vec<SourceRecord> = held.blocking.iter().map(|(i, _)| held.records[*i].clone()).collect();
         let why: Vec<String> = held.blocking.iter().map(|(_, why)| why.clone()).collect();
-        let raw = decode_records(&records, &self.meta, self.encoding);
+        let raw = decode_records(&records, &self.meta);
         let text: Vec<&str> = raw.text.iter().map(|t| t.as_ref()).collect();
         captures.tap_held(name, &mut held.shown, &records, &text, &why);
     }
@@ -642,7 +654,6 @@ impl Worker {
     pub fn new(
         source_id: SourceId,
         source: Box<dyn Source>,
-        encoding: Encoding,
         topology: CompiledTopology,
         destinations: Vec<DestinationTarget>,
         memory: MemoryBudget,
@@ -653,13 +664,11 @@ impl Worker {
             source_id,
             None,
             topology.meta_for(source_id),
-            encoding,
+            Handoff::new(),
             destinations.iter().map(|d| d.id).collect(),
             reports,
-            Arc::new(Ready::new()),
-            crate::handoff::HANDOFF_BYTES,
         ));
-        let ready = lane.ready.clone();
+        let ready = lane.batches.ready().clone();
         Worker {
             reader: Reader::new(
                 source_id,
@@ -795,7 +804,7 @@ impl Reader {
                 ("source".to_string(), self.source_id.to_string()),
                 ("cause".to_string(), cause.name().to_string()),
             ],
-            value: crate::heartbeat::MetricValueDto::Text(reason),
+            value: crate::heartbeat::MetricValueDto::text(&reason),
         })
     }
 
@@ -808,7 +817,7 @@ impl Reader {
         Some(crate::heartbeat::MetricSampleDto {
             metric: "smeltr_source_connection_error".to_string(),
             labels: vec![("source".to_string(), self.source_id.to_string())],
-            value: crate::heartbeat::MetricValueDto::Text(reason),
+            value: crate::heartbeat::MetricValueDto::text(&reason),
         })
     }
 }
@@ -944,29 +953,22 @@ impl Transform {
     /// One turn: take a batch -- an undelivered one, or the next off some lane's queue -- run it, hand the rows on,
     /// and report to the lane it came from.
     pub fn step(&mut self, pop_timeout: Duration) -> Result<usize, IoError> {
-        let Some(Turn {
-            lane: lane_idx,
-            batch,
-            records,
-            unprocessable,
-            waiting_since,
-        }) = self.take_next(pop_timeout)
-        else {
+        let Some(turn) = self.take_next(pop_timeout) else {
             // An idle turn is what collects completions.
             self.collect()?;
             return Ok(0);
         };
-        if unprocessable {
+        if turn.unprocessable {
             // Back for room or after a failed hand-over: no pipeline runs it again.
-            return self.divert_unprocessable(lane_idx, batch, records, waiting_since, true);
+            return self.divert_unprocessable(turn);
         }
-        let lane = self.lanes[lane_idx].clone();
+        let (lane, batch) = (self.lanes[turn.lane].clone(), turn.batch);
         let reports = lane.reports.clone();
         let source_label = lane.source_id.to_string();
 
         let process_start = std::time::Instant::now();
         let mut out = Output::default();
-        let outcome = catch_unwind(AssertUnwindSafe(|| self.process_batch(&lane, &records, &mut out)));
+        let outcome = catch_unwind(AssertUnwindSafe(|| self.process_batch(&lane, &turn.records, &mut out)));
         self.metrics.incr_seconds(
             "smeltr_tick_process_seconds_total",
             &[("source", source_label.as_str())],
@@ -979,12 +981,12 @@ impl Transform {
                 .gauge("smeltr_memory_peak_bytes", &[], self.memory.peak() as f64);
             self.metrics.gauge("smeltr_memory_budget_bytes", &[], limit as f64);
         }
-        let row_count = records.len();
+        let row_count = turn.records.len();
         match outcome {
             Ok(Ok(())) => {
                 let t = std::time::Instant::now();
                 let dests = lane.destinations();
-                match self.hand_off(lane_idx, batch, records, waiting_since, false, &dests, out.rows) {
+                match self.hand_off(turn, &dests, out.rows) {
                     Err(e) => {
                         reports.send(Report::Block(BlockCause::Waiting, undeliverable(&e)));
                         return Err(e);
@@ -1015,7 +1017,7 @@ impl Transform {
             Ok(Err(held)) => {
                 lane.park_held(
                     batch,
-                    records,
+                    turn.records,
                     std::mem::take(&mut out.blocking),
                     self.captures.as_ref(),
                 );
@@ -1027,7 +1029,11 @@ impl Transform {
                 // routes produced before the panic goes with `out`.
                 self.metrics
                     .incr("smeltr_batches_poisoned_total", &[("source", source_label.as_str())], 1);
-                return self.divert_unprocessable(lane_idx, batch, records, None, false);
+                let turn = Turn {
+                    waiting_since: None,
+                    ..turn
+                };
+                return self.divert_unprocessable(turn);
             }
         }
 
@@ -1052,17 +1058,19 @@ impl Transform {
     /// having ended clean. A routed batch asks every destination its lane reaches, including ones it has nothing for:
     /// `track` put all of them on the batch's waiting list at poll time, and one handed nothing completes at once. An
     /// unprocessable one asks only where its answer sends it: the reader has stopped waiting on the rest.
-    #[allow(clippy::too_many_arguments)]
     fn hand_off(
         &mut self,
-        lane: usize,
-        id: BatchId,
-        records: Vec<SourceRecord>,
-        waiting_since: Option<std::time::Instant>,
-        unprocessable: bool,
+        turn: Turn,
         dests: &[DestId],
         mut rows: HashMap<DestId, Vec<OwnedRecord>>,
     ) -> Result<HandOff, IoError> {
+        let Turn {
+            lane,
+            batch: id,
+            records,
+            unprocessable,
+            waiting_since,
+        } = turn;
         for &dest_id in dests {
             let Some(i) = self.destinations.iter().position(|d| d.id == dest_id) else {
                 // `deploy` gives every thread a handle for every destination, so this is a worker built by hand with a
@@ -1488,7 +1496,7 @@ impl Transform {
         let mut errors = ErrorSink::new();
         let began = std::time::Instant::now();
 
-        let raw = decode_records(slice, &lane.meta, lane.encoding);
+        let raw = decode_records(slice, &lane.meta);
 
         // A capture sees what this batch is about to be run over: after decode, before any pipeline, so what it
         // keeps is the record as it arrived. A worker nobody is debugging answers `watching` from one atomic load
@@ -1963,25 +1971,19 @@ impl Transform {
     /// A batch a pipeline panicked on, answered as `Unprocessable` is: held, dropped, or sent where it names, each record
     /// as it arrived. Delivered, it is handed over like a routed
     /// batch -- parked for room, re-run on a failed hand-over -- to every destination it names, and its commit waits
-    /// for each, and for every DLQ one of them sends a refusal to. `again` is a batch parked here before: the reader
-    /// already waits on these alone.
-    fn divert_unprocessable(
-        &mut self,
-        lane_idx: usize,
-        batch: BatchId,
-        records: Vec<SourceRecord>,
-        waiting_since: Option<std::time::Instant>,
-        again: bool,
-    ) -> Result<usize, IoError> {
-        let lane = self.lanes[lane_idx].clone();
+    /// for each, and for every DLQ one of them sends a refusal to. A turn already unprocessable was parked here before:
+    /// the reader already waits on these alone.
+    fn divert_unprocessable(&mut self, mut turn: Turn) -> Result<usize, IoError> {
+        let again = turn.unprocessable;
+        let (lane, batch) = (self.lanes[turn.lane].clone(), turn.batch);
         let source_label = lane.source_id.to_string();
-        let rows = records.len();
+        let rows = turn.records.len();
         match self.topology.on_exception.answer(&ExceptionKind::Unprocessable).clone() {
             // Load refuses ignore and tag: no record is left to carry on.
             Answer::Block | Answer::Ignore | Answer::Tag => {
                 // Which record panicked is not known, so every one of them is shown.
                 let blocking = (0..rows).map(|i| (i, PANICKED.to_string())).collect();
-                lane.park_held(batch, records, blocking, self.captures.as_ref());
+                lane.park_held(batch, turn.records, blocking, self.captures.as_ref());
                 lane.reports.send(Report::Block(
                     BlockCause::Held,
                     unprocessable_block_reason(rows, PANICKED),
@@ -2014,10 +2016,11 @@ impl Transform {
                     });
                 }
                 let mut out = Output::default();
-                let these: Vec<_> = records.iter().enumerate().collect();
+                let these: Vec<_> = turn.records.iter().enumerate().collect();
                 self.place_delivered(&mut out, &targets, &these, &lane, None, DROPPED_UNPROCESSABLE);
                 drop(these);
-                match self.hand_off(lane_idx, batch, records, waiting_since, true, &to, out.rows) {
+                turn.unprocessable = true;
+                match self.hand_off(turn, &to, out.rows) {
                     Err(e) => {
                         lane.reports.send(Report::Block(BlockCause::Waiting, undeliverable(&e)));
                         return Err(e);
@@ -2071,7 +2074,7 @@ impl Transform {
             .iter()
             .map(|&(i, r)| match (text, lane.meta.read_bytes(r)) {
                 (Some(text), _) => Cow::Borrowed(text[i].as_ref()),
-                (None, Some(bytes)) => lane.encoding.decode(bytes).text,
+                (None, Some(bytes)) => lane.meta.encoding().decode(bytes).text,
                 (None, None) => Cow::Borrowed(""),
             })
             .collect();
@@ -2260,7 +2263,7 @@ impl RefusalRing {
                     ("destination".to_string(), dest.to_string()),
                     ("at_millis".to_string(), r.at_millis.to_string()),
                 ],
-                value: crate::heartbeat::MetricValueDto::Text(r.message),
+                value: crate::heartbeat::MetricValueDto::text(&r.message),
             })
             .collect()
     }
@@ -2739,34 +2742,11 @@ struct Ingest<'a> {
 }
 
 /// A batch's records as text, decoded once per attempt and rebuilt as a column for routing and for each route.
-struct RawText<'a> {
-    text: Vec<Cow<'a, str>>,
+pub(crate) struct RawText<'a> {
+    pub(crate) text: Vec<Cow<'a, str>>,
     /// What a decode had to do, per row. Replayed into every route's exception window, so a repaired or guessed-at
     /// row is marked wherever it is delivered.
     notes: Vec<(u32, ExceptionKind)>,
-}
-
-/// Decode every record's `__source.bytes` with the source's encoding into its `_raw`; a row, which has none, has no
-/// text. One pass per batch:
-/// `_raw` is rebuilt per route, but from this text, so nothing decodes twice and a note is recorded once.
-fn decode_records<'a>(records: &'a [SourceRecord], meta: &SourceMeta, encoding: Encoding) -> RawText<'a> {
-    let mut text = Vec::with_capacity(records.len());
-    let mut notes = Vec::new();
-    for (row, read) in meta.read_bytes_each(records).enumerate() {
-        let Some(bytes) = read else {
-            text.push(Cow::Borrowed(""));
-            continue;
-        };
-        let decoded = encoding.decode(bytes);
-        if decoded.replaced {
-            notes.push((row as u32, ExceptionKind::InvalidUtf8));
-        }
-        if let Some(guess) = decoded.guessed {
-            notes.push((row as u32, ExceptionKind::GuessedEncoding { encoding: guess.name() }));
-        }
-        text.push(decoded.text);
-    }
-    RawText { text, notes }
 }
 
 /// A record in the form `payload` names, for a row no pipeline made: what it read as it arrived, the document a
@@ -4432,6 +4412,23 @@ mod tests {
             &fact.value,
             crate::heartbeat::MetricValueDto::Text(t) if t == &reason
         ));
+
+        let rambling = Reader::new(
+            7,
+            Box::new(FlakySource {
+                error: Some("x".repeat(10 * MAX_TEXT_LEN)),
+            }),
+            vec![],
+            MAX_IN_FLIGHT,
+            MetricsHandle::new(Arc::new(crate::metrics::Metrics::new()), "reader-7"),
+        );
+        assert!(
+            matches!(
+                rambling.connection_error_fact().map(|f| f.value),
+                Some(crate::heartbeat::MetricValueDto::Text(t)) if t.chars().count() <= MAX_TEXT_LEN + 1
+            ),
+            "a source's error rode the heartbeat whole"
+        );
     }
 
     /// A source that cannot be read, until it can.

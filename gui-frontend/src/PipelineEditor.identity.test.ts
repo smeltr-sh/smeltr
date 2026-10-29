@@ -40,13 +40,9 @@ beforeEach(async () => {
           mustChangePassword: false,
           access: { administrator: true, areas: {} },
         };
-      } else if (
-        url.pathname === '/api/config' &&
-        sharedConfig &&
-        url.searchParams.get('scope') === SHARED_SCOPE
-      ) {
+      } else if (url.pathname === `/api/areas/${SHARED_SCOPE}` && sharedConfig) {
         answer = { ok: true, config: sharedConfig, errors: [] };
-      } else if (url.pathname === '/api/config') {
+      } else if (/^\/api\/areas\/[^/]+$/.test(url.pathname)) {
         answer = {
           ok: true,
           config: { pipelines: [...pipelines.values()], lookupTables: [] },
@@ -54,12 +50,12 @@ beforeEach(async () => {
         };
       } else if (url.pathname === '/api/worker-groups') {
         answer = { ok: true, groups: [], errors: [] };
-      } else if (url.pathname === '/api/samples') {
+      } else if (/^\/api\/areas\/[^/]+\/samples$/.test(url.pathname)) {
         answer = { ok: true, samples: [], errors: [] };
-      } else if (url.pathname === '/api/connections') {
+      } else if (url.pathname.endsWith('/connections')) {
         answer = { ok: true, errors: [], upstream: [], downstream: [], groups: [], drawnIn: [] };
-      } else if (url.pathname.startsWith('/api/pipelines/')) {
-        const id = decodeURIComponent(url.pathname.slice('/api/pipelines/'.length));
+      } else if (/^\/api\/areas\/[^/]+\/pipelines\//.test(url.pathname)) {
+        const id = decodeURIComponent(url.pathname.split('/pipelines/')[1]);
         if (init?.method === 'PUT' && refuse) {
           answer = { ok: false, errors: refuse(id) };
         } else if (init?.method === 'PUT') {
@@ -139,7 +135,8 @@ async function refusedSave() {
   await tick();
 }
 
-const saveEntry = () => errors.entries.find((e) => e.key.startsWith('PUT /api/pipelines/'));
+const saveEntry = () =>
+  errors.entries.find((e) => e.key.startsWith('PUT /api/areas/') && e.key.includes('/pipelines/'));
 
 /** What the error bar draws for the refused save: what no step takes, and the steps holding the rest. */
 function barShows() {
@@ -229,7 +226,9 @@ describe('a group pipeline drawing on shared', () => {
     await open('audit');
     await vi.waitFor(() =>
       expect(
-        fetched.mock.calls.some(([input]) => String(input).includes(`scope=${SHARED_SCOPE}`)),
+        fetched.mock.calls.some(([input]) =>
+          String(input).startsWith(`/api/areas/${SHARED_SCOPE}?`),
+        ),
       ).toBe(true),
     );
     await tick();
