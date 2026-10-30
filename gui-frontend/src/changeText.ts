@@ -171,7 +171,7 @@ function nameOf(id: string, first: Map<string, string>, second: Map<string, stri
   return first.get(id) ?? second.get(id) ?? id;
 }
 
-/** Every changed field of one object, as `name before → after`. Keys are
+/** Every changed field of one object, as `name from before to after`. Keys are
  * compared whole (`diff.ts`), so a nested value reads as one field rather
  * than a diff inside a diff. With `names`, a `pipeline` field -- a route's,
  * a call step's -- holds a pipeline id and is said as that pipeline's name. */
@@ -190,7 +190,7 @@ function fieldPhrases(
     .filter((entry) => entry.kind !== 'unchanged' && !skip.includes(entry.key))
     .map(
       (entry) =>
-        `${entry.key} ${say(entry.key, entry.before, 'before')} → ${say(entry.key, entry.after, 'after')}`,
+        `${entry.key} from ${say(entry.key, entry.before, 'before')} to ${say(entry.key, entry.after, 'after')}`,
     );
 }
 
