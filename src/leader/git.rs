@@ -1353,7 +1353,7 @@ fn read_markers(repo_path: &Path, branch: &str) -> Result<Vec<Marker>, GitError>
     let tip = reference.into_fully_peeled_id().map_err(|e| failed(e.to_string()))?;
 
     let mut markers = Vec::new();
-    // First parents alone: a marker's second is the commit it names.
+    // First parents alone: a marker's last is the commit it names.
     let walk = repo.rev_walk([tip.detach()]).first_parent_only();
     for info in walk.all().map_err(|e| failed(e.to_string()))? {
         let info = info.map_err(|e| failed(e.to_string()))?;
@@ -1437,7 +1437,7 @@ fn titled(subject: &str, description: &str) -> String {
 /// first marker, and requires the ref not to exist.
 ///
 /// `trailers` go in the last paragraph, above the kind, each as `<key> <value>`. The commit a `Smeltr-At:` names is the
-/// marker's second parent, so a ref reaches it and packing keeps it.
+/// marker's last parent, so a ref reaches it and packing keeps it.
 fn write_marker(
     repo_path: &Path,
     branch: &str,
@@ -3716,7 +3716,7 @@ mod tests {
             old.iter().all(|id| odb.find_object(*id).is_err()),
             "what nothing reaches went"
         );
-        assert!(odb.find_object(recent).is_ok(), "what is recent stays its grace");
+        assert!(odb.find_object(recent).is_ok(), "what is recent stays");
         assert!(
             odb.find_commit(gix::ObjectId::from_hex(at.as_bytes()).unwrap()).is_ok(),
             "a marker's commit stays"
