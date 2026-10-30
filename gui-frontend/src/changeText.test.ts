@@ -158,7 +158,7 @@ describe('changeText, a pipeline is said by its name', () => {
       c.routes[0].pipeline = 'metrics-pipe';
     });
     expect(text(next).subject).toBe(
-      'Update route kafka-main → Main: pipeline from Main to Metrics passthrough',
+      'Update route kafka-main → Metrics passthrough: pipeline from Main to Metrics passthrough',
     );
   });
 
@@ -168,7 +168,7 @@ describe('changeText, a pipeline is said by its name', () => {
       c.routes[0].pipeline = 'pipeline-x7k2m9q1';
     });
     expect(text(next).body.split('\n')).toEqual([
-      'Update route kafka-main → Main: pipeline from Main to Firewall',
+      'Update route kafka-main → Firewall: pipeline from Main to Firewall',
       'Add pipeline Firewall',
     ]);
   });
@@ -178,7 +178,7 @@ describe('changeText, a pipeline is said by its name', () => {
       c.routes[0].pipeline = 'pipeline-gone0000';
     });
     expect(text(next).subject).toBe(
-      'Update route kafka-main → Main: pipeline from Main to pipeline-gone0000',
+      'Update route kafka-main → pipeline-gone0000: pipeline from Main to pipeline-gone0000',
     );
   });
 

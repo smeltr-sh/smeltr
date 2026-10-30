@@ -202,27 +202,19 @@ impl LoadedSystem {
     pub fn to_validation_error(&self, e: CompileError) -> load::ValidationError {
         // A route's error is about its condition, or about one of its rules' `when`.
         let route = e.route.and_then(|i| self.topology.routes.get(i));
+        let name = || e.route.map_or_else(String::new, |at| self.route_name(at));
         // The message names its route, as every item's does: the error bar shows it alone. The screen shows no
         // route's id: a route is the line from its source to its pipeline, and a rule the condition on the line
         // on to its destinations, unnumbered. So the message names them by those.
         let message = match (route, e.rule.and_then(|k| route?.deliver.get(k as usize))) {
-            (Some(r), Some(rule)) => {
+            (Some(_), Some(rule)) => {
                 let to: Vec<&str> = rule.to.iter().map(|&d| self.destination_name(d)).collect();
                 match to.as_slice() {
-                    [] => format!(
-                        "the condition for no destination of route {}: {}",
-                        self.route_name(r),
-                        e.message
-                    ),
-                    to => format!(
-                        "the condition for {} of route {}: {}",
-                        to.join(", "),
-                        self.route_name(r),
-                        e.message
-                    ),
+                    [] => format!("the condition for no destination of route {}: {}", name(), e.message),
+                    to => format!("the condition for {} of route {}: {}", to.join(", "), name(), e.message),
                 }
             }
-            (Some(r), None) => format!("the condition of route {}: {}", self.route_name(r), e.message),
+            (Some(_), None) => format!("the condition of route {}: {}", name(), e.message),
             (None, _) => e.message,
         };
         load::ValidationError {
@@ -252,20 +244,18 @@ impl LoadedSystem {
 
     /// Every route's [`route_name`], in the order they run.
     pub fn route_names(&self) -> Vec<String> {
-        let routes = &self.topology.routes;
-        (0..routes.len())
-            .map(|at| route_name(&self.topology.sources, &self.pipelines, &self.pipeline_ids, routes, at))
-            .collect()
+        (0..self.topology.routes.len()).map(|at| self.route_name(at)).collect()
     }
 
-    /// `r`, one of the topology's routes, by its [`route_name`].
-    fn route_name(&self, r: &RouteConfig) -> String {
-        let routes = &self.topology.routes;
-        let at = routes
-            .iter()
-            .position(|o| std::ptr::eq(o, r))
-            .expect("a route of this system");
-        route_name(&self.topology.sources, &self.pipelines, &self.pipeline_ids, routes, at)
+    /// The topology's route `at`, by its [`route_name`].
+    fn route_name(&self, at: usize) -> String {
+        route_name(
+            &self.topology.sources,
+            &self.pipelines,
+            &self.pipeline_ids,
+            &self.topology.routes,
+            at,
+        )
     }
 
     /// The author's id for `id`, a destination the loaded system has.
@@ -710,7 +700,7 @@ mod tests {
                      { "id": "d", "source": "k", "pipeline": "p" }]
         }"#;
         let system = load_str(json).unwrap();
-        let names: Vec<String> = (system.topology.routes.iter()).map(|r| system.route_name(r)).collect();
+        let names = system.route_names();
         assert_eq!(
             names,
             [

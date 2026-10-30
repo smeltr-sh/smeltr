@@ -264,13 +264,15 @@ function editsForScope(change: ScopeChange): Edit[] {
   const edits: Edit[] = [];
   const names = pipelineNames(change.before, change.after);
   // A pipeline is called by the name it had, which is the one a reader
-  // knows it by; a pipeline the change adds has only its new one.
+  // knows it by; a pipeline the change adds has only its new one. A route is
+  // called as the branch has it, as its card on the change page is, falling
+  // back to main's for a route the change removes.
   const nameFor = (noun: Noun, id: string) =>
     noun === 'pipeline'
       ? nameOf(id, names.before, names.after)
       : noun === 'route'
-        ? (routeNameIn(change.before, id, change.shared?.before) ??
-          routeNameIn(change.after, id, change.shared?.after) ??
+        ? (routeNameIn(change.after, id, change.shared?.after) ??
+          routeNameIn(change.before, id, change.shared?.before) ??
           id)
         : id;
 
