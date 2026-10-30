@@ -43,7 +43,7 @@ use crate::io::delta::log::{FileAction, Name, file_key};
 use crate::io::parquet::{Chunk, Columns, REST};
 
 /// The seeds a run takes.
-const SEEDS: std::ops::Range<u64> = 1..301;
+const SEEDS: std::ops::Range<u64> = 1..1001;
 
 /// What a run must reach over its seeds: every data type, protocol version and feature, table property, fault, other
 /// writer's change and commit outcome it draws.

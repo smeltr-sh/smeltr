@@ -250,10 +250,15 @@ mod tests {
         let log = seen.clone();
         std::thread::spawn(move || {
             for (status, body) in answers {
-                let (conn, _) = listener.accept().unwrap();
-                let mut reader = BufReader::new(conn);
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
+                // ureq connects before it refuses a header it will not send, and closes having sent nothing.
+                let (mut reader, line) = loop {
+                    let (conn, _) = listener.accept().unwrap();
+                    let mut reader = BufReader::new(conn);
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap() > 0 {
+                        break (reader, line);
+                    }
+                };
                 let (mut length, mut authorization) = (0, None);
                 loop {
                     let mut header = String::new();
@@ -1159,7 +1164,7 @@ mod tests {
         #[test]
         fn random_answers_are_taken_or_refused_by_name() {
             let mut cov = Coverage::new(ANSWERS.iter().copied());
-            crate::fuzz::run(0..400, |seed| check(seed, &mut cov));
+            crate::fuzz::run(0..1000, |seed| check(seed, &mut cov));
             cov.assert_complete();
         }
 
