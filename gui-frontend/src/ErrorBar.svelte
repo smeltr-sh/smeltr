@@ -58,7 +58,8 @@
                   e.preventDefault();
                   error.go();
                 }}
-                >{#if error.where}<span class="where">{error.where}</span>{' '}{/if}{error.message}</a
+                >{#if error.where}<span class="where">{error.where}</span
+                  >{' '}{/if}{error.message}</a
               >
             </li>
           {/each}
