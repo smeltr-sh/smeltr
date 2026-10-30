@@ -117,6 +117,8 @@ const COVERED: &[&str] = &[
     "enableExpiredLogCleanup",
     "dataSkippingNumIndexedCols",
     "dataSkippingStatsColumns",
+    "clustering column stats",
+    "clustering past the indexed columns",
     "orc",
     "fault Lost",
     "fault Dropped",
@@ -479,6 +481,31 @@ fn narrow(rng: &mut Rng, metadata: &mut Value, record: &DataType) {
     metadata["schemaString"] = json!(schema.to_string());
 }
 
+/// The domain an engine that clusters the table writes, over one or two of `metadata`'s top-level primitive columns
+/// that do not partition it, and those columns' physical names. None when it has no such column.
+fn clustering(rng: &mut Rng, metadata: &Value) -> Option<(Value, Vec<String>)> {
+    let schema: Value = serde_json::from_str(metadata["schemaString"].as_str()?).ok()?;
+    let partitions = metadata["partitionColumns"].as_array()?;
+    let mut columns: Vec<String> = (schema["fields"].as_array()?.iter())
+        .filter(|f| f["type"].is_string() && !partitions.contains(&f["name"]))
+        .filter_map(|f| {
+            let physical = &f["metadata"]["delta.columnMapping.physicalName"];
+            physical.as_str().or(f["name"].as_str()).map(str::to_string)
+        })
+        .collect();
+    if columns.is_empty() {
+        return None;
+    }
+    let mut chosen = Vec::new();
+    for _ in 0..1 + rng.below(2).min(columns.len() - 1) {
+        chosen.push(columns.remove(rng.below(columns.len())));
+    }
+    let configuration = json!({"clusteringColumns": chosen.iter().map(|c| vec![c]).collect::<Vec<_>>()});
+    let domain = json!({"domainMetadata": {"domain": "delta.clustering", "configuration": configuration.to_string(),
+                                           "removed": false}});
+    Some((domain, chosen))
+}
+
 /// Whether `text`, a partition value of a `kind` column, reads as that type. A column the record types alike is true.
 fn narrow_text(kind: &Kind, text: &str) -> bool {
     let fits = match kind {
@@ -684,6 +711,8 @@ struct Expected {
     /// The add's path, its escapes undone.
     relative: String,
     partition_values: Value,
+    /// The physical names of the clustering columns its stats must count.
+    clustering: Vec<String>,
 }
 
 /// One seed's table and what has been seen of it.
@@ -709,6 +738,8 @@ struct Run {
     other_txn: i64,
     /// A column another writer dropped, to add again.
     dropped: Option<schema::StructField>,
+    /// The physical names of the table's clustering columns.
+    clustering: Vec<String>,
 }
 
 /// Runs seed `seed`. Err names the property it breaks.
@@ -733,6 +764,7 @@ fn run(seed: u64) -> Result<(), String> {
         other_files: Vec::new(),
         other_txn: 0,
         dropped: None,
+        clustering: Vec::new(),
     };
     let must_refuse = run.existing()?;
     run.harvest()?;
@@ -803,6 +835,24 @@ impl Run {
                     narrow(&mut self.rng, m, &earlier);
                 }
             }
+        }
+        let clustered = (actions.iter()).any(|a| {
+            a["protocol"]["writerFeatures"]
+                .as_array()
+                .is_some_and(|f| f.contains(&json!("clustering")))
+        });
+        let metadata = actions
+            .iter_mut()
+            .find_map(|a| a.get_mut("metaData"))
+            .expect("a create holds metaData");
+        if let Some((domain, columns)) = clustered.then(|| clustering(&mut self.rng, metadata)).flatten() {
+            // With no column indexed, only being clustered takes a column stats.
+            if self.rng.chance(2) {
+                metadata["configuration"]["delta.dataSkippingNumIndexedCols"] = json!("0");
+                reach("clustering past the indexed columns");
+            }
+            actions.push(domain);
+            self.clustering = columns;
         }
         self.put(0, &actions);
         if self.rng.chance(3) {
@@ -1038,6 +1088,10 @@ impl Run {
                 Expected {
                     relative: file.path.trim_start_matches("tbl/").to_string(),
                     partition_values: Value::Object(partition_values),
+                    clustering: (self.clustering.iter())
+                        .filter(|c| committer.written.field_with_name(c).is_ok())
+                        .cloned()
+                        .collect(),
                 },
             );
             files.push(file);
@@ -1297,6 +1351,18 @@ impl Run {
                                     "commit {version} adds {key} with the partition values {}, not {}",
                                     add["partitionValues"], expected.partition_values
                                 ));
+                            }
+                            if let Some(stats) = add["stats"].as_str() {
+                                let stats: Value = serde_json::from_str(stats).unwrap();
+                                if let Some(c) = (expected.clustering.iter()).find(|c| stats["nullCount"][c].is_null())
+                                {
+                                    return Err(format!(
+                                        "commit {version} adds {key} with no stats for its clustering column {c}"
+                                    ));
+                                }
+                                if !expected.clustering.is_empty() {
+                                    reach("clustering column stats");
+                                }
                             }
                         }
                     }

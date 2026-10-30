@@ -43,7 +43,7 @@ use crate::ops::civil::MICROS_PER_DAY;
 use crate::plan::topology::{DeltaDestinationConfig, HeldSecrets, Records, UnityCatalogTable};
 
 /// The writer features of a table this writer can write. A table needing any other is refused.
-const WRITER_FEATURES: [&str; 10] = [
+const WRITER_FEATURES: [&str; 11] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -54,6 +54,8 @@ const WRITER_FEATURES: [&str; 10] = [
     "deletionVectors",
     "vacuumProtocolCheck",
     "timestampNtz",
+    // Our files are appended unclustered: they name no clustering provider, and carry stats for the clustering columns.
+    "clustering",
 ];
 
 /// The schemes of an S3 location.
@@ -499,7 +501,15 @@ impl DeltaCommitter {
             "dataChange": true,
         });
         if let Some(metadata) = file.metadata.as_deref() {
-            add["stats"] = json!(stats(metadata, &self.schema, &self.snapshot.metadata, file.record_count).to_string());
+            let clustering = clustering_columns(&self.snapshot)?;
+            let stats = stats(
+                metadata,
+                &self.schema,
+                &self.snapshot.metadata,
+                &clustering,
+                file.record_count,
+            );
+            add["stats"] = json!(stats.to_string());
         }
         Ok(add)
     }
@@ -778,7 +788,30 @@ fn wall_clock(micros: i64, digits: u32, separator: char) -> String {
 
 /// A data file's statistics as an add action carries them: its row count, and each leaf column's null count and
 /// bounds, keyed by physical names. A leaf inside an array or a map has none, nor one past the table's indexed columns.
-fn stats(file: &ParquetMetaData, schema: &StructType, metadata: &Metadata, rows: u64) -> Value {
+/// The physical paths of the columns the table is clustered by, from its `delta.clustering` domain; none when it is
+/// not clustered.
+fn clustering_columns(snapshot: &Snapshot) -> Result<Vec<Vec<String>>, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Clustering {
+        clustering_columns: Vec<Vec<String>>,
+    }
+    let Some(domain) = snapshot.domains.get("delta.clustering") else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_str::<Clustering>(&domain.configuration)
+        .map(|c| c.clustering_columns)
+        .map_err(|e| format!("the table's clustering domain does not read: {e}"))
+}
+
+/// A file's stats. A clustering column takes them whether or not the table indexes it, as the protocol asks.
+fn stats(
+    file: &ParquetMetaData,
+    schema: &StructType,
+    metadata: &Metadata,
+    clustering: &[Vec<String>],
+    rows: u64,
+) -> Value {
     let indexed = match metadata
         .property("delta.dataSkippingNumIndexedCols")
         .map(str::parse::<i64>)
@@ -807,7 +840,7 @@ fn stats(file: &ParquetMetaData, schema: &StructType, metadata: &Metadata, rows:
                 .iter()
                 .any(|n| *n == names.join(".") || names.join(".").starts_with(&format!("{n}."))),
             None => leaves < indexed,
-        };
+        } || clustering.contains(&parts);
         leaves += 1;
         if !taken {
             continue;
@@ -1761,7 +1794,7 @@ mod tests {
         };
         let status = physical(http, "status");
 
-        let got = stats(&file, &schema, &metadata(&schema, &[], &[]), 2);
+        let got = stats(&file, &schema, &metadata(&schema, &[], &[]), &[], 2);
         assert_eq!(
             got,
             json!({
@@ -1796,7 +1829,7 @@ mod tests {
         let (schema, file) = stats_file();
         let p = |name| physical(&schema, name);
         let meta = metadata(&schema, &[("delta.dataSkippingNumIndexedCols", "2")], &[]);
-        let got = stats(&file, &schema, &meta, 2);
+        let got = stats(&file, &schema, &meta, &[], 2);
         assert_eq!(got["nullCount"], json!({p("ts"): 0, p("host"): 0}));
         assert_eq!(
             got["minValues"],
@@ -1805,11 +1838,20 @@ mod tests {
     }
 
     #[test]
+    fn a_clustering_column_takes_stats_past_the_indexed_ones() {
+        let (schema, file) = stats_file();
+        let p = |name| physical(&schema, name);
+        let meta = metadata(&schema, &[("delta.dataSkippingNumIndexedCols", "1")], &[]);
+        let got = stats(&file, &schema, &meta, &[vec![p("n")]], 2);
+        assert_eq!(got["nullCount"], json!({p("ts"): 0, p("n"): 1}));
+    }
+
+    #[test]
     fn a_partition_column_takes_no_stats_nor_an_indexed_place() {
         let (schema, file) = stats_file();
         let p = |name| physical(&schema, name);
         let meta = metadata(&schema, &[("delta.dataSkippingNumIndexedCols", "2")], &["host"]);
-        let got = stats(&file, &schema, &meta, 2);
+        let got = stats(&file, &schema, &meta, &[], 2);
         assert_eq!(got["nullCount"], json!({p("ts"): 0, p("msg"): 0}));
     }
 
