@@ -4,8 +4,8 @@
 //! A fuzzer runs a seed range in `cargo test`. A failure names its seed: `SMELTR_FUZZ_SEED=n` runs seed `n` alone,
 //! and `SMELTR_FUZZ_SEEDS=n` runs `n` seeds rather than the fuzzer's default.
 //!
-//! Test-only and std-only: the crate's unit tests reach it as `crate::fuzz`, and `tests/harness` compiles this same
-//! file as `harness::fuzz`, so it can name nothing from either crate.
+//! Test-only and std-only: the crate's unit tests reach it as `crate::fuzz`, and `tests/harness` and the `smeltr`
+//! binary's tests compile this same file as their own `fuzz`, so it can name nothing from any of them.
 
 use std::collections::BTreeSet;
 use std::ops::Range;

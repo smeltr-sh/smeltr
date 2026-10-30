@@ -20,6 +20,7 @@ import {
 } from './api';
 import { diffObjects, type DiffEntry } from './diff';
 import { stepSummary, stepsFromDto } from './pipeline';
+import { bundleRoutes } from './routeFlow';
 
 export type Noun =
   | 'source'
@@ -211,6 +212,48 @@ export interface ScopePair {
   /** The scope's files that do not read at each end: each path, within the
    * bundle, to why. */
   unreadable?: { before: Map<string, string>; after: Map<string, string> };
+  /** `shared/`'s bundle at each end, for a group's: a group runs shared routes before its own, so they count in a
+   * route's name (`routeName`). */
+  shared?: { before: FileConfigDto; after: FileConfigDto };
+}
+
+/** Each end's pipelines by id, to their names: a scope's own over `shared/`'s, which a group runs too. */
+export interface SideNames {
+  before: Map<string, string>;
+  after: Map<string, string>;
+}
+
+export function sidePipelineNames(pair: Pick<ScopePair, 'before' | 'after' | 'shared'>): SideNames {
+  const names = (config: FileConfigDto, shared?: FileConfigDto) =>
+    new Map([...(shared?.pipelines ?? []), ...config.pipelines].map((p) => [p.id, p.name]));
+  return {
+    before: names(pair.before, pair.shared?.before),
+    after: names(pair.after, pair.shared?.after),
+  };
+}
+
+/** Pipeline `id` as a reader calls it at `side`: its name there, else at the other end, else the id itself. */
+export function pipelineNameAt(names: SideNames, id: string, side: 'before' | 'after'): string {
+  const other = side === 'before' ? 'after' : 'before';
+  return names[side].get(id) || names[other].get(id) || id;
+}
+
+/** A route's `pipeline` field, naming its pipeline at each end. */
+function pipelineByName(f: DiffEntry, names: SideNames): DiffEntry {
+  if (f.key !== 'pipeline') return f;
+  const at = (v: unknown, side: 'before' | 'after') =>
+    typeof v === 'string' ? pipelineNameAt(names, v, side) : v;
+  return { ...f, before: at(f.before, 'before'), after: at(f.after, 'after') };
+}
+
+/** Route `id` of a scope by its `routeName`: as the change leaves it, or as it was where the change removes it. */
+export function changedRouteName(
+  pair: Pick<ScopePair, 'before' | 'after' | 'shared'>,
+  id: string,
+): string | undefined {
+  const named = (config: FileConfigDto, shared?: FileConfigDto) =>
+    bundleRoutes(config, shared).find((r) => r.id === id)?.name;
+  return named(pair.after, pair.shared?.after) ?? named(pair.before, pair.shared?.before);
 }
 
 /** The file each section is read from. A section whose file does not read
@@ -450,6 +493,7 @@ function objectChange(
   before: unknown,
   after: unknown,
   moved: boolean,
+  label = labelOf(after ?? before, id),
 ): ObjectChange | null {
   const status: Status =
     before === undefined ? 'added' : after === undefined ? 'removed' : 'changed';
@@ -464,7 +508,7 @@ function objectChange(
     section: spec.key,
     noun: spec.noun,
     id,
-    label: labelOf(after ?? before, id),
+    label,
     status,
     fields,
   };
@@ -687,6 +731,7 @@ export function objectChanges(pairs: ScopePair[]): ObjectChange[] {
     const group = unread.has('system.json') ? null : groupChange(pair);
     if (group) out.push(group);
     out.push(...unreadableChanges(scope, pair));
+    const names = sidePipelineNames(pair);
     for (const spec of SECTIONS) {
       const wasList = (before[spec.key] ?? []) as { id: string }[];
       const nowList = (after[spec.key] ?? []) as { id: string }[];
@@ -697,7 +742,18 @@ export function objectChanges(pairs: ScopePair[]): ObjectChange[] {
       for (const id of ids) {
         // Its file says what it is, not that it was removed or added.
         if (unread.has(fileOfObject(spec, id))) continue;
-        const change = objectChange(scope, spec, id, was.get(id), now.get(id), moved.has(id));
+        const route = spec.key === 'routes' ? changedRouteName(pair, id) : undefined;
+        const change = objectChange(
+          scope,
+          spec,
+          id,
+          was.get(id),
+          now.get(id),
+          moved.has(id),
+          route,
+        );
+        if (change && spec.key === 'routes')
+          change.fields = change.fields.map((f) => pipelineByName(f, names));
         if (change) out.push(change);
       }
     }

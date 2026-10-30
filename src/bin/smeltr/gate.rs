@@ -13,6 +13,10 @@
 //! The browser protections are here too, because they are the same decision: a cookie is attached by the browser
 //! whoever caused the request, so an unsafe request must also prove it came from the GUI -- an exact `Origin` and
 //! a header carrying the session's own CSRF value, which a cross-site caller can read neither of.
+//!
+//! A key account calls with one of its keys instead, as `Authorization: Bearer`. No browser attaches that header
+//! on its own, so a key needs neither protection. A key names its account, and the account decides, as any
+//! account does.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -22,12 +26,14 @@ use axum::extract::State;
 use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use smeltr::leader::access::{Access, AgentPermissions, ByAgent, Level};
+use smeltr::leader::access::{Access, ByAgent, Level, given_by};
+use smeltr::leader::auth::hash_secret;
 use smeltr::leader::blocking;
 use smeltr::leader::envelope::Refusal;
 use smeltr::leader::sessions::{Refused, Sessions};
 use smeltr::leader::store::{Actor, AuthSource, Store, StoreError, UserRecord};
 use smeltr::leader::throttle::LoginThrottle;
+use smeltr::leader::warnings::now_millis;
 
 use crate::policy;
 
@@ -176,6 +182,19 @@ pub fn presented_token(headers: &axum::http::HeaderMap, cookie_name: &str) -> Op
         .filter(|token| !token.is_empty())
 }
 
+/// The key this request carries, if any.
+pub fn presented_key(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_string)
+}
+
+/// How seldom a key's last use is written: often enough to tell a key in use from one forgotten, seldom enough that
+/// a busy key account does not write on every request.
+const LAST_USED_EVERY: i64 = 60_000;
+
 /// Whether a method changes anything. `GET` and `HEAD` do not, and there are no state-changing `GET`s here, so
 /// this is also the list of methods that skip the CSRF check.
 fn is_safe(method: &Method) -> bool {
@@ -185,11 +204,22 @@ fn is_safe(method: &Method) -> bool {
 /// The gate. Every operator route is behind it; the public auth routes are not.
 pub async fn require_principal(
     State(auth): State<Auth>,
-    mut req: axum::extract::Request,
+    req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
     let path = req.uri().path().to_string();
     let method = req.method().clone();
+
+    if let Some(key) = presented_key(req.headers()) {
+        if presented_token(req.headers(), auth.origin.cookie_name()).is_some() {
+            return refuse(StatusCode::BAD_REQUEST, "send a key or a session, not both");
+        }
+        let by_agent = req.extensions().get::<ByAgent>().is_some();
+        return match key_account_of(&auth, key, by_agent).await {
+            Ok((actor, access)) => admit(req, next, &method, &path, actor, access).await,
+            Err(response) => *response,
+        };
+    }
 
     let Some(token) = presented_token(req.headers(), auth.origin.cookie_name()) else {
         return refuse(StatusCode::UNAUTHORIZED, "sign in to use this");
@@ -267,24 +297,91 @@ pub async fn require_principal(
         );
     }
 
-    let need = policy::need(&method, &path);
+    // The agent acts as its person and says so wherever the name is shown, in history and on a change alike.
+    let actor = if by_agent {
+        Actor::agent_of(&user.id, &user.display_name)
+    } else {
+        Actor::account(&user.id, &user.display_name)
+    };
+    admit(req, next, &method, &path, actor, access).await
+}
+
+/// Let in a caller the gate has named, if what they hold meets what the route needs.
+///
+/// An `Actor` is what an audit row and a git author both take: who is asking is one fact, and a second type for it
+/// would be a second fact to keep in step. The gate constructs it and nothing else does, so no field of a request
+/// body reaches it.
+async fn admit(
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+    method: &Method,
+    path: &str,
+    actor: Actor,
+    access: Access,
+) -> Response {
+    let need = policy::need(method, path);
     if !need.met_by(&access) {
         return Refusal::from(need).into_response();
     }
-
-    // An `Actor`, which is what an audit row and a git author both take: who is asking is one fact, and a second
-    // type for it would be a second fact to keep in step. Constructed here and nowhere else, so no field of a
-    // request body reaches it.
-    // The agent acts as its person and says so wherever the name is shown, in history and on a change alike.
-    let actor = if by_agent {
-        Actor::persons_agent(&user.id, &user.display_name)
-    } else {
-        Actor::person(&user.id, &user.display_name)
-    };
     req.extensions_mut().insert(actor);
     // Beside the actor, for a handler whose area is in the body or the branch and so could not be judged above.
     req.extensions_mut().insert(access);
     next.run(req).await
+}
+
+/// The account a key names, and what it holds now, read from the store on every request as an account is:
+/// for its agent, what it lets its agent use.
+///
+/// Three refusals, as a worker's token has, because a caller acts on each differently: a key never made is `401`,
+/// a revoked or expired key or a disabled account `403`, and a store that could not say is `503`, never either of
+/// them.
+async fn key_account_of(auth: &Auth, key: String, by_agent: bool) -> Result<(Actor, Access), Box<Response>> {
+    let store = auth.store.clone();
+    let now = now_millis();
+    let looked_up = blocking(move || {
+        let Some(presented) = store.api_key_by_hash(&hash_secret(&key))? else {
+            return Ok(None);
+        };
+        let user = store.get_user(&presented.user_id)?;
+        let access = match &user {
+            Some(user) if !presented.revoked && presented.expires_at.is_none_or(|at| now < at) && user.enabled => {
+                let access = access_of(store.as_ref(), user)?;
+                Some(match by_agent {
+                    true => access.for_agent(store.agent_permissions_of(&user.id)?),
+                    false => access,
+                })
+            }
+            _ => None,
+        };
+        // A minute at most behind, which is all a roster that asks whether a key is in use needs. Its failing to be
+        // written refuses nothing: the key is good.
+        if access.is_some()
+            && presented.last_used_at.is_none_or(|at| now - at >= LAST_USED_EVERY)
+            && let Err(e) = store.mark_api_key_used(&presented.id, now)
+        {
+            tracing::warn!(target: "leader.identity_unavailable", error = %e, "a key's last use could not be written");
+        }
+        Ok::<_, StoreError>(Some((user, access)))
+    })
+    .await;
+    match looked_up {
+        Ok(Some((Some(user), Some(access)))) if user.auth_source == AuthSource::Key => Ok((
+            match by_agent {
+                true => Actor::agent_of(&user.id, &user.display_name),
+                false => Actor::account(&user.id, &user.display_name),
+            },
+            access,
+        )),
+        Ok(Some(_)) => Err(Box::new(refuse(
+            StatusCode::FORBIDDEN,
+            "this key was revoked or has expired, or its account is disabled",
+        ))),
+        Ok(None) => Err(Box::new(refuse(StatusCode::UNAUTHORIZED, "this key is not known"))),
+        Err(e) => {
+            tracing::error!(target: "leader.identity_unavailable", error = %e, "the account store could not be read");
+            Err(Box::new(store_unavailable()))
+        }
+    }
 }
 
 /// What every answer carries for the browser, GUI and API alike: a served body is never sniffed into a script, no
@@ -346,23 +443,24 @@ pub async fn shape(req: axum::extract::Request, next: axum::middleware::Next) ->
     refuse(status, &message)
 }
 
-/// Whether `user` may hold a session at all. A local account must still be an administrator, which it always is;
-/// an OIDC account is let in whatever it holds, and what it may then do is the policy's to decide.
+/// Whether `user` may hold a session at all: any enabled account that signs in, and what it may then do is the
+/// policy's to decide. A key account never holds one: it calls with a key.
 pub fn admitted(user: &UserRecord) -> bool {
-    user.enabled && (user.auth_source != AuthSource::Local || user.administrator)
+    user.enabled && user.auth_source != AuthSource::Key
 }
 
-/// What `user` holds now: its groups as of its last sign-in, against the roles as they are.
+/// What `user` holds now: what the roles it holds give, against the roles as they are. An OIDC account holds the
+/// roles its groups gave as of its last sign-in; a local or key account the roles an administrator gave it.
 pub fn access_of(store: &dyn Store, user: &UserRecord) -> Result<Access, StoreError> {
-    let groups = match user.auth_source {
-        // Holds everything whatever the roles say, so neither is read.
-        AuthSource::Local => return Ok(Access::of(AuthSource::Local, &[], &[])),
-        AuthSource::Oidc => store
-            .oidc_identity_of(&user.id)?
-            .map(|identity| identity.groups)
-            .unwrap_or_default(),
+    let roles = store.list_roles()?;
+    let named = match user.auth_source {
+        AuthSource::Oidc => {
+            let groups = store.oidc_identity_of(&user.id)?.map(|identity| identity.groups);
+            given_by(&roles, &groups.unwrap_or_default())
+        }
+        AuthSource::Local | AuthSource::Key => store.given_roles(&user.id)?,
     };
-    Ok(Access::of(user.auth_source, &groups, &store.list_roles()?))
+    Ok(Access::of(&named, &roles))
 }
 
 /// `access`, as a session and the roster report it: `areas` is empty for an administrator, who holds everything.
@@ -386,10 +484,9 @@ impl From<&Access> for AccessDto {
             // The areas its person names, each as the agent permissions leave it. An administrator's agent names
             // only the areas its permissions do, since an administrator names none.
             Access::Agent { held, permissions } => {
-                let named: Vec<&String> = match (held.as_ref(), permissions) {
-                    (Access::Areas(areas), _) => areas.keys().collect(),
-                    (_, AgentPermissions::Upto { areas, .. }) => areas.keys().collect(),
-                    (_, AgentPermissions::Everything) => vec![],
+                let named: Vec<&String> = match held.as_ref() {
+                    Access::Areas(areas) => areas.keys().collect(),
+                    _ => permissions.areas.keys().collect(),
                 };
                 AccessDto {
                     administrator: false,
@@ -464,6 +561,25 @@ mod tests {
             secure: false,
             proxied: false,
         }
+    }
+
+    /// Model, points 3 and 5: any enabled account that signs in holds a session, whatever its roles; a key account
+    /// calls with a key, so no session of one is admitted.
+    #[test]
+    fn every_account_that_signs_in_holds_a_session_and_a_key_account_none() {
+        let account = |auth_source, enabled| UserRecord {
+            id: "u_1".into(),
+            auth_source,
+            display_name: "exporter".into(),
+            enabled,
+            generation: 1,
+            created_at: 0,
+            updated_at: 0,
+        };
+        assert!(admitted(&account(AuthSource::Local, true)));
+        assert!(admitted(&account(AuthSource::Oidc, true)));
+        assert!(!admitted(&account(AuthSource::Local, false)));
+        assert!(!admitted(&account(AuthSource::Key, true)));
     }
 
     /// `__Host-` is a promise the browser enforces, and it requires `Secure`. Used without it the cookie is
@@ -598,10 +714,10 @@ mod tests {
 
         use axum::Router;
         use axum::routing::{get, put};
-        use smeltr::leader::access::Role;
+        use smeltr::leader::access::{ADMINISTRATOR, AgentPermissions, Role};
         use smeltr::leader::accounts;
         use smeltr::leader::sqlite_store::SqliteStore;
-        use smeltr::leader::store::OidcSignIn;
+        use smeltr::leader::store::{NewApiKey, NewKeyAccount, OidcSignIn};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         const ORIGIN: &str = "http://127.0.0.1:4000";
@@ -639,7 +755,7 @@ mod tests {
                 .unwrap()
         }
 
-        /// What a handler behind the gate sees: that the gate handed it the person's access.
+        /// What a handler behind the gate sees: that the gate handed it the account's access.
         async fn reached(access: Option<axum::Extension<Access>>) -> &'static str {
             match access {
                 Some(_) => "reached",
@@ -662,7 +778,7 @@ mod tests {
             Router::new()
                 .route("/api/areas/:area", get(reached))
                 .route("/api/areas/:area/sources", put(reached))
-                .route("/api/users", get(reached))
+                .route("/api/accounts", get(reached))
                 .route_layer(axum::middleware::from_fn_with_state(auth, require_principal))
         }
 
@@ -704,6 +820,19 @@ mod tests {
             (status, body)
         }
 
+        /// One request carrying `key` and nothing a browser sends; the status.
+        async fn ask_with_key(at: std::net::SocketAddr, key: &str, method: &str, target: &str) -> u16 {
+            let request = format!(
+                "{method} {target} HTTP/1.1\r\nHost: {at}\r\nAuthorization: Bearer {key}\r\n\
+                 Content-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            let mut stream = tokio::net::TcpStream::connect(at).await.unwrap();
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut answer = String::new();
+            stream.read_to_string(&mut answer).await.unwrap();
+            answer.split(' ').nth(1).unwrap().parse().unwrap()
+        }
+
         fn auth(store: Arc<dyn Store>) -> Auth {
             let origin = Origin {
                 value: ORIGIN.into(),
@@ -717,7 +846,7 @@ mod tests {
         fn payments_viewer() -> Role {
             Role {
                 name: "smeltr-payments".into(),
-                administrator: false,
+                groups: vec!["smeltr-payments".into()],
                 areas: BTreeMap::from([("payments".to_string(), Level::Viewer)]),
             }
         }
@@ -742,7 +871,7 @@ mod tests {
             assert_eq!(status, 403, "{body}");
             assert!(body.contains("this needs viewer in search"), "{body}");
 
-            let (status, _) = ask(at, &auth, &viewer, "GET", "/api/users").await;
+            let (status, _) = ask(at, &auth, &viewer, "GET", "/api/accounts").await;
             assert_eq!(status, 403);
         }
 
@@ -764,22 +893,22 @@ mod tests {
 
         /// A role changed is in force on the very next request: access is read from the store every time.
         #[tokio::test]
-        async fn a_role_marked_administrator_reaches_everything_from_the_next_request() {
+        async fn a_group_given_the_administrator_role_reaches_everything_from_the_next_request() {
             let store = store();
             let person = sign_in(store.as_ref(), "ada", &["smeltr-admins"]);
             let auth = auth(store.clone());
             let at = serve(auth.clone()).await;
 
-            assert_eq!(ask(at, &auth, &person, "GET", "/api/users").await.0, 403);
+            assert_eq!(ask(at, &auth, &person, "GET", "/api/accounts").await.0, 403);
             let admins = Role {
-                name: "smeltr-admins".into(),
-                administrator: true,
+                name: ADMINISTRATOR.into(),
+                groups: vec!["smeltr-admins".into()],
                 areas: BTreeMap::new(),
             };
-            let event = accounts::event_for(&Actor::system(), "role-put", "smeltr-admins", "ok");
+            let event = accounts::event_for(&Actor::system(), "role-put", ADMINISTRATOR, "ok");
             store.put_role(&admins, &event).unwrap();
             assert_eq!(
-                ask(at, &auth, &person, "GET", "/api/users").await,
+                ask(at, &auth, &person, "GET", "/api/accounts").await,
                 (200, "reached".to_string())
             );
             assert_eq!(ask(at, &auth, &person, "PUT", "/api/areas/search/sources").await.0, 200);
@@ -788,7 +917,7 @@ mod tests {
         fn payments_deployer() -> Role {
             Role {
                 name: "smeltr-payments-deploy".into(),
-                administrator: false,
+                groups: vec!["smeltr-payments-deploy".into()],
                 areas: BTreeMap::from([("payments".to_string(), Level::Deployer)]),
             }
         }
@@ -816,7 +945,8 @@ mod tests {
             assert_eq!(status, 403, "{body}");
             assert!(body.contains("this needs editor in payments"), "{body}");
 
-            let permissions = AgentPermissions::Upto {
+            let permissions = AgentPermissions {
+                administrator: false,
                 default: Level::Viewer,
                 areas: BTreeMap::from([
                     ("payments".to_string(), Level::Editor),
@@ -839,29 +969,96 @@ mod tests {
             );
         }
 
-        /// An administrator's agent is no administrator until they give it everything.
+        /// A key account's agent holds what the account lets its agent use, as a person's does, and calls with its
+        /// key.
         #[tokio::test]
-        async fn an_administrators_agent_is_an_administrator_only_when_given_everything() {
+        async fn a_key_accounts_agent_holds_no_more_than_its_permissions() {
+            let store = store();
+            let created = accounts::event_for(&Actor::system(), "account-create", "u_int", "ok");
+            let account = NewKeyAccount {
+                id: "u_int",
+                display_name: "provisioner",
+            };
+            store
+                .create_key_account(account, &[ADMINISTRATOR.to_string()], &created)
+                .unwrap();
+            let key = key_of(store.as_ref(), "u_int", "key_1", None);
+            let auth = auth(store.clone());
+            let direct = serve(auth.clone()).await;
+            let agent = serve_by_agent(auth.clone()).await;
+
+            assert_eq!(ask_with_key(direct, &key, "GET", "/api/accounts").await, 200);
+            assert_eq!(ask_with_key(agent, &key, "GET", "/api/accounts").await, 403);
+            assert_eq!(ask_with_key(agent, &key, "GET", "/api/areas/search").await, 200);
+        }
+
+        /// A new key for the key account `id`, expiring at `expires_at`, and the key itself.
+        fn key_of(store: &dyn Store, id: &str, key_id: &str, expires_at: Option<i64>) -> String {
+            let key = smeltr::leader::auth::generate_secret();
+            let made = accounts::event_for(&Actor::system(), "key-create", key_id, "ok");
+            let hash = hash_secret(&key);
+            let new_key = NewApiKey {
+                id: key_id,
+                label: "",
+                token_hash: &hash,
+                created_at: 0,
+                expires_at,
+            };
+            store.create_api_key(id, new_key, &made).unwrap().unwrap();
+            key
+        }
+
+        /// Model, point 5: a key past its expiry is refused as a revoked one is, and one before it lets its account
+        /// in.
+        #[tokio::test]
+        async fn an_expired_key_is_refused_as_a_revoked_one() {
+            let store = store();
+            let created = accounts::event_for(&Actor::system(), "account-create", "u_int", "ok");
+            let account = NewKeyAccount {
+                id: "u_int",
+                display_name: "exporter",
+            };
+            store
+                .create_key_account(account, &[ADMINISTRATOR.to_string()], &created)
+                .unwrap();
+            let expired = key_of(store.as_ref(), "u_int", "key_1", Some(1));
+            let current = key_of(store.as_ref(), "u_int", "key_2", Some(now_millis() + 60_000));
+            let direct = serve(auth(store.clone())).await;
+
+            assert_eq!(ask_with_key(direct, &expired, "GET", "/api/accounts").await, 403);
+            assert_eq!(ask_with_key(direct, &current, "GET", "/api/accounts").await, 200);
+        }
+
+        /// An administrator's agent is no administrator until its permissions name the administrator role.
+        #[tokio::test]
+        async fn an_administrators_agent_is_an_administrator_only_when_its_permissions_say_so() {
             let store = store();
             let admins = Role {
-                name: "smeltr-admins".into(),
-                administrator: true,
+                name: ADMINISTRATOR.into(),
+                groups: vec!["smeltr-admins".into()],
                 areas: BTreeMap::new(),
             };
-            let event = accounts::event_for(&Actor::system(), "role-put", "smeltr-admins", "ok");
+            let event = accounts::event_for(&Actor::system(), "role-put", ADMINISTRATOR, "ok");
             store.put_role(&admins, &event).unwrap();
             let person = sign_in(store.as_ref(), "ada", &["smeltr-admins"]);
             let auth = auth(store.clone());
             let agent = serve_by_agent(auth.clone()).await;
 
-            assert_eq!(ask(agent, &auth, &person, "GET", "/api/users").await.0, 403);
+            assert_eq!(ask(agent, &auth, &person, "GET", "/api/accounts").await.0, 403);
             assert_eq!(ask(agent, &auth, &person, "GET", "/api/areas/search").await.0, 200);
             let event = accounts::event_for(&Actor::system(), "agent-permissions-put", &person.id, "ok");
             store
-                .put_agent_permissions(&person.id, &AgentPermissions::Everything, &event)
+                .put_agent_permissions(
+                    &person.id,
+                    &AgentPermissions {
+                        administrator: true,
+                        ..AgentPermissions::default()
+                    },
+                    &event,
+                )
                 .unwrap()
                 .unwrap();
-            assert_eq!(ask(agent, &auth, &person, "GET", "/api/users").await.0, 200);
+            assert_eq!(ask(agent, &auth, &person, "GET", "/api/accounts").await.0, 200);
         }
     }
 }

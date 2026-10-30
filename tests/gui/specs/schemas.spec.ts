@@ -198,6 +198,7 @@ test("a JSON Schema added on the Schemas page is saved as the bundle's own", asy
   await admin.getByRole('button', { name: '+ Add schema' }).click();
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'JSON Schema', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: /new schema from JSON Schema$/ })).toBeVisible();
   await dialog.getByLabel('id', { exact: true }).fill('orders');
   await dialog.getByRole('textbox', { name: 'JSON Schema' }).fill(JSON.stringify(schema));
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();

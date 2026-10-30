@@ -757,8 +757,8 @@ fn taken() -> bool {
     true
 }
 
-/// Leader → worker: what to run is `main`, which the worker fetches for itself -- naming a commit would put the
-/// leader between a worker and a ref it may not own.
+/// Leader → worker: what to run is the deployed pointer, which the worker fetches for itself. [`Self::deployed`] only
+/// says when to look.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeartbeatResponse {
@@ -793,6 +793,11 @@ pub struct HeartbeatResponse {
     /// worker stops reading. An absent key is the empty list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub holds: Vec<Hold>,
+    /// The commit the deployed pointer names, so a worker that has already fetched it need not fetch again to learn
+    /// it has not moved. A cue, not an order: what the worker runs is what its fetch returns. Absent before anything
+    /// is deployed, and from a leader too old to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployed: Option<String>,
 }
 
 /// One thing an operator asked of one worker. The id tells a repeat from a new request: a worker acts on each id
@@ -1484,10 +1489,13 @@ mod client {
         /// the leader keeps the first answer from each worker and ignores the rest, so a report arriving twice
         /// cannot double a sample.
         pub fn report_capture(&self, report: &super::CaptureReport) -> Result<(), HeartbeatError> {
+            let body = super::gzipped_json(report).map_err(|e| HeartbeatError::other(e.to_string()))?;
             self.capture_agent
                 .post(&self.capture_url)
                 .header("Authorization", &format!("Bearer {}", self.token))
-                .send_json(report)
+                .header("Content-Type", "application/json")
+                .header("Content-Encoding", "gzip")
+                .send(&body[..])
                 .map(|_| ())
                 .map_err(|e| HeartbeatError::other(e.to_string()))
         }
@@ -1505,11 +1513,17 @@ mod client {
         }
 
         fn send_once(&self, req: &HeartbeatRequest) -> Result<HeartbeatResponse, SendFailure> {
+            let body = super::gzipped_json(req).map_err(|e| SendFailure {
+                retryable: false,
+                error: HeartbeatError::other(e.to_string()),
+            })?;
             let mut response = self
                 .agent
                 .post(&self.heartbeat_url)
                 .header("Authorization", &format!("Bearer {}", self.token))
-                .send_json(req)
+                .header("Content-Type", "application/json")
+                .header("Content-Encoding", "gzip")
+                .send(&body[..])
                 .map_err(|e| SendFailure {
                     // The exchange did not complete, as opposed to the leader having answered.
                     retryable: matches!(
@@ -1534,6 +1548,14 @@ mod client {
                 })
         }
     }
+}
+
+/// `value` as JSON, gzipped, as a worker sends every body to its leader. A heartbeat is the same metric names and
+/// labels beat after beat, which gzip takes to a fraction.
+fn gzipped_json(value: &impl Serialize) -> std::io::Result<Vec<u8>> {
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    serde_json::to_writer(&mut gz, value)?;
+    gz.finish()
 }
 
 pub use client::{
@@ -2056,12 +2078,13 @@ mod tests {
         assert!(json.contains(r#""logs":[{"seq":0,"#), "{json}");
     }
 
-    /// The other direction of the same contract. The answer names no commit and no thread: what to run is `main`,
-    /// which the worker fetches for itself.
+    /// The other direction of the same contract. What to run is the deployed pointer, which the worker fetches for
+    /// itself.
     #[test]
     fn a_heartbeat_response_serializes_to_the_wire_spelling() {
         let resp = HeartbeatResponse {
             holds: Vec::new(),
+            deployed: None,
             authority: None,
             captures: Vec::new(),
             secrets: Vec::new(),
@@ -2308,6 +2331,7 @@ mod tests {
         // Through a response, a vector, an Option -- every shape a caller might have in hand.
         let response = HeartbeatResponse {
             holds: Vec::new(),
+            deployed: None,
             authority: None,
             captures: vec![Invited::Readable(Box::new(invitation))],
             secrets: vec![delivery.clone()],

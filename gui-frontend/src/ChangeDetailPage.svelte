@@ -571,6 +571,7 @@
         <div class="right">
           {#if mergeConflicts}
             <ConflictChoices
+              {branch}
               conflicts={mergeConflicts}
               busy={bringingCurrent}
               onapply={(sides) => confirmBringCurrent(sides)}

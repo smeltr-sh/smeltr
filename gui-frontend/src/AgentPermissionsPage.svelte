@@ -1,14 +1,13 @@
 <!--
-  What the person signed in lets their own agent use: everything they hold, or up to a level in every area and
-  another in the areas they name. The leader holds the agent to the lower of this and what the person holds, so
-  each area shows what they hold beside it.
+  What the person signed in lets their own agent use: up to a level in every area and another in the areas they
+  name, and, for an administrator, the administrator role. The leader holds the agent to the lower of this and what
+  the person holds, so each area shows what they hold beside it.
 -->
 <script lang="ts">
   import { reported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import Field from './Field.svelte';
-  import Segmented from './Segmented.svelte';
   import { LEVELS, isAdministrator, levelOf } from './access';
   import { scopeHue } from './scope';
   import {
@@ -21,10 +20,9 @@
   } from './api';
   import { session, type AccessLevel } from './session';
 
-  type Kind = AgentPermissionsDto['kind'];
-
   let loading = $state(true);
-  let kind = $state<Kind>('upto');
+  /** Kept as saved for someone who no longer holds the administrator role, who is not offered it. */
+  let administrator = $state(false);
   let everyArea = $state<AccessLevel>('viewer');
   /** `''` is an area left at the level every area gets. */
   let byArea = $state<Record<string, AccessLevel | ''>>({});
@@ -49,11 +47,9 @@
   });
 
   function show(permissions: AgentPermissionsDto) {
-    kind = permissions.kind;
-    if (permissions.kind === 'upto') {
-      everyArea = permissions.default;
-      byArea = { ...permissions.areas };
-    }
+    administrator = permissions.administrator;
+    everyArea = permissions.default;
+    byArea = { ...permissions.areas };
   }
 
   async function load() {
@@ -82,17 +78,16 @@
   });
 
   /** What the form would save: the areas given a level of their own. */
-  const draft = $derived<AgentPermissionsDto>(
-    kind === 'everything'
-      ? { kind }
-      : {
-          kind,
-          default: everyArea,
-          areas: Object.fromEntries(
-            Object.entries(byArea).filter((e): e is [string, AccessLevel] => e[1] !== ''),
-          ),
-        },
-  );
+  const draft = $derived<AgentPermissionsDto>({
+    administrator,
+    default: everyArea,
+    areas: Object.fromEntries(
+      Object.entries(byArea).filter((e): e is [string, AccessLevel] => e[1] !== ''),
+    ),
+  });
+
+  /** Whether the agent holds the administrator role, which leaves the levels nothing to limit. */
+  const administers = $derived(administrator && isAdministrator());
 
   async function save(event: SubmitEvent) {
     event.preventDefault();
@@ -126,15 +121,18 @@
     <p>Reading your agent permissions…</p>
   {:else}
     <form class="panel" onsubmit={save}>
-      <Segmented
-        label="Agent permissions"
-        options={[
-          { value: 'upto', label: 'Up to a level' },
-          { value: 'everything', label: 'Everything you hold' },
-        ]}
-        bind:value={kind}
-      />
-      {#if kind === 'upto'}
+      {#if isAdministrator()}
+        <Field label="Administrator" group>
+          {#snippet help()}
+            With this, your agent holds the administrator role with you, and so everything. Without
+            it, it holds what the levels below give.
+          {/snippet}
+          <label class="check"
+            ><input type="checkbox" bind:checked={administrator} /> Your agent is an administrator</label
+          >
+        </Field>
+      {/if}
+      {#if !administers}
         <Field label="Every area">
           <select bind:value={everyArea}>
             {#each LEVELS as level (level)}<option value={level}>{level}</option>{/each}
@@ -192,6 +190,13 @@
     grid-template-columns: max-content max-content 9rem;
     gap: 0.4rem 1rem;
     align-items: center;
+  }
+
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: var(--text-body);
   }
 
   .area-name {

@@ -9,7 +9,9 @@
 //! - a commit, once in the bucket, is never replaced, and every line of it reads;
 //! - every checkpoint holds the state the commits up to it replay to;
 //! - at the end the log loads at its newest version, every acknowledged file is added exactly once, no file of this
-//!   writer's is added twice, and each add's path and partition values are the file's.
+//!   writer's is added twice, and each add's path and partition values are the file's;
+//! - a column an earlier table holds narrower, as another engine may have made it, is written as that type, and a
+//!   partition value of it reads as that type or its row is refused.
 //!
 //! It draws from `crate::fuzz`: a failure names its seed, `SMELTR_FUZZ_SEED=n` replays seed `n`, and the run fails
 //! when its seeds leave a data type, protocol feature, table property or fault in `COVERED` unreached.
@@ -39,7 +41,7 @@ use crate::io::delta::log::{FileAction, Name, file_key};
 use crate::io::parquet::{Chunk, Columns, REST};
 
 /// The seeds a run takes.
-const SEEDS: std::ops::Range<u64> = 1..121;
+const SEEDS: std::ops::Range<u64> = 1..201;
 
 /// What a run must reach over its seeds: every data type, protocol version and feature, table property, fault, other
 /// writer's change and commit outcome it draws.
@@ -58,6 +60,15 @@ const COVERED: &[&str] = &[
     "type open struct",
     "new table",
     "existing table",
+    "narrowed byte",
+    "narrowed short",
+    "narrowed integer",
+    "narrowed float",
+    "narrowed date",
+    "narrowed timestamp_ntz",
+    "narrowed written as its type",
+    "narrowed partition",
+    "narrowed partition refused",
     "partitioned",
     "partitioning refused",
     "partition null",
@@ -106,6 +117,12 @@ const COVERED: &[&str] = &[
     "enableExpiredLogCleanup",
     "dataSkippingNumIndexedCols",
     "dataSkippingStatsColumns",
+    "clustering column stats",
+    "clustering past the indexed columns",
+    "row tracking enabled",
+    "row tracking suspended",
+    "row ids above the high-water mark",
+    "other row ids",
     "orc",
     "fault Lost",
     "fault Dropped",
@@ -434,6 +451,125 @@ fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bool
     refused
 }
 
+/// Some of `record`'s top-level columns in `metadata`'s schema held narrower, as another engine may have made them.
+/// A partition column is left as it is: its random rows' values mostly do not fit, and the run partitions every one.
+fn narrow(rng: &mut Rng, metadata: &mut Value, record: &DataType) {
+    let DataType::Struct(fields, _) = record else {
+        unreachable!("a record is a struct")
+    };
+    let Some(mut schema) = metadata["schemaString"]
+        .as_str()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+    else {
+        return;
+    };
+    let Some(columns) = schema["fields"].as_array_mut() else {
+        return;
+    };
+    for column in columns {
+        let Some((_, t)) = fields.iter().find(|(name, _)| column["name"] == name.as_str()) else {
+            continue;
+        };
+        let to = match (column["type"].as_str(), t) {
+            (Some("long"), DataType::I64) => *rng.pick(&["byte", "short", "integer"]),
+            (Some("double"), DataType::F64) => "float",
+            (Some("timestamp"), DataType::DateTime) => *rng.pick(&["date", "timestamp_ntz"]),
+            _ => continue,
+        };
+        if rng.chance(4) {
+            continue;
+        }
+        column["type"] = json!(to);
+        reach(format!("narrowed {to}"));
+    }
+    metadata["schemaString"] = json!(schema.to_string());
+}
+
+/// The domain an engine that clusters the table writes, over one or two of `metadata`'s top-level primitive columns
+/// that do not partition it, and those columns' physical names. None when it has no such column.
+fn clustering(rng: &mut Rng, metadata: &Value) -> Option<(Value, Vec<String>)> {
+    let schema: Value = serde_json::from_str(metadata["schemaString"].as_str()?).ok()?;
+    let partitions = metadata["partitionColumns"].as_array()?;
+    let mut columns: Vec<String> = (schema["fields"].as_array()?.iter())
+        .filter(|f| f["type"].is_string() && !partitions.contains(&f["name"]))
+        .filter_map(|f| {
+            let physical = &f["metadata"]["delta.columnMapping.physicalName"];
+            physical.as_str().or(f["name"].as_str()).map(str::to_string)
+        })
+        .collect();
+    if columns.is_empty() {
+        return None;
+    }
+    let mut chosen = Vec::new();
+    for _ in 0..1 + rng.below(2).min(columns.len() - 1) {
+        chosen.push(columns.remove(rng.below(columns.len())));
+    }
+    let configuration = json!({"clusteringColumns": chosen.iter().map(|c| vec![c]).collect::<Vec<_>>()});
+    let domain = json!({"domainMetadata": {"domain": "delta.clustering", "configuration": configuration.to_string(),
+                                           "removed": false}});
+    Some((domain, chosen))
+}
+
+/// The domain that holds a row-tracking table's highest row id, `high`.
+fn row_tracking(high: i64) -> Value {
+    let configuration = json!({"rowIdHighWaterMark": high}).to_string();
+    json!({"domainMetadata": {"domain": "delta.rowTracking", "configuration": configuration, "removed": false}})
+}
+
+/// The row ids a table tracking them gives its next rows: one above its high-water mark. None when it does not.
+fn next_row_id(protocol: &Value, metadata: &Value, high: Option<i64>) -> Option<i64> {
+    let tracked = (protocol["writerFeatures"].as_array()).is_some_and(|f| f.contains(&json!("rowTracking")));
+    let suspended = metadata["configuration"]["delta.rowTrackingSuspended"] == "true";
+    (tracked && !suspended).then(|| high.map_or(0, |high| high + 1))
+}
+
+/// The high-water mark `domain`, an action's domainMetadata, sets, if it is row tracking's.
+fn high_water_mark(domain: &Value) -> Option<i64> {
+    if domain["domain"] != "delta.rowTracking" {
+        return None;
+    }
+    let configuration: Value = serde_json::from_str(domain["configuration"].as_str()?).ok()?;
+    configuration["rowIdHighWaterMark"].as_i64()
+}
+
+/// Whether `text`, a partition value of a `kind` column, reads as that type. A column the record types alike is true.
+fn narrow_text(kind: &Kind, text: &str) -> bool {
+    let fits = match kind {
+        Kind::Byte => text.parse::<i8>().is_ok(),
+        Kind::Short => text.parse::<i16>().is_ok(),
+        Kind::Int => text.parse::<i32>().is_ok(),
+        Kind::Float => text.parse::<f32>().is_ok(),
+        // The protocol's form of a time without zone: a space before the time, and no zone.
+        Kind::Timestamp => text.as_bytes().get(10) == Some(&b' ') && !text.ends_with('Z'),
+        _ => return true,
+    };
+    if fits {
+        reach("narrowed partition");
+    }
+    fits
+}
+
+/// Err when a column `committer`'s table holds narrower is not written as that type.
+fn kept_narrow(committer: &DeltaCommitter) -> Result<(), String> {
+    for column in &committer.schema.fields {
+        let schema::Type::Primitive(p) = &column.data_type else {
+            continue;
+        };
+        let (Some(want), Some(at)) = (schema::narrow(p), committer.arrow.index_of(&column.name).ok()) else {
+            continue;
+        };
+        let written = committer.written.field(at).data_type();
+        if *written != want {
+            return Err(format!(
+                "{} is {p} in the table, and its files write it as {written}",
+                column.name
+            ));
+        }
+        reach("narrowed written as its type");
+    }
+    Ok(())
+}
+
 /// `record` with fields left out, and sometimes one of another type: the record of an earlier writer.
 fn earlier(rng: &mut Rng, record: &DataType) -> DataType {
     let DataType::Struct(fields, open) = record else {
@@ -601,6 +737,9 @@ struct Expected {
     /// The add's path, its escapes undone.
     relative: String,
     partition_values: Value,
+    /// The physical names of the clustering columns its stats must count.
+    clustering: Vec<String>,
+    records: u64,
 }
 
 /// One seed's table and what has been seen of it.
@@ -626,6 +765,8 @@ struct Run {
     other_txn: i64,
     /// A column another writer dropped, to add again.
     dropped: Option<schema::StructField>,
+    /// The physical names of the table's clustering columns.
+    clustering: Vec<String>,
 }
 
 /// Runs seed `seed`. Err names the property it breaks.
@@ -650,6 +791,7 @@ fn run(seed: u64) -> Result<(), String> {
         other_files: Vec::new(),
         other_txn: 0,
         dropped: None,
+        clustering: Vec::new(),
     };
     let must_refuse = run.existing()?;
     run.harvest()?;
@@ -714,6 +856,46 @@ impl Run {
                 refused |= configuration(rng, m, &earlier);
             }
         }
+        if !self.rng.chance(3) {
+            for action in &mut actions {
+                if let Some(m) = action.get_mut("metaData") {
+                    narrow(&mut self.rng, m, &earlier);
+                }
+            }
+        }
+        let features: Vec<Value> = (actions.iter())
+            .find_map(|a| a["protocol"]["writerFeatures"].as_array().cloned())
+            .unwrap_or_default();
+        let metadata = actions
+            .iter_mut()
+            .find_map(|a| a.get_mut("metaData"))
+            .expect("a create holds metaData");
+        if features.contains(&json!("rowTracking")) {
+            match self.rng.below(3) {
+                0 => {}
+                1 => {
+                    metadata["configuration"]["delta.enableRowTracking"] = json!("true");
+                    reach("row tracking enabled");
+                }
+                _ => {
+                    metadata["configuration"]["delta.rowTrackingSuspended"] = json!("true");
+                    reach("row tracking suspended");
+                }
+            }
+        }
+        let clustered = features.contains(&json!("clustering"));
+        if let Some((domain, columns)) = clustered.then(|| clustering(&mut self.rng, metadata)).flatten() {
+            // With no column indexed, only being clustered takes a column stats.
+            if self.rng.chance(2) {
+                metadata["configuration"]["delta.dataSkippingNumIndexedCols"] = json!("0");
+                reach("clustering past the indexed columns");
+            }
+            actions.push(domain);
+            self.clustering = columns;
+        }
+        if features.contains(&json!("rowTracking")) && self.rng.chance(2) {
+            actions.push(row_tracking(self.rng.below(1000) as i64));
+        }
         self.put(0, &actions);
         if self.rng.chance(3) {
             self.other_commit()?;
@@ -755,6 +937,7 @@ impl Run {
         self.harvest()?;
         match opened {
             Ok(committer) => {
+                kept_narrow(&committer)?;
                 self.committer = Some(committer);
                 Ok(true)
             }
@@ -875,6 +1058,16 @@ impl Run {
                     reach("partition key too long");
                     continue;
                 }
+                // A value of the record's wider type that the table's narrower column cannot hold.
+                Err(why) if why.contains("column cannot hold") || why.contains("float column's range") => {
+                    let narrowed =
+                        |p: &PartitionColumn| matches!(p.kind, Kind::Byte | Kind::Short | Kind::Int | Kind::Float);
+                    if !committer.partitions.iter().any(narrowed) {
+                        return Err(format!("a row's partition was refused: {why}"));
+                    }
+                    reach("narrowed partition refused");
+                    continue;
+                }
                 Err(why) => return Err(format!("a row's partition was refused: {why}")),
             };
             for (segment, (column, (_, text))) in partition
@@ -892,6 +1085,14 @@ impl Run {
                 };
                 if url_decode(name).as_deref() != Some(column.name.as_str()) || value != *text {
                     return Err(format!("the directory {segment} is not {}={text:?}", column.name));
+                }
+            }
+            for (column, (_, text)) in committer.partitions.iter().zip(&partition.values) {
+                if !text.is_empty() && !narrow_text(&column.kind, text) {
+                    return Err(format!(
+                        "{}'s partition value {text:?} is no {}",
+                        column.name, column.kind
+                    ));
                 }
             }
             let path = committer.file_path(&partition, &objects::object_id());
@@ -929,6 +1130,11 @@ impl Run {
                 Expected {
                     relative: file.path.trim_start_matches("tbl/").to_string(),
                     partition_values: Value::Object(partition_values),
+                    clustering: (self.clustering.iter())
+                        .filter(|c| committer.written.field_with_name(c).is_ok())
+                        .cloned()
+                        .collect(),
+                    records: record_count,
                 },
             );
             files.push(file);
@@ -956,10 +1162,19 @@ impl Run {
                 self.other_txn += 1;
                 let path = format!("other-{}.parquet", self.other_txn);
                 lines.push(json!({"txn": {"appId": OTHER, "version": self.other_txn}}));
-                lines.push(
-                    json!({"add": {"path": path, "partitionValues": {}, "size": 1, "modificationTime": 0,
-                                          "dataChange": true}}),
-                );
+                let records = 1 + rng.below(5) as i64;
+                let mut add = json!({"path": path, "partitionValues": {}, "size": 1, "modificationTime": 0,
+                                     "dataChange": true, "stats": json!({"numRecords": records}).to_string()});
+                let high = (snapshot.domains.values()).find_map(|d| high_water_mark(&serde_json::to_value(d).unwrap()));
+                let protocol = serde_json::to_value(&snapshot.protocol).unwrap();
+                if let Some(base) = next_row_id(&protocol, &serde_json::to_value(&metadata).unwrap(), high) {
+                    reach("other row ids");
+                    add["baseRowId"] = json!(base);
+                    add["defaultRowCommitVersion"] = json!(snapshot.version + 1);
+                    // Now and then it reserves ids past those it gives.
+                    lines.push(row_tracking(base + records - 1 + rng.below(3) as i64));
+                }
+                lines.push(json!({"add": add}));
                 self.other_files.push(path);
             }
             5 if !self.other_files.is_empty() => {
@@ -1133,6 +1348,89 @@ impl Run {
         Ok(replay)
     }
 
+    /// Every row id a commit gives is fresh: above the high-water mark it commits over, in no other file's ids, and
+    /// under the mark it leaves. This writer's files take ids, and their commit's version, exactly when the table
+    /// tracks rows.
+    fn check_row_ids(&self) -> Result<(), String> {
+        let (mut protocol, mut metadata, mut high) = (Value::Null, Value::Null, None);
+        let mut given: Vec<(String, i64, i64)> = Vec::new();
+        for (version, bytes) in &self.history {
+            let actions: Vec<Value> = (std::str::from_utf8(bytes).unwrap().lines())
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            let next = next_row_id(&protocol, &metadata, high);
+            let mut highest = None;
+            for add in actions.iter().filter_map(|a| a.get("add")) {
+                let key = file_key(add["path"].as_str().unwrap(), None);
+                let ours = self.ours.get(&key);
+                let records = match ours {
+                    Some(expected) => expected.records as i64,
+                    None => (add["stats"].as_str())
+                        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                        .and_then(|s| s["numRecords"].as_i64())
+                        .unwrap_or(0),
+                };
+                let base = add["baseRowId"].as_i64();
+                if ours.is_some() {
+                    match (next, base) {
+                        (Some(_), None) => {
+                            return Err(format!(
+                                "commit {version} adds {key} with no row ids, though the table tracks them"
+                            ));
+                        }
+                        (None, Some(_)) => {
+                            return Err(format!(
+                                "commit {version} gives {key} row ids, though the table tracks none"
+                            ));
+                        }
+                        (Some(next), Some(base)) if base < next => {
+                            return Err(format!(
+                                "commit {version} gives {key} row ids from {base}, not above its high-water mark {}",
+                                next - 1
+                            ));
+                        }
+                        (Some(_), Some(_)) if add["defaultRowCommitVersion"] != json!(version) => {
+                            return Err(format!(
+                                "commit {version} adds {key} with the row commit version {}",
+                                add["defaultRowCommitVersion"]
+                            ));
+                        }
+                        (Some(_), Some(_)) => reach("row ids above the high-water mark"),
+                        (None, None) => {}
+                    }
+                }
+                let Some(base) = base.filter(|_| records > 0) else {
+                    continue;
+                };
+                let end = base + records;
+                if let Some((other, ..)) = given.iter().find(|(_, b, e)| base < *e && *b < end) {
+                    return Err(format!(
+                        "commit {version} gives {key} row ids {base}..{end}, some of {other}'s"
+                    ));
+                }
+                given.push((key, base, end));
+                highest = highest.max(Some(end - 1));
+            }
+            for action in &actions {
+                if let Some(p) = action.get("protocol") {
+                    protocol = p.clone();
+                }
+                if let Some(m) = action.get("metaData") {
+                    metadata = m.clone();
+                }
+                if let Some(mark) = action.get("domainMetadata").and_then(high_water_mark) {
+                    high = Some(mark);
+                }
+            }
+            if highest.is_some() && high < highest {
+                return Err(format!(
+                    "commit {version} gives row ids up to {highest:?}, above its high-water mark {high:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// The properties of the log as the run left it.
     fn finish(&mut self) -> Result<(), String> {
         let latest = self.latest();
@@ -1158,6 +1456,7 @@ impl Run {
                 snapshot.version
             ));
         }
+        self.check_row_ids()?;
         let replayed = self.replay(latest)?;
         let loaded = Replay {
             protocol: Some(serde_json::to_value(&snapshot.protocol).unwrap()),
@@ -1188,6 +1487,18 @@ impl Run {
                                     "commit {version} adds {key} with the partition values {}, not {}",
                                     add["partitionValues"], expected.partition_values
                                 ));
+                            }
+                            if let Some(stats) = add["stats"].as_str() {
+                                let stats: Value = serde_json::from_str(stats).unwrap();
+                                if let Some(c) = (expected.clustering.iter()).find(|c| stats["nullCount"][c].is_null())
+                                {
+                                    return Err(format!(
+                                        "commit {version} adds {key} with no stats for its clustering column {c}"
+                                    ));
+                                }
+                                if !expected.clustering.is_empty() {
+                                    reach("clustering column stats");
+                                }
                             }
                         }
                     }

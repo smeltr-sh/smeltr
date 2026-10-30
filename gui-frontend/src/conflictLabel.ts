@@ -12,9 +12,9 @@ const SECTIONS: Record<string, string> = {
   'grok-patterns.json': 'Grok pattern',
 };
 
-/** `west · Pipeline Enrich`, `shared · Route from kafka-1 to es`, `west · lookups/t.csv`. A file outside any bundle
- * is its path. */
-export function conflictLabel(conflict: MergeConflict): string {
+/** `west · Pipeline Enrich`, `shared · Route kafka-1 → Enrich`, `west · lookups/t.csv`. A file outside any bundle
+ * is its path. A route is called `route`, its `routeName`, which takes the rest of its bundle to work out. */
+export function conflictLabel(conflict: MergeConflict, route?: string): string {
   const split = inBundle(conflict.path);
   if (!split) return conflict.path;
   const [bundle, file] = split;
@@ -33,7 +33,7 @@ export function conflictLabel(conflict: MergeConflict): string {
   } else if (file.startsWith('schemas/')) {
     label = named((v) => (typeof v.id === 'string' ? `Schema ${v.id}` : null));
   } else if (file === 'routes.json' && conflict.id !== undefined) {
-    label = `Route ${named(routeName) ?? ''}`.trimEnd();
+    label = `Route ${route ?? ''}`.trimEnd();
   } else if (conflict.id !== undefined && SECTIONS[file]) {
     // Every other section's id is the name its author gave it.
     label = `${SECTIONS[file]} ${conflict.id}`;
@@ -47,30 +47,6 @@ function inBundle(path: string): [string, string] | null {
   if (parts[0] === 'groups' && parts.length > 2) return [parts[1], parts.slice(2).join('/')];
   if (parts[0] === 'shared' && parts.length > 1) return ['shared', parts.slice(1).join('/')];
   return null;
-}
-
-/** A route as the Routes page reads it: where rows come from, which of them, and where they go. Routes from one
- * source are told apart by the rest. */
-function routeName(route: Record<string, unknown>): string | null {
-  if (typeof route.source !== 'string') return null;
-  let name = `from ${route.source}`;
-  if (typeof route.condition === 'string' && route.condition !== '')
-    name += ` if ${route.condition}`;
-  const to = Array.isArray(route.deliver)
-    ? [
-        ...new Set(
-          route.deliver.flatMap((rule: unknown) =>
-            typeof rule === 'object' &&
-            rule !== null &&
-            Array.isArray((rule as { to?: unknown }).to)
-              ? (rule as { to: unknown[] }).to.filter((d): d is string => typeof d === 'string')
-              : [],
-          ),
-        ),
-      ]
-    : [];
-  if (to.length > 0) name += ` to ${to.join(', ')}`;
-  return name;
 }
 
 function parsed(text: string | null): Record<string, unknown> | null {
