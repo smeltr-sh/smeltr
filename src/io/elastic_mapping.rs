@@ -93,13 +93,11 @@ fn field(ty: &DataType, keys: &mut Vec<String>, mapped: &Mapped) -> Option<Value
     let mut out = match own {
         Some(Value::Object(own)) => {
             // An object's own mapping names no type.
-            let was = own.get("type").and_then(Value::as_str).unwrap_or("object").to_string();
+            let same = says == Some(own.get("type").and_then(Value::as_str).unwrap_or("object"));
             // The same type keeps what its own mapping set, `ignore_above` or an object's properties; another keeps
             // only an object's properties, where it still has them.
             own.into_iter()
-                .filter(|(k, _)| {
-                    says == Some(was.as_str()) || (k == "properties" && matches!(says, Some("object" | "nested")))
-                })
+                .filter(|(k, _)| same || (k == "properties" && matches!(says, Some("object" | "nested"))))
                 .collect()
         }
         _ => Map::new(),

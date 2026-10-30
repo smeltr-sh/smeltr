@@ -23,14 +23,15 @@
   } = $props();
 
   const VIEWS = [
-    { value: 'fields', label: 'Schema' },
+    { value: 'schema', label: 'Schema' },
     { value: 'elasticsearch', label: 'Elasticsearch' },
   ] as const;
-  let view: (typeof VIEWS)[number]['value'] = $state('fields');
+  let view: (typeof VIEWS)[number]['value'] = $state('schema');
 
-  /** What a field maps to when it says nothing: a variant's type is Elasticsearch's to find from the first value. */
+  /** What a field maps to when it says nothing: a variant's type, or its elements', is Elasticsearch's to find from
+   * the first value. */
   function ownType(f: SchemaFieldDto): string {
-    return f.type.trim() === 'variant' ? 'dynamic' : (elasticsearchTypes(f.type)[0] ?? '');
+    return /^(array<)*variant>*$/.test(f.type) ? 'dynamic' : (elasticsearchTypes(f.type)[0] ?? '');
   }
 
   function choose(f: SchemaFieldDto, type: string) {

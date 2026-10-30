@@ -148,7 +148,13 @@ test("a field's own Elasticsearch settings show beside its type, and shared/'s s
     elasticsearch: { type: 'keyword', ignore_above: 1024 },
   };
   await api.put(`${SHARED}/schemas${ON}`, [
-    { ...LOGIN, fields: LOGIN.fields.map((f) => (f.field === 'user.name' ? name : f)) },
+    {
+      ...LOGIN,
+      fields: [
+        ...LOGIN.fields.map((f) => (f.field === 'user.name' ? name : f)),
+        { field: 'tags', type: 'array<variant>' },
+      ],
+    },
   ]);
   await goto(admin, leader, '#/build/schemas');
   await admin.getByRole('button', { name: 'login fields' }).click();
@@ -157,6 +163,12 @@ test("a field's own Elasticsearch settings show beside its type, and shared/'s s
     admin.getByRole('combobox', { name: 'Elasticsearch type of user.name' }),
   ).toHaveValue('keyword');
   await expect(admin.getByText('+ 1 more setting: ignore_above')).toBeVisible();
+  // An array's elements map as Elasticsearch finds them, as a variant does.
+  await expect(
+    admin
+      .getByRole('combobox', { name: 'Elasticsearch type of tags' })
+      .getByRole('option', { name: 'default (dynamic)' }),
+  ).toBeAttached();
   await admin.screenshot({ path: 'results/schemas-elasticsearch-settings.png' });
 
   await admin.getByRole('button', { name: 'shared', exact: true }).click();
