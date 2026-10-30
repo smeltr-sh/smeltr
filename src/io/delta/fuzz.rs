@@ -11,7 +11,9 @@
 //! - at the end the log loads at its newest version, every acknowledged file is added exactly once, no file of this
 //!   writer's is added twice, and each add's path and partition values are the file's;
 //! - a column an earlier table holds narrower, as another engine may have made it, is written as that type, and a
-//!   partition value of it reads as that type or its row is refused.
+//!   partition value of it reads as that type or its row is refused;
+//! - every identity value a file of this writer's holds is on its column's grid, within the mark its commit leaves,
+//!   and no other row's, this writer's or another's, and a row past a long's range is refused.
 //!
 //! It draws from `crate::fuzz`: a failure names its seed, `SMELTR_FUZZ_SEED=n` replays seed `n`, and the run fails
 //! when its seeds leave a data type, protocol feature, table property or fault in `COVERED` unreached.
@@ -41,7 +43,7 @@ use crate::io::delta::log::{FileAction, Name, file_key};
 use crate::io::parquet::{Chunk, Columns, REST};
 
 /// The seeds a run takes.
-const SEEDS: std::ops::Range<u64> = 1..201;
+const SEEDS: std::ops::Range<u64> = 1..301;
 
 /// What a run must reach over its seeds: every data type, protocol version and feature, table property, fault, other
 /// writer's change and commit outcome it draws.
@@ -128,6 +130,22 @@ const COVERED: &[&str] = &[
     "widened",
     "type changes kept",
     "other widen",
+    "identity generated",
+    "identity written",
+    "identity written refused",
+    "identity not nullable",
+    "identity step 0",
+    "identity negative step",
+    "identity mark",
+    "identity mark off the grid",
+    "identity explicit",
+    "identity exhausted",
+    "identity values checked",
+    "identity mark raised",
+    "identity changed refused",
+    "other identity values",
+    "other identity column",
+    "other identity change",
     "orc",
     "fault Lost",
     "fault Dropped",
@@ -475,6 +493,10 @@ fn narrow(rng: &mut Rng, metadata: &mut Value, record: &DataType) {
         let Some((_, t)) = fields.iter().find(|(name, _)| column["name"] == name.as_str()) else {
             continue;
         };
+        // An identity column is a long.
+        if column["metadata"].get("delta.identity.step").is_some() {
+            continue;
+        }
         // An array's element narrows as a column does.
         let (slot, t, within) = match (column["type"].is_object(), t) {
             (true, DataType::Array(element)) => (&mut column["type"]["elementType"], &**element, Some("element")),
@@ -606,6 +628,97 @@ fn narrow_text(kind: &Kind, text: &str) -> bool {
 }
 
 /// Err when a column `committer`'s table holds narrower is not written as that type.
+/// Makes a long column of `metadata`'s that the record writes an identity column, or adds one it does not write, as an
+/// engine that generates their values made it. Gives whether the writer must refuse the table.
+fn identity_column(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bool {
+    let Some(mut schema) = (metadata["schemaString"].as_str()).and_then(|s| serde_json::from_str::<Value>(s).ok())
+    else {
+        return false;
+    };
+    let longs: Vec<String> = (top_level(record).into_iter())
+        .filter(|(_, t)| *t == DataType::I64)
+        .map(|(n, _)| n)
+        .collect();
+    let fields = schema["fields"].as_array_mut().expect("a schema has fields");
+    let candidates: Vec<usize> = (0..fields.len())
+        .filter(|&i| fields[i]["type"] == "long" && longs.iter().any(|n| fields[i]["name"] == n.as_str()))
+        .collect();
+    let written = !candidates.is_empty() && rng.chance(2);
+    let at = if written {
+        reach("identity written");
+        *rng.pick(&candidates)
+    } else {
+        reach("identity generated");
+        let mut field = json!({"name": "ident", "type": "long", "nullable": true, "metadata": {}});
+        let max = &metadata["configuration"]["delta.columnMapping.maxColumnId"];
+        if let Some(max) = max.as_str().and_then(|m| m.parse::<i64>().ok()) {
+            field["metadata"]["delta.columnMapping.id"] = json!(max + 1);
+            field["metadata"]["delta.columnMapping.physicalName"] = json!(format!("col-i{}", max + 1));
+            metadata["configuration"]["delta.columnMapping.maxColumnId"] = json!((max + 1).to_string());
+        }
+        fields.push(field);
+        fields.len() - 1
+    };
+    let field = &mut fields[at];
+    let nullable = !rng.chance(3);
+    if !nullable {
+        reach("identity not nullable");
+    }
+    field["nullable"] = json!(nullable);
+    let start = *rng.pick(&[1, 0, -5, 1_000, i64::MAX - 4, i64::MIN + 4]);
+    let step: i64 = *rng.pick(&[1, 1, 2, -1, -7, 1 << 40, 0]);
+    if step == 0 {
+        reach("identity step 0");
+    }
+    if step < 0 {
+        reach("identity negative step");
+    }
+    let meta = &mut field["metadata"];
+    meta["delta.identity.start"] = json!(start);
+    meta["delta.identity.step"] = json!(step);
+    let mark = match rng.below(5) {
+        0 => None,
+        1 => start.checked_add(step.saturating_mul(rng.below(5) as i64)),
+        2 => start
+            .checked_add(step.saturating_mul(rng.below(5) as i64))
+            .map(|m| m.saturating_add(1)),
+        _ if step > 0 => Some(i64::MAX - rng.below(3) as i64),
+        _ => Some(i64::MIN + rng.below(3) as i64),
+    };
+    if let Some(mark) = mark {
+        reach("identity mark");
+        if step != 0 && (mark as i128 - start as i128) % step as i128 != 0 {
+            reach("identity mark off the grid");
+        }
+        meta["delta.identity.highWaterMark"] = json!(mark);
+    }
+    let explicit = rng.chance(2);
+    if explicit {
+        reach("identity explicit");
+        meta["delta.identity.allowExplicitInsert"] = json!(true);
+    } else if rng.chance(2) {
+        meta["delta.identity.allowExplicitInsert"] = json!(false);
+    }
+    metadata["schemaString"] = json!(schema.to_string());
+    let refused = written && (!explicit || !nullable);
+    if refused {
+        reach("identity written refused");
+    }
+    refused || step == 0
+}
+
+/// The values `step` from `start` beyond `mark`, `n` of them; None when a long holds fewer.
+fn identity_values(start: i64, step: i64, mark: Option<i64>, n: usize) -> Option<Vec<i64>> {
+    let (start, step) = (start as i128, step as i128);
+    let past = |k: i128| mark.is_none_or(|m| (start + k * step - m as i128) * step.signum() > 0);
+    // The first value past the mark is within a step of where the mark's own quotient falls.
+    let near = mark.map_or(0, |m| ((m as i128 - start) / step - 1).max(0));
+    let first = (near..near + 3).find(|&k| past(k))?;
+    (0..n as i128)
+        .map(|k| i64::try_from(start + (first + k) * step).ok())
+        .collect()
+}
+
 fn kept_narrow(committer: &DeltaCommitter) -> Result<(), String> {
     for column in &committer.schema.fields {
         let schema::Type::Primitive(p) = &column.data_type else {
@@ -796,6 +909,8 @@ struct Expected {
     /// The physical names of the clustering columns its stats must count.
     clustering: Vec<String>,
     records: u64,
+    /// The values of each identity column it generates, by the column's physical name.
+    identity: Vec<(String, Vec<i64>)>,
 }
 
 /// One seed's table and what has been seen of it.
@@ -823,6 +938,8 @@ struct Run {
     dropped: Option<schema::StructField>,
     /// The physical names of the table's clustering columns.
     clustering: Vec<String>,
+    /// The identity values of another writer's files, by file key and column name.
+    other_identity: BTreeMap<String, Vec<(String, Vec<i64>)>>,
 }
 
 /// Runs seed `seed`. Err names the property it breaks.
@@ -848,6 +965,7 @@ fn run(seed: u64) -> Result<(), String> {
         other_txn: 0,
         dropped: None,
         clustering: Vec::new(),
+        other_identity: BTreeMap::new(),
     };
     let must_refuse = run.existing()?;
     run.harvest()?;
@@ -912,24 +1030,32 @@ impl Run {
                 refused |= configuration(rng, m, &earlier);
             }
         }
-        // A table of writer features knows type widening more often than the protocol draw alone gives, so the seeds
-        // reach both a table that widens and one that does not.
+        // A table of writer features knows type widening and identity columns more often than the protocol draw alone
+        // gives, so the seeds reach both a table that widens and one that does not, and every kind of identity column.
         for action in &mut actions {
             let features = action.get_mut("protocol").and_then(|p| p.get_mut("writerFeatures"));
-            if let Some(features) = features.and_then(Value::as_array_mut)
-                && !features.contains(&json!("typeWidening"))
-                && !self.rng.chance(4)
-            {
-                features.push(json!("typeWidening"));
+            if let Some(features) = features.and_then(Value::as_array_mut) {
+                if !features.contains(&json!("typeWidening")) && !self.rng.chance(4) {
+                    features.push(json!("typeWidening"));
+                }
+                if !features.contains(&json!("identityColumns")) && self.rng.chance(2) {
+                    features.push(json!("identityColumns"));
+                }
             }
         }
         let features: Vec<Value> = (actions.iter())
             .find_map(|a| a["protocol"]["writerFeatures"].as_array().cloned())
             .unwrap_or_default();
+        let writer = (actions.iter())
+            .find_map(|a| a["protocol"]["minWriterVersion"].as_i64())
+            .unwrap_or(0);
         let metadata = actions
             .iter_mut()
             .find_map(|a| a.get_mut("metaData"))
             .expect("a create holds metaData");
+        if (writer == 6 || features.contains(&json!("identityColumns"))) && self.rng.chance(2) {
+            refused |= identity_column(&mut self.rng, metadata, &self.record);
+        }
         // A table that knows type widening is narrowed more often: the writer must widen it if it enables widening,
         // and leave it as it is if not.
         let knows = features.contains(&json!("typeWidening"));
@@ -1186,7 +1312,39 @@ impl Run {
             if path.len() > objects::MAX_KEY_BYTES {
                 return Err(format!("a file's key is {} bytes", path.len()));
             }
-            let record_count = 1 + self.rng.below(3) as u64;
+            let mut record_count = 1 + self.rng.below(3) as u64;
+            let computed = committer.sequences.computed(&committer.schema);
+            let mut identity = Vec::new();
+            if !computed.is_empty() {
+                let any = Columns {
+                    chunk: chunk.clone(),
+                    row,
+                };
+                let mut admitted = 0;
+                for _ in 0..record_count {
+                    match computed.iter().try_for_each(|c| c.admit(&any)) {
+                        Ok(()) => admitted += 1,
+                        Err(why) if why.contains("no value left within a long") => reach("identity exhausted"),
+                        Err(why) if why.contains("changed the identity column") => reach("identity changed refused"),
+                        Err(why) => return Err(format!("a row was refused its identity: {why}")),
+                    }
+                }
+                if admitted == 0 {
+                    continue;
+                }
+                record_count = admitted;
+                let rows = RecordBatch::try_new_with_options(
+                    Arc::new(ArrowSchema::empty()),
+                    Vec::new(),
+                    &arrow_array::RecordBatchOptions::new().with_row_count(Some(admitted as usize)),
+                )
+                .unwrap();
+                for c in &computed {
+                    let values = c.fill(&rows);
+                    let values = values.as_primitive::<arrow_array::types::Int64Type>().values().to_vec();
+                    identity.push((c.field().name().clone(), values));
+                }
+            }
             let metadata = (!self.rng.chance(4)).then(|| {
                 reach("footer");
                 footer(&mut self.rng, &committer.written, record_count as usize)
@@ -1216,6 +1374,7 @@ impl Run {
                         .cloned()
                         .collect(),
                     records: record_count,
+                    identity,
                 },
             );
             files.push(file);
@@ -1245,7 +1404,18 @@ impl Run {
             };
             knows && !metadata.partition_columns.contains(&f.name) && widened(p).is_some()
         });
+        let identity = schema
+            .fields
+            .iter()
+            .position(|f| f.metadata.contains_key("delta.identity.step"));
         match rng.below(12) {
+            _ if identity.is_some() && rng.chance(10) => {
+                reach("other identity change");
+                let field = &mut schema.fields[identity.expect("checked above")];
+                field.metadata.insert("delta.identity.step".into(), json!(3));
+                metadata.schema_string = schema.to_json();
+                lines.push(json!({"metaData": metadata}));
+            }
             0..=4 => {
                 reach("other add");
                 self.other_txn += 1;
@@ -1262,6 +1432,31 @@ impl Run {
                     add["defaultRowCommitVersion"] = json!(snapshot.version + 1);
                     // Now and then it reserves ids past those it gives.
                     lines.push(row_tracking(base + records - 1 + rng.below(3) as i64));
+                }
+                // It gives its rows identity values past each column's mark, and raises the mark to the last.
+                let mut given = Vec::new();
+                for field in schema.fields.iter_mut() {
+                    let Ok(Some(column)) = Identity::of(field) else {
+                        continue;
+                    };
+                    let mark = field
+                        .metadata
+                        .get("delta.identity.highWaterMark")
+                        .and_then(Value::as_i64);
+                    let Some(values) = identity_values(column.start, column.step, mark, records as usize) else {
+                        continue;
+                    };
+                    reach("other identity values");
+                    let last = *values.last().expect("a file has rows");
+                    field
+                        .metadata
+                        .insert("delta.identity.highWaterMark".into(), json!(last));
+                    given.push((column.name, values));
+                }
+                if !given.is_empty() {
+                    metadata.schema_string = schema.to_json();
+                    lines.push(json!({"metaData": metadata}));
+                    self.other_identity.insert(file_key(&path, None), given);
                 }
                 lines.push(json!({"add": add}));
                 self.other_files.push(path);
@@ -1292,6 +1487,12 @@ impl Run {
                         .metadata
                         .insert("delta.columnMapping.physicalName".into(), json!(format!("col-o{id}")));
                     (metadata.configuration).insert("delta.columnMapping.maxColumnId".into(), id.to_string());
+                }
+                if rng.chance(4) {
+                    reach("other identity column");
+                    field.data_type = schema::Type::Primitive("long".into());
+                    field.metadata.insert("delta.identity.start".into(), json!(1));
+                    field.metadata.insert("delta.identity.step".into(), json!(1));
                 }
                 if !schema.fields.iter().any(|f| f.name.eq_ignore_ascii_case(&field.name)) {
                     schema.fields.push(field);
@@ -1608,6 +1809,98 @@ impl Run {
         Ok(())
     }
 
+    /// Every identity value a commit adds is on its column's grid, within the mark the commit leaves, and no other
+    /// row's, and this writer's files hold one for each column the record does not write. This writer's commits never
+    /// lower a mark.
+    fn check_identity(&self) -> Result<(), String> {
+        let written: Vec<String> = top_level(&self.record).into_iter().map(|(n, _)| n).collect();
+        let mut seen: BTreeMap<String, BTreeSet<i64>> = BTreeMap::new();
+        let mut schema = StructType { fields: Vec::new() };
+        for (version, bytes) in &self.history {
+            let actions: Vec<Value> = (std::str::from_utf8(bytes).unwrap().lines())
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            let ours = actions.iter().any(|a| a["commitInfo"]["engineInfo"] == "smeltr");
+            let before = schema.clone();
+            if let Some(m) = actions.iter().find_map(|a| a.get("metaData")) {
+                schema = StructType::parse(m["schemaString"].as_str().unwrap())?;
+            }
+            let mark = |schema: &StructType, name: &str| {
+                (schema.fields.iter().find(|f| f.name == name))
+                    .and_then(|f| f.metadata.get("delta.identity.highWaterMark")?.as_i64())
+            };
+            let Ok(columns) = identity::columns(&schema) else {
+                continue;
+            };
+            for column in &columns {
+                if let (true, Some(was), Some(now)) = (ours, mark(&before, &column.name), mark(&schema, &column.name))
+                    && was != now
+                {
+                    if (now as i128 - was as i128) * column.step.signum() as i128 <= 0 {
+                        return Err(format!(
+                            "commit {version} lowers {}'s mark from {was} to {now}",
+                            column.name
+                        ));
+                    }
+                    reach("identity mark raised");
+                }
+            }
+            for add in actions.iter().filter_map(|a| a.get("add")) {
+                let key = file_key(add["path"].as_str().unwrap(), None);
+                let given: Vec<(String, Vec<i64>)> = match (self.ours.get(&key), self.other_identity.get(&key)) {
+                    (Some(expected), _) => {
+                        let mut given = Vec::new();
+                        for column in columns.iter().filter(|c| !written.contains(&c.name)) {
+                            let field = schema.fields.iter().find(|f| f.name == column.name).unwrap();
+                            let values = (expected.identity.iter())
+                                .find(|(physical, _)| physical == field.physical_name())
+                                .ok_or_else(|| {
+                                    format!("commit {version} adds {key} with no values for {}", column.name)
+                                })?;
+                            if values.1.len() as u64 != expected.records {
+                                return Err(format!(
+                                    "{key} holds {} rows and {} values",
+                                    expected.records,
+                                    values.1.len()
+                                ));
+                            }
+                            given.push((column.name.clone(), values.1.clone()));
+                        }
+                        given
+                    }
+                    (None, Some(other)) => other.clone(),
+                    (None, None) => continue,
+                };
+                for (name, values) in given {
+                    let Some(column) = columns.iter().find(|c| c.name == name) else {
+                        continue;
+                    };
+                    let Some(mark) = mark(&schema, &name) else {
+                        return Err(format!(
+                            "commit {version} adds identity values of {name}, and leaves no mark"
+                        ));
+                    };
+                    for v in values {
+                        let k = (v as i128 - column.start as i128) / column.step as i128;
+                        if column.start as i128 + k * column.step as i128 != v as i128 || k < 0 {
+                            return Err(format!("commit {version} adds {name} {v}, off its grid"));
+                        }
+                        if (v as i128 - mark as i128) * column.step.signum() as i128 > 0 {
+                            return Err(format!(
+                                "commit {version} adds {name} {v}, past the mark {mark} it leaves"
+                            ));
+                        }
+                        if !seen.entry(name.clone()).or_default().insert(v) {
+                            return Err(format!("commit {version} adds {name} {v} a second time"));
+                        }
+                        reach("identity values checked");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The properties of the log as the run left it.
     fn finish(&mut self) -> Result<(), String> {
         let latest = self.latest();
@@ -1635,6 +1928,7 @@ impl Run {
         }
         self.check_row_ids()?;
         self.check_type_changes()?;
+        self.check_identity()?;
         let replayed = self.replay(latest)?;
         let loaded = Replay {
             protocol: Some(serde_json::to_value(&snapshot.protocol).unwrap()),
