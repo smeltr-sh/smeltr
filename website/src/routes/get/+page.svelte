@@ -5,7 +5,7 @@
 <svelte:head
   ><title>Get smeltr</title><meta
     name="description"
-    content="Smeltr is free for individuals and for organizations with fewer than 250 employees. Above that, it is $10,000 a year per production leader."
+    content="Smeltr is free for individuals and for organizations with fewer than 250 employees. Above that, it is $10,000 a year for each production leader, the server that manages your workers."
   /></svelte:head
 >
 
@@ -17,8 +17,12 @@
     <p>
       Smeltr is free for production use by individuals, and by organizations with fewer than 250
       employees. Organizations with 250 or more employees pay $10,000 per year for each leader they
-      run in production; workers are not counted. Evaluation, development, and testing are free for
-      everyone.
+      run in production. Evaluation, development, and testing are free for everyone.
+    </p>
+    <p>
+      A leader is the Smeltr server you sign in to, where you build and deploy your configuration.
+      Workers run it and move your data. One leader manages any number of workers, and only leaders
+      are counted. <a href="/docs/getting-started#overview">How Smeltr fits together →</a>
     </p>
     <p>
       Every plan includes the same features. Email support is included with the paid license; the
