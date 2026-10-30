@@ -68,11 +68,14 @@
     // The same type keeps its other parameters.
     if (mapsAs(f) === type) return;
     const own = ownType(f);
+    // A date in one unit or the other is the same type, and keeps its other parameters.
+    const { format: _, ...date } =
+      f.elasticsearch?.type === 'date' ? f.elasticsearch : { type: 'date' };
     if (type === SECONDS) {
-      onmap?.(f.field, { type: 'date', format: 'epoch_second' });
+      onmap?.(f.field, { ...date, format: 'epoch_second' });
       return;
     }
-    onmap?.(f.field, type === '' || type === own ? undefined : { type });
+    onmap?.(f.field, type === '' || type === own ? undefined : type === 'date' ? date : { type });
   }
 
   /** Whether any field gives an example, so the column is there only where it says something. */

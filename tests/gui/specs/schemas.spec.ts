@@ -167,6 +167,25 @@ test('an integer indexed as a date counts milliseconds or seconds, as its choice
   await expect(time).toHaveValue('date in seconds');
   await time.selectOption({ label: 'date (milliseconds)' });
   expect((await saved()).elasticsearch).toEqual({ type: 'date' });
+  // Its other settings stay when only the unit changes.
+  await api.put(`${SHARED}/schemas${ON}`, [
+    {
+      ...LOGIN,
+      fields: LOGIN.fields.map((f) =>
+        f.field === 'time' ? { ...f, elasticsearch: { type: 'date', ignore_malformed: true } } : f,
+      ),
+    },
+    AUDIT,
+  ]);
+  await admin.reload();
+  await admin.getByRole('button', { name: 'login fields' }).click();
+  await admin.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+  await time.selectOption({ label: 'date (seconds)' });
+  expect((await saved()).elasticsearch).toEqual({
+    type: 'date',
+    ignore_malformed: true,
+    format: 'epoch_second',
+  });
   // A string's date is the text it holds, so it has no unit.
   await expect(
     admin
