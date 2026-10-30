@@ -223,6 +223,40 @@ describe('what a body is sent as', () => {
   });
 });
 
+// A body past 1 KiB goes gzipped, and inflates to what was meant; a smaller one goes as it is.
+describe('a large request body', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function sent(tip: string) {
+    let init: RequestInit | undefined;
+    vi.stubGlobal('fetch', (_url: string, i: RequestInit) => {
+      init = i;
+      return Promise.resolve(new Response('{"ok":true,"error":null}'));
+    });
+    await overwriteBranch('work', tip, null);
+    const encoding = new Headers(init?.headers).get('content-encoding');
+    const text =
+      encoding === 'gzip'
+        ? await new Response(
+            new Response(init?.body).body!.pipeThrough(new DecompressionStream('gzip')),
+          ).text()
+        : String(init?.body);
+    return { encoding, body: JSON.parse(text) };
+  }
+
+  it('is gzipped', async () => {
+    const tip = 'a'.repeat(2000);
+    expect(await sent(tip)).toEqual({ encoding: 'gzip', body: { tip, hostTip: null } });
+  });
+
+  it('is not when small', async () => {
+    expect(await sent('def5678')).toEqual({
+      encoding: null,
+      body: { tip: 'def5678', hostTip: null },
+    });
+  });
+});
+
 // The leader pushes over the host's branch only while the host is still where the person was shown,
 // so the tip travels with the call -- and `null`, not an absent key, when the host had no such branch.
 describe('overwriting the host', () => {

@@ -2234,7 +2234,9 @@ async fn run_leader() {
         .route("/api/*rest", axum::routing::any(unknown_api))
         .fallback(assets::serve)
         .layer(axum::middleware::from_fn(gate::shape))
-        .layer(axum::middleware::from_fn(gate::uncached))
+        .layer(axum::middleware::from_fn(gate::uncached));
+    // Outside `shape`, which reads a refusal's body.
+    let app = smeltr::leader::gzipped(app)
         // Outermost, so every answer carries the browser hardening headers, the assets and the fallback included.
         .layer(axum::middleware::from_fn(gate::harden));
     // What an agent's calls go through: this router, gate and all.
