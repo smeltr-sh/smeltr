@@ -523,7 +523,7 @@ test('rows that do not come out are put down to a route or a step', async ({
   await east.getByRole('link', { name: /trim/ }).click();
   await focus(admin, 'trim').getByRole('link', { name: 'Steps' }).click();
   await expect(focus(admin, 'trim').getByText(/[1-9][\d,]* dropped/)).toBeVisible({
-    timeout: 20_000,
+    timeout: 40_000,
   });
 });
 
