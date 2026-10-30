@@ -1395,7 +1395,7 @@ mod tests {
             false,
         );
         let schema = Schema::new(&record).unwrap();
-        let table = table_schema(&record, None, Mapping::Name { max_column_id: 0 })
+        let table = table_schema(&record, None, Mapping::Name { max_column_id: 0 }, None)
             .unwrap()
             .schema;
         let written = physical(schema.arrow(), &table);

@@ -45,7 +45,7 @@ use crate::ops::civil::MICROS_PER_DAY;
 use crate::plan::topology::{DeltaDestinationConfig, HeldSecrets, Records, UnityCatalogTable};
 
 /// The writer features of a table this writer can write. A table needing any other is refused.
-const WRITER_FEATURES: [&str; 12] = [
+const WRITER_FEATURES: [&str; 13] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -60,6 +60,8 @@ const WRITER_FEATURES: [&str; 12] = [
     "clustering",
     // Each file's rows take fresh ids above the table's high-water mark. An append moves no row, so every id is stable.
     "rowTracking",
+    // Columns are widened only at open, and only where the table enables it; earlier type changes are kept.
+    "typeWidening",
 ];
 
 /// The domain that holds a row-tracking table's highest row id.
@@ -391,13 +393,14 @@ impl DeltaCommitter {
         let schema = loop {
             fits(&snapshot)?;
             let current = StructType::parse(&snapshot.metadata.schema_string)?;
-            let evolution = schema::table_schema(record, Some(&current), mapping(&snapshot.metadata)?)?;
+            let evolution =
+                schema::table_schema(record, Some(&current), mapping(&snapshot.metadata)?, widens(&snapshot))?;
             if !evolution.changed {
                 break current;
             }
             if tries > MAX_CONFLICT_RETRIES {
                 return Err(format!(
-                    "the record's new columns could not be added: {}",
+                    "the record's new or wider columns could not be committed: {}",
                     failed.unwrap_or_default()
                 ));
             }
@@ -411,12 +414,12 @@ impl DeltaCommitter {
             let body = [
                 line(
                     "commitInfo",
-                    &json!({"timestamp": now_ms(), "operation": "ADD COLUMNS", "engineInfo": "smeltr"}),
+                    &json!({"timestamp": now_ms(), "operation": "UPDATE SCHEMA", "engineInfo": "smeltr"}),
                 ),
                 line("metaData", &metadata),
             ]
             .join("\n");
-            // Taken or lost, the log is read again, and the columns are added if they are still missing.
+            // Taken or lost, the log is read again, and the columns are added or widened if they still need it.
             match log.create(&commit_name(version), body.into_bytes()) {
                 Ok(true) => {
                     snapshot.committed(vec![Action::Metadata(Box::new(metadata))]);
@@ -472,12 +475,12 @@ impl DeltaCommitter {
         if let Some(why) = schema::refused_column(&schema) {
             return Err(why);
         }
-        let evolution = schema::table_schema(&self.record, Some(&schema), mapping(metadata)?)?;
+        let evolution = schema::table_schema(&self.record, Some(&schema), mapping(metadata)?, None)?;
         if evolution.changed {
             return Err("another writer dropped a column the record writes".to_string());
         }
         if schema::physical(&self.arrow, &schema) != self.written {
-            return Err("another writer dropped and added again a column the record writes".to_string());
+            return Err("another writer changed a column the record writes".to_string());
         }
         if partition_columns(metadata, &schema)? != self.partitions {
             return Err("another writer changed the table's partitioning".to_string());
@@ -541,7 +544,7 @@ impl DeltaCommitter {
 /// Commit 0 of a table of `record`, partitioned by `partition_by`: a plain table, which every Delta reader opens. Its
 /// files name their columns as the record does.
 fn create(record: &DataType, partition_by: &[String]) -> Result<String, String> {
-    let evolution = schema::table_schema(record, None, Mapping::None)?;
+    let evolution = schema::table_schema(record, None, Mapping::None, None)?;
     for name in partition_by {
         written_partition_column(&evolution.schema, name)?;
     }
@@ -807,6 +810,13 @@ fn wall_clock(micros: i64, digits: u32, separator: char) -> String {
         secs % 60,
         width = digits as usize
     )
+}
+
+/// The table's partition columns when it lets a writer widen its columns, as `schema::table_schema` takes them.
+fn widens(snapshot: &Snapshot) -> Option<&[String]> {
+    let supported = (snapshot.protocol.writer_features.iter().flatten()).any(|f| f == "typeWidening");
+    let enabled = snapshot.metadata.flag("delta.enableTypeWidening") == Some(true);
+    (supported && enabled).then_some(snapshot.metadata.partition_columns.as_slice())
 }
 
 /// The highest row id a row-tracking table has given, -1 when none; None when the table tracks no rows or suspends it.
@@ -1248,7 +1258,7 @@ mod tests {
     }
 
     fn new_schema(record: &DataType) -> StructType {
-        schema::table_schema(record, None, Mapping::Name { max_column_id: 0 })
+        schema::table_schema(record, None, Mapping::Name { max_column_id: 0 }, None)
             .unwrap()
             .schema
     }
@@ -1304,7 +1314,7 @@ mod tests {
         assert_eq!(committer.snapshot.version, 1);
 
         let actions = table.commit(1).unwrap();
-        assert_eq!(action(&actions, "commitInfo")["operation"], "ADD COLUMNS");
+        assert_eq!(action(&actions, "commitInfo")["operation"], "UPDATE SCHEMA");
         assert!(adds(&actions).is_empty());
         let meta = action(&actions, "metaData");
         let schema = StructType::parse(meta["schemaString"].as_str().unwrap()).unwrap();
@@ -1389,6 +1399,44 @@ mod tests {
         assert!(why.contains("partitioned by raw, a binary column"), "{why}");
     }
 
+    #[test]
+    fn a_table_that_enables_type_widening_has_a_narrower_column_widened_at_open() {
+        let record = st(&[("n", DataType::I64)]);
+        let narrow = |widening: &'static str| {
+            move |a: &mut Value| {
+                if let Some(p) = a.get_mut("protocol") {
+                    *p = json!({"minReaderVersion": 3, "minWriterVersion": 7, "readerFeatures": ["typeWidening"],
+                                "writerFeatures": ["typeWidening"]});
+                }
+                if let Some(m) = a.get_mut("metaData") {
+                    let schema = json!({"type": "struct", "fields": [
+                        {"name": "n", "type": "integer", "nullable": true, "metadata": {}}]});
+                    m["schemaString"] = json!(schema.to_string());
+                    m["configuration"] = json!({"delta.enableTypeWidening": widening});
+                }
+            }
+        };
+
+        let table = table_with(&record, &[], narrow("false"));
+        let kept = table.open(&record, &[]).unwrap();
+        assert_eq!(kept.written.field(0).data_type(), &arrow_schema::DataType::Int32);
+        assert!(
+            table.commit(1).is_none(),
+            "a table that does not widen is left as it is"
+        );
+
+        let table = table_with(&record, &[], narrow("true"));
+        let widened = table.open(&record, &[]).unwrap();
+        assert_eq!(widened.written.field(0).data_type(), &arrow_schema::DataType::Int64);
+        let meta = action(&table.commit(1).unwrap(), "metaData").clone();
+        let schema = StructType::parse(meta["schemaString"].as_str().unwrap()).unwrap();
+        assert_eq!(schema.fields[0].data_type, Type::Primitive("long".into()));
+        assert_eq!(
+            schema.fields[0].metadata["delta.typeChanges"],
+            json!([{"fromType": "integer", "toType": "long"}])
+        );
+    }
+
     /// A row-tracking table whose rows are given up to id 9, and that sets `configuration`.
     fn row_tracking_table(record: &DataType, configuration: Value) -> Table {
         let table = Table::new();
@@ -1448,7 +1496,7 @@ mod tests {
     #[test]
     fn a_table_that_maps_its_columns_by_name_has_them_written_under_their_physical_names() {
         let record = st(&[("host", DataType::Str), ("n", DataType::I64)]);
-        let mapped = schema::table_schema(&record, None, Mapping::Name { max_column_id: 0 })
+        let mapped = schema::table_schema(&record, None, Mapping::Name { max_column_id: 0 }, None)
             .unwrap()
             .schema;
         let table = table_with(&record, &["host"], |a| {
