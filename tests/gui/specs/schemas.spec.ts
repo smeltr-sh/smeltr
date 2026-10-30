@@ -110,13 +110,14 @@ test('the Elasticsearch view chooses the type a field maps to, saved with the sc
   await admin.screenshot({ path: 'results/schemas-elasticsearch-help.png' });
   await admin.keyboard.press('Escape');
   const ip = admin.getByRole('combobox', { name: 'Elasticsearch type of src_endpoint.ip' });
-  await expect(ip).toHaveValue('');
-  await expect(ip.getByRole('option', { name: 'default (keyword)' })).toBeAttached();
+  await expect(ip).toHaveValue('keyword');
+  await expect(ip.getByRole('option')).toHaveCount(8);
   await expect(
     admin
       .getByRole('combobox', { name: 'Elasticsearch type of user.manager' })
       .getByRole('option', {
-        name: 'default (dynamic)',
+        name: 'dynamic',
+        exact: true,
       }),
   ).toBeAttached();
   await ip.selectOption('ip');
@@ -133,7 +134,7 @@ test('the Elasticsearch view chooses the type a field maps to, saved with the sc
 
   await admin
     .getByRole('combobox', { name: 'Elasticsearch type of src_endpoint.ip' })
-    .selectOption('');
+    .selectOption('keyword');
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
   const cleared = await api.get(`${SHARED}${ON}`);
@@ -170,7 +171,7 @@ test("a field's own Elasticsearch settings show beside its type, and shared/'s s
   await expect(
     admin
       .getByRole('combobox', { name: 'Elasticsearch type of tags' })
-      .getByRole('option', { name: 'default (dynamic)' }),
+      .getByRole('option', { name: 'dynamic', exact: true }),
   ).toBeAttached();
   await admin.screenshot({ path: 'results/schemas-elasticsearch-settings.png' });
 

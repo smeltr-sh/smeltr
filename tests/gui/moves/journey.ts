@@ -1714,9 +1714,16 @@ const mapSchemaField: Move = {
     await goto(page, leader, `#/build/schemas?open=${id}`);
     await page.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
     const selects = page.getByRole('combobox', { name: /^Elasticsearch type of / });
-    const select = selects.nth(rng.below(await selects.count()));
+    await expect(selects.first()).toBeVisible();
+    // A field whose type maps one way only, a bool's, offers no other choice.
+    const choices: number[] = [];
+    for (let i = 0; i < (await selects.count()); i++) {
+      if ((await selects.nth(i).locator('option').count()) > 1) choices.push(i);
+    }
+    if (!choices.length) return `map nothing: every field of ${id} maps one way only`;
+    const select = selects.nth(rng.pick(choices));
     const field = (await select.getAttribute('aria-label'))!.replace('Elasticsearch type of ', '');
-    // Another than it shows, so the choice is an edit: the default, or a type its own allows.
+    // Another than it shows, so the choice is an edit. The first is its type's own, which saves no mapping.
     const was = await select.inputValue();
     const offered = await select
       .locator('option')
@@ -1730,15 +1737,15 @@ const mapSchemaField: Move = {
     const schema = res.config.schemas.find((s: { id: string }) => s.id === id);
     const saved = schema.fields.find((f: { field: string }) => f.field === field);
     expect(saved.elasticsearch, `${id}'s ${field} maps as chosen`).toEqual(
-      type ? { type } : undefined,
+      type === offered[0] ? undefined : { type },
     );
-    // The export maps it as chosen, or as its type does by default: the first the view offered after it.
+    // The export maps it as chosen, or, a variant that says nothing, as the first type it allows.
     const exported = await truth.post('/api/preview/schema-export', {
       schema,
       format: 'elasticsearch',
     });
     expect(exported.document.mappings.properties[field].type).toBe(type || offered[1]);
-    return `map ${id}'s ${field} in Elasticsearch as ${type || 'its default'}`;
+    return `map ${id}'s ${field} in Elasticsearch as ${type || 'dynamic'}`;
   },
 };
 

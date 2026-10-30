@@ -34,11 +34,18 @@
     return /^(array<)*variant>*$/.test(f.type) ? 'dynamic' : (elasticsearchTypes(f.type)[0] ?? '');
   }
 
+  /** The type a field maps as, as the dropdown holds it: a variant's own is the empty choice, Elasticsearch's to find. */
+  function mapsAs(f: SchemaFieldDto): string {
+    const own = ownType(f);
+    return f.elasticsearch?.type ?? (own === 'dynamic' ? '' : own);
+  }
+
+  /** The field's own type saves no mapping: what it maps as of itself needs none. */
   function choose(f: SchemaFieldDto, type: string) {
-    if (!type) onmap?.(f.field, undefined);
     // The same type keeps its other parameters.
-    else if (f.elasticsearch?.type === type) return;
-    else onmap?.(f.field, { type });
+    if (mapsAs(f) === type) return;
+    const own = ownType(f);
+    onmap?.(f.field, type === '' || type === own ? undefined : { type });
   }
 
   /** Whether any field gives an example, so the column is there only where it says something. */
@@ -96,10 +103,10 @@
               {:else if onmap}
                 <select
                   aria-label={`Elasticsearch type of ${f.field}`}
-                  value={f.elasticsearch?.type ?? ''}
+                  value={mapsAs(f)}
                   onchange={(e) => choose(f, e.currentTarget.value)}
                 >
-                  <option value="">default ({ownType(f)})</option>
+                  {#if ownType(f) === 'dynamic'}<option value="">dynamic</option>{/if}
                   {#each types as t (t)}<option value={t}>{t}</option>{/each}
                 </select>
               {:else}
