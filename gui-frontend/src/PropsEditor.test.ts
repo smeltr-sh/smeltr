@@ -12,7 +12,7 @@ describe('the Kafka properties editor', () => {
       properties: { 'security.protocol': 'SSL', 'socket.timeout.ms': '60000' },
       credentials: { 'sasl.password': 'KAFKA_PASSWORD' },
     };
-    const { body } = render(KafkaPropsEditor, { props: { value } });
+    const { body } = render(KafkaPropsEditor, { props: { value, reserved: new Map() } });
     expect(body).toContain('value="socket.timeout.ms"');
     expect(body).not.toContain('value="security.protocol"');
     expect(body).not.toContain('value="sasl.password"');
@@ -22,7 +22,8 @@ describe('the Kafka properties editor', () => {
 
   it('says in the row why a save would refuse it', () => {
     const value: KafkaProps = { properties: { 'group.id': 'g' } };
-    const { body } = render(KafkaPropsEditor, { props: { value } });
+    const reserved = new Map([['group.id', 'set from this source’s groupId']]);
+    const { body } = render(KafkaPropsEditor, { props: { value, reserved } });
     expect(body).toContain('smeltr owns this');
   });
 });

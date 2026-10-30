@@ -63,6 +63,8 @@
     putDestinations,
     putSources,
     fieldCatalogs,
+    NO_KAFKA_FACTS,
+    type KafkaFacts,
     type RouteDto,
     type DestinationDto,
     type SourceDto,
@@ -144,7 +146,7 @@
   let sourcing = $state<((source: string) => void) | null>(null);
   /** What a destination made here may name: the catalogs. */
   let secrets: SecretDto[] = $state([]);
-  let mechanisms: string[] = $state([]);
+  let kafka: KafkaFacts = $state(NO_KAFKA_FACTS);
   const GROUP_ROWS = CATEGORIES.flatMap((c) => [c, ...kindsOf(c)]);
   // Of the delivery kinds a route answers only `Unmatched`, for the rows its delivery rules decline.
   const ROUTE_ROWS = GROUP_ROWS.filter(
@@ -250,7 +252,7 @@
     manifestEditor.loading = false;
   }
   void load().then(arrive);
-  void fieldCatalogs().then((c) => ({ secrets, mechanisms } = c));
+  void fieldCatalogs().then((c) => ({ secrets, kafka } = c));
 
   /** A minted id, never a counted one: it is what the route's durable history is keyed by (`mintRouteId`). A new
    * route starts on a source no route reads yet, so it opens a card of its own; once every source has one, it starts
@@ -678,7 +680,7 @@
       open={placing !== null}
       unavailable={destinationIds}
       {secrets}
-      {mechanisms}
+      {kafka}
       onadd={addDestination}
       oncancel={() => (placing = null)}
     />
@@ -686,7 +688,7 @@
       open={sourcing !== null}
       unavailable={sourceIds}
       {secrets}
-      {mechanisms}
+      {kafka}
       readAt={routesEditor.readAtCommit}
       onsaved={(commit) => (routesEditor.readAtCommit = manifestEditor.readAtCommit = commit)}
       onadd={addSource}

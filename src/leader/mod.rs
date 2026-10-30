@@ -1018,6 +1018,8 @@ pub struct SystemInfo {
     /// The SASL mechanisms a Kafka client here can select. GSSAPI is in it only where a provider was linked, and a
     /// form that offered one this build does not carry would be offering a save that is refused.
     pub sasl_mechanisms: Vec<&'static str>,
+    /// The librdkafka properties a save refuses, each with why smeltr owns it, so a form refuses the same ones.
+    pub kafka_reserved: std::collections::BTreeMap<&'static str, &'static str>,
 }
 
 async fn health(State(state): State<AppState>) -> Envelope<HealthResponse> {
@@ -1032,6 +1034,7 @@ async fn system_info(State(state): State<AppState>) -> Envelope<SystemInfo> {
         newer_release: state.updates.newer(),
         release_check: state.updates.looked(),
         sasl_mechanisms: crate::io::kafka::available_sasl_mechanisms(),
+        kafka_reserved: crate::config_file::RESERVED_KAFKA_PROPS.iter().copied().collect(),
     })
 }
 

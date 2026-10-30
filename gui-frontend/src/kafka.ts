@@ -7,7 +7,7 @@
 // refuses a mechanism the build cannot select. Everything here says the same thing earlier, in the
 // field that caused it.
 
-import type { KafkaProps, SecretRef } from './api';
+import type { KafkaFacts, KafkaProps, SecretRef } from './api';
 import { onLoopback, UNENCRYPTED } from './http';
 
 // -- the read position ------------------------------------------------------
@@ -241,45 +241,6 @@ function assign(
 
 // -- what a save refuses ----------------------------------------------------
 
-/** Properties smeltr sets from a field of its own. Mirrors
- * `config_file::load::RESERVED_KAFKA_PROPS`, shortened to the reason a form
- * can act on. */
-const RESERVED: Record<string, string> = {
-  'bootstrap.servers': 'set from this connector’s own brokers field',
-  'metadata.broker.list': 'librdkafka’s other spelling of bootstrap.servers',
-  'group.id': 'set from this source’s own group id',
-  'client.rack': 'each worker sets it from its zone setting',
-  'group.instance.id': 'each worker sets it from its own id',
-  'auto.offset.reset': 'set from this source’s own start position',
-  'enable.auto.commit':
-    'smeltr commits once a batch’s destinations have flushed; auto-commit would acknowledge rows that were never delivered',
-  'auto.commit.enable': 'a deprecated spelling the high-level consumer ignores',
-  'max.poll.interval.ms':
-    'chosen with the destination stall threshold, so a failing destination cannot rebalance the group',
-  'compression.type': 'set from this destination’s own compression field',
-  'compression.codec': 'librdkafka’s other spelling of compression.type',
-  acks: 'set from this destination’s own acks field',
-  'request.required.acks': 'librdkafka’s other spelling of acks',
-  'queued.max.messages.kbytes': 'set from this source’s own fetch buffer',
-  'queue.buffering.max.kbytes': 'set from this destination’s own buffer',
-  'queue.buffering.max.messages':
-    'set to its maximum so this destination’s buffer bounds the queue',
-  'statistics.interval.ms': 'smeltr reports librdkafka’s statistics as metrics of its own',
-  'enable.idempotence':
-    'smeltr runs the producer with it off: an idempotent producer keeps too few requests in flight for a far link',
-  'transactional.id':
-    'smeltr never begins a transaction, and a transactional producer refuses every record sent outside one',
-  'partition.assignment.strategy':
-    'smeltr runs cooperative rebalancing, and cooperative and eager members must not share a group',
-  'sasl.kerberos.kinit.cmd':
-    'librdkafka runs it through system() on every worker, and a bundle carries no shell command',
-};
-
-/** Why this property cannot be set here, or nothing. */
-export function reservedReason(key: string): string | undefined {
-  return RESERVED[key.trim().toLowerCase()];
-}
-
 /** Properties that answer what the TLS settings answer: what this client
  * presents, and what it trusts. Mirrors `config_file::load::TLS_KAFKA_PROPS`. */
 const TLS_PROPS = new Set([
@@ -308,12 +269,13 @@ export function propertyRefusal(
   key: string,
   credential: boolean,
   hasTls: boolean,
+  reserved: KafkaFacts['reserved'],
 ): string | undefined {
   const trimmed = key.trim();
   if (trimmed === '') return undefined;
   if (SECTION_PROPS.includes(trimmed.toLowerCase())) return 'the security section above sets this';
-  const reserved = reservedReason(trimmed);
-  if (reserved !== undefined) return `smeltr owns this: ${reserved}`;
+  const owned = reserved.get(trimmed);
+  if (owned !== undefined) return `smeltr owns this: ${owned}`;
   const tls = tlsReason(trimmed, hasTls);
   if (tls !== undefined) return tls;
   if (!credential && isCredentialValued(trimmed))

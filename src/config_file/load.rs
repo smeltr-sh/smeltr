@@ -1332,9 +1332,10 @@ fn check_stall_after(t: StallAfter, id: &str, errors: &mut ItemErrors<'_>) {
 /// timeout drops that connection.
 const SFTP_MIN_STALL_AFTER: u64 = 15;
 
-/// Properties smeltr sets itself, with the reason it owns each. Both spellings of an aliased property appear:
-/// librdkafka resolves either to the same setting, and operator properties are applied after smeltr's.
-const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
+/// Properties smeltr sets itself, with the reason it owns each, which `/api/system` serves to the GUI. Both spellings
+/// of an aliased property appear: librdkafka resolves either to the same setting, and operator properties are applied
+/// after smeltr's.
+pub const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
     (
         "bootstrap.servers",
         "set from this source or destination's own `brokers` field",
