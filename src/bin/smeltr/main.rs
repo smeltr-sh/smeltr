@@ -2108,7 +2108,7 @@ async fn run_leader() {
         .route("/api/areas/:area/grok-patterns", put(config_api::put_grok_patterns))
         .route("/api/areas/:area/schemas", put(config_api::put_schemas))
         .route("/api/areas/:area/preview/schema-import", post(import_schema))
-        .route("/api/preview/from-json-schema", post(schema_api::from_json_schema))
+        .route("/api/preview/schema-read", post(schema_api::read))
         .route("/api/preview/schema-export", post(schema_api::export))
         .route("/api/areas/:area/manifest", put(config_api::put_manifest))
         .route("/api/areas/:area/pipelines", get(config_api::list_pipelines))

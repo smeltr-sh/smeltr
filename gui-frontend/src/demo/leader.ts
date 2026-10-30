@@ -714,8 +714,7 @@ export class DemoLeader {
       if (path === '/api/preview/line-breaker') return this.ask('/line-breaker', json());
       if (path === '/api/preview/format') return this.ask('/format', json());
       if (path === '/api/preview/onboard') return this.ask('/onboard/propose', json());
-      if (path === '/api/preview/from-json-schema')
-        return this.ask('/schemas/from-json-schema', json());
+      if (path === '/api/preview/schema-read') return this.ask('/schemas/read', json());
       if (path === '/api/preview/schema-export') return this.ask('/schemas/export', json());
       if (path === '/api/captures') return this.startCapture(json());
       const stop = path.match(/^\/api\/captures\/([^/]+)\/stop$/);

@@ -34,12 +34,62 @@
     return /^(array<)*variant>*$/.test(f.type) ? 'dynamic' : (elasticsearchTypes(f.type)[0] ?? '');
   }
 
-  function choose(f: SchemaFieldDto, type: string) {
-    if (!type) onmap?.(f.field, undefined);
-    // The same type keeps its other parameters.
-    else if (f.elasticsearch?.type === type) return;
-    else onmap?.(f.field, { type });
+  /** An integer read as a date counts milliseconds, Elasticsearch's own reading of a number, or seconds, which its
+   * mapping's format says. */
+  const SECONDS = 'date in seconds';
+  /** A date its mapping gives another format, set in Edit JSON, which the dropdown names and keeps. */
+  const FORMATTED = 'date as formatted';
+
+  function integer(f: SchemaFieldDto): boolean {
+    return /^(array<)*i64>*$/.test(f.type);
   }
+
+  /** The choices a field's dropdown offers, each with its label: an integer's date is one for each unit, and a date
+   * with another format is one more, named by it. */
+  function choices(f: SchemaFieldDto, types: string[]): { value: string; label: string }[] {
+    const formatted =
+      mapsAs(f) === FORMATTED
+        ? [{ value: FORMATTED, label: `date (${f.elasticsearch?.format})` }]
+        : [];
+    return types.flatMap((t) =>
+      t !== 'date'
+        ? [{ value: t, label: t }]
+        : integer(f)
+          ? [
+              { value: t, label: 'date (milliseconds)' },
+              { value: SECONDS, label: 'date (seconds)' },
+              ...formatted,
+            ]
+          : [{ value: t, label: t }, ...formatted],
+    );
+  }
+
+  /** The type a field maps as, as the dropdown holds it: a variant's own is the empty choice, Elasticsearch's to find. */
+  function mapsAs(f: SchemaFieldDto): string {
+    const own = ownType(f);
+    const type = f.elasticsearch?.type ?? (own === 'dynamic' ? '' : own);
+    const format = f.elasticsearch?.format;
+    if (type !== 'date' || format === undefined) return type;
+    return integer(f) && format === 'epoch_second' ? SECONDS : FORMATTED;
+  }
+
+  /** The field's own type saves no mapping: what it maps as of itself needs none. */
+  function choose(f: SchemaFieldDto, type: string) {
+    // The same type keeps its other parameters.
+    if (mapsAs(f) === type) return;
+    const own = ownType(f);
+    // A date in one unit or the other is the same type, and keeps its other parameters.
+    const { format: _, ...date } =
+      f.elasticsearch?.type === 'date' ? f.elasticsearch : { type: 'date' };
+    if (type === SECONDS) {
+      onmap?.(f.field, { ...date, format: 'epoch_second' });
+      return;
+    }
+    onmap?.(f.field, type === '' || type === own ? undefined : type === 'date' ? date : { type });
+  }
+
+  /** Whether any field gives an example, so the column is there only where it says something. */
+  let examples = $derived(of.fields.some((f) => f.example));
 
   let shown = $derived.by(() => {
     const needle = q.trim().toLowerCase();
@@ -67,10 +117,11 @@
         <th>Type</th>
         {#if view === 'elasticsearch'}<th
             >Elasticsearch <Help label="Elasticsearch"
-              >Each field is indexed as this Elasticsearch type. Leave it on default to use the type
-              its schema type maps to.</Help
+              >Each field is indexed as this Elasticsearch type. The first in its list is the type
+              its schema type maps to, and a field left on it saves no mapping of its own.</Help
             ></th
-          >{:else}<th>Description</th>{/if}
+          >{:else}<th>Description</th>
+          {#if examples}<th>Example</th>{/if}{/if}
       </tr>
     </thead>
     <tbody>
@@ -85,21 +136,29 @@
           <td class="mono">{f.type}</td>
           {#if view === 'elasticsearch'}
             {@const types = elasticsearchTypes(f.type)}
-            {@const others = Object.keys(f.elasticsearch ?? {}).filter((k) => k !== 'type')}
+            <!-- An integer's unit is its choice of type, not another setting. -->
+            {@const others = Object.keys(f.elasticsearch ?? {}).filter(
+              (k) => k !== 'type' && !(k === 'format' && [SECONDS, FORMATTED].includes(mapsAs(f))),
+            )}
             <td class="mapping">
               {#if types.length === 0}
                 <span class="dim">—</span>
               {:else if onmap}
                 <select
                   aria-label={`Elasticsearch type of ${f.field}`}
-                  value={f.elasticsearch?.type ?? ''}
+                  value={mapsAs(f)}
                   onchange={(e) => choose(f, e.currentTarget.value)}
                 >
-                  <option value="">default ({ownType(f)})</option>
-                  {#each types as t (t)}<option value={t}>{t}</option>{/each}
+                  {#if ownType(f) === 'dynamic'}<option value="">dynamic</option>{/if}
+                  {#each choices(f, types) as c (c.value)}<option value={c.value}>{c.label}</option
+                    >{/each}
                 </select>
               {:else}
-                <span class="mono">{f.elasticsearch?.type ?? ownType(f)}</span>
+                <span class="mono"
+                  >{choices(f, types).find((c) => c.value === mapsAs(f))?.label ??
+                    f.elasticsearch?.type ??
+                    ownType(f)}</span
+                >
               {/if}
               {#if others.length > 0}<span class="dim"
                   >+ {count(others.length, 'more setting')}:
@@ -108,6 +167,9 @@
             </td>
           {:else}
             <td class="about">{f.description ?? ''}</td>
+            {#if examples}<td class="example mono" title={f.example}
+                ><div>{f.example ?? ''}</div></td
+              >{/if}
           {/if}
         </tr>
       {/each}
@@ -164,6 +226,20 @@
 
   .name {
     white-space: nowrap;
+  }
+
+  /* An example can be a whole JSON document; two lines of it say what it is. */
+  .example {
+    max-width: 18rem;
+  }
+
+  .example div {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow-wrap: anywhere;
   }
 
   .about {

@@ -75,7 +75,7 @@ pub fn need(method: &Method, path: &str) -> Need {
 
     match (method.clone(), segments.as_slice()) {
         // A schema read from or written as JSON Schema: what the schema it is given holds, never config.
-        (Method::POST, ["preview", "from-json-schema" | "schema-export"]) => Need::Somewhere(Level::Viewer),
+        (Method::POST, ["preview", "schema-read" | "schema-export"]) => Need::Somewhere(Level::Viewer),
         // Production records a preview or a capture shows, in no one area.
         (Method::POST, ["captures"])
         | (Method::GET | Method::HEAD | Method::DELETE, ["captures", _])
@@ -361,7 +361,7 @@ mod tests {
             (Method::GET, "/api/main/diff"),
             (Method::GET, "/api/branches/b/diff"),
             (Method::GET, "/api/branches/b/schema-findings"),
-            (Method::POST, "/api/preview/from-json-schema"),
+            (Method::POST, "/api/preview/schema-read"),
             (Method::POST, "/api/preview/schema-export"),
             (Method::GET, "/api/branches/b/timeline"),
             (Method::POST, "/api/branches/b/comments"),

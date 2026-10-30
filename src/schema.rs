@@ -13,7 +13,38 @@ use std::sync::Arc;
 use crate::config_file::{SchemaDto, SchemaFieldDto};
 use crate::core::column::DataType;
 
+pub mod csv;
+pub mod ecs;
 pub mod json_schema;
+pub mod ocsf;
+
+/// The type a common name for one means, as a schema spells it: what a database, a spreadsheet or a standard calls a
+/// type, matched without regard to case. Each reader takes what is its own first, then this.
+pub fn named(name: &str) -> Option<&'static str> {
+    Some(match name.trim().to_ascii_lowercase().as_str() {
+        "str" | "string" | "text" | "varchar" | "char" | "keyword" => "str",
+        "i64" | "int" | "integer" | "long" | "bigint" | "smallint" | "tinyint" | "short" | "byte" | "unsigned_long" => {
+            "i64"
+        }
+        "f64" | "float" | "double" | "number" | "decimal" | "real" | "half_float" | "scaled_float" => "f64",
+        "bool" | "boolean" => "bool",
+        "datetime" | "date" | "timestamp" | "date_nanos" => "datetime",
+        "duration" => "duration",
+        "bytes" | "binary" => "bytes",
+        "object" | "json" | "map" | "struct" => "{...}",
+        "variant" | "any" => "variant",
+        _ => return None,
+    })
+}
+
+/// `value` as a field's example: a string as it is, any other value as its JSON.
+fn example_of(value: Option<&serde_json::Value>) -> String {
+    match value {
+        None | Some(serde_json::Value::Null) => String::new(),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+    }
+}
 
 /// One contract, by its id in the bundle.
 #[derive(Debug)]
@@ -33,6 +64,8 @@ pub struct Field {
     pub ty: DataType,
     pub required: bool,
     pub description: String,
+    /// A value it may hold, as text.
+    pub example: String,
     /// How it maps in an Elasticsearch index, over the mapping its type has (`io::elastic_mapping`).
     pub elasticsearch: Option<serde_json::Map<String, serde_json::Value>>,
 }
@@ -70,6 +103,7 @@ pub fn read(dto: &SchemaDto) -> Result<Schema, String> {
             ty,
             required: row.required,
             description: row.description.clone(),
+            example: row.example.clone(),
             elasticsearch: row.elasticsearch.clone(),
         });
     }
@@ -114,6 +148,7 @@ pub fn to_dto(schema: &Schema) -> SchemaDto {
                 ty: f.ty.spell(),
                 required: f.required,
                 description: f.description.clone(),
+                example: f.example.clone(),
                 elasticsearch: f.elasticsearch.clone(),
             })
             .collect(),
@@ -425,6 +460,33 @@ fn same_kind(a: &Misfit, b: &Misfit) -> bool {
 mod tests {
     use super::*;
 
+    /// An Elasticsearch type `named` reads is one the type it reads as may be indexed as, so the two lists cannot
+    /// drift apart.
+    #[test]
+    fn an_elasticsearch_name_reads_as_a_type_it_can_index() {
+        use crate::io::elastic_mapping::types_for;
+        let every = [
+            DataType::Str,
+            DataType::I64,
+            DataType::F64,
+            DataType::Bool,
+            DataType::DateTime,
+            DataType::Duration,
+            DataType::Bytes,
+            DataType::Variant,
+            DataType::Struct(Default::default(), true),
+        ];
+        for name in every.iter().flat_map(types_for) {
+            if let Some(ty) = named(name) {
+                let parsed = crate::expr::parse::parse_type(ty).unwrap();
+                assert!(
+                    types_for(&parsed).contains(name),
+                    "`{name}` reads as {ty}, which it cannot index"
+                );
+            }
+        }
+    }
+
     fn st(fields: &[(&str, DataType)]) -> DataType {
         DataType::Struct(fields.iter().map(|(k, t)| (k.to_string(), t.clone())).collect(), false)
     }
@@ -448,8 +510,7 @@ mod tests {
             field: field.to_string(),
             ty: ty.to_string(),
             required,
-            description: String::new(),
-            elasticsearch: None,
+            ..Default::default()
         }
     }
 

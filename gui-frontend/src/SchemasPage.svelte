@@ -21,11 +21,11 @@
   import Field from './Field.svelte';
   import JsonEditPage from './JsonEditPage.svelte';
   import SchemaFields from './SchemaFields.svelte';
-  import NewSchema, { type SchemaDraft } from './NewSchema.svelte';
+  import NewSchema, { READ_FORMATS, type SchemaDraft } from './NewSchema.svelte';
   import CrossButton from './CrossButton.svelte';
   import { resourcesTabs } from './nav';
   import {
-    fromJsonSchema,
+    readSchema,
     importSchema,
     exportSchema,
     type ExportFormat,
@@ -117,14 +117,16 @@
       });
       if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
       schema = read.schema;
-    } else if (draft.type === 'jsonSchema') {
-      let doc: Record<string, unknown>;
-      try {
-        doc = JSON.parse(draft.text);
-      } catch (e) {
-        throw new Error(`the JSON Schema is not JSON: ${e instanceof Error ? e.message : e}`);
-      }
-      const read = await fromJsonSchema(draft.id, doc);
+    } else if (READ_FORMATS[draft.type]) {
+      const read = await readSchema({
+        id: draft.id,
+        format: READ_FORMATS[draft.type]!,
+        text: draft.text,
+        ...(draft.type === 'ocsf'
+          ? { class: draft.class, cut: { depth: draft.depth, levels: draft.levels } }
+          : {}),
+        ...(draft.type === 'csv' ? { columns: draft.columns, types: draft.types } : {}),
+      });
       if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
       schema = read.schema;
     }

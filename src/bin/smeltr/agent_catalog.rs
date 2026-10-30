@@ -76,15 +76,15 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "POST",
-        path: "/api/preview/from-json-schema",
-        what: "A JSON Schema document read as a schema: its table of fields. No query.",
-        body: "{ id?: string, schema: object }",
+        path: "/api/preview/schema-read",
+        what: "A file read as a schema, its table of fields: a JSON Schema document, ECS's fields.csv or ecs_flat.yml, one class of ocsf-schema-compiler's output (cut to depth keys deep and to the requirement levels named; by default 2, required and recommended), or a CSV of fields under a header row. A CSV's columns are found by header name (field, type, and optionally required, description, example, elasticsearch) unless `columns` gives each by index; a type is smeltr's spelling, a common name for one (string, int, timestamp, ...), or as `types` says. With `preview`, a CSV is not read: the answer's `preview` holds its header, its first rows and the first row of each type value they lack (`first` counts the first rows), guessed columns, and each type value (`value`, `readsAs`, null where unknown, and `fields`, how many rows hold it). No query.",
+        body: "{ id?: string, format: \"json-schema\" | \"ecs\" | \"ocsf\" | \"csv\", text: string, class?: string, cut?: { depth?: number, levels?: (\"required\" | \"recommended\" | \"optional\")[] }, columns?: { field?: number, type?: number, required?: number, description?: number, example?: number, elasticsearch?: number }, types?: { [value: string]: string }, preview?: boolean }",
     },
     Route {
         method: "POST",
         path: "/api/preview/schema-export",
         what: "A schema written in an export format: a JSON Schema document, or an Elasticsearch index's mapping. No query.",
-        body: "{ schema: { id, title?, description?, fields: { field, type, required?, description? }[] }, format: \"json-schema\" | \"elasticsearch\" }",
+        body: "{ schema: { id, title?, description?, fields: { field, type, required?, description?, example?, elasticsearch? }[] }, format: \"json-schema\" | \"elasticsearch\" }",
     },
     Route {
         method: "PUT",

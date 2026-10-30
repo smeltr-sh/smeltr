@@ -8,6 +8,10 @@ use serde_json::{Map, Value, json};
 
 use crate::core::column::DataType;
 
+/// How long a text's keyword is indexed up to: a longer value is kept but not indexed. ECS sets the same on every
+/// keyword, and anything up to 8191 keeps Elasticsearch from refusing a document past 32766 bytes.
+pub const IGNORE_ABOVE: u64 = 1024;
+
 /// What a field says of its own mapping, by its keys from the record's root.
 pub type Mapped<'a> = HashMap<Vec<String>, &'a Map<String, Value>>;
 
@@ -115,8 +119,7 @@ fn typed(ty: &DataType, keys: &mut Vec<String>, mapped: &Mapped) -> Option<Value
         DataType::F64 => "double",
         // Milliseconds: Elasticsearch's date_nanos would keep the microseconds, but refuses any date before 1970.
         DataType::DateTime => "date",
-        // A longer value is kept but not indexed, since past 32766 bytes Elasticsearch would refuse the whole document.
-        DataType::Str => return Some(json!({ "type": "keyword", "ignore_above": 8191 })),
+        DataType::Str => return Some(json!({ "type": "keyword", "ignore_above": IGNORE_ABOVE })),
         // Elasticsearch's own base64 field, which is how a document carries bytes.
         DataType::Bytes => "binary",
         // Elasticsearch has no array type: a field holds one value or many of one mapping.
@@ -164,7 +167,7 @@ mod tests {
             ],
             true,
         );
-        let keyword = json!({ "type": "keyword", "ignore_above": 8191 });
+        let keyword = json!({ "type": "keyword", "ignore_above": IGNORE_ABOVE });
         let want = json!({ "mappings": { "properties": {
             "@timestamp": { "type": "date" },
             "status": { "type": "long" },
@@ -195,7 +198,7 @@ mod tests {
         let said = |v: Value| v.as_object().unwrap().clone();
         let (wildcard, longer, nested, flattened, any, scaled) = (
             said(json!({ "type": "wildcard" })),
-            said(json!({ "type": "keyword", "ignore_above": 1024 })),
+            said(json!({ "type": "keyword", "ignore_above": 4096 })),
             said(json!({ "type": "nested" })),
             said(json!({ "type": "flattened" })),
             said(json!({ "type": "flattened" })),
@@ -215,9 +218,9 @@ mod tests {
         let want = json!({ "mappings": { "properties": {
             "url": { "properties": {
                 "full": { "type": "wildcard" },
-                "path": { "type": "keyword", "ignore_above": 1024 },
+                "path": { "type": "keyword", "ignore_above": 4096 },
             } },
-            "hits": { "type": "nested", "properties": { "id": { "type": "keyword", "ignore_above": 8191 } } },
+            "hits": { "type": "nested", "properties": { "id": { "type": "keyword", "ignore_above": IGNORE_ABOVE } } },
             "labels": { "type": "flattened" },
             "attrs": { "type": "flattened" },
             "price": { "type": "scaled_float", "scaling_factor": 100 },

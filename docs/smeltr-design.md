@@ -98,8 +98,9 @@ Collector, the destinations that refuse records rather than being
 unreachable; any service taking a POST of NDJSON, a JSON array or one record per request, with the headers it asks
 for; Prometheus and any store taking its remote_write; a Log Analytics workspace, through a data collection rule; S3, Google Cloud Storage, Azure Blob Storage and a directory on an SFTP server, as NDJSON, JSON, text, the bytes as they arrived, Parquet or Avro, one file per prefix across batches. Functions: Call, Code, Comment, Drop,
 Eval, Lookup, Parser, Rename, Unroll. Parsers: JSON, CSV, key-value, Grok.
-Schemas a pipeline's rows are held to, read and written as JSON Schema or
-imported from a file of fields; a row that does not fit is a finding and
+Schemas a pipeline's rows are held to, read from JSON Schema, ECS, an OCSF
+class or a CSV of fields, written as JSON Schema or an Elasticsearch mapping,
+or imported by a pipeline; a row that does not fit is a finding and
 refuses nothing. Multiple routes per source. At-least-once delivery, metrics excepted. JSON
 output.
 
