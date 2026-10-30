@@ -560,19 +560,21 @@ test("a CSV's columns and types are picked from its rows when its header names n
   await dialog.getByRole('combobox', { name: 'Column Attribute holds' }).selectOption('field');
   await dialog.getByRole('combobox', { name: 'Column Kind holds' }).selectOption('type');
   await dialog.getByRole('combobox', { name: 'Column Meaning holds' }).selectOption('description');
-  await expect(dialog.getByRole('combobox', { name: 'Type of VARCHAR' })).toHaveValue('str');
-  await expect(dialog.getByRole('combobox', { name: 'Type of int' })).toHaveValue('i64');
-  const widget = dialog.getByRole('combobox', { name: 'Type of widget' });
+  const type = (name: string) => dialog.getByRole('combobox', { name, exact: true });
+  await expect(type('Type of VARCHAR')).toHaveValue('str');
+  await expect(type('Type of int')).toHaveValue('i64');
+  const widget = type('Type of widget');
   await expect(widget).toHaveValue('str');
-  await expect(dialog.getByText('not a type smeltr knows')).toBeVisible();
+  await expect(dialog.getByText('unknown', { exact: true })).toBeVisible();
   // Past the first five rows, `widget` shows in a row of its own; each value says how many rows hold it.
-  await expect(dialog.getByRole('cell', { name: '…', exact: true })).toBeVisible();
+  await expect(dialog.getByText('… and a row for each other type value')).toBeVisible();
   await expect(dialog.getByText('4 fields')).toBeVisible();
   await expect(dialog.getByText('1 field', { exact: true })).toBeVisible();
+  // A value's choice is one, in every row that holds it.
+  await type('Type of VARCHAR, row 3').selectOption('bytes');
+  await expect(type('Type of VARCHAR')).toHaveValue('bytes');
+  await type('Type of VARCHAR').selectOption('str');
   await widget.selectOption('{...}');
-  await expect(dialog.getByText(/^Reads as/)).toHaveText(
-    'Reads as host: str, port: i64, user: str, pid: i64, path: str, …',
-  );
   await dialog.screenshot({ path: 'results/schemas-csv-picker.png' });
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();

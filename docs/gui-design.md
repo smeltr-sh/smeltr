@@ -533,10 +533,9 @@ an OCSF class with how many keys deep and which requirements), from a file (a
 CSV of fields, or JSON Schema), from a pipeline, or empty: one tile for each.
 A CSV shows its first rows, and after a gap a row for each type value they
 lack, as one table: over each column a choice of what it holds, preset where
-the header names it, and in the type column, at the first row of each value,
-the type it reads as and how many rows hold it, preset where smeltr knows the
-name and `str` where it does not. Under the table, the first fields as they
-will read.
+the header names it, and beside the type column the type each row's value
+reads as, one choice for each value, preset where smeltr knows the name and
+`str` where it does not, with how many rows hold it.
 From a pipeline, a pipeline of the bundle is picked and a file uploaded, the
 leader runs the pipeline over the file's records as a preview runs, and each
 row it writes is a field. A field's example shows in its own column when any

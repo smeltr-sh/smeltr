@@ -303,6 +303,7 @@
         <p class="problem" role="alert">{draft.previewError}</p>
       {:else if draft.type === 'csv' && draft.preview}
         {@const preview = draft.preview}
+        {@const typed = draft.columns.type != null && preview.types.length > 0}
         <fieldset class="picker">
           <legend>What each column holds</legend>
           {#if draft.columns.field == null || draft.columns.type == null}
@@ -325,50 +326,53 @@
                         {#each CSV_ROLES as r (r)}<option value={r}>{r}</option>{/each}
                       </select>
                     </th>
+                    {#if typed && i === draft.columns.type}<th></th>{/if}
                   {/each}
                 </tr>
                 <tr>
-                  {#each preview.header as h, i (i)}<th class="name mono">{h}</th>{/each}
+                  {#each preview.header as h, i (i)}
+                    <th class="name mono">{h}</th>
+                    {#if typed && i === draft.columns.type}<th class="name">reads as</th>{/if}
+                  {/each}
                 </tr>
               </thead>
               <tbody>
                 {#each preview.rows as row, r (r)}
                   {@const value = cellOf(draft, row, 'type')}
-                  <!-- A type value's choice is in the first row that holds it. -->
+                  {@const said = preview.types.find((t) => t.value === value)}
+                  <!-- A type value's count and its name for a screen reader are at the first row that holds it. -->
                   {@const first =
                     preview.rows.findIndex((o) => cellOf(draft, o, 'type') === value) === r}
-                  {@const said = preview.types.find((t) => t.value === value)}
                   {#if r === preview.first}
-                    <tr><td class="dim" colspan={preview.header.length}>…</td></tr>
+                    <tr>
+                      <td class="dim gap" colspan={preview.header.length + (typed ? 1 : 0)}
+                        >… and a row for each other type value</td
+                      >
+                    </tr>
                   {/if}
                   <tr>
                     {#each preview.header as _, i (i)}
-                      {#if i === draft.columns.type && said}
-                        <td class="typed">
-                          <div class="mono">{row[i]}</div>
-                          {#if first}
-                            <div class="reads">
-                              as <select
-                                aria-label={`Type of ${value}`}
-                                bind:value={draft.types[value]}
-                              >
-                                {#each said.readsAs && !SCHEMA_TYPES.includes(said.readsAs) ? [said.readsAs, ...SCHEMA_TYPES] : SCHEMA_TYPES as t (t)}
-                                  <option value={t}>{t}</option>
-                                {/each}
-                              </select>
-                              <span class="dim">{count(said.fields, 'field')}</span>
-                              {#if said.readsAs === null}<span class="dim"
-                                  >· not a type smeltr knows: choose how to read it</span
-                                >{/if}
-                            </div>
-                          {:else}
-                            <div class="reads dim">
-                              as <span class="mono">{draft.types[value]}</span>
-                            </div>
+                      <td class="mono">{row[i] ?? ''}</td>
+                      {#if typed && i === draft.columns.type}
+                        <td class="reads">
+                          {#if said}
+                            <select
+                              aria-label={first
+                                ? `Type of ${value}`
+                                : `Type of ${value}, row ${r + 1}`}
+                              bind:value={draft.types[value]}
+                            >
+                              {#each said.readsAs && !SCHEMA_TYPES.includes(said.readsAs) ? [said.readsAs, ...SCHEMA_TYPES] : SCHEMA_TYPES as t (t)}
+                                <option value={t}>{t}</option>
+                              {/each}
+                            </select>
+                            {#if said.readsAs === null}<span
+                                class="unknown"
+                                title="Not a type smeltr knows: choose how to read it">unknown</span
+                              >{/if}
+                            {#if first}<span class="dim">{count(said.fields, 'field')}</span>{/if}
                           {/if}
                         </td>
-                      {:else}
-                        <td class="mono">{row[i] ?? ''}</td>
                       {/if}
                     {/each}
                   </tr>
@@ -376,21 +380,6 @@
               </tbody>
             </table>
           </div>
-          {#if draft.columns.field != null && draft.columns.type != null}
-            {@const reads = preview.rows
-              .slice(0, preview.first)
-              .map(
-                (row) =>
-                  `${cellOf(draft, row, 'field')}: ${draft.types[cellOf(draft, row, 'type')] ?? ''}`,
-              )}
-            <p class="note">
-              Reads as {#each reads as said, r (r)}{r > 0 ? ', ' : ''}<span class="mono"
-                  >{said}</span
-                >{/each}{preview.types.reduce((n, t) => n + t.fields, 0) > reads.length
-                ? ', …'
-                : ''}
-            </p>
-          {/if}
         </fieldset>
       {/if}
     {:else if draft.type === 'ocsf'}
@@ -493,21 +482,32 @@
   .preview td {
     padding: 0.2rem 0.5rem 0.2rem 0;
     text-align: left;
-    vertical-align: top;
+    vertical-align: middle;
     white-space: nowrap;
     max-width: 16rem;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  /* A type cell holds its choice, which wraps rather than being cut short. */
-  .preview .typed {
-    white-space: normal;
-    max-width: 20rem;
+  .preview .reads {
+    max-width: none;
+    padding-right: 1.5rem;
   }
 
-  .reads {
-    margin-top: 0.15rem;
+  .preview .reads select {
+    padding-block: 0;
+  }
+
+  .preview .reads span {
+    margin-left: 0.4rem;
+  }
+
+  .unknown {
+    color: var(--warn);
+  }
+
+  .preview .gap {
+    font-style: italic;
   }
 
   .preview .name {

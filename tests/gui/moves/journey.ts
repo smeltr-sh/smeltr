@@ -1707,7 +1707,9 @@ const addSchema: Move = {
     }
     for (const [i, f] of fields.entries()) {
       if (told[i]) {
-        await dialog.getByRole('combobox', { name: `Type of kind ${i}` }).selectOption(f.type);
+        await dialog
+          .getByRole('combobox', { name: `Type of kind ${i}`, exact: true })
+          .selectOption(f.type);
       }
     }
     if (format === 'ocsf') {
