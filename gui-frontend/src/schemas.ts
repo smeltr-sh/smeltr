@@ -71,3 +71,66 @@ export function downloadJson(name: string, value: unknown) {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+/**
+ * The Elasticsearch types a field of the type `type` may map to, as the leader checks them
+ * (`io::elastic_mapping::types_for`): first the one it maps to of itself, where it has one. An array's are its
+ * element's. A test of `types_for` holds the two equal, so each list stays one array literal.
+ */
+export function elasticsearchTypes(type: string): string[] {
+  const array = /^array<(.*)>$/.exec(type.trim());
+  if (array) return elasticsearchTypes(array[1]);
+  const t = type.trim();
+  if (t.startsWith('{')) return ['object', 'nested', 'flattened', 'geo_point'];
+  switch (t) {
+    case 'str':
+      return [
+        'keyword',
+        'constant_keyword',
+        'wildcard',
+        'text',
+        'match_only_text',
+        'ip',
+        'version',
+        'date',
+      ];
+    case 'duration':
+      return ['long', 'integer', 'short', 'byte', 'unsigned_long'];
+    case 'i64':
+      return [
+        'long',
+        'integer',
+        'short',
+        'byte',
+        'unsigned_long',
+        'double',
+        'float',
+        'half_float',
+        'scaled_float',
+        'date',
+      ];
+    case 'f64':
+      return ['double', 'float', 'half_float', 'scaled_float'];
+    case 'bool':
+      return ['boolean'];
+    case 'datetime':
+      return ['date', 'date_nanos'];
+    case 'bytes':
+      return ['binary'];
+    case 'variant':
+      return [
+        'keyword',
+        'text',
+        'wildcard',
+        'long',
+        'double',
+        'boolean',
+        'date',
+        'object',
+        'flattened',
+        'binary',
+      ];
+    default:
+      return [];
+  }
+}

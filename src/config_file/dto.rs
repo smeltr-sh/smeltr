@@ -3365,6 +3365,9 @@ pub struct SchemaFieldDto {
     pub required: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// How it maps in an Elasticsearch index: a field's mapping, laid over the one its type has (`io::elastic_mapping`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elasticsearch: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// A named grok pattern, declared once for the bundle and named as `%{id}` from any grok in it.

@@ -59,7 +59,12 @@ pub fn export(req: &ExportRequest) -> Result<ExportedSchema, String> {
     let schema = crate::schema::read(&req.schema)?;
     let document = match req.format {
         ExportFormat::JsonSchema => json_schema::write(&schema),
-        ExportFormat::Elasticsearch => crate::io::elastic_mapping::mapping(&schema.record_type()),
+        ExportFormat::Elasticsearch => {
+            let mapped = (schema.fields.iter())
+                .filter_map(|f| Some((f.keys(), f.elasticsearch.as_ref()?)))
+                .collect();
+            crate::io::elastic_mapping::mapping(&schema.record_type(), &mapped)
+        }
     };
     Ok(ExportedSchema { document })
 }
@@ -108,11 +113,17 @@ pub fn from_rows(id: &str, title: &str, rows: &[crate::leader::preview::RowOut])
             Some(Value::Bool(b)) => *b,
             Some(other) => return Err(format!("row {}: `required` is {other}, not a bool", row.row)),
         };
+        let elasticsearch = match json.get("elasticsearch") {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(said)) => Some(said.clone()),
+            Some(other) => return Err(format!("row {}: `elasticsearch` is {other}, not a mapping", row.row)),
+        };
         fields.push(crate::config_file::SchemaFieldDto {
             field,
             ty,
             required,
             description: text("description")?.unwrap_or_default(),
+            elasticsearch,
         });
     }
     if fields.is_empty() {
@@ -212,6 +223,23 @@ mod tests {
             mapping["mappings"]["properties"]["user"]["properties"]["name"]["type"],
             "keyword"
         );
+        // A field's own mapping is laid over its type's, and JSON Schema has no place for it.
+        let mut schema = schema;
+        schema.fields[2].elasticsearch = json!({ "type": "wildcard" }).as_object().cloned();
+        let request = |format| ExportRequest {
+            schema: schema.clone(),
+            format,
+        };
+        let mapping = super::export(&request(ExportFormat::Elasticsearch)).unwrap().document;
+        assert_eq!(
+            mapping["mappings"]["properties"]["user"]["properties"]["name"],
+            json!({ "type": "wildcard" })
+        );
+        let out = super::export(&request(ExportFormat::JsonSchema)).unwrap().document;
+        assert_eq!(
+            out["properties"]["user"]["properties"]["name"],
+            json!({ "type": "string" })
+        );
         assert!(
             from_json_schema(&FromJsonSchema {
                 id: String::new(),
@@ -236,13 +264,20 @@ mod tests {
                 0,
                 json!({ "field": "@timestamp", "type": "datetime", "required": true, "description": "When." }),
             ),
-            row(1, json!({ "field": "source.ip", "type": "str" })),
+            row(
+                1,
+                json!({ "field": "source.ip", "type": "str", "elasticsearch": { "type": "ip" } }),
+            ),
             row(2, json!(null)),
         ];
         let schema = from_rows("ecs", "ECS", &rows).unwrap().schema;
         assert_eq!(schema.fields.len(), 2);
         assert!(schema.fields[0].required);
         assert_eq!(schema.fields[1].ty, "str");
+        assert_eq!(
+            schema.fields[1].elasticsearch,
+            json!({ "type": "ip" }).as_object().cloned()
+        );
         let refused = |rows: &[RowOut]| from_rows("x", "", rows).unwrap_err();
         assert_eq!(refused(&[row(3, json!({ "type": "str" }))]), "row 3: no `field`");
         assert_eq!(refused(&[row(4, json!({ "field": "a" }))]), "row 4: no `type` for `a`");
@@ -251,6 +286,17 @@ mod tests {
             "row 5: `type` is 1, not text"
         );
         assert!(refused(&[row(6, json!({ "field": "a", "type": "nope" }))]).starts_with("`a`: `nope` is no type"));
+        assert_eq!(
+            refused(&[row(7, json!({ "field": "a", "type": "str", "elasticsearch": "ip" }))]),
+            "row 7: `elasticsearch` is \"ip\", not a mapping"
+        );
+        assert!(
+            refused(&[row(
+                8,
+                json!({ "field": "a", "type": "str", "elasticsearch": { "type": "long" } })
+            )])
+            .starts_with("`a`: Elasticsearch's `long` cannot hold str")
+        );
         assert_eq!(refused(&[]), "the importer wrote no rows");
     }
 
@@ -285,6 +331,13 @@ mod tests {
         assert_eq!(field("metadata.version"), ("str", true));
         assert_eq!(field("observables"), ("array<{...}>", false));
         assert_eq!(field("src_endpoint.ip"), ("str", false));
+        let mapped =
+            |path: &str| (schema.fields.iter().find(|f| f.field == path)).and_then(|f| f.elasticsearch.clone());
+        assert_eq!(
+            mapped("src_endpoint.ip"),
+            Some(json!({ "type": "ip" }).as_object().unwrap().clone())
+        );
+        assert_eq!(mapped("user.name"), None);
         assert!(schema.fields.iter().all(|f| f.field.split('.').count() <= 2));
         assert!(
             !schema.fields.iter().any(|f| f.field == "unmapped"),

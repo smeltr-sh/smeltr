@@ -767,7 +767,10 @@ fn a_pipeline_maps_as_it_compiled_and_as_its_sample_shows() {
         "took": { "type": "double" },
         "req": { "properties": { "path": { "type": "keyword", "ignore_above": 8191 } } },
     });
-    assert_eq!(mapping(&record), json!({ "mappings": { "properties": compiled } }));
+    assert_eq!(
+        mapping(&record, &Default::default()),
+        json!({ "mappings": { "properties": compiled } })
+    );
 
     let rows = [
         json!({ "status": 200, "req": { "path": "/a" }, "user": "bob", "n": 1 }),
@@ -776,7 +779,7 @@ fn a_pipeline_maps_as_it_compiled_and_as_its_sample_shows() {
     let mut sampled = compiled;
     sampled["user"] = json!({ "type": "keyword", "ignore_above": 8191 });
     assert_eq!(
-        mapping(&with_sample(&record, &rows)),
+        mapping(&with_sample(&record, &rows), &Default::default()),
         json!({ "mappings": { "properties": sampled } })
     );
 }

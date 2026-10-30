@@ -77,6 +77,7 @@ impl<'d> Reader<'d> {
                 ty: typed.ty,
                 required: required.contains(&name.as_str()),
                 description: text(property, "description"),
+                elasticsearch: None,
             });
             let read = match typed.holds {
                 Some(object) => self.fields_of(object, &path),

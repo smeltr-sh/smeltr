@@ -33,6 +33,8 @@ pub struct Field {
     pub ty: DataType,
     pub required: bool,
     pub description: String,
+    /// How it maps in an Elasticsearch index, over the mapping its type has (`io::elastic_mapping`).
+    pub elasticsearch: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl Field {
@@ -58,11 +60,17 @@ pub fn read(dto: &SchemaDto) -> Result<Schema, String> {
         }
         let ty = crate::expr::parse::parse_type(&row.ty)
             .map_err(|e| format!("`{}`: `{}` is no type: {}", row.field, row.ty, e.message))?;
+        if let Some(refusal) =
+            (row.elasticsearch.as_ref()).and_then(|said| crate::io::elastic_mapping::refusal(&ty, said))
+        {
+            return Err(format!("`{}`: {refusal}", row.field));
+        }
         fields.push(Field {
             path: row.field.clone(),
             ty,
             required: row.required,
             description: row.description.clone(),
+            elasticsearch: row.elasticsearch.clone(),
         });
     }
     for f in &fields {
@@ -106,6 +114,7 @@ pub fn to_dto(schema: &Schema) -> SchemaDto {
                 ty: f.ty.spell(),
                 required: f.required,
                 description: f.description.clone(),
+                elasticsearch: f.elasticsearch.clone(),
             })
             .collect(),
     }
@@ -440,6 +449,7 @@ mod tests {
             ty: ty.to_string(),
             required,
             description: String::new(),
+            elasticsearch: None,
         }
     }
 

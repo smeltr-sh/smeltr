@@ -55,12 +55,15 @@ a declaration spells one, so a schema, a parser's field table and a
 declaration read the same. A bundle declares its schemas as such tables, and
 JSON Schema is read in (`schema::json_schema`). A schema is exported as
 JSON Schema, or as the mapping an Elasticsearch index holding its rows should
-have. A pipeline
+have. A field may say how it maps in Elasticsearch, a piece of mapping laid
+over the one its type has; its `type` is checked at save to be one a value of
+the field's type can be indexed as, and its other parameters are
+Elasticsearch's to check. A pipeline
 names the schemas it produces, and a destination may name the schemas it
 accepts. Both are checked at save to name a schema the group can see. A
 schema is also imported: a pipeline of the bundle run over an uploaded
-file's records writes one row per field, `field`, `type`, `required` and
-`description`, and the rows are the schema. ECS and OCSF come in that way,
+file's records writes one row per field, `field`, `type`, `required`,
+`description` and `elasticsearch`, and the rows are the schema. ECS and OCSF come in that way,
 as any file of fields does.
 
 ```mermaid

@@ -35,6 +35,7 @@
     type FileConfigDto,
     type PipelineDto,
     type SchemaDto,
+    type SchemaFieldDto,
   } from './api';
   import { downloadJson, fileName, matchesOf, userHash, usersOf, type User } from './schemas';
   import { idProblem } from './ids';
@@ -130,6 +131,13 @@
     schemas.push(schema);
     opened = new Set(opened).add(draft.id);
     adding = false;
+  }
+
+  function map(of: SchemaDto, field: string, mapping: SchemaFieldDto['elasticsearch']) {
+    const f = of.fields.find((f) => f.field === field);
+    if (!f) return;
+    if (mapping) f.elasticsearch = mapping;
+    else delete f.elasticsearch;
   }
 
   async function exported(id: string, format: ExportFormat) {
@@ -361,7 +369,11 @@
           >Export Elasticsearch mapping</button
         >
       </div>
-      <SchemaFields {of} {q} />
+      <SchemaFields
+        {of}
+        {q}
+        onmap={fromShared || readOnly ? undefined : (field, m) => map(of, field, m)}
+      />
     </td>
   </tr>
 {/snippet}
