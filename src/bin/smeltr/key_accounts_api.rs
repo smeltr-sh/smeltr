@@ -1,8 +1,8 @@
 //! What is a key account's own: the accounts scripts call the operator API as, and the keys they call with.
 //!
-//! A key account holds what its roles give, as an OIDC account holds what its groups give, or everything when it
-//! is an administrator. A key is answered once, when it is made, and kept only as its hash. Disabling a key
-//! account revokes every key it holds, so enabling it again brings none of them back.
+//! A key account holds what an administrator gives it, as a local account does. A key is answered once, when it is
+//! made, and kept only as its hash, and may be made to expire. Disabling the account revokes every key it holds
+//! (`Store::set_user_enabled`), so enabling it again brings none of them back.
 //!
 //! Reached through `/api/accounts` (`accounts_api`), behind the gate and needing an administrator.
 
@@ -12,23 +12,27 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use smeltr::leader::envelope::Envelope;
-use smeltr::leader::store::{Actor, ApiKeyRecord, KeyAccountChange, NewApiKey, NewKeyAccount};
+use smeltr::leader::store::{Actor, ApiKeyRecord, GivenAccess, NewApiKey, NewKeyAccount};
 use smeltr::leader::warnings::now_millis;
 use smeltr::leader::{accounts, auth as tokens};
 
-use crate::accounts_api::{PatchRequest, account_error, current_account, display_name, store_call};
+use crate::accounts_api::{account_error, current_account, display_name, known_roles, store_call};
 use crate::gate::{Auth, refuse};
 
 /// The longest key label, in characters: room for what the key is for, and no more.
 const MAX_LABEL_CHARS: usize = 128;
 
-/// A key in force, as the roster shows it.
+/// A day, in the milliseconds a key's expiry is kept in.
+const DAY_MILLIS: i64 = 86_400_000;
+
+/// A key not revoked, as the roster shows it, expired or not.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyDto {
     pub id: String,
     pub label: String,
     pub created_at: i64,
+    pub expires_at: Option<i64>,
     pub last_used_at: Option<i64>,
 }
 
@@ -39,6 +43,7 @@ pub struct CreatedKeyDto {
     pub id: String,
     pub label: String,
     pub created_at: i64,
+    pub expires_at: Option<i64>,
     pub key: String,
 }
 
@@ -48,6 +53,7 @@ impl From<ApiKeyRecord> for KeyDto {
             id: key.id,
             label: key.label,
             created_at: key.created_at,
+            expires_at: key.expires_at,
             last_used_at: key.last_used_at,
         }
     }
@@ -78,6 +84,8 @@ pub async fn create_key_account(
             NewKeyAccount {
                 id: &created,
                 display_name: &name,
+            },
+            GivenAccess {
                 roles: &roles,
                 administrator,
             },
@@ -85,66 +93,19 @@ pub async fn create_key_account(
         )
     })
     .await;
-    match outcome {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            accounts::record(auth.store.as_ref(), actor, "account-create", display_name, "refused");
-            return account_error(e);
-        }
-        Err(response) => return *response,
+    if let Err(response) = outcome {
+        return *response;
     }
     (StatusCode::CREATED, current_account(auth, &id).await).into_response()
 }
 
-/// One field of the key account `id` changed, `request` naming exactly one.
-pub async fn patch_key_account(auth: &Auth, actor: &Actor, id: &str, request: PatchRequest) -> Response {
-    let store = auth.store.clone();
-    let (action, outcome) = if let Some(enabled) = request.enabled {
-        let action = if enabled { "account-enable" } else { "account-disable" };
-        let event = accounts::event_for(actor, action, id, "ok");
-        let target = id.to_string();
-        (
-            action,
-            store_call(move || store.set_key_account_enabled(&target, enabled, &event)).await,
-        )
-    } else {
-        let (action, change) = if let Some(name) = &request.display_name {
-            match display_name(name) {
-                Ok(name) => ("account-rename", KeyAccountChange::DisplayName(name)),
-                Err(why) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, why),
-            }
-        } else if let Some(roles) = request.roles {
-            match known_roles(auth, roles).await {
-                Ok(roles) => ("account-access", KeyAccountChange::Roles(roles)),
-                Err(response) => return *response,
-            }
-        } else {
-            let administrator = request.administrator.unwrap_or_default();
-            ("account-access", KeyAccountChange::Administrator(administrator))
-        };
-        let event = accounts::event_for(actor, action, id, "ok");
-        let target = id.to_string();
-        (
-            action,
-            store_call(move || store.change_key_account(&target, &change, &event)).await,
-        )
-    };
-    match outcome {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            accounts::record(auth.store.as_ref(), actor, action, id, "refused");
-            return account_error(e);
-        }
-        Err(response) => return *response,
-    }
-    current_account(auth, id).await
-}
-
 #[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateKeyRequest {
     #[serde(default)]
     pub label: String,
+    /// Days from now until the key stops letting anyone in. Absent for a key that never expires.
+    pub expires_in_days: Option<u32>,
 }
 
 /// `POST /api/accounts/:id/keys`: a new key for an enabled key account, answered this once.
@@ -167,9 +128,18 @@ pub async fn create_key(
             "a key's label holds no control characters",
         );
     }
+    if request.expires_in_days == Some(0) {
+        return refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a key expires in one day or more, or never",
+        );
+    }
     let key = tokens::generate_secret();
     let key_id = format!("key_{}", &tokens::generate_secret()[..24]);
     let created_at = now_millis();
+    let expires_at = request
+        .expires_in_days
+        .map(|days| created_at + i64::from(days) * DAY_MILLIS);
     let event = accounts::event_for(&actor, "key-create", &key_id, "ok");
     let store = auth.store.clone();
     let (target, written_id, written_label, token_hash) =
@@ -182,6 +152,7 @@ pub async fn create_key(
                 label: &written_label,
                 token_hash: &token_hash,
                 created_at,
+                expires_at,
             },
             &event,
         )
@@ -201,6 +172,7 @@ pub async fn create_key(
             id: key_id,
             label,
             created_at,
+            expires_at,
             key,
         }),
     )
@@ -223,24 +195,6 @@ pub async fn revoke_key(
             refuse(StatusCode::NOT_FOUND, "that account holds no such key")
         }
         Err(response) => *response,
-    }
-}
-
-/// `roles`, each named once, if every one is a role that exists.
-async fn known_roles(auth: &Auth, mut roles: Vec<String>) -> Result<Vec<String>, Box<Response>> {
-    roles.sort();
-    roles.dedup();
-    let store = auth.store.clone();
-    let existing = store_call(move || store.list_roles()).await?;
-    match roles
-        .iter()
-        .find(|name| !existing.iter().any(|role| &role.name == *name))
-    {
-        Some(unknown) => Err(Box::new(refuse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            &format!("there is no role named {unknown:?}"),
-        ))),
-        None => Ok(roles),
     }
 }
 

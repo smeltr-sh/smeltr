@@ -26,12 +26,12 @@ use axum::extract::State;
 use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use smeltr::leader::access::{Access, AgentPermissions, ByAgent, Level, Role};
+use smeltr::leader::access::{Access, AgentPermissions, ByAgent, Level};
 use smeltr::leader::auth::hash_secret;
 use smeltr::leader::blocking;
 use smeltr::leader::envelope::Refusal;
 use smeltr::leader::sessions::{Refused, Sessions};
-use smeltr::leader::store::{Actor, AuthSource, KeyAccountRecord, Store, StoreError, UserRecord};
+use smeltr::leader::store::{Actor, AuthSource, Store, StoreError, UserRecord};
 use smeltr::leader::throttle::LoginThrottle;
 use smeltr::leader::warnings::now_millis;
 
@@ -333,7 +333,8 @@ async fn admit(
 /// for its agent, what it lets its agent use.
 ///
 /// Three refusals, as a worker's token has, because a caller acts on each differently: a key never made is `401`,
-/// a revoked key or a disabled account `403`, and a store that could not say is `503`, never either of them.
+/// a revoked or expired key or a disabled account `403`, and a store that could not say is `503`, never either of
+/// them.
 async fn key_account_of(auth: &Auth, key: String, by_agent: bool) -> Result<(Actor, Access), Box<Response>> {
     let store = auth.store.clone();
     let now = now_millis();
@@ -343,7 +344,7 @@ async fn key_account_of(auth: &Auth, key: String, by_agent: bool) -> Result<(Act
         };
         let user = store.get_user(&presented.user_id)?;
         let access = match &user {
-            Some(user) if !presented.revoked && user.enabled => {
+            Some(user) if !presented.revoked && presented.expires_at.is_none_or(|at| now < at) && user.enabled => {
                 let access = access_of(store.as_ref(), user)?;
                 Some(match by_agent {
                     true => access.for_agent(store.agent_permissions_of(&user.id)?),
@@ -373,7 +374,7 @@ async fn key_account_of(auth: &Auth, key: String, by_agent: bool) -> Result<(Act
         )),
         Ok(Some(_)) => Err(Box::new(refuse(
             StatusCode::FORBIDDEN,
-            "this key was revoked, or its account is disabled",
+            "this key was revoked or has expired, or its account is disabled",
         ))),
         Ok(None) => Err(Box::new(refuse(StatusCode::UNAUTHORIZED, "this key is not known"))),
         Err(e) => {
@@ -442,44 +443,23 @@ pub async fn shape(req: axum::extract::Request, next: axum::middleware::Next) ->
     refuse(status, &message)
 }
 
-/// Whether `user` may hold a session at all. A local account must still be an administrator, which it always is;
-/// an OIDC account is let in whatever it holds, and what it may then do is the policy's to decide. A key account
-/// never holds one: it calls with a key.
+/// Whether `user` may hold a session at all: any enabled account that signs in, and what it may then do is the
+/// policy's to decide. A key account never holds one: it calls with a key.
 pub fn admitted(user: &UserRecord) -> bool {
-    user.enabled
-        && match user.auth_source {
-            AuthSource::Local => user.administrator,
-            AuthSource::Oidc => true,
-            AuthSource::Key => false,
-        }
+    user.enabled && user.auth_source != AuthSource::Key
 }
 
-/// What `user` holds now: its groups as of its last sign-in, or a key account's roles, against the roles as they
-/// are.
+/// What `user` holds now: what its own flag and the roles it names give, against the roles as they are. An OIDC
+/// account names its groups as of its last sign-in; a local or key account the roles an administrator gave it.
 pub fn access_of(store: &dyn Store, user: &UserRecord) -> Result<Access, StoreError> {
-    let groups = match user.auth_source {
-        // Holds everything whatever the roles say, so neither is read.
-        AuthSource::Local => return Ok(Access::of(AuthSource::Local, &[], &[])),
+    let named = match user.auth_source {
         AuthSource::Oidc => store
             .oidc_identity_of(&user.id)?
             .map(|identity| identity.groups)
             .unwrap_or_default(),
-        AuthSource::Key => {
-            return Ok(match store.key_account(&user.id)? {
-                Some(account) => key_account_access(&account, &store.list_roles()?),
-                None => Access::of(AuthSource::Key, &[], &[]),
-            });
-        }
+        AuthSource::Local | AuthSource::Key => store.given_roles(&user.id)?,
     };
-    Ok(Access::of(user.auth_source, &groups, &store.list_roles()?))
-}
-
-/// What `account` holds: everything when it is an administrator, else what its roles give.
-pub fn key_account_access(account: &KeyAccountRecord, roles: &[Role]) -> Access {
-    match account.administrator {
-        true => Access::Administrator,
-        false => Access::of(AuthSource::Key, &account.roles, roles),
-    }
+    Ok(Access::of(user.administrator, &named, &store.list_roles()?))
 }
 
 /// `access`, as a session and the roster report it: `areas` is empty for an administrator, who holds everything.
@@ -583,9 +563,10 @@ mod tests {
         }
     }
 
-    /// A key account calls with a key, so no session of one is admitted, whatever its account says.
+    /// Model, points 3 and 5: any enabled account that signs in holds a session, an administrator or not; a key
+    /// account calls with a key, so no session of one is admitted, whatever its account says.
     #[test]
-    fn a_key_account_holds_no_session() {
+    fn every_account_that_signs_in_holds_a_session_and_a_key_account_none() {
         let account = |auth_source, administrator| UserRecord {
             id: "u_1".into(),
             auth_source,
@@ -597,6 +578,7 @@ mod tests {
             updated_at: 0,
         };
         assert!(admitted(&account(AuthSource::Local, true)));
+        assert!(admitted(&account(AuthSource::Local, false)));
         assert!(admitted(&account(AuthSource::Oidc, false)));
         assert!(!admitted(&account(AuthSource::Key, false)));
         assert!(!admitted(&account(AuthSource::Key, true)));
@@ -737,7 +719,7 @@ mod tests {
         use smeltr::leader::access::Role;
         use smeltr::leader::accounts;
         use smeltr::leader::sqlite_store::SqliteStore;
-        use smeltr::leader::store::{NewApiKey, NewKeyAccount, OidcSignIn};
+        use smeltr::leader::store::{GivenAccess, NewApiKey, NewKeyAccount, OidcSignIn};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         const ORIGIN: &str = "http://127.0.0.1:4000";
@@ -997,20 +979,13 @@ mod tests {
             let account = NewKeyAccount {
                 id: "u_int",
                 display_name: "provisioner",
+            };
+            let given = GivenAccess {
                 roles: &[],
                 administrator: true,
             };
-            store.create_key_account(account, &created).unwrap().unwrap();
-            let key = smeltr::leader::auth::generate_secret();
-            let made = accounts::event_for(&Actor::system(), "key-create", "key_1", "ok");
-            let hash = hash_secret(&key);
-            let new_key = NewApiKey {
-                id: "key_1",
-                label: "",
-                token_hash: &hash,
-                created_at: 0,
-            };
-            store.create_api_key("u_int", new_key, &made).unwrap().unwrap();
+            store.create_key_account(account, given, &created).unwrap();
+            let key = key_of(store.as_ref(), "u_int", "key_1", None);
             let auth = auth(store.clone());
             let direct = serve(auth.clone()).await;
             let agent = serve_by_agent(auth.clone()).await;
@@ -1018,6 +993,45 @@ mod tests {
             assert_eq!(ask_with_key(direct, &key, "GET", "/api/accounts").await, 200);
             assert_eq!(ask_with_key(agent, &key, "GET", "/api/accounts").await, 403);
             assert_eq!(ask_with_key(agent, &key, "GET", "/api/areas/search").await, 200);
+        }
+
+        /// A new key for the key account `id`, expiring at `expires_at`, and the key itself.
+        fn key_of(store: &dyn Store, id: &str, key_id: &str, expires_at: Option<i64>) -> String {
+            let key = smeltr::leader::auth::generate_secret();
+            let made = accounts::event_for(&Actor::system(), "key-create", key_id, "ok");
+            let hash = hash_secret(&key);
+            let new_key = NewApiKey {
+                id: key_id,
+                label: "",
+                token_hash: &hash,
+                created_at: 0,
+                expires_at,
+            };
+            store.create_api_key(id, new_key, &made).unwrap().unwrap();
+            key
+        }
+
+        /// Model, point 5: a key past its expiry is refused as a revoked one is, and one before it lets its account
+        /// in.
+        #[tokio::test]
+        async fn an_expired_key_is_refused_as_a_revoked_one() {
+            let store = store();
+            let created = accounts::event_for(&Actor::system(), "account-create", "u_int", "ok");
+            let account = NewKeyAccount {
+                id: "u_int",
+                display_name: "exporter",
+            };
+            let given = GivenAccess {
+                roles: &[],
+                administrator: true,
+            };
+            store.create_key_account(account, given, &created).unwrap();
+            let expired = key_of(store.as_ref(), "u_int", "key_1", Some(1));
+            let current = key_of(store.as_ref(), "u_int", "key_2", Some(now_millis() + 60_000));
+            let direct = serve(auth(store.clone())).await;
+
+            assert_eq!(ask_with_key(direct, &expired, "GET", "/api/accounts").await, 403);
+            assert_eq!(ask_with_key(direct, &current, "GET", "/api/accounts").await, 200);
         }
 
         /// An administrator's agent is no administrator until they give it everything.

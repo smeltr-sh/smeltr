@@ -18,11 +18,11 @@ use std::time::Duration;
 use smeltr::leader::access::{Access, Role};
 use smeltr::leader::envelope::Envelope;
 use smeltr::leader::store::{
-    AccountError, Actor, AuthSource, KeyAccountRecord, NewLocalUser, Store, StoreError, UserRecord,
+    AccessChange, AccountError, Actor, AuthSource, GivenAccess, NewLocalUser, Store, StoreError, UserRecord,
 };
 use smeltr::leader::{accounts, blocking, sessions};
 
-use crate::gate::{AccessDto, Auth, key_account_access, refuse, store_unavailable};
+use crate::gate::{AccessDto, Auth, refuse, store_unavailable};
 use crate::key_accounts_api::{self, KeyDto};
 
 /// An account as the roster shows it. No verifier, no password state beyond whether one must be changed, and
@@ -34,16 +34,15 @@ pub struct AccountDto {
     pub username: Option<String>,
     pub display_name: String,
     pub enabled: bool,
-    /// Whether the account itself makes it an administrator, as a local account always does and a key account
-    /// may. What it holds, from this or its roles, is `access`.
+    /// The account's own flag, which an administrator gives a local or key account. What it holds, from this or
+    /// its roles, is `access`.
     pub administrator: bool,
     pub auth_source: String,
     /// What the provider last called an OIDC account, since its display name may not tell two people apart.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_login: Option<String>,
     /// The roles this account holds: an OIDC account's are those of its provider groups, as of its last sign-in,
-    /// that a role is named for; a key account's are those it was given. Empty for a local account, which holds
-    /// everything without one.
+    /// that a role is named for; a local or key account's are those an administrator gave it.
     pub roles: Vec<String>,
     /// Every group the provider named at this account's last sign-in or refresh, a role's or not, exactly as it
     /// named them: what a new role must be called to reach this person. Empty for any other account.
@@ -57,55 +56,48 @@ pub struct AccountDto {
 }
 
 impl AccountDto {
-    /// `user`, a person, as the roster shows it, given every role there is.
-    fn of(store: &dyn Store, user: UserRecord, roles: &[Role]) -> Result<AccountDto, StoreError> {
+    /// `user` as the roster shows it, given every role there is.
+    pub fn of(store: &dyn Store, user: UserRecord, roles: &[Role]) -> Result<AccountDto, StoreError> {
         let username = store.username_of(&user.id)?;
         let identity = match user.auth_source {
             AuthSource::Oidc => store.oidc_identity_of(&user.id)?,
             AuthSource::Local | AuthSource::Key => None,
         };
         let groups = identity.as_ref().map(|i| i.groups.clone()).unwrap_or_default();
-        let held = roles
-            .iter()
-            .filter(|role| groups.contains(&role.name))
-            .map(|role| role.name.clone())
-            .collect();
-        let access = Access::of(user.auth_source, &groups, roles);
+        let (named, held) = match user.auth_source {
+            AuthSource::Oidc => {
+                let held = roles
+                    .iter()
+                    .filter(|role| groups.contains(&role.name))
+                    .map(|role| role.name.clone())
+                    .collect();
+                (groups.clone(), held)
+            }
+            AuthSource::Local | AuthSource::Key => {
+                let given = store.given_roles(&user.id)?;
+                (given.clone(), given)
+            }
+        };
+        let keys = match user.auth_source {
+            AuthSource::Key => Some(store.api_keys_of(&user.id)?.into_iter().map(KeyDto::from).collect()),
+            AuthSource::Local | AuthSource::Oidc => None,
+        };
+        let access = Access::of(user.administrator, &named, roles);
         Ok(AccountDto {
             id: user.id,
             username,
             display_name: user.display_name,
             enabled: user.enabled,
-            administrator: user.auth_source == AuthSource::Local,
+            administrator: user.administrator,
             auth_source: user.auth_source.as_str().to_string(),
             provider_login: identity.and_then(|identity| identity.login),
             roles: held,
             groups,
             access: AccessDto::from(&access),
-            keys: None,
+            keys,
             created_at: user.created_at,
             updated_at: user.updated_at,
         })
-    }
-
-    /// `account` as the roster shows it, given every role there is.
-    pub fn of_key_account(account: KeyAccountRecord, roles: &[Role]) -> AccountDto {
-        let access = key_account_access(&account, roles);
-        AccountDto {
-            id: account.id,
-            username: None,
-            display_name: account.display_name,
-            enabled: account.enabled,
-            administrator: account.administrator,
-            auth_source: AuthSource::Key.as_str().to_string(),
-            provider_login: None,
-            roles: account.roles,
-            groups: Vec::new(),
-            access: AccessDto::from(&access),
-            keys: Some(account.keys.into_iter().map(KeyDto::from).collect()),
-            created_at: account.created_at,
-            updated_at: account.updated_at,
-        }
     }
 }
 
@@ -122,7 +114,7 @@ pub fn account_error(e: AccountError) -> Response {
     let status = match e {
         AccountError::UsernameTaken
         | AccountError::LastAdministrator
-        | AccountError::NameTaken
+        | AccountError::HeldByProvider
         | AccountError::Disabled => StatusCode::CONFLICT,
         AccountError::NoSuchUser => StatusCode::NOT_FOUND,
         AccountError::WrongAuthSource | AccountError::Superseded => StatusCode::CONFLICT,
@@ -147,19 +139,11 @@ pub async fn list_accounts(State(auth): State<Auth>) -> Response {
     let store = auth.store.clone();
     let listed = store_call(move || {
         let roles = store.list_roles()?;
-        let mut accounts = store
+        store
             .list_users()?
             .into_iter()
             .map(|user| AccountDto::of(store.as_ref(), user, &roles))
-            .collect::<Result<Vec<_>, _>>()?;
-        accounts.extend(
-            store
-                .list_key_accounts()?
-                .into_iter()
-                .map(|account| AccountDto::of_key_account(account, &roles)),
-        );
-        accounts.sort_by_key(|account| account.created_at);
-        Ok(accounts)
+            .collect::<Result<Vec<_>, _>>()
     })
     .await;
     match listed {
@@ -173,7 +157,14 @@ pub async fn list_accounts(State(auth): State<Auth>) -> Response {
 #[serde(tag = "authSource", rename_all = "lowercase")]
 pub enum CreateRequest {
     #[serde(rename_all = "camelCase")]
-    Local { username: String, display_name: String },
+    Local {
+        username: String,
+        display_name: String,
+        #[serde(default)]
+        roles: Vec<String>,
+        #[serde(default)]
+        administrator: bool,
+    },
     #[serde(rename_all = "camelCase")]
     Key {
         display_name: String,
@@ -184,15 +175,21 @@ pub enum CreateRequest {
     },
 }
 
-/// `POST /api/accounts`: a local administrator, answered with its temporary password, or an enabled key account
-/// holding no key yet, answered as the roster shows it.
+/// `POST /api/accounts`: a local account, answered with its temporary password, or an enabled key account holding
+/// no key yet, answered as the roster shows it. Each holds the roles it is given, or everything as an
+/// administrator.
 pub async fn create_account(
     State(auth): State<Auth>,
     actor: axum::Extension<Actor>,
     Json(request): Json<CreateRequest>,
 ) -> Response {
     match request {
-        CreateRequest::Local { username, display_name } => create_user(&auth, &actor, &username, &display_name).await,
+        CreateRequest::Local {
+            username,
+            display_name,
+            roles,
+            administrator,
+        } => create_user(&auth, &actor, &username, &display_name, roles, administrator).await,
         CreateRequest::Key {
             display_name,
             roles,
@@ -210,8 +207,15 @@ pub struct TemporaryPasswordDto {
     pub temporary_password: String,
 }
 
-/// A local administrator with a temporary password.
-async fn create_user(auth: &Auth, actor: &Actor, username: &str, display_name: &str) -> Response {
+/// A local account with a temporary password.
+async fn create_user(
+    auth: &Auth,
+    actor: &Actor,
+    username: &str,
+    display_name: &str,
+    roles: Vec<String>,
+    administrator: bool,
+) -> Response {
     let Some(username) = accounts::canonical_username(username) else {
         return refuse(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -221,6 +225,10 @@ async fn create_user(auth: &Auth, actor: &Actor, username: &str, display_name: &
     let display_name = match self::display_name(display_name) {
         Ok(name) => name,
         Err(why) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, why),
+    };
+    let roles = match known_roles(auth, roles).await {
+        Ok(roles) => roles,
+        Err(response) => return *response,
     };
 
     let password = accounts::generate_password();
@@ -245,6 +253,10 @@ async fn create_user(auth: &Auth, actor: &Actor, username: &str, display_name: &
                     display_name: &display_name,
                     password_hash: &hash,
                     must_change: true,
+                },
+                GivenAccess {
+                    roles: &roles,
+                    administrator,
                 },
                 &event,
             )
@@ -277,6 +289,24 @@ async fn create_user(auth: &Auth, actor: &Actor, username: &str, display_name: &
         .into_response()
 }
 
+/// `roles`, each named once, if every one is a role that exists.
+pub async fn known_roles(auth: &Auth, mut roles: Vec<String>) -> Result<Vec<String>, Box<Response>> {
+    roles.sort();
+    roles.dedup();
+    let store = auth.store.clone();
+    let existing = store_call(move || store.list_roles()).await?;
+    match roles
+        .iter()
+        .find(|name| !existing.iter().any(|role| &role.name == *name))
+    {
+        Some(unknown) => Err(Box::new(refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &format!("there is no role named {unknown:?}"),
+        ))),
+        None => Ok(roles),
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PatchRequest {
@@ -292,8 +322,7 @@ pub struct PatchRequest {
 /// refused on the second -- a caller told `409` while the display name had already changed. A refusal before
 /// anything is written is the honest answer, and no screen asks for two at once.
 ///
-/// Roles and administrator are a key account's alone: a local account is an administrator by being local, and an
-/// OIDC account's roles are its provider's.
+/// Roles and administrator are given to a local or key account. An OIDC account's roles are its provider's.
 pub async fn patch_account(
     State(auth): State<Auth>,
     actor: axum::Extension<Actor>,
@@ -313,21 +342,26 @@ pub async fn patch_account(
         );
     }
 
-    let store = auth.store.clone();
-    let target = id.clone();
-    let source = match store_call(move || store.get_user(&target)).await {
-        Ok(Some(user)) => user.auth_source,
-        Ok(None) => return account_error(AccountError::NoSuchUser),
-        Err(response) => return *response,
+    let change = match (request.roles, request.administrator) {
+        (Some(roles), _) => match known_roles(&auth, roles).await {
+            Ok(roles) => Some(AccessChange::Roles(roles)),
+            Err(response) => return *response,
+        },
+        (None, Some(administrator)) => Some(AccessChange::Administrator(administrator)),
+        (None, None) => None,
     };
-    if source == AuthSource::Key {
-        return key_accounts_api::patch_key_account(&auth, &actor, &id, request).await;
-    }
-    if request.roles.is_some() || request.administrator.is_some() {
-        return refuse(
-            StatusCode::CONFLICT,
-            "roles and administrator can be set here only for an account that signs in with a key",
-        );
+    if let Some(change) = change {
+        let event = accounts::event_for(&actor, "account-access", &id, "ok");
+        let store = auth.store.clone();
+        let target = id.clone();
+        match store_call(move || store.change_access(&target, &change, &event)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                accounts::record(auth.store.as_ref(), &actor, "account-access", &id, "refused");
+                return account_error(e);
+            }
+            Err(response) => return *response,
+        }
     }
 
     if let Some(name) = &request.display_name {
@@ -376,9 +410,6 @@ pub async fn current_account(auth: &Auth, id: &str) -> Response {
     let looked_up = store_call(move || {
         let roles = store.list_roles()?;
         match store.get_user(&target)? {
-            Some(user) if user.auth_source == AuthSource::Key => Ok(store
-                .key_account(&target)?
-                .map(|account| AccountDto::of_key_account(account, &roles))),
             Some(user) => AccountDto::of(store.as_ref(), user, &roles).map(Some),
             None => Ok(None),
         }

@@ -19,8 +19,6 @@ use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::leader::sessions::Refused;
 use smeltr::leader::store::Actor;
 
-use smeltr::leader::access::Access;
-
 use crate::gate::{
     AccessDto, Auth, access_of, admitted, check_browser_protections, presented_token, refuse, store_unavailable,
 };
@@ -271,9 +269,16 @@ pub async fn login(
 
     let store = auth.store.clone();
     let user_id = user.id.clone();
-    let looked_up = blocking(move || Ok((store.get_user(&user_id)?, smeltr::leader::model::on(store.as_ref())?))).await;
-    let (current, agents) = match looked_up {
-        Ok::<_, smeltr::leader::store::StoreError>((Some(user), agents)) => (user, agents),
+    let looked_up = blocking(move || {
+        let Some(user) = store.get_user(&user_id)? else {
+            return Ok(None);
+        };
+        let access = access_of(store.as_ref(), &user)?;
+        Ok(Some((user, access, smeltr::leader::model::on(store.as_ref())?)))
+    })
+    .await;
+    let (current, access, agents) = match looked_up {
+        Ok::<_, smeltr::leader::store::StoreError>(Some(found)) => found,
         _ => return store_unavailable(),
     };
     // A reset, revocation or disable that landed since the hash was checked has moved the account past what
@@ -310,10 +315,9 @@ pub async fn login(
             display_name: Some(current.display_name),
             username: Some(accounts::canonical_username(&request.username).unwrap_or(canonical)),
             auth_source: Some(current.auth_source.as_str()),
-            // A password sign-in is always a local account, which holds everything.
             provider_login: None,
-            administrator: true,
-            access: Some(AccessDto::from(&Access::Administrator)),
+            administrator: access.is_administrator(),
+            access: Some(AccessDto::from(&access)),
             must_change_password: must_change,
             agents,
             csrf: Some(issued.session.csrf),

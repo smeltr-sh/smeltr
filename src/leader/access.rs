@@ -1,20 +1,18 @@
-//! What a person may do, per area.
+//! What an account may do, per area.
 //!
-//! An area is `shared` or one worker group: the scope every config read and write already names. A person holds
-//! one [`Level`] in an area, and each level includes the ones below it. An OIDC account's levels come from the
-//! roles its provider's groups name, a role being one provider group and the level it gives in each area. A local
-//! account is always an administrator, and so is anyone holding a role marked administrator.
+//! An area is `shared` or one worker group: the scope every config read and write already names. An account holds
+//! one [`Level`] in an area, and each level includes the ones below it, from the roles it names: a role is a name
+//! and the level it gives in each area. An OIDC account names the roles its provider's groups name; a local or key
+//! account names the roles an administrator gave it. An account is an administrator by its own flag, which only a
+//! local or key account can be given, or by holding a role marked administrator.
 //!
-//! The leader decides this on every request, from the groups the account recorded at its last sign-in, so a
-//! change to a role reaches everyone holding it on their next request and a change to someone's groups at their
-//! next sign-in.
+//! The leader decides this on every request, from the names as they stand, so a change to a role reaches everyone
+//! holding it on their next request and a change to someone's groups at their next sign-in.
 //!
 //! A person's agent acts for them with [`AgentPermissions`]: a part of what they hold, never more, so what it may
 //! do is the lower of the two in each area and shrinks with them.
 
 use std::collections::BTreeMap;
-
-use super::store::AuthSource;
 
 /// The area every group draws on.
 pub const SHARED: &str = "shared";
@@ -122,15 +120,13 @@ impl AgentPermissions {
 }
 
 impl Access {
-    /// What an account holds, given the groups it last signed in with and the roles that exist.
-    ///
-    /// A local account is the way in when the provider is down or misconfigured, so it holds everything whatever
-    /// the roles say.
-    pub fn of(source: AuthSource, groups: &[String], roles: &[Role]) -> Access {
-        if source == AuthSource::Local {
+    /// What an account holds: everything when its own flag says so, else what the roles it names give, out of
+    /// the roles that exist.
+    pub fn of(administrator: bool, named: &[String], roles: &[Role]) -> Access {
+        if administrator {
             return Access::Administrator;
         }
-        let held = roles.iter().filter(|role| groups.contains(&role.name));
+        let held = roles.iter().filter(|role| named.contains(&role.name));
         let mut areas = BTreeMap::new();
         for role in held {
             if role.administrator {
@@ -216,17 +212,28 @@ mod tests {
         names.iter().map(|s| s.to_string()).collect()
     }
 
+    /// Model, point 3: an account's own flag holds everything, whatever its roles say.
     #[test]
-    fn a_local_account_is_an_administrator_whatever_the_roles_say() {
+    fn an_administrators_flag_holds_everything_whatever_the_roles_say() {
         let roles = [role("smeltr-payments", &[("payments", Level::Viewer)])];
         assert_eq!(
-            Access::of(AuthSource::Local, &groups(&["smeltr-payments"]), &roles),
+            Access::of(true, &groups(&["smeltr-payments"]), &roles),
             Access::Administrator
         );
     }
 
+    /// Model, point 3: an account without the flag holds only what its roles give, however it signs in.
     #[test]
-    fn an_oidc_account_holds_the_highest_level_its_roles_give_in_each_area() {
+    fn an_account_without_the_flag_holds_only_what_its_roles_give() {
+        let roles = [role("smeltr-payments", &[("payments", Level::Viewer)])];
+        let access = Access::of(false, &groups(&["smeltr-payments"]), &roles);
+        assert!(!access.is_administrator());
+        assert_eq!(access.level("payments"), Some(Level::Viewer));
+        assert_eq!(Access::of(false, &[], &roles), Access::Areas(BTreeMap::new()));
+    }
+
+    #[test]
+    fn an_account_holds_the_highest_level_its_roles_give_in_each_area() {
         let roles = [
             role(
                 "smeltr-storefront",
@@ -238,11 +245,7 @@ mod tests {
             ),
             role("smeltr-payments", &[("payments", Level::Deployer)]),
         ];
-        let access = Access::of(
-            AuthSource::Oidc,
-            &groups(&["smeltr-storefront", "smeltr-oncall"]),
-            &roles,
-        );
+        let access = Access::of(false, &groups(&["smeltr-storefront", "smeltr-oncall"]), &roles);
         assert_eq!(access.level("storefront"), Some(Level::Deployer));
         assert_eq!(access.level("search"), Some(Level::Editor));
         assert_eq!(access.level("payments"), Some(Level::Viewer));
@@ -253,7 +256,7 @@ mod tests {
     fn a_role_marked_administrator_holds_everything() {
         let mut admins = role("smeltr-admins", &[]);
         admins.administrator = true;
-        let access = Access::of(AuthSource::Oidc, &groups(&["smeltr-admins"]), &[admins]);
+        let access = Access::of(false, &groups(&["smeltr-admins"]), &[admins]);
         assert!(access.is_administrator());
         assert!(access.allows("anything", Level::Deployer));
     }
@@ -261,7 +264,7 @@ mod tests {
     #[test]
     fn a_group_no_role_names_gives_nothing() {
         let roles = [role("smeltr-payments", &[("payments", Level::Deployer)])];
-        let access = Access::of(AuthSource::Oidc, &groups(&["everyone"]), &roles);
+        let access = Access::of(false, &groups(&["everyone"]), &roles);
         assert_eq!(access, Access::Areas(BTreeMap::new()));
         assert!(!access.somewhere(Level::Viewer));
         assert_eq!(access.level(SHARED), None);
@@ -271,7 +274,7 @@ mod tests {
     #[test]
     fn holding_any_area_reads_shared() {
         let roles = [role("smeltr-search", &[("search", Level::Deployer)])];
-        let access = Access::of(AuthSource::Oidc, &groups(&["smeltr-search"]), &roles);
+        let access = Access::of(false, &groups(&["smeltr-search"]), &roles);
         assert!(access.allows(SHARED, Level::Viewer));
         assert!(!access.allows(SHARED, Level::Editor));
     }
@@ -286,7 +289,7 @@ mod tests {
     #[test]
     fn an_agent_holds_the_lower_of_its_person_and_its_permissions() {
         let roles = [role("r", &[("payments", Level::Deployer), ("search", Level::Viewer)])];
-        let person = Access::of(AuthSource::Oidc, &groups(&["r"]), &roles);
+        let person = Access::of(false, &groups(&["r"]), &roles);
         let agent = person.for_agent(upto(
             Level::Viewer,
             &[("payments", Level::Editor), ("search", Level::Deployer)],
@@ -330,7 +333,7 @@ mod tests {
     #[test]
     fn each_level_includes_the_ones_below_it() {
         let roles = [role("r", &[("payments", Level::Editor)])];
-        let access = Access::of(AuthSource::Oidc, &groups(&["r"]), &roles);
+        let access = Access::of(false, &groups(&["r"]), &roles);
         assert!(access.allows("payments", Level::Viewer));
         assert!(access.allows("payments", Level::Editor));
         assert!(!access.allows("payments", Level::Deployer));

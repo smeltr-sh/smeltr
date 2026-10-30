@@ -517,19 +517,19 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/accounts",
-        what: "Every account, however it signs in (authSource local, oidc or key), with its roles and, for a key account, its keys in force, never a key itself, as `accounts`. No query.",
+        what: "Every account, however it signs in (authSource local, oidc or key), with its roles and, for a key account, its keys not revoked with when each expires, never a key itself, as `accounts`. No query.",
         body: "",
     },
     Route {
         method: "POST",
         path: "/api/accounts",
-        what: "Create a local administrator, returning a one-time temporary password, or an enabled key account holding no key yet. No query.",
-        body: "{ authSource: 'local', username: string, displayName: string } | { authSource: 'key', displayName: string, roles?: string[], administrator?: boolean }",
+        what: "Create a local account, returning a one-time temporary password, or an enabled key account holding no key yet. Each holds the roles it is given, or everything as an administrator. No query.",
+        body: "{ authSource: 'local', username: string, displayName: string, roles?: string[], administrator?: boolean } | { authSource: 'key', displayName: string, roles?: string[], administrator?: boolean }",
     },
     Route {
         method: "PATCH",
         path: "/api/accounts/:id",
-        what: "Change one account's display name or enabled state, or a key account's roles or administrator, one field per request. Disabling a key account revokes every key it holds. No query.",
+        what: "Change one account's display name or enabled state, or a local or key account's roles or administrator, one field per request. Disabling an account revokes every key it holds. No query.",
         body: "{ displayName?: string, enabled?: boolean, roles?: string[], administrator?: boolean } (exactly one)",
     },
     Route {

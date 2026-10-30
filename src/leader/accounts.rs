@@ -314,7 +314,7 @@ fn judge(store: &dyn Store, credential: LocalCredentialRecord, password: &str) -
     let Some(user) = store.get_user(&credential.user_id)? else {
         return Ok(Authenticated::Refused);
     };
-    if !user.enabled || !user.administrator {
+    if !user.enabled {
         return Ok(Authenticated::Refused);
     }
     // A reset that landed while this was hashing leaves the verifier just checked superseded. Refusing is the
@@ -608,6 +608,10 @@ mod tests {
                     password_hash: &hash_password(GOOD).unwrap(),
                     must_change: false,
                 },
+                super::super::store::GivenAccess {
+                    roles: &[],
+                    administrator: true,
+                },
                 &event_for(&Actor::system(), "account-create", "", "ok"),
             )
             .unwrap()
@@ -684,6 +688,10 @@ mod tests {
                     display_name: "Other",
                     password_hash: &hash_password("the other account's passphrase").unwrap(),
                     must_change: false,
+                },
+                super::super::store::GivenAccess {
+                    roles: &[],
+                    administrator: true,
                 },
                 &event_for(&Actor::system(), "account-create", "u_2", "ok"),
             )
@@ -843,7 +851,17 @@ mod tests {
             must_change: false,
         };
         let event = event_for(&Actor::system(), "account-create", "u_2", "ok");
-        disabled.create_local_user(other, &event).unwrap().unwrap();
+        disabled
+            .create_local_user(
+                other,
+                super::super::store::GivenAccess {
+                    roles: &[],
+                    administrator: true,
+                },
+                &event,
+            )
+            .unwrap()
+            .unwrap();
         let credential = disabled.local_credential_by_username("admin").unwrap().unwrap();
         let event = event_for(&Actor::system(), "account-disable", "u_1", "ok");
         disabled.set_user_enabled("u_1", false, &event).unwrap().unwrap();

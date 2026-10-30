@@ -922,7 +922,7 @@ fn an_administrator_creates_an_account_that_can_then_sign_in() {
     let (status, created) = leader.post_as(
         &op,
         "/api/accounts",
-        serde_json::json!({ "authSource": "local", "username": "dana", "displayName": "Dana Okafor" }),
+        serde_json::json!({ "authSource": "local", "administrator": true, "username": "dana", "displayName": "Dana Okafor" }),
     );
     assert_eq!(status, 201, "{created}");
     let temporary = created["temporaryPassword"].as_str().expect("a temporary password");
@@ -1396,7 +1396,7 @@ fn a_username_cannot_be_taken_twice() {
         leader.post_as(
             &op,
             "/api/accounts",
-            serde_json::json!({ "authSource": "local", "username": username, "displayName": "Someone" }),
+            serde_json::json!({ "authSource": "local", "administrator": true, "username": username, "displayName": "Someone" }),
         )
     };
     assert_eq!(create("dana").0, 201);
@@ -1413,7 +1413,7 @@ fn a_renamed_account_keeps_its_username() {
     let (_, created) = leader.post_as(
         &op,
         "/api/accounts",
-        serde_json::json!({ "authSource": "local", "username": "dana", "displayName": "Dana" }),
+        serde_json::json!({ "authSource": "local", "administrator": true, "username": "dana", "displayName": "Dana" }),
     );
     let id = created["userId"].as_str().unwrap();
     let (status, patched) = leader.patch_as(
@@ -1451,7 +1451,7 @@ fn disabling_an_account_ends_its_session_at_once() {
     let (_, created) = leader.post_as(
         &op,
         "/api/accounts",
-        serde_json::json!({ "authSource": "local", "username": "dana", "displayName": "Dana" }),
+        serde_json::json!({ "authSource": "local", "administrator": true, "username": "dana", "displayName": "Dana" }),
     );
     let id = created["userId"].as_str().unwrap().to_string();
     let temporary = created["temporaryPassword"].as_str().unwrap().to_string();
@@ -1528,7 +1528,7 @@ fn resetting_a_password_ends_the_sessions_and_requires_a_new_choice() {
     let (_, created) = leader.post_as(
         &op,
         "/api/accounts",
-        serde_json::json!({ "authSource": "local", "username": "dana", "displayName": "Dana" }),
+        serde_json::json!({ "authSource": "local", "administrator": true, "username": "dana", "displayName": "Dana" }),
     );
     let id = created["userId"].as_str().unwrap().to_string();
     let before = leader.sign_in("dana", created["temporaryPassword"].as_str().unwrap());
@@ -1589,7 +1589,7 @@ fn account_changes_are_audited_without_their_passwords() {
     leader.post_as(
         &op,
         "/api/accounts",
-        serde_json::json!({ "authSource": "local", "username": "dana", "displayName": "Dana" }),
+        serde_json::json!({ "authSource": "local", "administrator": true, "username": "dana", "displayName": "Dana" }),
     );
 
     let (status, events) = leader.get_as(&op.session, "/api/security-events");
@@ -1891,7 +1891,7 @@ fn second_operator(leader: &Leader, op: &Operator, username: &str, display_name:
     let (status, created) = leader.post_as(
         op,
         "/api/accounts",
-        serde_json::json!({ "authSource": "local", "username": username, "displayName": display_name }),
+        serde_json::json!({ "authSource": "local", "administrator": true, "username": username, "displayName": display_name }),
     );
     assert_eq!(status, 201, "{created}");
     let temporary = created["temporaryPassword"].as_str().expect("a temporary password");
@@ -1979,7 +1979,7 @@ fn a_display_name_git_cannot_hold_is_refused() {
     let (status, body) = leader.post_as(
         &op,
         "/api/accounts",
-        serde_json::json!({ "authSource": "local", "username": "dana", "displayName": "Dana <Ops>" }),
+        serde_json::json!({ "authSource": "local", "administrator": true, "username": "dana", "displayName": "Dana <Ops>" }),
     );
     assert_eq!(status, 422, "{body}");
 
@@ -1987,7 +1987,7 @@ fn a_display_name_git_cannot_hold_is_refused() {
     let (status, created) = leader.post_as(
         &op,
         "/api/accounts",
-        serde_json::json!({ "authSource": "local", "username": "dana", "displayName": "Dana Okafor" }),
+        serde_json::json!({ "authSource": "local", "administrator": true, "username": "dana", "displayName": "Dana Okafor" }),
     );
     assert_eq!(status, 201, "{created}");
     let id = created["userId"].as_str().expect("an id");
@@ -2340,9 +2340,10 @@ fn a_key_and_a_session_together_are_refused() {
     assert_eq!(status, 400);
 }
 
-/// Display names are unique among key accounts, and a role a key account is given must exist.
+/// Model, points 3 and 7: display names may repeat, a role an account is given must exist, a change names one
+/// field, and a local account is given roles as a key account is.
 #[test]
-fn a_key_account_is_refused_a_taken_name_or_an_unknown_role() {
+fn an_account_is_given_roles_that_exist_and_may_share_a_name() {
     let leader = start("key-refusals");
     let op = operator(&leader);
     key_account(&leader, &op, serde_json::json!({ "displayName": "exporter" }));
@@ -2351,7 +2352,7 @@ fn a_key_account_is_refused_a_taken_name_or_an_unknown_role() {
         "/api/accounts",
         serde_json::json!({ "authSource": "key", "displayName": "exporter" }),
     );
-    assert_eq!(status, 409, "{body}");
+    assert_eq!(status, 201, "a display name was refused for being taken: {body}");
     let (status, body) = leader.post_as(
         &op,
         "/api/accounts",
@@ -2366,13 +2367,183 @@ fn a_key_account_is_refused_a_taken_name_or_an_unknown_role() {
     );
     assert_eq!(status, 422, "{body}");
     let (_, roster) = leader.get_as(&op.session, "/api/accounts");
-    let person = roster["accounts"][0]["id"].as_str().unwrap().to_string();
+    let local = roster["accounts"][0]["id"].as_str().unwrap().to_string();
     let (status, body) = leader.patch_as(
         &op,
-        &format!("/api/accounts/{person}"),
+        &format!("/api/accounts/{local}"),
         serde_json::json!({ "roles": [] }),
     );
-    assert_eq!(status, 409, "a person was given roles: {body}");
+    assert_eq!(status, 200, "a local account was refused roles: {body}");
+}
+
+// -- the account model -------------------------------------------------------
+//
+// One test per thing the account model (`docs/architecture/security.md`, Identity and access) says must hold, named
+// for it.
+
+/// A local account made by `op` with `given` (roles, administrator), signed in with a password of its own.
+fn local_signed_in(leader: &Leader, op: &Operator, username: &str, given: serde_json::Value) -> (String, Operator) {
+    let mut body = given;
+    body["authSource"] = "local".into();
+    body["username"] = username.into();
+    body["displayName"] = username.into();
+    let (status, created) = leader.post_as(op, "/api/accounts", body);
+    assert_eq!(status, 201, "{created}");
+    let id = created["userId"].as_str().unwrap().to_string();
+    let first = leader.sign_in(username, created["temporaryPassword"].as_str().unwrap());
+    let chosen = "another perfectly ordinary passphrase";
+    leader.put_as(
+        &Operator { session: first },
+        "/api/auth/password",
+        serde_json::json!({ "username": username, "newPassword": chosen }),
+    );
+    (
+        id,
+        Operator {
+            session: leader.sign_in(username, chosen),
+        },
+    )
+}
+
+/// Point 3: a local account holds only the roles it is given, signs in without being an administrator, and holds
+/// everything from the request after it is made one.
+#[test]
+fn a_local_account_holds_only_what_it_is_given() {
+    let leader = start("model-local");
+    let op = operator(&leader);
+    let (status, body) = leader.put_as(
+        &op,
+        "/api/roles/smeltr-readers",
+        serde_json::json!({ "areas": { "shared": "viewer" } }),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (id, dana) = local_signed_in(&leader, &op, "dana", serde_json::json!({ "roles": ["smeltr-readers"] }));
+    let (_, session) = leader.get_as(&dana.session, "/api/auth/session");
+    assert_eq!(session["administrator"], false, "{session}");
+    assert_eq!(leader.get_as(&dana.session, "/api/areas/shared").0, 200);
+    let (status, _) = leader.put_as(
+        &dana,
+        "/api/areas/shared/grok-patterns?branch=work",
+        serde_json::json!([]),
+    );
+    assert_eq!(status, 403, "a viewer edited");
+    assert_eq!(
+        leader.get_as(&dana.session, "/api/accounts").0,
+        403,
+        "a viewer read the roster"
+    );
+
+    let (status, body) = leader.patch_as(
+        &op,
+        &format!("/api/accounts/{id}"),
+        serde_json::json!({ "administrator": true }),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        leader.get_as(&dana.session, "/api/accounts").0,
+        200,
+        "made one, still not one"
+    );
+}
+
+/// Point 3: at least one enabled local administrator remains, so the last one's flag is not taken.
+#[test]
+fn the_last_local_administrator_keeps_the_flag() {
+    let leader = start("model-last-admin");
+    let op = operator(&leader);
+    let (_, roster) = leader.get_as(&op.session, "/api/accounts");
+    let admin = roster["accounts"][0]["id"].as_str().unwrap().to_string();
+    let (status, body) = leader.patch_as(
+        &op,
+        &format!("/api/accounts/{admin}"),
+        serde_json::json!({ "administrator": false }),
+    );
+    assert_eq!(status, 409, "{body}");
+}
+
+/// Point 5: a key may be made to expire in whole days, answered with when; only a key account holds one.
+#[test]
+fn a_key_is_made_to_expire_in_days_and_only_for_a_key_account() {
+    let leader = start("model-expiry");
+    let op = operator(&leader);
+    let id = key_account(
+        &leader,
+        &op,
+        serde_json::json!({ "displayName": "exporter", "administrator": true }),
+    );
+    let (status, created) = leader.post_as(
+        &op,
+        &format!("/api/accounts/{id}/keys"),
+        serde_json::json!({ "label": "ci", "expiresInDays": 1 }),
+    );
+    assert_eq!(status, 201, "{created}");
+    assert_eq!(
+        created["expiresAt"].as_i64().unwrap() - created["createdAt"].as_i64().unwrap(),
+        86_400_000
+    );
+    let key = created["key"].as_str().unwrap();
+    assert_eq!(with_key(&leader, key, "GET", "/api/health", None).0, 200);
+    let (_, roster) = leader.get_as(&op.session, "/api/accounts");
+    assert_eq!(roster["accounts"][1]["keys"][0]["expiresAt"], created["expiresAt"]);
+
+    let (status, body) = leader.post_as(
+        &op,
+        &format!("/api/accounts/{id}/keys"),
+        serde_json::json!({ "expiresInDays": 0 }),
+    );
+    assert_eq!(status, 422, "{body}");
+    let admin = roster["accounts"][0]["id"].as_str().unwrap().to_string();
+    let (status, body) = leader.post_as(&op, &format!("/api/accounts/{admin}/keys"), serde_json::json!({}));
+    assert_eq!(status, 404, "a local account was given a key: {body}");
+}
+
+/// Points 2 and 7: a key account sets its own agent permissions as any account does, through its key.
+#[test]
+fn a_key_account_sets_its_own_agent_permissions() {
+    let leader = start("model-key-agent");
+    let op = operator(&leader);
+    let model = FakeModel::start();
+    agents_on(&leader, &op, &model);
+    let id = key_account(&leader, &op, serde_json::json!({ "displayName": "exporter" }));
+    let (key, _) = key_for(&leader, &op, &id);
+    let (status, body) = with_key(
+        &leader,
+        &key,
+        "PUT",
+        "/api/me/agent-permissions",
+        Some(serde_json::json!({ "kind": "everything" })),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (_, permissions) = with_key(&leader, &key, "GET", "/api/me/agent-permissions", None);
+    assert_eq!(permissions["kind"], "everything");
+}
+
+/// Point 7: renaming and disabling are one write for every account, audited alike.
+#[test]
+fn every_account_is_renamed_and_disabled_alike() {
+    let leader = start("model-same-writes");
+    let op = operator(&leader);
+    let (local, _) = local_signed_in(&leader, &op, "dana", serde_json::json!({}));
+    let key = key_account(&leader, &op, serde_json::json!({ "displayName": "exporter" }));
+    for id in [&local, &key] {
+        for change in [
+            serde_json::json!({ "displayName": "same" }),
+            serde_json::json!({ "enabled": false }),
+        ] {
+            let (status, body) = leader.patch_as(&op, &format!("/api/accounts/{id}"), change);
+            assert_eq!(status, 200, "{body}");
+        }
+    }
+    let (_, events) = leader.get_as(&op.session, "/api/security-events");
+    let actions = |action: &str| {
+        events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["action"] == action && (e["target"] == local.as_str() || e["target"] == key.as_str()))
+            .count()
+    };
+    assert_eq!((actions("account-rename"), actions("account-disable")), (2, 2));
 }
 
 // -- OIDC sign-in --------------------------------------------------------------
@@ -2731,7 +2902,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
     let (status, body) = leader.post_as(
         &oidc_op,
         "/api/accounts",
-        serde_json::json!({ "authSource": "local", "username": "grace", "displayName": "Grace" }),
+        serde_json::json!({ "authSource": "local", "administrator": true, "username": "grace", "displayName": "Grace" }),
     );
     assert_eq!(status, 201, "{body}");
 

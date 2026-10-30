@@ -372,8 +372,8 @@ pub enum AccountError {
     NoSuchUser,
     /// The operation would leave no enabled administrator able to log in.
     LastAdministrator,
-    /// Another account that signs in with a key has that display name.
-    NameTaken,
+    /// An OIDC account holds what its provider's groups give, and is given nothing here.
+    HeldByProvider,
     /// The account is disabled, and takes no key until it is enabled.
     Disabled,
     /// A local-credential operation named an account that is not local.
@@ -389,7 +389,7 @@ impl std::fmt::Display for AccountError {
             AccountError::UsernameTaken => write!(f, "that username is already taken"),
             AccountError::NoSuchUser => write!(f, "no such account"),
             AccountError::LastAdministrator => write!(f, "this is the last local administrator account"),
-            AccountError::NameTaken => write!(f, "another key account has that display name"),
+            AccountError::HeldByProvider => write!(f, "an OIDC account holds what its provider's groups give"),
             AccountError::Disabled => write!(f, "that account is disabled"),
             AccountError::WrongAuthSource => write!(f, "that account does not sign in with a password"),
             AccountError::Superseded => write!(f, "that account changed since it was read"),
@@ -434,21 +434,19 @@ pub struct OidcIdentityRecord {
     pub last_sign_in: i64,
 }
 
-/// An account that signs in with a key: what a script outside the leader calls the operator API as. What it holds
-/// comes from its roles, as an OIDC account's comes from its groups.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KeyAccountRecord {
-    pub id: String,
-    pub display_name: String,
-    pub enabled: bool,
-    /// The roles an administrator gave it, by name.
-    pub roles: Vec<String>,
-    /// Holds everything, whatever its roles give.
+/// What an administrator gives a local or key account: everything, or what the named roles give. An OIDC account's
+/// roles are its provider's groups, and nothing here gives it any.
+#[derive(Clone, Copy, Debug)]
+pub struct GivenAccess<'a> {
+    pub roles: &'a [String],
     pub administrator: bool,
-    pub created_at: i64,
-    pub updated_at: i64,
-    /// Its keys still in force, oldest first. Never a key or its hash.
-    pub keys: Vec<ApiKeyRecord>,
+}
+
+/// One change to what an administrator gives an account, as one change to any account is one field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AccessChange {
+    Roles(Vec<String>),
+    Administrator(bool),
 }
 
 /// One key an account holds, as its roster shows it.
@@ -457,6 +455,8 @@ pub struct ApiKeyRecord {
     pub id: String,
     pub label: String,
     pub created_at: i64,
+    /// When it stops letting anyone in. `None` for a key that never expires.
+    pub expires_at: Option<i64>,
     /// When it last let a request in, to the minute. `None` for a key never used.
     pub last_used_at: Option<i64>,
 }
@@ -467,6 +467,7 @@ pub struct PresentedKey {
     pub id: String,
     pub user_id: String,
     pub revoked: bool,
+    pub expires_at: Option<i64>,
     pub last_used_at: Option<i64>,
 }
 
@@ -474,8 +475,6 @@ pub struct PresentedKey {
 pub struct NewKeyAccount<'a> {
     pub id: &'a str,
     pub display_name: &'a str,
-    pub roles: &'a [String],
-    pub administrator: bool,
 }
 
 /// A new key. The key itself is never here: the leader answers it once and keeps the hash.
@@ -484,14 +483,7 @@ pub struct NewApiKey<'a> {
     pub label: &'a str,
     pub token_hash: &'a str,
     pub created_at: i64,
-}
-
-/// One change to a key account, as one change to any account is one field.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum KeyAccountChange {
-    DisplayName(String),
-    Roles(Vec<String>),
-    Administrator(bool),
+    pub expires_at: Option<i64>,
 }
 
 /// A conversation between a person and their agent. Its turns are kept apart, in order.
@@ -894,13 +886,10 @@ pub trait Store: Send + Sync {
     /// reads any more; one that comes back starts afresh.
     fn forget_source(&self, group: &str, key: &SourceKey) -> Result<(), StoreError>;
 
-    // -- people ------------------------------------------------------------
+    // -- accounts ----------------------------------------------------------
     //
     // A password hash is written and compared, never listed: only `local_credential_by_username` returns one, so
     // the roster the GUI and the audit read cannot carry a verifier by accident.
-    //
-    // `get_user` reads a key account as well, since the gate reads every caller. No write here changes one: a key
-    // account changes only through the writes below.
 
     /// Whether any account exists at all. What bootstrap asks before creating the first administrator; the answer
     /// is only ever a hint, since [`Store::bootstrap_administrator`] re-checks it inside its own transaction.
@@ -910,17 +899,31 @@ pub trait Store: Send + Sync {
     /// written: the check and the insert are one transaction, so exactly one of two concurrent bootstraps wins.
     fn bootstrap_administrator(&self, user: NewLocalUser<'_>) -> Result<bool, StoreError>;
 
-    /// Create an enabled local administrator alongside the accounts already there.
+    /// Create an enabled local account alongside the accounts already there, holding what `given` gives.
     ///
     /// `event` lands in the same transaction: an account that exists with no record of who created it is the one
     /// case an audit is for, so the two are one write or neither is.
     fn create_local_user(
         &self,
         user: NewLocalUser<'_>,
+        given: GivenAccess<'_>,
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError>;
 
-    /// Every person's account. A key account is listed by `list_key_accounts`.
+    /// The roles an administrator gave the account `user_id`, by name. Empty for an OIDC account, whose roles are
+    /// its provider's groups.
+    fn given_roles(&self, user_id: &str) -> Result<Vec<String>, StoreError>;
+
+    /// Change what an administrator gives a local or key account, `event` in the same transaction. Refused for an
+    /// OIDC account, and when taking the flag from a local administrator would leave none who can sign in.
+    fn change_access(
+        &self,
+        user_id: &str,
+        change: &AccessChange,
+        event: &SecurityEvent,
+    ) -> Result<Result<(), AccountError>, StoreError>;
+
+    /// Every account, however it signs in, oldest first. A key account's roles and keys are `list_key_accounts`'s.
     fn list_users(&self) -> Result<Vec<UserRecord>, StoreError>;
 
     fn get_user(&self, id: &str) -> Result<Option<UserRecord>, StoreError>;
@@ -956,7 +959,8 @@ pub trait Store: Send + Sync {
 
     /// Enable or disable an account. Disabling is refused when it would leave no enabled administrator holding a
     /// password -- checked inside the transaction, so two concurrent disables cannot remove the last one between
-    /// them -- and moves the generation, so no session issued before it survives being re-enabled.
+    /// them -- and moves the generation, so no session issued before it survives being re-enabled. It also revokes
+    /// every key the account holds, so enabling it again brings back none of them.
     fn set_user_enabled(
         &self,
         user_id: &str,
@@ -964,6 +968,7 @@ pub trait Store: Send + Sync {
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError>;
 
+    /// Rename an account. Display names may repeat: the id tells accounts apart.
     fn set_display_name(&self, user_id: &str, display_name: &str) -> Result<Result<(), AccountError>, StoreError>;
 
     /// The account the identity `(issuer, subject)` signs in as, creating it on its first sign-in, with `created`
@@ -998,36 +1003,17 @@ pub trait Store: Send + Sync {
     //
     // A key is written and compared as its hash, never listed: only `api_key_by_hash` reads a key's row by it.
 
-    /// Create an enabled key account with no key, `event` in the same transaction. Refused when another key account
-    /// has its name.
+    /// Create an enabled key account with no key, holding what `given` gives, `event` in the same transaction.
     fn create_key_account(
         &self,
         account: NewKeyAccount<'_>,
+        given: GivenAccess<'_>,
         event: &SecurityEvent,
-    ) -> Result<Result<(), AccountError>, StoreError>;
+    ) -> Result<(), StoreError>;
 
-    /// Every key account, oldest first, each with its keys in force.
-    fn list_key_accounts(&self) -> Result<Vec<KeyAccountRecord>, StoreError>;
-
-    /// The key account `id`. `None` for no account, or an account that does not sign in with a key.
-    fn key_account(&self, id: &str) -> Result<Option<KeyAccountRecord>, StoreError>;
-
-    /// Change one thing about a key account, `event` in the same transaction.
-    fn change_key_account(
-        &self,
-        id: &str,
-        change: &KeyAccountChange,
-        event: &SecurityEvent,
-    ) -> Result<Result<(), AccountError>, StoreError>;
-
-    /// Enable or disable a key account, `event` in the same transaction. Disabling revokes every key it holds, so
-    /// enabling it again brings back none of them.
-    fn set_key_account_enabled(
-        &self,
-        id: &str,
-        enabled: bool,
-        event: &SecurityEvent,
-    ) -> Result<Result<(), AccountError>, StoreError>;
+    /// The keys the account `user_id` holds that are not revoked, expired or not, oldest first. Never a key or its
+    /// hash.
+    fn api_keys_of(&self, user_id: &str) -> Result<Vec<ApiKeyRecord>, StoreError>;
 
     /// Give the enabled key account `id` a new key, `event` in the same transaction.
     fn create_api_key(
@@ -1038,10 +1024,10 @@ pub trait Store: Send + Sync {
     ) -> Result<Result<(), AccountError>, StoreError>;
 
     /// Revoke the key `key_id` of the key account `id` at `at`, `event` in the same transaction. Its row stays, so
-    /// the key stays out. False when the account holds no such key in force.
+    /// the key stays out. False when the account holds no such key unrevoked.
     fn revoke_api_key(&self, id: &str, key_id: &str, at: i64, event: &SecurityEvent) -> Result<bool, StoreError>;
 
-    /// The key whose hash is `token_hash`, revoked or not. `None` for a key never made.
+    /// The key whose hash is `token_hash`, revoked, expired or neither. `None` for a key never made.
     fn api_key_by_hash(&self, token_hash: &str) -> Result<Option<PresentedKey>, StoreError>;
 
     /// Record that the key `key_id` let a request in at `at`.
