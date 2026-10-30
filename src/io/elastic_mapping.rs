@@ -227,6 +227,44 @@ mod tests {
         assert_eq!(mapping(&record, &mapped), want);
     }
 
+    /// The GUI's Elasticsearch view (`gui-frontend/src/schemas.ts`, `elasticsearchTypes`) carries a hand-written copy
+    /// of `types_for`; this keeps its lists equal to these, in order, since the first is the default it names.
+    #[test]
+    fn the_gui_offers_the_types_each_field_can_hold() {
+        let source = include_str!("../../gui-frontend/src/schemas.ts");
+        let body = &source[source
+            .find("export function elasticsearchTypes")
+            .expect("elasticsearchTypes")..];
+        let body = &body[..body.find("\n}\n").expect("its end")];
+        let listed = |pattern: &str| {
+            let re = regex::Regex::new(&format!(r"{pattern}\s*return \[([^\]]*)\]")).unwrap();
+            let names = re.captures(body).unwrap_or_else(|| panic!("no list after {pattern}"))[1].to_string();
+            let quoted = regex::Regex::new(r"'([a-z_]+)'").unwrap();
+            quoted
+                .captures_iter(&names)
+                .map(|c| c[1].to_string())
+                .collect::<Vec<_>>()
+        };
+        let any_struct = DataType::Struct(Vec::new(), true);
+        assert_eq!(
+            listed(r"startsWith\('\{'\)\)"),
+            types_for(&any_struct),
+            "a struct's types differ"
+        );
+        for ty in [
+            DataType::Str,
+            DataType::I64,
+            DataType::Duration,
+            DataType::F64,
+            DataType::Bool,
+            DataType::DateTime,
+            DataType::Bytes,
+            DataType::Variant,
+        ] {
+            assert_eq!(listed(&format!("case '{ty}':")), types_for(&ty), "{ty}'s types differ");
+        }
+    }
+
     #[test]
     fn a_mapping_names_a_type_its_field_can_hold() {
         let said = |v: Value| v.as_object().unwrap().clone();

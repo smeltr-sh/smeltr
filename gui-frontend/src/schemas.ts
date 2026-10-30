@@ -75,7 +75,7 @@ export function downloadJson(name: string, value: unknown) {
 /**
  * The Elasticsearch types a field of the type `type` may map to, as the leader checks them
  * (`io::elastic_mapping::types_for`): first the one it maps to of itself, where it has one. An array's are its
- * element's.
+ * element's. A test of `types_for` holds the two equal, so each list stays one array literal.
  */
 export function elasticsearchTypes(type: string): string[] {
   const array = /^array<(.*)>$/.exec(type.trim());
