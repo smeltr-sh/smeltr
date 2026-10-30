@@ -6,8 +6,9 @@
 //!
 //! A missing table takes the record as its schema, ids assigned as Iceberg assigns fresh ones. A table that exists
 //! keeps every column and its id; a field it lacks, at any depth, is added as an optional column with a new id; a
-//! field it holds as another type is refused, and the user renames the field in the pipeline or the column in the
-//! table.
+//! field it holds narrower (an `int`, a `float`, a `date` or a `timestamp`, as `parquet::narrows` says) is written as
+//! that type; a field it holds as another type is refused, and the user renames the field in the pipeline or the
+//! column in the table.
 
 use std::sync::Arc;
 
@@ -16,7 +17,8 @@ use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 
 use super::metadata::{ListType, NestedField, Primitive, Schema, StructTag, StructType, Type};
 use crate::core::column::DataType;
-use crate::io::parquet::{at, columns};
+use crate::io::parquet::{at, columns, narrows};
+use crate::io::table::Kind;
 
 /// The table's schema for a record, and whether it differs from the table's current one.
 #[derive(Clone, Debug, PartialEq)]
@@ -94,11 +96,17 @@ fn with_id(field: &Field, id: i32, ty: &Type) -> Field {
             Arrow::Struct(fields.iter().map(|f| labelled(f, &s.fields)).collect())
         }
         (Arrow::List(element), Type::List(l)) => Arrow::List(Arc::new(with_id(element, l.element_id, &l.element))),
+        (other, Type::Primitive(p)) => narrow(p).unwrap_or_else(|| other.clone()),
         (other, _) => other.clone(),
     };
     let mut metadata = field.metadata().clone();
     metadata.insert(PARQUET_FIELD_ID_META_KEY, id.to_string());
     field.clone().with_data_type(data_type).with_metadata(metadata)
+}
+
+/// The Parquet type a column of `p` is written as, where it is narrower than any record type.
+fn narrow(p: &Primitive) -> Option<Arrow> {
+    p.kind().as_ref().and_then(Kind::narrowed)
 }
 
 /// The Iceberg type a record's primitive is written as.
@@ -220,7 +228,8 @@ impl Ids {
                 ..l.clone()
             })),
             (Type::Primitive(p), t)
-                if !matches!(t, DataType::Array(_) | DataType::Struct(..)) && *p == primitive(t) =>
+                if !matches!(t, DataType::Array(_) | DataType::Struct(..))
+                    && (*p == primitive(t) || narrow(p).is_some_and(|to| narrows(t, &to))) =>
             {
                 Ok(table.clone())
             }
@@ -393,6 +402,55 @@ mod tests {
         assert_eq!(e.schema.fields[5], field(20, "gone", prim(Primitive::Int)));
     }
 
+    /// A column the table holds narrower than the record types it takes the record's values, each converted as it is
+    /// written; a duration is still no `int`.
+    #[test]
+    fn a_column_the_table_holds_narrower_is_written_as_its_type() {
+        let table = Schema {
+            kind: StructTag,
+            schema_id: 0,
+            identifier_field_ids: Vec::new(),
+            fields: vec![
+                field(1, "i", prim(Primitive::Int)),
+                field(2, "f", prim(Primitive::Float)),
+                field(3, "d", prim(Primitive::Date)),
+                field(4, "ts", prim(Primitive::Timestamp)),
+            ],
+        };
+        let narrow = st(
+            &[
+                ("i", DataType::I64),
+                ("f", DataType::F64),
+                ("d", DataType::DateTime),
+                ("ts", DataType::DateTime),
+            ],
+            false,
+        );
+        let evolved = table_schema(&narrow, Some(&table), 4).unwrap();
+        assert_eq!(
+            (evolved.schema.fields.clone(), evolved.changed),
+            (table.fields.clone(), false)
+        );
+        let file = crate::io::parquet::Schema::new(&narrow).unwrap();
+        let types: Vec<_> = (with_field_ids(file.arrow(), &evolved.schema).fields().iter())
+            .map(|f| f.data_type().clone())
+            .collect();
+        assert_eq!(
+            types,
+            vec![
+                Arrow::Int32,
+                Arrow::Float32,
+                Arrow::Date32,
+                Arrow::Timestamp(arrow_schema::TimeUnit::Microsecond, None)
+            ]
+        );
+        assert!(
+            table_schema(&st(&[("i", DataType::Duration)], false), Some(&table), 4)
+                .unwrap_err()
+                .starts_with("i is int in the table")
+        );
+    }
+
     #[test]
     fn a_type_the_table_holds_otherwise_is_refused() {
         let table = table_schema(&record(), None, 0).unwrap().schema;
@@ -408,20 +466,15 @@ mod tests {
             "http.status is long in the table, and the record writes str there as string; rename the field in the \
              pipeline or the column in the table"
         );
-        let mut naive = table.clone();
-        naive.fields[0].field_type = prim(Primitive::Timestamp);
-        assert_eq!(
-            table_schema(&record(), Some(&naive), 11).unwrap_err(),
-            "ts is timestamp in the table, and the record writes datetime there as timestamptz; rename the field in \
-             the pipeline or the column in the table"
-        );
-        let mut narrow = table.clone();
-        narrow.fields.push(field(12, "n", prim(Primitive::Int)));
+        let mut other = table.clone();
+        other
+            .fields
+            .push(field(12, "n", prim(Primitive::Other("decimal(10, 2)".into()))));
         let wide = st(&[("n", DataType::I64)], false);
         assert!(
-            table_schema(&wide, Some(&narrow), 12)
+            table_schema(&wide, Some(&other), 12)
                 .unwrap_err()
-                .starts_with("n is int in the table")
+                .starts_with("n is decimal(10, 2) in the table")
         );
         let flat = st(&[("http", DataType::Str)], false);
         assert!(

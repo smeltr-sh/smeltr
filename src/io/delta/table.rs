@@ -627,7 +627,7 @@ fn partition_columns(metadata: &Metadata, schema: &StructType) -> Result<Vec<Par
 /// `name`'s physical name and kind, where it is a partition column this writer writes values of.
 fn written_partition_column(schema: &StructType, name: &str) -> Result<(String, Kind), String> {
     let (physical, kind) = schema::partition_column(schema, name)?;
-    if matches!(kind, Kind::Binary | Kind::Float) {
+    if kind == Kind::Binary {
         return Err(format!(
             "the table is partitioned by {name}, a {kind} column, which this writer does not write"
         ));
@@ -689,7 +689,10 @@ impl Partitioner for DeltaPartitioner {
                 .map(|c| read(&c, at, &column.kind, &names))
                 .transpose()?
                 .flatten();
-            let text = value.as_ref().map(partition_text).unwrap_or_default();
+            let text = value
+                .as_ref()
+                .map(|v| partition_text(v, &column.kind))
+                .unwrap_or_default();
             let segment = if text.is_empty() {
                 NULL_PARTITION.to_string()
             } else {
@@ -709,15 +712,20 @@ impl Partitioner for DeltaPartitioner {
     }
 }
 
-/// A partition value as the log holds it. A timestamp is in UTC, as ISO 8601 writes it.
-fn partition_text(value: &Literal) -> String {
+/// A partition value of a `kind` column as the log holds it. A timestamp is in UTC, as ISO 8601 writes it; a time
+/// without zone is its wall clock, as the protocol writes it.
+fn partition_text(value: &Literal, kind: &Kind) -> String {
     match value {
         Literal::Boolean(b) => b.to_string(),
         Literal::Int(v) => v.to_string(),
         Literal::Long(v) => v.to_string(),
+        // As Java writes it, which is how Spark and the kernel read it back.
+        Literal::Double(v) if v.is_infinite() => if *v > 0.0 { "Infinity" } else { "-Infinity" }.to_string(),
+        Literal::Double(v) if *kind == Kind::Float => (*v as f32).to_string(),
         Literal::Double(v) => v.to_string(),
         Literal::Date(d) => iso_date(*d as i64),
-        Literal::Timestamptz(us) => timestamp(*us, 6),
+        Literal::Micros(us) if *kind == Kind::Timestamp => wall_clock(*us, 6, ' '),
+        Literal::Micros(us) => timestamp(*us, 6),
         Literal::String(s) => s.clone(),
         Literal::Binary(_) => unreachable!("a binary partition column is refused at start"),
     }
@@ -725,11 +733,16 @@ fn partition_text(value: &Literal) -> String {
 
 /// `micros` since the epoch as ISO 8601 in UTC, with `digits` of the second's fraction: 3 or 6.
 fn timestamp(micros: i64, digits: u32) -> String {
+    format!("{}Z", wall_clock(micros, digits, 'T'))
+}
+
+/// `micros` since the epoch as the date and the time of day in UTC, with no zone, `separator` between them.
+fn wall_clock(micros: i64, digits: u32, separator: char) -> String {
     let (day, time) = (micros.div_euclid(MICROS_PER_DAY), micros.rem_euclid(MICROS_PER_DAY));
     let secs = time / 1_000_000;
     let fraction = time % 1_000_000 / 10i64.pow(6 - digits);
     format!(
-        "{}T{:02}:{:02}:{:02}.{fraction:0width$}Z",
+        "{}{separator}{:02}:{:02}:{:02}.{fraction:0width$}",
         iso_date(day),
         secs / 3600,
         secs / 60 % 60,
@@ -821,14 +834,13 @@ fn leaf(schema: &StructType, parts: &[String]) -> Option<(Vec<String>, Option<Ki
 fn bound(kind: &Kind, bound: &crate::io::table::Bound, max: bool) -> Option<Value> {
     use crate::io::table::Bound as B;
     Some(match (kind, bound) {
-        (Kind::Int | Kind::Long, B::Int(v)) => json!(v),
+        (Kind::Byte | Kind::Short | Kind::Int | Kind::Long, B::Int(v)) => json!(v),
         (Kind::Int | Kind::Long, B::Long(v)) => json!(v),
         (Kind::Float | Kind::Double, B::Float(v)) => serde_json::Number::from_f64(*v as f64).map(Value::Number)?,
         (Kind::Float | Kind::Double, B::Double(v)) => serde_json::Number::from_f64(*v).map(Value::Number)?,
         (Kind::Date, B::Int(d)) => json!(iso_date(*d as i64)),
-        (Kind::Timestamp | Kind::Timestamptz, B::Long(us)) => {
-            json!(timestamp(us.div_euclid(1000).checked_mul(1000)?, 3))
-        }
+        (Kind::Timestamp, B::Long(us)) => json!(wall_clock(us.div_euclid(1000).checked_mul(1000)?, 3, 'T')),
+        (Kind::Timestamptz, B::Long(us)) => json!(timestamp(us.div_euclid(1000).checked_mul(1000)?, 3)),
         (Kind::String, B::Bytes(b)) => {
             let text = std::str::from_utf8(b).ok()?;
             match text.char_indices().nth(STRING_PREFIX) {
@@ -1633,6 +1645,25 @@ mod tests {
         assert_eq!(timestamp(SPEC_TIME + 123_456, 6), "2017-11-16T22:31:08.123456Z");
         assert_eq!(timestamp(SPEC_TIME + 123_456, 3), "2017-11-16T22:31:08.123Z");
         assert_eq!(timestamp(-1, 6), "1969-12-31T23:59:59.999999Z");
+        assert_eq!(wall_clock(SPEC_TIME + 123_456, 6, ' '), "2017-11-16 22:31:08.123456");
+    }
+
+    #[test]
+    fn a_partition_value_is_written_as_its_columns_type() {
+        assert_eq!(partition_text(&Literal::Double(0.1f32 as f64), &Kind::Float), "0.1");
+        assert_eq!(partition_text(&Literal::Double(0.1), &Kind::Double), "0.1");
+        assert_eq!(
+            partition_text(&Literal::Double(f64::NEG_INFINITY), &Kind::Float),
+            "-Infinity"
+        );
+        assert_eq!(
+            partition_text(&Literal::Micros(SPEC_TIME), &Kind::Timestamp),
+            "2017-11-16 22:31:08.000000"
+        );
+        assert_eq!(
+            partition_text(&Literal::Micros(SPEC_TIME), &Kind::Timestamptz),
+            "2017-11-16T22:31:08.000000Z"
+        );
     }
 
     /// `{ts, host, msg, n, ok, http: {status}, tags: [str]}` and a footer of two rows of it, by physical names.

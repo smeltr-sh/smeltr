@@ -1194,6 +1194,19 @@ const HANDLED = ['conflicts', 'doesNotLoad', 'config', 'samples', 'pipelines'];
 /** The session ended: the shell shows the sign-in screen, so no page shows it as an error. */
 class SignedOut extends Reported {}
 
+/** A request body longer than this goes gzipped. The leader inflates any
+ * request; below it, gzip saves next to nothing. */
+const GZIP_OVER = 1024;
+
+/** `body` as the leader is sent it: gzipped, with `headers` saying so, when it
+ * is text longer than `GZIP_OVER`. */
+async function gzipped(body: BodyInit | null | undefined, headers: Headers) {
+  if (typeof body !== 'string' || body.length <= GZIP_OVER) return body;
+  headers.set('content-encoding', 'gzip');
+  const stream = new Response(body).body!.pipeThrough(new CompressionStream('gzip'));
+  return new Response(stream).arrayBuffer();
+}
+
 async function send<T>(url: string, method: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (!SAFE.has(method)) {
@@ -1214,7 +1227,7 @@ async function send<T>(url: string, method: string, init?: RequestInit): Promise
     headers.set('content-type', 'application/json');
   }
 
-  const res = await fetch(url, { ...init, headers });
+  const res = await fetch(url, { ...init, headers, body: await gzipped(body, headers) });
   if (res.status === 401) {
     signedOut();
     throw new SignedOut('your session ended -- sign in again');
@@ -4719,7 +4732,7 @@ async function accountCall<T>(
   const call = errors.call(init.method ?? 'GET', url, weight);
   let res: Response;
   try {
-    res = await fetch(url, { ...init, headers });
+    res = await fetch(url, { ...init, headers, body: await gzipped(init.body, headers) });
   } catch (e) {
     throw failed(call, e);
   }

@@ -882,6 +882,66 @@ fn heartbeat_with_a_garbage_token_is_rejected() {
     assert!(matches!(status, ureq::Error::StatusCode(401)));
 }
 
+/// A worker gzips its heartbeat, and the leader holds the body to `HEARTBEAT_BODY_LIMIT` as inflated, so a few
+/// kilobytes on the wire cannot become more than the limit in the leader's memory.
+#[test]
+fn a_gzipped_heartbeat_is_held_to_the_limit_as_inflated() {
+    use std::io::Write;
+
+    let base = start_leader();
+    let token = enroll_worker(&base, "w1");
+    let send = |inflated: usize| {
+        let beat = br#"{"workerId":"w1","threads":[]}"#;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(beat).unwrap();
+        // Whitespace, so the JSON is valid at any length and only its size can refuse it.
+        gz.write_all(&vec![b' '; inflated - beat.len()]).unwrap();
+        let body = gz.finish().unwrap();
+        match ureq::post(format!("{base}/api/worker/heartbeat"))
+            .header("Authorization", &format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .header("Content-Encoding", "gzip")
+            .send(&body[..])
+        {
+            Ok(r) => r.status().as_u16(),
+            Err(ureq::Error::StatusCode(c)) => c,
+            Err(other) => panic!("unexpected transport error: {other}"),
+        }
+    };
+    let limit = smeltr::heartbeat::HEARTBEAT_BODY_LIMIT;
+    assert_eq!(send(limit), 200, "a gzipped heartbeat at the limit was refused");
+    assert_eq!(send(limit + 1), 413, "a gzipped heartbeat past the limit was taken");
+}
+
+/// The leader answers gzipped to a client that takes it, and as it is to one that does not. Read off the socket:
+/// `ureq` inflates an answer and drops the header that said it was gzipped.
+#[test]
+fn an_answer_is_gzipped_for_a_client_that_takes_it() {
+    use std::io::{Read, Write};
+
+    let base = start_leader();
+    let token = enroll_worker(&base, "w1");
+    heartbeat_one_thread(&base, &token, "w1", "t0", "pool");
+    let encoding = |accept: &str| {
+        let mut socket = std::net::TcpStream::connect(base.trim_start_matches("http://")).unwrap();
+        write!(
+            socket,
+            "GET /api/health HTTP/1.1\r\nHost: leader\r\nAccept-Encoding: {accept}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut answer = Vec::new();
+        socket.read_to_end(&mut answer).unwrap();
+        let answer = String::from_utf8_lossy(&answer).to_ascii_lowercase();
+        let head = &answer[..answer.find("\r\n\r\n").expect("a whole head")];
+        assert!(head.starts_with("http/1.1 200"), "{head}");
+        head.lines()
+            .find_map(|l| l.strip_prefix("content-encoding: "))
+            .map(str::to_string)
+    };
+    assert_eq!(encoding("gzip").as_deref(), Some("gzip"));
+    assert_eq!(encoding("identity"), None);
+}
+
 /// A token names exactly one worker, so a heartbeat reporting a different id is
 /// refused rather than recorded. The registry is keyed by `(worker_id,
 /// thread_id)` and never evicts, so a credential that could claim any id could
