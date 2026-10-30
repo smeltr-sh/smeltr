@@ -61,9 +61,10 @@ pub use dto::{
 pub use impact::{Impact, Reached, Reason, pipeline_answers_differ, pipelines_touched};
 pub use links::{Connections, Kind, Links, Object};
 pub use load::{
-    BundleAt, DeclaredAt, ItemRef, LoadError, RESERVED_KAFKA_PROPS, ValidationError, check_shared_group_starts,
-    fill_default_group_ids, line_breaker_refusal, load_str, load_str_at, on_loopback, plain_off_this_host,
-    refuse_outside_lookups, sql_connection, to_byte, validation_errors, validation_errors_at, web_url,
+    BundleAt, DeclaredAt, ItemRef, LoadError, RESERVED_KAFKA_PROPS, TLS_KAFKA_PROPS, ValidationError,
+    check_shared_group_starts, fill_default_group_ids, line_breaker_refusal, load_str, load_str_at, on_loopback,
+    plain_off_this_host, refuse_outside_lookups, sql_connection, to_byte, validation_errors, validation_errors_at,
+    web_url,
 };
 pub use merge::{ObjectConflict, SectionMerge, Side, is_section_file, merge_section, text_merge_keeps_each_side};
 pub use sample::{

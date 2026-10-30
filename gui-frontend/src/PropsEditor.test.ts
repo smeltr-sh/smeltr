@@ -4,7 +4,7 @@ import { createRawSnippet } from 'svelte';
 import PropsEditor from './PropsEditor.svelte';
 import { headerRefusal } from './http';
 import KafkaPropsEditor from './KafkaPropsEditor.svelte';
-import type { KafkaProps } from './api';
+import { NO_KAFKA_FACTS, type KafkaProps } from './api';
 
 describe('the Kafka properties editor', () => {
   it('shows what was typed by hand, and leaves the security section its own', () => {
@@ -12,7 +12,7 @@ describe('the Kafka properties editor', () => {
       properties: { 'security.protocol': 'SSL', 'socket.timeout.ms': '60000' },
       credentials: { 'sasl.password': 'KAFKA_PASSWORD' },
     };
-    const { body } = render(KafkaPropsEditor, { props: { value, reserved: new Map() } });
+    const { body } = render(KafkaPropsEditor, { props: { value, kafka: NO_KAFKA_FACTS } });
     expect(body).toContain('value="socket.timeout.ms"');
     expect(body).not.toContain('value="security.protocol"');
     expect(body).not.toContain('value="sasl.password"');
@@ -22,8 +22,11 @@ describe('the Kafka properties editor', () => {
 
   it('says in the row why a save would refuse it', () => {
     const value: KafkaProps = { properties: { 'group.id': 'g' } };
-    const reserved = new Map([['group.id', 'set from this source’s groupId']]);
-    const { body } = render(KafkaPropsEditor, { props: { value, reserved } });
+    const kafka = {
+      ...NO_KAFKA_FACTS,
+      reserved: new Map([['group.id', 'set from this source’s groupId']]),
+    };
+    const { body } = render(KafkaPropsEditor, { props: { value, kafka } });
     expect(body).toContain('smeltr owns this');
   });
 });

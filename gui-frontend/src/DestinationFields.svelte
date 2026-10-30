@@ -241,12 +241,7 @@
           }}
         />
       </Field>
-      <KafkaPropsEditor
-        value={destination}
-        {secrets}
-        reserved={kafka.reserved}
-        hasTls={tlsSet(destination)}
-      />
+      <KafkaPropsEditor value={destination} {secrets} {kafka} hasTls={tlsSet(destination)} />
     </Advanced>
   {:else if destination.type === 'eventHubs'}
     <Field required field="namespace" label="namespace">

@@ -241,25 +241,13 @@ function assign(
 
 // -- what a save refuses ----------------------------------------------------
 
-/** Properties that answer what the TLS settings answer: what this client
- * presents, and what it trusts. Mirrors `config_file::load::TLS_KAFKA_PROPS`. */
-const TLS_PROPS = new Set([
-  'ssl.certificate.pem',
-  'ssl.certificate.location',
-  'ssl.key.pem',
-  'ssl.key.location',
-  'ssl.ca.pem',
-  'ssl.ca.location',
-  'ssl.keystore.location',
-  'ssl.keystore.password',
-  'ssl.key.password',
-  'enable.ssl.certificate.verification',
-  'ssl.endpoint.identification.algorithm',
-]);
-
 /** Why this property cannot be set while the TLS settings are, or nothing. */
-export function tlsReason(key: string, hasTls: boolean): string | undefined {
-  if (!hasTls || !TLS_PROPS.has(key.trim().toLowerCase())) return undefined;
+export function tlsReason(
+  key: string,
+  hasTls: boolean,
+  tlsProps: KafkaFacts['tlsProps'],
+): string | undefined {
+  if (!hasTls || !tlsProps.has(key.trim().toLowerCase())) return undefined;
   return 'the TLS settings above already answer this, and librdkafka would take whichever was set last';
 }
 
@@ -286,14 +274,14 @@ export function propertyRefusal(
   key: string,
   credential: boolean,
   hasTls: boolean,
-  reserved: KafkaFacts['reserved'],
+  kafka: Pick<KafkaFacts, 'reserved' | 'tlsProps'>,
 ): string | undefined {
   const trimmed = key.trim();
   if (trimmed === '') return undefined;
   if (SECTION_PROPS.includes(trimmed.toLowerCase())) return 'the security section above sets this';
-  const owned = reserved.get(trimmed);
+  const owned = kafka.reserved.get(trimmed);
   if (owned !== undefined) return `smeltr owns this: ${inFormWords(owned)}`;
-  const tls = tlsReason(trimmed, hasTls);
+  const tls = tlsReason(trimmed, hasTls, kafka.tlsProps);
   if (tls !== undefined) return tls;
   if (!credential && isCredentialValued(trimmed))
     return 'its value is a credential, and these are committed to the config repository. Name it below instead';

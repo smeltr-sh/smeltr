@@ -1145,12 +1145,7 @@
       </Field>
       {@render encodingField(source)}
       {#if source.type === 'kafka'}
-        <KafkaPropsEditor
-          value={source}
-          {secrets}
-          reserved={kafka.reserved}
-          hasTls={tlsSet(source)}
-        />
+        <KafkaPropsEditor value={source} {secrets} {kafka} hasTls={tlsSet(source)} />
       {/if}
     </Advanced>
   {:else if isObjectSource(source)}

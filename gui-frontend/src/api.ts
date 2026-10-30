@@ -4934,17 +4934,20 @@ export interface SystemInfoDto {
   saslMechanisms?: string[];
   /** The librdkafka properties a save refuses, each with why smeltr owns it. */
   kafkaReserved?: Record<string, string>;
+  /** The librdkafka properties a save refuses beside a connector's own TLS settings. */
+  kafkaTlsProps?: string[];
 }
 
 export function getSystemInfo(): Promise<SystemInfoDto> {
   return readJson('/api/system');
 }
 
-/** What this leader's build can do with a Kafka client: the SASL mechanisms it can select, and the properties a save
- * refuses, each with why smeltr owns it. */
+/** What this leader's build can do with a Kafka client: the SASL mechanisms it can select, the properties a save
+ * refuses, each with why smeltr owns it, and those it refuses beside the TLS settings. */
 export interface KafkaFacts {
   mechanisms: string[];
   reserved: Map<string, string>;
+  tlsProps: Set<string>;
 }
 
 /** What a source's or destination's form picks from: the secret catalog, so a credential can be pointed at one
@@ -4958,6 +4961,7 @@ export async function fieldCatalogs(): Promise<{ secrets: SecretDto[]; kafka: Ka
       .then((info) => ({
         mechanisms: info.saslMechanisms ?? [],
         reserved: new Map(Object.entries(info.kafkaReserved ?? {})),
+        tlsProps: new Set(info.kafkaTlsProps ?? []),
       }))
       .catch(() => NO_KAFKA_FACTS),
   ]);
@@ -4965,7 +4969,11 @@ export async function fieldCatalogs(): Promise<{ secrets: SecretDto[]; kafka: Ka
 }
 
 /** What a form knows of Kafka before the leader has answered, or when it cannot. */
-export const NO_KAFKA_FACTS: KafkaFacts = { mechanisms: [], reserved: new Map() };
+export const NO_KAFKA_FACTS: KafkaFacts = {
+  mechanisms: [],
+  reserved: new Map(),
+  tlsProps: new Set(),
+};
 
 /** The Sessions tab of Admin -> System. Seconds on the wire; the form
  * converts to the minutes and hours a person thinks in. The bounds come from

@@ -2032,8 +2032,8 @@ fn check_sasl_login(dto: &KafkaPropsDto, what: &str, errors: &mut ItemErrors<'_>
 
 /// librdkafka property names that answer the same question a connector's TLS settings answer: what this client
 /// presents, and what it trusts. A connector setting TLS and one of these has two answers to one question, and
-/// librdkafka would silently take whichever was set last.
-const TLS_KAFKA_PROPS: &[&str] = &[
+/// librdkafka would silently take whichever was set last. `/api/system` serves them to the GUI.
+pub const TLS_KAFKA_PROPS: &[&str] = &[
     "ssl.certificate.pem",
     "ssl.certificate.location",
     "ssl.key.pem",
