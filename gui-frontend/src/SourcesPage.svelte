@@ -25,6 +25,8 @@
     type SecretDto,
     type NodeReadingDto,
     fieldCatalogs,
+    NO_KAFKA_FACTS,
+    type KafkaFacts,
     getMapMeasurements,
   } from './api';
   import { holdings, sourceReadings } from './mapTerms';
@@ -82,9 +84,9 @@
   void editor.load();
 
   /** What this leader's build can select, for the security section, and the secret catalog. */
-  let mechanisms: string[] = $state([]);
+  let kafka: KafkaFacts = $state(NO_KAFKA_FACTS);
   let secrets: SecretDto[] = $state([]);
-  void fieldCatalogs().then((c) => ({ secrets, mechanisms } = c));
+  void fieldCatalogs().then((c) => ({ secrets, kafka } = c));
 
   /** Each source's current readings, by id, for the worker holding a listing source: this scope's group's, or under
    * `shared/`, which runs in every group, each group's. Best-effort: a page without readings still edits. */
@@ -219,7 +221,7 @@
           <SourceFields
             {source}
             {secrets}
-            {mechanisms}
+            {kafka}
             {startMoves}
             readAt={editor.readAtCommit}
             onsaved={(commit) => (editor.readAtCommit = commit)}
@@ -241,7 +243,7 @@
         open={adding}
         unavailable={unavailable()}
         {secrets}
-        {mechanisms}
+        {kafka}
         readAt={editor.readAtCommit}
         onsaved={(commit) => (editor.readAtCommit = commit)}
         onadd={add}

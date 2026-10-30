@@ -4934,24 +4934,48 @@ export interface SystemInfoDto {
   /** The SASL mechanisms this leader's build can select. A form offering
    * one that is not here would be offering a save the leader refuses. */
   saslMechanisms?: string[];
+  /** The librdkafka properties a save refuses, each with why smeltr owns it. */
+  kafkaReserved?: Record<string, string>;
+  /** The librdkafka properties a save refuses beside a connector's own TLS settings. */
+  kafkaTlsProps?: string[];
 }
 
 export function getSystemInfo(): Promise<SystemInfoDto> {
   return readJson('/api/system');
 }
 
+/** What this leader's build can do with a Kafka client: the SASL mechanisms it can select, the properties a save
+ * refuses, each with why smeltr owns it, and those it refuses beside the TLS settings. */
+export interface KafkaFacts {
+  mechanisms: string[];
+  reserved: Map<string, string>;
+  tlsProps: Set<string>;
+}
+
 /** What a source's or destination's form picks from: the secret catalog, so a credential can be pointed at one
- * the leader holds, and the SASL mechanisms this leader's build can select. A failure offers none rather than
- * failing the form: a variable can still be named, and no mechanism is offered that the save would refuse. */
-export async function fieldCatalogs(): Promise<{ secrets: SecretDto[]; mechanisms: string[] }> {
-  const [secrets, mechanisms] = await Promise.all([
+ * the leader holds, and what this leader's build can do with a Kafka client. A failure offers none rather than
+ * failing the form: a variable can still be named, no mechanism is offered that the save would refuse, and a
+ * property the form lets through is still refused by the save. */
+export async function fieldCatalogs(): Promise<{ secrets: SecretDto[]; kafka: KafkaFacts }> {
+  const [secrets, kafka] = await Promise.all([
     listSecrets().catch((): SecretDto[] => []),
     getSystemInfo()
-      .then((info) => info.saslMechanisms ?? [])
-      .catch((): string[] => []),
+      .then((info) => ({
+        mechanisms: info.saslMechanisms ?? [],
+        reserved: new Map(Object.entries(info.kafkaReserved ?? {})),
+        tlsProps: new Set(info.kafkaTlsProps ?? []),
+      }))
+      .catch(() => NO_KAFKA_FACTS),
   ]);
-  return { secrets, mechanisms };
+  return { secrets, kafka };
 }
+
+/** What a form knows of Kafka before the leader has answered, or when it cannot. */
+export const NO_KAFKA_FACTS: KafkaFacts = {
+  mechanisms: [],
+  reserved: new Map(),
+  tlsProps: new Set(),
+};
 
 /** The Sessions tab of Admin -> System. Seconds on the wire; the form
  * converts to the minutes and hours a person thinks in. The bounds come from

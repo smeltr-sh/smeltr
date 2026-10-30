@@ -12,7 +12,7 @@
   import SaveConflictPanel from './SaveConflict.svelte';
   import HeldEdit from './HeldEdit.svelte';
   import { SectionEditor } from './sectionEditor.svelte';
-  import { sharedConfig, fieldCatalogs } from './api';
+  import { sharedConfig, fieldCatalogs, NO_KAFKA_FACTS, type KafkaFacts } from './api';
   import ObjectList from './ObjectList.svelte';
   import Field from './Field.svelte';
   import ExceptionsFold from './ExceptionsFold.svelte';
@@ -104,9 +104,9 @@
   void editor.load();
 
   /** What this leader's build can select, for the security section, and the secret catalog. */
-  let mechanisms: string[] = $state([]);
+  let kafka: KafkaFacts = $state(NO_KAFKA_FACTS);
   let secrets: SecretDto[] = $state([]);
-  void fieldCatalogs().then((c) => ({ secrets, mechanisms } = c));
+  void fieldCatalogs().then((c) => ({ secrets, kafka } = c));
 
   /** Ids the suggestion must not walk into. This scope's alone: the leader refuses a collision with the other
    * subtree, which this page cannot see. */
@@ -209,7 +209,7 @@
             </Field>
             <Field label="type"><span class="fixed">{typeLabel(destination.type)}</span></Field>
           </div>
-          <DestinationFields {destination} {secrets} {mechanisms} />
+          <DestinationFields {destination} {secrets} {kafka} />
           <Field field="accepts" label="accepts">
             {#snippet help()}
               A pipeline sending here should produce one of these schemas. Review says where one
@@ -256,7 +256,7 @@
         open={adding}
         unavailable={unavailable()}
         {secrets}
-        {mechanisms}
+        {kafka}
         onadd={add}
         oncancel={() => (adding = false)}
       />

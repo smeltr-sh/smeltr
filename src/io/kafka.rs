@@ -1518,6 +1518,18 @@ mod tests {
     use crate::plan::topology::StartPosition;
     use rdkafka::consumer::ConsumerContext;
 
+    /// The reason a save gives for refusing `max.poll.interval.ms` names this interval in minutes; it is text, so
+    /// nothing else ties the two.
+    #[test]
+    fn the_reserved_poll_interval_reason_names_the_interval() {
+        let (_, why) = crate::config_file::RESERVED_KAFKA_PROPS
+            .iter()
+            .find(|(key, _)| *key == "max.poll.interval.ms")
+            .expect("reserved");
+        let minutes = MAX_POLL_INTERVAL.as_secs() / 60;
+        assert!(why.starts_with(&format!("fixed at {minutes} minutes,")), "{why}");
+    }
+
     /// A commit names only the partitions this consumer still owns. One the group moved away is left out, and
     /// counted: the broker would take it from any current member, and it would move the new owner's offset back.
     #[test]
