@@ -40,8 +40,8 @@ pub struct SessionDto {
     /// What the provider last called an OIDC account, which the GUI shows where a local one shows its username.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_login: Option<String>,
-    /// Whether this account holds everything: a local account, or an OIDC account one of whose roles is marked
-    /// administrator. The same as `access.administrator`.
+    /// Whether this account holds everything, by holding the administrator role. The same as
+    /// `access.administrator`.
     pub administrator: bool,
     /// What this account may do, per area, as the gate decides it now.
     #[serde(skip_serializing_if = "Option::is_none")]

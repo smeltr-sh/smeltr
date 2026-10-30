@@ -103,8 +103,8 @@ export type World = {
   signIns: number[];
   /** Each local account the administrator added, by username, and whether it is enabled. */
   accounts: Map<string, boolean>;
-  /** Each role, by the provider group it names. */
-  roles: Set<string>;
+  /** Each role the journey made, and the administrator role, with the provider groups that give it. */
+  roles: Map<string, string[]>;
   /** Each key account, by display name, and the key it holds in force. */
   keyAccounts: Map<string, string | null>;
   /** AI agents are turned on, against the journey's model endpoint. */
@@ -147,7 +147,7 @@ export function newWorld(): World {
     made: 0,
     signIns: [],
     accounts: new Map(),
-    roles: new Set(),
+    roles: new Map([['administrator', []]]),
     keyAccounts: new Map(),
     agentsOn: false,
     conversations: [],
@@ -1842,35 +1842,37 @@ type Account = {
   username?: string;
   displayName: string;
   enabled: boolean;
-  administrator: boolean;
   authSource: string;
   roles: string[];
   groups: string[];
+  access: { administrator: boolean };
   keys?: { label: string; createdAt: number; expiresAt: number | null }[];
 };
 
 /** A day, in the milliseconds a key's expiry is kept in. */
 const DAY_MILLIS = 86_400_000;
 
-/** In the open access form, the flag on, or else a role or none of those there are. Answers what it chose. */
-async function chooseAccess(
-  j: Journey,
-  within: Locator,
-): Promise<{ administrator: boolean; roles: string[] }> {
+/** In the open access form, some of the roles there are, the administrator role among them, or none. Answers
+ * them, sorted as the leader keeps them. */
+async function chooseAccess(j: Journey, within: Locator): Promise<string[]> {
   const { rng, world } = j;
-  const administrator = rng.chance(2);
-  await within.getByRole('switch', { name: 'Administrator' }).setChecked(administrator);
-  if (administrator) return { administrator, roles: [] };
-  const offered = [...world.roles].sort();
-  for (const role of offered) await within.getByRole('checkbox', { name: role }).uncheck();
-  const roles = offered.length > 0 && rng.chance(2) ? [rng.pick(offered)] : [];
-  for (const role of roles) await within.getByRole('checkbox', { name: role }).check();
-  return { administrator, roles };
+  const offered = [...world.roles.keys()].sort();
+  const roles = offered.filter(() => rng.chance(3));
+  for (const role of offered)
+    await within.getByRole('checkbox', { name: role }).setChecked(roles.includes(role));
+  return roles;
 }
 
-function said(access: { administrator: boolean; roles: string[] }): string {
-  if (access.administrator) return 'an administrator';
-  return access.roles.length ? `holding ${access.roles.join(', ')}` : 'holding nothing';
+function said(roles: string[]): string {
+  return roles.length ? `holding ${roles.join(', ')}` : 'holding nothing';
+}
+
+/** The roles a person holding `groups` is given by the roles the world has. */
+function givenBy(world: World, groups: string[]): string[] {
+  return [...world.roles]
+    .filter(([, given]) => given.some((g) => groups.includes(g)))
+    .map(([name]) => name)
+    .sort();
 }
 
 const addAccount: Move = {
@@ -1897,7 +1899,7 @@ const addAccount: Move = {
     expect(users.find((u) => u.username === username)).toMatchObject({
       enabled: true,
       authSource: 'local',
-      ...access,
+      roles: access,
     });
     if (!rng.chance(2)) return `add ${username}, ${said(access)}`;
 
@@ -1966,7 +1968,7 @@ const addKeyAccount: Move = {
     await dialog.getByRole('button', { name: 'Key' }).click();
     await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill(name);
     const access = await chooseAccess(j, dialog);
-    const { administrator } = access;
+    const administrator = access.includes('administrator');
     await dialog.getByRole('button', { name: 'Add' }).click();
     await expect(dialog).toHaveCount(0);
 
@@ -1989,7 +1991,7 @@ const addKeyAccount: Move = {
       .get('/api/accounts')
       .then((a) => a.accounts);
     const made = accounts.find((a) => a.displayName === name)!;
-    expect(made).toMatchObject({ authSource: 'key', ...access, keys: [{ label: 'journey' }] });
+    expect(made).toMatchObject({ authSource: 'key', roles: access, keys: [{ label: 'journey' }] });
     const [held] = made.keys!;
     expect(held.expiresAt).toBe(days === null ? null : held.createdAt + days * DAY_MILLIS);
     // The health of the fleet is the administrator's alone; a role reads no more than shared.
@@ -2060,10 +2062,10 @@ const changeAccess: Move = {
     const changed = accounts.find((a) =>
       name.local ? a.username === name.name : a.displayName === name.name,
     );
-    expect(changed).toMatchObject(access);
+    expect(changed).toMatchObject({ roles: access });
     const key = name.local ? null : world.keyAccounts.get(name.name);
     if (key) {
-      const expected = access.administrator ? 200 : 403;
+      const expected = access.includes('administrator') ? 200 : 403;
       expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(expected);
     }
     return `change ${name.name} to ${said(access)}`;
@@ -2120,46 +2122,80 @@ const findAccount: Move = {
 
 /** The group the journey's provider puts the one person it signs in into. */
 export const PROVIDER_GROUP = 'journey-people';
-/** Their other group, which no role names until an administrator makes one from it on the roster. */
+/** Their other group, which gives no role until an administrator makes one from it on the roster. */
 export const REVIEW_GROUP = 'journey-reviewers';
+/** A group the provider puts nobody into. */
+const OTHER_GROUP = 'journey-others';
 
 const LEVELS = ['viewer', 'editor', 'deployer'] as const;
 
-/** Gives the role whose row is open a level in shared, saves it, and checks the leader holds it. Answers the level. */
-async function saveRole(j: Journey, name: string): Promise<string> {
+type Role = { name: string; builtIn: boolean; groups: string[]; areas: Record<string, string> };
+
+/** The open role's groups field. */
+function groupsField(page: Page): Locator {
+  return page.locator('tr.fold form').getByRole('textbox', { name: /^Groups\b/ });
+}
+
+/** Gives the role whose row is open `groups` and, unless it is the administrator role, a level in shared; saves
+ * it, and checks the leader holds it. Answers what it gives. */
+async function saveRole(j: Journey, name: string, groups: string[]): Promise<string> {
   const { page, rng, world } = j;
-  const level = rng.pick(LEVELS);
-  await page.getByRole('combobox', { name: 'shared level' }).selectOption(level);
+  await groupsField(page).fill(groups.join('\n'));
+  const level = name === 'administrator' ? null : rng.pick(LEVELS);
+  if (level !== null)
+    await page.getByRole('combobox', { name: 'shared level' }).selectOption(level);
   await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.getByRole('combobox', { name: 'shared level' })).toHaveCount(0);
-  world.roles.add(name);
-  const roles: { name: string; administrator: boolean; areas: Record<string, string> }[] = await (
-    await j.truth()
-  )
-    .get('/api/roles')
-    .then((a) => a.roles);
+  await expect(groupsField(page)).toHaveCount(0);
+  world.roles.set(name, groups);
+  const roles: Role[] = await (await j.truth()).get('/api/roles').then((a) => a.roles);
   expect(roles.find((r) => r.name === name)).toMatchObject({
-    administrator: false,
-    areas: { shared: level },
+    groups: [...groups].sort(),
+    areas: level === null ? {} : { shared: level },
   });
-  return level;
+  return level === null ? 'everything' : `${level} in shared`;
 }
 
 const addRole: Move = {
   name: 'add-role',
   leadsTo: ['sso-sign-in'],
-  weight: (w) => (w.password && w.roles.size < 2 ? 1 : 0),
+  weight: (w) => (w.password && w.roles.size < 3 ? 1 : 0),
   run: async (j) => {
     const { page, world } = j;
-    // The first names the provider's group, so the person it signs in holds it.
-    const name = world.roles.size ? `role-${world.made++}` : PROVIDER_GROUP;
+    // The first is given by the provider's group, so the person it signs in holds it.
+    const name = `role-${world.made++}`;
+    const groups = world.roles.size > 1 ? [] : [PROVIDER_GROUP];
     await openAdmin(page, 'Accounts');
     await page.getByRole('link', { name: 'Roles', exact: true }).click();
     await page.getByRole('button', { name: '+ Add role' }).click();
     const dialog = page.getByRole('dialog', { name: 'new role' });
     await dialog.getByRole('textbox', { name: /^Role\b/ }).fill(name);
     await dialog.getByRole('button', { name: 'Add' }).click();
-    return `add role ${name}, ${await saveRole(j, name)} in shared`;
+    const gives = await saveRole(j, name, groups);
+    return `add role ${name}, given by ${groups.join(', ') || 'no group'}, ${gives}`;
+  },
+};
+
+/** A role, the administrator role among them, given by other groups. The administrator role cannot be removed. */
+const roleGroups: Move = {
+  name: 'role-groups',
+  leadsTo: ['sso-sign-in'],
+  weight: (w) => (w.password ? 1 : 0),
+  run: async (j) => {
+    const { page, rng, world } = j;
+    const name = rng.pick([...world.roles.keys()].sort());
+    const groups = [PROVIDER_GROUP, REVIEW_GROUP, OTHER_GROUP].filter(() => rng.chance(3));
+    await openAdmin(page, 'Accounts');
+    await page.getByRole('link', { name: 'Roles', exact: true }).click();
+    await page
+      .getByRole('row')
+      .filter({ has: page.locator('.name').getByText(name, { exact: true }) })
+      .getByRole('button', { name: 'Manage' })
+      .click();
+    await expect(page.getByRole('button', { name: 'Remove role' })).toHaveCount(
+      name === 'administrator' ? 0 : 1,
+    );
+    const gives = await saveRole(j, name, groups);
+    return `give ${name} to ${groups.join(', ') || 'no group'}, ${gives}`;
   },
 };
 
@@ -2386,7 +2422,7 @@ const setUpSso: Move = {
 const ssoSignIn: Move = {
   name: 'sso-sign-in',
   leadsTo: ['role-from-group'],
-  weight: (w) => (w.sso && w.roles.has(PROVIDER_GROUP) ? 1 : 0),
+  weight: (w) => (w.sso && givenBy(w, [PROVIDER_GROUP, REVIEW_GROUP]).length > 0 ? 1 : 0),
   run: async (j) => {
     const { leader, browser, provider, world } = j;
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
@@ -2407,17 +2443,18 @@ const ssoSignIn: Move = {
       displayName: provider.person.name,
       groups: [PROVIDER_GROUP, REVIEW_GROUP],
     });
-    expect([...person!.roles].sort()).toEqual(
-      [PROVIDER_GROUP, REVIEW_GROUP].filter((g) => world.roles.has(g)),
-    );
+    const held = givenBy(world, [PROVIDER_GROUP, REVIEW_GROUP]);
+    expect([...person!.roles].sort()).toEqual(held);
+    expect(person!.access.administrator).toBe(held.includes('administrator'));
     return `${provider.person.name} signs in through the provider`;
   },
 };
 
-/** The provider's person is turned away while no role names their groups, and an administrator reads why. */
+/** The provider's person is turned away while their groups give no role, and an administrator reads why. */
 const refusedSignIn: Move = {
   name: 'refused-sign-in',
-  weight: (w) => (w.sso && !w.refusalSeen && !w.roles.has(PROVIDER_GROUP) ? 1 : 0),
+  weight: (w) =>
+    w.sso && !w.refusalSeen && givenBy(w, [PROVIDER_GROUP, REVIEW_GROUP]).length === 0 ? 1 : 0,
   run: async (j) => {
     const { page, leader, browser, provider, world } = j;
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
@@ -2445,11 +2482,12 @@ const refusedSignIn: Move = {
   },
 };
 
-/** A role made from a group the roster shows the person holds and no role names yet. */
+/** A role made from a group the roster shows the person holds and no role lists yet, given by that group. */
 const roleFromGroup: Move = {
   name: 'role-from-group',
   leadsTo: ['sso-sign-in'],
-  weight: (w) => (w.ssoSignedIn && !w.roles.has(REVIEW_GROUP) ? 1 : 0),
+  weight: (w) =>
+    w.ssoSignedIn && !w.roles.has(REVIEW_GROUP) && givenBy(w, [REVIEW_GROUP]).length === 0 ? 1 : 0,
   run: async (j) => {
     const { page } = j;
     await openAdmin(page, 'Accounts');
@@ -2462,8 +2500,9 @@ const roleFromGroup: Move = {
       'aria-current',
       'page',
     );
-    const level = await saveRole(j, REVIEW_GROUP);
-    return `make the role ${REVIEW_GROUP} from the roster, ${level} in shared`;
+    await expect(groupsField(page)).toHaveValue(REVIEW_GROUP);
+    const gives = await saveRole(j, REVIEW_GROUP, [REVIEW_GROUP]);
+    return `make the role ${REVIEW_GROUP} from the roster, ${gives}`;
   },
 };
 
@@ -2803,6 +2842,7 @@ export const MOVES: readonly Move[] = [
   addAccount,
   disableAccount,
   addRole,
+  roleGroups,
   addKeyAccount,
   revokeKey,
   changeAccess,

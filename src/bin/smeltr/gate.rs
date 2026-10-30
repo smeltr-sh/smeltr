@@ -26,7 +26,7 @@ use axum::extract::State;
 use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use smeltr::leader::access::{Access, AgentPermissions, ByAgent, Level};
+use smeltr::leader::access::{Access, AgentPermissions, ByAgent, Level, given_by};
 use smeltr::leader::auth::hash_secret;
 use smeltr::leader::blocking;
 use smeltr::leader::envelope::Refusal;
@@ -449,17 +449,18 @@ pub fn admitted(user: &UserRecord) -> bool {
     user.enabled && user.auth_source != AuthSource::Key
 }
 
-/// What `user` holds now: what its own flag and the roles it names give, against the roles as they are. An OIDC
-/// account names its groups as of its last sign-in; a local or key account the roles an administrator gave it.
+/// What `user` holds now: what the roles it holds give, against the roles as they are. An OIDC account holds the
+/// roles its groups gave as of its last sign-in; a local or key account the roles an administrator gave it.
 pub fn access_of(store: &dyn Store, user: &UserRecord) -> Result<Access, StoreError> {
+    let roles = store.list_roles()?;
     let named = match user.auth_source {
-        AuthSource::Oidc => store
-            .oidc_identity_of(&user.id)?
-            .map(|identity| identity.groups)
-            .unwrap_or_default(),
+        AuthSource::Oidc => {
+            let groups = store.oidc_identity_of(&user.id)?.map(|identity| identity.groups);
+            given_by(&roles, &groups.unwrap_or_default())
+        }
         AuthSource::Local | AuthSource::Key => store.given_roles(&user.id)?,
     };
-    Ok(Access::of(user.administrator, &named, &store.list_roles()?))
+    Ok(Access::of(&named, &roles))
 }
 
 /// `access`, as a session and the roster report it: `areas` is empty for an administrator, who holds everything.
@@ -563,24 +564,22 @@ mod tests {
         }
     }
 
-    /// Model, points 3 and 5: any enabled account that signs in holds a session, an administrator or not; a key
-    /// account calls with a key, so no session of one is admitted, whatever its account says.
+    /// Model, points 3 and 5: any enabled account that signs in holds a session, whatever its roles; a key account
+    /// calls with a key, so no session of one is admitted.
     #[test]
     fn every_account_that_signs_in_holds_a_session_and_a_key_account_none() {
-        let account = |auth_source, administrator| UserRecord {
+        let account = |auth_source, enabled| UserRecord {
             id: "u_1".into(),
             auth_source,
             display_name: "exporter".into(),
-            enabled: true,
-            administrator,
+            enabled,
             generation: 1,
             created_at: 0,
             updated_at: 0,
         };
         assert!(admitted(&account(AuthSource::Local, true)));
-        assert!(admitted(&account(AuthSource::Local, false)));
-        assert!(admitted(&account(AuthSource::Oidc, false)));
-        assert!(!admitted(&account(AuthSource::Key, false)));
+        assert!(admitted(&account(AuthSource::Oidc, true)));
+        assert!(!admitted(&account(AuthSource::Local, false)));
         assert!(!admitted(&account(AuthSource::Key, true)));
     }
 
@@ -716,10 +715,10 @@ mod tests {
 
         use axum::Router;
         use axum::routing::{get, put};
-        use smeltr::leader::access::Role;
+        use smeltr::leader::access::{ADMINISTRATOR, Role};
         use smeltr::leader::accounts;
         use smeltr::leader::sqlite_store::SqliteStore;
-        use smeltr::leader::store::{GivenAccess, NewApiKey, NewKeyAccount, OidcSignIn};
+        use smeltr::leader::store::{NewApiKey, NewKeyAccount, OidcSignIn};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         const ORIGIN: &str = "http://127.0.0.1:4000";
@@ -848,7 +847,7 @@ mod tests {
         fn payments_viewer() -> Role {
             Role {
                 name: "smeltr-payments".into(),
-                administrator: false,
+                groups: vec!["smeltr-payments".into()],
                 areas: BTreeMap::from([("payments".to_string(), Level::Viewer)]),
             }
         }
@@ -895,7 +894,7 @@ mod tests {
 
         /// A role changed is in force on the very next request: access is read from the store every time.
         #[tokio::test]
-        async fn a_role_marked_administrator_reaches_everything_from_the_next_request() {
+        async fn a_group_given_the_administrator_role_reaches_everything_from_the_next_request() {
             let store = store();
             let person = sign_in(store.as_ref(), "ada", &["smeltr-admins"]);
             let auth = auth(store.clone());
@@ -903,11 +902,11 @@ mod tests {
 
             assert_eq!(ask(at, &auth, &person, "GET", "/api/accounts").await.0, 403);
             let admins = Role {
-                name: "smeltr-admins".into(),
-                administrator: true,
+                name: ADMINISTRATOR.into(),
+                groups: vec!["smeltr-admins".into()],
                 areas: BTreeMap::new(),
             };
-            let event = accounts::event_for(&Actor::system(), "role-put", "smeltr-admins", "ok");
+            let event = accounts::event_for(&Actor::system(), "role-put", ADMINISTRATOR, "ok");
             store.put_role(&admins, &event).unwrap();
             assert_eq!(
                 ask(at, &auth, &person, "GET", "/api/accounts").await,
@@ -919,7 +918,7 @@ mod tests {
         fn payments_deployer() -> Role {
             Role {
                 name: "smeltr-payments-deploy".into(),
-                administrator: false,
+                groups: vec!["smeltr-payments-deploy".into()],
                 areas: BTreeMap::from([("payments".to_string(), Level::Deployer)]),
             }
         }
@@ -980,11 +979,9 @@ mod tests {
                 id: "u_int",
                 display_name: "provisioner",
             };
-            let given = GivenAccess {
-                roles: &[],
-                administrator: true,
-            };
-            store.create_key_account(account, given, &created).unwrap();
+            store
+                .create_key_account(account, &[ADMINISTRATOR.to_string()], &created)
+                .unwrap();
             let key = key_of(store.as_ref(), "u_int", "key_1", None);
             let auth = auth(store.clone());
             let direct = serve(auth.clone()).await;
@@ -1021,11 +1018,9 @@ mod tests {
                 id: "u_int",
                 display_name: "exporter",
             };
-            let given = GivenAccess {
-                roles: &[],
-                administrator: true,
-            };
-            store.create_key_account(account, given, &created).unwrap();
+            store
+                .create_key_account(account, &[ADMINISTRATOR.to_string()], &created)
+                .unwrap();
             let expired = key_of(store.as_ref(), "u_int", "key_1", Some(1));
             let current = key_of(store.as_ref(), "u_int", "key_2", Some(now_millis() + 60_000));
             let direct = serve(auth(store.clone())).await;
@@ -1039,11 +1034,11 @@ mod tests {
         async fn an_administrators_agent_is_an_administrator_only_when_given_everything() {
             let store = store();
             let admins = Role {
-                name: "smeltr-admins".into(),
-                administrator: true,
+                name: ADMINISTRATOR.into(),
+                groups: vec!["smeltr-admins".into()],
                 areas: BTreeMap::new(),
             };
-            let event = accounts::event_for(&Actor::system(), "role-put", "smeltr-admins", "ok");
+            let event = accounts::event_for(&Actor::system(), "role-put", ADMINISTRATOR, "ok");
             store.put_role(&admins, &event).unwrap();
             let person = sign_in(store.as_ref(), "ada", &["smeltr-admins"]);
             let auth = auth(store.clone());

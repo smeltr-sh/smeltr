@@ -34,8 +34,8 @@
     </li>
     <li>Enter a Display name, and for a local account a Username.</li>
     <li>
-      Turn on <strong>Administrator</strong> for an account that holds everything, or tick the
-      <a href="#roles">roles</a> it holds. An account with neither holds nothing and reaches nothing.
+      Tick the <a href="#roles">roles</a> it holds. The <strong>administrator</strong> role holds everything.
+      An account with no role holds nothing and reaches nothing.
     </li>
     <li>Choose <strong>Add</strong>.</li>
     <li>
@@ -45,8 +45,8 @@
     </li>
   </ol>
   <p>
-    Smeltr keeps at least one enabled local account that is an administrator, as the way in when the
-    provider is down, so it refuses to disable that account or take away its Administrator. Display
+    Smeltr keeps at least one enabled local account that holds the administrator role, as the way in
+    when the provider is down, so it refuses to disable that account or take the role away. Display
     names need not be unique.
   </p>
   <h2 id="keys">Call the API with a key</h2>
@@ -82,8 +82,8 @@
   <ul>
     <li><strong>Rename:</strong> change the display name only. Every account.</li>
     <li>
-      <strong>Change access:</strong> turn Administrator on or off, or change the roles it holds. A local
-      or key account; an OIDC account holds the roles of its provider groups.
+      <strong>Change access:</strong> change the roles it holds, administrator among them. A local or
+      key account; an OIDC account holds the roles its provider groups give it.
     </li>
     <li>
       <strong>Reset password:</strong> sign out existing sessions and issue a temporary password. A local
@@ -178,12 +178,12 @@
     <strong>Sign in with username</strong> beside it for local accounts. The first time somebody
     signs in through the provider, Smeltr creates their account. Accounts lists them with SSO as
     their sign-in, and the email or username the provider gives them under their name. To sign in, a
-    person must belong to at least one group that has a role. <strong>Refused sign-ins</strong> on the
+    person must belong to at least one group that gives a role. <strong>Refused sign-ins</strong> on the
     Roles tab lists everyone turned away, with the groups the provider sent.
   </p>
   <p>
     The provider owns an OIDC account's password, so it has no Reset password. To stop somebody
-    signing in, remove them from every group that has a role, or disable their account in Smeltr.
+    signing in, remove them from every group that gives a role, or disable their account in Smeltr.
   </p>
   <p>
     Account, role and session actions take effect immediately; they are not pipeline changes waiting
@@ -191,10 +191,10 @@
   </p>
   <h2 id="roles">Give people access with roles</h2>
   <p>
-    An account can do only what its roles give it, or everything as an administrator. A role gives
-    one level in each area: the shared configuration or a worker group. An OIDC account holds the
-    role named for each of its groups in the provider's groups claim. A local or key account holds
-    the roles you give it under Change access.
+    An account can do only what its roles give it. A role gives one level in each area: the shared
+    configuration or a worker group. The built-in <strong>administrator</strong> role gives everything,
+    Admin included; it cannot be removed. An OIDC account holds each role that one of its groups in the
+    provider's groups claim gives. A local or key account holds the roles you give it under Change access.
   </p>
   <ul>
     <li><strong>viewer</strong> reads the area's configuration.</li>
@@ -209,24 +209,29 @@
     view every area it touches; changing it takes an editor, and deploying it a deployer, in each of
     them. A change to shared counts as shared alone. Rolling back from History, or selecting
     <strong>Release</strong>, moves every group, so it takes a deployer in shared and in every
-    group. Group lists name only the groups a person holds. A role marked
-    <strong>Administrator</strong>
-    gives everything, Admin included.
+    group. Group lists name only the groups a person holds.
   </p>
   <ol>
     <li>Open Admin → Accounts → Roles and select <strong>+ Add role</strong>.</li>
+    <li>Enter a name for the role.</li>
     <li>
-      Enter the group exactly as the provider names it. For a role you give only to local or key
-      accounts, any name will do.
+      Under Groups, enter each group that gives it, one to a line, exactly as the provider names it.
+      Leave it empty for a role you give only to local or key accounts.
     </li>
-    <li>Choose a level for each area, or tick Administrator, and select <strong>Save</strong>.</li>
+    <li>Choose a level for each area and select <strong>Save</strong>.</li>
   </ol>
+  <p>
+    To let a provider group administer Smeltr, open the <strong>administrator</strong> role and add the
+    group under Groups. A group that an account holds but no role lists shows beside the account's roles
+    on the Accounts page. Select it to start a role for that group.
+  </p>
   <p>
     A change to a role applies on each holder's next request. A change to somebody's groups at the
     provider applies within a few minutes, while they stay signed in, when the provider issues
     refresh tokens and its refreshes carry an ID token; otherwise at their next sign-in. A refresh
-    the provider refuses, or one that leaves them in no group with a role, signs them out. To shut
-    somebody out at once, disable their account in Accounts, or remove them from those groups at the
-    provider and then revoke their sessions. Accounts lists each account's roles beside its name.
+    the provider refuses, or one that leaves them in no group that gives a role, signs them out. To
+    shut somebody out at once, disable their account in Accounts, or remove them from those groups
+    at the provider and then revoke their sessions. Accounts lists each account's roles beside its
+    name.
   </p>
 </GuideLayout>

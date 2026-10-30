@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use smeltr::leader::envelope::Envelope;
-use smeltr::leader::store::{Actor, ApiKeyRecord, GivenAccess, NewApiKey, NewKeyAccount};
+use smeltr::leader::store::{Actor, ApiKeyRecord, NewApiKey, NewKeyAccount};
 use smeltr::leader::warnings::now_millis;
 use smeltr::leader::{accounts, auth as tokens};
 
@@ -60,13 +60,7 @@ impl From<ApiKeyRecord> for KeyDto {
 }
 
 /// An enabled key account holding no key yet, answered as the roster shows it.
-pub async fn create_key_account(
-    auth: &Auth,
-    actor: &Actor,
-    display_name: &str,
-    roles: Vec<String>,
-    administrator: bool,
-) -> Response {
+pub async fn create_key_account(auth: &Auth, actor: &Actor, display_name: &str, roles: Vec<String>) -> Response {
     let name = match self::display_name(display_name) {
         Ok(name) => name,
         Err(why) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, why),
@@ -85,10 +79,7 @@ pub async fn create_key_account(
                 id: &created,
                 display_name: &name,
             },
-            GivenAccess {
-                roles: &roles,
-                administrator,
-            },
+            &roles,
             &event,
         )
     })

@@ -371,7 +371,7 @@ export async function addAccount(
     authSource: 'local',
     username,
     displayName,
-    administrator: true,
+    roles: ['administrator'],
   });
   const first = await signedIn(leader, username, made.temporaryPassword);
   const password = `${username}-chosen-password`;

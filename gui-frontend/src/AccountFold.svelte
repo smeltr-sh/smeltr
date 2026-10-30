@@ -48,7 +48,6 @@
   let form = $state<'rename' | 'access' | 'key' | null>(null);
   let draftName = $state('');
   let draftRoles = $state<string[]>([]);
-  let draftAdministrator = $state(false);
   let draftLabel = $state('');
   let draftDays = $state<number | null | undefined>(null);
 
@@ -65,7 +64,6 @@
     form = which;
     draftName = account.displayName;
     draftRoles = [...account.roles];
-    draftAdministrator = account.administrator;
     draftLabel = '';
     draftDays = null;
   }
@@ -90,14 +88,10 @@
 
   async function saveAccess(event: SubmitEvent) {
     event.preventDefault();
-    // One field per request: the administrator flag first, then the roles, each only when it changed. A
-    // refused one stops there, and the form stays open.
-    if (draftAdministrator !== account.administrator) {
-      if (!(await change({ administrator: draftAdministrator }, 'access updated'))) return;
-    }
     const same =
       draftRoles.length === account.roles.length &&
       draftRoles.every((r) => account.roles.includes(r));
+    // A refused change leaves the form open.
     if (!same && !(await change({ roles: draftRoles }, 'access updated'))) return;
     form = null;
   }
@@ -246,7 +240,7 @@
   </form>
 {:else if form === 'access'}
   <form class="panel" onsubmit={saveAccess}>
-    <AccountAccess {roles} bind:administrator={draftAdministrator} bind:chosen={draftRoles} />
+    <AccountAccess {roles} bind:chosen={draftRoles} />
     <div class="actions">
       <button type="button" onclick={() => (form = null)}>Cancel</button>
       <button class="primary" type="submit" disabled={busy}>Save access</button>

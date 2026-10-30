@@ -15,10 +15,11 @@ let calls: { method: string; url: string; body: unknown }[];
 let resets: number;
 
 const ROLES = [
-  { name: 'smeltr-admins', administrator: true, areas: {} },
+  { name: 'administrator', builtIn: true, groups: ['smeltr-admins'], areas: {} },
   {
-    name: 'smeltr-payments',
-    administrator: false,
+    name: 'payments',
+    builtIn: false,
+    groups: ['smeltr-payments', 'smeltr-oncall'],
     areas: { payments: 'deployer', shared: 'viewer' },
   },
 ];
@@ -29,11 +30,10 @@ const ACCOUNTS = [
     username: 'ada',
     displayName: 'Ada',
     enabled: true,
-    administrator: true,
     authSource: 'local',
     createdAt: 0,
     updatedAt: 0,
-    roles: [],
+    roles: ['administrator'],
     groups: [],
     access: {},
   },
@@ -42,11 +42,10 @@ const ACCOUNTS = [
     username: 'cy',
     displayName: 'Cy',
     enabled: true,
-    administrator: false,
     authSource: 'local',
     createdAt: 0,
     updatedAt: 0,
-    roles: ['smeltr-payments'],
+    roles: ['payments'],
     groups: [],
     access: {},
   },
@@ -55,11 +54,10 @@ const ACCOUNTS = [
     displayName: 'Bo',
     providerLogin: 'bo@example.com',
     enabled: true,
-    administrator: false,
     authSource: 'oidc',
     createdAt: 0,
     updatedAt: 0,
-    roles: ['smeltr-payments', 'smeltr-search'],
+    roles: ['payments'],
     groups: ['everyone', 'smeltr-payments', 'smeltr-search'],
     access: {},
   },
@@ -67,11 +65,10 @@ const ACCOUNTS = [
     id: 'u-exp',
     displayName: 'exporter',
     enabled: true,
-    administrator: false,
     authSource: 'key',
     createdAt: 1,
     updatedAt: 1,
-    roles: ['smeltr-payments'],
+    roles: ['payments'],
     groups: [],
     access: {},
     keys: [
@@ -238,16 +235,16 @@ afterEach(() => {
 });
 
 describe('the Accounts tab', () => {
-  it('shows each account its administrator flag and its roles, whatever its sign-in', async () => {
+  it('shows each account its roles, whatever its sign-in', async () => {
     await accountsTab();
     const pills = (name: string) =>
       [...row(name).querySelectorAll('td:nth-child(4) span.pill')].map((p) =>
         p.textContent?.trim(),
       );
     expect(pills('Ada')).toEqual(['administrator']);
-    expect(pills('Cy')).toEqual(['smeltr-payments']);
-    expect(pills('Bo')).toEqual(['smeltr-payments', 'smeltr-search']);
-    expect(pills('exporter')).toEqual(['smeltr-payments']);
+    expect(pills('Cy')).toEqual(['payments']);
+    expect(pills('Bo')).toEqual(['payments']);
+    expect(pills('exporter')).toEqual(['payments']);
   });
 
   it('offers each account what its kind of sign-in has', async () => {
@@ -370,8 +367,7 @@ describe('the Accounts tab', () => {
         authSource: 'local',
         username: 'dee',
         displayName: 'Dee',
-        roles: ['smeltr-admins'],
-        administrator: false,
+        roles: ['administrator'],
       },
     });
   });
@@ -393,15 +389,18 @@ describe('the Accounts tab', () => {
     await manage('exporter');
     button('Change access')!.click();
     flushSync();
-    // A role dropped and the administrator switched on: two changes, sent one at a time.
+    // The administrator role given beside the role it holds.
     form().querySelector<HTMLInputElement>('.roles input')!.click();
-    form().querySelector<HTMLInputElement>('input[role="switch"]')!.click();
     flushSync();
     button('Save access')!.click();
     await vi.waitFor(() => expect(calls).toHaveLength(1));
     await settle();
     expect(calls).toEqual([
-      { method: 'PATCH', url: '/api/accounts/u-exp', body: { administrator: true } },
+      {
+        method: 'PATCH',
+        url: '/api/accounts/u-exp',
+        body: { roles: ['payments', 'administrator'] },
+      },
     ]);
     expect(button('Save access')).toBeDefined();
   });
@@ -422,11 +421,11 @@ describe('the Accounts tab', () => {
     expect(calls[0]).toEqual({
       method: 'POST',
       url: '/api/accounts',
-      body: { authSource: 'key', displayName: 'exporter', roles: [], administrator: false },
+      body: { authSource: 'key', displayName: 'exporter', roles: [] },
     });
   });
 
-  it('offers a role for each group an account holds that no role names', async () => {
+  it('offers a role for each group an account holds that gives no role', async () => {
     history.replaceState(null, '', '/#/admin/accounts');
     await accountsTab();
     expect(button('+ smeltr-payments', row('Bo'))).toBeUndefined();
@@ -486,34 +485,39 @@ describe('the Accounts tab', () => {
 });
 
 describe('the Roles tab', () => {
-  it('shows what each role gives, shared first', async () => {
+  it('shows the groups that give each role and what it gives, shared first', async () => {
     await rolesTab();
-    expect(row('smeltr-admins').textContent).toContain('administrator');
-    const pills = [...row('smeltr-payments').querySelectorAll('.pill')].map((p) =>
-      p.textContent?.replace(/\s+/g, ' ').trim(),
-    );
-    expect(pills).toEqual(['shared viewer', 'payments deployer']);
+    const pills = (name: string, column: number) =>
+      [...row(name).querySelectorAll(`td:nth-child(${column}) .pill`)].map((p) =>
+        p.textContent?.replace(/\s+/g, ' ').trim(),
+      );
+    expect(pills('administrator', 2)).toEqual(['smeltr-admins']);
+    expect(pills('administrator', 3)).toEqual(['everything']);
+    expect(pills('payments', 2)).toEqual(['smeltr-payments', 'smeltr-oncall']);
+    expect(pills('payments', 3)).toEqual(['shared viewer', 'payments deployer']);
   });
 
-  it('saves an administrator role with no areas of its own', async () => {
+  it('changes only the groups of the administrator role, which stays', async () => {
     await rolesTab();
-    await manage('smeltr-payments');
-    const administrator = target.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
-    administrator.click();
-    flushSync();
+    await manage('administrator');
     expect(target.querySelector('select')).toBeNull();
+    expect(button('Remove role')).toBeUndefined();
+    const groups = form().querySelector('textarea')!;
+    groups.value = 'smeltr-admins\n smeltr-ops \n\nsmeltr-ops';
+    groups.dispatchEvent(new Event('input'));
+    flushSync();
     button('Save')!.click();
     await vi.waitFor(() => expect(calls).toHaveLength(1));
     expect(calls[0]).toEqual({
       method: 'PUT',
-      url: '/api/roles/smeltr-payments',
-      body: { administrator: true, areas: {} },
+      url: '/api/roles/administrator',
+      body: { groups: ['smeltr-admins', 'smeltr-ops'], areas: {} },
     });
   });
 
   it('saves the level chosen in each area, and none where none is chosen', async () => {
     await rolesTab();
-    await manage('smeltr-payments');
+    await manage('payments');
     choose('shared', 'editor');
     choose('payments', '');
     flushSync();
@@ -521,14 +525,14 @@ describe('the Roles tab', () => {
     await vi.waitFor(() => expect(calls).toHaveLength(1));
     expect(calls[0]).toEqual({
       method: 'PUT',
-      url: '/api/roles/smeltr-payments',
-      body: { administrator: false, areas: { shared: 'editor' } },
+      url: '/api/roles/payments',
+      body: { groups: ['smeltr-payments', 'smeltr-oncall'], areas: { shared: 'editor' } },
     });
   });
 
   it('removes a role only once it is confirmed', async () => {
     await rolesTab();
-    await manage('smeltr-payments');
+    await manage('payments');
     ask.mockResolvedValueOnce(false);
     button('Remove role')!.click();
     await settle();
@@ -538,7 +542,7 @@ describe('the Roles tab', () => {
     ask.mockResolvedValueOnce(true);
     button('Remove role')!.click();
     await vi.waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0]).toEqual({ method: 'DELETE', url: '/api/roles/smeltr-payments', body: null });
+    expect(calls[0]).toEqual({ method: 'DELETE', url: '/api/roles/payments', body: null });
   });
 
   it('does not save a new role until it gives something', async () => {
@@ -555,16 +559,16 @@ describe('the Roles tab', () => {
     await rolesTab();
     await addRole('smeltr-search');
     ask.mockResolvedValueOnce(false);
-    await manage('smeltr-payments');
+    await manage('payments');
     await settle();
     expect(ask).toHaveBeenCalledTimes(1);
     expect(row('smeltr-search')).toBeDefined();
     expect(row('smeltr-search').classList.contains('expanded')).toBe(true);
 
     ask.mockResolvedValueOnce(true);
-    await manage('smeltr-payments');
+    await manage('payments');
     await vi.waitFor(() => expect(row('smeltr-search')).toBeUndefined());
-    expect(row('smeltr-payments').classList.contains('expanded')).toBe(true);
+    expect(row('payments').classList.contains('expanded')).toBe(true);
   });
 
   it('asks before a second new role drops the first', async () => {
@@ -589,7 +593,7 @@ describe('the Roles tab', () => {
     flushSync();
     await vi.waitFor(() => expect(target.querySelector('dialog input')).not.toBeNull());
     const name = target.querySelector<HTMLInputElement>('dialog input')!;
-    name.value = 'smeltr-admins';
+    name.value = 'administrator';
     name.dispatchEvent(new Event('input'));
     flushSync();
     expect(button('Add')!.disabled).toBe(true);

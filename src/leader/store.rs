@@ -256,9 +256,6 @@ pub struct UserRecord {
     pub auth_source: AuthSource,
     pub display_name: String,
     pub enabled: bool,
-    /// A local account always is, and a key account is when it is made one. An OIDC account never is by this flag:
-    /// what it holds comes from its roles (`access::Access::of`).
-    pub administrator: bool,
     /// Bumped by a password change, a reset and an explicit revocation. A session quoting an older one is refused,
     /// which is what makes those three take effect on the next request rather than at the next sweep.
     pub generation: i64,
@@ -391,7 +388,7 @@ impl std::fmt::Display for AccountError {
             AccountError::LastAdministrator => write!(f, "this is the last administrator who signs in with a password"),
             AccountError::HeldByProvider => write!(
                 f,
-                "roles and administrator are not set here: an OIDC account holds what its provider's groups give"
+                "roles are not given here: an OIDC account holds the roles its provider's groups give"
             ),
             AccountError::Disabled => write!(f, "that account is disabled"),
             AccountError::WrongAuthSource => write!(f, "that account does not sign in with a password"),
@@ -435,21 +432,6 @@ pub struct OidcIdentityRecord {
     /// What the provider called the person at the last sign-in or refresh: their email, else their preferred username.
     pub login: Option<String>,
     pub last_sign_in: i64,
-}
-
-/// What an administrator gives a local or key account: everything, or what the named roles give. An OIDC account's
-/// roles are its provider's groups, and nothing here gives it any.
-#[derive(Clone, Copy, Debug)]
-pub struct GivenAccess<'a> {
-    pub roles: &'a [String],
-    pub administrator: bool,
-}
-
-/// One change to what an administrator gives an account, as one change to any account is one field.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AccessChange {
-    Roles(Vec<String>),
-    Administrator(bool),
 }
 
 /// One key an account holds, as its roster shows it.
@@ -902,27 +884,28 @@ pub trait Store: Send + Sync {
     /// written: the check and the insert are one transaction, so exactly one of two concurrent bootstraps wins.
     fn bootstrap_administrator(&self, user: NewLocalUser<'_>) -> Result<bool, StoreError>;
 
-    /// Create an enabled local account alongside the accounts already there, holding what `given` gives.
+    /// Create an enabled local account alongside the accounts already there, holding the roles `roles` names.
     ///
     /// `event` lands in the same transaction: an account that exists with no record of who created it is the one
     /// case an audit is for, so the two are one write or neither is.
     fn create_local_user(
         &self,
         user: NewLocalUser<'_>,
-        given: GivenAccess<'_>,
+        roles: &[String],
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError>;
 
-    /// The roles an administrator gave the account `user_id`, by name. Empty for an OIDC account, whose roles are
-    /// its provider's groups.
+    /// The roles an administrator gave the account `user_id`, by name. Empty for an OIDC account, whose roles its
+    /// provider's groups give.
     fn given_roles(&self, user_id: &str) -> Result<Vec<String>, StoreError>;
 
-    /// Change what an administrator gives a local or key account, `event` in the same transaction. Refused for an
-    /// OIDC account, and when taking the flag from a local administrator would leave none who can sign in.
+    /// Replace the roles an administrator gives a local or key account, `event` in the same transaction. Refused
+    /// for an OIDC account, and when taking the administrator role from a local account would leave none who can
+    /// sign in.
     fn change_access(
         &self,
         user_id: &str,
-        change: &AccessChange,
+        roles: &[String],
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError>;
 
@@ -989,8 +972,8 @@ pub trait Store: Send + Sync {
     /// as it is.
     fn oidc_refreshed(&self, user_id: &str, groups: &[String], login: Option<&str>) -> Result<(), StoreError>;
 
-    /// Re-enable a local account and give it a fresh must-change password, bumping its generation: what recovery
-    /// from the host does, as one transaction.
+    /// Re-enable a local account, give it the administrator role and a fresh must-change password, and bump its
+    /// generation: what recovery from the host does, as one transaction.
     fn recover_local_user(
         &self,
         username: &str,
@@ -1006,11 +989,11 @@ pub trait Store: Send + Sync {
     //
     // A key is written and compared as its hash, never listed: only `api_key_by_hash` reads a key's row by it.
 
-    /// Create an enabled key account with no key, holding what `given` gives, `event` in the same transaction.
+    /// Create an enabled key account with no key, holding the roles `roles` names, `event` in the same transaction.
     fn create_key_account(
         &self,
         account: NewKeyAccount<'_>,
-        given: GivenAccess<'_>,
+        roles: &[String],
         event: &SecurityEvent,
     ) -> Result<(), StoreError>;
 

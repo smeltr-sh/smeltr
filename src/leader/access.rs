@@ -1,10 +1,10 @@
 //! What an account may do, per area.
 //!
 //! An area is `shared` or one worker group: the scope every config read and write already names. An account holds
-//! one [`Level`] in an area, and each level includes the ones below it, from the roles it names: a role is a name
-//! and the level it gives in each area. An OIDC account names the roles its provider's groups name; a local or key
-//! account names the roles an administrator gave it. An account is an administrator by its own flag, which only a
-//! local or key account can be given, or by holding a role marked administrator.
+//! one [`Level`] in an area, and each level includes the ones below it, from the roles it holds: a role is a name,
+//! the provider groups that give it, and the level it gives in each area. An OIDC account holds the roles its
+//! provider's groups give; a local or key account holds the roles an administrator gave it. The built-in
+//! [`ADMINISTRATOR`] role holds everything, and is the only way to.
 //!
 //! The leader decides this on every request, from the names as they stand, so a change to a role reaches everyone
 //! holding it on their next request and a change to someone's groups at their next sign-in.
@@ -48,14 +48,26 @@ impl Level {
     }
 }
 
-/// One provider group and what holding it gives.
+/// The built-in role that holds everything, everywhere. It always exists, and only the groups that give it change.
+pub const ADMINISTRATOR: &str = "administrator";
+
+/// A role and what holding it gives.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Role {
-    /// The group exactly as the provider's groups claim names it.
     pub name: String,
-    /// Holds everything, everywhere, as a local account does. `areas` is then beside the point.
-    pub administrator: bool,
+    /// The provider groups that give it, each exactly as the provider's groups claim names it.
+    pub groups: Vec<String>,
+    /// Beside the point for [`ADMINISTRATOR`], which holds everything.
     pub areas: BTreeMap<String, Level>,
+}
+
+/// The names of the roles `groups` give: each role one of whose groups is among them.
+pub fn given_by(roles: &[Role], groups: &[String]) -> Vec<String> {
+    roles
+        .iter()
+        .filter(|role| role.groups.iter().any(|group| groups.contains(group)))
+        .map(|role| role.name.clone())
+        .collect()
 }
 
 /// What one person holds.
@@ -120,18 +132,15 @@ impl AgentPermissions {
 }
 
 impl Access {
-    /// What an account holds: everything when its own flag says so, else what the roles it names give, out of
-    /// the roles that exist.
-    pub fn of(administrator: bool, named: &[String], roles: &[Role]) -> Access {
-        if administrator {
+    /// What an account holds: everything when it holds [`ADMINISTRATOR`], else what the roles it names give, out
+    /// of the roles that exist.
+    pub fn of(named: &[String], roles: &[Role]) -> Access {
+        if named.iter().any(|name| name == ADMINISTRATOR) {
             return Access::Administrator;
         }
         let held = roles.iter().filter(|role| named.contains(&role.name));
         let mut areas = BTreeMap::new();
         for role in held {
-            if role.administrator {
-                return Access::Administrator;
-            }
             for (area, level) in &role.areas {
                 let at = areas.entry(area.clone()).or_insert(*level);
                 *at = (*at).max(*level);
@@ -203,7 +212,7 @@ mod tests {
     fn role(name: &str, areas: &[(&str, Level)]) -> Role {
         Role {
             name: name.into(),
-            administrator: false,
+            groups: vec![name.into()],
             areas: areas.iter().map(|(a, l)| (a.to_string(), *l)).collect(),
         }
     }
@@ -212,24 +221,40 @@ mod tests {
         names.iter().map(|s| s.to_string()).collect()
     }
 
-    /// Model, point 3: an account's own flag holds everything, whatever its roles say.
+    /// Model, point 3: the administrator role holds everything, whatever the other roles say.
     #[test]
-    fn an_administrators_flag_holds_everything_whatever_the_roles_say() {
+    fn the_administrator_role_holds_everything_whatever_the_other_roles_say() {
         let roles = [role("smeltr-payments", &[("payments", Level::Viewer)])];
-        assert_eq!(
-            Access::of(true, &groups(&["smeltr-payments"]), &roles),
-            Access::Administrator
-        );
+        let access = Access::of(&groups(&["smeltr-payments", ADMINISTRATOR]), &roles);
+        assert_eq!(access, Access::Administrator);
+        assert!(access.allows("anything", Level::Deployer));
     }
 
-    /// Model, point 3: an account without the flag holds only what its roles give, however it signs in.
+    /// Model, point 3: an account without the administrator role holds only what its roles give, however it signs
+    /// in.
     #[test]
-    fn an_account_without_the_flag_holds_only_what_its_roles_give() {
+    fn an_account_without_the_administrator_role_holds_only_what_its_roles_give() {
         let roles = [role("smeltr-payments", &[("payments", Level::Viewer)])];
-        let access = Access::of(false, &groups(&["smeltr-payments"]), &roles);
+        let access = Access::of(&groups(&["smeltr-payments"]), &roles);
         assert!(!access.is_administrator());
         assert_eq!(access.level("payments"), Some(Level::Viewer));
-        assert_eq!(Access::of(false, &[], &roles), Access::Areas(BTreeMap::new()));
+        assert_eq!(Access::of(&[], &roles), Access::Areas(BTreeMap::new()));
+    }
+
+    /// A role's name is not a group: only the groups it lists give it, and one group may give several.
+    #[test]
+    fn the_groups_a_role_lists_give_it_and_its_name_does_not() {
+        let mut payments = role("payments", &[("payments", Level::Viewer)]);
+        payments.groups = groups(&["smeltr-payments", "smeltr-oncall"]);
+        let mut oncall = role("oncall", &[]);
+        oncall.groups = groups(&["smeltr-oncall"]);
+        let roles = [payments, oncall];
+        assert_eq!(given_by(&roles, &groups(&["payments"])), Vec::<String>::new());
+        assert_eq!(given_by(&roles, &groups(&["smeltr-payments"])), groups(&["payments"]));
+        assert_eq!(
+            given_by(&roles, &groups(&["smeltr-oncall"])),
+            groups(&["payments", "oncall"])
+        );
     }
 
     #[test]
@@ -245,7 +270,7 @@ mod tests {
             ),
             role("smeltr-payments", &[("payments", Level::Deployer)]),
         ];
-        let access = Access::of(false, &groups(&["smeltr-storefront", "smeltr-oncall"]), &roles);
+        let access = Access::of(&groups(&["smeltr-storefront", "smeltr-oncall"]), &roles);
         assert_eq!(access.level("storefront"), Some(Level::Deployer));
         assert_eq!(access.level("search"), Some(Level::Editor));
         assert_eq!(access.level("payments"), Some(Level::Viewer));
@@ -253,18 +278,9 @@ mod tests {
     }
 
     #[test]
-    fn a_role_marked_administrator_holds_everything() {
-        let mut admins = role("smeltr-admins", &[]);
-        admins.administrator = true;
-        let access = Access::of(false, &groups(&["smeltr-admins"]), &[admins]);
-        assert!(access.is_administrator());
-        assert!(access.allows("anything", Level::Deployer));
-    }
-
-    #[test]
-    fn a_group_no_role_names_gives_nothing() {
+    fn a_role_that_does_not_exist_gives_nothing() {
         let roles = [role("smeltr-payments", &[("payments", Level::Deployer)])];
-        let access = Access::of(false, &groups(&["everyone"]), &roles);
+        let access = Access::of(&groups(&["everyone"]), &roles);
         assert_eq!(access, Access::Areas(BTreeMap::new()));
         assert!(!access.somewhere(Level::Viewer));
         assert_eq!(access.level(SHARED), None);
@@ -274,7 +290,7 @@ mod tests {
     #[test]
     fn holding_any_area_reads_shared() {
         let roles = [role("smeltr-search", &[("search", Level::Deployer)])];
-        let access = Access::of(false, &groups(&["smeltr-search"]), &roles);
+        let access = Access::of(&groups(&["smeltr-search"]), &roles);
         assert!(access.allows(SHARED, Level::Viewer));
         assert!(!access.allows(SHARED, Level::Editor));
     }
@@ -289,7 +305,7 @@ mod tests {
     #[test]
     fn an_agent_holds_the_lower_of_its_person_and_its_permissions() {
         let roles = [role("r", &[("payments", Level::Deployer), ("search", Level::Viewer)])];
-        let person = Access::of(false, &groups(&["r"]), &roles);
+        let person = Access::of(&groups(&["r"]), &roles);
         let agent = person.for_agent(upto(
             Level::Viewer,
             &[("payments", Level::Editor), ("search", Level::Deployer)],
@@ -333,7 +349,7 @@ mod tests {
     #[test]
     fn each_level_includes_the_ones_below_it() {
         let roles = [role("r", &[("payments", Level::Editor)])];
-        let access = Access::of(false, &groups(&["r"]), &roles);
+        let access = Access::of(&groups(&["r"]), &roles);
         assert!(access.allows("payments", Level::Viewer));
         assert!(access.allows("payments", Level::Editor));
         assert!(!access.allows("payments", Level::Deployer));

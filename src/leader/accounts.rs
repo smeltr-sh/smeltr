@@ -608,10 +608,7 @@ mod tests {
                     password_hash: &hash_password(GOOD).unwrap(),
                     must_change: false,
                 },
-                super::super::store::GivenAccess {
-                    roles: &[],
-                    administrator: true,
-                },
+                &[super::super::access::ADMINISTRATOR.to_string()],
                 &event_for(&Actor::system(), "account-create", "", "ok"),
             )
             .unwrap()
@@ -689,10 +686,7 @@ mod tests {
                     password_hash: &hash_password("the other account's passphrase").unwrap(),
                     must_change: false,
                 },
-                super::super::store::GivenAccess {
-                    roles: &[],
-                    administrator: true,
-                },
+                &[super::super::access::ADMINISTRATOR.to_string()],
                 &event_for(&Actor::system(), "account-create", "u_2", "ok"),
             )
             .unwrap()
@@ -852,14 +846,7 @@ mod tests {
         };
         let event = event_for(&Actor::system(), "account-create", "u_2", "ok");
         disabled
-            .create_local_user(
-                other,
-                super::super::store::GivenAccess {
-                    roles: &[],
-                    administrator: true,
-                },
-                &event,
-            )
+            .create_local_user(other, &[super::super::access::ADMINISTRATOR.to_string()], &event)
             .unwrap()
             .unwrap();
         let credential = disabled.local_credential_by_username("admin").unwrap().unwrap();

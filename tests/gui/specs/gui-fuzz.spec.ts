@@ -89,7 +89,10 @@ async function offerSso(api: Api, provider: Provider, level: string) {
     clientId: CLIENT_ID,
     clientSecret: CLIENT_SECRET,
   });
-  await api.put(`/api/roles/${PROVIDER_GROUP}`, { administrator: false, areas: { shared: level } });
+  await api.put(`/api/roles/${PROVIDER_GROUP}`, {
+    groups: [PROVIDER_GROUP],
+    areas: { shared: level },
+  });
 }
 
 /** Signs in as the seed's person by whichever way the screen offers, or chooses their password. */

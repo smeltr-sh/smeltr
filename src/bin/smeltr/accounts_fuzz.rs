@@ -1,8 +1,8 @@
 //! The accounts fuzzer. An administrator, signed in however an administrator can be, makes local and key accounts,
-//! and a provider signs OIDC accounts in. Accounts are renamed, given roles or the administrator flag, disabled and
-//! enabled, have their password reset and their sessions ended, and key accounts are given keys that expire or not,
-//! and have them revoked; each account sets what its agent may use. Between those, accounts call the leader with a
-//! session or a key, as themselves or through their agent.
+//! and a provider signs OIDC accounts in. Accounts are renamed, given roles, the administrator role among them,
+//! disabled and enabled, have their password reset and their sessions ended, and key accounts are given keys that
+//! expire or not, and have them revoked; roles are given other groups; each account sets what its agent may use.
+//! Between those, accounts call the leader with a session or a key, as themselves or through their agent.
 //!
 //! However it goes, the leader answers as the account model says (`docs/architecture/security.md`, Identity and
 //! access), which [`Model`] holds apart from the leader's own code: an account reaches what it holds and nothing
@@ -18,15 +18,15 @@ use std::time::Instant;
 use axum::Router;
 use axum::routing::{delete, get, patch, post, put};
 use serde_json::{Value, json};
-use smeltr::leader::access::{AgentPermissions, ByAgent, Level, Role};
+use smeltr::leader::access::{ADMINISTRATOR, AgentPermissions, ByAgent, Level, Role};
 use smeltr::leader::sqlite_store::SqliteStore;
-use smeltr::leader::store::{Actor, GivenAccess, NewApiKey, NewLocalUser, OidcSignIn, Store};
+use smeltr::leader::store::{Actor, NewApiKey, NewLocalUser, OidcSignIn, Store};
 use smeltr::leader::{accounts, auth as tokens};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::fuzz::{self, Coverage, Rng};
 use crate::gate::{self, Auth, CSRF_HEADER, Origin};
-use crate::{accounts_api, key_accounts_api};
+use crate::{accounts_api, key_accounts_api, roles_api};
 
 const ORIGIN: &str = "http://127.0.0.1:4000";
 const DAY_MILLIS: i64 = 86_400_000;
@@ -34,25 +34,26 @@ const DAY_MILLIS: i64 = 86_400_000;
 /// Areas a request names: `shared`, and two groups.
 const AREAS: [&str; 3] = ["shared", "payments", "search"];
 
-/// A role: its name, whether it is an administrator's, and what it gives by area.
-type RoleDef = (&'static str, bool, &'static [(&'static str, Level)]);
+/// A role: its name, the groups it starts given by, and what it gives by area.
+type RoleDef = (&'static str, &'static [&'static str], &'static [(&'static str, Level)]);
 
-/// The roles there are.
+/// The roles there are, the built-in one among them.
 const ROLES: [RoleDef; 3] = [
-    ("viewers", false, &[("payments", Level::Viewer)]),
+    ("viewers", &["g-viewers", "g-staff"], &[("payments", Level::Viewer)]),
     (
         "editors",
-        false,
+        &["g-editors"],
         &[("payments", Level::Editor), ("search", Level::Viewer)],
     ),
-    ("admins", true, &[]),
+    (ADMINISTRATOR, &["g-admins"], &[]),
 ];
 
-/// What a provider may say a person belongs to: each role's group, and one no role names.
-const GROUPS: [&str; 4] = ["viewers", "editors", "admins", "everyone"];
+/// What a provider may say a person belongs to, and a role's groups may name: groups roles start with, one no role
+/// starts with, and a role's own name, which gives nothing unless a role lists it.
+const GROUPS: [&str; 6] = ["g-viewers", "g-staff", "g-editors", "g-admins", "everyone", "viewers"];
 
 /// What an administrator may give: each role, and a name no role has.
-const GIVEN: [&str; 4] = ["viewers", "editors", "admins", "ghost"];
+const GIVEN: [&str; 4] = ["viewers", "editors", ADMINISTRATOR, "ghost"];
 
 /// Display names, which may repeat.
 const NAMES: [&str; 3] = ["Ada", "Bo", "nightly export"];
@@ -70,10 +71,15 @@ const OPTIONS: &[&str] = &[
     "roles-given",
     "roles-unknown-refused",
     "roles-oidc-refused",
-    "flag-given",
-    "flag-taken",
-    "flag-oidc-refused",
-    "flag-last-administrator-refused",
+    "roles-last-administrator-refused",
+    "administrator-given",
+    "administrator-taken",
+    "administrator-oidc-refused",
+    "administrator-last-refused",
+    "role-groups-changed",
+    "role-name-is-no-group",
+    "administrator-areas-refused",
+    "administrator-delete-refused",
     "disable",
     "disable-last-administrator-refused",
     "enable",
@@ -150,7 +156,6 @@ struct Account {
     username: Option<String>,
     subject: Option<String>,
     enabled: bool,
-    administrator: bool,
     /// What an administrator gave a local or key account.
     roles: Vec<String>,
     /// What the provider last said an OIDC account belongs to.
@@ -168,28 +173,44 @@ enum Held {
 }
 
 /// The account model, apart from the leader's code.
-#[derive(Default)]
 struct Model {
     accounts: Vec<Account>,
+    /// Each role's groups as they stand, by its place in [`ROLES`].
+    groups: [Vec<String>; 3],
     made: usize,
 }
 
 impl Model {
+    fn new() -> Model {
+        Model {
+            accounts: Vec::new(),
+            groups: ROLES.map(|(_, groups, _)| groups.iter().map(|g| g.to_string()).collect()),
+            made: 0,
+        }
+    }
+
+    /// The roles `account` holds: those its groups give an OIDC account, those given any other.
+    fn roles_of(&self, account: &Account) -> Vec<&'static str> {
+        ROLES
+            .iter()
+            .zip(&self.groups)
+            .filter(|((name, ..), groups)| match account.kind {
+                Kind::Oidc => groups.iter().any(|g| account.groups.contains(g)),
+                Kind::Local | Kind::Key => account.roles.iter().any(|r| r == name),
+            })
+            .map(|((name, ..), _)| *name)
+            .collect()
+    }
+
     fn held(&self, account: &Account) -> Held {
-        if account.administrator {
+        let named = self.roles_of(account);
+        if named.contains(&ADMINISTRATOR) {
             return Held::Everything;
         }
-        let named = match account.kind {
-            Kind::Oidc => &account.groups,
-            Kind::Local | Kind::Key => &account.roles,
-        };
         let mut areas = BTreeMap::new();
-        for (name, administrator, gives) in ROLES {
-            if !named.iter().any(|n| n == name) {
+        for (name, _, gives) in ROLES {
+            if !named.contains(&name) {
                 continue;
-            }
-            if administrator {
-                return Held::Everything;
             }
             for (area, level) in gives {
                 let at = areas.entry(*area).or_insert(*level);
@@ -225,7 +246,7 @@ impl Model {
     fn other_local_administrators(&self, id: &str) -> usize {
         self.accounts
             .iter()
-            .filter(|a| a.id != id && a.kind == Kind::Local && a.enabled && a.administrator)
+            .filter(|a| a.id != id && a.kind == Kind::Local && a.enabled && a.roles.iter().any(|r| r == ADMINISTRATOR))
             .count()
     }
 
@@ -280,6 +301,10 @@ fn routes(auth: Auth) -> Router {
         .route("/api/accounts/:id/revoke-sessions", post(accounts_api::revoke_sessions))
         .route("/api/accounts/:id/keys", post(key_accounts_api::create_key))
         .route("/api/accounts/:id/keys/:key", delete(key_accounts_api::revoke_key))
+        .route(
+            "/api/roles/:name",
+            put(roles_api::put_role).delete(roles_api::delete_role),
+        )
         .with_state(auth.clone())
         .route_layer(axum::middleware::from_fn_with_state(auth, gate::require_principal))
 }
@@ -445,13 +470,11 @@ async fn create_local(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &m
     model.made += 1;
     let display_name = rng.pick(&NAMES).to_string();
     let roles = some_roles(rng);
-    let administrator = rng.chance(3);
     let body = json!({
         "authSource": "local",
         "username": username,
         "displayName": display_name,
         "roles": roles,
-        "administrator": administrator,
     });
     let (status, answer) = leader
         .send(false, &credential, "POST", "/api/accounts", Some(&body))
@@ -471,7 +494,6 @@ async fn create_local(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &m
         username: Some(username),
         subject: None,
         enabled: true,
-        administrator,
         roles: kept(roles),
         groups: Vec::new(),
         keys: Vec::new(),
@@ -490,12 +512,10 @@ async fn create_key_account(
     let (by, credential) = actor(leader, model, rng, cov);
     let display_name = rng.pick(&NAMES).to_string();
     let roles = some_roles(rng);
-    let administrator = rng.chance(3);
     let body = json!({
         "authSource": "key",
         "displayName": display_name,
         "roles": roles,
-        "administrator": administrator,
     });
     let (status, answer) = leader
         .send(false, &credential, "POST", "/api/accounts", Some(&body))
@@ -515,7 +535,6 @@ async fn create_key_account(
         username: None,
         subject: None,
         enabled: true,
-        administrator,
         roles: kept(roles),
         groups: Vec::new(),
         keys: Vec::new(),
@@ -527,9 +546,9 @@ async fn create_key_account(
 
 /// The provider signs someone in: a new identity makes its account, and a known one says its groups again.
 fn oidc_sign_in(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Coverage) -> Result<(), String> {
-    let known: Vec<String> = model.accounts.iter().filter_map(|a| a.subject.clone()).collect();
-    let subject = if !known.is_empty() && rng.chance(2) {
-        rng.pick(&known).clone()
+    let signed_in: Vec<String> = model.accounts.iter().filter_map(|a| a.subject.clone()).collect();
+    let subject = if !signed_in.is_empty() && rng.chance(2) {
+        rng.pick(&signed_in).clone()
     } else {
         model.made += 1;
         format!("subject-{}", model.made)
@@ -564,11 +583,11 @@ fn oidc_sign_in(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Cov
             if user.id != account.id {
                 return Err(format!("{subject} signed in again as a second account"));
             }
-            account.groups = groups;
+            account.groups = groups.clone();
         }
         None => {
             cov.reach("oidc-first-sign-in");
-            if user.id != new_id || user.administrator {
+            if user.id != new_id {
                 return Err(format!("{subject}'s first sign-in made {user:?}"));
             }
             model.accounts.push(Account {
@@ -576,16 +595,23 @@ fn oidc_sign_in(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Cov
                 kind: Kind::Oidc,
                 display_name,
                 username: None,
-                subject: Some(subject),
+                subject: Some(subject.clone()),
                 enabled: true,
-                administrator: false,
                 roles: Vec::new(),
-                groups,
+                groups: groups.clone(),
                 keys: Vec::new(),
                 agent: AgentPermissions::default(),
                 session: None,
             });
         }
+    }
+    let account = model
+        .accounts
+        .iter()
+        .find(|a| a.subject.as_deref() == Some(&subject))
+        .unwrap();
+    if groups.iter().any(|g| g == "viewers") && !model.roles_of(account).contains(&"viewers") {
+        cov.reach("role-name-is-no-group");
     }
     Ok(())
 }
@@ -618,27 +644,55 @@ async fn change(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Cov
                 cov.reach("roles-oidc-refused");
                 return expect("roles given an OIDC account", status, 409, &answer);
             }
+            if !roles.iter().any(|r| r == ADMINISTRATOR) && model.other_local_administrators(&id) == 0 {
+                cov.reach("roles-last-administrator-refused");
+                return expect(
+                    "roles without administrator for the last local administrator",
+                    status,
+                    409,
+                    &answer,
+                );
+            }
             expect("roles given", status, 200, &answer)?;
             cov.reach("roles-given");
             audited(leader, &by, "account-access", &id)?;
             model.accounts[i].roles = kept(roles);
         }
         2 => {
+            // The administrator role given or taken, the account's other roles as they are.
             let administrator = rng.chance(2);
-            let body = json!({ "administrator": administrator });
+            let mut roles: Vec<String> = model.accounts[i]
+                .roles
+                .iter()
+                .filter(|r| *r != ADMINISTRATOR)
+                .cloned()
+                .collect();
+            if administrator {
+                roles.push(ADMINISTRATOR.to_string());
+            }
+            let body = json!({ "roles": roles });
             let (status, answer) = leader.send(false, &credential, "PATCH", &target, Some(&body)).await;
             if kind == Kind::Oidc {
-                cov.reach("flag-oidc-refused");
-                return expect("the flag given an OIDC account", status, 409, &answer);
+                cov.reach("administrator-oidc-refused");
+                return expect("the administrator role given an OIDC account", status, 409, &answer);
             }
             if !administrator && model.other_local_administrators(&id) == 0 {
-                cov.reach("flag-last-administrator-refused");
-                return expect("the flag taken from the last local administrator", status, 409, &answer);
+                cov.reach("administrator-last-refused");
+                return expect(
+                    "the administrator role taken from the last local administrator",
+                    status,
+                    409,
+                    &answer,
+                );
             }
-            expect("the flag", status, 200, &answer)?;
-            cov.reach(if administrator { "flag-given" } else { "flag-taken" });
+            expect("the administrator role", status, 200, &answer)?;
+            cov.reach(if administrator {
+                "administrator-given"
+            } else {
+                "administrator-taken"
+            });
             audited(leader, &by, "account-access", &id)?;
-            model.accounts[i].administrator = administrator;
+            model.accounts[i].roles = kept(roles);
         }
         _ => {
             let enabled = rng.chance(2);
@@ -928,6 +982,37 @@ async fn probe(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Cove
     Ok(())
 }
 
+/// A role given other groups, which change what OIDC accounts holding them hold; or the administrator role asked
+/// to give a level in an area, or to go, which it never does.
+async fn role(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Coverage) -> Result<(), String> {
+    let (by, credential) = actor(leader, model, rng, cov);
+    let r = rng.below(ROLES.len());
+    let (name, _, gives) = ROLES[r];
+    let target = format!("/api/roles/{name}");
+    if name == ADMINISTRATOR && rng.chance(3) {
+        let (status, answer) = leader.send(false, &credential, "DELETE", &target, None).await;
+        cov.reach("administrator-delete-refused");
+        return expect("the administrator role deleted", status, 409, &answer);
+    }
+    let groups: Vec<String> = GROUPS.iter().filter(|_| rng.chance(3)).map(|g| g.to_string()).collect();
+    let mut areas: BTreeMap<&str, &str> = gives.iter().map(|(a, l)| (*a, l.as_str())).collect();
+    let asks_area = name == ADMINISTRATOR && rng.chance(3);
+    if asks_area {
+        areas.insert("payments", "viewer");
+    }
+    let body = json!({ "groups": groups, "areas": areas });
+    let (status, answer) = leader.send(false, &credential, "PUT", &target, Some(&body)).await;
+    if asks_area {
+        cov.reach("administrator-areas-refused");
+        return expect("the administrator role given a level in an area", status, 422, &answer);
+    }
+    expect("a role given other groups", status, 200, &answer)?;
+    cov.reach("role-groups-changed");
+    audited(leader, &by, "role-put", name)?;
+    model.groups[r] = groups;
+    Ok(())
+}
+
 /// The roster, read by an administrator, shows every account as the model holds it.
 async fn roster(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Coverage) -> Result<(), String> {
     let (_, credential) = actor(leader, model, rng, cov);
@@ -947,15 +1032,10 @@ async fn roster(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Cov
             .iter()
             .find(|a| a["id"] == account.id.as_str())
             .ok_or_else(|| format!("{} is not on the roster", account.id))?;
-        let roles: Vec<&str> = match account.kind {
-            Kind::Oidc => ROLES
-                .iter()
-                .map(|(name, ..)| *name)
-                .filter(|name| account.groups.iter().any(|g| g == name))
-                .collect(),
+        let mut roles: Vec<&str> = match account.kind {
+            Kind::Oidc => model.roles_of(account),
             Kind::Local | Kind::Key => account.roles.iter().map(String::as_str).collect(),
         };
-        let mut roles = roles;
         roles.sort();
         let mut shown_roles: Vec<&str> = shown["roles"]
             .as_array()
@@ -981,7 +1061,7 @@ async fn roster(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Cov
             "displayName": account.display_name,
             "username": account.username,
             "enabled": account.enabled,
-            "administrator": account.administrator,
+            "administrator": model.administers(account, false),
             "roles": roles,
             "groups": groups,
             "keys": keys,
@@ -991,7 +1071,7 @@ async fn roster(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Cov
             "displayName": shown["displayName"],
             "username": shown["username"],
             "enabled": shown["enabled"],
-            "administrator": shown["administrator"],
+            "administrator": shown["access"]["administrator"],
             "roles": shown_roles,
             "groups": shown["groups"],
             "keys": shown_keys,
@@ -1006,10 +1086,10 @@ async fn roster(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Cov
 async fn journey(seed: u64, cov: &mut Coverage) -> Result<(), String> {
     let mut rng = Rng::seeded(seed);
     let leader = Leader::start().await;
-    for (name, administrator, gives) in ROLES {
+    for (name, groups, gives) in ROLES {
         let role = Role {
             name: name.to_string(),
-            administrator,
+            groups: groups.iter().map(|g| g.to_string()).collect(),
             areas: gives.iter().map(|(a, l)| (a.to_string(), *l)).collect(),
         };
         let event = accounts::event_for(&Actor::system(), "role-put", name, "ok");
@@ -1028,15 +1108,12 @@ async fn journey(seed: u64, cov: &mut Coverage) -> Result<(), String> {
                 password_hash: "never-checked",
                 must_change: false,
             },
-            GivenAccess {
-                roles: &[],
-                administrator: true,
-            },
+            &[ADMINISTRATOR.to_string()],
             &event,
         )
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
-    let mut model = Model::default();
+    let mut model = Model::new();
     model.accounts.push(Account {
         id: root,
         kind: Kind::Local,
@@ -1044,8 +1121,7 @@ async fn journey(seed: u64, cov: &mut Coverage) -> Result<(), String> {
         username: Some("root".into()),
         subject: None,
         enabled: true,
-        administrator: true,
-        roles: Vec::new(),
+        roles: vec![ADMINISTRATOR.to_string()],
         groups: Vec::new(),
         keys: Vec::new(),
         agent: AgentPermissions::default(),
@@ -1070,7 +1146,8 @@ async fn journey(seed: u64, cov: &mut Coverage) -> Result<(), String> {
                 "agent-permissions",
                 agent_permissions(&leader, &mut model, &mut rng, cov),
             ),
-            8 => ("roster", roster(&leader, &mut model, &mut rng, cov).await),
+            8 if rng.chance(2) => ("roster", roster(&leader, &mut model, &mut rng, cov).await),
+            8 => ("role", role(&leader, &mut model, &mut rng, cov).await),
             _ => ("probe", probe(&leader, &mut model, &mut rng, cov).await),
         };
         done.push(name);

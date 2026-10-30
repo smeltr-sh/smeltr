@@ -523,14 +523,14 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/accounts",
-        what: "Create a local account, returning a one-time temporary password, or an enabled key account holding no key yet. Each holds the roles it is given, or everything as an administrator. No query.",
-        body: "{ authSource: 'local', username: string, displayName: string, roles?: string[], administrator?: boolean } | { authSource: 'key', displayName: string, roles?: string[], administrator?: boolean }",
+        what: "Create a local account, returning a one-time temporary password, or an enabled key account holding no key yet. Each holds the roles it is given; the administrator role holds everything. No query.",
+        body: "{ authSource: 'local', username: string, displayName: string, roles?: string[] } | { authSource: 'key', displayName: string, roles?: string[] }",
     },
     Route {
         method: "PATCH",
         path: "/api/accounts/:id",
-        what: "Change one account's display name or enabled state, or a local or key account's roles or administrator, one field per request. Disabling an account revokes every key it holds. No query.",
-        body: "{ displayName?: string, enabled?: boolean, roles?: string[], administrator?: boolean } (exactly one)",
+        what: "Change one account's display name or enabled state, or a local or key account's roles, one field per request. Disabling an account revokes every key it holds. No query.",
+        body: "{ displayName?: string, enabled?: boolean, roles?: string[] } (exactly one)",
     },
     Route {
         method: "POST",
@@ -577,19 +577,19 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/roles",
-        what: "Every role by name, as `roles`. No query.",
+        what: "Every role by name, as `roles`, each with the provider groups that give it. The administrator role is built in. No query.",
         body: "",
     },
     Route {
         method: "PUT",
         path: "/api/roles/:name",
-        what: "Create a role or replace it whole. No query.",
-        body: "{ administrator?: boolean, areas?: { [area]: 'viewer'|'editor'|'deployer' } }",
+        what: "Create a role or replace it whole. The administrator role holds everything, so only its groups can be changed. No query.",
+        body: "{ groups?: string[], areas?: { [area]: 'viewer'|'editor'|'deployer' } }",
     },
     Route {
         method: "DELETE",
         path: "/api/roles/:name",
-        what: "Delete a role. No query.",
+        what: "Delete a role. The administrator role is built in and cannot be deleted. No query.",
         body: "",
     },
     // -- settings --

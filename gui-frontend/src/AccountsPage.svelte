@@ -3,10 +3,10 @@
   account under Accounts, however it signs in, under Roles what each role
   gives, and under Single sign-on the provider itself.
 
-  A local or key account holds the roles an administrator gives it, or
-  everything as an administrator. An OIDC account holds what the roles named
-  for its provider groups give it, so the roster shows those roles and the
-  Roles tab is where what they give is changed.
+  A local or key account holds the roles an administrator gives it. An OIDC
+  account holds the roles its provider groups give it, so the roster shows
+  those roles and the Roles tab is where what they give, and which groups give
+  them, is changed. The administrator role holds everything.
 -->
 <script lang="ts">
   import { reported, unreported } from './errors.svelte';
@@ -64,7 +64,6 @@
   let newSignIn = $state<'local' | 'key'>('local');
   let newUsername = $state('');
   let newDisplayName = $state('');
-  let newAdministrator = $state(false);
   let newRoles = $state<string[]>([]);
 
   let message = $state('');
@@ -97,11 +96,6 @@
     return SIGN_IN_LABELS[account.authSource];
   }
 
-  /** What the Roles column shows: the account's own administrator flag, then its roles. */
-  function rolesOf(account: AccountDto): string[] {
-    return account.administrator ? ['administrator', ...account.roles] : account.roles;
-  }
-
   let query = $state('');
   let kind = $state<AccountDto['authSource'] | null>(null);
   const kinds = $derived(
@@ -131,7 +125,7 @@
       account: (p) => p.displayName,
       state: (p) => (p.enabled ? 'Enabled' : 'Disabled'),
       signIn: signIn,
-      roles: (p) => rolesOf(p).join(' '),
+      roles: (p) => p.roles.join(' '),
     }),
   );
 
@@ -158,7 +152,6 @@
     newSignIn = 'local';
     newUsername = '';
     newDisplayName = '';
-    newAdministrator = false;
     newRoles = [];
   }
 
@@ -171,16 +164,11 @@
     busy = true;
     try {
       if (newSignIn === 'local') {
-        const result = await createLocalAccount(
-          newUsername,
-          newDisplayName,
-          newRoles,
-          newAdministrator,
-        );
+        const result = await createLocalAccount(newUsername, newDisplayName, newRoles);
         if (refused(result)) return;
         handovers = [...handovers, result];
       } else {
-        const result = await createKeyAccount(newDisplayName, newRoles, newAdministrator);
+        const result = await createKeyAccount(newDisplayName, newRoles);
         if (refused(result)) return;
         // Opened, so the next thing it needs, a key, is one click away.
         open = result.id;
@@ -210,8 +198,9 @@
 
   /** The role whose row is open, and what its form holds. `''` is no level in that area. */
   let openRole = $state<string | null>(null);
-  let draft = $state<{ administrator: boolean; areas: Record<string, AccessLevel | ''> }>({
-    administrator: false,
+  /** The groups as typed, one to a line. */
+  let draft = $state<{ groups: string; areas: Record<string, AccessLevel | ''> }>({
+    groups: '',
     areas: {},
   });
   /** A role named in `+ Role` and not saved yet: a row of its own until Save or Cancel. */
@@ -249,7 +238,7 @@
   const shownRoles = $derived(
     unsaved === null
       ? roles
-      : [...roles, { name: unsaved, administrator: false, areas: {} }].sort((a, b) =>
+      : [...roles, { name: unsaved, builtIn: false, groups: [], areas: {} }].sort((a, b) =>
           a.name.localeCompare(b.name),
         ),
   );
@@ -298,7 +287,7 @@
     }
     if (unsaved !== role.name && !(await dropUnsaved())) return;
     openRole = role.name;
-    draft = { administrator: role.administrator, areas: { ...role.areas } };
+    draft = { groups: role.groups.join('\n'), areas: { ...role.areas } };
   }
 
   function closeRow() {
@@ -313,8 +302,18 @@
       Object.entries(draft.areas).filter((e): e is [string, AccessLevel] => e[1] !== ''),
     ),
   );
+  /** The groups the form would save, each once. */
+  const draftGroups = $derived([
+    ...new Set(
+      draft.groups
+        .split('\n')
+        .map((g) => g.trim())
+        .filter((g) => g !== ''),
+    ),
+  ]);
+  const openBuiltIn = $derived(shownRoles.find((r) => r.name === openRole)?.builtIn ?? false);
   /** A role that gives nothing is a role nobody needs, so it is never saved. */
-  const givesSomething = $derived(draft.administrator || Object.keys(draftAreas).length > 0);
+  const givesSomething = $derived(openBuiltIn || Object.keys(draftAreas).length > 0);
 
   const nameTaken = $derived(roles.some((r) => r.name === newRole.trim()));
 
@@ -325,21 +324,26 @@
     naming = true;
   }
 
-  /** A group the provider names that no role does yet, opened on the Roles tab as a new role. */
+  /** Whether any role lists `group`. */
+  function givesRole(group: string): boolean {
+    return roles.some((r) => r.groups.includes(group));
+  }
+
+  /** A group the provider names that gives no role yet, opened on the Roles tab as a new role it gives. */
   async function roleFor(group: string) {
     if (!(await dropUnsaved())) return;
     location.hash = '#/admin/accounts/roles';
     newRole = group;
-    named();
+    named(group);
   }
 
-  function named() {
+  function named(group?: string) {
     const name = newRole.trim();
     if (name === '' || nameTaken) return;
     naming = false;
     unsaved = name;
     openRole = name;
-    draft = { administrator: false, areas: {} };
+    draft = { groups: group ?? '', areas: {} };
     roleError = '';
   }
 
@@ -349,7 +353,7 @@
     busy = true;
     roleError = '';
     try {
-      const res = await putRole(name, draft.administrator, draft.administrator ? {} : draftAreas);
+      const res = await putRole(name, draftGroups, openBuiltIn ? {} : draftAreas);
       if (res.ok === false) return void (roleError = res.errors[0]?.message ?? 'that did not work');
       if (unsaved === name) unsaved = null;
       openRole = null;
@@ -366,7 +370,7 @@
     if (unsaved === name) return closeRow();
     const ok = await ask({
       title: 'remove role',
-      body: `Remove the role ${name}. Accounts in this group lose what it gives.`,
+      body: `Remove the role ${name}. Accounts holding it lose what it gives.`,
       action: 'Remove role',
       danger: true,
     });
@@ -414,9 +418,9 @@
     {/snippet}
     {#snippet help()}
       <p>
-        A role is a group your provider names. It gives viewer, editor or deployer in each area:
-        shared or a worker group. Administrators hold everything. A password or key account holds
-        the roles you give it.
+        A role gives viewer, editor or deployer in each area: shared or a worker group. An SSO
+        account holds the roles its provider groups give it; a password or key account holds the
+        roles you give it. The administrator role holds everything.
       </p>
     {/snippet}
   </PageHeader>
@@ -473,7 +477,7 @@
           <input bind:value={newDisplayName} autocomplete="off" required />
         </Field>
       {/if}
-      <AccountAccess {roles} bind:administrator={newAdministrator} bind:chosen={newRoles} />
+      <AccountAccess {roles} bind:chosen={newRoles} />
     </div>
     {#snippet actions()}
       <button type="button" onclick={reset} disabled={busy}>Cancel</button>
@@ -481,12 +485,9 @@
     {/snippet}
   </Dialog>
 
-  <Dialog open={naming} title="new role" oncancel={() => (naming = false)} onsubmit={named}>
+  <Dialog open={naming} title="new role" oncancel={() => (naming = false)} onsubmit={() => named()}>
     <Field required label="Role" error={nameTaken ? 'There is a role by this name already.' : null}>
-      {#snippet help()}
-        The group exactly as your provider names it. Accounts in that group hold what the role
-        gives.
-      {/snippet}
+      {#snippet help()}What the role is called. You can add the groups that give it next.{/snippet}
       <input bind:value={newRole} autocomplete="off" required />
     </Field>
     {#snippet actions()}
@@ -509,6 +510,7 @@
         <thead>
           <tr>
             <th>Role</th>
+            <th>Groups</th>
             <th>Access</th>
             <th></th>
           </tr>
@@ -519,8 +521,17 @@
               <td><div class="name mono">{role.name}</div></td>
               <td>
                 <div class="pills">
-                  {#if role.administrator}
-                    <span class="pill">administrator</span>
+                  {#each role.groups as group (group)}
+                    <span class="pill mono">{group}</span>
+                  {:else}
+                    <span class="dim">—</span>
+                  {/each}
+                </div>
+              </td>
+              <td>
+                <div class="pills">
+                  {#if role.builtIn}
+                    <span class="pill">everything</span>
                   {:else}
                     {#each heldBy(role) as [area, level] (area)}
                       <span class="pill area"
@@ -548,12 +559,18 @@
             </tr>
             {#if openRole === role.name}
               <tr class="fold">
-                <td colspan="3">
+                <td colspan="4">
                   <form class="panel" onsubmit={(e) => saveRole(e, role.name)}>
-                    <label class="check"
-                      ><input type="checkbox" bind:checked={draft.administrator} /> Administrator</label
-                    >
-                    {#if !draft.administrator}
+                    <Field label="Groups">
+                      {#snippet help()}
+                        One to a line, exactly as your provider names it. An SSO account in any of
+                        them holds this role.
+                      {/snippet}
+                      <textarea rows="3" bind:value={draft.groups} autocomplete="off"></textarea>
+                    </Field>
+                    {#if role.builtIn}
+                      <p class="dim">The administrator role holds everything, in every area.</p>
+                    {:else}
                       <Field label="Access" group>
                         {#snippet help()}
                           Viewers read, editors save on branches, deployers approve and deploy.
@@ -580,9 +597,13 @@
                     {/if}
                     <InlineError message={roleError} />
                     <div class="actions split">
-                      <button type="button" onclick={() => removeRole(role.name)} disabled={busy}
-                        >Remove role</button
-                      >
+                      {#if role.builtIn}
+                        <span></span>
+                      {:else}
+                        <button type="button" onclick={() => removeRole(role.name)} disabled={busy}
+                          >Remove role</button
+                        >
+                      {/if}
                       <span class="buttons">
                         <button type="button" onclick={closeRow}>Cancel</button>
                         <button class="primary" type="submit" disabled={busy || !givesSomething}
@@ -665,10 +686,10 @@
                 <td class="wide dim">{signIn(account)}</td>
                 <td>
                   <div class="pills">
-                    {#each rolesOf(account) as role (role)}
+                    {#each account.roles as role (role)}
                       <span class="pill mono">{role}</span>
                     {/each}
-                    {#each account.groups.filter((g) => !account.roles.includes(g)) as group (group)}
+                    {#each account.groups.filter((g) => !givesRole(g)) as group (group)}
                       <button type="button" class="pill ghost mono" onclick={() => roleFor(group)}
                         >+ {group}</button
                       >
@@ -841,11 +862,12 @@
     font-size: var(--text-body);
   }
 
-  .check {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-size: var(--text-body);
+  .panel textarea {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    font-family: var(--mono);
+    font-size: var(--text-note);
   }
 
   .actions.split {

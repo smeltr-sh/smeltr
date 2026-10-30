@@ -94,11 +94,12 @@ same for every account. A local and an OIDC sign-in end in the same session,
 so the gate, its deadlines, disabling and revocation treat the two alike.
 Display names may repeat: an account is known by its id, which the audit and git record beside its name.
 
-A local or key account holds the roles an administrator gives it, or
-everything by its own administrator flag. An OIDC account holds the roles of
-its provider groups, and never the flag. At least one enabled local account
-keeps the flag: it is the way in when the provider is down or misconfigured.
-An administrator makes local and key accounts.
+A local or key account holds the roles an administrator gives it. An OIDC
+account holds the roles its provider groups give it. The built-in
+**administrator** role holds everything; it is never removed, and only the
+groups that give it change. At least one enabled local account holds it: it is
+the way in when the provider is down or misconfigured. An administrator makes
+local and key accounts.
 
 A local account holds a username and a password the leader verifies. An OIDC account is one identity at one
 provider, named by the issuer and the subject the provider gives it and
@@ -107,11 +108,12 @@ first time the provider vouches for the person, and records the groups the
 provider names at each sign-in and at each refresh. While a session lives the
 leader refreshes it at the provider every few minutes with the refresh token
 the sign-in gave, held in memory with the session: a provider that refuses the
-refresh, or whose fresh ID token no longer names a group any role names, ends
-the session. Only a person holding a group some role names is let in; anyone
-else who can sign up at the provider would otherwise hold a session that gives
-nothing. A refused sign-in is logged with the groups the provider sent, since
-those are the names a role must match before anybody has been let in. The sign-in is the authorization code
+refresh, or whose fresh ID token no longer names a group that gives a role,
+ends the session. Only a person holding a group that gives some role is let in;
+anyone else who can sign up at the provider would otherwise hold a session that
+gives nothing. A refused sign-in is logged with the groups the provider sent,
+since those are the names a role's groups must match before anybody has been
+let in. The sign-in is the authorization code
 flow with PKCE, bound to the browser that started it, and the ID token's
 signature is checked in the module that performs all the leader's other
 cryptography.
@@ -137,21 +139,19 @@ sequenceDiagram
 
 Access is per area, and governs every account. An area is `shared` or one
 worker group, the scope every configuration read and write already names. A
-role is one group the provider names and what holding it gives: viewer,
-editor or deployer in each area, each including the ones before it, or
-administrator. An account holds the highest level any of its roles gives in
+role is a name, what holding it gives, viewer, editor or deployer in each area,
+each including the ones before it, and the provider groups that give it. The
+administrator role gives everything instead. An account holds the highest level any of its roles gives in
 each area, and reads `shared` if it holds any area, since a group is read
 merged with it. Objects carry nothing, so a team's access is set once rather
 than on every object it makes.
 
 ```text
   provider groups ──────┐
-  (OIDC, at sign-in     │
+  (OIDC, at sign-in     │   each role's groups
    and each refresh)    ├─► roles ──► level per area ──► the gate, on every request
   given by an admin ────┘   (leader store)
-  (local, key)
-
-  administrator flag (local, key) ──► everything
+  (local, key)              administrator role ──► everything
 ```
 
 The gate names the area and level each route needs

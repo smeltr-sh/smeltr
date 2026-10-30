@@ -9,14 +9,13 @@ use std::sync::Mutex;
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension};
 
-use super::access::{AgentPermissions, Level, Role};
+use super::access::{ADMINISTRATOR, AgentPermissions, Level, Role};
 use super::secrets::{self, EncryptionKey, Sealed};
 use super::store::{
-    AccessChange, AccountError, ApiKeyRecord, AuthSource, ConversationRecord, Custody, EnrollmentCodeRecord,
-    GivenAccess, HeldSource, Issued, Kept, KeyStanding, KeyState, LocalCredentialRecord, NewApiKey, NewEnrollmentCode,
-    NewKeyAccount, NewLocalUser, OidcIdentityRecord, OidcSignIn, PresentedKey, SecretRecord, SecurityEvent, SourceHold,
-    Spend, Store, StoreError, StoredValue, Unopenable, UsableEnrollmentCode, UserRecord, WorkerCredentialRecord,
-    WorkerKind,
+    AccountError, ApiKeyRecord, AuthSource, ConversationRecord, Custody, EnrollmentCodeRecord, HeldSource, Issued,
+    Kept, KeyStanding, KeyState, LocalCredentialRecord, NewApiKey, NewEnrollmentCode, NewKeyAccount, NewLocalUser,
+    OidcIdentityRecord, OidcSignIn, PresentedKey, SecretRecord, SecurityEvent, SourceHold, Spend, Store, StoreError,
+    StoredValue, Unopenable, UsableEnrollmentCode, UserRecord, WorkerCredentialRecord, WorkerKind,
 };
 use crate::heartbeat::{LedgerEntry, SourceKey};
 use crate::io::Progress;
@@ -339,17 +338,45 @@ pub(crate) const STEPS: &[&str] = &[
     // 13 -- a certificate this leader orders over ACME, which it orders again under the `acme.*` settings. Additive:
     // an older build lists it as the certificate it also is.
     "CREATE TABLE acme_certificates (name TEXT PRIMARY KEY);",
-    // 14 -- key accounts, which a script calls the operator API as, and the keys each holds; and the roles an
-    // administrator gives a local or key account. Breaking: a build without this step reads a 'key' account as
-    // local, and holds every local account an administrator whatever its flag says.
-    "-- An OIDC account's roles are its provider's groups (`oidc_identities`), so it has no row here.
+    // 14 -- key accounts, which a script calls the operator API as, and the keys each holds; the roles an
+    // administrator gives a local or key account; the groups that give each role; and the built-in administrator
+    // role (`access::ADMINISTRATOR`), the one way to hold everything. Breaking: a build without this step reads a
+    // 'key' account as local, and reads both administrator flags it drops.
+    "-- An OIDC account's roles are the ones its provider's groups give (`role_groups`), so it has no row here.
      CREATE TABLE account_roles (
          user_id     TEXT PRIMARY KEY,
          auth_source TEXT NOT NULL CHECK (auth_source IN ('local', 'key')),
-         -- By name, as a JSON array: what an OIDC account's groups are to it.
+         -- By name, as a JSON array.
          roles       TEXT NOT NULL DEFAULT '[]',
          FOREIGN KEY (user_id, auth_source) REFERENCES users (id, auth_source)
      );
+     -- A provider group that gives a role, exactly as the groups claim names it. A role was named for its group, and
+     -- keeps it here.
+     CREATE TABLE role_groups (
+         role       TEXT NOT NULL REFERENCES roles (name) ON DELETE CASCADE,
+         group_name TEXT NOT NULL,
+         PRIMARY KEY (role, group_name)
+     );
+     -- A role already called administrator gave only its areas, unless marked: it keeps them under another name, so
+     -- nobody holding it gains everything by the built-in role taking its name.
+     INSERT INTO roles (name, administrator)
+         SELECT 'administrator (group)', administrator FROM roles WHERE name = 'administrator';
+     UPDATE role_areas SET role = 'administrator (group)' WHERE role = 'administrator';
+     INSERT INTO role_groups (role, group_name)
+         SELECT name, CASE name WHEN 'administrator (group)' THEN 'administrator' ELSE name END
+           FROM roles WHERE name <> 'administrator';
+     DELETE FROM roles WHERE name = 'administrator';
+     INSERT INTO roles (name) VALUES ('administrator');
+     -- A role marked administrator gave everything: its groups now give the built-in role, and it goes.
+     INSERT OR IGNORE INTO role_groups (role, group_name)
+         SELECT 'administrator', g.group_name FROM role_groups g JOIN roles r ON r.name = g.role
+          WHERE r.administrator = 1;
+     DELETE FROM roles WHERE administrator = 1;
+     ALTER TABLE roles DROP COLUMN administrator;
+     -- Every local account before this step was an administrator by its flag, and keeps being one by the role.
+     INSERT INTO account_roles (user_id, auth_source, roles)
+         SELECT id, auth_source, '[\"administrator\"]' FROM users WHERE auth_source = 'local' AND administrator = 1;
+     ALTER TABLE users DROP COLUMN administrator;
      -- A key belongs to a key account and to no other kind, as a password does to a local one. A revoked key is
      -- marked rather than removed, so it stays refused, and what it did stays answerable.
      CREATE TABLE api_keys (
@@ -1561,7 +1588,8 @@ impl Store for SqliteStore {
         if occupied != 0 {
             return Ok(false);
         }
-        insert_local_user(&tx, &user, true)?;
+        insert_local_user(&tx, &user)?;
+        insert_given_roles(&tx, user.id, AuthSource::Local, &[ADMINISTRATOR.to_string()])?;
         tx.commit()?;
         Ok(true)
     }
@@ -1569,7 +1597,7 @@ impl Store for SqliteStore {
     fn create_local_user(
         &self,
         user: NewLocalUser<'_>,
-        given: GivenAccess<'_>,
+        roles: &[String],
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError> {
         let mut conn = self.conn.lock().unwrap();
@@ -1577,8 +1605,8 @@ impl Store for SqliteStore {
         if username_taken(&tx, user.username)? {
             return Ok(Err(AccountError::UsernameTaken));
         }
-        insert_local_user(&tx, &user, given.administrator)?;
-        insert_given_roles(&tx, user.id, AuthSource::Local, given.roles)?;
+        insert_local_user(&tx, &user)?;
+        insert_given_roles(&tx, user.id, AuthSource::Local, roles)?;
         insert_event(&tx, event)?;
         tx.commit()?;
         Ok(Ok(()))
@@ -1586,24 +1614,13 @@ impl Store for SqliteStore {
 
     fn given_roles(&self, user_id: &str) -> Result<Vec<String>, StoreError> {
         let conn = self.conn.lock().unwrap();
-        let roles: Option<String> = conn
-            .query_row(
-                "SELECT roles FROM account_roles WHERE user_id = ?1",
-                (user_id,),
-                |row| row.get(0),
-            )
-            .optional()?;
-        match roles {
-            None => Ok(Vec::new()),
-            Some(roles) => serde_json::from_str(&roles)
-                .map_err(|e| StoreError::failed(format!("reading the roles of {user_id}: {e}"))),
-        }
+        given_roles_in(&conn, user_id)
     }
 
     fn change_access(
         &self,
         user_id: &str,
-        change: &AccessChange,
+        roles: &[String],
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError> {
         let mut conn = self.conn.lock().unwrap();
@@ -1618,25 +1635,11 @@ impl Store for SqliteStore {
             Some(Some(AuthSource::Oidc)) | Some(None) => return Ok(Err(AccountError::HeldByProvider)),
             Some(Some(source)) => source,
         };
-        match change {
-            AccessChange::Roles(roles) => {
-                tx.execute(
-                    "INSERT INTO account_roles (user_id, auth_source, roles) VALUES (?1, ?2, ?3)
-                     ON CONFLICT(user_id) DO UPDATE SET roles = excluded.roles",
-                    (user_id, source.as_str(), encode_roles(roles)?),
-                )?;
-            }
-            AccessChange::Administrator(administrator) => {
-                // Counted inside the transaction and excluding this account, as a disable is.
-                if !administrator && others_who_can_sign_in(&tx, user_id)? == 0 {
-                    return Ok(Err(AccountError::LastAdministrator));
-                }
-                tx.execute(
-                    "UPDATE users SET administrator = ?2 WHERE id = ?1",
-                    rusqlite::params![user_id, *administrator as i64],
-                )?;
-            }
+        // Counted inside the transaction and excluding this account, as a disable is.
+        if !roles.iter().any(|role| role == ADMINISTRATOR) && others_who_can_sign_in(&tx, user_id)? == 0 {
+            return Ok(Err(AccountError::LastAdministrator));
         }
+        give_roles(&tx, user_id, source, roles)?;
         tx.execute(
             "UPDATE users SET updated_at = ?2 WHERE id = ?1",
             rusqlite::params![user_id, event.at],
@@ -1649,7 +1652,7 @@ impl Store for SqliteStore {
     fn list_users(&self) -> Result<Vec<UserRecord>, StoreError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, auth_source, display_name, enabled, administrator, generation, created_at, updated_at
+            "SELECT id, auth_source, display_name, enabled, generation, created_at, updated_at
                FROM users ORDER BY created_at, id",
         )?;
         let rows = stmt.query_map([], read_user)?;
@@ -1660,7 +1663,7 @@ impl Store for SqliteStore {
         let conn = self.conn.lock().unwrap();
         Ok(conn
             .query_row(
-                "SELECT id, auth_source, display_name, enabled, administrator, generation, created_at, updated_at
+                "SELECT id, auth_source, display_name, enabled, generation, created_at, updated_at
                    FROM users WHERE id = ?1",
                 (id,),
                 read_user,
@@ -1828,9 +1831,8 @@ impl Store for SqliteStore {
             }
             None => {
                 tx.execute(
-                    "INSERT INTO users (id, auth_source, display_name, enabled, administrator, generation, created_at,
-                                        updated_at)
-                     VALUES (?1, 'oidc', ?2, 1, 0, 1, ?3, ?3)",
+                    "INSERT INTO users (id, auth_source, display_name, enabled, generation, created_at, updated_at)
+                     VALUES (?1, 'oidc', ?2, 1, 1, ?3, ?3)",
                     rusqlite::params![who.new_id, who.display_name, who.at],
                 )?;
                 tx.execute(
@@ -1843,7 +1845,7 @@ impl Store for SqliteStore {
             }
         };
         let user = tx.query_row(
-            "SELECT id, auth_source, display_name, enabled, administrator, generation, created_at, updated_at
+            "SELECT id, auth_source, display_name, enabled, generation, created_at, updated_at
                FROM users WHERE id = ?1",
             (&user_id,),
             read_user,
@@ -1908,9 +1910,14 @@ impl Store for SqliteStore {
         // Enabled and an administrator both: recovery exists for the case where neither is true any more, and an
         // account it cannot sign in with is not recovered.
         tx.execute(
-            "UPDATE users SET enabled = 1, administrator = 1, updated_at = ?2 WHERE id = ?1",
+            "UPDATE users SET enabled = 1, updated_at = ?2 WHERE id = ?1",
             rusqlite::params![&user_id, super::warnings::now_millis()],
         )?;
+        let mut roles = given_roles_in(&tx, &user_id)?;
+        if !roles.iter().any(|role| role == ADMINISTRATOR) {
+            roles.push(ADMINISTRATOR.to_string());
+            give_roles(&tx, &user_id, AuthSource::Local, &roles)?;
+        }
         bump_generation(&tx, &user_id)?;
         tx.commit()?;
         Ok(Ok(user_id))
@@ -1945,17 +1952,17 @@ impl Store for SqliteStore {
     fn create_key_account(
         &self,
         account: NewKeyAccount<'_>,
-        given: GivenAccess<'_>,
+        roles: &[String],
         event: &SecurityEvent,
     ) -> Result<(), StoreError> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO users (id, auth_source, display_name, enabled, administrator, generation, created_at, updated_at)
-             VALUES (?1, 'key', ?2, 1, ?3, 1, ?4, ?4)",
-            rusqlite::params![account.id, account.display_name, given.administrator as i64, event.at],
+            "INSERT INTO users (id, auth_source, display_name, enabled, generation, created_at, updated_at)
+             VALUES (?1, 'key', ?2, 1, 1, ?3, ?3)",
+            rusqlite::params![account.id, account.display_name, event.at],
         )?;
-        insert_given_roles(&tx, account.id, AuthSource::Key, given.roles)?;
+        insert_given_roles(&tx, account.id, AuthSource::Key, roles)?;
         insert_event(&tx, event)?;
         tx.commit()?;
         Ok(())
@@ -2180,15 +2187,25 @@ impl Store for SqliteStore {
     fn list_roles(&self) -> Result<Vec<Role>, StoreError> {
         let conn = self.conn.lock().unwrap();
         let mut roles: Vec<Role> = conn
-            .prepare("SELECT name, administrator FROM roles ORDER BY name")?
+            .prepare("SELECT name FROM roles ORDER BY name")?
             .query_map([], |row| {
                 Ok(Role {
                     name: row.get(0)?,
-                    administrator: row.get::<_, i64>(1)? != 0,
+                    groups: Vec::new(),
                     areas: std::collections::BTreeMap::new(),
                 })
             })?
             .collect::<Result<_, _>>()?;
+        let mut stmt = conn.prepare("SELECT role, group_name FROM role_groups ORDER BY role, group_name")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (name, group) = row?;
+            // Both lists are by name and the foreign key holds every group's role in the first.
+            let at = roles
+                .binary_search_by(|role| role.name.as_str().cmp(&name))
+                .map_err(|_| StoreError::failed(format!("a group of {name}, which is no role")))?;
+            roles[at].groups.push(group);
+        }
         let mut stmt = conn.prepare("SELECT role, area, level FROM role_areas ORDER BY role, area")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get(1)?, row.get::<_, String>(2)?))
@@ -2210,10 +2227,16 @@ impl Store for SqliteStore {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO roles (name, administrator) VALUES (?1, ?2)
-             ON CONFLICT(name) DO UPDATE SET administrator = excluded.administrator",
-            rusqlite::params![role.name, role.administrator as i64],
+            "INSERT INTO roles (name) VALUES (?1) ON CONFLICT(name) DO NOTHING",
+            (&role.name,),
         )?;
+        tx.execute("DELETE FROM role_groups WHERE role = ?1", (&role.name,))?;
+        for group in &role.groups {
+            tx.execute(
+                "INSERT OR IGNORE INTO role_groups (role, group_name) VALUES (?1, ?2)",
+                (&role.name, group),
+            )?;
+        }
         // Replaced whole, so an area left out of the new role is one it no longer gives anything in.
         tx.execute("DELETE FROM role_areas WHERE role = ?1", (&role.name,))?;
         for (area, level) in &role.areas {
@@ -2314,23 +2337,18 @@ fn read_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<UserRecord> {
         auth_source: AuthSource::parse(&source).unwrap_or(AuthSource::Local),
         display_name: row.get(2)?,
         enabled: row.get::<_, i64>(3)? != 0,
-        administrator: row.get::<_, i64>(4)? != 0,
-        generation: row.get(5)?,
-        created_at: row.get(6)?,
-        updated_at: row.get(7)?,
+        generation: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
     })
 }
 
-fn insert_local_user(
-    tx: &rusqlite::Transaction<'_>,
-    user: &NewLocalUser<'_>,
-    administrator: bool,
-) -> Result<(), StoreError> {
+fn insert_local_user(tx: &rusqlite::Transaction<'_>, user: &NewLocalUser<'_>) -> Result<(), StoreError> {
     let now = super::warnings::now_millis();
     tx.execute(
-        "INSERT INTO users (id, auth_source, display_name, enabled, administrator, generation, created_at, updated_at)
-         VALUES (?1, 'local', ?2, 1, ?3, 1, ?4, ?4)",
-        rusqlite::params![user.id, user.display_name, administrator as i64, now],
+        "INSERT INTO users (id, auth_source, display_name, enabled, generation, created_at, updated_at)
+         VALUES (?1, 'local', ?2, 1, 1, ?3, ?3)",
+        rusqlite::params![user.id, user.display_name, now],
     )?;
     tx.execute(
         "INSERT INTO local_credentials (user_id, auth_source, username, password_hash, must_change)
@@ -2371,18 +2389,51 @@ fn local_user_exists(tx: &rusqlite::Transaction<'_>, user_id: &str) -> Result<Pr
     })
 }
 
-/// How many accounts other than `user_id` could still sign in and administer: enabled, an administrator, and
-/// holding a password. Anything short of all three is an account that cannot let an operator back in. An OIDC
+/// How many accounts other than `user_id` could still sign in and administer: enabled, holding the administrator
+/// role, and holding a password. Anything short of all three is an account that cannot let an operator back in. An OIDC
 /// administrator does not count: it signs in only while its provider answers, and a local one is the way in when
 /// that provider is down or misconfigured.
 fn others_who_can_sign_in(tx: &rusqlite::Transaction<'_>, user_id: &str) -> Result<i64, StoreError> {
     Ok(tx.query_row(
         "SELECT COUNT(*) FROM users u
            JOIN local_credentials c ON c.user_id = u.id
-          WHERE u.id <> ?1 AND u.enabled = 1 AND u.administrator = 1",
-        (user_id,),
+           JOIN account_roles r ON r.user_id = u.id
+          WHERE u.id <> ?1 AND u.enabled = 1
+            AND EXISTS (SELECT 1 FROM json_each(r.roles) WHERE value = ?2)",
+        (user_id, ADMINISTRATOR),
         |row| row.get(0),
     )?)
+}
+
+fn given_roles_in(conn: &Connection, user_id: &str) -> Result<Vec<String>, StoreError> {
+    let roles: Option<String> = conn
+        .query_row(
+            "SELECT roles FROM account_roles WHERE user_id = ?1",
+            (user_id,),
+            |row| row.get(0),
+        )
+        .optional()?;
+    match roles {
+        None => Ok(Vec::new()),
+        Some(roles) => {
+            serde_json::from_str(&roles).map_err(|e| StoreError::failed(format!("reading the roles of {user_id}: {e}")))
+        }
+    }
+}
+
+/// Replace the roles a local or key account holds.
+fn give_roles(
+    tx: &rusqlite::Transaction<'_>,
+    user_id: &str,
+    source: AuthSource,
+    roles: &[String],
+) -> Result<(), StoreError> {
+    tx.execute(
+        "INSERT INTO account_roles (user_id, auth_source, roles) VALUES (?1, ?2, ?3)
+         ON CONFLICT(user_id) DO UPDATE SET roles = excluded.roles",
+        (user_id, source.as_str(), encode_roles(roles)?),
+    )?;
+    Ok(())
 }
 
 /// The roles an administrator gives a new account. None is no row, which reads as none.
@@ -3767,10 +3818,7 @@ mod tests {
         assert_eq!(
             s.create_local_user(
                 new_user("u_2", "admin"),
-                crate::leader::store::GivenAccess {
-                    roles: &[],
-                    administrator: true
-                },
+                &[ADMINISTRATOR.to_string()],
                 &crate::leader::accounts::event_for(&crate::leader::store::Actor::system(), "account-create", "", "ok")
             )
             .unwrap(),
@@ -3786,10 +3834,7 @@ mod tests {
         s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
         s.create_local_user(
             new_user("u_2", "bob"),
-            crate::leader::store::GivenAccess {
-                roles: &[],
-                administrator: true,
-            },
+            &[ADMINISTRATOR.to_string()],
             &crate::leader::accounts::event_for(&crate::leader::store::Actor::system(), "account-create", "", "ok"),
         )
         .unwrap()
@@ -3804,10 +3849,7 @@ mod tests {
         assert_eq!(
             s.create_local_user(
                 new_user("u_3", "bob"),
-                crate::leader::store::GivenAccess {
-                    roles: &[],
-                    administrator: true
-                },
+                &[ADMINISTRATOR.to_string()],
                 &crate::leader::accounts::event_for(&crate::leader::store::Actor::system(), "account-create", "", "ok")
             )
             .unwrap(),
@@ -3918,10 +3960,7 @@ mod tests {
         s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
         s.create_local_user(
             new_user("u_2", "bob"),
-            crate::leader::store::GivenAccess {
-                roles: &[],
-                administrator: true,
-            },
+            &[ADMINISTRATOR.to_string()],
             &crate::leader::accounts::event_for(&crate::leader::store::Actor::system(), "account-create", "", "ok"),
         )
         .unwrap()
@@ -4063,18 +4102,23 @@ mod tests {
         );
     }
 
-    /// What recovery is for: an account disabled, with a password nobody has, is signed back in to.
+    /// What recovery is for: an account disabled, its administrator role taken, with a password nobody has, is
+    /// signed back in to as an administrator.
     #[test]
     fn recovery_reenables_the_account_and_moves_its_generation() {
         let s = store();
         s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
         s.create_local_user(
             new_user("u_2", "bob"),
-            crate::leader::store::GivenAccess {
-                roles: &[],
-                administrator: true,
-            },
+            &[ADMINISTRATOR.to_string()],
             &crate::leader::accounts::event_for(&crate::leader::store::Actor::system(), "account-create", "", "ok"),
+        )
+        .unwrap()
+        .unwrap();
+        s.change_access(
+            "u_1",
+            &[],
+            &crate::leader::accounts::event_for(&crate::leader::store::Actor::system(), "account-access", "", "ok"),
         )
         .unwrap()
         .unwrap();
@@ -4094,7 +4138,7 @@ mod tests {
         assert_eq!(id, "u_1");
         let after = s.get_user("u_1").unwrap().unwrap();
         assert!(after.enabled);
-        assert!(after.administrator);
+        assert_eq!(s.given_roles("u_1").unwrap(), vec![ADMINISTRATOR.to_string()]);
         assert!(after.generation > before);
         let credential = s.local_credential_by_username("admin").unwrap().unwrap();
         assert!(credential.must_change, "a password nobody chose has to be changed");
@@ -4118,8 +4162,8 @@ mod tests {
         let s = store();
         let conn = s.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO users (id, auth_source, display_name, enabled, administrator, generation, created_at, updated_at)
-             VALUES ('u_oidc', 'oidc', 'Someone', 1, 1, 1, 0, 0)",
+            "INSERT INTO users (id, auth_source, display_name, enabled, generation, created_at, updated_at)
+             VALUES ('u_oidc', 'oidc', 'Someone', 1, 1, 0, 0)",
             [],
         )
         .unwrap();
@@ -4153,7 +4197,7 @@ mod tests {
         crate::leader::accounts::event_for(&crate::leader::store::Actor::system(), "account-create", target, "ok")
     }
 
-    /// The first sign-in makes an enabled account, holding nothing by its own flag, and says who made it; the next
+    /// The first sign-in makes an enabled account, given no role here, and says who made it; the next
     /// finds the same account and records what the provider says now.
     #[test]
     fn an_oidc_identity_is_one_account_across_sign_ins() {
@@ -4173,9 +4217,10 @@ mod tests {
         );
         assert_eq!(first.id, "u_a");
         assert_eq!(first.auth_source, AuthSource::Oidc);
+        assert!(first.enabled);
         assert!(
-            first.enabled && !first.administrator,
-            "an OIDC account's access comes from its roles"
+            s.given_roles("u_a").unwrap().is_empty(),
+            "an OIDC account's roles come from its groups"
         );
         assert_eq!(s.list_security_events(10).unwrap().len(), 1);
 
@@ -4261,18 +4306,22 @@ mod tests {
     }
 
     /// Local administrators are the way in when the provider is not: an OIDC administrator does not stand in for
-    /// the last of them, even one whose flag says it is one.
+    /// the last of them.
     #[test]
     fn an_oidc_administrator_does_not_count_as_one_who_can_sign_in() {
         let s = store();
         s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
-        s.oidc_sign_in(sign_in("https://idp", "sub", &[], "u_a", NOW), &created("u_a"))
-            .unwrap();
-        s.conn
-            .lock()
-            .unwrap()
-            .execute("UPDATE users SET administrator = 1 WHERE id = 'u_a'", [])
-            .unwrap();
+        let admins = Role {
+            name: ADMINISTRATOR.into(),
+            groups: vec!["smeltr-admins".into()],
+            areas: Default::default(),
+        };
+        s.put_role(&admins, &created("administrator")).unwrap();
+        s.oidc_sign_in(
+            sign_in("https://idp", "sub", &["smeltr-admins".into()], "u_a", NOW),
+            &created("u_a"),
+        )
+        .unwrap();
         assert_eq!(
             s.set_user_enabled(
                 "u_1",
@@ -4494,10 +4543,10 @@ mod tests {
 
     // -- roles ---------------------------------------------------------------
 
-    fn role(name: &str, administrator: bool, areas: &[(&str, Level)]) -> Role {
+    fn role(name: &str, groups: &[&str], areas: &[(&str, Level)]) -> Role {
         Role {
             name: name.into(),
-            administrator,
+            groups: groups.iter().map(|g| g.to_string()).collect(),
             areas: areas.iter().map(|(a, l)| (a.to_string(), *l)).collect(),
         }
     }
@@ -4506,50 +4555,66 @@ mod tests {
         crate::leader::accounts::event_for(&crate::leader::store::Actor::system(), action, target, "ok")
     }
 
+    /// Model, point 3: a store holds the administrator role from its first start, given by no group.
     #[test]
-    fn roles_read_back_by_name_with_their_areas() {
+    fn a_fresh_store_holds_the_administrator_role() {
+        assert_eq!(store().list_roles().unwrap(), vec![role(ADMINISTRATOR, &[], &[])]);
+    }
+
+    #[test]
+    fn roles_read_back_by_name_with_their_groups_and_areas() {
         let s = store();
         let payments = role(
-            "smeltr-payments",
-            false,
+            "payments",
+            &["smeltr-payments", "smeltr-oncall"],
             &[("payments", Level::Deployer), ("shared", Level::Viewer)],
         );
-        let admins = role("smeltr-admins", true, &[]);
+        let admins = role(ADMINISTRATOR, &["smeltr-admins"], &[]);
         s.put_role(&payments, &role_event("role-put", &payments.name)).unwrap();
         s.put_role(&admins, &role_event("role-put", &admins.name)).unwrap();
+        let mut payments = payments;
+        payments.groups.sort();
         assert_eq!(s.list_roles().unwrap(), vec![admins, payments]);
     }
 
     #[test]
-    fn putting_a_role_again_replaces_its_areas_whole() {
+    fn putting_a_role_again_replaces_its_groups_and_areas_whole() {
         let s = store();
         s.put_role(
-            &role("r", true, &[("payments", Level::Deployer), ("search", Level::Editor)]),
+            &role(
+                "r",
+                &["a", "b"],
+                &[("payments", Level::Deployer), ("search", Level::Editor)],
+            ),
             &role_event("role-put", "r"),
         )
         .unwrap();
-        let replaced = role("r", false, &[("search", Level::Viewer)]);
+        let replaced = role("r", &["c"], &[("search", Level::Viewer)]);
         s.put_role(&replaced, &role_event("role-put", "r")).unwrap();
-        assert_eq!(s.list_roles().unwrap(), vec![replaced]);
+        assert_eq!(s.list_roles().unwrap()[1..], [replaced]);
     }
 
     #[test]
     fn deleting_a_role_takes_its_areas_and_says_whether_there_was_one() {
         let s = store();
         s.put_role(
-            &role("r", false, &[("payments", Level::Editor)]),
+            &role("r", &["g"], &[("payments", Level::Editor)]),
             &role_event("role-put", "r"),
         )
         .unwrap();
         assert!(s.delete_role("r", &role_event("role-delete", "r")).unwrap());
-        assert!(s.list_roles().unwrap().is_empty());
-        let areas: i64 = s
+        assert_eq!(s.list_roles().unwrap(), vec![role(ADMINISTRATOR, &[], &[])]);
+        let left: i64 = s
             .conn
             .lock()
             .unwrap()
-            .query_row("SELECT count(*) FROM role_areas", [], |row| row.get(0))
+            .query_row(
+                "SELECT (SELECT count(*) FROM role_areas) + (SELECT count(*) FROM role_groups)",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
-        assert_eq!(areas, 0, "the role's areas outlived it");
+        assert_eq!(left, 0, "the role's areas or groups outlived it");
 
         assert!(!s.delete_role("r", &role_event("role-delete", "r")).unwrap());
         assert_eq!(
@@ -4562,8 +4627,7 @@ mod tests {
     #[test]
     fn a_role_change_carries_its_audit_row() {
         let s = store();
-        s.put_role(&role("r", false, &[]), &role_event("role-put", "r"))
-            .unwrap();
+        s.put_role(&role("r", &[], &[]), &role_event("role-put", "r")).unwrap();
         s.delete_role("r", &role_event("role-delete", "r")).unwrap();
         let events = s.list_security_events(10).unwrap();
         assert_eq!(
@@ -4578,8 +4642,7 @@ mod tests {
     #[test]
     fn a_stored_level_this_build_does_not_know_is_an_error() {
         let s = store();
-        s.put_role(&role("r", false, &[]), &role_event("role-put", "r"))
-            .unwrap();
+        s.put_role(&role("r", &[], &[]), &role_event("role-put", "r")).unwrap();
         s.conn
             .lock()
             .unwrap()
@@ -4621,7 +4684,7 @@ mod tests {
 
     // -- key accounts --------------------------------------------------------
 
-    /// A build without the step would read a key account as local, and every local account as an administrator.
+    /// A build without the step would read a key account as local, and both administrator flags it drops.
     #[test]
     fn the_key_account_step_is_breaking() {
         assert!(!super::super::steps::is_additive(STEPS[13]));
@@ -4633,21 +4696,78 @@ mod tests {
         assert_eq!(min_reader, 14);
     }
 
+    /// Model, point 3: the step carries every role and flag over so nobody gains or loses anything. A role keeps
+    /// the group it was named for; one marked administrator gives its groups to the built-in role and goes; one
+    /// already called administrator keeps its areas under another name; a local account with the flag holds the
+    /// role.
+    #[test]
+    fn the_administrator_role_step_carries_every_role_and_flag_over() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        super::super::steps::upgrade_sqlite(&mut conn, "leader.db", &STEPS[..13]).unwrap();
+        conn.execute_batch(
+            "INSERT INTO users (id, auth_source, display_name, administrator, created_at, updated_at)
+             VALUES ('u_local', 'local', 'admin', 1, 0, 0), ('u_oidc', 'oidc', 'someone', 0, 0, 0);
+             INSERT INTO roles (name, administrator)
+             VALUES ('payments', 0), ('smeltr-admins', 1), ('ops', 1), ('administrator', 0);
+             INSERT INTO role_areas (role, area, level)
+             VALUES ('payments', 'payments', 'viewer'), ('administrator', 'search', 'editor'), ('ops', 'x', 'viewer');",
+        )
+        .unwrap();
+        super::super::steps::upgrade_sqlite(&mut conn, "leader.db", &STEPS[..14]).unwrap();
+        let rows = |sql: &str| -> Vec<(String, String)> {
+            conn.prepare(sql)
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let pairs = |p: &[(&str, &str)]| -> Vec<(String, String)> {
+            p.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+        };
+        assert_eq!(
+            rows("SELECT role, group_name FROM role_groups ORDER BY role, group_name"),
+            pairs(&[
+                ("administrator", "ops"),
+                ("administrator", "smeltr-admins"),
+                ("administrator (group)", "administrator"),
+                ("payments", "payments"),
+            ])
+        );
+        assert_eq!(
+            rows("SELECT role, area FROM role_areas ORDER BY role"),
+            pairs(&[("administrator (group)", "search"), ("payments", "payments")])
+        );
+        assert_eq!(
+            rows("SELECT user_id, roles FROM account_roles"),
+            pairs(&[("u_local", "[\"administrator\"]")])
+        );
+        let flags: i64 = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM pragma_table_info('users') WHERE name = 'administrator')
+                      + (SELECT count(*) FROM pragma_table_info('roles') WHERE name = 'administrator')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(flags, 0);
+    }
+
     fn key_account_event(action: &str) -> SecurityEvent {
         crate::leader::accounts::event_for(&crate::leader::store::Actor::system(), action, "", "ok")
     }
 
-    fn given(roles: &[String], administrator: bool) -> GivenAccess<'_> {
-        GivenAccess { roles, administrator }
-    }
-
-    fn new_key_account(s: &SqliteStore, id: &str, roles: &[String], administrator: bool) {
+    fn new_key_account(s: &SqliteStore, id: &str, roles: &[String]) {
         s.create_key_account(
             NewKeyAccount { id, display_name: id },
-            given(roles, administrator),
+            roles,
             &key_account_event("account-create"),
         )
         .unwrap();
+    }
+
+    fn administrator() -> Vec<String> {
+        vec![ADMINISTRATOR.to_string()]
     }
 
     fn new_key<'a>(id: &'a str, token_hash: &'a str, expires_at: Option<i64>) -> NewApiKey<'a> {
@@ -4666,28 +4786,19 @@ mod tests {
         let s = store();
         s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
         let readers = vec!["readers".to_string()];
-        s.create_local_user(
-            new_user("u_2", "bob"),
-            given(&readers, false),
-            &key_account_event("account-create"),
-        )
-        .unwrap()
-        .unwrap();
-        new_key_account(&s, "k_1", &readers, false);
-        new_key_account(&s, "k_2", &[], true);
-        for (id, roles, administrator) in [
-            ("u_2", &readers[..], false),
-            ("k_1", &readers[..], false),
-            ("k_2", &[][..], true),
+        s.create_local_user(new_user("u_2", "bob"), &readers, &key_account_event("account-create"))
+            .unwrap()
+            .unwrap();
+        new_key_account(&s, "k_1", &readers);
+        new_key_account(&s, "k_2", &administrator());
+        for (id, roles) in [
+            ("u_1", &administrator()[..]),
+            ("u_2", &readers[..]),
+            ("k_1", &readers[..]),
+            ("k_2", &administrator()[..]),
         ] {
-            let user = s.get_user(id).unwrap().unwrap();
-            assert_eq!(user.administrator, administrator, "{id}");
             assert_eq!(s.given_roles(id).unwrap(), roles, "{id}");
         }
-        assert!(
-            s.get_user("u_1").unwrap().unwrap().administrator,
-            "the first account is an administrator"
-        );
         assert_eq!(s.get_user("k_1").unwrap().unwrap().auth_source, AuthSource::Key);
     }
 
@@ -4696,46 +4807,32 @@ mod tests {
     fn access_is_changed_for_a_local_or_key_account_and_never_an_oidc_one() {
         let s = store();
         s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
-        new_key_account(&s, "k_1", &[], false);
+        new_key_account(&s, "k_1", &[]);
         let writers = vec!["writers".to_string()];
-        for id in ["u_1", "k_1"] {
-            s.change_access(
-                id,
-                &AccessChange::Roles(writers.clone()),
-                &key_account_event("account-access"),
-            )
-            .unwrap()
-            .unwrap();
-            assert_eq!(s.given_roles(id).unwrap(), writers, "{id}");
+        let mut both = writers.clone();
+        both.push(ADMINISTRATOR.to_string());
+        for (id, roles) in [("u_1", &both), ("k_1", &writers), ("k_1", &both)] {
+            s.change_access(id, roles, &key_account_event("account-access"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(&s.given_roles(id).unwrap(), roles, "{id}");
         }
-        s.change_access(
-            "k_1",
-            &AccessChange::Administrator(true),
-            &key_account_event("account-access"),
-        )
-        .unwrap()
-        .unwrap();
-        assert!(s.get_user("k_1").unwrap().unwrap().administrator);
         let oidc = s
             .oidc_sign_in(
                 sign_in("https://idp", "s_1", &[], "o_1", 1),
                 &key_account_event("account-create"),
             )
             .unwrap();
-        for change in [AccessChange::Roles(writers.clone()), AccessChange::Administrator(true)] {
+        for roles in [writers.clone(), administrator()] {
             assert_eq!(
-                s.change_access(&oidc.id, &change, &key_account_event("account-access"))
+                s.change_access(&oidc.id, &roles, &key_account_event("account-access"))
                     .unwrap(),
                 Err(AccountError::HeldByProvider)
             );
         }
         assert_eq!(
-            s.change_access(
-                "nobody",
-                &AccessChange::Administrator(true),
-                &key_account_event("account-access")
-            )
-            .unwrap(),
+            s.change_access("nobody", &administrator(), &key_account_event("account-access"))
+                .unwrap(),
             Err(AccountError::NoSuchUser)
         );
         let actions: Vec<_> = s
@@ -4747,38 +4844,30 @@ mod tests {
         assert_eq!(actions.iter().filter(|a| *a == "account-access").count(), 3);
     }
 
-    /// Model, point 3: one enabled local administrator always remains, so taking the flag is guarded as a
-    /// disable is.
+    /// Model, point 3: one enabled local administrator always remains, so taking the administrator role is
+    /// guarded as a disable is.
     #[test]
-    fn the_last_local_administrator_keeps_the_flag() {
+    fn the_last_local_administrator_keeps_the_role() {
         let s = store();
         s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
-        new_key_account(&s, "k_1", &[], true);
+        new_key_account(&s, "k_1", &administrator());
         assert_eq!(
-            s.change_access(
-                "u_1",
-                &AccessChange::Administrator(false),
-                &key_account_event("account-access")
-            )
-            .unwrap(),
+            s.change_access("u_1", &[], &key_account_event("account-access"))
+                .unwrap(),
             Err(AccountError::LastAdministrator),
             "a key administrator stood in for a local one"
         );
         s.create_local_user(
             new_user("u_2", "bob"),
-            given(&[], true),
+            &administrator(),
             &key_account_event("account-create"),
         )
         .unwrap()
         .unwrap();
-        s.change_access(
-            "u_1",
-            &AccessChange::Administrator(false),
-            &key_account_event("account-access"),
-        )
-        .unwrap()
-        .unwrap();
-        assert!(!s.get_user("u_1").unwrap().unwrap().administrator);
+        s.change_access("u_1", &[], &key_account_event("account-access"))
+            .unwrap()
+            .unwrap();
+        assert!(s.given_roles("u_1").unwrap().is_empty());
     }
 
     /// Model, point 7: every account is listed, renamed, disabled and given agent permissions alike, and display
@@ -4787,8 +4876,8 @@ mod tests {
     fn every_account_is_changed_by_the_same_writes() {
         let s = store();
         s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
-        new_key_account(&s, "k_1", &[], false);
-        new_key_account(&s, "k_2", &[], false);
+        new_key_account(&s, "k_1", &[]);
+        new_key_account(&s, "k_2", &[]);
         let listed: Vec<_> = s.list_users().unwrap().into_iter().map(|u| u.id).collect();
         assert_eq!(listed, ["u_1", "k_1", "k_2"]);
         for id in ["u_1", "k_1", "k_2"] {
@@ -4815,7 +4904,7 @@ mod tests {
     #[test]
     fn a_key_is_found_by_its_hash_and_revoked_once() {
         let s = store();
-        new_key_account(&s, "i_1", &[], false);
+        new_key_account(&s, "i_1", &[]);
         s.create_api_key(
             "i_1",
             new_key("k_1", "hash-1", Some(99)),
@@ -4873,7 +4962,7 @@ mod tests {
     fn disabling_an_account_revokes_every_key() {
         let s = store();
         s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
-        new_key_account(&s, "i_1", &[], false);
+        new_key_account(&s, "i_1", &[]);
         s.create_api_key("i_1", new_key("k_1", "hash-1", None), &key_account_event("key-create"))
             .unwrap()
             .unwrap();

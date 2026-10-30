@@ -283,8 +283,8 @@ the ones before it:
 | **editor**   | change it on a branch, and capture, preview and read its samples |
 | **deployer** | approve and deploy a change to it                                |
 
-A role is one group the provider names and the level it gives in each
-area. Holding several roles holds the highest level any of them gives.
+A role is the level it gives in each area, and the provider groups that
+give it. Holding several roles holds the highest level any of them gives.
 Holding any area reads `shared`, since a group is read merged with it.
 
 **P2 — Nothing to set on an object.** An object is in the area it was
@@ -295,10 +295,10 @@ asks nothing about access.
 `shared` is judged as `shared`, though every group runs it, so a
 `shared` deployer can change what every group runs.
 
-**P4 — A full administrator holds everything.** An account an
-administrator marks as administrator is one, and so is anyone holding a
-role marked administrator, so one person can run the whole system alone.
-Only administrators reach Admin, and at least one local administrator
+**P4 — A full administrator holds everything.** Anyone holding the
+built-in administrator role is one, given it by an administrator or by a
+provider group, so one person can run the whole system alone. Only
+administrators reach Admin, and at least one local administrator
 remains.
 
 **P5 — Records are editor work.** Capture, preview and samples show

@@ -4621,16 +4621,13 @@ export interface AccountDto {
   username?: string;
   displayName: string;
   enabled: boolean;
-  /** The account's own flag, which an administrator gives a local or key account. What it holds, from
-   * this or its roles, is `access`. */
-  administrator: boolean;
   /** How the account signs in: `local` (a password), `oidc` (the provider) or `key`. */
   authSource: 'local' | 'oidc' | 'key';
   /** What the provider last called an OIDC account: its email, else its preferred username. */
   providerLogin?: string;
   createdAt: number;
   updatedAt: number;
-  /** The roles this account holds: an OIDC account's provider groups a role exists for, or the roles a
+  /** The roles this account holds: those an OIDC account's provider groups give, or the roles a
    * local or key account was given. */
   roles: string[];
   /** Every group the provider named at the last sign-in or refresh, exactly as named. Empty for any other account. */
@@ -4691,17 +4688,15 @@ async function accountCall<T>(
   return body as T;
 }
 
-/** A local account holding the roles given, or everything as an administrator, answered with the
- * temporary password to hand over. */
+/** A local account holding the roles given, answered with the temporary password to hand over. */
 export function createLocalAccount(
   username: string,
   displayName: string,
   roles: string[],
-  administrator: boolean,
 ): Promise<TemporaryPasswordDto | AccountRefusal> {
   return accountCall('/api/accounts', {
     method: 'POST',
-    body: JSON.stringify({ authSource: 'local', username, displayName, roles, administrator }),
+    body: JSON.stringify({ authSource: 'local', username, displayName, roles }),
   });
 }
 
@@ -4709,18 +4704,16 @@ export function createLocalAccount(
 export function createKeyAccount(
   displayName: string,
   roles: string[],
-  administrator: boolean,
 ): Promise<AccountDto | AccountRefusal> {
   return accountCall('/api/accounts', {
     method: 'POST',
-    body: JSON.stringify({ authSource: 'key', displayName, roles, administrator }),
+    body: JSON.stringify({ authSource: 'key', displayName, roles }),
   });
 }
 
-/** One change to an account: the leader takes one field per request, and roles and administrator
- * only for a local or key account. */
-export type AccountChange =
-  { displayName: string } | { enabled: boolean } | { roles: string[] } | { administrator: boolean };
+/** One change to an account: the leader takes one field per request, and roles only for a local or
+ * key account. */
+export type AccountChange = { displayName: string } | { enabled: boolean } | { roles: string[] };
 
 export function changeAccount(
   id: string,
@@ -4747,13 +4740,19 @@ export function revokeAccountSessions(id: string): Promise<{ ended: number } | A
 
 // -- roles --------------------------------------------------------------------
 //
-// A role is one provider group, by the name the provider gives it, and what holding it gives
-// (`roles_api.rs`). Administrators only, like the roster.
+// A role is what holding it gives, and the provider groups that give it (`roles_api.rs`).
+// Administrators only, like the roster.
+
+/** The built-in role that holds everything. */
+export const ADMINISTRATOR = 'administrator';
 
 export interface RoleDto {
   name: string;
-  administrator: boolean;
-  /** Empty for an administrator role, which holds every area. */
+  /** The administrator role, which holds everything, gives no level in an area, and is never removed. */
+  builtIn: boolean;
+  /** The provider groups that give it, exactly as the groups claim names them. */
+  groups: string[];
+  /** Empty for the administrator role, which holds every area. */
   areas: Record<string, AccessLevel>;
 }
 
@@ -4762,17 +4761,17 @@ export async function listRoles(): Promise<RoleDto[]> {
   return (await readJson<{ roles: RoleDto[] }>('/api/roles')).roles;
 }
 
-/** Creates the role or replaces what it gives. */
+/** Creates the role or replaces its groups and what it gives. */
 export function putRole(
   name: string,
-  administrator: boolean,
+  groups: string[],
   areas: Record<string, AccessLevel>,
 ): Promise<{ ok: boolean; errors: ApiError[] }> {
   return apiJson(
     `/api/roles/${encodeURIComponent(name)}`,
     {
       method: 'PUT',
-      body: JSON.stringify({ administrator, areas }),
+      body: JSON.stringify({ groups, areas }),
     },
     'quiet',
   );
