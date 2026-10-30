@@ -173,9 +173,22 @@ impl LoadedSystem {
 
     /// A `CompileError`'s `pipeline` and `function` are the compiler's indices; this is what a caller reports, keyed
     /// by the ids the file itself uses.
-    fn to_validation_error(&self, e: CompileError) -> load::ValidationError {
+    pub fn to_validation_error(&self, e: CompileError) -> load::ValidationError {
         // A route's error is about its condition, or about one of its rules' `when`.
         let route = e.route.and_then(|i| self.topology.routes.get(i));
+        // The message names its route, as every item's does: the error bar shows it alone. The screen shows a rule
+        // as the condition on its line to its destinations, unnumbered, so the message names it by them.
+        let message = match (route, e.rule.and_then(|k| route?.deliver.get(k as usize))) {
+            (Some(r), Some(rule)) => {
+                let to: Vec<&str> = rule.to.iter().map(|&d| self.destination_name(d)).collect();
+                match to.as_slice() {
+                    [] => format!("route {}'s condition for no destination: {}", r.id, e.message),
+                    to => format!("route {}'s condition for {}: {}", r.id, to.join(", "), e.message),
+                }
+            }
+            (Some(r), None) => format!("route {}'s condition: {}", r.id, e.message),
+            (None, _) => e.message,
+        };
         load::ValidationError {
             pipeline: e.pipeline.and_then(|id| self.pipeline_ids.get(id).cloned()),
             step: self.step_id_for(e.pipeline, e.function),
@@ -187,8 +200,19 @@ impl LoadedSystem {
             }),
             field: route.map(|_| if e.rule.is_some() { "deliver.when" } else { "condition" }),
             rule: route.and(e.rule),
-            ..load::ValidationError::from(e.message)
+            ..load::ValidationError::from(message)
         }
+    }
+
+    /// The author's id for `id`, a destination the loaded system has.
+    fn destination_name(&self, id: DestId) -> &str {
+        &self
+            .topology
+            .destinations
+            .iter()
+            .find(|d| d.id == id)
+            .expect("a loaded system names destinations it has")
+            .name
     }
 
     /// `answer` as the file says it, with each destination by its author's id.
@@ -201,15 +225,7 @@ impl LoadedSystem {
             Answer::Deliver(targets) => AnswerDto::Deliver {
                 to: targets
                     .iter()
-                    .map(|&to| {
-                        self.topology
-                            .destinations
-                            .iter()
-                            .find(|d| d.id == to)
-                            .expect("a loaded system's answer names destinations it has")
-                            .name
-                            .clone()
-                    })
+                    .map(|&to| self.destination_name(to).to_string())
                     .collect(),
             },
         }
@@ -625,16 +641,18 @@ mod tests {
         });
         let errors = validation_of(&route_json("_raw", "true"));
         assert!(
-            errors
-                .iter()
-                .any(|e| e.item == route && e.field == Some("condition") && e.rule.is_none()),
+            errors.iter().any(|e| e.item == route
+                && e.field == Some("condition")
+                && e.rule.is_none()
+                && e.message.starts_with("route r's condition: ")),
             "{errors:?}"
         );
         let errors = validation_of(&route_json("true", "_raw"));
         assert!(
-            errors
-                .iter()
-                .any(|e| e.item == route && e.field == Some("deliver.when") && e.rule == Some(1)),
+            errors.iter().any(|e| e.item == route
+                && e.field == Some("deliver.when")
+                && e.rule == Some(1)
+                && e.message.starts_with("route r's condition for out: ")),
             "{errors:?}"
         );
     }
