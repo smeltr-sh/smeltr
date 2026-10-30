@@ -13,6 +13,8 @@ let page: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
 let calls: { method: string; url: string; body: unknown }[];
 let resets: number;
+/** The last key's number, so each key made gets an id of its own, as the leader's do. */
+let keys: number;
 
 const ROLES = [
   { name: 'administrator', builtIn: true, groups: ['smeltr-admins'], areas: {} },
@@ -123,7 +125,7 @@ function stubFetch() {
         return json({
           ok: true,
           errors: [],
-          id: 'key_3',
+          id: `key_${(keys += 1)}`,
           label: '',
           createdAt: 0,
           expiresAt: null,
@@ -221,6 +223,7 @@ async function addRole(name: string) {
 beforeEach(() => {
   calls = [];
   resets = 0;
+  keys = 2; // the exporter's own two
   ask.mockReset();
   history.replaceState(null, '', '/#/admin/accounts/roles');
   target = document.createElement('div');
