@@ -527,8 +527,9 @@ reaches into fields, so a field's path finds the schemas that name it. A schema
 folds open to its table of fields, narrowed to the search, and any schema
 exports as JSON Schema or as an Elasticsearch mapping. The table's
 Elasticsearch view shows the type each field maps to, and on the bundle's own
-schemas chooses it from those the field's type allows; a mapping's other
-parameters are set in Edit JSON. A schema is added from a standard (ECS, or
+schemas chooses it from those the field's type allows, an integer's date as
+milliseconds or seconds since 1970; a mapping's other parameters are set in
+Edit JSON. A schema is added from a standard (ECS, or
 an OCSF class with how many keys deep and which requirements), from a file (a
 CSV of fields, or JSON Schema), from a pipeline, or empty: one tile for each.
 A CSV shows its first rows, and after a gap a row for each type value they

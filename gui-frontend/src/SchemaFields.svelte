@@ -34,10 +34,33 @@
     return /^(array<)*variant>*$/.test(f.type) ? 'dynamic' : (elasticsearchTypes(f.type)[0] ?? '');
   }
 
+  /** An integer read as a date counts milliseconds, Elasticsearch's own reading of a number, or seconds, which its
+   * mapping's format says. */
+  const SECONDS = 'date in seconds';
+
+  function integer(f: SchemaFieldDto): boolean {
+    return /^(array<)*i64>*$/.test(f.type);
+  }
+
+  /** The choices a field's dropdown offers, each with its label: an integer's date is one for each unit. */
+  function choices(f: SchemaFieldDto, types: string[]): { value: string; label: string }[] {
+    return types.flatMap((t) =>
+      t === 'date' && integer(f)
+        ? [
+            { value: t, label: 'date (milliseconds)' },
+            { value: SECONDS, label: 'date (seconds)' },
+          ]
+        : [{ value: t, label: t }],
+    );
+  }
+
   /** The type a field maps as, as the dropdown holds it: a variant's own is the empty choice, Elasticsearch's to find. */
   function mapsAs(f: SchemaFieldDto): string {
     const own = ownType(f);
-    return f.elasticsearch?.type ?? (own === 'dynamic' ? '' : own);
+    const type = f.elasticsearch?.type ?? (own === 'dynamic' ? '' : own);
+    return type === 'date' && integer(f) && f.elasticsearch?.format === 'epoch_second'
+      ? SECONDS
+      : type;
   }
 
   /** The field's own type saves no mapping: what it maps as of itself needs none. */
@@ -45,6 +68,10 @@
     // The same type keeps its other parameters.
     if (mapsAs(f) === type) return;
     const own = ownType(f);
+    if (type === SECONDS) {
+      onmap?.(f.field, { type: 'date', format: 'epoch_second' });
+      return;
+    }
     onmap?.(f.field, type === '' || type === own ? undefined : { type });
   }
 
@@ -96,7 +123,10 @@
           <td class="mono">{f.type}</td>
           {#if view === 'elasticsearch'}
             {@const types = elasticsearchTypes(f.type)}
-            {@const others = Object.keys(f.elasticsearch ?? {}).filter((k) => k !== 'type')}
+            <!-- An integer's unit is its choice of type, not another setting. -->
+            {@const others = Object.keys(f.elasticsearch ?? {}).filter(
+              (k) => k !== 'type' && !(k === 'format' && mapsAs(f) === SECONDS),
+            )}
             <td class="mapping">
               {#if types.length === 0}
                 <span class="dim">—</span>
@@ -107,10 +137,15 @@
                   onchange={(e) => choose(f, e.currentTarget.value)}
                 >
                   {#if ownType(f) === 'dynamic'}<option value="">dynamic</option>{/if}
-                  {#each types as t (t)}<option value={t}>{t}</option>{/each}
+                  {#each choices(f, types) as c (c.value)}<option value={c.value}>{c.label}</option
+                    >{/each}
                 </select>
               {:else}
-                <span class="mono">{f.elasticsearch?.type ?? ownType(f)}</span>
+                <span class="mono"
+                  >{choices(f, types).find((c) => c.value === mapsAs(f))?.label ??
+                    f.elasticsearch?.type ??
+                    ownType(f)}</span
+                >
               {/if}
               {#if others.length > 0}<span class="dim"
                   >+ {count(others.length, 'more setting')}:

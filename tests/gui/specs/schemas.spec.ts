@@ -141,6 +141,40 @@ test('the Elasticsearch view chooses the type a field maps to, saved with the sc
   expect(kept(cleared.config)).toEqual({ field: 'src_endpoint.ip', type: 'str' });
 });
 
+test('an integer indexed as a date counts milliseconds or seconds, as its choice says', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await declare(api);
+  await goto(admin, leader, '#/build/schemas');
+  await admin.getByRole('button', { name: 'login fields' }).click();
+  await admin.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+  const time = admin.getByRole('combobox', { name: 'Elasticsearch type of time' });
+  await expect(time.getByRole('option', { name: 'date (milliseconds)' })).toBeAttached();
+  await time.selectOption({ label: 'date (seconds)' });
+  await expect(admin.getByText('more setting')).toBeHidden();
+  /** `time` of `login`, as the leader keeps it after a save. */
+  const saved = async () => {
+    await admin.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+    const { config } = await api.get(`${SHARED}${ON}`);
+    return config.schemas
+      .find((s: { id: string }) => s.id === 'login')
+      .fields.find((f: { field: string }) => f.field === 'time');
+  };
+  expect((await saved()).elasticsearch).toEqual({ type: 'date', format: 'epoch_second' });
+  await expect(time).toHaveValue('date in seconds');
+  await time.selectOption({ label: 'date (milliseconds)' });
+  expect((await saved()).elasticsearch).toEqual({ type: 'date' });
+  // A string's date is the text it holds, so it has no unit.
+  await expect(
+    admin
+      .getByRole('combobox', { name: 'Elasticsearch type of src_endpoint.ip' })
+      .getByRole('option', { name: 'date', exact: true }),
+  ).toBeAttached();
+});
+
 test("a field's own Elasticsearch settings show beside its type, and shared/'s schemas only show it", async ({
   admin,
   leader,

@@ -1768,15 +1768,20 @@ const mapSchemaField: Move = {
     const res = await truth.get(`/api/areas/shared?branch=${world.branch}`);
     const schema = res.config.schemas.find((s: { id: string }) => s.id === id);
     const saved = schema.fields.find((f: { field: string }) => f.field === field);
+    // An integer's date in seconds is a date its format reads as seconds.
+    const mapping =
+      type === 'date in seconds' ? { type: 'date', format: 'epoch_second' } : { type };
     expect(saved.elasticsearch, `${id}'s ${field} maps as chosen`).toEqual(
-      type === offered[0] ? undefined : { type },
+      type === offered[0] ? undefined : mapping,
     );
     // The export maps it as chosen, or, a variant that says nothing, as the first type it allows.
     const exported = await truth.post('/api/preview/schema-export', {
       schema,
       format: 'elasticsearch',
     });
-    expect(exported.document.mappings.properties[field].type).toBe(type || offered[1]);
+    expect(exported.document.mappings.properties[field]).toMatchObject(
+      type ? mapping : { type: offered[1] },
+    );
     return `map ${id}'s ${field} in Elasticsearch as ${type || 'dynamic'}`;
   },
 };
