@@ -719,6 +719,8 @@ fn partition_text(value: &Literal, kind: &Kind) -> String {
         Literal::Boolean(b) => b.to_string(),
         Literal::Int(v) => v.to_string(),
         Literal::Long(v) => v.to_string(),
+        // As Java writes it, which is how Spark and the kernel read it back.
+        Literal::Double(v) if v.is_infinite() => if *v > 0.0 { "Infinity" } else { "-Infinity" }.to_string(),
         Literal::Double(v) if *kind == Kind::Float => (*v as f32).to_string(),
         Literal::Double(v) => v.to_string(),
         Literal::Date(d) => iso_date(*d as i64),
@@ -1650,6 +1652,10 @@ mod tests {
     fn a_partition_value_is_written_as_its_columns_type() {
         assert_eq!(partition_text(&Literal::Double(0.1f32 as f64), &Kind::Float), "0.1");
         assert_eq!(partition_text(&Literal::Double(0.1), &Kind::Double), "0.1");
+        assert_eq!(
+            partition_text(&Literal::Double(f64::NEG_INFINITY), &Kind::Float),
+            "-Infinity"
+        );
         assert_eq!(
             partition_text(&Literal::Timestamptz(SPEC_TIME), &Kind::Timestamp),
             "2017-11-16 22:31:08.000000"
