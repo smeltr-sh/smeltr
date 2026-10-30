@@ -12,12 +12,13 @@
 
 use std::sync::Arc;
 
-use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema, TimeUnit};
+use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 
 use super::metadata::{ListType, NestedField, Primitive, Schema, StructTag, StructType, Type};
 use crate::core::column::DataType;
 use crate::io::parquet::{at, columns, narrows};
+use crate::io::table::Kind;
 
 /// The table's schema for a record, and whether it differs from the table's current one.
 #[derive(Clone, Debug, PartialEq)]
@@ -103,15 +104,9 @@ fn with_id(field: &Field, id: i32, ty: &Type) -> Field {
     field.clone().with_data_type(data_type).with_metadata(metadata)
 }
 
-/// The Parquet type a column of `p` holds, where it is narrower than any record type is written as.
+/// The Parquet type a column of `p` is written as, where it is narrower than any record type.
 fn narrow(p: &Primitive) -> Option<Arrow> {
-    Some(match p {
-        Primitive::Int => Arrow::Int32,
-        Primitive::Float => Arrow::Float32,
-        Primitive::Date => Arrow::Date32,
-        Primitive::Timestamp => Arrow::Timestamp(TimeUnit::Microsecond, None),
-        _ => return None,
-    })
+    p.kind().as_ref().and_then(Kind::narrowed)
 }
 
 /// The Iceberg type a record's primitive is written as.
@@ -446,7 +441,7 @@ mod tests {
                 Arrow::Int32,
                 Arrow::Float32,
                 Arrow::Date32,
-                Arrow::Timestamp(TimeUnit::Microsecond, None)
+                Arrow::Timestamp(arrow_schema::TimeUnit::Microsecond, None)
             ]
         );
         assert!(

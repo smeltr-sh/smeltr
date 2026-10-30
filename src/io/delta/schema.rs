@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema, TimeUnit};
+use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use serde_json::{Map, Value, json};
 
@@ -290,18 +290,10 @@ fn mapped_type(arrow: &Arrow, table: &Type) -> Arrow {
     }
 }
 
-/// The Parquet type a column of the primitive the log names `p` holds, where it is narrower than any record type is
-/// written as.
-fn narrow(p: &str) -> Option<Arrow> {
-    Some(match p {
-        "byte" => Arrow::Int8,
-        "short" => Arrow::Int16,
-        "integer" => Arrow::Int32,
-        "float" => Arrow::Float32,
-        "date" => Arrow::Date32,
-        "timestamp_ntz" => Arrow::Timestamp(TimeUnit::Microsecond, None),
-        _ => return None,
-    })
+/// The Parquet type a column of the primitive the log names `p` is written as, where it is narrower than any record
+/// type.
+pub fn narrow(p: &str) -> Option<Arrow> {
+    kind(p).as_ref().and_then(Kind::narrowed)
 }
 
 /// The kind of the primitive type the log names `primitive`, when it is one this writer reads a value of.
@@ -904,7 +896,7 @@ mod tests {
                 Arrow::Int32,
                 Arrow::Float32,
                 Arrow::Date32,
-                Arrow::Timestamp(TimeUnit::Microsecond, None),
+                Arrow::Timestamp(arrow_schema::TimeUnit::Microsecond, None),
             ]
         );
         assert!(

@@ -404,7 +404,7 @@ fn compare(a: &Literal, b: &Literal) -> Option<Ordering> {
     match (a, b) {
         (L::Boolean(a), L::Boolean(b)) => Some(a.cmp(b)),
         (L::Int(a), L::Int(b)) | (L::Date(a), L::Date(b)) => Some(a.cmp(b)),
-        (L::Long(a), L::Long(b)) | (L::Timestamptz(a), L::Timestamptz(b)) => Some(a.cmp(b)),
+        (L::Long(a), L::Long(b)) | (L::Micros(a), L::Micros(b)) => Some(a.cmp(b)),
         (L::Double(a), L::Double(b)) => a.partial_cmp(b),
         (L::String(a), L::String(b)) => Some(a.cmp(b)),
         (L::Binary(a), L::Binary(b)) => Some(a.cmp(b)),
@@ -425,7 +425,7 @@ fn literal_bytes(literal: &Literal) -> Vec<u8> {
     match literal {
         Literal::Boolean(b) => vec![*b as u8],
         Literal::Int(v) | Literal::Date(v) => v.to_le_bytes().to_vec(),
-        Literal::Long(v) | Literal::Timestamptz(v) => v.to_le_bytes().to_vec(),
+        Literal::Long(v) | Literal::Micros(v) => v.to_le_bytes().to_vec(),
         Literal::Double(v) => v.to_le_bytes().to_vec(),
         Literal::String(s) => s.as_bytes().to_vec(),
         Literal::Binary(b) => b.clone(),
@@ -873,7 +873,7 @@ fn literal_value(literal: &Literal, ty: &Primitive) -> Result<Value, String> {
         (P::Float, L::Double(v)) => Value::Float(*v as f32),
         (P::Double, L::Double(v)) => Value::Double(*v),
         (P::Date, L::Date(v)) => Value::Date(*v),
-        (P::Timestamp | P::Timestamptz, L::Timestamptz(v)) => Value::TimestampMicros(*v),
+        (P::Timestamp | P::Timestamptz, L::Micros(v)) => Value::TimestampMicros(*v),
         (P::String, L::String(s)) => Value::String(s.clone()),
         (P::Binary, L::Binary(b)) => Value::Bytes(b.clone()),
         _ => return Err(format!("partition value {literal:?} is not a {ty}")),
@@ -891,7 +891,7 @@ fn literal_of(value: &Value) -> Result<Option<Literal>, String> {
         Value::Float(v) => Literal::Double(*v as f64),
         Value::Double(v) => Literal::Double(*v),
         Value::Date(v) => Literal::Date(*v),
-        Value::TimestampMicros(v) | Value::LocalTimestampMicros(v) => Literal::Timestamptz(*v),
+        Value::TimestampMicros(v) | Value::LocalTimestampMicros(v) => Literal::Micros(*v),
         Value::String(s) => Literal::String(s.clone()),
         Value::Bytes(b) | Value::Fixed(_, b) => Literal::Binary(b.clone()),
         other => {

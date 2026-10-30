@@ -724,8 +724,8 @@ fn partition_text(value: &Literal, kind: &Kind) -> String {
         Literal::Double(v) if *kind == Kind::Float => (*v as f32).to_string(),
         Literal::Double(v) => v.to_string(),
         Literal::Date(d) => iso_date(*d as i64),
-        Literal::Timestamptz(us) if *kind == Kind::Timestamp => wall_clock(*us, 6, ' '),
-        Literal::Timestamptz(us) => timestamp(*us, 6),
+        Literal::Micros(us) if *kind == Kind::Timestamp => wall_clock(*us, 6, ' '),
+        Literal::Micros(us) => timestamp(*us, 6),
         Literal::String(s) => s.clone(),
         Literal::Binary(_) => unreachable!("a binary partition column is refused at start"),
     }
@@ -1657,11 +1657,11 @@ mod tests {
             "-Infinity"
         );
         assert_eq!(
-            partition_text(&Literal::Timestamptz(SPEC_TIME), &Kind::Timestamp),
+            partition_text(&Literal::Micros(SPEC_TIME), &Kind::Timestamp),
             "2017-11-16 22:31:08.000000"
         );
         assert_eq!(
-            partition_text(&Literal::Timestamptz(SPEC_TIME), &Kind::Timestamptz),
+            partition_text(&Literal::Micros(SPEC_TIME), &Kind::Timestamptz),
             "2017-11-16T22:31:08.000000Z"
         );
     }

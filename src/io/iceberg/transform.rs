@@ -119,13 +119,13 @@ pub fn apply(transform: &Transform, value: &Literal) -> Option<Literal> {
         }
         Transform::Day => Some(Literal::Date(i32::try_from(days_of(value)?).ok()?)),
         Transform::Hour => match value {
-            Literal::Timestamptz(us) => Some(Literal::Int(i32::try_from(us.div_euclid(MICROS_PER_HOUR)).ok()?)),
+            Literal::Micros(us) => Some(Literal::Int(i32::try_from(us.div_euclid(MICROS_PER_HOUR)).ok()?)),
             _ => None,
         },
         Transform::Bucket(n) if *n > 0 => {
             let hash = match value {
                 Literal::Int(v) | Literal::Date(v) => murmur3_x86_32(&(*v as i64).to_le_bytes()),
-                Literal::Long(v) | Literal::Timestamptz(v) => murmur3_x86_32(&v.to_le_bytes()),
+                Literal::Long(v) | Literal::Micros(v) => murmur3_x86_32(&v.to_le_bytes()),
                 Literal::String(s) => murmur3_x86_32(s.as_bytes()),
                 Literal::Binary(b) => murmur3_x86_32(b),
                 _ => return None,
@@ -153,7 +153,7 @@ pub fn apply(transform: &Transform, value: &Literal) -> Option<Literal> {
 fn days_of(value: &Literal) -> Option<i64> {
     match value {
         Literal::Date(d) => Some(*d as i64),
-        Literal::Timestamptz(us) => Some(us.div_euclid(MICROS_PER_DAY)),
+        Literal::Micros(us) => Some(us.div_euclid(MICROS_PER_DAY)),
         _ => None,
     }
 }
@@ -207,7 +207,7 @@ pub fn path_text(value: Option<&Literal>, result: &Primitive, transform: &Transf
         (Literal::Double(v), _) if *result == Primitive::Float => java_float(*v as f32),
         (Literal::Double(v), _) => java_double(*v),
         (Literal::Date(d), _) => iso_date(*d as i64),
-        (Literal::Timestamptz(us), _) => {
+        (Literal::Micros(us), _) => {
             let (day, time) = (us.div_euclid(MICROS_PER_DAY), us.rem_euclid(MICROS_PER_DAY));
             let secs = time / 1_000_000;
             let zone = if *result == Primitive::Timestamp { "" } else { "+00:00" };
@@ -269,10 +269,10 @@ pub fn literal_of(result: &Primitive, transform: &Transform, text: &str) -> Resu
             let days = parse_date(&human).ok_or_else(bad)?;
             Literal::Date(i32::try_from(days).map_err(|_| bad())?)
         }
-        (Primitive::Timestamp, _) => Literal::Timestamptz(parse_timestamp(&human).ok_or_else(bad)?),
+        (Primitive::Timestamp, _) => Literal::Micros(parse_timestamp(&human).ok_or_else(bad)?),
         (Primitive::Timestamptz, _) => {
             let time = human.strip_suffix("+00:00").or_else(|| human.strip_suffix('Z'));
-            Literal::Timestamptz(time.and_then(parse_timestamp).ok_or_else(bad)?)
+            Literal::Micros(time.and_then(parse_timestamp).ok_or_else(bad)?)
         }
         (Primitive::String, _) => Literal::String(human),
         (Primitive::Binary, _) => Literal::Binary(
@@ -565,7 +565,7 @@ mod tests {
     fn a_bucket_masks_the_sign_and_takes_the_remainder() {
         let hash = -2_047_944_441i32;
         assert_eq!(
-            apply(&Transform::Bucket(16), &Literal::Timestamptz(SPEC_TIME)),
+            apply(&Transform::Bucket(16), &Literal::Micros(SPEC_TIME)),
             Some(Literal::Int((hash & i32::MAX) % 16))
         );
         assert_eq!(
@@ -577,7 +577,7 @@ mod tests {
 
     #[test]
     fn time_transforms_count_from_1970() {
-        let t = Literal::Timestamptz(SPEC_TIME);
+        let t = Literal::Micros(SPEC_TIME);
         assert_eq!(apply(&Transform::Year, &t), Some(Literal::Int(47)));
         assert_eq!(apply(&Transform::Month, &t), Some(Literal::Int(47 * 12 + 10)));
         assert_eq!(apply(&Transform::Day, &t), Some(Literal::Date(17_486)));
@@ -588,7 +588,7 @@ mod tests {
         assert_eq!(apply(&Transform::Day, &d), Some(d.clone()));
         assert_eq!(apply(&Transform::Hour, &d), None);
         // Before 1970 counts down, a whole unit at a time.
-        let before = Literal::Timestamptz(-1);
+        let before = Literal::Micros(-1);
         assert_eq!(apply(&Transform::Year, &before), Some(Literal::Int(-1)));
         assert_eq!(apply(&Transform::Month, &before), Some(Literal::Int(-1)));
         assert_eq!(apply(&Transform::Day, &before), Some(Literal::Date(-1)));
@@ -697,13 +697,13 @@ mod tests {
                 "0000-01-01",
             ),
             (
-                Some(Literal::Timestamptz(at_13)),
+                Some(Literal::Micros(at_13)),
                 P::Timestamptz,
                 Transform::Identity,
                 "2026-10-10T13%3A05%3A09.000123%2B00%3A00",
             ),
             (
-                Some(Literal::Timestamptz(at_13)),
+                Some(Literal::Micros(at_13)),
                 P::Timestamp,
                 Transform::Identity,
                 "2026-10-10T13%3A05%3A09.000123",
@@ -753,14 +753,11 @@ mod tests {
                 (Transform::Year, apply(&Transform::Year, &Literal::Date(days))),
                 (
                     Transform::Hour,
-                    apply(
-                        &Transform::Hour,
-                        &Literal::Timestamptz(days as i64 * MICROS_PER_DAY + 7),
-                    ),
+                    apply(&Transform::Hour, &Literal::Micros(days as i64 * MICROS_PER_DAY + 7)),
                 ),
                 (
                     Transform::Identity,
-                    Some(Literal::Timestamptz(days as i64 * MICROS_PER_DAY - 1)),
+                    Some(Literal::Micros(days as i64 * MICROS_PER_DAY - 1)),
                 ),
             ] {
                 let source = match transform {

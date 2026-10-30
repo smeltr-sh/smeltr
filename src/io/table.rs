@@ -35,6 +35,21 @@ pub enum Kind {
     Binary,
 }
 
+impl Kind {
+    /// The Parquet type a column of this kind is written as, where it is narrower than any record type (`parquet::narrows`).
+    pub fn narrowed(&self) -> Option<Arrow> {
+        Some(match self {
+            Kind::Byte => Arrow::Int8,
+            Kind::Short => Arrow::Int16,
+            Kind::Int => Arrow::Int32,
+            Kind::Float => Arrow::Float32,
+            Kind::Date => Arrow::Date32,
+            Kind::Timestamp => Arrow::Timestamp(TimeUnit::Microsecond, None),
+            _ => return None,
+        })
+    }
+}
+
 impl fmt::Display for Kind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -55,7 +70,7 @@ impl fmt::Display for Kind {
 }
 
 /// One value of a primitive type, as a partition holds it. The column's type says how it is written: an `Int` of a
-/// byte column, a `Double` of a float column, a `Timestamptz` of a timestamp column without zone.
+/// byte column, a `Double` of a float column, `Micros` of a timestamp with or without zone.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Literal {
     Boolean(bool),
@@ -65,7 +80,7 @@ pub enum Literal {
     /// Days since 1970-01-01.
     Date(i32),
     /// Microseconds since 1970-01-01T00:00:00Z. A time without zone is its wall clock in UTC.
-    Timestamptz(i64),
+    Micros(i64),
     String(String),
     Binary(Vec<u8>),
 }
@@ -121,12 +136,7 @@ pub fn read(column: &ArrayRef, at: usize, kind: &Kind, names: &[String]) -> Resu
         (Kind::Int, Arrow::Int32) => Literal::Int(column.as_primitive::<Int32Type>().value(at)),
         // A row's column is the record's, wider than a table may hold it (`parquet::narrows`).
         (Kind::Byte | Kind::Short | Kind::Int, Arrow::Int64) | (Kind::Float, Arrow::Float64) => {
-            let to = match kind {
-                Kind::Byte => Arrow::Int8,
-                Kind::Short => Arrow::Int16,
-                Kind::Int => Arrow::Int32,
-                _ => Arrow::Float32,
-            };
+            let to = kind.narrowed().expect("a narrower kind");
             if let Some(why) = crate::io::parquet::misfit(column, at, &to) {
                 return Err(format!("{} {why}", names.join(".")));
             }
@@ -144,7 +154,7 @@ pub fn read(column: &ArrayRef, at: usize, kind: &Kind, names: &[String]) -> Resu
         (Kind::Double, Arrow::Float64) => Literal::Double(column.as_primitive::<Float64Type>().value(at)),
         (Kind::Date, Arrow::Date32) => Literal::Date(column.as_primitive::<Date32Type>().value(at)),
         (Kind::Timestamp | Kind::Timestamptz, Arrow::Timestamp(TimeUnit::Microsecond, Some(_))) => {
-            Literal::Timestamptz(column.as_primitive::<TimestampMicrosecondType>().value(at))
+            Literal::Micros(column.as_primitive::<TimestampMicrosecondType>().value(at))
         }
         (Kind::String, Arrow::Utf8) => Literal::String(column.as_string::<i32>().value(at).to_string()),
         (Kind::Binary, Arrow::Binary) => Literal::Binary(column.as_binary::<i32>().value(at).to_vec()),
@@ -307,9 +317,6 @@ mod tests {
         assert!(matches!(at(2), Ok(Some(Literal::Double(v))) if v.is_nan()));
 
         let times: ArrayRef = Arc::new(TimestampMicrosecondArray::from(vec![-1]).with_timezone("UTC"));
-        assert_eq!(
-            read(&times, 0, &Kind::Timestamp, &names),
-            Ok(Some(Literal::Timestamptz(-1)))
-        );
+        assert_eq!(read(&times, 0, &Kind::Timestamp, &names), Ok(Some(Literal::Micros(-1))));
     }
 }

@@ -106,7 +106,7 @@ impl Val {
             Val::Bool(b) => Literal::Boolean(*b),
             Val::Long(v) => Literal::Long(*v),
             Val::Double(bits) => Literal::Double(f64::from_bits(*bits)),
-            Val::Micros(us) => Literal::Timestamptz(*us),
+            Val::Micros(us) => Literal::Micros(*us),
             Val::Str(s) => Literal::String(s.clone()),
         })
     }

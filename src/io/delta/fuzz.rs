@@ -445,19 +445,6 @@ fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bool
     refused
 }
 
-/// The Parquet type a column of `primitive` holds, where a table holds it narrower than the record types it.
-fn narrowed(primitive: &str) -> Option<Arrow> {
-    Some(match primitive {
-        "byte" => Arrow::Int8,
-        "short" => Arrow::Int16,
-        "integer" => Arrow::Int32,
-        "float" => Arrow::Float32,
-        "date" => Arrow::Date32,
-        "timestamp_ntz" => Arrow::Timestamp(arrow_schema::TimeUnit::Microsecond, None),
-        _ => return None,
-    })
-}
-
 /// Some of `record`'s top-level columns in `metadata`'s schema held narrower, as another engine may have made them.
 /// A partition column is left as it is: its random rows' values mostly do not fit, and the run partitions every one.
 fn narrow(rng: &mut Rng, metadata: &mut Value, record: &DataType) {
@@ -515,7 +502,7 @@ fn kept_narrow(committer: &DeltaCommitter) -> Result<(), String> {
         let schema::Type::Primitive(p) = &column.data_type else {
             continue;
         };
-        let (Some(want), Some(at)) = (narrowed(p), committer.arrow.index_of(&column.name).ok()) else {
+        let (Some(want), Some(at)) = (schema::narrow(p), committer.arrow.index_of(&column.name).ok()) else {
             continue;
         };
         let written = committer.written.field(at).data_type();
