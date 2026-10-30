@@ -42,6 +42,7 @@
     type SchemaRegistry,
     type HttpCompression,
     type Acks,
+    type KafkaFacts,
     COMPRESSIONS,
     ACKS,
     STORAGE_CLASSES,
@@ -64,13 +65,13 @@
   let {
     destination,
     secrets,
-    mechanisms,
+    kafka,
   }: {
     destination: DestinationDto;
     /** The secret catalog, so a credential can be pointed at one the leader holds. */
     secrets: SecretDto[];
-    /** The SASL mechanisms this leader's build can select. */
-    mechanisms: string[];
+    /** What this leader's build can do with a Kafka client. */
+    kafka: KafkaFacts;
   } = $props();
 
   /** Properties set by hand: the security section's own are its business,
@@ -167,7 +168,12 @@
     <TlsFields value={destination} farEnd="destination" />
     <div class="section">
       <div class="section-head">security</div>
-      <KafkaSecurity value={destination} {secrets} {mechanisms} hasTls={tlsSet(destination)} />
+      <KafkaSecurity
+        value={destination}
+        {secrets}
+        mechanisms={kafka.mechanisms}
+        hasTls={tlsSet(destination)}
+      />
     </div>
     <Advanced label="Delivery and client properties" modified={kafkaModified(destination)}>
       <Field field="compression" label="compression">
@@ -235,7 +241,7 @@
           }}
         />
       </Field>
-      <KafkaPropsEditor value={destination} {secrets} hasTls={tlsSet(destination)} />
+      <KafkaPropsEditor value={destination} {secrets} {kafka} hasTls={tlsSet(destination)} />
     </Advanced>
   {:else if destination.type === 'eventHubs'}
     <Field required field="namespace" label="namespace">

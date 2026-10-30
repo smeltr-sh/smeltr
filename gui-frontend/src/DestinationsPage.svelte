@@ -12,7 +12,7 @@
   import SaveConflictPanel from './SaveConflict.svelte';
   import HeldEdit from './HeldEdit.svelte';
   import { SectionEditor } from './sectionEditor.svelte';
-  import { sharedConfig, fieldCatalogs } from './api';
+  import { sharedConfig, fieldCatalogs, NO_KAFKA_FACTS, type KafkaFacts } from './api';
   import ObjectList from './ObjectList.svelte';
   import Field from './Field.svelte';
   import ExceptionsFold from './ExceptionsFold.svelte';
@@ -28,11 +28,14 @@
     putDestinations,
     type DestinationDto,
     type ExceptionsDto,
+    type FileConfigDto,
+    type PipelineDto,
     type RouteDto,
     type SchemaDto,
     type SecretDto,
   } from './api';
   import { mayCapture } from './access';
+  import { bundleRoutes } from './routeFlow';
   import { at, typeLabel, writes } from './destinations';
   import NewDestination from './NewDestination.svelte';
 
@@ -52,12 +55,20 @@
    * what the load checks beside it. */
   let group = $state<ExceptionsDto | undefined>(undefined);
   let routes: RouteDto[] = $state([]);
+  let pipelines: PipelineDto[] = $state([]);
+  let shared = $state<FileConfigDto | null>(null);
   /** What an accepts list may name beside the built-ins. */
   let ownSchemas: SchemaDto[] = $state([]);
   let sharedSchemas: SchemaDto[] = $state([]);
   let schemas = $derived([...sharedSchemas, ...ownSchemas]);
   let all = $derived([...destinations, ...sharedDestinations]);
-  let refusals = $derived(problems(group, routes, all));
+  let refusals = $derived(
+    problems(
+      group,
+      bundleRoutes({ routes, pipelines }, shared).slice(shared?.routes.length ?? 0),
+      all,
+    ),
+  );
   /** The destination being captured at, by id, and the scope that declares it. Only a group runs a
    * destination, so `shared/`'s own page offers none. */
   let capturing: { id: string; scope: string } | null = $state(null);
@@ -77,6 +88,7 @@
     onLoaded: async (config) => {
       group = config.exceptions;
       routes = config.routes;
+      pipelines = config.pipelines;
       ownSchemas = config.schemas ?? [];
       await loadShared();
     },
@@ -84,7 +96,7 @@
 
   /** `shared/`'s own. A group runs the two merged, so a page showing only its own hides half of what runs. */
   async function loadShared() {
-    const shared = await sharedConfig();
+    shared = await sharedConfig();
     sharedDestinations = shared ? shared.destinations : [];
     sharedSchemas = shared?.schemas ?? [];
   }
@@ -92,9 +104,9 @@
   void editor.load();
 
   /** What this leader's build can select, for the security section, and the secret catalog. */
-  let mechanisms: string[] = $state([]);
+  let kafka: KafkaFacts = $state(NO_KAFKA_FACTS);
   let secrets: SecretDto[] = $state([]);
-  void fieldCatalogs().then((c) => ({ secrets, mechanisms } = c));
+  void fieldCatalogs().then((c) => ({ secrets, kafka } = c));
 
   /** Ids the suggestion must not walk into. This scope's alone: the leader refuses a collision with the other
    * subtree, which this page cannot see. */
@@ -197,7 +209,7 @@
             </Field>
             <Field label="type"><span class="fixed">{typeLabel(destination.type)}</span></Field>
           </div>
-          <DestinationFields {destination} {secrets} {mechanisms} />
+          <DestinationFields {destination} {secrets} {kafka} />
           <Field field="accepts" label="accepts">
             {#snippet help()}
               A pipeline sending here should produce one of these schemas. Review says where one
@@ -244,7 +256,7 @@
         open={adding}
         unavailable={unavailable()}
         {secrets}
-        {mechanisms}
+        {kafka}
         onadd={add}
         oncancel={() => (adding = false)}
       />

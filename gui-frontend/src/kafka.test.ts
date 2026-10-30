@@ -8,7 +8,6 @@ import {
   propertyRefusal,
   PROTOCOLS,
   readSecurity,
-  reservedReason,
   SECTION_PROPS,
   setCredential,
   setField,
@@ -17,6 +16,13 @@ import {
 } from './kafka';
 import type { KafkaProps } from './api';
 
+const kafka = {
+  tlsProps: new Set(['ssl.ca.location']),
+  reserved: new Map([
+    ['group.id', "set from this source's `groupId` field"],
+    ['max.poll.interval.ms', "caps each destination's `stallAfterSecs` field"],
+  ]),
+};
 describe('the security section', () => {
   it('reads what the maps already say, and nothing they do not', () => {
     expect(readSecurity({})).toEqual({ protocol: undefined, mechanism: undefined });
@@ -130,16 +136,10 @@ describe('the security section', () => {
 });
 
 describe('what a save refuses', () => {
-  it('names the field a reserved property is set from', () => {
-    expect(reservedReason('group.id')).toContain('group id');
-    expect(reservedReason('GROUP.ID')).toContain('group id');
-    expect(reservedReason('socket.timeout.ms')).toBeUndefined();
-  });
-
   it('refuses a TLS property only while the TLS settings answer for it', () => {
-    expect(tlsReason('ssl.ca.location', true)).toContain('TLS settings');
-    expect(tlsReason('ssl.ca.location', false)).toBeUndefined();
-    expect(tlsReason('socket.timeout.ms', true)).toBeUndefined();
+    expect(tlsReason('ssl.ca.location', true, kafka.tlsProps)).toContain('TLS settings');
+    expect(tlsReason('ssl.ca.location', false, kafka.tlsProps)).toBeUndefined();
+    expect(tlsReason('socket.timeout.ms', true, kafka.tlsProps)).toBeUndefined();
   });
 
   it('classifies a credential by shape, so a property it has never seen is still refused', () => {
@@ -150,14 +150,26 @@ describe('what a save refuses', () => {
     expect(isCredentialValued('ssl.ca.location')).toBe(false);
   });
 
+  it('refuses the properties the leader reserves, as the leader spells them', () => {
+    expect(propertyRefusal('group.id', false, false, kafka)).toBe(
+      "smeltr owns this: set from this source's group id field",
+    );
+    expect(propertyRefusal('max.poll.interval.ms', false, false, kafka)).toBe(
+      "smeltr owns this: caps each destination's stall after field",
+    );
+    expect(propertyRefusal('GROUP.ID', false, false, kafka)).toBeUndefined();
+  });
+
   it('says one reason per row, the security section first', () => {
-    expect(propertyRefusal('', false, false)).toBeUndefined();
-    expect(propertyRefusal('sasl.password', true, false)).toContain('security section');
-    expect(propertyRefusal('group.id', false, false)).toContain('smeltr owns this');
-    expect(propertyRefusal('ssl.ca.location', false, true)).toContain('TLS settings');
-    expect(propertyRefusal('ssl.keystore.password', false, false)).toContain('Name it below');
-    expect(propertyRefusal('ssl.keystore.password', true, false)).toBeUndefined();
-    expect(propertyRefusal('socket.timeout.ms', false, false)).toBeUndefined();
+    expect(propertyRefusal('', false, false, kafka)).toBeUndefined();
+    expect(propertyRefusal('sasl.password', true, false, kafka)).toContain('security section');
+    expect(propertyRefusal('group.id', false, false, kafka)).toContain('smeltr owns this');
+    expect(propertyRefusal('ssl.ca.location', false, true, kafka)).toContain('TLS settings');
+    expect(propertyRefusal('ssl.keystore.password', false, false, kafka)).toContain(
+      'Name it below',
+    );
+    expect(propertyRefusal('ssl.keystore.password', true, false, kafka)).toBeUndefined();
+    expect(propertyRefusal('socket.timeout.ms', false, false, kafka)).toBeUndefined();
   });
 });
 

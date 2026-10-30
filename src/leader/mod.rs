@@ -430,9 +430,12 @@ async fn heartbeat(
     // reaches the fleet on the next one.
     let checks = state.deploy_checks.clone();
     let store = state.store.clone();
-    let (deployed, entitled, findings) = tokio::task::spawn_blocking(move || {
+    let (deployed, pointer, entitled, findings) = tokio::task::spawn_blocking(move || {
+        // Read once, so the groups and the commit a worker is cued with are of the same deploy.
+        let pointer = deployed_pointer(&data_dir);
         (
-            deployed_groups(&data_dir),
+            groups_in(&data_dir, pointer.as_deref()),
+            pointer,
             at_newest(
                 &entitled(&data_dir, &entitlements, &for_group),
                 // Unreadable, a beat entitles no certificate and the next one tries again.
@@ -507,6 +510,7 @@ async fn heartbeat(
 
     Ok(Json(HeartbeatResponse {
         holds,
+        deployed: pointer,
         authority,
         directive,
         captures: captures_for
@@ -1014,6 +1018,10 @@ pub struct SystemInfo {
     /// The SASL mechanisms a Kafka client here can select. GSSAPI is in it only where a provider was linked, and a
     /// form that offered one this build does not carry would be offering a save that is refused.
     pub sasl_mechanisms: Vec<&'static str>,
+    /// The librdkafka properties a save refuses, each with why smeltr owns it, so a form refuses the same ones.
+    pub kafka_reserved: std::collections::BTreeMap<&'static str, &'static str>,
+    /// The librdkafka properties a save refuses beside a connector's own TLS settings, which answer the same question.
+    pub kafka_tls_props: &'static [&'static str],
 }
 
 async fn health(State(state): State<AppState>) -> Envelope<HealthResponse> {
@@ -1028,6 +1036,8 @@ async fn system_info(State(state): State<AppState>) -> Envelope<SystemInfo> {
         newer_release: state.updates.newer(),
         release_check: state.updates.looked(),
         sasl_mechanisms: crate::io::kafka::available_sasl_mechanisms(),
+        kafka_reserved: crate::config_file::RESERVED_KAFKA_PROPS.iter().copied().collect(),
+        kafka_tls_props: crate::config_file::TLS_KAFKA_PROPS,
     })
 }
 
@@ -1285,14 +1295,19 @@ fn tls_of(topology: &crate::plan::topology::TopologyConfig) -> Vec<DeployedTls> 
 }
 
 fn deployed_groups(data_dir: &std::path::Path) -> std::collections::HashSet<String> {
+    groups_in(data_dir, deployed_pointer(data_dir).as_deref())
+}
+
+/// The commit the deployed pointer names. `None` before anything is deployed.
+fn deployed_pointer(data_dir: &std::path::Path) -> Option<String> {
     let repo = git::repo_path(data_dir);
-    if !git::repo_ready(&repo) {
-        return std::collections::HashSet::new();
-    }
-    let Some(deployed) = git::deployed(&repo) else {
-        return std::collections::HashSet::new();
-    };
-    tree::groups_at(&repo, &deployed)
+    git::repo_ready(&repo).then(|| git::deployed(&repo)).flatten()
+}
+
+/// The groups `commit` holds; none for no commit.
+fn groups_in(data_dir: &std::path::Path, commit: Option<&str>) -> std::collections::HashSet<String> {
+    commit
+        .and_then(|commit| tree::groups_at(&git::repo_path(data_dir), commit).ok())
         .unwrap_or_default()
         .into_iter()
         .collect()
@@ -3665,10 +3680,17 @@ pub fn compose(state: AppState, admin: Router<AppState>) -> Router {
 /// [`compose`] with no operator gate, for the integration tests. Every request is an administrator's, since the
 /// handlers that answer per area read the caller's access the gate would otherwise have set.
 pub fn router(state: AppState) -> Router {
-    compose(
+    gzipped(compose(
         state.clone(),
         admin_router().layer(axum::Extension(access::Access::Administrator)),
-    )
+    ))
+}
+
+/// `app` answering gzipped to a client that takes it, by tower-http's defaults, and taking a gzipped request on every
+/// route. A route's body limit holds the body as inflated, so a small gzipped body cannot become a large one.
+pub fn gzipped(app: Router) -> Router {
+    app.layer(tower_http::compression::CompressionLayer::new())
+        .layer(tower_http::decompression::RequestDecompressionLayer::new())
 }
 
 /// Where a store would write its secrets encryption key. No fixture below stores a secret, so nothing is written --

@@ -1,9 +1,12 @@
-// Schemas: a bundle's schemas opened and searched by field, one added from a JSON Schema, a pipeline's Produces and
-// a destination's accepts, and what review finds where rows do not fit.
-import { readFile } from 'node:fs/promises';
+// Schemas: a bundle's schemas opened and searched by field, added from a standard's file (ECS, OCSF, a CSV of fields,
+// JSON Schema) or by an importer pipeline, a pipeline's Produces and a destination's accepts, and what review finds
+// where rows do not fit.
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { test, expect, goto, type Api } from '../fleet';
+import type { Page } from '@playwright/test';
+import { test, expect, goto, type Api, type Leader } from '../fleet';
 
 const ON = '?branch=work';
 const SHARED = '/api/areas/shared';
@@ -77,7 +80,7 @@ test('a schema exports as JSON Schema and as an Elasticsearch mapping', async ({
   expect(mapping.name).toBe('login.mapping.json');
   expect(mapping.body.mappings.properties.src_endpoint).toEqual({
     properties: {
-      ip: { type: 'keyword', ignore_above: 8191 },
+      ip: { type: 'keyword', ignore_above: 1024 },
       port: { type: 'long' },
     },
   });
@@ -107,13 +110,14 @@ test('the Elasticsearch view chooses the type a field maps to, saved with the sc
   await admin.screenshot({ path: 'results/schemas-elasticsearch-help.png' });
   await admin.keyboard.press('Escape');
   const ip = admin.getByRole('combobox', { name: 'Elasticsearch type of src_endpoint.ip' });
-  await expect(ip).toHaveValue('');
-  await expect(ip.getByRole('option', { name: 'default (keyword)' })).toBeAttached();
+  await expect(ip).toHaveValue('keyword');
+  await expect(ip.getByRole('option')).toHaveCount(8);
   await expect(
     admin
       .getByRole('combobox', { name: 'Elasticsearch type of user.manager' })
       .getByRole('option', {
-        name: 'default (dynamic)',
+        name: 'dynamic',
+        exact: true,
       }),
   ).toBeAttached();
   await ip.selectOption('ip');
@@ -130,11 +134,95 @@ test('the Elasticsearch view chooses the type a field maps to, saved with the sc
 
   await admin
     .getByRole('combobox', { name: 'Elasticsearch type of src_endpoint.ip' })
-    .selectOption('');
+    .selectOption('keyword');
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
   const cleared = await api.get(`${SHARED}${ON}`);
   expect(kept(cleared.config)).toEqual({ field: 'src_endpoint.ip', type: 'str' });
+});
+
+test('an integer indexed as a date counts milliseconds or seconds, as its choice says', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await declare(api);
+  await goto(admin, leader, '#/build/schemas');
+  await admin.getByRole('button', { name: 'login fields' }).click();
+  await admin.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+  const time = admin.getByRole('combobox', { name: 'Elasticsearch type of time' });
+  await expect(time.getByRole('option', { name: 'date (milliseconds)' })).toBeAttached();
+  await time.selectOption({ label: 'date (seconds)' });
+  await expect(admin.getByText('more setting')).toBeHidden();
+  /** `time` of `login`, as the leader keeps it after a save. */
+  const saved = async () => {
+    await admin.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+    const { config } = await api.get(`${SHARED}${ON}`);
+    return config.schemas
+      .find((s: { id: string }) => s.id === 'login')
+      .fields.find((f: { field: string }) => f.field === 'time');
+  };
+  expect((await saved()).elasticsearch).toEqual({
+    type: 'date',
+    format: 'epoch_second||strict_date_optional_time',
+  });
+  await expect(time).toHaveValue('date in seconds');
+  await time.selectOption({ label: 'date (milliseconds)' });
+  expect((await saved()).elasticsearch).toEqual({ type: 'date' });
+  // Its other settings stay when only the unit changes.
+  await api.put(`${SHARED}/schemas${ON}`, [
+    {
+      ...LOGIN,
+      fields: LOGIN.fields.map((f) =>
+        f.field === 'time' ? { ...f, elasticsearch: { type: 'date', ignore_malformed: true } } : f,
+      ),
+    },
+    AUDIT,
+  ]);
+  await admin.reload();
+  await admin.getByRole('button', { name: 'login fields' }).click();
+  await admin.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+  await time.selectOption({ label: 'date (seconds)' });
+  expect((await saved()).elasticsearch).toEqual({
+    type: 'date',
+    ignore_malformed: true,
+    format: 'epoch_second||strict_date_optional_time',
+  });
+  // A date in a format of its own says it, and keeps it until another is chosen.
+  await api.put(`${SHARED}/schemas${ON}`, [
+    {
+      ...LOGIN,
+      fields: LOGIN.fields.map((f) =>
+        f.field === 'user.name'
+          ? { ...f, elasticsearch: { type: 'date', format: 'yyyy-MM-dd HH:mm:ss' } }
+          : f,
+      ),
+    },
+    AUDIT,
+  ]);
+  await admin.reload();
+  await admin.getByRole('button', { name: 'login fields' }).click();
+  await admin.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+  const name = admin.getByRole('combobox', { name: 'Elasticsearch type of user.name' });
+  await expect(name.locator('option:checked')).toHaveText('date (yyyy-MM-dd HH:mm:ss)');
+  await expect(admin.getByText('more setting')).toBeHidden();
+  await name.selectOption({ label: 'date', exact: true });
+  const user = async () => {
+    await admin.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+    const { config } = await api.get(`${SHARED}${ON}`);
+    return config.schemas
+      .find((s: { id: string }) => s.id === 'login')
+      .fields.find((f: { field: string }) => f.field === 'user.name');
+  };
+  expect((await user()).elasticsearch).toEqual({ type: 'date' });
+  // A string's date is the text it holds, so it has no unit.
+  await expect(
+    admin
+      .getByRole('combobox', { name: 'Elasticsearch type of src_endpoint.ip' })
+      .getByRole('option', { name: 'date', exact: true }),
+  ).toBeAttached();
 });
 
 test("a field's own Elasticsearch settings show beside its type, and shared/'s schemas only show it", async ({
@@ -167,7 +255,7 @@ test("a field's own Elasticsearch settings show beside its type, and shared/'s s
   await expect(
     admin
       .getByRole('combobox', { name: 'Elasticsearch type of tags' })
-      .getByRole('option', { name: 'default (dynamic)' }),
+      .getByRole('option', { name: 'dynamic', exact: true }),
   ).toBeAttached();
   await admin.screenshot({ path: 'results/schemas-elasticsearch-settings.png' });
 
@@ -198,6 +286,7 @@ test("a JSON Schema added on the Schemas page is saved as the bundle's own", asy
   await admin.getByRole('button', { name: '+ Add schema' }).click();
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'JSON Schema', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: /new schema from JSON Schema$/ })).toBeVisible();
   await dialog.getByLabel('id', { exact: true }).fill('orders');
   await dialog.getByRole('textbox', { name: 'JSON Schema' }).fill(JSON.stringify(schema));
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
@@ -389,6 +478,216 @@ async function arrangeMisfit(api: Api, branch: string) {
     { id: 'r1', source: 'm1', condition: null, pipeline: 'logins', deliver: [{ to: ['search'] }] },
   ]);
 }
+
+/** A fixture's path, for an upload. */
+const fixture = (path: string) => fileURLToPath(new URL(path, import.meta.url));
+
+/** Opens Add schema at `tile`, names the schema `id` and uploads `file`. Answers the dialog. */
+async function addFrom(admin: Page, leader: Leader, tile: string, id: string, file: string) {
+  await goto(admin, leader, '#/build/schemas');
+  await admin.getByRole('button', { name: '+ Add schema' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: tile, exact: true }).click();
+  await dialog.getByLabel('id', { exact: true }).fill(id);
+  await dialog.getByLabel(/^File/).setInputFiles(file);
+  return dialog;
+}
+
+/** Saves the page, and answers `id`'s fields as the leader keeps them. */
+async function saved(admin: Page, api: Api, id: string) {
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  const config = (await api.get(`${SHARED}${ON}`)).config;
+  type Kept = {
+    field: string;
+    type: string;
+    required?: boolean;
+    example?: string;
+    elasticsearch?: object;
+  };
+  const fields: Kept[] = config.schemas.find((s: { id: string }) => s.id === id).fields;
+  return (name: string) => fields.find((f) => f.field === name);
+}
+
+test('ECS comes in from ecs_flat.yml with its types, settings and examples', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const dialog = await addFrom(
+    admin,
+    leader,
+    'ECS',
+    'ecs',
+    fixture('../../fixtures/ecs-flat-excerpt.yml'),
+  );
+  await expect(dialog.getByRole('heading', { name: /new schema from ECS$/ })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(admin.getByRole('cell', { name: '@timestamp*', exact: true })).toBeVisible();
+  await expect(admin.getByRole('cell', { name: 'Albert Einstein', exact: true })).toBeVisible();
+  const field = await saved(admin, api, 'ecs');
+  expect(field('ecs.version')?.required).toBe(true);
+  expect(field('agent.id')).toMatchObject({ type: 'str', example: '8a4f500d' });
+  expect(field('agent.id')?.elasticsearch).toBeUndefined();
+  expect(field('user.full_name')?.elasticsearch).toEqual({
+    type: 'keyword',
+    fields: { text: { type: 'match_only_text' } },
+  });
+  expect(field('tags')?.type).toBe('array<str>');
+});
+
+test('ECS comes in from fields.csv, with no line breaker to set', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const dialog = await addFrom(
+    admin,
+    leader,
+    'ECS',
+    'ecs',
+    fixture('../fixtures/ecs-fields-excerpt.csv'),
+  );
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  const field = await saved(admin, api, 'ecs');
+  expect(field('@timestamp')).toMatchObject({ type: 'datetime', required: true });
+  expect(field('message')?.elasticsearch).toEqual({ type: 'match_only_text' });
+  expect(field('gen_ai.input.messages')).toMatchObject({
+    type: 'variant',
+    elasticsearch: { type: 'flattened' },
+  });
+});
+
+test('an OCSF class comes in as deep and with the requirements chosen', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const dialog = await addFrom(
+    admin,
+    leader,
+    'OCSF',
+    'auth',
+    fixture('../../fixtures/ocsf-authentication.json'),
+  );
+  await expect(dialog.getByRole('combobox', { name: 'Class' })).toHaveValue('authentication');
+  await expect(dialog.getByRole('spinbutton', { name: 'Depth' })).toHaveValue('2');
+  await expect(dialog.getByRole('checkbox', { name: 'required' })).toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: 'recommended' })).toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: 'optional' })).not.toBeChecked();
+  await dialog.getByRole('spinbutton', { name: 'Depth' }).fill('1');
+  await dialog.getByRole('checkbox', { name: 'recommended' }).uncheck();
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  const field = await saved(admin, api, 'auth');
+  expect(field('user')).toMatchObject({ type: '{...}', required: true });
+  expect(field('user.name')).toBeUndefined();
+  expect(field('src_endpoint')).toBeUndefined();
+});
+
+test('a CSV of fields comes in by its header, example and Elasticsearch type among them', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const csv = path.join(test.info().outputDir, 'fields.csv');
+  await mkdir(test.info().outputDir, { recursive: true });
+  await writeFile(
+    csv,
+    'Field,Type,Required,Description,Example,Elasticsearch,Owner\n' +
+      'client_ip,str,yes,Where the request came from.,10.0.0.1,ip,web team\n' +
+      'status,i64,,The HTTP status answered.,200,,web team\n',
+  );
+  const dialog = await addFrom(admin, leader, 'CSV of fields', 'web', csv);
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(admin.getByRole('cell', { name: 'Example', exact: true })).toBeVisible();
+  const field = await saved(admin, api, 'web');
+  expect(field('client_ip')).toEqual({
+    field: 'client_ip',
+    type: 'str',
+    required: true,
+    description: 'Where the request came from.',
+    example: '10.0.0.1',
+    elasticsearch: { type: 'ip' },
+  });
+  expect(field('status')).toMatchObject({ type: 'i64', example: '200' });
+});
+
+test("a CSV's columns and types are picked from its rows when its header names neither", async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const csv = path.join(test.info().outputDir, 'columns.csv');
+  await mkdir(test.info().outputDir, { recursive: true });
+  await writeFile(
+    csv,
+    'Attribute,Kind,Meaning\n' +
+      'host,VARCHAR,The machine it ran on.\n' +
+      'port,int,The port it listened on.\n' +
+      'user,VARCHAR,Who ran it.\n' +
+      'pid,int,Its process.\n' +
+      'path,VARCHAR,What it ran.\n' +
+      'args,VARCHAR,What it was told.\n' +
+      'tags,widget,What the team calls it.\n',
+  );
+  const dialog = await addFrom(admin, leader, 'CSV of fields', 'inventory', csv);
+  await expect(dialog.getByText('Choose the column that holds')).toBeVisible();
+  await expect(dialog.getByRole('combobox', { name: 'Column Kind holds' })).toHaveValue('');
+  await expect(
+    dialog.getByRole('combobox', { name: 'Column Kind holds' }).locator('option:checked'),
+  ).toHaveText('ignore');
+  await expect(dialog.getByRole('button', { name: 'Add', exact: true })).toBeDisabled();
+  await dialog.getByRole('combobox', { name: 'Column Attribute holds' }).selectOption('field');
+  await dialog.getByRole('combobox', { name: 'Column Kind holds' }).selectOption('type');
+  await dialog.getByRole('combobox', { name: 'Column Meaning holds' }).selectOption('description');
+  const type = (name: string) => dialog.getByRole('combobox', { name, exact: true });
+  await expect(type('Type of VARCHAR')).toHaveValue('str');
+  await expect(type('Type of int')).toHaveValue('i64');
+  const widget = type('Type of widget');
+  await expect(widget).toHaveValue('str');
+  await expect(dialog.getByText('unknown', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'About What each column holds' }).click();
+  await expect(
+    admin.getByText(/Rows with the same type value share one choice\. A value tagged unknown/),
+  ).toBeVisible();
+  await admin.keyboard.press('Escape');
+  // Past the first five rows, `widget` shows in a row of its own; each value says how many rows hold it.
+  await expect(dialog.getByText('… and a row for each other type value')).toBeVisible();
+  await expect(dialog.getByText('4 fields')).toBeVisible();
+  await expect(dialog.getByText('1 field', { exact: true })).toBeVisible();
+  // A value's choice is one, in every row that holds it.
+  await type('Type of VARCHAR, row 3').selectOption('bytes');
+  await expect(type('Type of VARCHAR')).toHaveValue('bytes');
+  await type('Type of VARCHAR').selectOption('str');
+  await widget.selectOption('{...}');
+  await dialog.screenshot({ path: 'results/schemas-csv-picker.png' });
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  const field = await saved(admin, api, 'inventory');
+  expect(field('host')).toMatchObject({ type: 'str', description: 'The machine it ran on.' });
+  expect(field('port')?.type).toBe('i64');
+  expect(field('tags')?.type).toBe('{...}');
+});
+
+test('a CSV with many type values scrolls its rows under the choice of each column', async ({
+  admin,
+  leader,
+}) => {
+  const csv = path.join(test.info().outputDir, 'many.csv');
+  await mkdir(test.info().outputDir, { recursive: true });
+  const rows = Array.from({ length: 40 }, (_, i) => `f${i},kind${i}`);
+  await writeFile(csv, ['field,type', ...rows].join('\n') + '\n');
+  const dialog = await addFrom(admin, leader, 'CSV of fields', 'many', csv);
+  const last = dialog.getByRole('combobox', { name: 'Type of kind39', exact: true });
+  await last.scrollIntoViewIfNeeded();
+  await expect(last).toBeInViewport();
+  await expect(dialog.getByRole('combobox', { name: 'Column type holds' })).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: 'Add', exact: true })).toBeInViewport();
+});
 
 test('review lists where the rows do not fit a schema, and the dock counts them without blocking', async ({
   admin,

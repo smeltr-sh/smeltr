@@ -62,6 +62,9 @@ const ALLOWED: &[(&str, &str)] = &[
     ("src/io/avro.rs", "a route's record as an Avro schema, once per schema"),
     ("src/io/avro/", "a schema registry's answers, once per schema"),
     ("src/schema/json_schema.rs", "a bundle's schema, once per load"),
+    ("src/schema/csv.rs", "a file read as a schema, once per read"),
+    ("src/schema/ecs.rs", "a file read as a schema, once per read"),
+    ("src/schema/ocsf.rs", "a file read as a schema, once per read"),
     ("src/schema.rs", "a field's Elasticsearch mapping, once per load"),
 ];
 

@@ -61,9 +61,10 @@ pub use dto::{
 pub use impact::{Impact, Reached, Reason, pipeline_answers_differ, pipelines_touched};
 pub use links::{Connections, Kind, Links, Object};
 pub use load::{
-    BundleAt, DeclaredAt, ItemRef, LoadError, ValidationError, check_shared_group_starts, fill_default_group_ids,
-    line_breaker_refusal, load_str, load_str_at, on_loopback, plain_off_this_host, refuse_outside_lookups,
-    sql_connection, to_byte, validation_errors, validation_errors_at, web_url,
+    BundleAt, DeclaredAt, ItemRef, LoadError, RESERVED_KAFKA_PROPS, TLS_KAFKA_PROPS, ValidationError,
+    check_shared_group_starts, fill_default_group_ids, line_breaker_refusal, load_str, load_str_at, on_loopback,
+    plain_off_this_host, refuse_outside_lookups, sql_connection, to_byte, validation_errors, validation_errors_at,
+    web_url,
 };
 pub use merge::{ObjectConflict, SectionMerge, Side, is_section_file, merge_section, text_merge_keeps_each_side};
 pub use sample::{
@@ -176,27 +177,19 @@ impl LoadedSystem {
     pub fn to_validation_error(&self, e: CompileError) -> load::ValidationError {
         // A route's error is about its condition, or about one of its rules' `when`.
         let route = e.route.and_then(|i| self.topology.routes.get(i));
+        let name = || e.route.map_or_else(String::new, |at| self.route_name(at));
         // The message names its route, as every item's does: the error bar shows it alone. The screen shows no
         // route's id: a route is the line from its source to its pipeline, and a rule the condition on the line
         // on to its destinations, unnumbered. So the message names them by those.
         let message = match (route, e.rule.and_then(|k| route?.deliver.get(k as usize))) {
-            (Some(r), Some(rule)) => {
+            (Some(_), Some(rule)) => {
                 let to: Vec<&str> = rule.to.iter().map(|&d| self.destination_name(d)).collect();
                 match to.as_slice() {
-                    [] => format!(
-                        "the condition for no destination of route {}: {}",
-                        self.route_name(r),
-                        e.message
-                    ),
-                    to => format!(
-                        "the condition for {} of route {}: {}",
-                        to.join(", "),
-                        self.route_name(r),
-                        e.message
-                    ),
+                    [] => format!("the condition for no destination of route {}: {}", name(), e.message),
+                    to => format!("the condition for {} of route {}: {}", to.join(", "), name(), e.message),
                 }
             }
-            (Some(r), None) => format!("the condition of route {}: {}", self.route_name(r), e.message),
+            (Some(_), None) => format!("the condition of route {}: {}", name(), e.message),
             (None, _) => e.message,
         };
         load::ValidationError {
@@ -224,8 +217,17 @@ impl LoadedSystem {
         }
     }
 
-    /// `r` as the routes page shows it: its source, then its pipeline.
-    fn route_name(&self, r: &RouteConfig) -> String {
+    /// Every route's [`Self::route_name`], in the order they run.
+    pub fn route_names(&self) -> Vec<String> {
+        (0..self.topology.routes.len()).map(|at| self.route_name(at)).collect()
+    }
+
+    /// Route `at` as every screen and message names it: its source, then its pipeline, and `(n)` when another route
+    /// runs from that source to that pipeline too, `n` counting those routes in the order they run. A route's id is
+    /// minted, so it is never the name. The GUI names routes the same way (`routeName` in `routeFlow.ts`).
+    pub fn route_name(&self, at: usize) -> String {
+        let routes = &self.topology.routes;
+        let r = &routes[at];
         let source = (self.topology.sources.iter())
             .find(|s| s.id == r.source)
             .map_or("", |s| &s.name);
@@ -233,7 +235,14 @@ impl LoadedSystem {
             Some(p) if !p.name.is_empty() => &p.name,
             _ => self.pipeline_ids.get(r.pipeline).map_or("", String::as_str),
         };
-        format!("{source} \u{2192} {pipeline}")
+        let twin = |o: &&RouteConfig| o.source == r.source && o.pipeline == r.pipeline;
+        match routes.iter().filter(twin).count() {
+            1 => format!("{source} \u{2192} {pipeline}"),
+            _ => format!(
+                "{source} \u{2192} {pipeline} ({})",
+                routes[..at].iter().filter(twin).count() + 1
+            ),
+        }
     }
 
     /// The author's id for `id`, a destination the loaded system has.
@@ -661,6 +670,31 @@ mod tests {
                     None,
                     "destination \"out\" accepts Login, but pipeline \"p\" produces no schema it accepts".to_string()
                 ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_route_is_named_by_its_source_and_pipeline_and_numbered_among_its_twins() {
+        let json = r#"{
+          "version": 1,
+          "sources": [{ "id": "k", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g" },
+                      { "id": "j", "type": "kafka", "brokers": "b:9092", "topics": ["u"], "groupId": "g" }],
+          "pipelines": [{ "id": "p", "name": "p", "steps": [] }, { "id": "q-1f", "name": "Enrich", "steps": [] }],
+          "routes": [{ "id": "a", "source": "k", "pipeline": "p", "condition": "true" },
+                     { "id": "b", "source": "k", "pipeline": "q-1f" },
+                     { "id": "c", "source": "j", "pipeline": "p" },
+                     { "id": "d", "source": "k", "pipeline": "p" }]
+        }"#;
+        let system = load_str(json).unwrap();
+        let names = system.route_names();
+        assert_eq!(
+            names,
+            [
+                "k \u{2192} p (1)",
+                "k \u{2192} Enrich",
+                "j \u{2192} p",
+                "k \u{2192} p (2)"
             ]
         );
     }

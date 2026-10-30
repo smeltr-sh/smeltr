@@ -52,8 +52,18 @@ A schema is what a pipeline's rows should hold: a table of fields, each a
 path from the record's root, the type it must hold, whether a row must hold it,
 and what it means. A path spells its keys with dots, and a type is spelled as
 a declaration spells one, so a schema, a parser's field table and a
-declaration read the same. A bundle declares its schemas as such tables, and
-JSON Schema is read in (`schema::json_schema`). A schema is exported as
+declaration read the same. A bundle declares its schemas as such tables. A
+schema is also read from a file a standard or a spreadsheet gives, each format
+by its own reader: JSON Schema (`schema::json_schema`), ECS's `fields.csv` or
+`ecs_flat.yml` (`schema::ecs`), one class of `ocsf-schema-compiler`'s output,
+cut to as many keys deep and to the requirements asked for (`schema::ocsf`),
+and a CSV of fields, one row per field, its columns chosen by their place or
+found by the header's names (`schema::csv`). A type is read as smeltr spells
+it, or by the name a database, a spreadsheet or a standard gives it, from one
+map every reader shares (`schema::named`); a CSV's type the map does not know
+is read as the type it is told. Each reader gives the same table, checked as a
+bundle's schema is, and a field may carry an example of a value it holds, which ECS,
+OCSF and the CSV fill. A schema is exported as
 JSON Schema, or as the mapping an Elasticsearch index holding its rows should
 have. A field may say how it maps in Elasticsearch, a piece of mapping laid
 over the one its type has; its `type` is checked at save to be one a value of
@@ -63,8 +73,8 @@ names the schemas it produces, and a destination may name the schemas it
 accepts. Both are checked at save to name a schema the group can see. A
 schema is also imported: a pipeline of the bundle run over an uploaded
 file's records writes one row per field, `field`, `type`, `required`,
-`description` and `elasticsearch`, and the rows are the schema. ECS and OCSF come in that way,
-as any file of fields does.
+`description` and `elasticsearch`, and the rows are the schema. A file no
+reader takes comes in that way.
 
 ```mermaid
 flowchart LR

@@ -8,15 +8,25 @@
 <script lang="ts">
   import Field from './Field.svelte';
   import Panel from './Panel.svelte';
-  import type { MergeConflicts, MergeSide } from './api';
+  import {
+    SHARED_SCOPE,
+    configAt,
+    type MergeConflict,
+    type MergeConflicts,
+    type MergeSide,
+  } from './api';
   import { conflictLabel } from './conflictLabel';
+  import { scopeOf } from './objectChanges';
+  import { bundleRoutes } from './routeFlow';
 
   let {
+    branch,
     conflicts,
     busy = false,
     onapply,
     oncancel,
   }: {
+    branch: string;
     conflicts: MergeConflicts;
     busy?: boolean;
     onapply: (sides: MergeSide[]) => void;
@@ -28,6 +38,39 @@
     sides = conflicts.conflicts.map(() => '');
   });
   let ready = $derived(sides.length > 0 && sides.every((s) => s !== ''));
+
+  const key = (c: MergeConflict) => `${c.path}\u0000${c.id ?? ''}`;
+
+  /** Each conflicting route's `routeName` on this branch, by `key`. A route the branch removed has none, and is
+   * told by its JSON. */
+  let routeNames = $state<Map<string, string>>(new Map());
+  $effect(() => {
+    nameRoutes(conflicts);
+  });
+
+  async function nameRoutes(at: MergeConflicts) {
+    const routes = at.conflicts.filter(
+      (c) => c.id !== undefined && c.path.endsWith('/routes.json'),
+    );
+    if (routes.length === 0) return;
+    // Without its bundle a route's label is just `Route`.
+    const read = (scope: string) =>
+      configAt(branch, scope, at.work).then(
+        (res) => res.config,
+        () => null,
+      );
+    const shared = await read(SHARED_SCOPE);
+    const names = new Map<string, string>();
+    for (const scope of new Set(routes.map((c) => scopeOf(c.path)))) {
+      const own = scope === SHARED_SCOPE ? shared : await read(scope);
+      const named = own ? bundleRoutes(own, scope === SHARED_SCOPE ? null : shared) : [];
+      for (const c of routes.filter((c) => scopeOf(c.path) === scope)) {
+        const name = named.find((r) => r.id === c.id)?.name;
+        if (name) names.set(key(c), name);
+      }
+    }
+    if (at === conflicts) routeNames = names;
+  }
 </script>
 
 <Panel title="Conflicts">
@@ -42,9 +85,9 @@
       >
     </div>
   {/snippet}
-  {#each conflicts.conflicts as conflict, i (`${conflict.path}\u0000${conflict.id ?? ''}`)}
+  {#each conflicts.conflicts as conflict, i (key(conflict))}
     <section class="conflict">
-      <h3>{conflictLabel(conflict)}</h3>
+      <h3>{conflictLabel(conflict, routeNames.get(key(conflict)))}</h3>
       <div class="versions">
         {#each [['Base', conflict.base], ['Main', conflict.main], ['This branch', conflict.work]] as [label, text] (label)}
           <div class="version" role="group" aria-label={label}>

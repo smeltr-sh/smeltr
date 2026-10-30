@@ -11,6 +11,9 @@ use axum::Router;
 use axum::extract::{Json, Multipart};
 use axum::routing::{delete, get, patch, post, put};
 
+mod accounts_api;
+#[cfg(test)]
+mod accounts_fuzz;
 mod acme_api;
 mod agent_catalog;
 mod agents_api;
@@ -23,7 +26,12 @@ mod chat_api;
 mod cluster;
 mod config_api;
 mod docs_api;
+// What the crate's fuzzers share, compiled here as `tests/harness` compiles it: the library's is test-only.
+#[cfg(test)]
+#[path = "../../fuzz.rs"]
+mod fuzz;
 mod gate;
+mod key_accounts_api;
 mod oidc_api;
 mod policy;
 mod roles_api;
@@ -31,7 +39,6 @@ mod schema_api;
 mod service;
 mod sql_api;
 mod test_api;
-mod users_api;
 mod worker_groups_api;
 
 use smeltr::config_file;
@@ -2101,7 +2108,7 @@ async fn run_leader() {
         .route("/api/areas/:area/grok-patterns", put(config_api::put_grok_patterns))
         .route("/api/areas/:area/schemas", put(config_api::put_schemas))
         .route("/api/areas/:area/preview/schema-import", post(import_schema))
-        .route("/api/preview/from-json-schema", post(schema_api::from_json_schema))
+        .route("/api/preview/schema-read", post(schema_api::read))
         .route("/api/preview/schema-export", post(schema_api::export))
         .route("/api/areas/:area/manifest", put(config_api::put_manifest))
         .route("/api/areas/:area/pipelines", get(config_api::list_pipelines))
@@ -2123,11 +2130,16 @@ async fn run_leader() {
     // config routes above -- and it must be inside the gate, which is what `route_layer` below covers.
     let app = app.merge(
         Router::new()
-            .route("/api/users", get(users_api::list_users).post(users_api::create_user))
-            .route("/api/users/:id", patch(users_api::patch_user))
-            .route("/api/users/:id/reset-password", post(users_api::reset_password))
-            .route("/api/users/:id/revoke-sessions", post(users_api::revoke_sessions))
-            .route("/api/security-events", get(users_api::list_security_events))
+            .route(
+                "/api/accounts",
+                get(accounts_api::list_accounts).post(accounts_api::create_account),
+            )
+            .route("/api/accounts/:id", patch(accounts_api::patch_account))
+            .route("/api/accounts/:id/reset-password", post(accounts_api::reset_password))
+            .route("/api/accounts/:id/revoke-sessions", post(accounts_api::revoke_sessions))
+            .route("/api/accounts/:id/keys", post(key_accounts_api::create_key))
+            .route("/api/accounts/:id/keys/:key", delete(key_accounts_api::revoke_key))
+            .route("/api/security-events", get(accounts_api::list_security_events))
             .route(
                 "/api/me/agent-permissions",
                 get(agents_api::get_permissions).put(agents_api::put_permissions),
@@ -2139,7 +2151,7 @@ async fn run_leader() {
             )
             .route(
                 "/api/settings/sessions",
-                get(users_api::get_session_settings).put(users_api::put_session_settings),
+                get(accounts_api::get_session_settings).put(accounts_api::put_session_settings),
             )
             .route(
                 "/api/settings/oidc",
@@ -2234,7 +2246,9 @@ async fn run_leader() {
         .route("/api/*rest", axum::routing::any(unknown_api))
         .fallback(assets::serve)
         .layer(axum::middleware::from_fn(gate::shape))
-        .layer(axum::middleware::from_fn(gate::uncached))
+        .layer(axum::middleware::from_fn(gate::uncached));
+    // Outside `shape`, which reads a refusal's body.
+    let app = smeltr::leader::gzipped(app)
         // Outermost, so every answer carries the browser hardening headers, the assets and the fallback included.
         .layer(axum::middleware::from_fn(gate::harden));
     // What an agent's calls go through: this router, gate and all.
@@ -3228,6 +3242,7 @@ mod tests {
             response.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
         assert_eq!(response.route_ids, vec!["audit-orders"]);
+        assert_eq!(response.route_names, vec!["orders \u{2192} audit"]);
         let through = &response.rows[0].through;
         assert_eq!(through.len(), 1, "the group's route took the record");
         let document: serde_json::Value = serde_json::from_str(&through[0].documents[0].document).unwrap();

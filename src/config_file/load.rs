@@ -360,35 +360,12 @@ pub(crate) fn from_file_config_at(
     }));
     errors.extend(pipeline_errors);
 
-    // Only once every answer resolves.
-    if errors.is_empty() {
-        errors.extend(impossible_answers("the group", &group, None, Layer::Group));
-        for r in &routes {
-            let what = format!("route {:?}", r.id);
-            errors.extend(impossible_answers(&what, &r.on_exception, Some(&group), Layer::Route));
-        }
-        for d in &destinations {
-            let mut own = OnException::default();
-            own.answers[ExceptionKind::Refused.index()] = d.on_reject.clone();
-            let what = format!("destination {:?}", d.name);
-            errors.extend(impossible_answers(&what, &own, Some(&group), Layer::Destination));
-            if d.on_reject.targets().contains(&d.id) {
-                errors.push(format!(
-                    "destination {:?} delivers what it refuses to itself, where it would be refused again; give it \
-                     its own answer to Refused",
-                    d.name
-                ));
-            }
-        }
-        errors.extend(refusal_cycles(&destinations));
-    }
-
     if !errors.is_empty() {
         return Err(LoadError::Validation(errors.into_iter().map(Into::into).collect()));
     }
 
     let (named_secrets, named_certificates) = named_by(&file);
-    Ok(super::LoadedSystem {
+    let system = super::LoadedSystem {
         topology: TopologyConfig {
             named_secrets,
             named_certificates,
@@ -422,7 +399,41 @@ pub(crate) fn from_file_config_at(
             .filter(|(_, a)| !a.is_empty())
             .collect(),
         compiled: None,
-    })
+    };
+    // Only once every answer resolves.
+    let errors = impossible_answers_of(&system);
+    if errors.is_empty() {
+        Ok(system)
+    } else {
+        Err(LoadError::Validation(errors.into_iter().map(Into::into).collect()))
+    }
+}
+
+/// Every answer `system` gives that its kind's row cannot carry out, and every refusal that leads back to where it
+/// started.
+fn impossible_answers_of(system: &super::LoadedSystem) -> Vec<String> {
+    let topology = &system.topology;
+    let group = &topology.on_exception;
+    let mut errors = impossible_answers("the group", group, None, Layer::Group);
+    for (at, r) in topology.routes.iter().enumerate() {
+        let what = format!("route {}", system.route_name(at));
+        errors.extend(impossible_answers(&what, &r.on_exception, Some(group), Layer::Route));
+    }
+    for d in &topology.destinations {
+        let mut own = OnException::default();
+        own.answers[ExceptionKind::Refused.index()] = d.on_reject.clone();
+        let what = format!("destination {:?}", d.name);
+        errors.extend(impossible_answers(&what, &own, Some(group), Layer::Destination));
+        if d.on_reject.targets().contains(&d.id) {
+            errors.push(format!(
+                "destination {:?} delivers what it refuses to itself, where it would be refused again; give it \
+                 its own answer to Refused",
+                d.name
+            ));
+        }
+    }
+    errors.extend(refusal_cycles(&topology.destinations));
+    errors
 }
 
 /// Each object's schemas, in the file's order.
@@ -555,16 +566,13 @@ fn impossible_answers(
             continue;
         }
         let lacks = match (*kind, answer) {
-            ("Unmatched", Answer::Ignore | Answer::Tag) => Some("route"),
-            ("Unprocessable", Answer::Ignore | Answer::Tag) => Some("record"),
-            ("Refused", Answer::Ignore | Answer::Tag) => Some("destination"),
+            ("Unmatched", Answer::Ignore | Answer::Tag) => Some("an Unmatched row has no route"),
+            ("Unprocessable", Answer::Ignore | Answer::Tag) => Some("an Unprocessable row has no record"),
+            ("Refused", Answer::Ignore | Answer::Tag) => Some("a Refused row has no destination"),
             _ => None,
         };
         if let Some(lacks) = lacks {
-            errors.push(format!(
-                "{what} answers {kind} with {}, but a {kind} row has no {lacks}",
-                answer.label()
-            ));
+            errors.push(format!("{what} answers {kind} with {}, but {lacks}", answer.label()));
         }
     }
     errors
@@ -1324,94 +1332,98 @@ fn check_stall_after(t: StallAfter, id: &str, errors: &mut ItemErrors<'_>) {
 /// timeout drops that connection.
 const SFTP_MIN_STALL_AFTER: u64 = 15;
 
-/// Properties smeltr sets itself, with the reason it owns each. Both spellings of an aliased property appear:
-/// librdkafka resolves either to the same setting, and operator properties are applied after smeltr's.
-const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
-    (
-        "bootstrap.servers",
-        "set from this source or destination's own `brokers` field",
-    ),
+/// Properties smeltr sets itself, with the reason it owns each, which `/api/system` serves to the GUI. Both spellings
+/// of an aliased property appear: librdkafka resolves either to the same setting, and operator properties are applied
+/// after smeltr's.
+pub const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
+    ("bootstrap.servers", "set from the `brokers` field"),
+    // librdkafka runs it through system() on every worker, at client start and on each ticket refresh; its default
+    // already uses the keytab and principal a bundle names, and a bundle may not carry a shell command.
     (
         "sasl.kerberos.kinit.cmd",
-        "librdkafka runs it through system() on every worker, at client start and on each ticket \
-         refresh; its default already uses the keytab and principal a bundle names, and a bundle \
-         may not carry a shell command",
+        "it runs a shell command on every worker, and a config may not carry one",
     ),
     (
         "metadata.broker.list",
-        "librdkafka's other spelling of `bootstrap.servers`, which is set from this source or destination's own `brokers` field",
+        "another name for bootstrap.servers, which is set from the `brokers` field",
     ),
-    ("group.id", "set from this source's own `groupId` field"),
-    ("client.rack", "each worker sets it from its zone setting"),
+    ("group.id", "set from this source's `groupId` field"),
+    ("client.rack", "each worker sets it from its zone"),
     ("group.instance.id", "each worker sets it from its own id"),
+    // smeltr commits explicitly once a batch's destinations have flushed; letting librdkafka auto-commit would
+    // acknowledge offsets for rows that have not been delivered, silently breaking at-least-once.
     (
         "enable.auto.commit",
-        "smeltr commits explicitly once a batch's destinations have flushed; letting librdkafka auto-commit would acknowledge offsets for rows that have not been delivered, silently breaking at-least-once",
+        "smeltr commits only once a batch is delivered, and auto-commit would mark rows done before they are",
     ),
+    // A deprecated topic-level property for librdkafka's legacy simple consumer, which the high-level consumer smeltr
+    // runs ignores; setting it reads as a way to control auto-commit and does nothing at all, where
+    // `enable.auto.commit` is the global property smeltr pins off and reserves.
     (
         "auto.commit.enable",
-        "a deprecated topic-level property for librdkafka's legacy simple consumer, which the high-level consumer smeltr runs ignores -- setting it reads as a way to control auto-commit and does nothing at all, where `enable.auto.commit` is the global property smeltr pins off and reserves",
+        "it does nothing on the consumer smeltr runs, and smeltr keeps auto-commit off",
     ),
-    ("auto.offset.reset", "set from this source's own `start` field"),
+    ("auto.offset.reset", "set from this source's `start` field"),
+    // `io::kafka::MAX_POLL_INTERVAL`. A flush must not outlast it (`StallAfter::MAX`), or the group evicts the consumer.
     (
         "max.poll.interval.ms",
-        "chosen together with the destination stall threshold so a failing destination cannot trigger a group-wide rebalance",
+        "fixed at 5 minutes, which caps each destination's `stallAfterSecs` field, so a slow destination cannot rebalance the group",
     ),
-    (
-        "compression.type",
-        "set from this destination's own `compression` field, which offers exactly the codecs this build can produce -- two ways to set one thing is one way too many",
-    ),
+    // That field offers exactly the codecs this build can produce.
+    ("compression.type", "set from this destination's `compression` field"),
     (
         "compression.codec",
-        "librdkafka's other spelling of `compression.type`, which is set from this destination's own `compression` field",
+        "another name for compression.type, which is set from this destination's `compression` field",
     ),
-    ("acks", "set from this destination's own `acks` field"),
+    ("acks", "set from this destination's `acks` field"),
     (
         "request.required.acks",
-        "librdkafka's other spelling of `acks`, which is set from this destination's own `acks` field",
+        "another name for acks, which is set from this destination's `acks` field",
     ),
+    // That field makes a reader's memory footprint a number this deployment chose.
     (
         "queued.max.messages.kbytes",
-        "set from this source's own `fetchBytes` field, which is what makes a reader's memory footprint a number this deployment chose",
+        "set from this source's `fetchBytes` field",
     ),
+    // The producer holds half of that field, and the egress queue in front of it the other half.
     (
         "queue.buffering.max.kbytes",
-        "set from this destination's own `bufferBytes` field: the producer holds half of it and the egress queue in front of it the other half",
+        "set from this destination's `bufferBytes` field",
     ),
+    // smeltr reports librdkafka's own statistics as `smeltr_destination_throttled_seconds_total` and
+    // `smeltr_destination_buffered_bytes`, which is the only way broker-enforced quota throttling is visible at all;
+    // setting it to 0 would switch those series off with nothing to say they had stopped.
     (
         "statistics.interval.ms",
-        "smeltr reports librdkafka's own statistics as `smeltr_destination_throttled_seconds_total` and \
-         `smeltr_destination_buffered_bytes`, which is the only way broker-enforced quota throttling is visible at \
-         all; setting it to 0 would switch those series off with nothing to say they had stopped",
+        "smeltr needs it on to report destination throttling and buffer size",
     ),
     (
         "queue.buffering.max.messages",
-        "set to its maximum so the producer's half of this destination's own `bufferBytes` field bounds its queue",
+        "set to its maximum, so this destination's `bufferBytes` field bounds the queue",
     ),
-    (
-        "fetch.max.bytes",
-        "set from this source's own `fetchBytes` field: one fetch may carry half the queue, so a fetch always lands with room behind it",
-    ),
+    // One fetch may carry half the queue, so a fetch always lands with room behind it.
+    ("fetch.max.bytes", "set from this source's `fetchBytes` field"),
+    // librdkafka refuses a fetch larger than the message that carries it.
     (
         "receive.message.max.bytes",
-        "raised with the fetch derived from this source's own `fetchBytes` field, since librdkafka refuses a fetch \
-         larger than the message that carries it",
+        "raised with the fetch size, which is set from this source's `fetchBytes` field",
     ),
-    (
-        "fetch.message.max.bytes",
-        "set from this source's own `fetchBytes` field, the same as `fetch.max.bytes`, so one hot partition may fill a fetch",
-    ),
+    // The same as `fetch.max.bytes`, so one hot partition may fill a fetch.
+    ("fetch.message.max.bytes", "set from this source's `fetchBytes` field"),
+    // smeltr runs the producer with it off: an idempotent producer keeps at most five requests in flight, too few for a
+    // far link.
     (
         "enable.idempotence",
-        "smeltr runs the producer with it off: an idempotent producer keeps at most five requests in flight, too few for a far link",
+        "smeltr keeps it off, because an idempotent producer allows too few requests in flight for a distant broker",
     ),
     (
         "transactional.id",
-        "smeltr never begins a transaction, and a transactional producer refuses every record sent outside one",
+        "smeltr never begins a transaction, and a transactional producer refuses records sent outside one",
     ),
+    // Cooperative and eager members must not share a consumer group.
     (
         "partition.assignment.strategy",
-        "smeltr runs cooperative rebalancing, and cooperative and eager members must not share a consumer group -- a source that set this to an eager strategy would break rebalancing for every worker in its group, not only itself",
+        "smeltr uses cooperative rebalancing, and one member on another strategy breaks the group for every worker",
     ),
 ];
 
@@ -2020,8 +2032,8 @@ fn check_sasl_login(dto: &KafkaPropsDto, what: &str, errors: &mut ItemErrors<'_>
 
 /// librdkafka property names that answer the same question a connector's TLS settings answer: what this client
 /// presents, and what it trusts. A connector setting TLS and one of these has two answers to one question, and
-/// librdkafka would silently take whichever was set last.
-const TLS_KAFKA_PROPS: &[&str] = &[
+/// librdkafka would silently take whichever was set last. `/api/system` serves them to the GUI.
+pub const TLS_KAFKA_PROPS: &[&str] = &[
     "ssl.certificate.pem",
     "ssl.certificate.location",
     "ssl.key.pem",
@@ -7052,7 +7064,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("sasl.kerberos.kinit.cmd") && e.contains("system()")),
+                .any(|e| e.contains("sasl.kerberos.kinit.cmd") && e.contains("shell command")),
             "{errors:?}"
         );
     }
@@ -7071,9 +7083,157 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("auto.commit.enable") && e.contains("enable.auto.commit")),
+                .any(|e| e.contains("auto.commit.enable") && e.contains("keeps auto-commit off")),
             "{errors:?}"
         );
+    }
+
+    /// The GUI's `LIMITS` (`gui-frontend/src/api.ts`) offers each field's bounds and default without asking the
+    /// leader; these are the ones a save enforces, so a form never offers a value the save refuses.
+    #[test]
+    fn the_gui_offers_the_bounds_a_save_enforces() {
+        use crate::config_file::dto::{
+            BufferBytes as Buffer, BulkBytes as Bulk, FetchBytes as Fetch, FileInterval as File, HttpRequestBytes,
+            InFlight, MaxDeliveries as Deliveries, MaxRequestBytes as Receiver, ObjectBytes as Object,
+            PollIntervalSecs, RequestBytes, StallAfter as Stall, VisibilitySecs as Visibility,
+        };
+        use crate::plan::topology::MAX_SENDERS;
+        type Request = RequestBytes;
+        // Name, min, max (none where the loader sets none), default.
+        let want: Vec<(&str, u64, Option<u64>, u64)> = vec![
+            ("inFlight", 1, Some(MAX_SENDERS as u64), InFlight::DEFAULT as u64),
+            (
+                "maxBulkBytes",
+                Bulk::MIN as u64,
+                Some(Bulk::MAX as u64),
+                Bulk::DEFAULT as u64,
+            ),
+            (
+                "maxRequestBytes",
+                Request::MIN as u64,
+                Some(Request::MAX as u64),
+                Request::DEFAULT as u64,
+            ),
+            (
+                "httpRequestBytes",
+                Request::MIN as u64,
+                Some(Request::MAX as u64),
+                HttpRequestBytes::DEFAULT as u64,
+            ),
+            (
+                "logAnalyticsRequestBytes",
+                Request::MIN as u64,
+                Some(LOG_ANALYTICS_MAX_REQUEST_BYTES as u64),
+                Request::DEFAULT as u64,
+            ),
+            (
+                "receiverRequestBytes",
+                Receiver::MIN,
+                Some(Receiver::MAX),
+                Receiver::DEFAULT,
+            ),
+            (
+                "maxObjectBytes",
+                Object::MIN as u64,
+                Some(Object::MAX as u64),
+                Object::DEFAULT as u64,
+            ),
+            ("stallAfterSecs", Stall::MIN, Some(Stall::MAX), Stall::DEFAULT),
+            (
+                "bufferBytes",
+                Buffer::MIN as u64,
+                Some(Buffer::MAX as u64),
+                Buffer::DEFAULT as u64,
+            ),
+            ("fileIntervalSecs", File::MIN, Some(File::MAX), File::DEFAULT),
+            (
+                "tableFileIntervalSecs",
+                File::MIN,
+                Some(TABLE_FILE_INTERVAL_MAX),
+                File::DEFAULT,
+            ),
+            (
+                "objectBufferBytes",
+                Buffer::MIN as u64,
+                Some(Buffer::OBJECT_MAX as u64),
+                Buffer::OBJECT_DEFAULT as u64,
+            ),
+            (
+                "fetchBytes",
+                Fetch::MIN as u64,
+                Some(Fetch::MAX as u64),
+                Fetch::DEFAULT as u64,
+            ),
+            (
+                "visibilitySecs",
+                Visibility::MIN,
+                Some(Visibility::MAX),
+                Visibility::DEFAULT,
+            ),
+            (
+                "ackDeadlineSecs",
+                Visibility::MIN,
+                Some(ACK_DEADLINE_MAX),
+                Visibility::DEFAULT,
+            ),
+            (
+                "maxDeliveries",
+                Deliveries::MIN.into(),
+                Some(Deliveries::MAX.into()),
+                Deliveries::DEFAULT.into(),
+            ),
+            // The loader refuses only 0.
+            ("pollIntervalSecs", 1, None, PollIntervalSecs::DEFAULT),
+        ];
+
+        let source = include_str!("../../gui-frontend/src/api.ts");
+        let table = &source[source.find("export const LIMITS = {").expect("LIMITS")..];
+        let table = &table[..table.find("} as const;").expect("the end of LIMITS")];
+        // `64 * 1024 * 1024` or `43_200`; `Number.MAX_SAFE_INTEGER` is no bound.
+        let number = |text: &str| -> Option<u64> {
+            let text = text.trim();
+            (text != "Number.MAX_SAFE_INTEGER").then(|| {
+                text.split('*')
+                    .map(|n| n.trim().replace('_', "").parse::<u64>().expect(text))
+                    .product()
+            })
+        };
+        let offered: Vec<(&str, u64, Option<u64>, u64)> = table
+            .split("},")
+            .filter(|entry| entry.contains("min:"))
+            .map(|entry| {
+                let head = &entry[..entry.find(": {").expect("an entry")];
+                let name = head.rsplit(|c: char| !c.is_alphanumeric()).next().expect("its name");
+                let field = |key: &str| {
+                    let rest = &entry[entry.find(&format!("{key}:")).expect(key) + key.len() + 1..];
+                    number(&rest[..rest.find([',', '}']).unwrap_or(rest.len())])
+                };
+                (
+                    name,
+                    field("min").expect("a min"),
+                    field("max"),
+                    field("default").expect("a default"),
+                )
+            })
+            .collect();
+        assert_eq!(offered, want);
+    }
+
+    /// The GUI's Kafka form (`gui-frontend/src/kafka.ts`, `FIELD_LABELS`) shows each reason with its label for every
+    /// field the reason names in backticks; one it has no label for would show as the JSON key.
+    #[test]
+    fn the_gui_labels_every_field_a_reserved_reason_names() {
+        let source = include_str!("../../gui-frontend/src/kafka.ts");
+        let labels = &source[source.find("const FIELD_LABELS").expect("FIELD_LABELS")..];
+        let labels = &labels[..labels.find("]);").expect("the end of FIELD_LABELS")];
+        for (key, why) in RESERVED_KAFKA_PROPS {
+            for field in why.split('`').skip(1).step_by(2) {
+                assert!(
+                    labels.contains(&format!("['{field}', '")),
+                    "{key} names `{field}`, which the form has no label for"
+                );
+            }
+        }
     }
 
     /// Every property smeltr sets on a client is reserved.

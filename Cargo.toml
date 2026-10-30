@@ -37,6 +37,10 @@ zmij = "1"
 # A bytes value's one text spelling, wherever one is written as text.
 base64 = "0.23"
 
+# ECS's `ecs_flat.yml`, read as a schema (`schema::ecs`). yaml-rust2 because it is pure Rust and maintained;
+# serde_yaml is archived.
+yaml-rust2 = { version = "0.13.0", default-features = false }
+
 # The startup file. TOML because a human hand-edits it and comments matter.
 toml = "1"
 # Lookup files are mapped, so a host holds one copy of each in its page cache however many plans name it.
@@ -142,6 +146,8 @@ async-trait = "0.1"
 http = "1"
 # The leader's AI agent sends its calls through the leader's own router, as a service. Already built for axum.
 tower-service = "0.3"
+# The leader gzips what it answers and inflates what it is sent gzipped. Already in the tree under `reqwest`.
+tower-http = { version = "0.6", default-features = false, features = ["compression-gzip", "decompression-gzip"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 zstd = { version = "0.14", default-features = false }
 lz4_flex = { version = "0.14", default-features = false, features = ["std", "frame"] }

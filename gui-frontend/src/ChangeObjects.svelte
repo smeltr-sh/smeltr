@@ -125,6 +125,16 @@
     return res.config ?? emptyConfig();
   }
 
+  /** `shared/` at both ends, which a group's routes are counted after (`routeName`); none for `shared/` itself. */
+  async function sharedOf(scope: string, from: string, to: string) {
+    if (scope === SHARED_SCOPE) return undefined;
+    const [before, after] = await Promise.all([
+      sideAt(SHARED_SCOPE, from),
+      sideAt(SHARED_SCOPE, to),
+    ]);
+    return { before, after };
+  }
+
   function prefixOf(scope: string): string {
     return scope === SHARED_SCOPE ? 'shared/' : `groups/${scope}/`;
   }
@@ -201,8 +211,12 @@
       const [sides, changed] = await Promise.all([
         Promise.all(
           scopes.map(async (scope) => {
-            const [before, after] = await Promise.all([sideAt(scope, from), sideAt(scope, to)]);
-            return { scope, before, after };
+            const [before, after, shared] = await Promise.all([
+              sideAt(scope, from),
+              sideAt(scope, to),
+              sharedOf(scope, from, to),
+            ]);
+            return { scope, before, after, shared };
           }),
         ),
         filesChanged(from, to),
@@ -728,13 +742,13 @@
   }
   .obj-head {
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.6rem;
     padding: 0.55rem 0.8rem;
     border-bottom: 1px solid var(--border);
   }
-  /* One row however narrow the pane: the name and its kind give way, the buttons do not. */
+  /* However narrow the pane, nothing is clipped: what does not fit on a row wraps under it, and the buttons never shrink. */
   .obj-head > :global(*) {
     flex-shrink: 0;
     white-space: nowrap;
@@ -746,7 +760,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  /* The kind gives way first: the name is what the card is about, and gives way only past half the row. */
+  /* A name or kind wider than a whole row ellipsizes; the name gives way only past half the row. */
   .obj-head .label {
     flex-shrink: 0;
     max-width: 50%;

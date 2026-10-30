@@ -77,6 +77,7 @@ impl<'d> Reader<'d> {
                 ty: typed.ty,
                 required: required.contains(&name.as_str()),
                 description: text(property, "description"),
+                example: super::example_of(property.get("examples").and_then(|e| e.get(0))),
                 elasticsearch: None,
             });
             let read = match typed.holds {
@@ -113,10 +114,6 @@ impl<'d> Reader<'d> {
         let format = node.get("format").and_then(Value::as_str);
         Ok(match types.as_slice() {
             ["string"] if format == Some("date-time") => leaf(DataType::DateTime),
-            ["string"] => leaf(DataType::Str),
-            ["integer"] => leaf(DataType::I64),
-            ["number"] => leaf(DataType::F64),
-            ["boolean"] => leaf(DataType::Bool),
             ["object"] => Typed {
                 ty: DataType::Struct(Vec::new(), true),
                 holds: Some(node),
@@ -128,6 +125,9 @@ impl<'d> Reader<'d> {
                     ty: DataType::Array(Box::new(element.ty)),
                     ..element
                 }
+            }
+            [t] if let Some(named) = super::named(t) => {
+                leaf(crate::expr::parse::parse_type(named).expect("a type `named` spells"))
             }
             // Two types at once, or none: JSON Schema leaves it open, and so does the check.
             _ => leaf(DataType::Variant),
@@ -215,6 +215,14 @@ impl Node<'_> {
             if let Some(f) = child.field {
                 if !f.description.is_empty() {
                     value["description"] = json!(f.description);
+                }
+                if !f.example.is_empty() {
+                    // Text, unless the field holds something else and the example reads as that.
+                    let written = match f.ty {
+                        DataType::Str => None,
+                        _ => serde_json::from_str::<Value>(&f.example).ok(),
+                    };
+                    value["examples"] = json!([written.unwrap_or_else(|| json!(f.example))]);
                 }
                 if f.required {
                     required.push(key.clone());

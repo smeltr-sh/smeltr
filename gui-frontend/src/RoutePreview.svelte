@@ -118,7 +118,7 @@
   };
 
   function routeName(i: number): string {
-    return result?.route_ids[i] || `route ${i}`;
+    return result?.route_names[i] ?? '';
   }
 
   // A record's lines are its routes in the order they ran, so the sort orders records and each keeps

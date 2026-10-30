@@ -1,5 +1,6 @@
-//! A schema brought in as JSON Schema or by an importer pipeline, and handed out in an export format. The leader's
-//! `/api/preview/from-json-schema`, `/api/preview/schema-export` and `/api/areas/:area/preview/schema-import`, and
+//! A schema brought in from a file a standard publishes (JSON Schema, ECS, OCSF, a CSV of fields) or by an importer
+//! pipeline, and handed out in an export format. The leader's
+//! `/api/preview/schema-read`, `/api/preview/schema-export` and `/api/areas/:area/preview/schema-import`, and
 //! the website demo's service, answer from here. A bundle's schemas are config like any other: read with
 //! `GET /api/areas/:area`, saved with `PUT /api/areas/:area/schemas`.
 
@@ -10,26 +11,88 @@ use crate::io::line_breaker::{LineBreaker, PER_LINE};
 use crate::io::raw_object;
 use crate::schema::json_schema;
 
-/// A JSON Schema document to read as the schema `id`.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FromJsonSchema {
-    #[serde(default)]
-    pub id: String,
-    pub schema: Value,
+/// What a schema is read from: a file in a format a standard publishes.
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReadFormat {
+    /// A JSON Schema document (`schema::json_schema`).
+    JsonSchema,
+    /// ECS's `fields.csv` or `ecs_flat.yml` (`schema::ecs`).
+    Ecs,
+    /// One class of `ocsf-schema-compiler`'s output (`schema::ocsf`).
+    Ocsf,
+    /// A spreadsheet of fields under a header row (`schema::csv`).
+    Csv,
 }
 
-/// A schema read from JSON Schema, as a bundle declares one.
+/// A file to read as the schema `id`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadRequest {
+    #[serde(default)]
+    pub id: String,
+    pub format: ReadFormat,
+    /// The file, as text.
+    pub text: String,
+    /// The OCSF class to read.
+    #[serde(default)]
+    pub class: String,
+    /// How much of an OCSF class to read.
+    #[serde(default)]
+    pub cut: crate::schema::ocsf::Cut,
+    /// Which column of a CSV holds what; unsaid, its header says.
+    #[serde(default)]
+    pub columns: Option<crate::schema::csv::Columns>,
+    /// The type of each value of a CSV's type column the reader does not know of itself.
+    #[serde(default)]
+    pub types: std::collections::BTreeMap<String, String>,
+    /// Answer what a CSV holds, for its columns and types to be chosen, rather than read it.
+    #[serde(default)]
+    pub preview: bool,
+}
+
+/// A schema read from a file, as a bundle declares one, or, asked for, what a CSV holds before it is read.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct ReadSchema {
     pub schema: SchemaDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<crate::schema::csv::Preview>,
 }
 
-/// The schema `req` declares.
-pub fn from_json_schema(req: &FromJsonSchema) -> Result<ReadSchema, String> {
-    json_schema::read(&req.id, &req.schema).map(|s| ReadSchema {
-        schema: crate::schema::to_dto(&s),
-    })
+/// The schema `req`'s file declares, checked as a bundle's would be.
+pub fn read(req: &ReadRequest) -> Result<ReadSchema, String> {
+    let json = || serde_json::from_str::<Value>(&req.text).map_err(|e| format!("the file is not JSON: {e}"));
+    let fields = match req.format {
+        ReadFormat::JsonSchema => {
+            let schema = json_schema::read(&req.id, &json()?)?;
+            return Ok(ReadSchema {
+                schema: crate::schema::to_dto(&schema),
+                preview: None,
+            });
+        }
+        ReadFormat::Ecs => crate::schema::ecs::read(&req.text)?,
+        ReadFormat::Ocsf => crate::schema::ocsf::read(&json()?, &req.class, &req.cut)?,
+        ReadFormat::Csv if req.preview => {
+            return Ok(ReadSchema {
+                preview: Some(crate::schema::csv::preview(&req.text, req.columns.as_ref())?),
+                ..ReadSchema::default()
+            });
+        }
+        ReadFormat::Csv => crate::schema::csv::read(&req.text, req.columns.as_ref(), &req.types)?,
+    };
+    declared(&req.id, "", fields)
+}
+
+/// The schema `id` of `fields`, checked as a bundle's would be.
+fn declared(id: &str, title: &str, fields: Vec<crate::config_file::SchemaFieldDto>) -> Result<ReadSchema, String> {
+    let schema = SchemaDto {
+        id: id.to_string(),
+        title: title.to_string(),
+        description: String::new(),
+        fields,
+    };
+    crate::schema::read(&schema)?;
+    Ok(ReadSchema { schema, preview: None })
 }
 
 /// What a schema is exported as.
@@ -123,20 +186,14 @@ pub fn from_rows(id: &str, title: &str, rows: &[crate::leader::preview::RowOut])
             ty,
             required,
             description: text("description")?.unwrap_or_default(),
+            example: text("example")?.unwrap_or_default(),
             elasticsearch,
         });
     }
     if fields.is_empty() {
         return Err("the importer wrote no rows".to_string());
     }
-    let schema = SchemaDto {
-        id: id.to_string(),
-        title: title.to_string(),
-        description: String::new(),
-        fields,
-    };
-    crate::schema::read(&schema)?;
-    Ok(ReadSchema { schema })
+    declared(id, title, fields)
 }
 
 /// What breaks a schema in `file`, a group's bundle merged with `shared/`: each pipeline's rows against the schemas it
@@ -166,9 +223,68 @@ pub fn findings(
 mod fuzz;
 
 #[cfg(test)]
+mod fuzz_read;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn json_schema(id: &str, doc: Value) -> ReadRequest {
+        ReadRequest {
+            id: id.to_string(),
+            format: ReadFormat::JsonSchema,
+            text: doc.to_string(),
+            class: String::new(),
+            cut: Default::default(),
+            columns: None,
+            types: Default::default(),
+            preview: false,
+        }
+    }
+
+    #[test]
+    fn a_file_reads_in_the_format_it_is_named_as_and_is_checked_as_a_bundles_schema() {
+        let req = |format, text: &str| ReadRequest {
+            id: "x".to_string(),
+            format,
+            text: text.to_string(),
+            class: "authentication".to_string(),
+            cut: Default::default(),
+            columns: None,
+            types: Default::default(),
+            preview: false,
+        };
+        let fields = |r: Result<ReadSchema, String>| r.unwrap().schema.fields.len();
+        assert_eq!(fields(read(&req(ReadFormat::Csv, "field,type\na,str\nb,i64"))), 2);
+        assert_eq!(
+            fields(read(&req(
+                ReadFormat::Ecs,
+                include_str!("../../tests/gui/fixtures/ecs-fields-excerpt.csv")
+            ))),
+            14
+        );
+        assert!(
+            fields(read(&req(
+                ReadFormat::Ocsf,
+                include_str!("../../tests/fixtures/ocsf-authentication.json")
+            ))) > 30
+        );
+        assert_eq!(
+            read(&req(ReadFormat::Ocsf, "nope")).unwrap_err(),
+            "the file is not JSON: expected ident at line 1 column 2"
+        );
+        assert!(
+            read(&req(ReadFormat::Csv, "field,type,elasticsearch\na,str,long"))
+                .unwrap_err()
+                .starts_with("`a`: Elasticsearch's `long` cannot hold str")
+        );
+        assert!(
+            read(&req(ReadFormat::Csv, "field,type,elasticsearch\na,str,long"))
+                .unwrap_err()
+                .starts_with("`a`: Elasticsearch's `long` cannot hold str")
+        );
+    }
 
     #[test]
     fn an_uploaded_file_is_a_record_per_line_without_a_line_breaker() {
@@ -202,12 +318,7 @@ mod tests {
                 "user": { "type": "object", "properties": { "name": { "type": "string" } } },
             },
         });
-        let schema = from_json_schema(&FromJsonSchema {
-            id: "login".to_string(),
-            schema: doc,
-        })
-        .unwrap()
-        .schema;
+        let schema = read(&json_schema("login", doc)).unwrap().schema;
         let rows: Vec<&str> = schema.fields.iter().map(|f| f.field.as_str()).collect();
         assert_eq!(rows, ["time", "user", "user.name"]);
         assert!(schema.fields[0].required);
@@ -243,13 +354,7 @@ mod tests {
             out["properties"]["user"]["properties"]["name"],
             json!({ "type": "string" })
         );
-        assert!(
-            from_json_schema(&FromJsonSchema {
-                id: String::new(),
-                schema: json!({ "type": "string" })
-            })
-            .is_err()
-        );
+        assert!(read(&json_schema("", json!({ "type": "string" }))).is_err());
     }
 
     #[test]
@@ -303,49 +408,35 @@ mod tests {
         assert_eq!(refused(&[]), "the importer wrote no rows");
     }
 
-    /// The OCSF importer of `docs/examples.md` 10 over a compiled schema's authentication class: a row for each
-    /// attribute OCSF requires or recommends, and for each such attribute of the objects those hold, and no deeper.
+    /// The importer of `docs/examples.md` 9 over a BigQuery table's schema: a row for each column.
     #[test]
-    fn the_ocsf_importer_writes_what_a_class_requires_and_recommends() {
+    fn the_docs_importer_writes_a_row_for_each_column() {
         let examples = include_str!("../../docs/examples.md");
-        let section = examples.split("## 10.").nth(1).expect("the OCSF importer's section");
+        let section = examples.split("## 9.").nth(1).expect("the importer's section");
         let body = (section.split("```ts\n").nth(1).and_then(|b| b.split("\n```").next())).expect("its pipeline");
         let config = json!({
             "version": 1,
-            "pipelines": [{ "id": "ocsf", "name": "OCSF importer",
+            "pipelines": [{ "id": "bq", "name": "BigQuery importer",
                             "steps": [{ "id": "rows", "type": "code", "body": body }] }],
         });
         let req: crate::leader::preview::PreviewRequest =
-            serde_json::from_value(json!({ "config": config.to_string(), "pipeline": "ocsf" })).unwrap();
-        let text = include_str!("../../tests/fixtures/ocsf-authentication.json");
+            serde_json::from_value(json!({ "config": config.to_string(), "pipeline": "bq" })).unwrap();
+        let text = include_str!("../../tests/fixtures/bigquery-table.json");
         let records = records_of(text, Some(r"(\x00)")).unwrap();
         let preview = crate::leader::preview::run_preview(req, Default::default(), &[], records);
         assert!(preview.succeeded(), "{:?}", preview.errors);
-        let schema = from_rows("ocsf-authentication", "Authentication", &preview.body.rows)
-            .unwrap()
-            .schema;
+        let schema = from_rows("web", "Web", &preview.body.rows).unwrap().schema;
         let field = |path: &str| {
             let f = (schema.fields.iter().find(|f| f.field == path)).unwrap_or_else(|| panic!("no `{path}`"));
             (f.ty.as_str(), f.required)
         };
-        assert_eq!(field("time"), ("i64", true));
-        assert_eq!(field("user"), ("{...}", true));
-        assert_eq!(field("user.name"), ("str", false));
-        assert_eq!(field("metadata.version"), ("str", true));
-        assert_eq!(field("observables"), ("array<{...}>", false));
-        assert_eq!(field("src_endpoint.ip"), ("str", false));
-        let mapped =
-            |path: &str| (schema.fields.iter().find(|f| f.field == path)).and_then(|f| f.elasticsearch.clone());
-        assert_eq!(
-            mapped("src_endpoint.ip"),
-            Some(json!({ "type": "ip" }).as_object().unwrap().clone())
-        );
-        assert_eq!(mapped("user.name"), None);
-        assert!(schema.fields.iter().all(|f| f.field.split('.').count() <= 2));
-        assert!(
-            !schema.fields.iter().any(|f| f.field == "unmapped"),
-            "an optional attribute is left out"
-        );
+        assert_eq!(field("event_time"), ("datetime", true));
+        assert_eq!(field("status"), ("i64", false));
+        assert_eq!(field("latency_ms"), ("f64", false));
+        assert_eq!(field("cached"), ("bool", false));
+        assert_eq!(field("tags"), ("array<str>", false));
+        assert_eq!(field("headers"), ("{...}", false));
+        assert_eq!(schema.fields.len(), 7);
     }
 
     /// A row dropped on purpose is passed over; one an exception dropped or marked is refused by its number.

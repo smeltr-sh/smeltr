@@ -13,6 +13,7 @@ import {
   type Api,
   type Fleet,
   type Leader,
+  withKey,
 } from '../fleet';
 import type { Rng } from '../fuzz';
 import { MODEL_CONTEXT, MODEL_KEY, request, say, type FakeModel } from '../model';
@@ -109,8 +110,10 @@ export type World = {
   signIns: number[];
   /** Each local account the administrator added, by username, and whether it is enabled. */
   accounts: Map<string, boolean>;
-  /** Each role, by the provider group it names. */
-  roles: Set<string>;
+  /** Each role the journey made, and the administrator role, with the provider groups that give it. */
+  roles: Map<string, string[]>;
+  /** Each key account, by display name, and the key it holds in force. */
+  keyAccounts: Map<string, string | null>;
   /** AI agents are turned on, against the journey's model endpoint. */
   agentsOn: boolean;
   /** The administrator's conversations with their agent, by title. */
@@ -129,7 +132,7 @@ export type World = {
   supplied: boolean;
   /** The certificate in force was ordered from the journey's certificate authority. It is supplied too. */
   acme: boolean;
-  /** A certificate was ordered over ACME. The leader keeps it, sealed, after a switch away from it. */
+  /** A certificate was ordered over ACME, so ordering is on, and stays on after a switch away from it. */
   ordered: boolean;
 };
 
@@ -152,7 +155,8 @@ export function newWorld(): World {
     fielded: [],
     signIns: [],
     accounts: new Map(),
-    roles: new Set(),
+    roles: new Map([['administrator', []]]),
+    keyAccounts: new Map(),
     agentsOn: false,
     conversations: [],
     restarted: [],
@@ -1252,23 +1256,21 @@ const regenerateKey: Move = {
         await j.truth()
       ).get('/api/settings/encryption-key');
       expect(key.state).toBe('held');
-      // One in force may be ordered again at once, so it may be sealed or not.
+      // While ordering is on, the leader orders the certificate again whether or not it is in force, so it may
+      // be sealed or not.
       return key.unopenable
         .map((u) => u.name)
-        .filter((name) => !(world.acme && name === 'acme'))
+        .filter((name) => !(world.ordered && name === 'acme'))
         .sort();
     };
-    // An ordered certificate is not entered again: the leader orders it again while ordering is on, and keeps
-    // it sealed while ordering is off. The leader's own certificate is renewed at once, so only what an admin
-    // entered is left to enter again.
-    const ordered = world.ordered && !world.acme ? ['acme'] : [];
+    // An ordered certificate is not entered again, and the leader's own certificate is renewed at once, so only
+    // what an admin entered is left to enter again.
     await expect
       .poll(unopenable, { timeout: 30_000 })
       .toEqual(
         [
           ...world.secrets.keys(),
           ...world.certificates.keys(),
-          ...ordered,
           ...settings.map((s) => s.key),
         ].sort(),
       );
@@ -1303,7 +1305,7 @@ const regenerateKey: Move = {
         .click();
       await expect(page.getByText(setting.label, { exact: true })).toHaveCount(0);
     }
-    expect(await unopenable()).toEqual([...world.secrets.keys(), ...ordered].sort());
+    expect(await unopenable()).toEqual([...world.secrets.keys()].sort());
     const again = [...world.certificates.keys(), ...settings.map((s) => s.label)];
     const entered = again.length ? `, ${again.join(' and ')} entered again` : '';
     return `regenerate the key, ${world.secrets.size} to enter again${entered}`;
@@ -1554,13 +1556,43 @@ const addGrokPattern: Move = {
   },
 };
 
-/** A JSON Schema type, and the type the schema's table spells it as. */
-const JSON_TYPES = [
-  ['string', 'str'],
-  ['integer', 'i64'],
-  ['number', 'f64'],
-  ['boolean', 'bool'],
+/** A field's type in each format a schema is read from, the type the schema's table spells it as, and how it maps
+ * in Elasticsearch where that is not its type's own. */
+const FORMAT_TYPES = [
+  { json: 'string', ecs: 'keyword', ocsf: 'string_t', common: 'VARCHAR', type: 'str' },
+  { json: 'integer', ecs: 'long', ocsf: 'integer_t', common: 'BIGINT', type: 'i64' },
+  { json: 'number', ecs: 'double', ocsf: 'float_t', common: 'double', type: 'f64' },
+  { json: 'boolean', ecs: 'boolean', ocsf: 'boolean_t', common: 'Boolean', type: 'bool' },
+  {
+    json: 'string',
+    ecs: 'ip',
+    ocsf: 'ip_t',
+    common: 'String',
+    type: 'str',
+    elasticsearch: { type: 'ip' },
+  },
 ] as const;
+
+/** The tile each format is added from. */
+const FORMAT_TILES = {
+  empty: 'Empty schema',
+  'json-schema': 'JSON Schema',
+  csv: 'CSV of fields',
+  ecs: 'ECS',
+  ocsf: 'OCSF',
+} as const;
+
+type SchemaFormat = keyof typeof FORMAT_TILES;
+
+/** A field as the move writes it, and as the leader keeps it. */
+type Drawn = {
+  field: string;
+  type: string;
+  required?: true;
+  description?: string;
+  example?: string;
+  elasticsearch?: { type: string };
+};
 
 const addSchema: Move = {
   name: 'add-schema',
@@ -1569,28 +1601,122 @@ const addSchema: Move = {
   run: async (j) => {
     const { page, leader, rng, world } = j;
     const id = `schema-${world.made++}`;
-    // Empty, or read from a JSON Schema of a few fields, some required.
-    const fields = rng.chance(3)
-      ? []
-      : Array.from({ length: 1 + rng.below(3) }, (_, i) => {
-          const [json, ty] = rng.pick(JSON_TYPES);
-          return { field: `f${i}`, json, type: ty, required: rng.chance(2) };
-        });
+    const format = rng.pick(Object.keys(FORMAT_TILES) as SchemaFormat[]);
+    // A few fields, some required, read from the format drawn. ECS requires only fields of its own, and an OCSF class
+    // read as by default takes the required and the recommended.
+    const drawn = Array.from({ length: format === 'empty' ? 0 : 1 + rng.below(3) }, (_, i) => {
+      const t = rng.pick(FORMAT_TYPES);
+      const requirement = i === 0 ? 'required' : rng.pick(['required', 'recommended', 'optional']);
+      return { i, t, requirement, example: rng.chance(2) ? `e${i}, "quoted"` : '' };
+    });
+    const onlyRequired = format === 'ocsf' && rng.chance(3);
+    const taken = drawn.filter(
+      (d) =>
+        format !== 'ocsf' ||
+        d.requirement === 'required' ||
+        (d.requirement === 'recommended' && !onlyRequired),
+    );
+    const fields: Drawn[] = taken.map(({ i, t, requirement, example }) => ({
+      field: `f${i}`,
+      type: t.type,
+      ...(requirement === 'required' && format !== 'ecs' ? { required: true as const } : {}),
+      ...(format === 'csv' || format === 'ecs' || format === 'ocsf'
+        ? { description: `Field ${i}.` }
+        : {}),
+      ...(example && format !== 'json-schema' ? { example } : {}),
+      ...('elasticsearch' in t && format !== 'json-schema'
+        ? { elasticsearch: t.elasticsearch }
+        : {}),
+    }));
+    // A CSV's columns picked by hand, under a header that names none of them; its types as other systems spell them.
+    const picked = format === 'csv' && rng.chance(2);
+    const common = taken.map(() => rng.chance(2));
+    const told = taken.map(() => format === 'csv' && rng.chance(4));
+    const cell = (s: string) => (/[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s);
+    const file = {
+      empty: '',
+      'json-schema': JSON.stringify({
+        type: 'object',
+        required: drawn.filter((d) => d.requirement === 'required').map((d) => `f${d.i}`),
+        properties: Object.fromEntries(drawn.map((d) => [`f${d.i}`, { type: d.t.json }])),
+      }),
+      csv:
+        (picked
+          ? 'Name,Kind,Must,About,Sample,Index\n'
+          : 'Field,Type,Required,Description,Example,Elasticsearch\n') +
+        fields
+          .map((f, i) =>
+            [
+              f.field,
+              // As another system spells it, a type the leader knows, or one it is told.
+              told[i] ? `kind ${i}` : common[i] ? taken[i].t.common : f.type,
+              f.required ? 'yes' : '',
+              f.description!,
+              f.example ?? '',
+              f.elasticsearch?.type ?? '',
+            ]
+              .map(cell)
+              .join(','),
+          )
+          .join('\n'),
+      ecs:
+        'ECS_Version,Indexed,Field_Set,Field,Type,Level,Normalization,Example,Description\n' +
+        drawn
+          .map((d) =>
+            ['9.1.0', 'true', 'base', `f${d.i}`, d.t.ecs, 'core', '', d.example, `Field ${d.i}.`]
+              .map(cell)
+              .join(','),
+          )
+          .join('\n'),
+      ocsf: JSON.stringify({
+        classes: {
+          web: {
+            attributes: Object.fromEntries(
+              drawn.map((d) => [
+                `f${d.i}`,
+                {
+                  type: d.t.ocsf,
+                  requirement: d.requirement,
+                  description: `Field ${d.i}.`,
+                  ...(d.example ? { example: d.example } : {}),
+                },
+              ]),
+            ),
+          },
+        },
+        objects: {},
+      }),
+    }[format];
     await goto(page, leader, '#/build/schemas');
     await page.getByRole('button', { name: '+ Add schema' }).click();
     const dialog = page.getByRole('dialog');
-    if (fields.length) {
-      await dialog.getByRole('button', { name: 'JSON Schema', exact: true }).click();
-      await dialog.getByLabel('id', { exact: true }).fill(id);
-      const doc = {
-        type: 'object',
-        required: fields.filter((f) => f.required).map((f) => f.field),
-        properties: Object.fromEntries(fields.map((f) => [f.field, { type: f.json }])),
-      };
-      await dialog.getByRole('textbox', { name: 'JSON Schema' }).fill(JSON.stringify(doc));
-    } else {
-      await dialog.getByRole('button', { name: 'Empty schema', exact: true }).click();
-      await dialog.getByLabel('id', { exact: true }).fill(id);
+    await dialog.getByRole('button', { name: FORMAT_TILES[format], exact: true }).click();
+    await dialog.getByLabel('id', { exact: true }).fill(id);
+    if (format === 'json-schema') {
+      await dialog.getByRole('textbox', { name: 'JSON Schema' }).fill(file);
+    } else if (format !== 'empty') {
+      const name = { csv: 'fields.csv', ecs: 'fields.csv', ocsf: 'ocsf.json' }[format];
+      await dialog
+        .getByLabel(/^File/)
+        .setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(file) });
+    }
+    if (format === 'csv' && picked) {
+      const roles = ['field', 'type', 'required', 'description', 'example', 'elasticsearch'];
+      const names = ['Name', 'Kind', 'Must', 'About', 'Sample', 'Index'];
+      for (const [i, role] of roles.entries()) {
+        await dialog.getByRole('combobox', { name: `Column ${names[i]} holds` }).selectOption(role);
+      }
+    }
+    for (const [i, f] of fields.entries()) {
+      if (told[i]) {
+        await dialog
+          .getByRole('combobox', { name: `Type of kind ${i}`, exact: true })
+          .selectOption(f.type);
+      }
+    }
+    if (format === 'ocsf') {
+      await expect(dialog.getByRole('combobox', { name: 'Class' })).toHaveValue('web');
+      if (onlyRequired) await dialog.getByRole('checkbox', { name: 'recommended' }).uncheck();
     }
     await dialog.getByRole('button', { name: 'Add', exact: true }).click();
     await expect(dialog).toBeHidden();
@@ -1600,14 +1726,8 @@ const addSchema: Move = {
     await editingIsSaved(j);
     const res = await (await j.truth()).get(`/api/areas/shared?branch=${world.branch}`);
     const saved = res.config.schemas.find((s: { id: string }) => s.id === id);
-    expect(saved.fields).toEqual(
-      fields.map((f) =>
-        f.required
-          ? { field: f.field, type: f.type, required: true }
-          : { field: f.field, type: f.type },
-      ),
-    );
-    return `add schema ${id} of ${fields.length} field(s)`;
+    expect(saved.fields, `${id} from ${format}`).toEqual(fields);
+    return `add schema ${id} from ${format}, of ${fields.length} field(s)`;
   },
 };
 
@@ -1624,9 +1744,16 @@ const mapSchemaField: Move = {
     await goto(page, leader, `#/build/schemas?open=${id}`);
     await page.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
     const selects = page.getByRole('combobox', { name: /^Elasticsearch type of / });
-    const select = selects.nth(rng.below(await selects.count()));
+    await expect(selects.first()).toBeVisible();
+    // A field whose type maps one way only, a bool's, offers no other choice.
+    const choices: number[] = [];
+    for (let i = 0; i < (await selects.count()); i++) {
+      if ((await selects.nth(i).locator('option').count()) > 1) choices.push(i);
+    }
+    if (!choices.length) return `map nothing: every field of ${id} maps one way only`;
+    const select = selects.nth(rng.pick(choices));
     const field = (await select.getAttribute('aria-label'))!.replace('Elasticsearch type of ', '');
-    // Another than it shows, so the choice is an edit: the default, or a type its own allows.
+    // Another than it shows, so the choice is an edit. The first is its type's own, which saves no mapping.
     const was = await select.inputValue();
     const offered = await select
       .locator('option')
@@ -1639,16 +1766,23 @@ const mapSchemaField: Move = {
     const res = await truth.get(`/api/areas/shared?branch=${world.branch}`);
     const schema = res.config.schemas.find((s: { id: string }) => s.id === id);
     const saved = schema.fields.find((f: { field: string }) => f.field === field);
+    // An integer's date in seconds is a date its format reads as seconds.
+    const mapping =
+      type === 'date in seconds'
+        ? { type: 'date', format: 'epoch_second||strict_date_optional_time' }
+        : { type };
     expect(saved.elasticsearch, `${id}'s ${field} maps as chosen`).toEqual(
-      type ? { type } : undefined,
+      type === offered[0] ? undefined : mapping,
     );
-    // The export maps it as chosen, or as its type does by default: the first the view offered after it.
+    // The export maps it as chosen, or, a variant that says nothing, as the first type it allows.
     const exported = await truth.post('/api/preview/schema-export', {
       schema,
       format: 'elasticsearch',
     });
-    expect(exported.document.mappings.properties[field].type).toBe(type || offered[1]);
-    return `map ${id}'s ${field} in Elasticsearch as ${type || 'its default'}`;
+    expect(exported.document.mappings.properties[field]).toMatchObject(
+      type ? mapping : { type: offered[1] },
+    );
+    return `map ${id}'s ${field} in Elasticsearch as ${type || 'dynamic'}`;
   },
 };
 
@@ -1984,20 +2118,49 @@ type Account = {
   authSource: string;
   roles: string[];
   groups: string[];
+  access: { administrator: boolean };
+  keys?: { label: string; createdAt: number; expiresAt: number | null }[];
 };
+
+/** A day, in the milliseconds a key's expiry is kept in. */
+const DAY_MILLIS = 86_400_000;
+
+/** In the open access form, some of the roles there are, the administrator role among them, or none. Answers
+ * them, sorted as the leader keeps them. */
+async function chooseAccess(j: Journey, within: Locator): Promise<string[]> {
+  const { rng, world } = j;
+  const offered = [...world.roles.keys()].sort();
+  const roles = offered.filter(() => rng.chance(3));
+  for (const role of offered)
+    await within.getByRole('checkbox', { name: role }).setChecked(roles.includes(role));
+  return roles;
+}
+
+function said(roles: string[]): string {
+  return roles.length ? `holding ${roles.join(', ')}` : 'holding nothing';
+}
+
+/** The roles a person holding `groups` is given by the roles the world has. */
+function givenBy(world: World, groups: string[]): string[] {
+  return [...world.roles]
+    .filter(([, given]) => given.some((g) => groups.includes(g)))
+    .map(([name]) => name)
+    .sort();
+}
 
 const addAccount: Move = {
   name: 'add-account',
-  leadsTo: ['disable-account'],
+  leadsTo: ['disable-account', 'change-access', 'find-account'],
   weight: (w) => (w.password && w.accounts.size < 2 ? 1 : 0),
   run: async (j) => {
     const { page, leader, browser, rng, world } = j;
-    const username = `admin${world.made++}`;
+    const username = `person${world.made++}`;
     await openAdmin(page, 'Accounts');
-    await page.getByRole('button', { name: '+ Add user' }).click();
-    const dialog = page.getByRole('dialog', { name: 'new administrator' });
-    await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill(`Admin ${username}`);
+    await page.getByRole('button', { name: '+ Add account' }).click();
+    const dialog = page.getByRole('dialog', { name: 'new account' });
+    await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill(`Person ${username}`);
     await dialog.getByRole('textbox', { name: /^Username\b/ }).fill(username);
+    const access = await chooseAccess(j, dialog);
     await dialog.getByRole('button', { name: 'Add' }).click();
     const handover = page.locator('section.handover').filter({ hasText: username });
     await expect(handover.getByText('it is shown only once')).toBeVisible();
@@ -2005,12 +2168,13 @@ const addAccount: Move = {
     await handover.getByRole('button', { name: 'Done' }).click();
     await expect(handover).toHaveCount(0);
     world.accounts.set(username, true);
-    const users: Account[] = await (await j.truth()).get('/api/users').then((a) => a.users);
+    const users: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
     expect(users.find((u) => u.username === username)).toMatchObject({
       enabled: true,
       authSource: 'local',
+      roles: access,
     });
-    if (!rng.chance(2)) return `add administrator ${username}`;
+    if (!rng.chance(2)) return `add ${username}, ${said(access)}`;
 
     // The one handed the password signs in with it, and chooses their own.
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
@@ -2030,7 +2194,7 @@ const addAccount: Move = {
     } finally {
       await context.close();
     }
-    return `add administrator ${username}, who signs in and chooses a password`;
+    return `add ${username}, ${said(access)}, who signs in and chooses a password`;
   },
 };
 
@@ -2050,54 +2214,261 @@ const disableAccount: Move = {
       .click();
     await expect(page.getByRole('status')).toHaveText('account disabled; its sessions are over');
     world.accounts.set(username, false);
-    const users: Account[] = await (await j.truth()).get('/api/users').then((a) => a.users);
+    const users: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
     expect(users.find((u) => u.username === username)?.enabled).toBe(false);
     return `disable ${username}`;
   },
 };
 
+/** The roster's row for the key account `name`, by the name it is shown under. */
+function keyAccountRow(page: Page, name: string): Locator {
+  return page
+    .getByRole('row')
+    .filter({ has: page.locator('.name').getByText(name, { exact: true }) });
+}
+
+const addKeyAccount: Move = {
+  name: 'add-key-account',
+  leadsTo: ['revoke-key', 'change-access'],
+  weight: (w) => (w.password && w.keyAccounts.size < 2 ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const name = `key-account-${world.made++}`;
+    const days = rng.pick([null, 1, 30]);
+    await openAdmin(page, 'Accounts');
+    await page.getByRole('button', { name: '+ Add account' }).click();
+    const dialog = page.getByRole('dialog', { name: 'new account' });
+    await dialog.getByRole('button', { name: 'Key' }).click();
+    await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill(name);
+    const access = await chooseAccess(j, dialog);
+    const administrator = access.includes('administrator');
+    await dialog.getByRole('button', { name: 'Add' }).click();
+    await expect(dialog).toHaveCount(0);
+
+    // The new account's row opens on its own, and a key is made there.
+    await page.getByRole('button', { name: '+ New key' }).click();
+    await page.getByRole('textbox', { name: /^Label\b/ }).fill('journey');
+    if (days !== null)
+      await page.getByRole('spinbutton', { name: /^Expires in \(days\)/ }).fill(String(days));
+    await page.getByRole('button', { name: 'Create key' }).click();
+    const handover = page.locator('section.handover').filter({ hasText: name });
+    await expect(handover.getByText('it is shown only once')).toBeVisible();
+    const key = (await handover.locator('.secret code').innerText()).trim();
+    await handover.getByRole('button', { name: 'Done' }).click();
+    await expect(handover).toHaveCount(0);
+    world.keyAccounts.set(name, key);
+
+    const accounts: Account[] = await (
+      await j.truth()
+    )
+      .get('/api/accounts')
+      .then((a) => a.accounts);
+    const made = accounts.find((a) => a.displayName === name)!;
+    expect(made).toMatchObject({ authSource: 'key', roles: access, keys: [{ label: 'journey' }] });
+    const [held] = made.keys!;
+    expect(held.expiresAt).toBe(days === null ? null : held.createdAt + days * DAY_MILLIS);
+    // The health of the fleet is the administrator's alone; a role reads no more than shared.
+    expect(await withKey(leader, key, 'GET', '/api/health')).toBe(administrator ? 200 : 403);
+    expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(administrator ? 200 : 403);
+    const lasts = days === null ? 'never expires' : `expires in ${days} days`;
+    return `add key account ${name}, ${said(access)}, with a key that ${lasts}`;
+  },
+};
+
+const revokeKey: Move = {
+  name: 'revoke-key',
+  weight: (w) => ([...w.keyAccounts.values()].some((k) => k) ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const name = rng.pick([...world.keyAccounts].filter(([, k]) => k).map(([n]) => n));
+    const key = world.keyAccounts.get(name)!;
+    await openAdmin(page, 'Accounts');
+    await keyAccountRow(page, name).getByRole('button', { name: 'Manage' }).click();
+    await page
+      .getByRole('table', { name: 'Keys' })
+      .getByRole('row')
+      .filter({ hasText: 'journey' })
+      .getByRole('button', { name: 'Revoke' })
+      .click();
+    await page
+      .getByRole('dialog', { name: 'revoke key' })
+      .getByRole('button', { name: 'Revoke key' })
+      .click();
+    await expect(page.getByRole('status')).toHaveText('key revoked');
+    world.keyAccounts.set(name, null);
+    const accounts: Account[] = await (
+      await j.truth()
+    )
+      .get('/api/accounts')
+      .then((a) => a.accounts);
+    expect(accounts.find((a) => a.displayName === name)?.keys).toEqual([]);
+    expect(await withKey(leader, key, 'GET', '/api/health')).toBe(403);
+    return `revoke ${name}'s key`;
+  },
+};
+
+/** A local or key account the journey made, changed to hold something else, and the leader holds it. */
+const changeAccess: Move = {
+  name: 'change-access',
+  weight: (w) => (w.accounts.size + w.keyAccounts.size > 0 ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const name = rng.pick([
+      ...[...world.accounts.keys()].map((u) => ({ local: true, name: u })),
+      ...[...world.keyAccounts.keys()].map((n) => ({ local: false, name: n })),
+    ]);
+    await openAdmin(page, 'Accounts');
+    const row = name.local
+      ? page.getByRole('row').filter({ hasText: name.name })
+      : keyAccountRow(page, name.name);
+    await row.getByRole('button', { name: 'Manage' }).click();
+    await page.getByRole('button', { name: 'Change access' }).click();
+    const form = page.locator('tr.fold form');
+    const access = await chooseAccess(j, form);
+    await form.getByRole('button', { name: 'Save access' }).click();
+    await expect(form).toHaveCount(0);
+    const accounts: Account[] = await (
+      await j.truth()
+    )
+      .get('/api/accounts')
+      .then((a) => a.accounts);
+    const changed = accounts.find((a) =>
+      name.local ? a.username === name.name : a.displayName === name.name,
+    );
+    expect(changed).toMatchObject({ roles: access });
+    const key = name.local ? null : world.keyAccounts.get(name.name);
+    if (key) {
+      const expected = access.includes('administrator') ? 200 : 403;
+      expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(expected);
+    }
+    return `change ${name.name} to ${said(access)}`;
+  },
+};
+
+/** Admin › Accounts searched and filtered by sign-in, and the roster shows what the leader's answer does. */
+const findAccount: Move = {
+  name: 'find-account',
+  weight: (w) => (w.password && w.accounts.size + w.keyAccounts.size > 0 ? 1 : 0),
+  run: async (j) => {
+    const { page, rng } = j;
+    await openAdmin(page, 'Accounts');
+    const accounts: (Account & { providerLogin?: string })[] = await (
+      await j.truth()
+    )
+      .get('/api/accounts')
+      .then((a) => a.accounts);
+    const kinds = { local: 'Password', oidc: 'SSO', key: 'Key' } as const;
+    const kind = rng.pick([null, 'local', 'oidc', 'key'] as const);
+    const named = rng.pick(accounts);
+    const query = rng.pick([
+      '',
+      named.displayName,
+      named.username ?? named.displayName,
+      named.displayName.slice(1, 4).toUpperCase(),
+    ]);
+    const search = page.getByRole('searchbox', { name: 'Search accounts' });
+    const chips = page.getByRole('group', { name: 'Filter accounts by sign-in' });
+    await search.fill(query);
+    await chips
+      .getByRole('button', { name: new RegExp(`^${kind === null ? 'All' : kinds[kind]}\\b`) })
+      .click();
+    const needle = query.trim().toLowerCase();
+    const expected = accounts
+      .filter((a) => kind === null || a.authSource === kind)
+      .filter((a) =>
+        [a.displayName, a.username, a.providerLogin].some((n) => n?.toLowerCase().includes(needle)),
+      )
+      .map((a) => a.displayName)
+      .sort();
+    const shown = page.locator('tbody tr:not(.fold) .name');
+    await expect
+      .poll(async () => (await shown.allInnerTexts()).map((n) => n.replace(/ · you$/, '')).sort())
+      .toEqual(expected);
+    if (expected.length === 0) await expect(page.getByText('No account matches.')).toBeVisible();
+    // Left as found, so the next move sees every account.
+    await search.fill('');
+    await chips.getByRole('button', { name: /^All\b/ }).click();
+    const by = kind === null ? 'every sign-in' : kinds[kind];
+    return `find "${query}" among ${by}: ${expected.length} shown`;
+  },
+};
+
 /** The group the journey's provider puts the one person it signs in into. */
 export const PROVIDER_GROUP = 'journey-people';
-/** Their other group, which no role names until an administrator makes one from it on the roster. */
+/** Their other group, which gives no role until an administrator makes one from it on the roster. */
 export const REVIEW_GROUP = 'journey-reviewers';
+/** A group the provider puts nobody into. */
+const OTHER_GROUP = 'journey-others';
 
 const LEVELS = ['viewer', 'editor', 'deployer'] as const;
 
-/** Gives the role whose row is open a level in shared, saves it, and checks the leader holds it. Answers the level. */
-async function saveRole(j: Journey, name: string): Promise<string> {
+type Role = { name: string; builtIn: boolean; groups: string[]; areas: Record<string, string> };
+
+/** The open role's groups field. */
+function groupsField(page: Page): Locator {
+  return page.locator('tr.fold form').getByRole('textbox', { name: /^Groups\b/ });
+}
+
+/** Gives the role whose row is open `groups` and, unless it is the administrator role, a level in shared; saves
+ * it, and checks the leader holds it. Answers what it gives. */
+async function saveRole(j: Journey, name: string, groups: string[]): Promise<string> {
   const { page, rng, world } = j;
-  const level = rng.pick(LEVELS);
-  await page.getByRole('combobox', { name: 'shared level' }).selectOption(level);
+  await groupsField(page).fill(groups.join('\n'));
+  const level = name === 'administrator' ? null : rng.pick(LEVELS);
+  if (level !== null)
+    await page.getByRole('combobox', { name: 'shared level' }).selectOption(level);
   await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.getByRole('combobox', { name: 'shared level' })).toHaveCount(0);
-  world.roles.add(name);
-  const roles: { name: string; administrator: boolean; areas: Record<string, string> }[] = await (
-    await j.truth()
-  )
-    .get('/api/roles')
-    .then((a) => a.roles);
+  await expect(groupsField(page)).toHaveCount(0);
+  world.roles.set(name, groups);
+  const roles: Role[] = await (await j.truth()).get('/api/roles').then((a) => a.roles);
   expect(roles.find((r) => r.name === name)).toMatchObject({
-    administrator: false,
-    areas: { shared: level },
+    groups: [...groups].sort(),
+    areas: level === null ? {} : { shared: level },
   });
-  return level;
+  return level === null ? 'everything' : `${level} in shared`;
 }
 
 const addRole: Move = {
   name: 'add-role',
   leadsTo: ['sso-sign-in'],
-  weight: (w) => (w.password && w.roles.size < 2 ? 1 : 0),
+  weight: (w) => (w.password && w.roles.size < 3 ? 1 : 0),
   run: async (j) => {
     const { page, world } = j;
-    // The first names the provider's group, so the person it signs in holds it.
-    const name = world.roles.size ? `role-${world.made++}` : PROVIDER_GROUP;
+    // The first is given by the provider's group, so the person it signs in holds it.
+    const name = `role-${world.made++}`;
+    const groups = world.roles.size > 1 ? [] : [PROVIDER_GROUP];
     await openAdmin(page, 'Accounts');
     await page.getByRole('link', { name: 'Roles', exact: true }).click();
     await page.getByRole('button', { name: '+ Add role' }).click();
     const dialog = page.getByRole('dialog', { name: 'new role' });
     await dialog.getByRole('textbox', { name: /^Role\b/ }).fill(name);
     await dialog.getByRole('button', { name: 'Add' }).click();
-    return `add role ${name}, ${await saveRole(j, name)} in shared`;
+    const gives = await saveRole(j, name, groups);
+    return `add role ${name}, given by ${groups.join(', ') || 'no group'}, ${gives}`;
+  },
+};
+
+/** A role, the administrator role among them, given by other groups. The administrator role cannot be removed. */
+const roleGroups: Move = {
+  name: 'role-groups',
+  leadsTo: ['sso-sign-in'],
+  weight: (w) => (w.password ? 1 : 0),
+  run: async (j) => {
+    const { page, rng, world } = j;
+    const name = rng.pick([...world.roles.keys()].sort());
+    const groups = [PROVIDER_GROUP, REVIEW_GROUP, OTHER_GROUP].filter(() => rng.chance(3));
+    await openAdmin(page, 'Accounts');
+    await page.getByRole('link', { name: 'Roles', exact: true }).click();
+    await page
+      .getByRole('row')
+      .filter({ has: page.locator('.name').getByText(name, { exact: true }) })
+      .getByRole('button', { name: 'Manage' })
+      .click();
+    await expect(page.getByRole('button', { name: 'Remove role' })).toHaveCount(
+      name === 'administrator' ? 0 : 1,
+    );
+    const gives = await saveRole(j, name, groups);
+    return `give ${name} to ${groups.join(', ') || 'no group'}, ${gives}`;
   },
 };
 
@@ -2139,21 +2510,25 @@ const setAgentPermissions: Move = {
     await page.getByRole('button', { name: /^signed in as / }).click();
     await page.getByRole('button', { name: 'Agent permissions' }).click();
     await expect(page.getByRole('heading', { name: 'Agent permissions' })).toBeVisible();
+    // The journey's person is an administrator, so they are offered the administrator role for their agent, and
+    // holding it leaves no levels to set.
+    const administrator = page.getByRole('checkbox', { name: 'Your agent is an administrator' });
     let expected: object;
     if (rng.chance(3)) {
-      await page.getByRole('button', { name: 'Everything you hold' }).click();
-      expected = { kind: 'everything' };
+      await administrator.check();
+      await expect(page.getByRole('combobox', { name: /^Every area\b/ })).toHaveCount(0);
+      expected = { administrator: true };
     } else {
       const level = rng.pick(LEVELS);
       const shared = rng.pick(LEVELS);
-      await page.getByRole('button', { name: 'Up to a level' }).click();
+      await administrator.uncheck();
       await page.getByRole('combobox', { name: /^Every area\b/ }).selectOption(level);
       await page.getByRole('combobox', { name: 'shared level' }).selectOption(shared);
-      expected = { kind: 'upto', default: level, areas: { shared } };
+      expected = { administrator: false, default: level, areas: { shared } };
     }
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByRole('status')).toHaveText('agent permissions saved');
-    expect(await (await j.truth()).get('/api/me/agent-permissions')).toEqual({
+    expect(await (await j.truth()).get('/api/me/agent-permissions')).toMatchObject({
       ok: true,
       errors: [],
       ...expected,
@@ -2324,7 +2699,7 @@ const setUpSso: Move = {
 const ssoSignIn: Move = {
   name: 'sso-sign-in',
   leadsTo: ['role-from-group'],
-  weight: (w) => (w.sso && w.roles.has(PROVIDER_GROUP) ? 1 : 0),
+  weight: (w) => (w.sso && givenBy(w, [PROVIDER_GROUP, REVIEW_GROUP]).length > 0 ? 1 : 0),
   run: async (j) => {
     const { leader, browser, provider, world } = j;
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
@@ -2339,23 +2714,24 @@ const ssoSignIn: Move = {
       await context.close();
     }
     world.ssoSignedIn = true;
-    const users: Account[] = await (await j.truth()).get('/api/users').then((a) => a.users);
+    const users: Account[] = await (await j.truth()).get('/api/accounts').then((a) => a.accounts);
     const person = users.find((u) => u.authSource === 'oidc');
     expect(person).toMatchObject({
       displayName: provider.person.name,
       groups: [PROVIDER_GROUP, REVIEW_GROUP],
     });
-    expect([...person!.roles].sort()).toEqual(
-      [PROVIDER_GROUP, REVIEW_GROUP].filter((g) => world.roles.has(g)),
-    );
+    const held = givenBy(world, [PROVIDER_GROUP, REVIEW_GROUP]);
+    expect([...person!.roles].sort()).toEqual(held);
+    expect(person!.access.administrator).toBe(held.includes('administrator'));
     return `${provider.person.name} signs in through the provider`;
   },
 };
 
-/** The provider's person is turned away while no role names their groups, and an administrator reads why. */
+/** The provider's person is turned away while their groups give no role, and an administrator reads why. */
 const refusedSignIn: Move = {
   name: 'refused-sign-in',
-  weight: (w) => (w.sso && !w.refusalSeen && !w.roles.has(PROVIDER_GROUP) ? 1 : 0),
+  weight: (w) =>
+    w.sso && !w.refusalSeen && givenBy(w, [PROVIDER_GROUP, REVIEW_GROUP]).length === 0 ? 1 : 0,
   run: async (j) => {
     const { page, leader, browser, provider, world } = j;
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
@@ -2383,22 +2759,27 @@ const refusedSignIn: Move = {
   },
 };
 
-/** A role made from a group the roster shows the person holds and no role names yet. */
+/** A role made from a group the roster shows the person holds and no role lists yet, given by that group. */
 const roleFromGroup: Move = {
   name: 'role-from-group',
   leadsTo: ['sso-sign-in'],
-  weight: (w) => (w.ssoSignedIn && !w.roles.has(REVIEW_GROUP) ? 1 : 0),
+  weight: (w) =>
+    w.ssoSignedIn && !w.roles.has(REVIEW_GROUP) && givenBy(w, [REVIEW_GROUP]).length === 0 ? 1 : 0,
   run: async (j) => {
     const { page } = j;
     await openAdmin(page, 'Accounts');
-    await page.getByRole('link', { name: 'Users', exact: true }).click();
+    await page
+      .getByRole('navigation', { name: 'Accounts' })
+      .getByRole('link', { name: 'Accounts', exact: true })
+      .click();
     await page.getByRole('button', { name: `+ ${REVIEW_GROUP}` }).click();
     await expect(page.getByRole('link', { name: 'Roles', exact: true })).toHaveAttribute(
       'aria-current',
       'page',
     );
-    const level = await saveRole(j, REVIEW_GROUP);
-    return `make the role ${REVIEW_GROUP} from the roster, ${level} in shared`;
+    await expect(groupsField(page)).toHaveValue(REVIEW_GROUP);
+    const gives = await saveRole(j, REVIEW_GROUP, [REVIEW_GROUP]);
+    return `make the role ${REVIEW_GROUP} from the roster, ${gives}`;
   },
 };
 
@@ -2744,6 +3125,11 @@ export const MOVES: readonly Move[] = [
   addAccount,
   disableAccount,
   addRole,
+  roleGroups,
+  addKeyAccount,
+  revokeKey,
+  changeAccess,
+  findAccount,
   turnOnAgents,
   setAgentPermissions,
   askAgent,

@@ -714,8 +714,7 @@ export class DemoLeader {
       if (path === '/api/preview/line-breaker') return this.ask('/line-breaker', json());
       if (path === '/api/preview/format') return this.ask('/format', json());
       if (path === '/api/preview/onboard') return this.ask('/onboard/propose', json());
-      if (path === '/api/preview/from-json-schema')
-        return this.ask('/schemas/from-json-schema', json());
+      if (path === '/api/preview/schema-read') return this.ask('/schemas/read', json());
       if (path === '/api/preview/schema-export') return this.ask('/schemas/export', json());
       if (path === '/api/captures') return this.startCapture(json());
       const stop = path.match(/^\/api\/captures\/([^/]+)\/stop$/);
@@ -1160,6 +1159,15 @@ const NOT_RECORDED: Answer = refused(404, [bareError('not found')]);
 export const DEMO_REFUSAL =
   "The demo can't do this. It runs in your browser, but you can download the full smeltr to try it: https://smeltr.sh/get/";
 
+/** What the GUI sent as text, inflated when the GUI gzipped it. */
+async function sentText(init?: RequestInit): Promise<string | null> {
+  const body = init?.body;
+  if (typeof body === 'string') return body;
+  if (body == null || new Headers(init?.headers).get('content-encoding') !== 'gzip') return null;
+  const stream = new Response(body).body!.pipeThrough(new DecompressionStream('gzip'));
+  return new Response(stream).text();
+}
+
 /** Answer every `/api/` call this page makes from `leader`. */
 export function install(leader: DemoLeader) {
   const passOn = window.fetch.bind(window);
@@ -1171,7 +1179,7 @@ export function install(leader: DemoLeader) {
     const method = (
       init?.method ?? (input instanceof Request ? input.method : 'GET')
     ).toUpperCase();
-    const body = typeof init?.body === 'string' ? init.body : null;
+    const body = await sentText(init);
     const answer = await leader.answer(method, url, body);
     if (method !== 'GET') window.dispatchEvent(new Event(CHANGED_EVENT));
     return new Response(JSON.stringify(answer.body), {

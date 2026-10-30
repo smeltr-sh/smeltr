@@ -20,6 +20,7 @@
   import PageHeader from './PageHeader.svelte';
   import {
     getConfig,
+    sharedConfig,
     getMap,
     getMapMeasurements,
     getPipelineCallers,
@@ -35,6 +36,7 @@
     type UnmatchedStreamsDto,
     type WorkerGroupDto,
   } from './api';
+  import { bundleRoutes } from './routeFlow';
   import FocusView, { FOCUS_TABS, type FocusTab } from './FocusView.svelte';
   import MapRows from './MapRows.svelte';
   import StackView from './StackView.svelte';
@@ -190,13 +192,13 @@
         // Best-effort only, to link a problem to its object: `getConfig` reads leniently, so
         // this can still name every id that did parse even though the bundle as a whole did
         // not compile.
-        const cfg = await getConfig();
+        const [cfg, shared] = await Promise.all([getConfig(), sharedConfig().catch(() => null)]);
         if (cfg.config) {
           known = {
             pipelines: cfg.config.pipelines.map((p) => ({ id: p.id, name: p.name })),
             sources: cfg.config.sources.map((s) => s.id),
             destinations: cfg.config.destinations.map((d) => d.id),
-            routes: cfg.config.routes.map((r) => r.id),
+            routes: bundleRoutes(cfg.config, shared).map(({ id, name }) => ({ id, name })),
           };
         }
       }

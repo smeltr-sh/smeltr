@@ -29,6 +29,7 @@
     SHARED_SCOPE,
     LIMITS,
     type SourceDto,
+    type KafkaFacts,
     type SecretDto,
     type ApiRecords,
     type OtlpSignal,
@@ -61,7 +62,7 @@
   let {
     source,
     secrets,
-    mechanisms,
+    kafka,
     startMoves = () => false,
     readAt,
     onsaved,
@@ -69,8 +70,8 @@
     source: SourceDto;
     /** The secret catalog, so a credential can be pointed at one the leader holds. */
     secrets: SecretDto[];
-    /** The SASL mechanisms this leader's build can select. */
-    mechanisms: string[];
+    /** What this leader's build can do with a Kafka client. */
+    kafka: KafkaFacts;
     /** Whether a stream source's start differs from the saved one, so deploying it moves the source. */
     startMoves?: (s: StreamSource) => boolean;
     /** The commit the sources were read at, for a database source's sample. */
@@ -880,7 +881,7 @@
 
   <div class="section">
     <div class="section-head">security</div>
-    <KafkaSecurity value={source} {secrets} {mechanisms} hasTls={tlsSet(source)} />
+    <KafkaSecurity value={source} {secrets} mechanisms={kafka.mechanisms} hasTls={tlsSet(source)} />
   </div>
 {/snippet}
 
@@ -1144,7 +1145,7 @@
       </Field>
       {@render encodingField(source)}
       {#if source.type === 'kafka'}
-        <KafkaPropsEditor value={source} {secrets} hasTls={tlsSet(source)} />
+        <KafkaPropsEditor value={source} {secrets} {kafka} hasTls={tlsSet(source)} />
       {/if}
     </Advanced>
   {:else if isObjectSource(source)}

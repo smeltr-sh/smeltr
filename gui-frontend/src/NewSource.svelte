@@ -6,13 +6,13 @@
   import SourceFields from './SourceFields.svelte';
   import { SOURCE_KINDS } from './sourceKinds';
   import { SOURCE_TYPES, blankSource, isSql, typeLabel } from './sources';
-  import type { SecretDto, SourceDto } from './api';
+  import type { KafkaFacts, SecretDto, SourceDto } from './api';
 
   let {
     open,
     unavailable,
     secrets,
-    mechanisms,
+    kafka,
     readAt,
     onsaved,
     onadd,
@@ -23,7 +23,7 @@
     /** Every id the new one may not take. */
     unavailable: string[];
     secrets: SecretDto[];
-    mechanisms: string[];
+    kafka: KafkaFacts;
     /** The commit the caller read, for what `SourceFields` saves on its own. */
     readAt: string | null;
     onsaved: (commit: string) => void;
@@ -49,6 +49,6 @@
   {oncancel}
 >
   {#snippet fields(draft)}
-    <SourceFields source={draft} {secrets} {mechanisms} {readAt} {onsaved} />
+    <SourceFields source={draft} {secrets} {kafka} {readAt} {onsaved} />
   {/snippet}
 </NewObject>

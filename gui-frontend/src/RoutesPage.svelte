@@ -32,7 +32,7 @@
   import Advanced from './Advanced.svelte';
   import Collapsible from './Collapsible.svelte';
   import RouteFlow from './RouteFlow.svelte';
-  import { cards, type Card } from './routeFlow';
+  import { bundleRoutes, cards, type Card } from './routeFlow';
   import JsonEditPage from './JsonEditPage.svelte';
   import RoutePreview from './RoutePreview.svelte';
   import ExceptionMatrix from './ExceptionMatrix.svelte';
@@ -63,6 +63,8 @@
     putDestinations,
     putSources,
     fieldCatalogs,
+    NO_KAFKA_FACTS,
+    type KafkaFacts,
     type RouteDto,
     type DestinationDto,
     type SourceDto,
@@ -144,7 +146,7 @@
   let sourcing = $state<((source: string) => void) | null>(null);
   /** What a destination made here may name: the catalogs. */
   let secrets: SecretDto[] = $state([]);
-  let mechanisms: string[] = $state([]);
+  let kafka: KafkaFacts = $state(NO_KAFKA_FACTS);
   const GROUP_ROWS = CATEGORIES.flatMap((c) => [c, ...kindsOf(c)]);
   // Of the delivery kinds a route answers only `Unmatched`, for the rows its delivery rules decline.
   const ROUTE_ROWS = GROUP_ROWS.filter(
@@ -153,9 +155,16 @@
   /** Ids `shared/` declares. A group runs `shared/` merged with its own subtree, so a route of its own may name
    * one of these; marking them is what keeps an author from reading a fleet-wide object as their group's. */
   let fromShared: Set<string> = $state(new Set());
-  /** `shared/`'s own routes, which this group runs too. Never saved from here: the page writes its own scope. */
-  let sharedRoutes: RouteDto[] = $state([]);
-  let refusals = $derived(problems(exceptions, [...routes, ...sharedRoutes], destinations));
+  /** `shared/`'s bundle, whose routes this group runs too. Never saved from here: the page writes its own scope. */
+  let shared = $state<FileConfigDto | null>(null);
+  let sharedRoutes = $derived(shared?.routes ?? []);
+  let refusals = $derived(
+    problems(
+      exceptions,
+      bundleRoutes({ routes, pipelines: loadedConfig?.pipelines ?? [] }, shared),
+      destinations,
+    ),
+  );
   // This page writes two files (`edits.ts`): the routes, and the manifest's
   // answers. The manifest write lands first and can land alone, so a
   // half-landed save keeps what is still unsaved rather than dropping all.
@@ -243,7 +252,7 @@
     manifestEditor.loading = false;
   }
   void load().then(arrive);
-  void fieldCatalogs().then((c) => ({ secrets, mechanisms } = c));
+  void fieldCatalogs().then((c) => ({ secrets, kafka } = c));
 
   /** A minted id, never a counted one: it is what the route's durable history is keyed by (`mintRouteId`). A new
    * route starts on a source no route reads yet, so it opens a card of its own; once every source has one, it starts
@@ -342,7 +351,7 @@
    * what runs is the two merged -- so a group's page has to offer both. `shared/` itself draws on nothing, so
    * there is nothing to add there. A failed read leaves the group's own choices rather than the page. */
   async function addShared() {
-    const shared = await sharedConfig();
+    shared = await sharedConfig();
     if (!shared) return;
     fromShared = new Set([
       ...shared.sources.map((x) => x.id),
@@ -351,7 +360,6 @@
     ]);
     // The group's own first: these lists are also where a new route takes its defaults from, and a route should
     // start on something the group owns rather than on a fleet-wide object it merely draws on.
-    sharedRoutes = shared.routes;
     sourceIds = [...sourceIds, ...shared.sources.map((x) => x.id)];
     pipelineIds = [...pipelineIds, ...shared.pipelines.map((x) => x.id)];
     pipelineNames = {
@@ -672,7 +680,7 @@
       open={placing !== null}
       unavailable={destinationIds}
       {secrets}
-      {mechanisms}
+      {kafka}
       onadd={addDestination}
       oncancel={() => (placing = null)}
     />
@@ -680,7 +688,7 @@
       open={sourcing !== null}
       unavailable={sourceIds}
       {secrets}
-      {mechanisms}
+      {kafka}
       readAt={routesEditor.readAtCommit}
       onsaved={(commit) => (routesEditor.readAtCommit = manifestEditor.readAtCommit = commit)}
       onadd={addSource}

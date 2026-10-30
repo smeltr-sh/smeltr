@@ -26,7 +26,9 @@ use object_store::Attributes;
 use serde_json::{Map, Value, json};
 
 use super::checkpoint;
-use super::log::{Action, Format, Log, Metadata, Protocol, Snapshot, Txn, commit_name, line, now_ms, uuid};
+use super::log::{
+    Action, DomainMetadata, Format, Log, Metadata, Protocol, Snapshot, Txn, commit_name, line, now_ms, uuid,
+};
 use super::schema::{self, Mapping, StructField, StructType, Type};
 use super::unity::UnityCatalog;
 use crate::core::column::DataType;
@@ -34,14 +36,16 @@ use crate::io::files::{
     CommitError, Committer, DataFile, FileConfig, FileDestination, Lost, MAX_CONFLICT_RETRIES, ParquetFormat,
     Partition, Partitioner,
 };
-use crate::io::table::{Kind, Literal, column_at, column_stats, iso_date, one_record, read, url_encode};
+use crate::io::table::{
+    Kind, Literal, ROW_GROUP_BYTES, column_at, column_stats, iso_date, one_record, read, url_encode,
+};
 use crate::io::vended::Vended;
 use crate::io::{IoError, OwnedRecord, objects, parquet};
 use crate::ops::civil::MICROS_PER_DAY;
 use crate::plan::topology::{DeltaDestinationConfig, HeldSecrets, Records, UnityCatalogTable};
 
 /// The writer features of a table this writer can write. A table needing any other is refused.
-const WRITER_FEATURES: [&str; 10] = [
+const WRITER_FEATURES: [&str; 13] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -52,7 +56,16 @@ const WRITER_FEATURES: [&str; 10] = [
     "deletionVectors",
     "vacuumProtocolCheck",
     "timestampNtz",
+    // Our files are appended unclustered: they name no clustering provider, and carry stats for the clustering columns.
+    "clustering",
+    // Each file's rows take fresh ids above the table's high-water mark. An append moves no row, so every id is stable.
+    "rowTracking",
+    // Columns are widened only at open, and only where the table enables it; earlier type changes are kept.
+    "typeWidening",
 ];
+
+/// The domain that holds a row-tracking table's highest row id.
+const ROW_TRACKING: &str = "delta.rowTracking";
 
 /// The schemes of an S3 location.
 const S3_SCHEMES: [&str; 2] = ["s3", "s3a"];
@@ -105,13 +118,18 @@ pub fn destination(
     let file_schema = parquet::Schema::new(record).map_err(refused)?;
     let format = ParquetFormat::new(
         vec![file_schema.with_written(committer.written.clone())],
-        config.compression,
+        config.compression.into(),
     );
+    // The protocol names no codec and no row group's size; a table names its files' size.
+    let file_bytes = (committer.snapshot.metadata.property("delta.targetFileSize"))
+        .and_then(size_bytes)
+        .unwrap_or(config.max_object_bytes);
     let files = FileConfig {
         format: Arc::new(format),
         partitioner: Arc::new(partitioner),
         commit_interval: config.file_interval,
-        max_file_bytes: config.max_object_bytes,
+        max_file_bytes: file_bytes,
+        take_bytes: ROW_GROUP_BYTES,
         buffer_bytes: config.buffer_bytes,
         stall_after: config.stall_after,
         attributes: Attributes::new(),
@@ -278,17 +296,20 @@ impl Committer for DeltaCommitter {
         }
         self.txn_version += 1;
         let now = now_ms();
+        let version = self.snapshot.version + 1;
+        let mut high_water_mark = high_water_mark(&self.snapshot).map_err(CommitError::Transient)?;
+        let mut commit_info = json!({
+            "timestamp": now,
+            "operation": "WRITE",
+            "operationParameters": {"mode": "Append"},
+            "isBlindAppend": true,
+            "engineInfo": "smeltr",
+        });
+        if self.snapshot.metadata.flag("delta.enableRowTracking") == Some(true) {
+            commit_info["tags"] = json!({"delta.rowTracking.preserved": "true"});
+        }
         let mut lines = vec![
-            line(
-                "commitInfo",
-                &json!({
-                    "timestamp": now,
-                    "operation": "WRITE",
-                    "operationParameters": {"mode": "Append"},
-                    "isBlindAppend": true,
-                    "engineInfo": "smeltr",
-                }),
-            ),
+            line("commitInfo", &commit_info),
             line(
                 "txn",
                 &Txn {
@@ -299,14 +320,27 @@ impl Committer for DeltaCommitter {
             ),
         ];
         for file in files {
-            lines.push(line("add", &self.add(file, now).map_err(CommitError::Transient)?));
+            let mut add = self.add(file, now).map_err(CommitError::Transient)?;
+            if let Some(high) = &mut high_water_mark {
+                add["baseRowId"] = json!(*high + 1);
+                add["defaultRowCommitVersion"] = json!(version);
+                *high += file.record_count as i64;
+            }
+            lines.push(line("add", &add));
+        }
+        if let Some(high) = high_water_mark {
+            let domain = DomainMetadata {
+                domain: ROW_TRACKING.into(),
+                configuration: json!({"rowIdHighWaterMark": high}).to_string(),
+                removed: false,
+            };
+            lines.push(line("domainMetadata", &domain));
         }
         let actions = lines
             .iter()
             .map(|l| Action::parse(l))
             .collect::<Result<Vec<_>, String>>()
             .map_err(CommitError::Transient)?;
-        let version = self.snapshot.version + 1;
         match self.log.create(&commit_name(version), lines.join("\n").into_bytes()) {
             Ok(true) => {
                 self.snapshot.committed(actions);
@@ -339,6 +373,8 @@ impl DeltaCommitter {
     /// The committer of the table whose log is `log`, created from `record` and partitioned by `partition_by` when
     /// missing, the record's new columns added. Err when the table cannot be written.
     fn open(log: Log, root: Root, partition_by: &[String], record: &DataType) -> Result<DeltaCommitter, String> {
+        // Before anything is written for it: a record Parquet cannot hold must leave the log as it was.
+        let arrow = parquet::Schema::new(record)?.arrow().clone();
         let app_id = uuid();
         let mut snapshot = None;
         let mut failed = None;
@@ -359,13 +395,14 @@ impl DeltaCommitter {
         let schema = loop {
             fits(&snapshot)?;
             let current = StructType::parse(&snapshot.metadata.schema_string)?;
-            let evolution = schema::table_schema(record, Some(&current), mapping(&snapshot.metadata)?)?;
+            let evolution =
+                schema::table_schema(record, Some(&current), mapping(&snapshot.metadata)?, widens(&snapshot))?;
             if !evolution.changed {
                 break current;
             }
             if tries > MAX_CONFLICT_RETRIES {
                 return Err(format!(
-                    "the record's new columns could not be added: {}",
+                    "the record's new or wider columns could not be committed: {}",
                     failed.unwrap_or_default()
                 ));
             }
@@ -376,15 +413,21 @@ impl DeltaCommitter {
                 (metadata.configuration).insert("delta.columnMapping.maxColumnId".into(), max_column_id.to_string());
             }
             let version = snapshot.version + 1;
+            // Named as Delta names its own: a commit that both widens and adds is named for the widening.
+            let operation = if evolution.widened {
+                "CHANGE COLUMN"
+            } else {
+                "ADD COLUMNS"
+            };
             let body = [
                 line(
                     "commitInfo",
-                    &json!({"timestamp": now_ms(), "operation": "ADD COLUMNS", "engineInfo": "smeltr"}),
+                    &json!({"timestamp": now_ms(), "operation": operation, "engineInfo": "smeltr"}),
                 ),
                 line("metaData", &metadata),
             ]
             .join("\n");
-            // Taken or lost, the log is read again, and the columns are added if they are still missing.
+            // Taken or lost, the log is read again, and the columns are added or widened if they still need it.
             match log.create(&commit_name(version), body.into_bytes()) {
                 Ok(true) => {
                     snapshot.committed(vec![Action::Metadata(Box::new(metadata))]);
@@ -400,7 +443,6 @@ impl DeltaCommitter {
             return Err(why);
         }
         let partitions = partition_columns(&snapshot.metadata, &schema)?;
-        let arrow = parquet::Schema::new(record)?.arrow().clone();
         let written = schema::physical(&arrow, &schema);
         Ok(DeltaCommitter {
             log,
@@ -440,17 +482,22 @@ impl DeltaCommitter {
         if let Some(why) = schema::refused_column(&schema) {
             return Err(why);
         }
-        let evolution = schema::table_schema(&self.record, Some(&schema), mapping(metadata)?)?;
+        let evolution = schema::table_schema(&self.record, Some(&schema), mapping(metadata)?, None)?;
         if evolution.changed {
             return Err("another writer dropped a column the record writes".to_string());
         }
-        if schema::physical(&self.arrow, &schema) != self.written {
-            return Err("another writer dropped and added again a column the record writes".to_string());
+        // A column another writer widened still takes this writer's files of its earlier type, as the protocol lets a
+        // table hold, and their stats are read by the schema they were written by.
+        let widened = schema::physical(&self.arrow, &schema) != self.written;
+        if widened && !schema::only_widened(&self.schema, &schema) {
+            return Err("another writer changed a column the record writes".to_string());
         }
         if partition_columns(metadata, &schema)? != self.partitions {
             return Err("another writer changed the table's partitioning".to_string());
         }
-        self.schema = schema;
+        if !widened {
+            self.schema = schema;
+        }
         Ok(())
     }
 
@@ -492,7 +539,15 @@ impl DeltaCommitter {
             "dataChange": true,
         });
         if let Some(metadata) = file.metadata.as_deref() {
-            add["stats"] = json!(stats(metadata, &self.schema, &self.snapshot.metadata, file.record_count).to_string());
+            let clustering = clustering_columns(&self.snapshot)?;
+            let stats = stats(
+                metadata,
+                &self.schema,
+                &self.snapshot.metadata,
+                &clustering,
+                file.record_count,
+            );
+            add["stats"] = json!(stats.to_string());
         }
         Ok(add)
     }
@@ -501,7 +556,7 @@ impl DeltaCommitter {
 /// Commit 0 of a table of `record`, partitioned by `partition_by`: a plain table, which every Delta reader opens. Its
 /// files name their columns as the record does.
 fn create(record: &DataType, partition_by: &[String]) -> Result<String, String> {
-    let evolution = schema::table_schema(record, None, Mapping::None)?;
+    let evolution = schema::table_schema(record, None, Mapping::None, None)?;
     for name in partition_by {
         written_partition_column(&evolution.schema, name)?;
     }
@@ -627,7 +682,7 @@ fn partition_columns(metadata: &Metadata, schema: &StructType) -> Result<Vec<Par
 /// `name`'s physical name and kind, where it is a partition column this writer writes values of.
 fn written_partition_column(schema: &StructType, name: &str) -> Result<(String, Kind), String> {
     let (physical, kind) = schema::partition_column(schema, name)?;
-    if matches!(kind, Kind::Binary | Kind::Float) {
+    if kind == Kind::Binary {
         return Err(format!(
             "the table is partitioned by {name}, a {kind} column, which this writer does not write"
         ));
@@ -689,7 +744,10 @@ impl Partitioner for DeltaPartitioner {
                 .map(|c| read(&c, at, &column.kind, &names))
                 .transpose()?
                 .flatten();
-            let text = value.as_ref().map(partition_text).unwrap_or_default();
+            let text = value
+                .as_ref()
+                .map(|v| partition_text(v, &column.kind))
+                .unwrap_or_default();
             let segment = if text.is_empty() {
                 NULL_PARTITION.to_string()
             } else {
@@ -709,15 +767,38 @@ impl Partitioner for DeltaPartitioner {
     }
 }
 
-/// A partition value as the log holds it. A timestamp is in UTC, as ISO 8601 writes it.
-fn partition_text(value: &Literal) -> String {
+/// Bytes `value` says, as Delta writes a size: `104857600`, `100mb`. None for none, or nothing.
+fn size_bytes(value: &str) -> Option<usize> {
+    let value = value.trim().to_ascii_lowercase();
+    let digits = value.find(|c: char| !c.is_ascii_digit()).unwrap_or(value.len());
+    let unit = match value[digits..].trim() {
+        "" | "b" => 1,
+        "k" | "kb" => 1 << 10,
+        "m" | "mb" => 1 << 20,
+        "g" | "gb" => 1 << 30,
+        _ => return None,
+    };
+    value[..digits]
+        .parse::<usize>()
+        .ok()?
+        .checked_mul(unit)
+        .filter(|&n| n > 0)
+}
+
+/// A partition value of a `kind` column as the log holds it. A timestamp is in UTC, as ISO 8601 writes it; a time
+/// without zone is its wall clock, as the protocol writes it.
+fn partition_text(value: &Literal, kind: &Kind) -> String {
     match value {
         Literal::Boolean(b) => b.to_string(),
         Literal::Int(v) => v.to_string(),
         Literal::Long(v) => v.to_string(),
+        // As Java writes it, which is how Spark and the kernel read it back.
+        Literal::Double(v) if v.is_infinite() => if *v > 0.0 { "Infinity" } else { "-Infinity" }.to_string(),
+        Literal::Double(v) if *kind == Kind::Float => (*v as f32).to_string(),
         Literal::Double(v) => v.to_string(),
         Literal::Date(d) => iso_date(*d as i64),
-        Literal::Timestamptz(us) => timestamp(*us, 6),
+        Literal::Micros(us) if *kind == Kind::Timestamp => wall_clock(*us, 6, ' '),
+        Literal::Micros(us) => timestamp(*us, 6),
         Literal::String(s) => s.clone(),
         Literal::Binary(_) => unreachable!("a binary partition column is refused at start"),
     }
@@ -725,11 +806,16 @@ fn partition_text(value: &Literal) -> String {
 
 /// `micros` since the epoch as ISO 8601 in UTC, with `digits` of the second's fraction: 3 or 6.
 fn timestamp(micros: i64, digits: u32) -> String {
+    format!("{}Z", wall_clock(micros, digits, 'T'))
+}
+
+/// `micros` since the epoch as the date and the time of day in UTC, with no zone, `separator` between them.
+fn wall_clock(micros: i64, digits: u32, separator: char) -> String {
     let (day, time) = (micros.div_euclid(MICROS_PER_DAY), micros.rem_euclid(MICROS_PER_DAY));
     let secs = time / 1_000_000;
     let fraction = time % 1_000_000 / 10i64.pow(6 - digits);
     format!(
-        "{}T{:02}:{:02}:{:02}.{fraction:0width$}Z",
+        "{}{separator}{:02}:{:02}:{:02}.{fraction:0width$}",
         iso_date(day),
         secs / 3600,
         secs / 60 % 60,
@@ -738,9 +824,50 @@ fn timestamp(micros: i64, digits: u32) -> String {
     )
 }
 
+/// The table's partition columns when it lets a writer widen its columns, as `schema::table_schema` takes them.
+fn widens(snapshot: &Snapshot) -> Option<&[String]> {
+    let supported = (snapshot.protocol.writer_features.iter().flatten()).any(|f| f == "typeWidening");
+    let enabled = snapshot.metadata.flag("delta.enableTypeWidening") == Some(true);
+    (supported && enabled).then_some(snapshot.metadata.partition_columns.as_slice())
+}
+
+/// The highest row id a row-tracking table has given, -1 when none; None when the table tracks no rows or suspends it.
+fn high_water_mark(snapshot: &Snapshot) -> Result<Option<i64>, String> {
+    let tracked = (snapshot.protocol.writer_features.iter().flatten()).any(|f| f == "rowTracking");
+    if !tracked || snapshot.metadata.flag("delta.rowTrackingSuspended") == Some(true) {
+        return Ok(None);
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RowTracking {
+        row_id_high_water_mark: i64,
+    }
+    let domain = snapshot.domain::<RowTracking>(ROW_TRACKING)?;
+    Ok(Some(domain.map_or(-1, |r| r.row_id_high_water_mark)))
+}
+
+/// The physical paths of the columns the table is clustered by, from its `delta.clustering` domain; none when it is
+/// not clustered.
+fn clustering_columns(snapshot: &Snapshot) -> Result<Vec<Vec<String>>, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Clustering {
+        clustering_columns: Vec<Vec<String>>,
+    }
+    let domain = snapshot.domain::<Clustering>("delta.clustering")?;
+    Ok(domain.map_or_else(Vec::new, |c| c.clustering_columns))
+}
+
 /// A data file's statistics as an add action carries them: its row count, and each leaf column's null count and
-/// bounds, keyed by physical names. A leaf inside an array or a map has none, nor one past the table's indexed columns.
-fn stats(file: &ParquetMetaData, schema: &StructType, metadata: &Metadata, rows: u64) -> Value {
+/// bounds, keyed by physical names. A leaf inside an array or a map has none, nor one past the table's indexed columns
+/// unless the table is clustered by it, as the protocol asks.
+fn stats(
+    file: &ParquetMetaData,
+    schema: &StructType,
+    metadata: &Metadata,
+    clustering: &[Vec<String>],
+    rows: u64,
+) -> Value {
     let indexed = match metadata
         .property("delta.dataSkippingNumIndexedCols")
         .map(str::parse::<i64>)
@@ -769,7 +896,7 @@ fn stats(file: &ParquetMetaData, schema: &StructType, metadata: &Metadata, rows:
                 .iter()
                 .any(|n| *n == names.join(".") || names.join(".").starts_with(&format!("{n}."))),
             None => leaves < indexed,
-        };
+        } || clustering.contains(&parts);
         leaves += 1;
         if !taken {
             continue;
@@ -821,14 +948,13 @@ fn leaf(schema: &StructType, parts: &[String]) -> Option<(Vec<String>, Option<Ki
 fn bound(kind: &Kind, bound: &crate::io::table::Bound, max: bool) -> Option<Value> {
     use crate::io::table::Bound as B;
     Some(match (kind, bound) {
-        (Kind::Int | Kind::Long, B::Int(v)) => json!(v),
+        (Kind::Byte | Kind::Short | Kind::Int | Kind::Long, B::Int(v)) => json!(v),
         (Kind::Int | Kind::Long, B::Long(v)) => json!(v),
         (Kind::Float | Kind::Double, B::Float(v)) => serde_json::Number::from_f64(*v as f64).map(Value::Number)?,
         (Kind::Float | Kind::Double, B::Double(v)) => serde_json::Number::from_f64(*v).map(Value::Number)?,
         (Kind::Date, B::Int(d)) => json!(iso_date(*d as i64)),
-        (Kind::Timestamp | Kind::Timestamptz, B::Long(us)) => {
-            json!(timestamp(us.div_euclid(1000).checked_mul(1000)?, 3))
-        }
+        (Kind::Timestamp, B::Long(us)) => json!(wall_clock(us.div_euclid(1000).checked_mul(1000)?, 3, 'T')),
+        (Kind::Timestamptz, B::Long(us)) => json!(timestamp(us.div_euclid(1000).checked_mul(1000)?, 3)),
         (Kind::String, B::Bytes(b)) => {
             let text = std::str::from_utf8(b).ok()?;
             match text.char_indices().nth(STRING_PREFIX) {
@@ -1144,7 +1270,7 @@ mod tests {
     }
 
     fn new_schema(record: &DataType) -> StructType {
-        schema::table_schema(record, None, Mapping::Name { max_column_id: 0 })
+        schema::table_schema(record, None, Mapping::Name { max_column_id: 0 }, None)
             .unwrap()
             .schema
     }
@@ -1251,10 +1377,10 @@ mod tests {
         assert!(why.contains("needs writer version 8"), "{why}");
         let why = table_with(&record, &[], |a| {
             protocol("minWriterVersion", json!(7))(a);
-            protocol("writerFeatures", json!(["v2Checkpoint", "rowTracking"]))(a);
+            protocol("writerFeatures", json!(["v2Checkpoint", "identityColumns"]))(a);
         })
         .refused(&record, &[]);
-        assert!(why.contains("writer feature rowTracking"), "{why}");
+        assert!(why.contains("writer feature identityColumns"), "{why}");
         // A V2 table is written classic checkpoints, which the protocol always allows.
         table_with(&record, &[], |a| {
             protocol("minReaderVersion", json!(3))(a);
@@ -1286,9 +1412,133 @@ mod tests {
     }
 
     #[test]
+    fn a_table_that_enables_type_widening_has_a_narrower_column_widened_at_open() {
+        let record = st(&[("n", DataType::I64)]);
+        let narrow = |widening: &'static str| {
+            move |a: &mut Value| {
+                if let Some(p) = a.get_mut("protocol") {
+                    *p = json!({"minReaderVersion": 3, "minWriterVersion": 7, "readerFeatures": ["typeWidening"],
+                                "writerFeatures": ["typeWidening"]});
+                }
+                if let Some(m) = a.get_mut("metaData") {
+                    let schema = json!({"type": "struct", "fields": [
+                        {"name": "n", "type": "integer", "nullable": true, "metadata": {}}]});
+                    m["schemaString"] = json!(schema.to_string());
+                    m["configuration"] = json!({"delta.enableTypeWidening": widening});
+                }
+            }
+        };
+
+        let table = table_with(&record, &[], narrow("false"));
+        let kept = table.open(&record, &[]).unwrap();
+        assert_eq!(kept.written.field(0).data_type(), &arrow_schema::DataType::Int32);
+        assert!(
+            table.commit(1).is_none(),
+            "a table that does not widen is left as it is"
+        );
+
+        let table = table_with(&record, &[], narrow("true"));
+        let widened = table.open(&record, &[]).unwrap();
+        assert_eq!(widened.written.field(0).data_type(), &arrow_schema::DataType::Int64);
+        let actions = table.commit(1).unwrap();
+        assert_eq!(action(&actions, "commitInfo")["operation"], "CHANGE COLUMN");
+        let meta = action(&actions, "metaData").clone();
+        let schema = StructType::parse(meta["schemaString"].as_str().unwrap()).unwrap();
+        assert_eq!(schema.fields[0].data_type, Type::Primitive("long".into()));
+        assert_eq!(
+            schema.fields[0].metadata["delta.typeChanges"],
+            json!([{"fromType": "integer", "toType": "long"}])
+        );
+
+        // Another writer widens the column of a table this writer holds open: its files are still added, of the
+        // earlier type.
+        let table = table_with(&record, &[], narrow("false"));
+        let mut committer = table.open(&record, &[]).unwrap();
+        let mut meta = action(&table.commit(0).unwrap(), "metaData").clone();
+        let widened = json!({"type": "struct", "fields": [{"name": "n", "type": "long", "nullable": true,
+                             "metadata": {"delta.typeChanges": [{"fromType": "integer", "toType": "long"}]}}]});
+        meta["schemaString"] = json!(widened.to_string());
+        table.put(1, &[json!({"metaData": meta.clone()})]);
+        let files = [file(&committer, &[], &[], None)];
+        assert!(matches!(committer.commit(&files), Err(CommitError::Conflict)));
+        committer.commit(&files).unwrap();
+        assert_eq!(committer.written.field(0).data_type(), &arrow_schema::DataType::Int32);
+        assert_eq!(adds(&table.commit(2).unwrap()).len(), 1);
+
+        // A change no widening makes is still refused, though the record could be written narrower still.
+        let changed = json!({"type": "struct", "fields": [{"name": "n", "type": "short", "nullable": true,
+                             "metadata": {}}]});
+        meta["schemaString"] = json!(changed.to_string());
+        table.put(3, &[json!({"metaData": meta})]);
+        let files = [file(&committer, &[], &[], None)];
+        assert!(matches!(committer.commit(&files), Err(CommitError::Conflict)));
+        let refused = committer.commit(&files);
+        assert!(
+            matches!(&refused, Err(CommitError::Transient(why)) if why.contains("changed a column")),
+            "{refused:?}"
+        );
+    }
+
+    /// A row-tracking table whose rows are given up to id 9, and that sets `configuration`.
+    fn row_tracking_table(record: &DataType, configuration: Value) -> Table {
+        let table = Table::new();
+        let mut actions: Vec<Value> = (create(record, &[]).unwrap().lines())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        for action in &mut actions {
+            if let Some(p) = action.get_mut("protocol") {
+                *p = json!({"minReaderVersion": 1, "minWriterVersion": 7,
+                            "writerFeatures": ["domainMetadata", "rowTracking"]});
+            }
+            if let Some(m) = action.get_mut("metaData") {
+                m["configuration"] = configuration.clone();
+            }
+        }
+        actions.push(json!({"domainMetadata": {"domain": ROW_TRACKING,
+                                               "configuration": "{\"rowIdHighWaterMark\":9}", "removed": false}}));
+        table.put(0, &actions);
+        table
+    }
+
+    #[test]
+    fn a_row_tracking_tables_new_rows_take_fresh_ids_above_its_high_water_mark() {
+        let record = st(&[("host", DataType::Str)]);
+        let table = row_tracking_table(&record, json!({"delta.enableRowTracking": "true"}));
+        let mut committer = table.open(&record, &[]).unwrap();
+        let files = [file(&committer, &[], &[], None), file(&committer, &[], &[], None)];
+        committer.commit(&files).unwrap();
+
+        let actions = table.commit(1).unwrap();
+        let rows: Vec<(&Value, &Value)> = (adds(&actions).into_iter())
+            .map(|a| (&a["baseRowId"], &a["defaultRowCommitVersion"]))
+            .collect();
+        assert_eq!(rows, [(&json!(10), &json!(1)), (&json!(12), &json!(1))]);
+        let domain = action(&actions, "domainMetadata");
+        assert_eq!(domain["domain"], ROW_TRACKING);
+        assert_eq!(domain["configuration"], "{\"rowIdHighWaterMark\":13}");
+        assert_eq!(
+            action(&actions, "commitInfo")["tags"]["delta.rowTracking.preserved"],
+            "true"
+        );
+    }
+
+    #[test]
+    fn a_table_that_suspends_row_tracking_is_given_no_row_ids() {
+        let record = st(&[("host", DataType::Str)]);
+        let table = row_tracking_table(&record, json!({"delta.rowTrackingSuspended": "true"}));
+        let mut committer = table.open(&record, &[]).unwrap();
+        committer.commit(&[file(&committer, &[], &[], None)]).unwrap();
+
+        let actions = table.commit(1).unwrap();
+        assert_eq!(adds(&actions)[0].get("baseRowId"), None);
+        assert!(!actions.iter().any(|a| a.get("domainMetadata").is_some()));
+        assert_eq!(action(&actions, "commitInfo").get("tags"), None);
+    }
+
+    #[test]
     fn a_table_that_maps_its_columns_by_name_has_them_written_under_their_physical_names() {
         let record = st(&[("host", DataType::Str), ("n", DataType::I64)]);
-        let mapped = schema::table_schema(&record, None, Mapping::Name { max_column_id: 0 })
+        let mapped = schema::table_schema(&record, None, Mapping::Name { max_column_id: 0 }, None)
             .unwrap()
             .schema;
         let table = table_with(&record, &["host"], |a| {
@@ -1623,6 +1873,16 @@ mod tests {
     }
 
     #[test]
+    fn a_size_reads_as_delta_writes_one() {
+        assert_eq!(size_bytes("104857600"), Some(104_857_600));
+        assert_eq!(size_bytes("100mb"), Some(100 << 20));
+        assert_eq!(size_bytes(" 1 GB "), Some(1 << 30));
+        for nothing in ["", "0", "mb", "1tb", "-5", "1.5mb"] {
+            assert_eq!(size_bytes(nothing), None, "{nothing:?}");
+        }
+    }
+
+    #[test]
     fn an_add_path_is_a_uri_path() {
         assert_eq!(uri_path("h=a+b%2F c/x.parquet"), "h=a%2Bb%252F%20c/x.parquet");
         assert_eq!(uri_path("Az09.-_~/="), "Az09.-_~/=");
@@ -1633,6 +1893,25 @@ mod tests {
         assert_eq!(timestamp(SPEC_TIME + 123_456, 6), "2017-11-16T22:31:08.123456Z");
         assert_eq!(timestamp(SPEC_TIME + 123_456, 3), "2017-11-16T22:31:08.123Z");
         assert_eq!(timestamp(-1, 6), "1969-12-31T23:59:59.999999Z");
+        assert_eq!(wall_clock(SPEC_TIME + 123_456, 6, ' '), "2017-11-16 22:31:08.123456");
+    }
+
+    #[test]
+    fn a_partition_value_is_written_as_its_columns_type() {
+        assert_eq!(partition_text(&Literal::Double(0.1f32 as f64), &Kind::Float), "0.1");
+        assert_eq!(partition_text(&Literal::Double(0.1), &Kind::Double), "0.1");
+        assert_eq!(
+            partition_text(&Literal::Double(f64::NEG_INFINITY), &Kind::Float),
+            "-Infinity"
+        );
+        assert_eq!(
+            partition_text(&Literal::Micros(SPEC_TIME), &Kind::Timestamp),
+            "2017-11-16 22:31:08.000000"
+        );
+        assert_eq!(
+            partition_text(&Literal::Micros(SPEC_TIME), &Kind::Timestamptz),
+            "2017-11-16T22:31:08.000000Z"
+        );
     }
 
     /// `{ts, host, msg, n, ok, http: {status}, tags: [str]}` and a footer of two rows of it, by physical names.
@@ -1695,7 +1974,7 @@ mod tests {
         };
         let status = physical(http, "status");
 
-        let got = stats(&file, &schema, &metadata(&schema, &[], &[]), 2);
+        let got = stats(&file, &schema, &metadata(&schema, &[], &[]), &[], 2);
         assert_eq!(
             got,
             json!({
@@ -1730,7 +2009,7 @@ mod tests {
         let (schema, file) = stats_file();
         let p = |name| physical(&schema, name);
         let meta = metadata(&schema, &[("delta.dataSkippingNumIndexedCols", "2")], &[]);
-        let got = stats(&file, &schema, &meta, 2);
+        let got = stats(&file, &schema, &meta, &[], 2);
         assert_eq!(got["nullCount"], json!({p("ts"): 0, p("host"): 0}));
         assert_eq!(
             got["minValues"],
@@ -1739,11 +2018,20 @@ mod tests {
     }
 
     #[test]
+    fn a_clustering_column_takes_stats_past_the_indexed_ones() {
+        let (schema, file) = stats_file();
+        let p = |name| physical(&schema, name);
+        let meta = metadata(&schema, &[("delta.dataSkippingNumIndexedCols", "1")], &[]);
+        let got = stats(&file, &schema, &meta, &[vec![p("n")]], 2);
+        assert_eq!(got["nullCount"], json!({p("ts"): 0, p("n"): 1}));
+    }
+
+    #[test]
     fn a_partition_column_takes_no_stats_nor_an_indexed_place() {
         let (schema, file) = stats_file();
         let p = |name| physical(&schema, name);
         let meta = metadata(&schema, &[("delta.dataSkippingNumIndexedCols", "2")], &["host"]);
-        let got = stats(&file, &schema, &meta, 2);
+        let got = stats(&file, &schema, &meta, &[], 2);
         assert_eq!(got["nullCount"], json!({p("ts"): 0, p("msg"): 0}));
     }
 

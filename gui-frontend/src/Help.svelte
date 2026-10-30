@@ -31,6 +31,8 @@
   let openAtPress = false;
 
   let stop: (() => void) | undefined;
+  // A page left with the help open drops it without a toggle, and its anchor with it.
+  $effect(() => () => stop?.());
 </script>
 
 <span

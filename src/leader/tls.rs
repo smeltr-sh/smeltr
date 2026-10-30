@@ -3308,7 +3308,9 @@ pub(crate) mod tests {
         let dir = scratch("not-for-servers");
         let ca = ensure(&dir, names(), A_YEAR, &[]).expect("an authority").ca_pem;
         let ca_key = std::fs::read_to_string(dir.join(CA_KEY)).unwrap();
-        let params = leaf_params(names(), A_YEAR, vec![ExtendedKeyUsagePurpose::ClientAuth], "names").unwrap();
+        let mut params = leaf_params(names(), A_YEAR, vec![ExtendedKeyUsagePurpose::ClientAuth], "names").unwrap();
+        // As `issue` does: signed a second after the authority, a year's certificate would outlive it.
+        cap_at(&mut params, &authority_held(&dir).unwrap().2).unwrap();
         let (chain, key) = sign(params, &ca_key, "a client certificate").unwrap();
 
         let refused =

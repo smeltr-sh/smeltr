@@ -1146,11 +1146,11 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await expect(admin.getByRole('button', { name: '1 kafka-alerts' })).toBeVisible();
 
   const table = admin.getByRole('table');
-  const ok = table.getByRole('row', { name: /^0 web/ });
+  const ok = table.getByRole('row', { name: /^0 storefront → web/ });
   await expect(ok).toContainText('es-web');
   await expect(ok).not.toContainText('kafka-alerts');
   await expect(ok).toContainText('"status":200');
-  const failed = table.getByRole('row', { name: /^1 web/ });
+  const failed = table.getByRole('row', { name: /^1 storefront → web/ });
   await expect(failed).toContainText('es-web, kafka-alerts');
   await expect(failed).toContainText('"status":503');
 });
@@ -1521,14 +1521,14 @@ test('A8: a route sends its unparseable rows where the analyst says, and the pre
 
   await admin.getByRole('link', { name: 'Route a sample' }).click();
   await admin.getByRole('link', { name: 'Where these records would go' }).click();
-  const bad = admin.getByRole('table').getByRole('row', { name: /^1 web/ });
+  const bad = admin.getByRole('table').getByRole('row', { name: /^1 storefront → web/ });
   await expect(bad).toContainText('Unparsable');
   await expect(bad).toContainText('deliver');
   await expect(bad).toContainText('es-dlq');
   await expect(bad).not.toContainText('es-web');
-  await expect(admin.getByRole('table').getByRole('row', { name: /^0 web/ })).toContainText(
-    'es-web',
-  );
+  await expect(
+    admin.getByRole('table').getByRole('row', { name: /^0 storefront → web/ }),
+  ).toContainText('es-web');
 });
 
 /** A pipeline that parses `store` and looks it up in `table` by `keyColumn`, writing `valueColumn` as `region`, and

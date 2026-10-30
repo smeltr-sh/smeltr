@@ -85,24 +85,35 @@ is how an ephemeral worker the leader forgot while it was away comes back.
 ## Identity and access
 
 Identity and access are the leader's alone; nothing in the data plane
-learns a person exists. A person signs in with a local account or through
-the organization's OpenID provider, and either ends in the same session, so
-the gate, its deadlines, disabling and revocation treat the two alike.
+learns a person exists. Whoever calls the operator API is an **account**, and an
+account signs in one way: a local account with a password, an OIDC account
+through the organization's OpenID provider, a key account with a key. How it
+signs in decides only how it proves who it is. What it reaches is what it
+holds, and renaming, disabling, its agent permissions and the audit are the
+same for every account. A local and an OIDC sign-in end in the same session,
+so the gate, its deadlines, disabling and revocation treat the two alike.
+Display names may repeat: an account is known by its id, which the audit and git record beside its name.
 
-A local account holds a username and a password the leader verifies. It is
-always an administrator: it is the way in when the provider is down or
-misconfigured. An OIDC account is one identity at one
+A local or key account holds the roles an administrator gives it. An OIDC
+account holds the roles its provider groups give it. The built-in
+**administrator** role holds everything; it is never removed, and only the
+groups that give it change. At least one enabled local account holds it: it is
+the way in when the provider is down or misconfigured. An administrator makes
+local and key accounts.
+
+A local account holds a username and a password the leader verifies. An OIDC account is one identity at one
 provider, named by the issuer and the subject the provider gives it and
 never by a name or an address. It holds no password. It is created the
 first time the provider vouches for the person, and records the groups the
 provider names at each sign-in and at each refresh. While a session lives the
 leader refreshes it at the provider every few minutes with the refresh token
 the sign-in gave, held in memory with the session: a provider that refuses the
-refresh, or whose fresh ID token no longer names a group any role names, ends
-the session. Only a person holding a group some role names is let in; anyone
-else who can sign up at the provider would otherwise hold a session that gives
-nothing. A refused sign-in is logged with the groups the provider sent, since
-those are the names a role must match before anybody has been let in. The sign-in is the authorization code
+refresh, or whose fresh ID token no longer names a group that gives a role,
+ends the session. Only a person holding a group that gives some role is let in;
+anyone else who can sign up at the provider would otherwise hold a session that
+gives nothing. A refused sign-in is logged with the groups the provider sent,
+since those are the names a role's groups must match before anybody has been
+let in. The sign-in is the authorization code
 flow with PKCE, bound to the browser that started it, and the ID token's
 signature is checked in the module that performs all the leader's other
 cryptography.
@@ -126,19 +137,21 @@ sequenceDiagram
   end
 ```
 
-Access is per area, and governs OIDC accounts. An area is `shared` or one
+Access is per area, and governs every account. An area is `shared` or one
 worker group, the scope every configuration read and write already names. A
-role is one group the provider names and what holding it gives: viewer,
-editor or deployer in each area, each including the ones before it, or
-administrator. An account holds the highest level any of its roles gives in
+role is a name, what holding it gives, viewer, editor or deployer in each area,
+each including the ones before it, and the provider groups that give it. The
+administrator role gives everything instead. An account holds the highest level any of its roles gives in
 each area, and reads `shared` if it holds any area, since a group is read
 merged with it. Objects carry nothing, so a team's access is set once rather
 than on every object it makes.
 
 ```text
-  provider groups ──► roles ──► level per area ──► the gate, on every request
-  (at sign-in and     (leader store)
-   each refresh)
+  provider groups ──────┐
+  (OIDC, at sign-in     │   each role's groups
+   and each refresh)    ├─► roles ──► level per area ──► the gate, on every request
+  given by an admin ────┘   (leader store)
+  (local, key)              administrator role ──► everything
 ```
 
 The gate names the area and level each route needs
@@ -163,13 +176,14 @@ roles that named it.
 
 The leader's AI agent is a principal of the same kind. Acting for a person, it
 carries their session and holds their **agent permissions**: the level in each
-area they let it use, viewer everywhere until they choose otherwise, up to
-everything they hold. The gate judges its requests by the lower of the person's
+area they let it use, viewer everywhere until they choose otherwise, and
+whether it holds the administrator role with them. The gate judges its requests by the lower of the person's
 level and the agent permissions in each area, so an agent never holds more than
 its person, and loses what they lose on their next request. Only the leader
 marks a request as the agent's. No agent changes its own permissions: only
 its person sets them. An administrator's agent is an administrator only when
-its permissions are everything. What it does is recorded as its person's
+its permissions name the administrator role; for anyone else, naming it gives
+nothing. What it does is recorded as its person's
 agent's, in the audit and in git.
 None of this acts until an administrator turns AI agents on and names the
 model endpoint they think with: until then no agent permissions are set, and
@@ -177,7 +191,7 @@ what was set before is kept. Turning them on asks the endpoint for a short answe
 setting that cannot work is refused when it is saved. What an agent reads to
 do its work is sent to that endpoint.
 An agent works by requests to the leader's own API, sent through the gate with
-its person's session, so each is judged as the GUI's would be. It reaches only
+the session or key it runs under, so each is judged as the GUI's would be. It reaches only
 the routes its catalog names, which leave out signing in and out and its
 person's conversations. What a request answers is data the agent reads, never
 an instruction to it: its permissions bound what an instruction written into
@@ -188,6 +202,21 @@ that data could do. A conversation is its person's alone.
                     ├─ lower of the two ─► the gate, on every agent request
   agent permissions ┘
 ```
+
+A key account is an account for a script outside the leader that calls its
+API. A person signs in with a password or through a provider and holds a
+session; a key account calls with one of its **keys**, sent as a Bearer token
+on every request, and holds no session. It needs no Origin or CSRF check, since
+no browser sends a key on its own. Only an administrator makes a key, and only
+a key account holds one. The leader keeps a key's hash and returns the key
+once, when it is made, as it does a worker's token. A key may be made to expire
+after a number of days. A key account holds any number of keys, so one is
+replaced without a gap. A revoked or expired key is refused, and disabling a
+key account revokes every key it holds.
+
+What a key reaches is what its account holds, as a session reaches what
+its person holds. What a key account does is recorded as its own: by its id in
+the audit, and in git under its display name and its id.
 
 A disable, a password reset or a revocation that lands while a sign-in is
 checking the password refuses that sign-in. Changing a

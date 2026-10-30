@@ -163,8 +163,8 @@
         route,
         x: COL2_X,
         y: PAD + i * ROW_H,
-        label: result?.route_pipelines[route] ?? `route ${route}`,
-        sub: `route ${route + 1} matched ${count(s.matched, 'record')}`,
+        label: result?.route_names[route] ?? '',
+        sub: `matched ${count(s.matched, 'record')}`,
         kind: 'pipeline',
       })),
   );

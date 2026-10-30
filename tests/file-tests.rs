@@ -185,10 +185,11 @@ struct Table {
 
 fn config(schema: &Schema, partitioner: Arc<dyn Partitioner>) -> FileConfig {
     FileConfig {
-        format: Arc::new(ParquetFormat::new(vec![schema.clone()], Compression::None)),
+        format: Arc::new(ParquetFormat::new(vec![schema.clone()], Compression::None.into())),
         partitioner,
         commit_interval: INTERVAL,
         max_file_bytes: 64 * 1024 * 1024,
+        take_bytes: smeltr::io::files::TAKE_BYTES,
         buffer_bytes: 64 * 1024 * 1024,
         stall_after: Duration::from_secs(30),
         attributes: Attributes::new(),
@@ -480,6 +481,29 @@ fn a_group_larger_than_a_row_group_is_written_in_several_row_groups() {
 }
 
 #[test]
+fn a_row_group_ends_at_the_take_bytes_asked_past_a_files_share_or_short_of_it() {
+    let schema = raw_schema();
+    // Forty distinct texts of a mebibyte each, uncompressed.
+    let texts: Vec<String> = (0..40u8)
+        .map(|i| ((b'a' + i) as char).to_string().repeat(1024 * 1024))
+        .collect();
+    for (take_bytes, want) in [(2 * TAKE_BYTES, 1..=1), (4 * 1024 * 1024, 10..=14)] {
+        let mut c = config(&schema, Arc::new(Unpartitioned));
+        c.max_file_bytes = 4 * TAKE_BYTES;
+        c.buffer_bytes = 8 * TAKE_BYTES;
+        c.take_bytes = take_bytes;
+        let mut t = table(c, &[]);
+        let rows = rows(&schema, &texts.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(t.deliver(1, &rows).is_empty());
+        assert_eq!(t.completed(1), vec![1]);
+        let commits = t.commits();
+        let metadata = commits[0][0].metadata.as_ref().expect("a Parquet file's metadata");
+        let groups = metadata.num_row_groups();
+        assert!(want.contains(&groups), "{groups} row groups of {take_bytes} bytes");
+    }
+}
+
+#[test]
 fn one_batch_larger_than_max_file_bytes_makes_several_files_none_far_past_the_limit() {
     let schema = raw_schema();
     let mut c = config(&schema, Arc::new(Unpartitioned));
@@ -708,7 +732,10 @@ fn each_part_is_written_on_its_own_schema() {
     let raw = raw_schema();
     let text = text_schema();
     let mut c = config(&raw, Arc::new(ByPartDigit));
-    c.format = Arc::new(ParquetFormat::new(vec![raw.clone(), text.clone()], Compression::None));
+    c.format = Arc::new(ParquetFormat::new(
+        vec![raw.clone(), text.clone()],
+        Compression::None.into(),
+    ));
     let mut t = table(c, &[]);
     let mut mixed = rows(&raw, &["0-first", "0-second"]);
     mixed.extend(rows(&text, &["1-first"]));
@@ -738,7 +765,10 @@ fn a_row_not_of_its_parts_schema_or_of_a_part_with_no_schema_is_refused_at_deliv
     let raw = raw_schema();
     let text = text_schema();
     let mut c = config(&raw, Arc::new(ByPartDigit));
-    c.format = Arc::new(ParquetFormat::new(vec![raw.clone(), text.clone()], Compression::None));
+    c.format = Arc::new(ParquetFormat::new(
+        vec![raw.clone(), text.clone()],
+        Compression::None.into(),
+    ));
     let mut t = table(c, &[]);
     // Part 1 is of `text`; part 2 has no schema.
     let mut mixed = rows(&raw, &["0-fine", "1-raw", "2-nowhere"]);

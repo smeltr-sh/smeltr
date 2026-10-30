@@ -2,7 +2,7 @@
 //! statistics from its Parquet footer. Each format names its own types and writes these values its own way.
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Date32Type, Int32Type, Int64Type, TimestampMicrosecondType};
+use arrow_array::types::{Date32Type, Float64Type, Int32Type, Int64Type, TimestampMicrosecondType};
 use arrow_array::{Array, ArrayRef};
 use arrow_schema::{DataType as Arrow, TimeUnit};
 use parquet::basic::{LogicalType, TimeUnit as ParquetTimeUnit};
@@ -14,10 +14,17 @@ use crate::core::column::DataType;
 use crate::ops::civil::civil_from_days;
 use crate::plan::topology::Records;
 
+/// A row group's size where a table sets none: Iceberg's default, and Spark's for Delta.
+pub const ROW_GROUP_BYTES: usize = 128 * 1024 * 1024;
+
 /// A primitive column type, as both formats have it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
     Boolean,
+    /// Delta's 8-bit integer.
+    Byte,
+    /// Delta's 16-bit integer.
+    Short,
     Int,
     Long,
     Float,
@@ -31,10 +38,27 @@ pub enum Kind {
     Binary,
 }
 
+impl Kind {
+    /// The Parquet type a column of this kind is written as, where it is narrower than any record type (`parquet::narrows`).
+    pub fn narrowed(&self) -> Option<Arrow> {
+        Some(match self {
+            Kind::Byte => Arrow::Int8,
+            Kind::Short => Arrow::Int16,
+            Kind::Int => Arrow::Int32,
+            Kind::Float => Arrow::Float32,
+            Kind::Date => Arrow::Date32,
+            Kind::Timestamp => Arrow::Timestamp(TimeUnit::Microsecond, None),
+            _ => return None,
+        })
+    }
+}
+
 impl fmt::Display for Kind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Kind::Boolean => "boolean",
+            Kind::Byte => "byte",
+            Kind::Short => "short",
             Kind::Int => "int",
             Kind::Long => "long",
             Kind::Float => "float",
@@ -48,7 +72,8 @@ impl fmt::Display for Kind {
     }
 }
 
-/// One value of a primitive type, as a partition holds it.
+/// One value of a primitive type, as a partition holds it. The column's type says how it is written: an `Int` of a
+/// byte column, a `Double` of a float column, `Micros` of a timestamp with or without zone.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Literal {
     Boolean(bool),
@@ -57,8 +82,8 @@ pub enum Literal {
     Double(f64),
     /// Days since 1970-01-01.
     Date(i32),
-    /// Microseconds since 1970-01-01T00:00:00Z.
-    Timestamptz(i64),
+    /// Microseconds since 1970-01-01T00:00:00Z. A time without zone is its wall clock in UTC.
+    Micros(i64),
     String(String),
     Binary(Vec<u8>),
 }
@@ -112,12 +137,27 @@ pub fn read(column: &ArrayRef, at: usize, kind: &Kind, names: &[String]) -> Resu
         (Kind::Boolean, Arrow::Boolean) => Literal::Boolean(column.as_boolean().value(at)),
         (Kind::Long, Arrow::Int64) => Literal::Long(column.as_primitive::<Int64Type>().value(at)),
         (Kind::Int, Arrow::Int32) => Literal::Int(column.as_primitive::<Int32Type>().value(at)),
-        (Kind::Double, Arrow::Float64) => {
-            Literal::Double(column.as_primitive::<arrow_array::types::Float64Type>().value(at))
+        // A row's column is the record's, wider than a table may hold it (`parquet::narrows`).
+        (Kind::Byte | Kind::Short | Kind::Int, Arrow::Int64) | (Kind::Float, Arrow::Float64) => {
+            let to = kind.narrowed().expect("a narrower kind");
+            if let Some(why) = crate::io::parquet::misfit(column, at, &to) {
+                return Err(format!("{} {why}", names.join(".")));
+            }
+            match column.data_type() {
+                Arrow::Int64 => Literal::Int(column.as_primitive::<Int64Type>().value(at) as i32),
+                // Rounded: what a float column is.
+                _ => Literal::Double(column.as_primitive::<Float64Type>().value(at) as f32 as f64),
+            }
         }
+        (Kind::Date, Arrow::Timestamp(TimeUnit::Microsecond, Some(_))) => {
+            let us = column.as_primitive::<TimestampMicrosecondType>().value(at);
+            // Every day an i64 of microseconds reaches is an i32.
+            Literal::Date(us.div_euclid(crate::ops::civil::MICROS_PER_DAY) as i32)
+        }
+        (Kind::Double, Arrow::Float64) => Literal::Double(column.as_primitive::<Float64Type>().value(at)),
         (Kind::Date, Arrow::Date32) => Literal::Date(column.as_primitive::<Date32Type>().value(at)),
-        (Kind::Timestamptz, Arrow::Timestamp(TimeUnit::Microsecond, Some(_))) => {
-            Literal::Timestamptz(column.as_primitive::<TimestampMicrosecondType>().value(at))
+        (Kind::Timestamp | Kind::Timestamptz, Arrow::Timestamp(TimeUnit::Microsecond, Some(_))) => {
+            Literal::Micros(column.as_primitive::<TimestampMicrosecondType>().value(at))
         }
         (Kind::String, Arrow::Utf8) => Literal::String(column.as_string::<i32>().value(at).to_string()),
         (Kind::Binary, Arrow::Binary) => Literal::Binary(column.as_binary::<i32>().value(at).to_vec()),
@@ -225,7 +265,9 @@ fn min_max(statistics: &Statistics, kind: &Kind) -> Option<(Bound, Bound)> {
     use Kind as K;
     match (kind, statistics) {
         (K::Boolean, Statistics::Boolean(s)) => Some((Bound::Boolean(*s.min_opt()?), Bound::Boolean(*s.max_opt()?))),
-        (K::Int | K::Date, Statistics::Int32(s)) => Some((Bound::Int(*s.min_opt()?), Bound::Int(*s.max_opt()?))),
+        (K::Byte | K::Short | K::Int | K::Date, Statistics::Int32(s)) => {
+            Some((Bound::Int(*s.min_opt()?), Bound::Int(*s.max_opt()?)))
+        }
         (K::Long | K::Timestamp | K::Timestamptz, Statistics::Int64(s)) => {
             Some((Bound::Long(*s.min_opt()?), Bound::Long(*s.max_opt()?)))
         }
@@ -243,5 +285,41 @@ fn min_max(statistics: &Statistics, kind: &Kind) -> Option<(Bound, Bound)> {
             Bound::Bytes(s.max_opt()?.data().to_vec()),
         )),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow_array::{Float64Array, Int64Array, TimestampMicrosecondArray};
+
+    use super::*;
+
+    #[test]
+    fn a_partition_value_is_read_as_the_table_holds_it_or_refused_where_it_cannot() {
+        let names = ["v".to_string()];
+        let longs: ArrayRef = Arc::new(Int64Array::from(vec![127, 128, -32_768, 40_000]));
+        let at = |kind: Kind, row| read(&longs, row, &kind, &names);
+        assert_eq!(at(Kind::Byte, 0), Ok(Some(Literal::Int(127))));
+        assert_eq!(
+            at(Kind::Byte, 1),
+            Err("v is 128, which an 8-bit integer column cannot hold".into())
+        );
+        assert_eq!(at(Kind::Short, 2), Ok(Some(Literal::Int(-32_768))));
+        assert_eq!(
+            at(Kind::Short, 3),
+            Err("v is 40000, which a 16-bit integer column cannot hold".into())
+        );
+        assert_eq!(at(Kind::Int, 3), Ok(Some(Literal::Int(40_000))));
+
+        let doubles: ArrayRef = Arc::new(Float64Array::from(vec![0.1, 1e300, f64::NAN]));
+        let at = |row| read(&doubles, row, &Kind::Float, &names);
+        assert_eq!(at(0), Ok(Some(Literal::Double(0.1f32 as f64))));
+        assert_eq!(at(1), Err("v is 1e300, beyond a 32-bit float column's range".into()));
+        assert!(matches!(at(2), Ok(Some(Literal::Double(v))) if v.is_nan()));
+
+        let times: ArrayRef = Arc::new(TimestampMicrosecondArray::from(vec![-1]).with_timezone("UTC"));
+        assert_eq!(read(&times, 0, &Kind::Timestamp, &names), Ok(Some(Literal::Micros(-1))));
     }
 }

@@ -87,7 +87,7 @@ describe('changeText, one object changed one way', () => {
       (c.sources[0] as { brokers: string }).brokers = 'b1:9092,b2:9092,b3:9092';
     });
     expect(text(next)).toEqual({
-      subject: 'Update source kafka-main: brokers b1:9092,b2:9092 → b1:9092,b2:9092,b3:9092',
+      subject: 'Update source kafka-main: brokers from b1:9092,b2:9092 to b1:9092,b2:9092,b3:9092',
       body: '',
     });
   });
@@ -112,7 +112,7 @@ describe('changeText, one object changed one way', () => {
     const next = structuredClone(before);
     (next.sources.at(-1) as { trustedAuthorities?: string }).trustedAuthorities = 'cert-v2';
     expect(text(next, before).subject).toBe(
-      'Update source acme: trustedAuthorities cert-v1 → cert-v2',
+      'Update source acme: trustedAuthorities from cert-v1 to cert-v2',
     );
   });
 
@@ -139,7 +139,7 @@ describe('changeText, one object changed one way', () => {
       pipeline(c, 'metrics-pipe').name = 'Metrics pass-through v2';
     });
     expect(text(next).subject).toBe(
-      'Update pipeline Metrics passthrough: name Metrics passthrough → Metrics pass-through v2',
+      'Update pipeline Metrics passthrough: name from Metrics passthrough to Metrics pass-through v2',
     );
   });
 });
@@ -157,7 +157,9 @@ describe('changeText, a pipeline is said by its name', () => {
     const next = after((c) => {
       c.routes[0].pipeline = 'metrics-pipe';
     });
-    expect(text(next).subject).toBe('Update route catch-all: pipeline Main → Metrics passthrough');
+    expect(text(next).subject).toBe(
+      'Update route kafka-main → Metrics passthrough: pipeline from Main to Metrics passthrough',
+    );
   });
 
   it('names a pipeline the change adds and a route moves onto in the same change', () => {
@@ -166,7 +168,7 @@ describe('changeText, a pipeline is said by its name', () => {
       c.routes[0].pipeline = 'pipeline-x7k2m9q1';
     });
     expect(text(next).body.split('\n')).toEqual([
-      'Update route catch-all: pipeline Main → Firewall',
+      'Update route kafka-main → Firewall: pipeline from Main to Firewall',
       'Add pipeline Firewall',
     ]);
   });
@@ -175,7 +177,9 @@ describe('changeText, a pipeline is said by its name', () => {
     const next = after((c) => {
       c.routes[0].pipeline = 'pipeline-gone0000';
     });
-    expect(text(next).subject).toBe('Update route catch-all: pipeline Main → pipeline-gone0000');
+    expect(text(next).subject).toBe(
+      'Update route kafka-main → pipeline-gone0000: pipeline from Main to pipeline-gone0000',
+    );
   });
 
   it('names the pipelines a call step moved between', () => {
@@ -192,7 +196,7 @@ describe('changeText, a pipeline is said by its name', () => {
     const next = structuredClone(before);
     (pipeline(next, 'main').steps[2] as { pipeline: string }).pipeline = 'pipeline-x7k2m9q1';
     expect(text(next, before).subject).toBe(
-      'Update pipeline Main: call step pipeline Metrics passthrough → Firewall',
+      'Update pipeline Main: call step pipeline from Metrics passthrough to Firewall',
     );
   });
 
@@ -217,7 +221,9 @@ describe('changeText, absent and empty', () => {
     const next = after((c) => {
       delete (c.destinations[1] as { stallAfterSecs?: number }).stallAfterSecs;
     });
-    expect(text(next).subject).toBe('Update destination kafka-out: stallAfterSecs 30 → unset');
+    expect(text(next).subject).toBe(
+      'Update destination kafka-out: stallAfterSecs from 30 to unset',
+    );
   });
 
   it('keeps a field set to nothing distinct from one never set', () => {
@@ -232,7 +238,7 @@ describe('changeText, a union value', () => {
       c.destinations[1].exceptions = { kinds: { Refused: 'drop' } };
     });
     const { subject } = text(next);
-    expect(subject).toBe('Update destination kafka-out: exceptions unset → 1 entry');
+    expect(subject).toBe('Update destination kafka-out: exceptions from unset to 1 entry');
     expect(subject).not.toContain('{');
   });
 
@@ -298,7 +304,7 @@ describe('changeText, pipeline steps', () => {
       ).assignments = [{ target: '.level', expr: '500' }];
     });
     expect(text(next).subject).toBe(
-      'Update pipeline Main: eval step assignments .level=400 → .level=500',
+      'Update pipeline Main: eval step assignments from .level=400 to .level=500',
     );
   });
 
@@ -307,7 +313,7 @@ describe('changeText, pipeline steps', () => {
       (pipeline(c, 'main').steps[1] as { condition: string }).condition = '.kind == "y"';
     });
     expect(text(next).subject).toBe(
-      'Update pipeline Main: if step condition .kind == "x" → .kind == "y"',
+      'Update pipeline Main: if step condition from .kind == "x" to .kind == "y"',
     );
   });
 });
@@ -321,8 +327,8 @@ describe('changeText, more than one object', () => {
     expect(text(next)).toEqual({
       subject: 'Update 2 destinations',
       body: [
-        'Update destination kafka-dlq: stallAfterSecs 30 → 45',
-        'Update destination kafka-out: stallAfterSecs 30 → 45',
+        'Update destination kafka-dlq: stallAfterSecs from 30 to 45',
+        'Update destination kafka-out: stallAfterSecs from 30 to 45',
       ].join('\n'),
     });
   });
@@ -373,7 +379,7 @@ describe('changeText, more than one object', () => {
     expect(text(next)).toEqual({
       subject: 'Change 2 objects across sources and destinations',
       body: [
-        'Update source kafka-main: brokers b1:9092,b2:9092 → b1:9092,b2:9092,b3:9092',
+        'Update source kafka-main: brokers from b1:9092,b2:9092 to b1:9092,b2:9092,b3:9092',
         'Add destination elastic-logs',
       ].join('\n'),
     });
@@ -417,9 +423,9 @@ describe('changeText, more than one object', () => {
     );
     expect(body.split('\n')).toEqual([
       'Add source kafka-eu',
-      'Update source kafka-main: brokers b1:9092,b2:9092 → b1:9092,b2:9092,b3:9092',
+      'Update source kafka-main: brokers from b1:9092,b2:9092 to b1:9092,b2:9092,b3:9092',
       'Add destination elastic-logs',
-      'Update route catch-all: condition none → __source.offset > 0',
+      'Update route kafka-main → Main: condition from none to __source.offset > 0',
       'Add lookup table user-agents',
       'Update pipeline Main: add code step',
     ]);
@@ -459,8 +465,8 @@ describe('changeText, the edges', () => {
     const { subject, body } = changeText(spans);
     expect(subject).toBe('Update 2 objects across 2 groups');
     expect(body.split('\n')).toEqual([
-      'Update source kafka-main in west: groupId smeltr → west',
-      'Update source kafka-main in east: groupId smeltr → east',
+      'Update source kafka-main in west: groupId from smeltr to west',
+      'Update source kafka-main in east: groupId from smeltr to east',
     ]);
   });
 });
