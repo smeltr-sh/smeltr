@@ -194,8 +194,11 @@
     return millis === null ? 'never' : ago(millis / 1000);
   }
 
+  /** Rounded up to the minute, so a key made for 30 days reads 30 days, not 29, the moment it is made. */
   function expires(millis: number | null): string {
-    return millis === null ? 'never' : expiry(millis).replace(/^expires /, '');
+    if (millis === null) return 'never';
+    if (millis <= Date.now()) return 'expired';
+    return expiry(millis + 59_999).replace(/^expires /, '');
   }
 </script>
 

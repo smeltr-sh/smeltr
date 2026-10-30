@@ -80,7 +80,8 @@ const ACCOUNTS = [
         id: 'key_2',
         label: 'weekly',
         createdAt: 0,
-        expiresAt: Date.now() + 10 * 86_400_000 + 60_000,
+        // Made a moment ago for 10 days, which it still reads.
+        expiresAt: Date.now() + 10 * 86_400_000 - 5_000,
         lastUsedAt: null,
       },
     ],
