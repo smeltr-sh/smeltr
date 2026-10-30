@@ -32,7 +32,9 @@ pub fn types_for(ty: &DataType) -> &'static [&'static str] {
             "version",
             "date",
         ],
-        DataType::I64 | DataType::Duration => &[
+        // Integer microseconds, which as a date would read as a time a thousand times too late.
+        DataType::Duration => &["long", "integer", "short", "byte", "unsigned_long"],
+        DataType::I64 => &[
             "long",
             "integer",
             "short",
@@ -230,6 +232,7 @@ mod tests {
         let said = |v: Value| v.as_object().unwrap().clone();
         assert_eq!(refusal(&DataType::Str, &said(json!({ "type": "ip" }))), None);
         assert_eq!(refusal(&DataType::I64, &said(json!({ "type": "date" }))), None);
+        assert!(refusal(&DataType::Duration, &said(json!({ "type": "date" }))).is_some());
         assert_eq!(
             refusal(
                 &DataType::Array(Box::new(DataType::Str)),

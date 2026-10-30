@@ -102,6 +102,9 @@ test('the Elasticsearch view chooses the type a field maps to, saved with the sc
   await goto(admin, leader, '#/build/schemas');
   await admin.getByRole('button', { name: 'login fields' }).click();
   await admin.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+  await admin.getByRole('button', { name: 'About Elasticsearch' }).click();
+  await expect(admin.getByText(/Each field is indexed as this Elasticsearch type/)).toBeVisible();
+  await admin.keyboard.press('Escape');
   const ip = admin.getByRole('combobox', { name: 'Elasticsearch type of src_endpoint.ip' });
   await expect(ip).toHaveValue('');
   await expect(ip.getByRole('option', { name: 'default (keyword)' })).toBeAttached();
@@ -131,6 +134,39 @@ test('the Elasticsearch view chooses the type a field maps to, saved with the sc
   await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
   const cleared = await api.get(`${SHARED}${ON}`);
   expect(kept(cleared.config)).toEqual({ field: 'src_endpoint.ip', type: 'str' });
+});
+
+test("a field's own Elasticsearch settings show beside its type, and shared/'s schemas only show it", async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const name = {
+    field: 'user.name',
+    type: 'str',
+    elasticsearch: { type: 'keyword', ignore_above: 1024 },
+  };
+  await api.put(`${SHARED}/schemas${ON}`, [
+    { ...LOGIN, fields: LOGIN.fields.map((f) => (f.field === 'user.name' ? name : f)) },
+  ]);
+  await goto(admin, leader, '#/build/schemas');
+  await admin.getByRole('button', { name: 'login fields' }).click();
+  await admin.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+  await expect(
+    admin.getByRole('combobox', { name: 'Elasticsearch type of user.name' }),
+  ).toHaveValue('keyword');
+  await expect(admin.getByText('+ 1 more setting: ignore_above')).toBeVisible();
+  await admin.screenshot({ path: 'results/schemas-elasticsearch-settings.png' });
+
+  await admin.getByRole('button', { name: 'shared', exact: true }).click();
+  await admin.getByRole('button', { name: /^default/ }).click();
+  await admin.getByRole('button', { name: '▸ login' }).click();
+  await admin.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+  await expect(admin.getByRole('combobox')).toHaveCount(0);
+  await expect(
+    admin.getByRole('cell', { name: 'keyword + 1 more setting: ignore_above', exact: true }),
+  ).toBeVisible();
+  await admin.screenshot({ path: 'results/schemas-elasticsearch-shared.png' });
 });
 
 test("a JSON Schema added on the Schemas page is saved as the bundle's own", async ({

@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
   import type { SchemaDto, SchemaFieldDto } from './api';
+  import Help from './Help.svelte';
   import Segmented from './Segmented.svelte';
   import { elasticsearchTypes } from './schemas';
   import { count } from './time';
@@ -22,7 +23,7 @@
   } = $props();
 
   const VIEWS = [
-    { value: 'fields', label: 'Fields' },
+    { value: 'fields', label: 'Schema' },
     { value: 'elasticsearch', label: 'Elasticsearch' },
   ] as const;
   let view: (typeof VIEWS)[number]['value'] = $state('fields');
@@ -54,6 +55,8 @@
   <p class="dim">No fields.</p>
 {:else}
   <div class="views">
+    <!-- The toggle names itself to a screen reader. -->
+    <span class="dim" aria-hidden="true">Fields shown as</span>
     <Segmented label="Fields shown as" options={[...VIEWS]} bind:value={view} />
   </div>
   <table class="fields" class:mapped={view === 'elasticsearch'}>
@@ -61,7 +64,12 @@
       <tr>
         <th>Field</th>
         <th>Type</th>
-        {#if view === 'elasticsearch'}<th>Elasticsearch</th>{:else}<th>Description</th>{/if}
+        {#if view === 'elasticsearch'}<th
+            >Elasticsearch <Help label="Elasticsearch"
+              >Each field is indexed as this Elasticsearch type. Leave it on default to use the type
+              its schema type maps to.</Help
+            ></th
+          >{:else}<th>Description</th>{/if}
       </tr>
     </thead>
     <tbody>
@@ -92,7 +100,10 @@
               {:else}
                 <span class="mono">{f.elasticsearch?.type ?? ownType(f)}</span>
               {/if}
-              {#if others.length > 0}<span class="dim mono">+ {others.join(', ')}</span>{/if}
+              {#if others.length > 0}<span class="dim"
+                  >+ {count(others.length, 'more setting')}:
+                  <span class="mono">{others.join(', ')}</span></span
+                >{/if}
             </td>
           {:else}
             <td class="about">{f.description ?? ''}</td>
@@ -108,7 +119,11 @@
 
 <style>
   .views {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     margin-bottom: 0.4rem;
+    font-size: var(--text-label);
   }
 
   .mapping {

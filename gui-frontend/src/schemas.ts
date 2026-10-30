@@ -94,8 +94,9 @@ export function elasticsearchTypes(type: string): string[] {
         'version',
         'date',
       ];
-    case 'i64':
     case 'duration':
+      return ['long', 'integer', 'short', 'byte', 'unsigned_long'];
+    case 'i64':
       return [
         'long',
         'integer',
