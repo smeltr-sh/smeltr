@@ -1360,7 +1360,12 @@ fn read_markers(repo_path: &Path, branch: &str) -> Result<Vec<Marker>, GitError>
         let commit = repo.find_commit(info.id).map_err(|e| failed(e.to_string()))?;
         let message = commit.message_raw().map_err(|e| failed(e.to_string()))?.to_string();
         let Some((kind, text, trailers)) = parse_marker(&message) else {
-            continue;
+            // A kind this build does not know is read past. A commit that is no marker is what a first marker names,
+            // and the chain ends before it.
+            if message.lines().last().is_some_and(|l| l.starts_with(CHANGE_TRAILER)) {
+                continue;
+            }
+            break;
         };
         // A key this build does not know is read past, as a kind it does not know is.
         let trailer = |key: &str| trailers.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.clone());
