@@ -464,7 +464,7 @@ impl DeltaCommitter {
         }
         let partitions = partition_columns(&snapshot.metadata, &schema)?;
         let written = schema::physical(&arrow, &schema);
-        let sequences = Arc::new(Sequences::new(generated, log.clone(), &snapshot));
+        let sequences = Arc::new(Sequences::new(generated, log.clone()));
         Ok(DeltaCommitter {
             log,
             root,

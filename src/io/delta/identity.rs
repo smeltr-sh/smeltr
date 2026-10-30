@@ -19,13 +19,13 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType as Arrow, Field, Schema as ArrowSchema};
 use serde_json::{Value, json};
 
-use super::log::{Action, Log, Metadata, Since, Snapshot, commit_name, line, now_ms};
+use super::log::{Log, Metadata, Snapshot, commit_name, line, now_ms};
 use super::schema::{self, StructField, StructType};
 use crate::io::files::{CommitError, Retry};
 use crate::io::parquet::{Columns, Computed};
@@ -144,20 +144,8 @@ struct Reserve {
 pub struct Sequences {
     columns: Vec<Identity>,
     reserves: Mutex<Vec<Reserve>>,
-    reserver: Mutex<Reserver>,
-}
-
-/// What reserves values outside a data commit: the log, read as far as its last reservation.
-struct Reserver {
+    /// Where a row admitted when none is left reserves a block.
     log: Log,
-    snapshot: Snapshot,
-    stall_after: Duration,
-}
-
-impl std::fmt::Debug for Reserver {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Reserver at version {}", self.snapshot.version)
-    }
 }
 
 /// The values of `columns` taken for a commit: the table's metadata with their marks raised, and the blocks raised.
@@ -167,20 +155,13 @@ pub struct Raised {
 }
 
 impl Sequences {
-    /// The sequences of `columns`, none reserved yet. A row admitted when none is left reserves a block through `log`,
-    /// read on from `snapshot`, trying again until the log's stall threshold.
-    pub fn new(columns: Vec<Identity>, log: Log, snapshot: &Snapshot) -> Sequences {
-        let mut snapshot = snapshot.clone();
-        // Only the metadata is read: the files the log adds are let go.
-        snapshot.since = Since::default();
+    /// The sequences of `columns`, none reserved yet. A row admitted when none is left reserves a block in `log`,
+    /// trying again until the log's stall threshold.
+    pub fn new(columns: Vec<Identity>, log: Log) -> Sequences {
         Sequences {
             reserves: Mutex::new(columns.iter().map(|_| Reserve::default()).collect()),
             columns,
-            reserver: Mutex::new(Reserver {
-                stall_after: log.stall_after(),
-                log,
-                snapshot,
-            }),
+            log,
         }
     }
 
@@ -273,19 +254,19 @@ impl Sequences {
         }
     }
 
-    /// Reserves a block for each column low on values, in a commit of its own.
+    /// Reserves a block for each column low on values, in a commit of its own on the table as the log has it now.
     fn reserve(&self) -> Result<(), String> {
-        let mut guard = self.reserver.lock().unwrap_or_else(PoisonError::into_inner);
-        let reserver = &mut *guard;
-        let mut retry = Retry::new(Instant::now(), reserver.stall_after);
+        let mut retry = Retry::new(Instant::now(), self.log.stall_after());
         loop {
-            let error = match reserver.snapshot.advance(&reserver.log) {
+            // Rare enough to read the log whole, from its last checkpoint.
+            let error = match Snapshot::load(&self.log, "") {
                 Err(why) => CommitError::Transient(why),
-                Ok(_) => {
-                    let Some(raised) = self.raised(&reserver.snapshot.metadata)? else {
+                Ok(None) => CommitError::Transient("the table's log has no commit".to_string()),
+                Ok(Some(snapshot)) => {
+                    let Some(raised) = self.raised(&snapshot.metadata)? else {
                         return Ok(());
                     };
-                    match self.commit(reserver, raised) {
+                    match self.commit(snapshot.version + 1, raised) {
                         Ok(()) => return Ok(()),
                         Err(e) => e,
                     }
@@ -304,7 +285,7 @@ impl Sequences {
         }
     }
 
-    fn commit(&self, reserver: &mut Reserver, raised: Raised) -> Result<(), CommitError> {
+    fn commit(&self, version: i64, raised: Raised) -> Result<(), CommitError> {
         let body = [
             line(
                 "commitInfo",
@@ -313,12 +294,8 @@ impl Sequences {
             line("metaData", &raised.metadata),
         ]
         .join("\n");
-        match reserver
-            .log
-            .create(&commit_name(reserver.snapshot.version + 1), body.into_bytes())
-        {
+        match self.log.create(&commit_name(version), body.into_bytes()) {
             Ok(true) => {
-                (reserver.snapshot).committed(vec![Action::Metadata(Box::new(raised.metadata.clone()))]);
                 self.reserved(raised);
                 Ok(())
             }
