@@ -373,6 +373,8 @@ impl DeltaCommitter {
     /// The committer of the table whose log is `log`, created from `record` and partitioned by `partition_by` when
     /// missing, the record's new columns added. Err when the table cannot be written.
     fn open(log: Log, root: Root, partition_by: &[String], record: &DataType) -> Result<DeltaCommitter, String> {
+        // Before anything is written for it: a record Parquet cannot hold must leave the log as it was.
+        let arrow = parquet::Schema::new(record)?.arrow().clone();
         let app_id = uuid();
         let mut snapshot = None;
         let mut failed = None;
@@ -441,7 +443,6 @@ impl DeltaCommitter {
             return Err(why);
         }
         let partitions = partition_columns(&snapshot.metadata, &schema)?;
-        let arrow = parquet::Schema::new(record)?.arrow().clone();
         let written = schema::physical(&arrow, &schema);
         Ok(DeltaCommitter {
             log,
