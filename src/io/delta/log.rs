@@ -27,6 +27,7 @@ const MAX_JSON_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_HELD_BYTES: usize = 16 * 1024 * 1024;
 
 /// A table's `_delta_log` in its store. Every call is bounded by `stall_after`, so a store that goes quiet is an error.
+#[derive(Clone, Debug)]
 pub struct Log {
     store: Arc<dyn ObjectStore>,
     runtime: Arc<tokio::runtime::Runtime>,
@@ -64,6 +65,11 @@ impl Log {
                 format!("{table}/_delta_log")
             },
         }
+    }
+
+    /// How long a call may take.
+    pub fn stall_after(&self) -> Duration {
+        self.stall_after
     }
 
     fn path(&self, name: &str) -> Result<Path, String> {
