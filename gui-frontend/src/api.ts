@@ -500,8 +500,9 @@ export type Acks = (typeof ACKS)[number];
 
 /** Bounds and defaults of the numeric delivery settings, mirroring the
  * newtypes in `config_file::dto` (`BulkBytes`, `FetchBytes`, ...). The Rust
- * side is the authority; these keep the inputs from offering a value the
- * save would reject. */
+ * side is the authority, and `config_file::load`'s
+ * `the_gui_offers_the_bounds_a_save_enforces` keeps these equal to it, so the
+ * inputs never offer a value the save would reject. */
 export const LIMITS = {
   inFlight: { min: 1, max: 64, default: 4 },
   maxBulkBytes: { min: 64 * 1024, max: 100 * 1024 * 1024, default: 5 * 1024 * 1024 },

@@ -7088,6 +7088,137 @@ mod tests {
         );
     }
 
+    /// The GUI's `LIMITS` (`gui-frontend/src/api.ts`) offers each field's bounds and default without asking the
+    /// leader; these are the ones a save enforces, so a form never offers a value the save refuses.
+    #[test]
+    fn the_gui_offers_the_bounds_a_save_enforces() {
+        use crate::config_file::dto::{
+            BufferBytes as Buffer, BulkBytes as Bulk, FetchBytes as Fetch, FileInterval as File, HttpRequestBytes,
+            InFlight, MaxDeliveries as Deliveries, MaxRequestBytes as Receiver, ObjectBytes as Object,
+            PollIntervalSecs, RequestBytes, StallAfter as Stall, VisibilitySecs as Visibility,
+        };
+        use crate::plan::topology::MAX_SENDERS;
+        type Request = RequestBytes;
+        // Name, min, max (none where the loader sets none), default.
+        let want: Vec<(&str, u64, Option<u64>, u64)> = vec![
+            ("inFlight", 1, Some(MAX_SENDERS as u64), InFlight::DEFAULT as u64),
+            (
+                "maxBulkBytes",
+                Bulk::MIN as u64,
+                Some(Bulk::MAX as u64),
+                Bulk::DEFAULT as u64,
+            ),
+            (
+                "maxRequestBytes",
+                Request::MIN as u64,
+                Some(Request::MAX as u64),
+                Request::DEFAULT as u64,
+            ),
+            (
+                "httpRequestBytes",
+                Request::MIN as u64,
+                Some(Request::MAX as u64),
+                HttpRequestBytes::DEFAULT as u64,
+            ),
+            (
+                "logAnalyticsRequestBytes",
+                Request::MIN as u64,
+                Some(LOG_ANALYTICS_MAX_REQUEST_BYTES as u64),
+                Request::DEFAULT as u64,
+            ),
+            (
+                "receiverRequestBytes",
+                Receiver::MIN,
+                Some(Receiver::MAX),
+                Receiver::DEFAULT,
+            ),
+            (
+                "maxObjectBytes",
+                Object::MIN as u64,
+                Some(Object::MAX as u64),
+                Object::DEFAULT as u64,
+            ),
+            ("stallAfterSecs", Stall::MIN, Some(Stall::MAX), Stall::DEFAULT),
+            (
+                "bufferBytes",
+                Buffer::MIN as u64,
+                Some(Buffer::MAX as u64),
+                Buffer::DEFAULT as u64,
+            ),
+            ("fileIntervalSecs", File::MIN, Some(File::MAX), File::DEFAULT),
+            (
+                "tableFileIntervalSecs",
+                File::MIN,
+                Some(TABLE_FILE_INTERVAL_MAX),
+                File::DEFAULT,
+            ),
+            (
+                "objectBufferBytes",
+                Buffer::MIN as u64,
+                Some(Buffer::OBJECT_MAX as u64),
+                Buffer::OBJECT_DEFAULT as u64,
+            ),
+            (
+                "fetchBytes",
+                Fetch::MIN as u64,
+                Some(Fetch::MAX as u64),
+                Fetch::DEFAULT as u64,
+            ),
+            (
+                "visibilitySecs",
+                Visibility::MIN,
+                Some(Visibility::MAX),
+                Visibility::DEFAULT,
+            ),
+            (
+                "ackDeadlineSecs",
+                Visibility::MIN,
+                Some(ACK_DEADLINE_MAX),
+                Visibility::DEFAULT,
+            ),
+            (
+                "maxDeliveries",
+                Deliveries::MIN.into(),
+                Some(Deliveries::MAX.into()),
+                Deliveries::DEFAULT.into(),
+            ),
+            // The loader refuses only 0.
+            ("pollIntervalSecs", 1, None, PollIntervalSecs::DEFAULT),
+        ];
+
+        let source = include_str!("../../gui-frontend/src/api.ts");
+        let table = &source[source.find("export const LIMITS = {").expect("LIMITS")..];
+        let table = &table[..table.find("} as const;").expect("the end of LIMITS")];
+        // `64 * 1024 * 1024` or `43_200`; `Number.MAX_SAFE_INTEGER` is no bound.
+        let number = |text: &str| -> Option<u64> {
+            let text = text.trim();
+            (text != "Number.MAX_SAFE_INTEGER").then(|| {
+                text.split('*')
+                    .map(|n| n.trim().replace('_', "").parse::<u64>().expect(text))
+                    .product()
+            })
+        };
+        let offered: Vec<(&str, u64, Option<u64>, u64)> = table
+            .split("},")
+            .filter(|entry| entry.contains("min:"))
+            .map(|entry| {
+                let head = &entry[..entry.find(": {").expect("an entry")];
+                let name = head.rsplit(|c: char| !c.is_alphanumeric()).next().expect("its name");
+                let field = |key: &str| {
+                    let rest = &entry[entry.find(&format!("{key}:")).expect(key) + key.len() + 1..];
+                    number(&rest[..rest.find([',', '}']).unwrap_or(rest.len())])
+                };
+                (
+                    name,
+                    field("min").expect("a min"),
+                    field("max"),
+                    field("default").expect("a default"),
+                )
+            })
+            .collect();
+        assert_eq!(offered, want);
+    }
+
     /// The GUI's Kafka form (`gui-frontend/src/kafka.ts`, `FIELD_LABELS`) shows each reason with its label for every
     /// field the reason names in backticks; one it has no label for would show as the JSON key.
     #[test]
