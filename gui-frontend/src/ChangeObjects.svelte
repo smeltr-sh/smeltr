@@ -748,7 +748,7 @@
     padding: 0.55rem 0.8rem;
     border-bottom: 1px solid var(--border);
   }
-  /* The name and its kind give way, the buttons do not: past what one row holds, they wrap under it. */
+  /* However narrow the pane, nothing is clipped: what does not fit on a row wraps under it, and the buttons never shrink. */
   .obj-head > :global(*) {
     flex-shrink: 0;
     white-space: nowrap;
@@ -760,7 +760,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  /* The kind gives way first: the name is what the card is about, and gives way only past half the row. */
+  /* A name or kind wider than a whole row ellipsizes; the name gives way only past half the row. */
   .obj-head .label {
     flex-shrink: 0;
     max-width: 50%;
