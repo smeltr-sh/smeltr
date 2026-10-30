@@ -129,6 +129,7 @@
   import LineBreakerField from './LineBreakerField.svelte';
   import { readSchema } from './api';
   import { count } from './time';
+  import Help from './Help.svelte';
 
   let {
     open,
@@ -305,7 +306,12 @@
         {@const preview = draft.preview}
         {@const typed = draft.columns.type != null && preview.types.length > 0}
         <fieldset class="picker">
-          <legend>What each column holds</legend>
+          <legend
+            >What each column holds <Help label="What each column holds"
+              >Rows with the same type value share one choice. A value tagged unknown is not a type
+              smeltr knows: choose how to read it.</Help
+            ></legend
+          >
           {#if draft.columns.field == null || draft.columns.type == null}
             <p class="note">
               Choose the column that holds each field's name, and the one that holds its type.
@@ -377,12 +383,6 @@
               </tbody>
             </table>
           </div>
-          {#if typed}
-            <p class="note dim">
-              Rows with the same type value share one choice.{#if preview.types.some((t) => t.readsAs === null)}
-                {' '}A value tagged unknown is not a type smeltr knows: choose how to read it.{/if}
-            </p>
-          {/if}
         </fieldset>
       {/if}
     {:else if draft.type === 'ocsf'}
