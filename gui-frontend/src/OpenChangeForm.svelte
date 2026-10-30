@@ -15,7 +15,7 @@
     SAVED_EVENT,
     branchDiff,
     configAt,
-    listUsers,
+    listAccounts,
     openChange,
     runTests,
     type BranchDto,
@@ -129,7 +129,8 @@
 
   async function loadReviewers() {
     try {
-      reviewers = (await listUsers())
+      // Any account that could approve, however it signs in: a key account approves through the API.
+      reviewers = (await listAccounts())
         .filter(
           (u) =>
             u.enabled && deployBlocker(entry.touches, u.access) === '' && u.id !== session().userId,

@@ -11,6 +11,9 @@ use axum::Router;
 use axum::extract::{Json, Multipart};
 use axum::routing::{delete, get, patch, post, put};
 
+mod accounts_api;
+#[cfg(test)]
+mod accounts_fuzz;
 mod acme_api;
 mod agent_catalog;
 mod agents_api;
@@ -23,7 +26,12 @@ mod chat_api;
 mod cluster;
 mod config_api;
 mod docs_api;
+// What the crate's fuzzers share, compiled here as `tests/harness` compiles it: the library's is test-only.
+#[cfg(test)]
+#[path = "../../fuzz.rs"]
+mod fuzz;
 mod gate;
+mod key_accounts_api;
 mod oidc_api;
 mod policy;
 mod roles_api;
@@ -31,7 +39,6 @@ mod schema_api;
 mod service;
 mod sql_api;
 mod test_api;
-mod users_api;
 mod worker_groups_api;
 
 use smeltr::config_file;
@@ -2123,11 +2130,16 @@ async fn run_leader() {
     // config routes above -- and it must be inside the gate, which is what `route_layer` below covers.
     let app = app.merge(
         Router::new()
-            .route("/api/users", get(users_api::list_users).post(users_api::create_user))
-            .route("/api/users/:id", patch(users_api::patch_user))
-            .route("/api/users/:id/reset-password", post(users_api::reset_password))
-            .route("/api/users/:id/revoke-sessions", post(users_api::revoke_sessions))
-            .route("/api/security-events", get(users_api::list_security_events))
+            .route(
+                "/api/accounts",
+                get(accounts_api::list_accounts).post(accounts_api::create_account),
+            )
+            .route("/api/accounts/:id", patch(accounts_api::patch_account))
+            .route("/api/accounts/:id/reset-password", post(accounts_api::reset_password))
+            .route("/api/accounts/:id/revoke-sessions", post(accounts_api::revoke_sessions))
+            .route("/api/accounts/:id/keys", post(key_accounts_api::create_key))
+            .route("/api/accounts/:id/keys/:key", delete(key_accounts_api::revoke_key))
+            .route("/api/security-events", get(accounts_api::list_security_events))
             .route(
                 "/api/me/agent-permissions",
                 get(agents_api::get_permissions).put(agents_api::put_permissions),
@@ -2139,7 +2151,7 @@ async fn run_leader() {
             )
             .route(
                 "/api/settings/sessions",
-                get(users_api::get_session_settings).put(users_api::put_session_settings),
+                get(accounts_api::get_session_settings).put(accounts_api::put_session_settings),
             )
             .route(
                 "/api/settings/oidc",

@@ -4676,30 +4676,32 @@ export function deployCommit(commit: string, confirm = false): Promise<BranchMut
 
 // -- accounts ---------------------------------------------------------------
 //
-// The roster and what an administrator does to it (`users_api.rs`). Every
+// The roster and what an administrator does to it (`accounts_api.rs`). Every
 // mutation but a rename re-asks for the acting administrator's own password:
 // a session alone is not enough to create an administrator or end somebody's
 // access, which is what stands between a walked-away-from browser and either.
 
-/** An account as the roster shows it. No verifier, and no password state
- * beyond whether one must be changed. */
-export interface UserDto {
+/** An account as the roster shows it. No verifier, no password state beyond
+ * whether one must be changed, and never a key. */
+export interface AccountDto {
   id: string;
   username?: string;
   displayName: string;
   enabled: boolean;
-  administrator: boolean;
-  /** How the account signs in: `local` (a password) or `oidc` (the provider). */
-  authSource: 'local' | 'oidc';
+  /** How the account signs in: `local` (a password), `oidc` (the provider) or `key`. */
+  authSource: 'local' | 'oidc' | 'key';
   /** What the provider last called an OIDC account: its email, else its preferred username. */
   providerLogin?: string;
   createdAt: number;
   updatedAt: number;
-  /** The roles this account holds: its provider groups a role exists for. Empty for a local account. */
+  /** The roles this account holds: those an OIDC account's provider groups give, or the roles a
+   * local or key account was given. */
   roles: string[];
-  /** Every group the provider named at the last sign-in or refresh, exactly as named. Empty for a local account. */
+  /** Every group the provider named at the last sign-in or refresh, exactly as named. Empty for any other account. */
   groups: string[];
   access: AccessDto;
+  /** A key account's keys in force. Absent for any other account. */
+  keys?: KeyDto[];
 }
 
 /** A generated password, shown once and never retrievable. */
@@ -4713,8 +4715,9 @@ export interface TemporaryPasswordDto {
  * that something went wrong. */
 export type AccountRefusal = { status: number; error: string };
 
-export async function listUsers(): Promise<UserDto[]> {
-  return (await readJson<{ users: UserDto[] }>('/api/users')).users;
+/** Every account, however it signs in, oldest first. */
+export async function listAccounts(): Promise<AccountDto[]> {
+  return (await readJson<{ accounts: AccountDto[] }>('/api/accounts')).accounts;
 }
 
 /** `POST`, `PATCH` and the two actions all answer the envelope, whose first error the
@@ -4752,52 +4755,71 @@ async function accountCall<T>(
   return body as T;
 }
 
-export function createUser(
+/** A local account holding the roles given, answered with the temporary password to hand over. */
+export function createLocalAccount(
   username: string,
   displayName: string,
+  roles: string[],
 ): Promise<TemporaryPasswordDto | AccountRefusal> {
-  return accountCall('/api/users', {
+  return accountCall('/api/accounts', {
     method: 'POST',
-    body: JSON.stringify({ username, displayName }),
+    body: JSON.stringify({ authSource: 'local', username, displayName, roles }),
   });
 }
 
-export function renameUser(id: string, displayName: string): Promise<UserDto | AccountRefusal> {
-  return accountCall(`/api/users/${encodeURIComponent(id)}`, {
+/** An enabled key account holding no key yet. */
+export function createKeyAccount(
+  displayName: string,
+  roles: string[],
+): Promise<AccountDto | AccountRefusal> {
+  return accountCall('/api/accounts', {
+    method: 'POST',
+    body: JSON.stringify({ authSource: 'key', displayName, roles }),
+  });
+}
+
+/** One change to an account: the leader takes one field per request, and roles only for a local or
+ * key account. */
+export type AccountChange = { displayName: string } | { enabled: boolean } | { roles: string[] };
+
+export function changeAccount(
+  id: string,
+  change: AccountChange,
+): Promise<AccountDto | AccountRefusal> {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    body: JSON.stringify({ displayName }),
+    body: JSON.stringify(change),
   });
 }
 
-export function setUserEnabled(id: string, enabled: boolean): Promise<UserDto | AccountRefusal> {
-  return accountCall(`/api/users/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ enabled }),
-  });
-}
-
-export function resetUserPassword(id: string): Promise<TemporaryPasswordDto | AccountRefusal> {
-  return accountCall(`/api/users/${encodeURIComponent(id)}/reset-password`, {
+export function resetAccountPassword(id: string): Promise<TemporaryPasswordDto | AccountRefusal> {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}/reset-password`, {
     method: 'POST',
   });
 }
 
 /** `ended` is the wire field: how many sessions this ended. */
-export function revokeUserSessions(id: string): Promise<{ ended: number } | AccountRefusal> {
-  return accountCall(`/api/users/${encodeURIComponent(id)}/revoke-sessions`, {
+export function revokeAccountSessions(id: string): Promise<{ ended: number } | AccountRefusal> {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}/revoke-sessions`, {
     method: 'POST',
   });
 }
 
 // -- roles --------------------------------------------------------------------
 //
-// A role is one provider group, by the name the provider gives it, and what holding it gives
-// (`roles_api.rs`). Administrators only, like the roster.
+// A role is what holding it gives, and the provider groups that give it (`roles_api.rs`).
+// Administrators only, like the roster.
+
+/** The built-in role that holds everything. */
+export const ADMINISTRATOR = 'administrator';
 
 export interface RoleDto {
   name: string;
-  administrator: boolean;
-  /** Empty for an administrator role, which holds every area. */
+  /** The administrator role, which holds everything, gives no level in an area, and is never removed. */
+  builtIn: boolean;
+  /** The provider groups that give it, exactly as the groups claim names them. */
+  groups: string[];
+  /** Empty for the administrator role, which holds every area. */
   areas: Record<string, AccessLevel>;
 }
 
@@ -4806,17 +4828,17 @@ export async function listRoles(): Promise<RoleDto[]> {
   return (await readJson<{ roles: RoleDto[] }>('/api/roles')).roles;
 }
 
-/** Creates the role or replaces what it gives. */
+/** Creates the role or replaces its groups and what it gives. */
 export function putRole(
   name: string,
-  administrator: boolean,
+  groups: string[],
   areas: Record<string, AccessLevel>,
 ): Promise<{ ok: boolean; errors: ApiError[] }> {
   return apiJson(
     `/api/roles/${encodeURIComponent(name)}`,
     {
       method: 'PUT',
-      body: JSON.stringify({ administrator, areas }),
+      body: JSON.stringify({ groups, areas }),
     },
     'quiet',
   );
@@ -4826,15 +4848,61 @@ export function deleteRole(name: string): Promise<{ ok: boolean; errors: ApiErro
   return apiJson(`/api/roles/${encodeURIComponent(name)}`, { method: 'DELETE' }, 'quiet');
 }
 
+// -- keys ---------------------------------------------------------------------
+//
+// A key account is an account a script calls the API as, with one of its keys (`key_accounts_api.rs`).
+// Administrators only, like the roster.
+
+/** A key not revoked, expired or not. Never the key itself, which only `createKey` answers. */
+export interface KeyDto {
+  id: string;
+  label: string;
+  createdAt: number;
+  /** Null for a key that never expires. */
+  expiresAt: number | null;
+  /** To the minute; null for a key never used. */
+  lastUsedAt: number | null;
+}
+
+/** A key just made: the one answer that carries it. */
+export interface CreatedKeyDto {
+  id: string;
+  label: string;
+  createdAt: number;
+  expiresAt: number | null;
+  key: string;
+}
+
+/** `expiresInDays` null makes a key that never expires. */
+export function createKey(
+  id: string,
+  label: string,
+  expiresInDays: number | null,
+): Promise<CreatedKeyDto | AccountRefusal> {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}/keys`, {
+    method: 'POST',
+    body: JSON.stringify({ label, expiresInDays }),
+  });
+}
+
+export function revokeKey(id: string, key: string): Promise<object | AccountRefusal> {
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}/keys/${encodeURIComponent(key)}`, {
+    method: 'DELETE',
+  });
+}
+
 // -- agents -------------------------------------------------------------------
 //
 // The leader's agent, acting for a person within their agent permissions (`agents_api.rs`).
 
-/** What a person lets their own agent use: everything they hold, or up to `default` in each area and the level
- * `areas` names in the ones it names. The agent holds the lower of this and what the person holds. */
-export type AgentPermissionsDto =
-  | { kind: 'everything' }
-  | { kind: 'upto'; default: AccessLevel; areas: Record<string, AccessLevel> };
+/** What a person lets their own agent use: up to `default` in each area and the level `areas` names in the ones it
+ * names, and with `administrator` the administrator role, when the person holds it. The agent holds the lower of
+ * this and what the person holds. */
+export type AgentPermissionsDto = {
+  administrator: boolean;
+  default: AccessLevel;
+  areas: Record<string, AccessLevel>;
+};
 
 export function getAgentPermissions(): Promise<AgentPermissionsDto> {
   return readJson('/api/me/agent-permissions');

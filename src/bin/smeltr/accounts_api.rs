@@ -4,8 +4,9 @@
 //! Behind the gate, so every handler has an [`Actor`] the server built. Who is acting is taken from that and
 //! never from the body: a caller naming themselves in JSON is naming nothing.
 //!
-//! Every account created here is a local one, and so an administrator. An OIDC account holds what its roles give
-//! (`roles_api`), which the roster reports beside it.
+//! An account signs in with a password, through an OpenID provider, or with a key (`key_accounts_api`). A local
+//! account is an administrator. An OIDC account holds what its roles give (`roles_api`), which the roster reports
+//! beside it. A key account holds the roles it is given here, or everything when it is made an administrator.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -14,63 +15,70 @@ use axum::response::{IntoResponse, Response};
 
 use std::time::Duration;
 
-use smeltr::leader::access::{Access, Role};
+use smeltr::leader::access::{Access, Role, given_by};
 use smeltr::leader::envelope::Envelope;
 use smeltr::leader::store::{AccountError, Actor, AuthSource, NewLocalUser, Store, StoreError, UserRecord};
 use smeltr::leader::{accounts, blocking, sessions};
 
 use crate::gate::{AccessDto, Auth, refuse, store_unavailable};
+use crate::key_accounts_api::{self, KeyDto};
 
-/// An account as the roster shows it. No verifier, no password state beyond whether one must be changed.
+/// An account as the roster shows it. No verifier, no password state beyond whether one must be changed, and
+/// never a key or its hash.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UserDto {
+pub struct AccountDto {
     pub id: String,
     pub username: Option<String>,
     pub display_name: String,
     pub enabled: bool,
-    pub administrator: bool,
     pub auth_source: String,
     /// What the provider last called an OIDC account, since its display name may not tell two people apart.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_login: Option<String>,
-    /// The roles this account holds: those of its provider groups, as of its last sign-in, that a role is named
-    /// for. Empty for a local account, which holds everything without one.
+    /// The roles this account holds: an OIDC account's are those its provider groups give, as of its last sign-in;
+    /// a local or key account's are those an administrator gave it.
     pub roles: Vec<String>,
     /// Every group the provider named at this account's last sign-in or refresh, a role's or not, exactly as it
-    /// named them: what a new role must be called to reach this person. Empty for a local account.
+    /// named them: what a role's groups must name to reach this person. Empty for any other account.
     pub groups: Vec<String>,
     pub access: AccessDto,
+    /// A key account's keys in force. Absent for any other account.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keys: Option<Vec<KeyDto>>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-impl UserDto {
+impl AccountDto {
     /// `user` as the roster shows it, given every role there is.
-    fn of(store: &dyn Store, user: UserRecord, roles: &[Role]) -> Result<UserDto, StoreError> {
+    pub fn of(store: &dyn Store, user: UserRecord, roles: &[Role]) -> Result<AccountDto, StoreError> {
         let username = store.username_of(&user.id)?;
         let identity = match user.auth_source {
             AuthSource::Oidc => store.oidc_identity_of(&user.id)?,
-            AuthSource::Local => None,
+            AuthSource::Local | AuthSource::Key => None,
         };
         let groups = identity.as_ref().map(|i| i.groups.clone()).unwrap_or_default();
-        let held = roles
-            .iter()
-            .filter(|role| groups.contains(&role.name))
-            .map(|role| role.name.clone())
-            .collect();
-        let access = Access::of(user.auth_source, &groups, roles);
-        Ok(UserDto {
+        let held = match user.auth_source {
+            AuthSource::Oidc => given_by(roles, &groups),
+            AuthSource::Local | AuthSource::Key => store.given_roles(&user.id)?,
+        };
+        let keys = match user.auth_source {
+            AuthSource::Key => Some(store.api_keys_of(&user.id)?.into_iter().map(KeyDto::from).collect()),
+            AuthSource::Local | AuthSource::Oidc => None,
+        };
+        let access = Access::of(&held, roles);
+        Ok(AccountDto {
             id: user.id,
             username,
             display_name: user.display_name,
             enabled: user.enabled,
-            administrator: access.is_administrator(),
             auth_source: user.auth_source.as_str().to_string(),
             provider_login: identity.and_then(|identity| identity.login),
             roles: held,
             groups,
             access: AccessDto::from(&access),
+            keys,
             created_at: user.created_at,
             updated_at: user.updated_at,
         })
@@ -86,9 +94,12 @@ pub fn provider_login_of(store: &dyn Store, user: &UserRecord) -> Result<Option<
 }
 
 /// Turn a refused account operation into the status that describes it.
-fn account_error(e: AccountError) -> Response {
+pub fn account_error(e: AccountError) -> Response {
     let status = match e {
-        AccountError::UsernameTaken | AccountError::LastAdministrator => StatusCode::CONFLICT,
+        AccountError::UsernameTaken
+        | AccountError::LastAdministrator
+        | AccountError::HeldByProvider
+        | AccountError::Disabled => StatusCode::CONFLICT,
         AccountError::NoSuchUser => StatusCode::NOT_FOUND,
         AccountError::WrongAuthSource | AccountError::Superseded => StatusCode::CONFLICT,
     };
@@ -107,29 +118,60 @@ pub async fn store_call<T: Send + 'static>(
     blocking(f).await.map_err(|e| Box::new(unavailable(e)))
 }
 
-/// `GET /api/users`.
-pub async fn list_users(State(auth): State<Auth>) -> Response {
+/// `GET /api/accounts`: every account, however it signs in, oldest first.
+pub async fn list_accounts(State(auth): State<Auth>) -> Response {
     let store = auth.store.clone();
     let listed = store_call(move || {
         let roles = store.list_roles()?;
         store
             .list_users()?
             .into_iter()
-            .map(|user| UserDto::of(store.as_ref(), user, &roles))
+            .map(|user| AccountDto::of(store.as_ref(), user, &roles))
             .collect::<Result<Vec<_>, _>>()
     })
     .await;
     match listed {
-        Ok(users) => Envelope::ok(serde_json::json!({ "users": users })).into_response(),
+        Ok(accounts) => Envelope::ok(serde_json::json!({ "accounts": accounts })).into_response(),
         Err(response) => *response,
     }
 }
 
+/// A new account, by how it signs in. An OIDC account is made at its first sign-in, never here.
 #[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateRequest {
-    pub username: String,
-    pub display_name: String,
+#[serde(tag = "authSource", rename_all = "lowercase")]
+pub enum CreateRequest {
+    #[serde(rename_all = "camelCase")]
+    Local {
+        username: String,
+        display_name: String,
+        #[serde(default)]
+        roles: Vec<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Key {
+        display_name: String,
+        #[serde(default)]
+        roles: Vec<String>,
+    },
+}
+
+/// `POST /api/accounts`: a local account, answered with its temporary password, or an enabled key account holding
+/// no key yet, answered as the roster shows it. Each holds the roles it is given.
+pub async fn create_account(
+    State(auth): State<Auth>,
+    actor: axum::Extension<Actor>,
+    Json(request): Json<CreateRequest>,
+) -> Response {
+    match request {
+        CreateRequest::Local {
+            username,
+            display_name,
+            roles,
+        } => create_user(&auth, &actor, &username, &display_name, roles).await,
+        CreateRequest::Key { display_name, roles } => {
+            key_accounts_api::create_key_account(&auth, &actor, &display_name, roles).await
+        }
+    }
 }
 
 /// What a created or reset account is handed over as: a password to pass on once, and never again.
@@ -141,21 +183,21 @@ pub struct TemporaryPasswordDto {
     pub temporary_password: String,
 }
 
-/// `POST /api/users`: create a local administrator with a temporary password.
-pub async fn create_user(
-    State(auth): State<Auth>,
-    actor: axum::Extension<Actor>,
-    Json(request): Json<CreateRequest>,
-) -> Response {
-    let Some(username) = accounts::canonical_username(&request.username) else {
+/// A local account with a temporary password.
+async fn create_user(auth: &Auth, actor: &Actor, username: &str, display_name: &str, roles: Vec<String>) -> Response {
+    let Some(username) = accounts::canonical_username(username) else {
         return refuse(
             StatusCode::UNPROCESSABLE_ENTITY,
             "a username starts with a letter and holds letters, digits, dots, dashes and underscores",
         );
     };
-    let display_name = match display_name(&request.display_name) {
+    let display_name = match self::display_name(display_name) {
         Ok(name) => name,
         Err(why) => return refuse(StatusCode::UNPROCESSABLE_ENTITY, why),
+    };
+    let roles = match known_roles(auth, roles).await {
+        Ok(roles) => roles,
+        Err(response) => return *response,
     };
 
     let password = accounts::generate_password();
@@ -163,7 +205,7 @@ pub async fn create_user(
     let id = accounts::generate_user_id();
     // Written with the account, in one transaction: an administrator who exists with no record of who created
     // them is the one case an audit is for.
-    let event = accounts::event_for(&actor, "account-create", &id, "ok");
+    let event = accounts::event_for(actor, "account-create", &id, "ok");
     // The permit bounds how many hashes run at once, here as on every sign-in: a script creating many accounts
     // would otherwise fill the blocking pool with jobs each holding Argon2's memory.
     let Ok(_permit) = auth.hashes.acquire().await else {
@@ -181,6 +223,7 @@ pub async fn create_user(
                     password_hash: &hash,
                     must_change: true,
                 },
+                &roles,
                 &event,
             )
         })
@@ -193,7 +236,7 @@ pub async fn create_user(
     if let Err(e) = outcome {
         accounts::record(
             auth.store.as_ref(),
-            &actor,
+            actor,
             "account-create",
             &created_username,
             "refused",
@@ -212,38 +255,73 @@ pub async fn create_user(
         .into_response()
 }
 
+/// `roles`, each named once, if every one is a role that exists.
+pub async fn known_roles(auth: &Auth, mut roles: Vec<String>) -> Result<Vec<String>, Box<Response>> {
+    roles.sort();
+    roles.dedup();
+    let store = auth.store.clone();
+    let existing = store_call(move || store.list_roles()).await?;
+    match roles
+        .iter()
+        .find(|name| !existing.iter().any(|role| &role.name == *name))
+    {
+        Some(unknown) => Err(Box::new(refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &format!("there is no role named {unknown:?}"),
+        ))),
+        None => Ok(roles),
+    }
+}
+
 #[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PatchRequest {
     pub display_name: Option<String>,
     pub enabled: Option<bool>,
+    pub roles: Option<Vec<String>>,
 }
 
-/// `PATCH /api/users/:id`.
+/// `PATCH /api/accounts/:id`.
 ///
-/// One field at a time. A rename and an enable are separate store writes, so a request carrying both could land
-/// the first and be refused on the second -- a caller told `409` while the display name had already changed. A
-/// refusal before anything is written is the honest answer, and no screen asks for both at once.
-pub async fn patch_user(
+/// One field at a time. Each is its own store write, so a request carrying two could land the first and be
+/// refused on the second -- a caller told `409` while the display name had already changed. A refusal before
+/// anything is written is the honest answer, and no screen asks for two at once.
+///
+/// Roles are given to a local or key account. An OIDC account's roles are its provider's groups'.
+pub async fn patch_account(
     State(auth): State<Auth>,
     actor: axum::Extension<Actor>,
     Path(id): Path<String>,
     Json(request): Json<PatchRequest>,
 ) -> Response {
-    match (&request.display_name, request.enabled) {
-        (None, None) => {
-            return refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "name a display name or an enabled state",
-            );
+    let named = [
+        request.display_name.is_some(),
+        request.enabled.is_some(),
+        request.roles.is_some(),
+    ];
+    if named.iter().filter(|&&n| n).count() != 1 {
+        return refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "change one of display name, enabled or roles in each request",
+        );
+    }
+
+    if let Some(roles) = request.roles {
+        let roles = match known_roles(&auth, roles).await {
+            Ok(roles) => roles,
+            Err(response) => return *response,
+        };
+        let event = accounts::event_for(&actor, "account-access", &id, "ok");
+        let store = auth.store.clone();
+        let target = id.clone();
+        match store_call(move || store.change_access(&target, &roles, &event)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                accounts::record(auth.store.as_ref(), &actor, "account-access", &id, "refused");
+                return account_error(e);
+            }
+            Err(response) => return *response,
         }
-        (Some(_), Some(_)) => {
-            return refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "change a display name or an enabled state, not both in one request",
-            );
-        }
-        _ => {}
     }
 
     if let Some(name) = &request.display_name {
@@ -281,27 +359,30 @@ pub async fn patch_user(
         }
     }
 
-    current_user(&auth, &id).await
+    current_account(&auth, &id).await
 }
 
 /// The account as it stands, for a caller that just changed it. With its username, since a client replacing its
 /// roster entry with this would otherwise lose the login name.
-async fn current_user(auth: &Auth, id: &str) -> Response {
+pub async fn current_account(auth: &Auth, id: &str) -> Response {
     let store = auth.store.clone();
     let target = id.to_string();
-    let looked_up = store_call(move || match store.get_user(&target)? {
-        Some(user) => UserDto::of(store.as_ref(), user, &store.list_roles()?).map(Some),
-        None => Ok(None),
+    let looked_up = store_call(move || {
+        let roles = store.list_roles()?;
+        match store.get_user(&target)? {
+            Some(user) => AccountDto::of(store.as_ref(), user, &roles).map(Some),
+            None => Ok(None),
+        }
     })
     .await;
     match looked_up {
-        Ok(Some(user)) => Envelope::ok(user).into_response(),
+        Ok(Some(account)) => Envelope::ok(account).into_response(),
         Ok(None) => account_error(AccountError::NoSuchUser),
         Err(response) => *response,
     }
 }
 
-/// `POST /api/users/:id/reset-password`: give an account a temporary password and end every session it holds.
+/// `POST /api/accounts/:id/reset-password`: give an account a temporary password and end every session it holds.
 pub async fn reset_password(
     State(auth): State<Auth>,
     actor: axum::Extension<Actor>,
@@ -343,7 +424,7 @@ pub async fn reset_password(
     .into_response()
 }
 
-/// `POST /api/users/:id/revoke-sessions`: end every session an account holds, without touching its password.
+/// `POST /api/accounts/:id/revoke-sessions`: end every session an account holds, without touching its password.
 pub async fn revoke_sessions(
     State(auth): State<Auth>,
     actor: axum::Extension<Actor>,
@@ -431,8 +512,8 @@ mod tests {
         assert!(display_name(&"a".repeat(129)).is_err());
     }
 
-    /// The roster names the roles an OIDC account holds -- the provider groups a role exists for -- and what
-    /// they give it.
+    /// The roster names the roles an OIDC account holds -- the ones its provider groups give -- and what they give
+    /// it.
     #[test]
     fn an_oidc_account_is_listed_with_its_roles_and_access() {
         use smeltr::leader::access::Level;
@@ -457,22 +538,38 @@ mod tests {
             .unwrap();
         let roles = [
             Role {
-                name: "smeltr-payments".into(),
-                administrator: false,
+                name: "payments".into(),
+                groups: vec!["smeltr-payments".into()],
                 areas: [("payments".to_string(), Level::Editor)].into(),
             },
             Role {
-                name: "smeltr-admins".into(),
-                administrator: true,
+                name: "administrator".into(),
+                groups: vec!["smeltr-admins".into()],
                 areas: Default::default(),
             },
         ];
-        let dto = UserDto::of(&store, user, &roles).unwrap();
-        assert_eq!(dto.roles, vec!["smeltr-payments".to_string()]);
-        assert!(!dto.administrator);
+        let dto = AccountDto::of(&store, user, &roles).unwrap();
+        assert_eq!(dto.roles, vec!["payments".to_string()]);
         assert!(!dto.access.administrator);
         assert_eq!(dto.access.areas.get("payments"), Some(&Level::Editor));
         assert_eq!(dto.provider_login.as_deref(), Some("vera@example.com"));
+    }
+
+    #[test]
+    fn a_new_account_names_how_it_signs_in() {
+        let local: CreateRequest =
+            serde_json::from_str(r#"{"authSource":"local","username":"ada","displayName":"Ada"}"#).unwrap();
+        assert!(matches!(local, CreateRequest::Local { .. }));
+        let key: CreateRequest = serde_json::from_str(r#"{"authSource":"key","displayName":"exporter"}"#).unwrap();
+        assert!(matches!(key, CreateRequest::Key { .. }));
+        assert!(serde_json::from_str::<CreateRequest>(r#"{"authSource":"oidc","displayName":"Vera"}"#).is_err());
+        assert!(serde_json::from_str::<CreateRequest>(r#"{"username":"ada","displayName":"Ada"}"#).is_err());
+    }
+
+    #[test]
+    fn a_change_names_what_it_changes() {
+        assert!(serde_json::from_str::<PatchRequest>(r#"{"enabled":false}"#).is_ok());
+        assert!(serde_json::from_str::<PatchRequest>(r#"{"administrator":true}"#).is_err());
     }
 
     /// A duplicate username and a last-administrator refusal are both conflicts; a missing account is not.
