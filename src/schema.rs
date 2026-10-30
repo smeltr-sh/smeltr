@@ -460,6 +460,33 @@ fn same_kind(a: &Misfit, b: &Misfit) -> bool {
 mod tests {
     use super::*;
 
+    /// An Elasticsearch type `named` reads is one the type it reads as may be indexed as, so the two lists cannot
+    /// drift apart.
+    #[test]
+    fn an_elasticsearch_name_reads_as_a_type_it_can_index() {
+        use crate::io::elastic_mapping::types_for;
+        let every = [
+            DataType::Str,
+            DataType::I64,
+            DataType::F64,
+            DataType::Bool,
+            DataType::DateTime,
+            DataType::Duration,
+            DataType::Bytes,
+            DataType::Variant,
+            DataType::Struct(Default::default(), true),
+        ];
+        for name in every.iter().flat_map(types_for) {
+            if let Some(ty) = named(name) {
+                let parsed = crate::expr::parse::parse_type(ty).unwrap();
+                assert!(
+                    types_for(&parsed).contains(name),
+                    "`{name}` reads as {ty}, which it cannot index"
+                );
+            }
+        }
+    }
+
     fn st(fields: &[(&str, DataType)]) -> DataType {
         DataType::Struct(fields.iter().map(|(k, t)| (k.to_string(), t.clone())).collect(), false)
     }
