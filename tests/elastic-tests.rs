@@ -753,19 +753,19 @@ fn a_pipeline_maps_as_it_compiled_and_as_its_sample_shows() {
     let plan = smeltr::plan::compile::compile(&p, &smeltr::plan::topology::SourceMeta::NONE).unwrap();
     let record = record_type(&plan, "smeltr.exception");
     let compiled = json!({
-        "_raw": { "type": "keyword", "ignore_above": 8191 },
+        "_raw": { "type": "keyword", "ignore_above": 1024 },
         "smeltr": { "properties": { "exception": { "properties": {
-            "route": { "type": "keyword", "ignore_above": 8191 },
-            "pipeline": { "type": "keyword", "ignore_above": 8191 },
+            "route": { "type": "keyword", "ignore_above": 1024 },
+            "pipeline": { "type": "keyword", "ignore_above": 1024 },
             "exceptions": { "properties": {
-                "step": { "type": "keyword", "ignore_above": 8191 },
-                "kind": { "type": "keyword", "ignore_above": 8191 },
-                "message": { "type": "keyword", "ignore_above": 8191 },
+                "step": { "type": "keyword", "ignore_above": 1024 },
+                "kind": { "type": "keyword", "ignore_above": 1024 },
+                "message": { "type": "keyword", "ignore_above": 1024 },
             } },
         } } } },
         "status": { "type": "long" },
         "took": { "type": "double" },
-        "req": { "properties": { "path": { "type": "keyword", "ignore_above": 8191 } } },
+        "req": { "properties": { "path": { "type": "keyword", "ignore_above": 1024 } } },
     });
     assert_eq!(
         mapping(&record, &Default::default()),
@@ -777,7 +777,7 @@ fn a_pipeline_maps_as_it_compiled_and_as_its_sample_shows() {
         json!({ "n": "x" }),
     ];
     let mut sampled = compiled;
-    sampled["user"] = json!({ "type": "keyword", "ignore_above": 8191 });
+    sampled["user"] = json!({ "type": "keyword", "ignore_above": 1024 });
     assert_eq!(
         mapping(&with_sample(&record, &rows), &Default::default()),
         json!({ "mappings": { "properties": sampled } })

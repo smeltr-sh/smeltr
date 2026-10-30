@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 
 use super::csv;
 use crate::config_file::SchemaFieldDto;
-use crate::io::elastic_mapping::types_for;
+use crate::io::elastic_mapping::{IGNORE_ABOVE, types_for};
 
 /// The fields ECS requires. Its YAML says so of each; its CSV has no column for it.
 const REQUIRED: [&str; 2] = ["@timestamp", "ecs.version"];
@@ -84,6 +84,10 @@ fn from_yaml(text: &str) -> Result<Vec<Ecs>, String> {
                 .into_iter()
                 .filter_map(|k| Some((k.to_string(), f.get(k)?.clone())))
                 .collect();
+            // A keyword's own mapping indexes as far as ECS does; only another length says something.
+            if ty == "keyword" && settings.get("ignore_above") == Some(&json!(IGNORE_ABOVE)) {
+                settings.remove("ignore_above");
+            }
             // The YAML names a field's multi-fields under it; the CSV gives each a row, folded in later.
             let multi = f.get("multi_fields").and_then(Value::as_array).into_iter().flatten();
             let multi: Map<String, Value> = multi
@@ -240,15 +244,11 @@ mod tests {
         let id = get(&fields, "agent.id");
         assert_eq!(id.ty, "str");
         assert_eq!(id.example, "8a4f500d");
-        assert_eq!(
-            id.elasticsearch,
-            mapped(json!({ "type": "keyword", "ignore_above": 1024 }))
-        );
+        // ECS's `ignore_above: 1024` is a keyword's own, so it says nothing.
+        assert_eq!(id.elasticsearch, None);
         assert_eq!(
             get(&fields, "user.full_name").elasticsearch,
-            mapped(
-                json!({ "type": "keyword", "ignore_above": 1024, "fields": { "text": { "type": "match_only_text" } } })
-            )
+            mapped(json!({ "type": "keyword", "fields": { "text": { "type": "match_only_text" } } }))
         );
         assert!(!fields.iter().any(|f| f.field == "user.full_name.text"));
         assert_eq!(get(&fields, "tags").ty, "array<str>");

@@ -80,7 +80,7 @@ test('a schema exports as JSON Schema and as an Elasticsearch mapping', async ({
   expect(mapping.name).toBe('login.mapping.json');
   expect(mapping.body.mappings.properties.src_endpoint).toEqual({
     properties: {
-      ip: { type: 'keyword', ignore_above: 8191 },
+      ip: { type: 'keyword', ignore_above: 1024 },
       port: { type: 'long' },
     },
   });
@@ -444,9 +444,9 @@ test('ECS comes in from ecs_flat.yml with its types, settings and examples', asy
   const field = await saved(admin, api, 'ecs');
   expect(field('ecs.version')?.required).toBe(true);
   expect(field('agent.id')).toMatchObject({ type: 'str', example: '8a4f500d' });
+  expect(field('agent.id')?.elasticsearch).toBeUndefined();
   expect(field('user.full_name')?.elasticsearch).toEqual({
     type: 'keyword',
-    ignore_above: 1024,
     fields: { text: { type: 'match_only_text' } },
   });
   expect(field('tags')?.type).toBe('array<str>');
