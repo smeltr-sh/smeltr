@@ -1048,7 +1048,7 @@
       },
       {
         "width": 360,
-        "height": 620,
+        "height": 650,
         "nodes": [
           {
             "x": 60,
@@ -1074,17 +1074,18 @@
           { "x": 60, "y": 410, "w": 240, "title": "Review", "detail": ["Lists findings"] },
           {
             "x": 60,
-            "y": 530,
+            "y": 560,
             "w": 240,
             "title": "Elasticsearch",
             "detail": ["Mapping for the index"]
           }
         ],
-        "paths": ["M180 90V140", "M60 190H25V570H50"],
+        "paths": ["M180 90V140", "M60 190H25V520H120V550"],
         "controlPaths": ["M180 230V280", "M300 190H335V450H310"],
         "labels": [
           { "x": 220, "y": 118, "text": "Read" },
-          { "x": 222, "y": 258, "text": "Checks" }
+          { "x": 222, "y": 258, "text": "Checks" },
+          { "x": 160, "y": 540, "text": "Export" }
         ]
       }
     ]
