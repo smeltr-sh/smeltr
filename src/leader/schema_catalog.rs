@@ -254,7 +254,7 @@ mod tests {
         assert_eq!(refused(&[]), "the importer wrote no rows");
     }
 
-    /// The OCSF importer of `docs/examples.md` 10 over a compiled schema's authentication class (OCSF, Apache 2.0): a row for each
+    /// The OCSF importer of `docs/examples.md` 10 over a compiled schema's authentication class: a row for each
     /// attribute OCSF requires or recommends, and for each such attribute of the objects those hold, and no deeper.
     #[test]
     fn the_ocsf_importer_writes_what_a_class_requires_and_recommends() {
