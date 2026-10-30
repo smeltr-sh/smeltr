@@ -566,6 +566,9 @@ test("a CSV's columns and types are picked from its rows when its header names n
   const widget = type('Type of widget');
   await expect(widget).toHaveValue('str');
   await expect(dialog.getByText('unknown', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Rows with the same type value share one choice.')).toContainText(
+    'one choice. A value tagged unknown is not a type smeltr knows',
+  );
   // Past the first five rows, `widget` shows in a row of its own; each value says how many rows hold it.
   await expect(dialog.getByText('… and a row for each other type value')).toBeVisible();
   await expect(dialog.getByText('4 fields')).toBeVisible();
@@ -582,6 +585,22 @@ test("a CSV's columns and types are picked from its rows when its header names n
   expect(field('host')).toMatchObject({ type: 'str', description: 'The machine it ran on.' });
   expect(field('port')?.type).toBe('i64');
   expect(field('tags')?.type).toBe('{...}');
+});
+
+test('a CSV with many type values scrolls its rows under the choice of each column', async ({
+  admin,
+  leader,
+}) => {
+  const csv = path.join(test.info().outputDir, 'many.csv');
+  await mkdir(test.info().outputDir, { recursive: true });
+  const rows = Array.from({ length: 40 }, (_, i) => `f${i},kind${i}`);
+  await writeFile(csv, ['field,type', ...rows].join('\n') + '\n');
+  const dialog = await addFrom(admin, leader, 'CSV of fields', 'many', csv);
+  const last = dialog.getByRole('combobox', { name: 'Type of kind39', exact: true });
+  await last.scrollIntoViewIfNeeded();
+  await expect(last).toBeInViewport();
+  await expect(dialog.getByRole('combobox', { name: 'Column type holds' })).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: 'Add', exact: true })).toBeInViewport();
 });
 
 test('review lists where the rows do not fit a schema, and the dock counts them without blocking', async ({

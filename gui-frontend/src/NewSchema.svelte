@@ -366,10 +366,7 @@
                                 <option value={t}>{t}</option>
                               {/each}
                             </select>
-                            {#if said.readsAs === null}<span
-                                class="unknown"
-                                title="Not a type smeltr knows: choose how to read it">unknown</span
-                              >{/if}
+                            {#if said.readsAs === null}<span class="unknown">unknown</span>{/if}
                             {#if first}<span class="dim">{count(said.fields, 'field')}</span>{/if}
                           {/if}
                         </td>
@@ -380,6 +377,12 @@
               </tbody>
             </table>
           </div>
+          {#if typed}
+            <p class="note dim">
+              Rows with the same type value share one choice.{#if preview.types.some((t) => t.readsAs === null)}
+                {' '}A value tagged unknown is not a type smeltr knows: choose how to read it.{/if}
+            </p>
+          {/if}
         </fieldset>
       {/if}
     {:else if draft.type === 'ocsf'}
@@ -468,9 +471,18 @@
     margin-bottom: 0.3rem;
   }
 
+  /* A file with many type values has a row for each; the table scrolls under its choices of column. */
   .scroll {
-    overflow-x: auto;
+    overflow: auto;
     max-width: 100%;
+    max-height: 24rem;
+  }
+
+  .preview thead {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--panel);
   }
 
   .preview {
