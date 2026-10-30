@@ -3665,10 +3665,17 @@ pub fn compose(state: AppState, admin: Router<AppState>) -> Router {
 /// [`compose`] with no operator gate, for the integration tests. Every request is an administrator's, since the
 /// handlers that answer per area read the caller's access the gate would otherwise have set.
 pub fn router(state: AppState) -> Router {
-    compose(
+    gzipped(compose(
         state.clone(),
         admin_router().layer(axum::Extension(access::Access::Administrator)),
-    )
+    ))
+}
+
+/// `app` answering gzipped to a client that takes it, by tower-http's defaults, and taking a gzipped request on every
+/// route. A route's body limit holds the body as inflated, so a small gzipped body cannot become a large one.
+pub fn gzipped(app: Router) -> Router {
+    app.layer(tower_http::compression::CompressionLayer::new())
+        .layer(tower_http::decompression::RequestDecompressionLayer::new())
 }
 
 /// Where a store would write its secrets encryption key. No fixture below stores a secret, so nothing is written --

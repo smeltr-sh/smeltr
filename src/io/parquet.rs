@@ -16,13 +16,20 @@
 //! Where the record types a place wider than the column holding it (the tag field, met with what the pipeline writes
 //! there), each row is read into the record's type by the declared-type table (`tag::decode_column`). A row that does
 //! not fit is marked in the chunk, and refused alone where it is delivered.
+//!
+//! A table may hold a leaf narrower than the record types it (`narrows`): an `i64` in an 8, 16 or 32-bit integer, an
+//! `f64` in a 32-bit float, a `datetime` in a date (its UTC day) or a timestamp without a zone. A route's rows are cut
+//! once, to the record's own types, for every destination on it; a table's file converts each value as it writes it,
+//! a float rounded, and a row whose value the column cannot hold is refused alone where it is delivered
+//! (`Schema::unfit`).
 
 use std::sync::{Arc, Mutex};
 
 use arrow_array::builder::StringBuilder;
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, ListArray, NullArray, RecordBatch,
-    StringArray, StructArray, TimestampMicrosecondArray, new_null_array,
+    Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Float32Array, Float64Array, Int8Array, Int16Array,
+    Int32Array, Int64Array, ListArray, NullArray, RecordBatch, StringArray, StructArray, TimestampMicrosecondArray,
+    new_null_array,
 };
 use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema, TimeUnit};
@@ -47,9 +54,11 @@ pub(crate) const REST: &str = "rest";
 pub struct Schema {
     root: Arc<Node>,
     arrow: Arc<ArrowSchema>,
-    /// The schema a file is written with, when it differs from `arrow` in names and metadata alone: a table format's
-    /// field ids or physical column names. Rows are cut to and matched against `arrow`.
+    /// The schema a file is written with, when it differs from `arrow` in names and metadata, a table format's field
+    /// ids or physical column names, or in a leaf a table holds narrower. Rows are cut to and matched against `arrow`.
     written: Option<Arc<ArrowSchema>>,
+    /// Whether `written` holds a leaf narrower than `arrow`, so a row's values are checked against it.
+    narrowed: bool,
 }
 
 #[derive(Debug)]
@@ -129,21 +138,34 @@ impl Schema {
             root: Arc::new(root),
             arrow,
             written: None,
+            narrowed: false,
         })
     }
 
     /// This schema, its files written with `written`: the same fields, at any depth, renamed or with metadata of their
-    /// own, such as Iceberg's field ids or Delta's physical names.
+    /// own, such as Iceberg's field ids or Delta's physical names, and a leaf a table holds narrower of that type
+    /// (`narrows`).
     pub fn with_written(self, written: Arc<ArrowSchema>) -> Schema {
-        assert!(
-            written.fields().len() == self.arrow.fields().len()
-                && (written.fields().iter().zip(self.arrow.fields())).all(|(w, a)| alike(w.data_type(), a.data_type())),
-            "a written schema is the record's own, renamed or with metadata added"
-        );
+        let Some(Arrow::Struct(fields)) = narrowed(&self.root, &Arrow::Struct(written.fields().clone())) else {
+            panic!("a written schema is the record's own, renamed, with metadata added or a leaf narrowed");
+        };
         Schema {
+            narrowed: fields != *self.arrow.fields(),
             written: Some(written),
             ..self
         }
+    }
+
+    /// Why `columns`' row cannot be written, when a value of it is one a column its table holds narrower cannot hold.
+    pub fn unfit(&self, columns: &Columns) -> Option<String> {
+        let written = self.written.as_ref().filter(|_| self.narrowed)?;
+        let batch = &columns.chunk.batch;
+        (batch
+            .columns()
+            .iter()
+            .zip(batch.schema().fields())
+            .zip(written.fields()))
+        .find_map(|((column, own), to)| unfit_at(column, to.data_type(), columns.row as usize, &|| own.name().into()))
     }
 
     /// Whether `columns` were cut to this schema, so they can be written by a writer opened on it.
@@ -263,14 +285,44 @@ impl Columns {
     }
 }
 
-/// Whether `a` and `b` are one type but for the names and metadata of the fields within.
-fn alike(a: &Arrow, b: &Arrow) -> bool {
-    match (a, b) {
-        (Arrow::Struct(a), Arrow::Struct(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| alike(a.data_type(), b.data_type()))
+/// Whether a table may hold a leaf the record types `record` as `to`, each value converted as its file is written.
+pub fn narrows(record: &DataType, to: &Arrow) -> bool {
+    matches!(
+        (record, to),
+        (DataType::I64, Arrow::Int8 | Arrow::Int16 | Arrow::Int32)
+            | (DataType::F64, Arrow::Float32)
+            | (
+                DataType::DateTime,
+                Arrow::Date32 | Arrow::Timestamp(TimeUnit::Microsecond, None)
+            )
+    )
+}
+
+/// `node`'s type with each leaf `written` holds narrower (`narrows`) of that type. `None` when `written` is not the
+/// node's type, renamed, with metadata added or a leaf narrowed.
+fn narrowed(node: &Node, written: &Arrow) -> Option<Arrow> {
+    match (&node.kind, written) {
+        (Kind::Struct(s), Arrow::Struct(w)) if w.len() == s.arrow.len() => {
+            let fields = (s.arrow.iter().zip(w).enumerate())
+                .map(|(i, (ours, w))| {
+                    let t = match s.fields.get(i) {
+                        Some((_, child)) => narrowed(child, w.data_type())?,
+                        // `rest`
+                        None => (w.data_type() == ours.data_type()).then(|| ours.data_type().clone())?,
+                    };
+                    Some(ours.as_ref().clone().with_data_type(t))
+                })
+                .collect::<Option<Fields>>()?;
+            Some(Arrow::Struct(fields))
         }
-        (Arrow::List(a), Arrow::List(b)) => alike(a.data_type(), b.data_type()),
-        (a, b) => a == b,
+        (Kind::List(element, field), Arrow::List(w)) => {
+            let t = narrowed(element, w.data_type())?;
+            Some(Arrow::List(Arc::new(field.as_ref().clone().with_data_type(t))))
+        }
+        (Kind::Struct(_) | Kind::List(..), _) => None,
+        (_, w) if *w == node.arrow => Some(node.arrow.clone()),
+        (_, w) if narrows(&node.ty, w) => Some(w.clone()),
+        _ => None,
     }
 }
 
@@ -280,7 +332,8 @@ fn relabel(batch: &RecordBatch, schema: &Arc<ArrowSchema>) -> RecordBatch {
         .zip(schema.fields())
         .map(|(column, field)| relabelled(column, field.data_type()))
         .collect();
-    RecordBatch::try_new(schema.clone(), columns).expect("a written schema alike the rows' own")
+    RecordBatch::try_new(schema.clone(), columns)
+        .expect("a written schema the rows' own but for names, metadata and narrowed leaves")
 }
 
 fn relabelled(array: &ArrayRef, to: &Arrow) -> ArrayRef {
@@ -290,7 +343,9 @@ fn relabelled(array: &ArrayRef, to: &Arrow) -> ArrayRef {
     }
     match to {
         Arrow::Struct(fields) => {
-            let parent = array.as_struct_opt().expect("a written schema alike the rows' own");
+            let parent = array
+                .as_struct_opt()
+                .expect("a written schema the rows' own but for names, metadata and narrowed leaves");
             let children = (parent.columns().iter())
                 .zip(fields)
                 .map(|(child, field)| relabelled(child, field.data_type()))
@@ -300,7 +355,7 @@ fn relabelled(array: &ArrayRef, to: &Arrow) -> ArrayRef {
         Arrow::List(field) => {
             let list = array
                 .as_list_opt::<i32>()
-                .expect("a written schema alike the rows' own");
+                .expect("a written schema the rows' own but for names, metadata and narrowed leaves");
             let values = relabelled(list.values(), field.data_type());
             Arc::new(ListArray::new(
                 field.clone(),
@@ -309,7 +364,93 @@ fn relabelled(array: &ArrayRef, to: &Arrow) -> ArrayRef {
                 list.nulls().cloned(),
             ))
         }
-        _ => unreachable!("`alike` holds other types equal"),
+        // `Schema::unfit` refused every row whose value this column cannot hold.
+        to => narrow_leaf(array, to),
+    }
+}
+
+/// Why value `i` of `array` cannot be written as `to`, `written`'s type for it, naming it by `path`, made only then.
+fn unfit_at(array: &ArrayRef, to: &Arrow, i: usize, path: &dyn Fn() -> String) -> Option<String> {
+    use arrow_array::cast::AsArray;
+    if array.is_null(i) {
+        return None;
+    }
+    match (array.data_type(), to) {
+        (Arrow::Struct(own), Arrow::Struct(fields)) => (array.as_struct().columns().iter().zip(own).zip(fields))
+            .find_map(|((child, own), to)| unfit_at(child, to.data_type(), i, &|| at(&path(), own.name()))),
+        (Arrow::List(_), Arrow::List(to)) => {
+            let list = array.as_list::<i32>();
+            let (items, offsets) = (list.values(), list.value_offsets());
+            let path = || format!("{}[]", path());
+            (offsets[i] as usize..offsets[i + 1] as usize).find_map(|e| unfit_at(items, to.data_type(), e, &path))
+        }
+        (own, to) if own == to => None,
+        _ => misfit(array, i, to).map(|why| format!("{} {why}", path())),
+    }
+}
+
+/// Why value `i` of `array`, a leaf of the record's, cannot be held by a column a table holds as `to` (`narrows`):
+/// `is 300, which an 8-bit integer column cannot hold`. None when it can, and for a time, which every one can.
+pub fn misfit(array: &ArrayRef, i: usize, to: &Arrow) -> Option<String> {
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::{Float64Type, Int64Type};
+    let int = |fits: bool, width: &str| {
+        let v = array.as_primitive::<Int64Type>().value(i);
+        (!fits).then(|| format!("is {v}, which {width} integer column cannot hold"))
+    };
+    match to {
+        Arrow::Int8 => int(
+            i8::try_from(array.as_primitive::<Int64Type>().value(i)).is_ok(),
+            "an 8-bit",
+        ),
+        Arrow::Int16 => int(
+            i16::try_from(array.as_primitive::<Int64Type>().value(i)).is_ok(),
+            "a 16-bit",
+        ),
+        Arrow::Int32 => int(
+            i32::try_from(array.as_primitive::<Int64Type>().value(i)).is_ok(),
+            "a 32-bit",
+        ),
+        Arrow::Float32 => {
+            let v = array.as_primitive::<Float64Type>().value(i);
+            (v.is_finite() && !(v as f32).is_finite())
+                .then(|| format!("is {v:?}, beyond a 32-bit float column's range"))
+        }
+        _ => None,
+    }
+}
+
+/// `array`'s values as `to`, a type a table holds narrower (`narrows`), a float rounded; a value the column cannot
+/// hold (`misfit`) is null.
+fn narrow_leaf(array: &ArrayRef, to: &Arrow) -> ArrayRef {
+    use crate::ops::civil::MICROS_PER_DAY;
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::{Float64Type, Int64Type, TimestampMicrosecondType};
+    let held = |i: usize| !array.is_null(i) && misfit(array, i, to).is_none();
+    let ints = || (0..array.len()).map(|i| held(i).then(|| array.as_primitive::<Int64Type>().value(i)));
+    match to {
+        Arrow::Int8 => Arc::new(ints().map(|v| v.map(|v| v as i8)).collect::<Int8Array>()),
+        Arrow::Int16 => Arc::new(ints().map(|v| v.map(|v| v as i16)).collect::<Int16Array>()),
+        Arrow::Int32 => Arc::new(ints().map(|v| v.map(|v| v as i32)).collect::<Int32Array>()),
+        // Rounded: what a float column is.
+        Arrow::Float32 => Arc::new(
+            (0..array.len())
+                .map(|i| held(i).then(|| array.as_primitive::<Float64Type>().value(i) as f32))
+                .collect::<Float32Array>(),
+        ),
+        // Every day an i64 of microseconds reaches is an i32.
+        Arrow::Date32 => Arc::new(
+            (array.as_primitive::<TimestampMicrosecondType>().iter())
+                .map(|v| v.map(|v| v.div_euclid(MICROS_PER_DAY) as i32))
+                .collect::<Date32Array>(),
+        ),
+        Arrow::Timestamp(TimeUnit::Microsecond, None) => Arc::new(
+            array
+                .as_primitive::<TimestampMicrosecondType>()
+                .clone()
+                .with_timezone_opt(None::<String>),
+        ),
+        to => unreachable!("`with_written` narrows a leaf to no {to}"),
     }
 }
 
@@ -1014,6 +1155,138 @@ mod tests {
             (1, ["z", "x", "y"].map(String::from).to_vec())
         );
         assert!(write(std::iter::empty(), Compression::None).is_empty());
+    }
+
+    /// A column a table holds narrower takes each value converted as the file is written, at any depth, and a row
+    /// whose value it cannot hold is unfit.
+    #[test]
+    fn a_column_a_table_holds_narrower_is_written_as_its_type() {
+        use crate::core::column::Column;
+        use arrow_array::cast::AsArray;
+        use arrow_array::types::{Date32Type, Float32Type, Int8Type, Int16Type};
+        let mut pool = BufferPool::new();
+        let mut n = Column::alloc(&mut pool, &DataType::I64, 3);
+        n.i64_mut().unwrap().values.copy_from_slice(&[1, 40_000, 0]);
+        n.i64_mut().unwrap().validity.set_valid(2, false);
+        let mut f = Column::alloc(&mut pool, &DataType::F64, 3);
+        f.f64_mut().unwrap().values.copy_from_slice(&[1.1, 2.0, 1e300]);
+        let mut t = Column::alloc(&mut pool, &DataType::DateTime, 3);
+        t.datetime_mut()
+            .unwrap()
+            .values
+            .copy_from_slice(&[86_400_000_000 + 1, -1, 0]);
+        let mut m = Column::alloc(&mut pool, &DataType::I64, 3);
+        m.i64_mut().unwrap().values.copy_from_slice(&[-128, 127, 5]);
+        let record = st(
+            &[
+                ("n", DataType::I64),
+                ("f", DataType::F64),
+                ("t", DataType::DateTime),
+                ("ctx", st(&[("m", DataType::I64)], false)),
+            ],
+            false,
+        );
+        let schema = Schema::new(&record).unwrap();
+        let ctx = Fields::from(vec![Field::new("m", Arrow::Int8, true)]);
+        let written = Arc::new(ArrowSchema::new(vec![
+            Field::new("n", Arrow::Int16, true),
+            Field::new("f", Arrow::Float32, true),
+            Field::new("t", Arrow::Date32, true),
+            Field::new("ctx", Arrow::Struct(ctx), true),
+        ]));
+        let narrow = schema.clone().with_written(written.clone());
+        let view = RecordView::from_named([("n", &n), ("f", &f), ("t", &t), ("ctx.m", &m)]);
+        let chunk = Arc::new(Chunk::cut(&schema, &[(&view, &[0, 1, 2])], 0, &mut pool));
+        for c in [n, f, t, m] {
+            c.reclaim(&mut pool);
+        }
+        let rows: Vec<Columns> = (0..3)
+            .map(|row| Columns {
+                chunk: chunk.clone(),
+                row,
+            })
+            .collect();
+
+        assert!(narrow.matches(&rows[0]), "rows are cut to the record's own types");
+        assert_eq!(narrow.unfit(&rows[0]), None);
+        assert_eq!(
+            narrow.unfit(&rows[1]).as_deref(),
+            Some("n is 40000, which a 16-bit integer column cannot hold")
+        );
+        assert_eq!(
+            narrow.unfit(&rows[2]).as_deref(),
+            Some("f is 1e300, beyond a 32-bit float column's range")
+        );
+        assert_eq!(
+            schema.unfit(&rows[1]),
+            None,
+            "a schema that narrows nothing checks nothing"
+        );
+
+        let mut w = FileWriter::open(&narrow, &Compression::None.into());
+        w.write([&rows[0]]);
+        let (file, _) = w.finish();
+        let batch = ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+            tokio_util::bytes::Bytes::from(file),
+        )
+        .unwrap()
+        .build()
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+        assert_eq!(batch.schema().fields(), written.fields());
+        assert_eq!(batch.column(0).as_primitive::<Int16Type>().value(0), 1);
+        assert_eq!(
+            batch.column(1).as_primitive::<Float32Type>().value(0),
+            1.1f32,
+            "rounded"
+        );
+        assert_eq!(batch.column(2).as_primitive::<Date32Type>().value(0), 1, "its UTC day");
+        let m = batch
+            .column(3)
+            .as_struct()
+            .column(0)
+            .as_primitive::<Int8Type>()
+            .value(0);
+        assert_eq!(m, -128);
+    }
+
+    /// A list's items a table holds narrower: a row is unfit for any one the column cannot hold, and written each one
+    /// converted.
+    #[test]
+    fn a_list_a_table_holds_narrower_is_checked_and_written_item_by_item() {
+        use arrow_array::cast::AsArray;
+        use arrow_array::types::{Int32Type, Int64Type};
+        let lists = ListArray::from_iter_primitive::<Int64Type, _, _>([
+            Some(vec![Some(1), None, Some(2)]),
+            Some(vec![Some(3), Some(1 << 40)]),
+            None,
+        ]);
+        let lists: ArrayRef = Arc::new(lists);
+        let to = Arrow::List(Arc::new(Field::new_list_field(Arrow::Int32, true)));
+        assert_eq!(unfit_at(&lists, &to, 0, &|| "n".into()), None);
+        assert_eq!(
+            unfit_at(&lists, &to, 1, &|| "n".into()).as_deref(),
+            Some("n[] is 1099511627776, which a 32-bit integer column cannot hold")
+        );
+        assert_eq!(
+            unfit_at(&lists, &to, 2, &|| "n".into()),
+            None,
+            "a null list holds nothing"
+        );
+        let written = relabelled(&lists.slice(0, 1), &to);
+        let items = written.as_list::<i32>().value(0);
+        let items = items.as_primitive::<Int32Type>();
+        assert_eq!(items.iter().collect::<Vec<_>>(), vec![Some(1), None, Some(2)]);
+    }
+
+    /// A written schema may narrow only a leaf the record types wider.
+    #[test]
+    #[should_panic(expected = "a leaf narrowed")]
+    fn a_written_schema_narrows_no_leaf_the_record_types_otherwise() {
+        let schema = Schema::new(&st(&[("s", DataType::Str)], false)).unwrap();
+        let _ = schema.with_written(Arc::new(ArrowSchema::new(vec![Field::new("s", Arrow::Int32, true)])));
     }
 
     #[test]
