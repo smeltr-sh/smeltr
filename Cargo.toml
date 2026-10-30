@@ -69,17 +69,17 @@ rdkafka = { version = "0.39", features = ["cmake-build", "ssl-vendored", "libz-s
 # custom certificate authority, which a worker fetching from a leader that signs its own certificate must have.
 # Serving the repository stays on system git (leader/git.rs) -- framing the smart-HTTP protocol by hand is a
 # second implementation of something git already ships.
-gix = { version = "0.88", default-features = false, features = [
+gix = { version = "0.90", default-features = false, features = [
     "sha1",
     "merge",
     "revision",
-    "max-performance-safe",
+    "max-performance",
     "auto-chain-error",
     "blocking-http-transport-curl-rustls",
 ] }
 # The worker's merge of its clone's packs writes one pack in-process (`generate`), as `gix` itself cannot. The same
 # version `gix` builds, so no crate is added.
-gix-pack = { version = "0.75", default-features = false, features = ["generate"] }
+gix-pack = { version = "0.77", default-features = false, features = ["generate"] }
 # Pinned to rustls and to vendoring: `curl-sys` links a system libcurl when `pkg-config` finds one, which would make
 # what a worker's fetch is built against a fact about the build host rather than about smeltr. `static-curl` builds
 # curl's own vendored source instead, the same shape `rdkafka`'s `curl-static` feature already commits this build to.
