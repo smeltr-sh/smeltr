@@ -6,6 +6,7 @@
 <script lang="ts" module>
   import type { CatalogType } from './TypeCatalog.svelte';
   import type { CsvColumns, CsvPreview, OcsfLevel, SchemaReadFormat } from './api';
+  import { FIELD_TYPES } from './api';
 
   export type SchemaStart = 'ecs' | 'ocsf' | 'csv' | 'jsonSchema' | 'import' | 'empty';
 
@@ -59,17 +60,7 @@
   ] as const;
 
   /** The types a value of a CSV's type column may be read as. */
-  export const SCHEMA_TYPES = [
-    'str',
-    'i64',
-    'f64',
-    'bool',
-    'datetime',
-    'duration',
-    'bytes',
-    'variant',
-    '{...}',
-  ];
+  export const SCHEMA_TYPES = [...FIELD_TYPES, '{...}'];
 
   const LABELS: Record<SchemaStart, string> = {
     ecs: 'schema from ECS',
@@ -488,10 +479,6 @@
   .problem {
     color: var(--error);
     margin: 0;
-  }
-
-  .dim {
-    color: var(--dim);
   }
 
   .note {
