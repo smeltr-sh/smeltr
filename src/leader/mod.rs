@@ -3671,14 +3671,11 @@ pub fn router(state: AppState) -> Router {
     ))
 }
 
-/// `app` answering gzipped to a client that takes it, every answer past a few bytes, and taking a gzipped request on
-/// every route. A route's body limit holds the body as inflated, so a small gzipped body cannot become a large one.
+/// `app` answering gzipped to a client that takes it, by tower-http's defaults, and taking a gzipped request on every
+/// route. A route's body limit holds the body as inflated, so a small gzipped body cannot become a large one.
 pub fn gzipped(app: Router) -> Router {
-    app.layer(
-        tower_http::compression::CompressionLayer::new()
-            .compress_when(tower_http::compression::predicate::SizeAbove::new(32)),
-    )
-    .layer(tower_http::decompression::RequestDecompressionLayer::new())
+    app.layer(tower_http::compression::CompressionLayer::new())
+        .layer(tower_http::decompression::RequestDecompressionLayer::new())
 }
 
 /// Where a store would write its secrets encryption key. No fixture below stores a secret, so nothing is written --
