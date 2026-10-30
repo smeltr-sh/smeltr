@@ -39,6 +39,10 @@ fn default_levels() -> Vec<String> {
 /// The deepest `Cut::depth`. OCSF's objects name each other, so a cut has to stop somewhere.
 pub const DEEPEST: usize = 8;
 
+/// The most fields a cut may make. OCSF's objects hold each other, so a deep cut that takes optional attributes makes
+/// tens of thousands, more than a schema anyone reads.
+pub const MOST: usize = 10_000;
+
 /// The fields of the class `class` in `doc`, cut as `cut` says.
 pub fn read(doc: &Value, class: &str, cut: &Cut) -> Result<Vec<SchemaFieldDto>, String> {
     if !(1..=DEEPEST).contains(&cut.depth) {
@@ -138,6 +142,11 @@ impl Reader<'_> {
                     _ => None,
                 },
             });
+            if out.len() > MOST {
+                return Err(format!(
+                    "the cut makes more than {MOST} fields: take less depth or fewer requirements"
+                ));
+            }
             if ty == "object_t" && depth < self.cut.depth {
                 let name = a.get("object_type").and_then(Value::as_str).unwrap_or_default();
                 let inner = (self.objects.and_then(|o| o.get(name)))
@@ -217,5 +226,24 @@ mod tests {
             "`maybe` is no OCSF requirement: required, recommended or optional"
         );
         assert_eq!(classes(&doc()), vec!["authentication".to_string()]);
+    }
+
+    #[test]
+    fn a_cut_that_makes_too_many_fields_is_refused() {
+        let held = json!({ "type": "object_t", "object_type": "o", "requirement": "required" });
+        let attributes = json!({ "a": held, "b": held, "c": held, "d": held });
+        let doc = json!({
+            "classes": { "c": { "attributes": attributes } },
+            "objects": { "o": { "attributes": attributes } },
+        });
+        let deep = Cut {
+            depth: DEEPEST,
+            ..Cut::default()
+        };
+        assert_eq!(
+            read(&doc, "c", &deep).unwrap_err(),
+            "the cut makes more than 10000 fields: take less depth or fewer requirements"
+        );
+        assert!(read(&doc, "c", &Cut::default()).is_ok());
     }
 }
