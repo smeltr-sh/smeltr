@@ -11,7 +11,14 @@
 
 import type { FileConfigDto } from './api';
 import { diffObjects } from './diff';
-import { SECTIONS, byId, isRecord, type Noun } from './objectChanges';
+import {
+  SECTIONS,
+  byId,
+  changedRouteName,
+  isRecord,
+  type Noun,
+  type ScopePair,
+} from './objectChanges';
 import { count } from './time';
 
 export interface ChangeText {
@@ -28,9 +35,10 @@ export interface ScopeChange {
   scope: string;
   before: FileConfigDto;
   after: FileConfigDto;
+  shared?: ScopePair['shared'];
 }
 
-/** `name` is the object as a reader calls it: its id, or a pipeline's name. */
+/** `name` is the object as a reader calls it: its id, a pipeline's name, or a route's `routeName`. */
 type Edit =
   | { op: 'add'; noun: Noun; name: string; scope: string }
   | { op: 'remove'; noun: Noun; name: string; scope: string }
@@ -169,7 +177,7 @@ function nameOf(id: string, first: Map<string, string>, second: Map<string, stri
   return first.get(id) ?? second.get(id) ?? id;
 }
 
-/** Every changed field of one object, as `name before → after`. Keys are
+/** Every changed field of one object, as `name from before to after`. Keys are
  * compared whole (`diff.ts`), so a nested value reads as one field rather
  * than a diff inside a diff. With `names`, a `pipeline` field -- a route's,
  * a call step's -- holds a pipeline id and is said as that pipeline's name. */
@@ -188,7 +196,7 @@ function fieldPhrases(
     .filter((entry) => entry.kind !== 'unchanged' && !skip.includes(entry.key))
     .map(
       (entry) =>
-        `${entry.key} ${say(entry.key, entry.before, 'before')} → ${say(entry.key, entry.after, 'after')}`,
+        `${entry.key} from ${say(entry.key, entry.before, 'before')} to ${say(entry.key, entry.after, 'after')}`,
     );
 }
 
@@ -262,9 +270,15 @@ function editsForScope(change: ScopeChange): Edit[] {
   const edits: Edit[] = [];
   const names = pipelineNames(change.before, change.after);
   // A pipeline is called by the name it had, which is the one a reader
-  // knows it by; a pipeline the change adds has only its new one.
+  // knows it by; a pipeline the change adds has only its new one. A route is
+  // called as the branch has it, as its card on the change page is, falling
+  // back to main's for a route the change removes.
   const nameFor = (noun: Noun, id: string) =>
-    noun === 'pipeline' ? nameOf(id, names.before, names.after) : id;
+    noun === 'pipeline'
+      ? nameOf(id, names.before, names.after)
+      : noun === 'route'
+        ? (changedRouteName(change, id) ?? id)
+        : id;
 
   for (const section of sections(change.before, change.after)) {
     const was = byId(section.before);

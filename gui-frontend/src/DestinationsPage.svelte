@@ -28,11 +28,14 @@
     putDestinations,
     type DestinationDto,
     type ExceptionsDto,
+    type FileConfigDto,
+    type PipelineDto,
     type RouteDto,
     type SchemaDto,
     type SecretDto,
   } from './api';
   import { mayCapture } from './access';
+  import { bundleRoutes } from './routeFlow';
   import { at, typeLabel, writes } from './destinations';
   import NewDestination from './NewDestination.svelte';
 
@@ -52,12 +55,20 @@
    * what the load checks beside it. */
   let group = $state<ExceptionsDto | undefined>(undefined);
   let routes: RouteDto[] = $state([]);
+  let pipelines: PipelineDto[] = $state([]);
+  let shared = $state<FileConfigDto | null>(null);
   /** What an accepts list may name beside the built-ins. */
   let ownSchemas: SchemaDto[] = $state([]);
   let sharedSchemas: SchemaDto[] = $state([]);
   let schemas = $derived([...sharedSchemas, ...ownSchemas]);
   let all = $derived([...destinations, ...sharedDestinations]);
-  let refusals = $derived(problems(group, routes, all));
+  let refusals = $derived(
+    problems(
+      group,
+      bundleRoutes({ routes, pipelines }, shared).slice(shared?.routes.length ?? 0),
+      all,
+    ),
+  );
   /** The destination being captured at, by id, and the scope that declares it. Only a group runs a
    * destination, so `shared/`'s own page offers none. */
   let capturing: { id: string; scope: string } | null = $state(null);
@@ -77,6 +88,7 @@
     onLoaded: async (config) => {
       group = config.exceptions;
       routes = config.routes;
+      pipelines = config.pipelines;
       ownSchemas = config.schemas ?? [];
       await loadShared();
     },
@@ -84,7 +96,7 @@
 
   /** `shared/`'s own. A group runs the two merged, so a page showing only its own hides half of what runs. */
   async function loadShared() {
-    const shared = await sharedConfig();
+    shared = await sharedConfig();
     sharedDestinations = shared ? shared.destinations : [];
     sharedSchemas = shared?.schemas ?? [];
   }

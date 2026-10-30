@@ -186,14 +186,14 @@ function chain(id: string, next: Refusals): string[] {
  * to where they started. */
 export function problems(
   group: ExceptionsDto | undefined,
-  routes: { id: string; exceptions?: ExceptionsDto }[],
+  routes: { name: string; exceptions?: ExceptionsDto }[],
   destinations: DestinationDto[],
 ): string[] {
   const ids = new Set(destinations.map((d) => d.id));
   const out: string[] = [];
   const layers: [string, ExceptionsDto | undefined][] = [
     ['the group', group],
-    ...routes.map((r): [string, ExceptionsDto | undefined] => [`route ${r.id}`, r.exceptions]),
+    ...routes.map((r): [string, ExceptionsDto | undefined] => [`route ${r.name}`, r.exceptions]),
     ...destinations.map((d): [string, ExceptionsDto | undefined] => [
       `destination ${d.id}`,
       d.exceptions,

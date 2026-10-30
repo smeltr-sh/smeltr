@@ -929,7 +929,7 @@ describe('linkForError', () => {
     ],
     sources: ['orders-west'],
     destinations: ['es-prod'],
-    routes: ['r1'],
+    routes: [{ id: 'r1', name: 'orders-west \u2192 orders' }],
   };
 
   it('an unreadable pipeline file links straight to that pipeline, known or not', () => {
@@ -1024,11 +1024,13 @@ describe('linkForError', () => {
     });
   });
 
-  it('a route with no id of its own still lands on the routes editor', () => {
-    expect(linkForError('route "r1" names no pipeline', known)).toEqual({
-      label: 'route r1',
-      hash: '#/build/routes',
-    });
+  it('a route still lands on the routes editor, named by its name', () => {
+    const route = { label: 'route orders-west \u2192 orders', hash: '#/build/routes' };
+    expect(linkForError('route "r1" names no pipeline', known)).toEqual(route);
+    // Its name holds its source's id, which it outweighs.
+    expect(
+      linkForError('route orders-west \u2192 orders answers Unmatched with tag', known),
+    ).toEqual(route);
   });
 
   it('names nothing it cannot tie to an object', () => {
