@@ -324,7 +324,7 @@ pub(crate) fn from_file_config_at(
         ));
     }
 
-    let sources = file.sources.iter().map(|s| to_source(s, maps.sources[&s.id])).collect();
+    let sources: Vec<SourceConfig> = file.sources.iter().map(|s| to_source(s, maps.sources[&s.id])).collect();
     let mut errors = Vec::new();
     let mut group = OnException::default();
     if let Some(layer) = &file.on_exception {
@@ -363,8 +363,9 @@ pub(crate) fn from_file_config_at(
     // Only once every answer resolves.
     if errors.is_empty() {
         errors.extend(impossible_answers("the group", &group, None, Layer::Group));
-        for r in &routes {
-            let what = format!("route {:?}", r.id);
+        let pipeline_ids: Vec<String> = file.pipelines.iter().map(|p| p.id.clone()).collect();
+        for (at, r) in routes.iter().enumerate() {
+            let what = format!("route {}", super::route_name(&sources, &pipelines, &pipeline_ids, &routes, at));
             errors.extend(impossible_answers(&what, &r.on_exception, Some(&group), Layer::Route));
         }
         for d in &destinations {

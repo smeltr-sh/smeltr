@@ -42,7 +42,7 @@ use crate::core::column::DataType;
 use crate::core::error::ExceptionKind;
 use crate::core::id::{DestId, FunctionId};
 use crate::plan::config::{Answer, CompileError, PipelineConfig};
-use crate::plan::topology::{CompiledTopology, DestinationKind, Records, RouteConfig, TopologyConfig};
+use crate::plan::topology::{CompiledTopology, DestinationKind, Records, RouteConfig, SourceConfig, TopologyConfig};
 
 pub use bundle::{
     BundleError, DirFileSet, FileSet, GROK_PATTERNS_FILE, GROUPS_DIR, LOOKUP_TABLES_FILE, LOOKUPS_DIR, PIPELINES_DIR,
@@ -119,6 +119,29 @@ pub struct LoadedSystem {
     pub accepts: HashMap<DestId, Vec<Arc<crate::schema::Schema>>>,
     /// What `validate` compiled; `None` for a system loaded without validating it.
     pub compiled: Option<CompiledTopology>,
+}
+
+/// `routes[at]` as every screen and message names it: its source, then its pipeline, and `(n)` when another route
+/// runs from that source to that pipeline too, `n` counting those routes in the order they run. A route's id is
+/// minted, so it is never the name. The GUI names routes the same way (`routeName` in `routeFlow.ts`).
+pub(crate) fn route_name(
+    sources: &[SourceConfig],
+    pipelines: &[PipelineConfig],
+    pipeline_ids: &[String],
+    routes: &[RouteConfig],
+    at: usize,
+) -> String {
+    let r = &routes[at];
+    let source = sources.iter().find(|s| s.id == r.source).map_or("", |s| &s.name);
+    let pipeline = match pipelines.iter().find(|p| p.id == r.pipeline) {
+        Some(p) if !p.name.is_empty() => &p.name,
+        _ => pipeline_ids.get(r.pipeline).map_or("", String::as_str),
+    };
+    let twin = |o: &&RouteConfig| o.source == r.source && o.pipeline == r.pipeline;
+    match routes.iter().filter(twin).count() {
+        1 => format!("{source} \u{2192} {pipeline}"),
+        _ => format!("{source} \u{2192} {pipeline} ({})", routes[..at].iter().filter(twin).count() + 1),
+    }
 }
 
 /// A route as `LoadedSystem::checked_routes` walks it.
@@ -224,16 +247,11 @@ impl LoadedSystem {
         }
     }
 
-    /// `r` as the routes page shows it: its source, then its pipeline.
+    /// `r`, one of the topology's routes, by its [`route_name`].
     fn route_name(&self, r: &RouteConfig) -> String {
-        let source = (self.topology.sources.iter())
-            .find(|s| s.id == r.source)
-            .map_or("", |s| &s.name);
-        let pipeline = match self.pipelines.iter().find(|p| p.id == r.pipeline) {
-            Some(p) if !p.name.is_empty() => &p.name,
-            _ => self.pipeline_ids.get(r.pipeline).map_or("", String::as_str),
-        };
-        format!("{source} \u{2192} {pipeline}")
+        let routes = &self.topology.routes;
+        let at = routes.iter().position(|o| std::ptr::eq(o, r)).expect("a route of this system");
+        route_name(&self.topology.sources, &self.pipelines, &self.pipeline_ids, routes, at)
     }
 
     /// The author's id for `id`, a destination the loaded system has.
@@ -663,6 +681,23 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn a_route_is_named_by_its_source_and_pipeline_and_numbered_among_its_twins() {
+        let json = r#"{
+          "version": 1,
+          "sources": [{ "id": "k", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g" },
+                      { "id": "j", "type": "kafka", "brokers": "b:9092", "topics": ["u"], "groupId": "g" }],
+          "pipelines": [{ "id": "p", "name": "p", "steps": [] }, { "id": "q-1f", "name": "Enrich", "steps": [] }],
+          "routes": [{ "id": "a", "source": "k", "pipeline": "p", "condition": "true" },
+                     { "id": "b", "source": "k", "pipeline": "q-1f" },
+                     { "id": "c", "source": "j", "pipeline": "p" },
+                     { "id": "d", "source": "k", "pipeline": "p" }]
+        }"#;
+        let system = load_str(json).unwrap();
+        let names: Vec<String> = (system.topology.routes.iter()).map(|r| system.route_name(r)).collect();
+        assert_eq!(names, ["k \u{2192} p (1)", "k \u{2192} Enrich", "j \u{2192} p", "k \u{2192} p (2)"]);
     }
 
     #[test]

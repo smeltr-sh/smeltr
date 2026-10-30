@@ -1218,6 +1218,15 @@ fn an_answer_a_delivery_kind_cannot_carry_out_is_refused() {
         "{err}"
     );
 
+    // A route is named as the Routes page names it, not by its minted id.
+    let err = load_str(&cfg_with_route(r#","exceptions":{"kinds":{"Unmatched":"tag"}}"#))
+        .expect_err("a route tagging")
+        .to_string();
+    assert!(
+        err.contains("route s \u{2192} p answers Unmatched with tag, but a Unmatched row has no route"),
+        "{err}"
+    );
+
     // A category's answer is each of its kinds'.
     let err = load_str(&with_group(&base, r#"{"categories":{"delivery":"tag"}}"#))
         .expect_err("tags the delivery kinds")
