@@ -184,19 +184,19 @@ impl LoadedSystem {
                 let to: Vec<&str> = rule.to.iter().map(|&d| self.destination_name(d)).collect();
                 match to.as_slice() {
                     [] => format!(
-                        "route {}'s condition for no destination: {}",
+                        "the condition for no destination of route {}: {}",
                         self.route_name(r),
                         e.message
                     ),
                     to => format!(
-                        "route {}'s condition for {}: {}",
-                        self.route_name(r),
+                        "the condition for {} of route {}: {}",
                         to.join(", "),
+                        self.route_name(r),
                         e.message
                     ),
                 }
             }
-            (Some(r), None) => format!("route {}'s condition: {}", self.route_name(r), e.message),
+            (Some(r), None) => format!("the condition of route {}: {}", self.route_name(r), e.message),
             (None, _) => e.message,
         };
         load::ValidationError {
@@ -676,7 +676,7 @@ mod tests {
             errors.iter().any(|e| e.item == route
                 && e.field == Some("condition")
                 && e.rule.is_none()
-                && e.message.starts_with("route k \u{2192} p's condition: ")),
+                && e.message.starts_with("the condition of route k \u{2192} p: ")),
             "{errors:?}"
         );
         let errors = validation_of(&route_json("true", "_raw"));
@@ -684,7 +684,7 @@ mod tests {
             errors.iter().any(|e| e.item == route
                 && e.field == Some("deliver.when")
                 && e.rule == Some(1)
-                && e.message.starts_with("route k \u{2192} p's condition for out: ")),
+                && e.message.starts_with("the condition for out of route k \u{2192} p: ")),
             "{errors:?}"
         );
     }
