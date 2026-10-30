@@ -12,6 +12,8 @@ use axum::extract::{Json, Multipart};
 use axum::routing::{delete, get, patch, post, put};
 
 mod accounts_api;
+#[cfg(test)]
+mod accounts_fuzz;
 mod acme_api;
 mod agent_catalog;
 mod agents_api;
@@ -24,6 +26,10 @@ mod chat_api;
 mod cluster;
 mod config_api;
 mod docs_api;
+// What the crate's fuzzers share, compiled here as `tests/harness` compiles it: the library's is test-only.
+#[cfg(test)]
+#[path = "../../fuzz.rs"]
+mod fuzz;
 mod gate;
 mod key_accounts_api;
 mod oidc_api;
