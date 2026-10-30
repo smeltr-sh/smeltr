@@ -302,7 +302,7 @@ pub async fn login(
 
     accounts::record(
         auth.store.as_ref(),
-        &Actor::person(&current.id, &current.display_name),
+        &Actor::account(&current.id, &current.display_name),
         "login",
         &current.id,
         "ok",
@@ -363,7 +363,7 @@ pub async fn logout(State(auth): State<Auth>, headers: HeaderMap) -> Response {
     auth.sessions.remove(&token);
     accounts::record(
         auth.store.as_ref(),
-        &Actor::person(&session.user_id, ""),
+        &Actor::account(&session.user_id, ""),
         "logout",
         &session.user_id,
         "ok",

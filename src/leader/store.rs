@@ -1,4 +1,4 @@
-//! Durable leader state: people, worker credentials, enrollment codes, the secret catalog, every group's color, and
+//! Durable leader state: accounts, worker credentials, enrollment codes, the secret catalog, every group's color, and
 //! who holds each single-worker source with what it has delivered. A worker group's identity and configuration are
 //! not here at all -- it exists exactly when `main` holds a file under `groups/<id>/`, and that repository is what
 //! holds its name and configuration. Its color is the one thing about it kept here instead. Live heartbeat state is `registry`'s, in memory.
@@ -209,7 +209,7 @@ impl KeyStanding {
     }
 }
 
-// -- people -----------------------------------------------------------------
+// -- accounts ---------------------------------------------------------------
 
 /// Where an account's credentials come from, fixed when the account is created.
 ///
@@ -246,7 +246,7 @@ impl AuthSource {
     }
 }
 
-/// A person. Never their credentials: a password hash reaches only [`Store::local_credential_by_username`], so
+/// An account, however it signs in. Never its credentials: a password hash reaches only [`Store::local_credential_by_username`], so
 /// nothing that logs, serializes or `Debug`s a user can carry one.
 #[derive(Clone, Debug)]
 pub struct UserRecord {
@@ -341,7 +341,7 @@ impl Actor {
     }
 
     /// An account, as the gate resolved it.
-    pub fn person(id: &str, display_name: &str) -> Actor {
+    pub fn account(id: &str, display_name: &str) -> Actor {
         Actor {
             id: id.to_string(),
             display_name: display_name.to_string(),
@@ -356,8 +356,8 @@ impl Actor {
         }
     }
 
-    /// Whether this is a person rather than the leader or its host. What decides if an action needs a session.
-    pub fn is_person(&self) -> bool {
+    /// Whether this is an account rather than the leader, its host or nobody.
+    pub fn is_account(&self) -> bool {
         ![Actor::SYSTEM_ID, Actor::HOST_ID, Actor::ANONYMOUS_ID].contains(&self.id.as_str())
     }
 }

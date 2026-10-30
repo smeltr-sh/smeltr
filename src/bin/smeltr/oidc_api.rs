@@ -619,7 +619,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
     }
     accounts::record(
         auth.store.as_ref(),
-        &Actor::person(&user.id, &user.display_name),
+        &Actor::account(&user.id, &user.display_name),
         "login",
         &user.id,
         "ok",

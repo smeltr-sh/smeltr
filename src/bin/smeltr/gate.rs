@@ -301,7 +301,7 @@ pub async fn require_principal(
     let actor = if by_agent {
         Actor::agent_of(&user.id, &user.display_name)
     } else {
-        Actor::person(&user.id, &user.display_name)
+        Actor::account(&user.id, &user.display_name)
     };
     admit(req, next, &method, &path, actor, access).await
 }
@@ -368,7 +368,7 @@ async fn key_account_of(auth: &Auth, key: String, by_agent: bool) -> Result<(Act
         Ok(Some((Some(user), Some(access)))) if user.auth_source == AuthSource::Key => Ok((
             match by_agent {
                 true => Actor::agent_of(&user.id, &user.display_name),
-                false => Actor::person(&user.id, &user.display_name),
+                false => Actor::account(&user.id, &user.display_name),
             },
             access,
         )),
@@ -757,7 +757,7 @@ mod tests {
                 .unwrap()
         }
 
-        /// What a handler behind the gate sees: that the gate handed it the person's access.
+        /// What a handler behind the gate sees: that the gate handed it the account's access.
         async fn reached(access: Option<axum::Extension<Access>>) -> &'static str {
             match access {
                 Some(_) => "reached",

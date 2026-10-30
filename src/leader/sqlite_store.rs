@@ -1546,7 +1546,7 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    // -- people ------------------------------------------------------------
+    // -- accounts ----------------------------------------------------------
 
     fn any_user_exists(&self) -> Result<bool, StoreError> {
         let conn = self.conn.lock().unwrap();

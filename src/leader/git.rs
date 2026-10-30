@@ -6492,7 +6492,7 @@ mod tests {
     fn a_commit_carries_its_author_and_the_leader_as_committer() {
         let repo = repo_with_one_commit("authored");
         let main = main_head(&repo).unwrap();
-        let dana = Actor::person("u_abc123", "Dana Okafor");
+        let dana = Actor::account("u_abc123", "Dana Okafor");
         let commit = at(commit_edits(&repo, "work", &main, None, &[wrote("a.json", "1")], "edit", &dana).unwrap());
 
         let (author, committer) = signatures_of(&repo, &commit);
@@ -6546,7 +6546,7 @@ mod tests {
             None,
             &[wrote("a.json", "1")],
             "first",
-            &Actor::person("u_abc123", "Dana Okafor"),
+            &Actor::account("u_abc123", "Dana Okafor"),
         )
         .unwrap());
         let after = at(commit_edits(
@@ -6556,7 +6556,7 @@ mod tests {
             Some(&before),
             &[wrote("a.json", "2")],
             "second",
-            &Actor::person("u_abc123", "Dana Okafor-Smith"),
+            &Actor::account("u_abc123", "Dana Okafor-Smith"),
         )
         .unwrap());
 

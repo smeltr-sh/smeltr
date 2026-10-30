@@ -370,7 +370,7 @@ pub fn change_own_password(
     };
     let (actor, generation) = match judge(store, credential, current)? {
         Authenticated::Refused => return Ok(PasswordChange::WrongPassword),
-        Authenticated::Ok { user, .. } => (Actor::person(&user.id, &user.display_name), user.generation),
+        Authenticated::Ok { user, .. } => (Actor::account(&user.id, &user.display_name), user.generation),
     };
     let hash = hash_password(new)?;
     // Bumps the generation, so every session this account holds -- including the one asking -- stops being
@@ -405,7 +405,7 @@ pub fn choose_first_password(
     let Some(user) = store.get_user(user_id)? else {
         return Ok(PasswordChange::Superseded);
     };
-    let actor = Actor::person(&user.id, &user.display_name);
+    let actor = Actor::account(&user.id, &user.display_name);
     let hash = hash_password(new)?;
     let event = event_for(&actor, "password-change", user_id, "ok");
     written(store.set_local_password(user_id, &hash, false, Some(generation), Some(&event))?)
@@ -758,7 +758,7 @@ mod tests {
     fn a_required_change_loses_to_whatever_moved_the_account_meanwhile() {
         let store = store_with_admin(GOOD);
         let before = store.get_user("u_1").unwrap().unwrap().generation;
-        let event = event_for(&Actor::person("u_2", "Someone"), "session-revoke", "u_1", "ok");
+        let event = event_for(&Actor::account("u_2", "Someone"), "session-revoke", "u_1", "ok");
         store.revoke_sessions("u_1", &event).unwrap().unwrap();
         assert_eq!(
             choose_first_password(&store, "u_1", before, "a brand new passphrase").unwrap(),
