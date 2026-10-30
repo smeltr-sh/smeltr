@@ -299,27 +299,20 @@ impl WriteSettings {
     }
 }
 
-/// The name Iceberg gives `codec`.
+/// The name Iceberg gives `codec`: librdkafka's, but for none.
 fn codec_name(codec: Compression) -> &'static str {
     match codec {
         Compression::None => "uncompressed",
-        Compression::Gzip => "gzip",
-        Compression::Snappy => "snappy",
-        Compression::Lz4 => "lz4",
-        Compression::Zstd => "zstd",
+        codec => codec.as_property(),
     }
 }
 
 /// The codec Iceberg names `name`, where this writer has it.
 fn codec(name: &str) -> Option<Compression> {
-    Some(match name {
-        "uncompressed" | "none" => Compression::None,
-        "gzip" => Compression::Gzip,
-        "snappy" => Compression::Snappy,
-        "lz4" => Compression::Lz4,
-        "zstd" => Compression::Zstd,
-        _ => return None,
-    })
+    use Compression as C;
+    [C::None, C::Gzip, C::Snappy, C::Lz4, C::Zstd]
+        .into_iter()
+        .find(|c| codec_name(*c) == name || c.as_property() == name)
 }
 
 /// Creates the table with the record as its schema and `partitionBy` as its spec. A table another writer created
