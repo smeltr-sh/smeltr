@@ -409,13 +409,16 @@ impl DeltaCommitter {
             .ok_or_else(|| format!("the table could not be created: {}", failed.clone().unwrap_or_default()))?;
         let mut checkpoint_due = false;
         let mut tries = 0;
-        let schema = loop {
+        let (schema, identities, generated) = loop {
             fits(&snapshot)?;
             let current = StructType::parse(&snapshot.metadata.schema_string)?;
+            // Before the record's columns are committed: a table this writer refuses keeps its log as it was.
+            let identities = identity::columns(&current)?;
+            let generated = generated(&identities, &arrow, &snapshot.metadata.partition_columns)?;
             let evolution =
                 schema::table_schema(record, Some(&current), mapping(&snapshot.metadata)?, widens(&snapshot))?;
             if !evolution.changed {
-                break current;
+                break (current, identities, generated);
             }
             if tries > MAX_CONFLICT_RETRIES {
                 return Err(format!(
@@ -461,25 +464,6 @@ impl DeltaCommitter {
         }
         let partitions = partition_columns(&snapshot.metadata, &schema)?;
         let written = schema::physical(&arrow, &schema);
-        let identities = identity::columns(&schema)?;
-        let mut generated = Vec::new();
-        for column in &identities {
-            if arrow.field_with_name(&column.name).is_ok() {
-                if !column.explicit {
-                    return Err(format!(
-                        "the record writes {}, an identity column the table generates and lets no writer set",
-                        column.name
-                    ));
-                }
-            } else if partitions.iter().any(|p| p.name == column.name) {
-                return Err(format!(
-                    "the table is partitioned by its identity column {}, which this writer generates",
-                    column.name
-                ));
-            } else {
-                generated.push(column.clone());
-            }
-        }
         let sequences = Arc::new(Sequences::new(generated, log.clone(), &snapshot));
         Ok(DeltaCommitter {
             log,
@@ -593,6 +577,34 @@ impl DeltaCommitter {
         }
         Ok(add)
     }
+}
+
+/// The identity columns of `identities` whose values this writer generates: the ones the record, of `arrow`, does not
+/// write. Err when the record writes one the table lets no writer set, or one it generates partitions the table.
+fn generated(
+    identities: &[Identity],
+    arrow: &ArrowSchema,
+    partition_columns: &[String],
+) -> Result<Vec<Identity>, String> {
+    let mut generated = Vec::new();
+    for column in identities {
+        if arrow.field_with_name(&column.name).is_ok() {
+            if !column.explicit {
+                return Err(format!(
+                    "the record writes {}, an identity column the table generates and lets no writer set",
+                    column.name
+                ));
+            }
+        } else if partition_columns.contains(&column.name) {
+            return Err(format!(
+                "the table is partitioned by its identity column {}, which this writer generates",
+                column.name
+            ));
+        } else {
+            generated.push(column.clone());
+        }
+    }
+    Ok(generated)
 }
 
 /// Commit 0 of a table of `record`, partitioned by `partition_by`: a plain table, which every Delta reader opens. Its
@@ -1734,22 +1746,33 @@ mod tests {
     }
 
     #[test]
-    fn an_identity_column_that_is_nested_partitions_the_table_or_does_not_read_is_refused() {
+    fn an_identity_column_that_partitions_the_table_or_does_not_read_is_refused_before_anything_is_committed() {
         let record = st(&[("host", DataType::Str)]);
-        let identity = json!({"delta.identity.start": 1, "delta.identity.step": 1});
-        let why = identity_table(&record, &["id"], true, identity).refused(&record, &[]);
+        // The record adds a column, which an open that took the table would commit first.
+        let wider = st(&[("host", DataType::Str), ("n", DataType::I64)]);
+        let refused = |partition_by: &[&str], identity: Value| {
+            let table = identity_table(&record, partition_by, true, identity);
+            let why = table.refused(&wider, &[]);
+            assert!(table.commit(1).is_none(), "{why}");
+            why
+        };
+        let why = refused(&["id"], json!({"delta.identity.start": 1, "delta.identity.step": 1}));
         assert!(why.contains("partitioned by its identity column id"), "{why}");
+        let why = refused(&[], json!({"delta.identity.start": 1, "delta.identity.step": 0}));
+        assert!(why.contains("steps by 0"), "{why}");
+        let why = refused(&[], json!({"delta.identity.step": 1}));
+        assert!(why.contains("has no delta.identity.start"), "{why}");
 
-        let why = identity_table(
+        let writes = st(&[("host", DataType::Str), ("id", DataType::I64), ("n", DataType::I64)]);
+        let table = identity_table(
             &record,
             &[],
             true,
-            json!({"delta.identity.start": 1, "delta.identity.step": 0}),
-        )
-        .refused(&record, &[]);
-        assert!(why.contains("steps by 0"), "{why}");
-        let why = identity_table(&record, &[], true, json!({"delta.identity.step": 1})).refused(&record, &[]);
-        assert!(why.contains("has no delta.identity.start"), "{why}");
+            json!({"delta.identity.start": 1, "delta.identity.step": 1}),
+        );
+        let why = table.refused(&writes, &[]);
+        assert!(why.contains("the record writes id"), "{why}");
+        assert!(table.commit(1).is_none());
     }
 
     #[test]
