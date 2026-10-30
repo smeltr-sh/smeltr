@@ -1725,7 +1725,7 @@ fn elastic_mapping_fuzz() {
         let mut rng = Rng::seeded(seed);
         // A record is an object: its type is always a struct.
         let record = draw_struct(&mut rng, 0, TOP);
-        let m = mapping(&record);
+        let m = mapping(&record, &Default::default());
         let root = m.get("mappings").ok_or_else(|| format!("no mappings: {m}"))?;
         if m.as_object().unwrap().len() != 1 {
             return Err(format!("more than mappings: {m}"));
@@ -1929,7 +1929,7 @@ fn live_seed(seed: u64, url: &str, reached: &mut Reached, pki: &Pki) -> Result<(
     };
     fields.extend([("n".to_string(), DataType::I64), ("num".to_string(), DataType::I64)]);
     let record = DataType::Struct(fields, open);
-    let m = mapping(&record);
+    let m = mapping(&record, &Default::default());
     for index in made {
         let (status, answer) = call("PUT", &format!("{url}/{index}"), Some(&m))?;
         if status != 200 {

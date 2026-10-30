@@ -62,6 +62,7 @@ const ALLOWED: &[(&str, &str)] = &[
     ("src/io/avro.rs", "a route's record as an Avro schema, once per schema"),
     ("src/io/avro/", "a schema registry's answers, once per schema"),
     ("src/schema/json_schema.rs", "a bundle's schema, once per load"),
+    ("src/schema.rs", "a field's Elasticsearch mapping, once per load"),
 ];
 
 /// The lines of `text` that name `serde_json`, 1-based, outside comments and `#[cfg(test)]` items. An item ends at

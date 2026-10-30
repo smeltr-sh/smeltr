@@ -525,7 +525,10 @@ after a reload.
 The Schemas page lists the bundle's own schemas, then `shared/`'s. A search
 reaches into fields, so a field's path finds the schemas that name it. A schema
 folds open to its table of fields, narrowed to the search, and any schema
-exports as JSON Schema or as an Elasticsearch mapping. A schema is added empty,
+exports as JSON Schema or as an Elasticsearch mapping. The table's
+Elasticsearch view shows the type each field maps to, and on the bundle's own
+schemas chooses it from those the field's type allows; a mapping's other
+parameters are set in Edit JSON. A schema is added empty,
 from a JSON Schema, or imported: a pipeline of the bundle is picked and a file
 uploaded, the leader runs the pipeline over the file's records as a preview
 runs, and each row it writes is a field.

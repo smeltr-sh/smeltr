@@ -419,6 +419,10 @@ type = ecs == "date" ? "datetime"
   : "str";
 if (normalization == "array") { type = "array<" + type + ">"; }
 required = field == "@timestamp";
+if (ecs == "wildcard" || ecs == "text" || ecs == "match_only_text" || ecs == "ip" || ecs == "constant_keyword"
+    || ecs == "float" || ecs == "geo_point" || ecs == "nested" || ecs == "flattened") {
+  elasticsearch = {type: ecs};
+}
 delete(_raw, ecs, normalization);
 ```
 
@@ -427,11 +431,15 @@ Out, the schema's first rows:
 ```json
 {"field": "@timestamp", "type": "datetime", "required": true, "description": "Date/time when the event originated."}
 {"field": "labels", "type": "{...}", "description": "Custom key/value pairs."}
+{"field": "message", "type": "str", "description": "Log message optimized for viewing in a log viewer.", "elasticsearch": {"type": "match_only_text"}}
 {"field": "tags", "type": "array<str>", "description": "List of keywords used to tag each event."}
 ```
 
 A keyword, a text, an IP and a wildcard are each `str`, since that is what a
 pipeline writes for them; an object a pipeline fills key by key is `{...}`.
+What tells them apart is how Elasticsearch indexes them, so a field whose ECS
+type is not the one its smeltr type maps to on its own says so in
+`elasticsearch`, and the schema's Elasticsearch mapping keeps it.
 
 ## 10. A schema from a compiled schema (the OCSF importer)
 
@@ -464,8 +472,10 @@ let ty = a => {
   a.is_array == true ? "array<" + t + ">" : t
 };
 let wanted = a => a.requirement == "required" || a.requirement == "recommended";
-let row = (path, a) => ({field: path, type: ty(a), required: a.requirement == "required", description: a.description});
-let found: array<{field: str, type: str, required: bool, description: str}> = [];
+let mapped = a => a.type == "ip_t" ? {type: "ip"} : a.type == "json_t" ? {type: "flattened"} : null;
+let row = (path, a) => ({field: path, type: ty(a), required: a.requirement == "required", description: a.description,
+                         elasticsearch: mapped(a)});
+let found: array<{field: str, type: str, required: bool, description: str, elasticsearch: {type: str}}> = [];
 for (let top of entries(attrs)) {
   let a: {type: str, object_type: str, is_array: bool, requirement: str, description: str, ...} = top.value;
   if (wanted(a)) {
@@ -495,5 +505,7 @@ Out, some of the schema's rows:
 ```
 
 A timestamp is epoch milliseconds in OCSF, so `i64`; a `required` inside an
-object holds where the object is there.
+object holds where the object is there. An `ip_t` is a `str` that Elasticsearch
+indexes as an IP, and a `json_t` one it keeps whole, so each says so in
+`elasticsearch`.
 

@@ -93,6 +93,46 @@ test('a search finds a schema by a field it holds', async ({ admin, leader, api 
   await expect(admin.getByText(/No schema or field matches/)).toBeVisible();
 });
 
+test('the Elasticsearch view chooses the type a field maps to, saved with the schema', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await declare(api);
+  await goto(admin, leader, '#/build/schemas');
+  await admin.getByRole('button', { name: 'login fields' }).click();
+  await admin.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+  const ip = admin.getByRole('combobox', { name: 'Elasticsearch type of src_endpoint.ip' });
+  await expect(ip).toHaveValue('');
+  await expect(ip.getByRole('option', { name: 'default (keyword)' })).toBeAttached();
+  await expect(
+    admin
+      .getByRole('combobox', { name: 'Elasticsearch type of user.manager' })
+      .getByRole('option', {
+        name: 'default (dynamic)',
+      }),
+  ).toBeAttached();
+  await ip.selectOption('ip');
+  await admin.screenshot({ path: 'results/schemas-elasticsearch.png' });
+
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  const saved = await api.get(`${SHARED}${ON}`);
+  /** `src_endpoint.ip` of `login`, as the leader keeps it. */
+  type Kept = { schemas: { id: string; fields: { field: string; elasticsearch?: object }[] }[] };
+  const kept = (config: Kept) =>
+    config.schemas.find((s) => s.id === 'login')!.fields.find((f) => f.field === 'src_endpoint.ip');
+  expect(kept(saved.config)?.elasticsearch).toEqual({ type: 'ip' });
+
+  await admin
+    .getByRole('combobox', { name: 'Elasticsearch type of src_endpoint.ip' })
+    .selectOption('');
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  const cleared = await api.get(`${SHARED}${ON}`);
+  expect(kept(cleared.config)).toEqual({ field: 'src_endpoint.ip', type: 'str' });
+});
+
 test("a JSON Schema added on the Schemas page is saved as the bundle's own", async ({
   admin,
   leader,
@@ -203,6 +243,10 @@ const ECS_IMPORTER = {
         '  : "str";',
         'if (normalization == "array") { type = "array<" + type + ">"; }',
         'required = field == "@timestamp";',
+        'if (ecs == "wildcard" || ecs == "text" || ecs == "match_only_text" || ecs == "ip" || ecs == "constant_keyword"',
+        '    || ecs == "float" || ecs == "geo_point" || ecs == "nested" || ecs == "flattened") {',
+        '  elasticsearch = {type: ecs};',
+        '}',
         'delete(_raw, ecs, normalization);',
       ].join('\n'),
     },
@@ -257,6 +301,17 @@ test('a schema is imported by a pipeline of the bundle run over an uploaded file
   expect(fields.find((f: { field: string }) => f.field === 'gen_ai.input.messages').type).toBe(
     'variant',
   );
+  expect(fields.find((f: { field: string }) => f.field === 'message').elasticsearch).toEqual({
+    type: 'match_only_text',
+  });
+  expect(
+    fields.find((f: { field: string }) => f.field === 'gen_ai.input.messages').elasticsearch,
+  ).toEqual({
+    type: 'flattened',
+  });
+  expect(
+    fields.find((f: { field: string }) => f.field === 'agent.id').elasticsearch,
+  ).toBeUndefined();
 });
 
 /** On `branch`, in group `default`: a pipeline producing `login` that writes nothing, routed from a metrics source

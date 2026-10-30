@@ -1094,6 +1094,8 @@ export interface SchemaFieldDto {
   /** Whether a row must hold it. */
   required?: boolean;
   description?: string;
+  /** How it maps in an Elasticsearch index: its mapping, laid over the one its type has. */
+  elasticsearch?: { type: string; [parameter: string]: unknown };
 }
 
 export interface FileConfigDto {

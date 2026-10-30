@@ -169,7 +169,7 @@ impl Dictionary {
     pub fn of(record: &crate::core::column::DataType) -> Self {
         Dictionary {
             fields: plan::dictionary::fields(record),
-            elasticsearch: crate::io::elastic_mapping::mapping(record),
+            elasticsearch: crate::io::elastic_mapping::mapping(record, &Default::default()),
         }
     }
 }
