@@ -241,6 +241,99 @@ fn a_document_a_real_cluster_refuses_is_a_rejection_and_the_batch_survives() {
     assert_eq!(count(&url, &index), 2, "the two good documents landed anyway");
 }
 
+/// Documents hitting a range query on `field`, from `from` to `to` inclusive.
+fn in_range(url: &str, index: &str, field: &str, from: &str, to: &str) -> u64 {
+    refresh(url, index);
+    let body: serde_json::Value = ureq::post(format!("{url}/{index}/_count"))
+        // A field with a format of its own reads a query's bounds in it too, unless the query names another.
+        .send_json(serde_json::json!({
+            "query": { "range": { field: { "gte": from, "lte": to, "format": "strict_date_optional_time" } } }
+        }))
+        .expect("counting a range")
+        .body_mut()
+        .read_json()
+        .expect("a count response");
+    body["count"].as_u64().unwrap_or_default()
+}
+
+/// assume: Elasticsearch reads a number in a `date` field as epoch milliseconds, `epoch_second` as seconds, and a
+/// string in the format its mapping names.
+///
+/// A schema offers an integer's date in milliseconds or seconds, and keeps a date's own format, and the GUI says
+/// so; this is the cluster agreeing. An integer of seconds mapped as milliseconds lands in January 1970 without a
+/// word, which is why the unit is part of the choice.
+#[test]
+fn an_integer_or_a_string_mapped_as_a_date_reads_as_its_mapping_says() {
+    use smeltr::core::column::DataType;
+    use smeltr::io::elastic_mapping::{Mapped, mapping};
+    let name = "an_integer_or_a_string_mapped_as_a_date_reads_as_its_mapping_says";
+    let Some(url) = live::elastic(name) else {
+        return;
+    };
+    let index = unique("smeltr-dates");
+    let record = DataType::Struct(
+        ["millis", "seconds", "seconds_as_millis"]
+            .map(|f| (f.to_string(), DataType::I64))
+            .into_iter()
+            .chain([("text".to_string(), DataType::Str)])
+            .collect(),
+        false,
+    );
+    let date = |format: Option<&str>| {
+        let mut m = serde_json::Map::new();
+        m.insert("type".into(), "date".into());
+        if let Some(f) = format {
+            m.insert("format".into(), f.into());
+        }
+        m
+    };
+    let (millis, seconds, text) = (
+        date(None),
+        date(Some("epoch_second")),
+        date(Some("yyyy-MM-dd HH:mm:ss")),
+    );
+    let mapped: Mapped = [
+        (vec!["millis".to_string()], &millis),
+        (vec!["seconds".to_string()], &seconds),
+        (vec!["seconds_as_millis".to_string()], &millis),
+        (vec!["text".to_string()], &text),
+    ]
+    .into_iter()
+    .collect();
+    ureq::put(format!("{url}/{index}"))
+        .send_json(mapping(&record, &mapped))
+        .expect("creating the index with the schema's mapping")
+        .body_mut()
+        .read_to_string()
+        .ok();
+
+    let mut d = dest(&url, &index, DocIdPolicy::Auto);
+    let rejections = deliver(
+        &mut d,
+        &[OutgoingRecord::new(
+            br#"{"millis":1730311573000,"seconds":1730311573,"seconds_as_millis":1730311573,"text":"2024-10-30 18:06:13"}"#,
+        )],
+    )
+    .expect("delivered");
+    assert!(rejections.is_empty(), "{rejections:?}");
+
+    let at = "2024-10-30T18:06:13Z";
+    for field in ["millis", "seconds", "text"] {
+        assert_eq!(in_range(&url, &index, field, at, at), 1, "`{field}` reads as {at}");
+    }
+    // Seconds read as milliseconds: the 21st of January 1970.
+    assert_eq!(
+        in_range(
+            &url,
+            &index,
+            "seconds_as_millis",
+            "1970-01-21T00:00:00Z",
+            "1970-01-21T23:59:59Z"
+        ),
+        1
+    );
+}
+
 /// How many bulk requests each node has taken, by the address it publishes.
 fn bulks_by_node(url: &str) -> std::collections::BTreeMap<String, u64> {
     let body: serde_json::Value = ureq::get(format!("{url}/_nodes/stats/http"))
