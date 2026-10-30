@@ -188,6 +188,10 @@ fn live_rows_are_committed_as_snapshots_of_a_table_it_creates() {
     assert!(columns.contains(&"host") && columns.contains(&"n"), "{columns:?}");
     let spec = &first["metadata"]["partition-specs"][0]["fields"][0];
     assert_eq!(spec["transform"], "identity", "{spec}");
+    assert_eq!(
+        first["metadata"]["properties"]["write.parquet.compression-codec"], "zstd",
+        "the table says how every writer after this one writes"
+    );
     let s = summary(&first);
     assert_eq!(s["added-records"], "3", "{s}");
     assert_eq!(s["added-data-files"], "2", "one file per host: {s}");

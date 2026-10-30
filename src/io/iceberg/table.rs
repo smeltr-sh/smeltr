@@ -43,9 +43,9 @@ use crate::io::files::{
 };
 use crate::io::objects::{self, RENEW_BEFORE, Signing};
 use crate::io::parquet;
-use crate::io::table::one_record;
+use crate::io::table::{ROW_GROUP_BYTES, one_record};
 use crate::io::vended::Vended;
-use crate::plan::topology::{CatalogSignIn, HeldSecrets, IcebergDestinationConfig, Records, S3Access};
+use crate::plan::topology::{CatalogSignIn, Compression, HeldSecrets, IcebergDestinationConfig, Records, S3Access};
 
 /// The schemes of an S3 location.
 const S3_SCHEMES: [&str; 3] = ["s3", "s3a", "s3n"];
@@ -115,12 +115,14 @@ fn assemble(
     let partitioner = TablePartitioner::new(&committer.spec, &committer.schema).map_err(refused)?;
     let file_schema = parquet::Schema::new(record).map_err(refused)?;
     let written = with_field_ids(file_schema.arrow(), &committer.schema);
-    let format = ParquetFormat::new(vec![file_schema.with_written(written)], config.compression);
+    let settings = WriteSettings::of(&committer.metadata.properties, config);
+    let format = ParquetFormat::new(vec![file_schema.with_written(written)], settings.options);
     let files = FileConfig {
         format: Arc::new(format),
         partitioner: Arc::new(partitioner),
         commit_interval: config.file_interval,
-        max_file_bytes: config.max_object_bytes,
+        max_file_bytes: settings.file_bytes,
+        take_bytes: settings.row_group_bytes,
         buffer_bytes: config.buffer_bytes,
         stall_after: config.stall_after,
         attributes: Attributes::new(),
@@ -247,6 +249,79 @@ fn open(
     evolve(catalog, config, record, loaded)
 }
 
+/// How the table asks its data files written, as its `write.*` properties say; what they leave unsaid is the
+/// destination's config, or Iceberg's own default where the config has no say.
+#[derive(Debug, PartialEq)]
+struct WriteSettings {
+    options: parquet::WriteOptions,
+    row_group_bytes: usize,
+    file_bytes: usize,
+}
+
+/// Iceberg's `write.parquet.bloom-filter-fpp.column.*` where a table sets none.
+const BLOOM_FILTER_FPP: f64 = 0.01;
+
+const CODEC: &str = "write.parquet.compression-codec";
+const BLOOM_FILTER: &str = "write.parquet.bloom-filter-enabled.column.";
+
+impl WriteSettings {
+    fn of(properties: &BTreeMap<String, String>, config: &IcebergDestinationConfig) -> WriteSettings {
+        let property = |key: &str| properties.get(key).map(String::as_str);
+        let bytes = |key: &str| property(key).and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0);
+        let codec = match property(CODEC).map(str::to_ascii_lowercase).as_deref() {
+            None => config.compression,
+            Some(name) => codec(name).unwrap_or_else(|| {
+                tracing::warn!(target: "iceberg.write", table = config.table, codec = name,
+                    "the table asks for a codec this writer has not, and its files take the destination's");
+                config.compression
+            }),
+        };
+        let bloom_filters = (properties.iter())
+            .filter_map(|(key, value)| Some((key.strip_prefix(BLOOM_FILTER)?, value)))
+            .filter(|(_, enabled)| enabled.eq_ignore_ascii_case("true"))
+            .map(|(column, _)| {
+                let fpp = property(&format!("write.parquet.bloom-filter-fpp.column.{column}"))
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .filter(|p| *p > 0.0 && *p < 1.0)
+                    .unwrap_or(BLOOM_FILTER_FPP);
+                (column.split('.').map(str::to_string).collect(), fpp)
+            })
+            .collect();
+        WriteSettings {
+            options: parquet::WriteOptions {
+                codec,
+                level: property("write.parquet.compression-level").and_then(|v| v.parse().ok()),
+                bloom_filters,
+            },
+            row_group_bytes: bytes("write.parquet.row-group-size-bytes").unwrap_or(ROW_GROUP_BYTES),
+            file_bytes: bytes("write.target-file-size-bytes").unwrap_or(config.max_object_bytes),
+        }
+    }
+}
+
+/// The name Iceberg gives `codec`.
+fn codec_name(codec: Compression) -> &'static str {
+    match codec {
+        Compression::None => "uncompressed",
+        Compression::Gzip => "gzip",
+        Compression::Snappy => "snappy",
+        Compression::Lz4 => "lz4",
+        Compression::Zstd => "zstd",
+    }
+}
+
+/// The codec Iceberg names `name`, where this writer has it.
+fn codec(name: &str) -> Option<Compression> {
+    Some(match name {
+        "uncompressed" | "none" => Compression::None,
+        "gzip" => Compression::Gzip,
+        "snappy" => Compression::Snappy,
+        "lz4" => Compression::Lz4,
+        "zstd" => Compression::Zstd,
+        _ => return None,
+    })
+}
+
 /// Creates the table with the record as its schema and `partitionBy` as its spec. A table another writer created
 /// first is loaded instead.
 fn create(catalog: &mut Catalog, config: &IcebergDestinationConfig, record: &DataType) -> Result<Loaded, IoError> {
@@ -256,6 +331,8 @@ fn create(catalog: &mut Catalog, config: &IcebergDestinationConfig, record: &Dat
     let properties = BTreeMap::from([
         ("format-version".to_string(), "2".to_string()),
         ("write.format.default".to_string(), "parquet".to_string()),
+        // So that every writer after this one writes as it does.
+        (CODEC.to_string(), codec_name(config.compression).to_string()),
     ]);
     catalog.create_table(&config.namespace, &config.table, &fresh.schema, &spec, &properties)
 }
@@ -1232,6 +1309,50 @@ mod tests {
 
     fn st(fields: &[(&str, DataType)]) -> DataType {
         DataType::Struct(fields.iter().map(|(n, t)| (n.to_string(), t.clone())).collect(), false)
+    }
+
+    #[test]
+    fn a_table_says_how_its_files_are_written_and_the_config_says_the_rest() {
+        let config = config("http://catalog", &[]);
+        let unsaid = WriteSettings::of(&BTreeMap::new(), &config);
+        assert_eq!(
+            unsaid,
+            WriteSettings {
+                options: config.compression.into(),
+                row_group_bytes: ROW_GROUP_BYTES,
+                file_bytes: config.max_object_bytes,
+            }
+        );
+        let said = BTreeMap::from(
+            [
+                (CODEC, "SNAPPY"),
+                ("write.parquet.compression-level", "3"),
+                ("write.parquet.row-group-size-bytes", "8388608"),
+                ("write.target-file-size-bytes", "268435456"),
+                ("write.parquet.bloom-filter-enabled.column.http.host", "true"),
+                ("write.parquet.bloom-filter-fpp.column.http.host", "0.05"),
+                ("write.parquet.bloom-filter-enabled.column.id", "true"),
+                ("write.parquet.bloom-filter-enabled.column.off", "false"),
+            ]
+            .map(|(k, v)| (k.to_string(), v.to_string())),
+        );
+        assert_eq!(
+            WriteSettings::of(&said, &config),
+            WriteSettings {
+                options: parquet::WriteOptions {
+                    codec: Compression::Snappy,
+                    level: Some(3),
+                    bloom_filters: vec![
+                        (vec!["http".into(), "host".into()], 0.05),
+                        (vec!["id".into()], BLOOM_FILTER_FPP),
+                    ],
+                },
+                row_group_bytes: 8 << 20,
+                file_bytes: 256 << 20,
+            }
+        );
+        let brotli = BTreeMap::from([(CODEC.to_string(), "brotli".to_string())]);
+        assert_eq!(WriteSettings::of(&brotli, &config).options.codec, config.compression);
     }
 
     fn config(url: &str, partition_by: &[&str]) -> IcebergDestinationConfig {

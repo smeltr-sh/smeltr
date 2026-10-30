@@ -34,7 +34,9 @@ use crate::io::files::{
     CommitError, Committer, DataFile, FileConfig, FileDestination, Lost, MAX_CONFLICT_RETRIES, ParquetFormat,
     Partition, Partitioner,
 };
-use crate::io::table::{Kind, Literal, column_at, column_stats, iso_date, one_record, read, url_encode};
+use crate::io::table::{
+    Kind, Literal, ROW_GROUP_BYTES, column_at, column_stats, iso_date, one_record, read, url_encode,
+};
 use crate::io::vended::Vended;
 use crate::io::{IoError, OwnedRecord, objects, parquet};
 use crate::ops::civil::MICROS_PER_DAY;
@@ -105,13 +107,18 @@ pub fn destination(
     let file_schema = parquet::Schema::new(record).map_err(refused)?;
     let format = ParquetFormat::new(
         vec![file_schema.with_written(committer.written.clone())],
-        config.compression,
+        config.compression.into(),
     );
+    // The protocol names no codec and no row group's size; a table names its files' size.
+    let file_bytes = (committer.snapshot.metadata.property("delta.targetFileSize"))
+        .and_then(size_bytes)
+        .unwrap_or(config.max_object_bytes);
     let files = FileConfig {
         format: Arc::new(format),
         partitioner: Arc::new(partitioner),
         commit_interval: config.file_interval,
-        max_file_bytes: config.max_object_bytes,
+        max_file_bytes: file_bytes,
+        take_bytes: ROW_GROUP_BYTES,
         buffer_bytes: config.buffer_bytes,
         stall_after: config.stall_after,
         attributes: Attributes::new(),
@@ -707,6 +714,24 @@ impl Partitioner for DeltaPartitioner {
         }
         Ok(Partition { part: 0, path, values })
     }
+}
+
+/// Bytes `value` says, as Delta writes a size: `104857600`, `100mb`. None for none, or nothing.
+fn size_bytes(value: &str) -> Option<usize> {
+    let value = value.trim().to_ascii_lowercase();
+    let digits = value.find(|c: char| !c.is_ascii_digit()).unwrap_or(value.len());
+    let unit = match value[digits..].trim() {
+        "" | "b" => 1,
+        "k" | "kb" => 1 << 10,
+        "m" | "mb" => 1 << 20,
+        "g" | "gb" => 1 << 30,
+        _ => return None,
+    };
+    value[..digits]
+        .parse::<usize>()
+        .ok()?
+        .checked_mul(unit)
+        .filter(|&n| n > 0)
 }
 
 /// A partition value as the log holds it. A timestamp is in UTC, as ISO 8601 writes it.
@@ -1620,6 +1645,16 @@ mod tests {
         .unwrap();
         assert_eq!(unpartitioned.path, Vec::<String>::new());
         assert_eq!(unpartitioned.values, Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn a_size_reads_as_delta_writes_one() {
+        assert_eq!(size_bytes("104857600"), Some(104_857_600));
+        assert_eq!(size_bytes("100mb"), Some(100 << 20));
+        assert_eq!(size_bytes(" 1 GB "), Some(1 << 30));
+        for nothing in ["", "0", "mb", "1tb", "-5", "1.5mb"] {
+            assert_eq!(size_bytes(nothing), None, "{nothing:?}");
+        }
     }
 
     #[test]

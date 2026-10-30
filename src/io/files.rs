@@ -38,15 +38,19 @@ use object_store::{
 use parquet::file::metadata::ParquetMetaData;
 use tokio_util::bytes::Bytes;
 
-use super::parquet::{Columns, FileWriter, Schema};
+use super::parquet::{Columns, FileWriter, Schema, WriteOptions};
 use super::{BatchCompletion, BatchId, Destination, Dispatched, IoError, OwnedRecord, Rejection};
-use crate::plan::topology::Compression;
 
 /// Files open per destination. Opening one more closes the least recently written.
 pub const MAX_OPEN_FILES: usize = 64;
 
-/// Bytes an encoder buffers before its output goes to the upload: a Parquet row group, or that much of lines.
+/// Bytes an encoder buffers before its output goes to the upload: a Parquet row group, or that much of lines. What
+/// the worker reserves for each open file.
 pub const TAKE_BYTES: usize = 32 * 1024 * 1024;
+
+/// What every open file's encoder may buffer together. A file may take more than `TAKE_BYTES` while others take less:
+/// a row group grows to its table's size where few files are open.
+const TAKE_POOL_BYTES: usize = MAX_OPEN_FILES * TAKE_BYTES;
 
 /// Commits retried at once after a `Conflict` before the destination fails.
 pub const MAX_CONFLICT_RETRIES: usize = 8;
@@ -243,12 +247,12 @@ pub trait FileEncoder: Send {
 pub struct ParquetFormat {
     /// The records the destination writes, one per part. A table has one.
     schemas: Vec<Schema>,
-    compression: Compression,
+    options: WriteOptions,
 }
 
 impl ParquetFormat {
-    pub fn new(schemas: Vec<Schema>, compression: Compression) -> ParquetFormat {
-        ParquetFormat { schemas, compression }
+    pub fn new(schemas: Vec<Schema>, options: WriteOptions) -> ParquetFormat {
+        ParquetFormat { schemas, options }
     }
 }
 
@@ -283,7 +287,7 @@ impl FileFormat for ParquetFormat {
         // `admit` let through only parts this format has a schema for.
         Box::new(ParquetEncoder(FileWriter::open(
             &self.schemas[partition.part],
-            self.compression,
+            &self.options,
         )))
     }
 }
@@ -329,6 +333,9 @@ pub struct FileConfig {
     pub commit_interval: Duration,
     /// Bytes a data file may reach before it is closed early.
     pub max_file_bytes: usize,
+    /// Bytes an encoder buffers before its output goes to the upload: for Parquet, a row group's size. Less where
+    /// every open file's together reach what the worker reserves for them.
+    pub take_bytes: usize,
     /// The destination's egress budget; a commit is forced short of it (`commit_at`).
     pub buffer_bytes: usize,
     /// How long a commit may take, retries included, before the destination fails.
@@ -682,10 +689,13 @@ impl Writer {
                 let file = self.open_file(partition.clone())?;
                 self.open.insert(partition.clone(), file);
             }
+            let pooled = self.make_room()?;
+            let take_bytes = self.config.take_bytes;
             let file = self.open.get_mut(&partition).expect("opened above");
             file.last_written = Instant::now();
-            let room = TAKE_BYTES
+            let room = take_bytes
                 .saturating_sub(file.encoder.in_progress_bytes())
+                .min(pooled)
                 .min(self.config.max_file_bytes.saturating_sub(file.encoder.bytes_written()));
             let mut end = 1;
             let mut bytes = rest[0].bytes();
@@ -696,7 +706,7 @@ impl Writer {
             let (slice, later) = rest.split_at(end);
             file.encoder.write(slice);
             rest = later;
-            if file.encoder.in_progress_bytes() >= TAKE_BYTES {
+            if file.encoder.in_progress_bytes() >= take_bytes {
                 upload_taken(file)?;
             }
             // Within a 64th of its limit a file is full: a slice there would be a few rows at a time.
@@ -713,6 +723,21 @@ impl Writer {
             }
         }
         Ok(())
+    }
+
+    /// What the open files' encoders may buffer more together: when they have buffered it all, the largest take goes
+    /// to its upload first.
+    fn make_room(&mut self) -> Result<usize, String> {
+        let buffered: usize = self.open.values().map(|f| f.encoder.in_progress_bytes()).sum();
+        if buffered < TAKE_POOL_BYTES {
+            return Ok(TAKE_POOL_BYTES - buffered);
+        }
+        let largest = (self.open.values_mut())
+            .max_by_key(|f| f.encoder.in_progress_bytes())
+            .expect("a full pool has a file");
+        let freed = largest.encoder.in_progress_bytes();
+        upload_taken(largest)?;
+        Ok(TAKE_POOL_BYTES - buffered + freed)
     }
 
     fn open_file(&mut self, partition: Partition) -> Result<OpenFile, String> {
