@@ -565,8 +565,13 @@ fn impossible_answers(
             _ => None,
         };
         if let Some(lacks) = lacks {
+            let a = if kind.starts_with(['A', 'E', 'I', 'O', 'U']) {
+                "an"
+            } else {
+                "a"
+            };
             errors.push(format!(
-                "{what} answers {kind} with {}, but a {kind} row has no {lacks}",
+                "{what} answers {kind} with {}, but {a} {kind} row has no {lacks}",
                 answer.label()
             ));
         }

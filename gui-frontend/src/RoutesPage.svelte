@@ -32,7 +32,7 @@
   import Advanced from './Advanced.svelte';
   import Collapsible from './Collapsible.svelte';
   import RouteFlow from './RouteFlow.svelte';
-  import { cards, type Card } from './routeFlow';
+  import { cards, namedRoutes, type Card } from './routeFlow';
   import JsonEditPage from './JsonEditPage.svelte';
   import RoutePreview from './RoutePreview.svelte';
   import ExceptionMatrix from './ExceptionMatrix.svelte';
@@ -155,7 +155,13 @@
   let fromShared: Set<string> = $state(new Set());
   /** `shared/`'s own routes, which this group runs too. Never saved from here: the page writes its own scope. */
   let sharedRoutes: RouteDto[] = $state([]);
-  let refusals = $derived(problems(exceptions, [...routes, ...sharedRoutes], destinations));
+  let refusals = $derived(
+    problems(
+      exceptions,
+      namedRoutes([...sharedRoutes, ...routes], (id) => pipelineNames[id] || id),
+      destinations,
+    ),
+  );
   // This page writes two files (`edits.ts`): the routes, and the manifest's
   // answers. The manifest write lands first and can land alone, so a
   // half-landed save keeps what is still unsaved rather than dropping all.

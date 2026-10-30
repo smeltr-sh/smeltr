@@ -1171,22 +1171,22 @@ fn an_answer_a_delivery_kind_cannot_carry_out_is_refused() {
         (
             "Unmatched",
             r#""ignore""#,
-            "the group answers Unmatched with ignore, but a Unmatched row has no route",
+            "the group answers Unmatched with ignore, but an Unmatched row has no route",
         ),
         (
             "Unmatched",
             r#""tag""#,
-            "the group answers Unmatched with tag, but a Unmatched row has no route",
+            "the group answers Unmatched with tag, but an Unmatched row has no route",
         ),
         (
             "Unprocessable",
             r#""ignore""#,
-            "answers Unprocessable with ignore, but a Unprocessable row has no record",
+            "answers Unprocessable with ignore, but an Unprocessable row has no record",
         ),
         (
             "Unprocessable",
             r#""tag""#,
-            "answers Unprocessable with tag, but a Unprocessable row has no record",
+            "answers Unprocessable with tag, but an Unprocessable row has no record",
         ),
         (
             "Refused",
@@ -1223,7 +1223,7 @@ fn an_answer_a_delivery_kind_cannot_carry_out_is_refused() {
         .expect_err("a route tagging")
         .to_string();
     assert!(
-        err.contains("route s \u{2192} p answers Unmatched with tag, but a Unmatched row has no route"),
+        err.contains("route s \u{2192} p answers Unmatched with tag, but an Unmatched row has no route"),
         "{err}"
     );
 

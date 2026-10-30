@@ -8,7 +8,7 @@
 // The card holds one thing the bundle cannot: a destination brought onto it that no rule sends to yet. It
 // lives on the card only, so the card can warn about it, and a reload forgets it.
 
-import type { DeliverRuleDto, FileConfigDto, RouteDto } from './api';
+import type { DeliverRuleDto, FileConfigDto, PipelineDto, RouteDto } from './api';
 import { elbow } from './map';
 
 export type Point = { x: number; y: number };
@@ -27,37 +27,59 @@ export function cards(routes: RouteDto[]): Card[] {
   return out;
 }
 
+type Routed = Pick<RouteDto, 'source' | 'pipeline'>;
+
 /** `routes[at]` as every screen and message names it: its source, then its pipeline, and `(n)` when another route
  * runs from that source to that pipeline too, `n` counting those routes in the order they run. A route's id is
  * minted, so it is never the name. The server names routes the same way (`route_name` in `src/config_file/mod.rs`). */
 export function routeName(
-  routes: readonly Pick<RouteDto, 'source' | 'pipeline'>[],
+  routes: readonly Routed[],
   at: number,
   pipelineName: (id: string) => string,
 ): string {
   const r = routes[at];
-  const twin = (o: Pick<RouteDto, 'source' | 'pipeline'>) =>
-    o.source === r.source && o.pipeline === r.pipeline;
+  const twin = (o: Routed) => o.source === r.source && o.pipeline === r.pipeline;
   const name = `${r.source} \u2192 ${pipelineName(r.pipeline)}`;
   const twins = routes.filter(twin).length;
   return twins === 1 ? name : `${name} (${routes.slice(0, at).filter(twin).length + 1})`;
 }
 
-/** Route `id` of `config` by its `routeName`, counted among `shared`'s routes first, as a group runs them; undefined
- * where `config` has no such route. */
+/** Each of `routes`, all that run, in the order they run, with its `routeName`. */
+export function namedRoutes<R extends Routed>(
+  routes: readonly R[],
+  pipelineName: (id: string) => string,
+): (R & { name: string })[] {
+  return routes.map((r, at) => ({ ...r, name: routeName(routes, at, pipelineName) }));
+}
+
+/** What a pipeline is called: its name, or its id where it has none. */
+export function pipelineNamer(
+  pipelines: readonly Pick<PipelineDto, 'id' | 'name'>[],
+): (id: string) => string {
+  const names = new Map(pipelines.map((p) => [p.id, p.name || p.id]));
+  return (id) => names.get(id) ?? id;
+}
+
+/** The routes a bundle runs, `shared`'s first, as a group runs them, each with its `routeName`. */
+export function bundleRoutes(
+  config: Pick<FileConfigDto, 'routes' | 'pipelines'>,
+  shared?: Pick<FileConfigDto, 'routes' | 'pipelines'> | null,
+): (RouteDto & { name: string })[] {
+  return namedRoutes(
+    [...(shared?.routes ?? []), ...(config.routes ?? [])],
+    pipelineNamer([...(shared?.pipelines ?? []), ...(config.pipelines ?? [])]),
+  );
+}
+
+/** Route `id` of `config` by its `routeName`, counted after `shared`'s routes; undefined where `config` has no such
+ * route. */
 export function routeNameIn(
   config: Pick<FileConfigDto, 'routes' | 'pipelines'>,
   id: string,
   shared?: Pick<FileConfigDto, 'routes' | 'pipelines'> | null,
 ): string | undefined {
-  const own = config.routes ?? [];
-  const at = own.findIndex((r) => r.id === id);
-  if (at < 0) return undefined;
-  const first = shared?.routes ?? [];
-  const pipelines = new Map(
-    [...(shared?.pipelines ?? []), ...(config.pipelines ?? [])].map((p) => [p.id, p.name || p.id]),
-  );
-  return routeName([...first, ...own], first.length + at, (p) => pipelines.get(p) ?? p);
+  if (!(config.routes ?? []).some((r) => r.id === id)) return undefined;
+  return bundleRoutes(config, shared).find((r) => r.id === id)?.name;
 }
 
 /** Every destination on the card, once each: those a rule sends to, in first-use order, then the ones brought onto

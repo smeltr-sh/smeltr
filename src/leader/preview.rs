@@ -79,6 +79,7 @@ pub struct CaptureFilterCheck {
 
 #[derive(serde::Serialize)]
 pub struct RouteSkip {
+    /// The route's name (`LoadedSystem::route_names`).
     pub route: String,
     pub error: String,
 }
@@ -728,11 +729,12 @@ fn capture_filter(
 ) -> Result<CaptureFilterCheck, String> {
     let (compiled, dest) = at_destination(system, &asked.destination)?;
     let mut check = CaptureFilterCheck::default();
+    let names = system.route_names();
     for (idx, filter) in compiled.capture_filters(dest, &asked.text) {
         match filter {
             Ok(_) => check.reads += 1,
             Err(e) => check.skips.push(RouteSkip {
-                route: compiled.routes[idx].id.clone(),
+                route: names[idx].clone(),
                 error: e.to_string(),
             }),
         }
@@ -1754,7 +1756,10 @@ mod tests {
         assert_eq!((both.reads, both.skips.len()), (2, 0));
         let one = check("x > 1");
         assert_eq!(one.reads, 1);
-        assert_eq!(one.skips.iter().map(|s| s.route.as_str()).collect::<Vec<_>>(), ["r2"]);
+        assert_eq!(
+            one.skips.iter().map(|s| s.route.as_str()).collect::<Vec<_>>(),
+            ["in \u{2192} Q"]
+        );
         assert!(one.skips[0].error.contains('x'), "{}", one.skips[0].error);
         assert_eq!(check("nope > 1").reads, 0);
     }
