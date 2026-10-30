@@ -998,5 +998,48 @@
         ]
       }
     ]
+  },
+  "schemas": {
+    "title": "How schemas work",
+    "description": "A schema lists fields and their types. A pipeline names the schemas it produces, and a destination names the schemas it accepts. Records flow from the pipeline to the destination, and Smeltr checks them against both.",
+    "caption": "A pipeline names the schemas it produces. A destination may name the schemas it accepts. Smeltr checks the records against both, in the editor and in review. A mismatch is a finding, and never blocks a deploy.",
+    "layouts": [
+      {
+        "width": 900,
+        "height": 300,
+        "nodes": [
+          {
+            "x": 340,
+            "y": 20,
+            "w": 220,
+            "title": "Schema",
+            "detail": ["Fields \u00b7 types \u00b7 required"]
+          },
+          { "x": 20, "y": 200, "w": 220, "title": "Pipeline", "detail": ["Produces schemas"] },
+          { "x": 660, "y": 200, "w": 220, "title": "Destination", "detail": ["Accepts schemas"] }
+        ],
+        "paths": ["M240 240H650"],
+        "controlPaths": ["M400 100V150H130V190", "M500 100V150H770V190"],
+        "labels": [{ "x": 450, "y": 228, "text": "Records" }]
+      },
+      {
+        "width": 360,
+        "height": 420,
+        "nodes": [
+          {
+            "x": 60,
+            "y": 10,
+            "w": 240,
+            "title": "Schema",
+            "detail": ["Fields \u00b7 types \u00b7 required"]
+          },
+          { "x": 60, "y": 170, "w": 240, "title": "Pipeline", "detail": ["Produces schemas"] },
+          { "x": 60, "y": 330, "w": 240, "title": "Destination", "detail": ["Accepts schemas"] }
+        ],
+        "paths": ["M180 250V320"],
+        "controlPaths": ["M60 50H25V210H50", "M300 50H335V370H310"],
+        "labels": [{ "x": 215, "y": 290, "text": "Records" }]
+      }
+    ]
   }
 }
