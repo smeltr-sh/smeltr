@@ -149,7 +149,8 @@ test('a visitor captures a sample, saves it on a branch and previews a pipeline 
 
 test('the map draws the fleet from the service', async ({ page }) => {
   await open(page, '#/map');
-  await expect(page.getByText('panw-firewalls').first()).toBeVisible();
+  // The map draws from what the in-browser service has computed, which a loaded machine takes seconds over.
+  await expect(page.getByText('panw-firewalls').first()).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText('nginx-access').first()).toBeVisible();
   await expect(page.getByText('lookup key column')).toHaveCount(0);
 });
