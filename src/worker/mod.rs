@@ -4805,10 +4805,12 @@ fn load_target(
     if !unusable.is_empty() {
         return Err(unusable.join("; "));
     }
-    let topology = system
-        .compile_topology()
-        .map(Arc::new)
-        .map_err(|errs| errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))?;
+    let topology = system.compile_topology().map(Arc::new).map_err(|errs| {
+        (errs.into_iter())
+            .map(|e| system.describe(e))
+            .collect::<Vec<_>>()
+            .join("; ")
+    })?;
     Ok((system, topology, content))
 }
 

@@ -173,8 +173,14 @@ impl<'a> ItemErrors<'a> {
         }
     }
 
-    /// A problem with the item as a whole, or after `at`, with one setting.
+    /// A problem with the item as a whole, or after `at`, with one setting. `message` names the item, as the error
+    /// bar shows it without its id.
     fn push(&mut self, message: String) {
+        debug_assert!(
+            message.contains(&self.item.id),
+            "{message:?} does not name {}",
+            self.item.id
+        );
         self.errors.push(ValidationError {
             item: Some(self.item.clone()),
             field: self.field,
@@ -438,7 +444,7 @@ fn resolve_schemas(file: &FileConfig, attributed: &mut Vec<ValidationError>) -> 
             Ok(schema) => {
                 declared.insert(&dto.id, Arc::new(schema));
             }
-            Err(e) => errors.at("fields").push(e),
+            Err(e) => errors.at("fields").push(format!("schema {}'s fields: {e}", dto.id)),
         }
     }
     // `names` is what the object does with a schema: "produces" or "accepts".

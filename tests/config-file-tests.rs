@@ -1274,7 +1274,7 @@ fn a_deliver_condition_is_compiled_against_the_pipelines_output() {
     let Err(errs) = compile(EMPTY_PIPELINE, "nosuch > 3") else {
         panic!("an unknown field must not compile")
     };
-    assert!(errs[0].message.contains("deliver rule"), "{}", errs[0].message);
+    assert_eq!((errs[0].route, errs[0].rule), (Some(0), Some(0)), "{}", errs[0].message);
     let Err(errs) = compile(sets_severity, "severity") else {
         panic!("a non-Bool must not compile")
     };

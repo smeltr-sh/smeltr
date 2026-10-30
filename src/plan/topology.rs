@@ -3570,7 +3570,6 @@ pub fn compile_topology_with(
                     compiled.deliver.push(c);
                 }
                 Err(mut e) => {
-                    e.message = format!("route {r}'s deliver rule: {}", e.message);
                     e.route = Some(r);
                     e.rule = Some(i as u32);
                     errors.push(e);
