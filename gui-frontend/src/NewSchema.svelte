@@ -128,6 +128,7 @@
   import { suggestId } from './ids';
   import LineBreakerField from './LineBreakerField.svelte';
   import { readSchema } from './api';
+  import { count } from './time';
 
   let {
     open,
@@ -188,7 +189,7 @@
     draft.previewError = '';
     draft.columns = read.preview.columns;
     draft.types = Object.fromEntries(
-      read.preview.types.map(([value, ty]) => [value, draft.types[value] ?? ty ?? 'str']),
+      read.preview.types.map((t) => [t.value, draft.types[t.value] ?? t.readsAs ?? 'str']),
     );
   }
 
@@ -202,6 +203,12 @@
     if (role) columns[role as (typeof CSV_ROLES)[number]] = at;
     draft.columns = columns;
     void previewCsv(draft, columns);
+  }
+
+  /** A row's cell in the column that holds `role`, trimmed. */
+  function cellOf(draft: SchemaDraft, row: string[], role: (typeof CSV_ROLES)[number]): string {
+    const at = draft.columns[role];
+    return at == null ? '' : (row[at] ?? '').trim();
   }
 
   /** The role column `at` holds, or '' for none. */
@@ -314,7 +321,7 @@
                         value={roleOf(draft, i)}
                         onchange={(e) => hold(draft, i, e.currentTarget.value)}
                       >
-                        <option value="">nothing</option>
+                        <option value="">ignore</option>
                         {#each CSV_ROLES as r (r)}<option value={r}>{r}</option>{/each}
                       </select>
                     </th>
@@ -326,38 +333,62 @@
               </thead>
               <tbody>
                 {#each preview.rows as row, r (r)}
+                  {@const value = cellOf(draft, row, 'type')}
+                  <!-- A type value's choice is in the first row that holds it. -->
+                  {@const first =
+                    preview.rows.findIndex((o) => cellOf(draft, o, 'type') === value) === r}
+                  {@const said = preview.types.find((t) => t.value === value)}
                   <tr>
-                    {#each preview.header as _, i (i)}<td class="mono">{row[i] ?? ''}</td>{/each}
+                    {#each preview.header as _, i (i)}
+                      {#if i === draft.columns.type && said}
+                        <td class="typed">
+                          <div class="mono">{row[i]}</div>
+                          {#if first}
+                            <div class="reads">
+                              as <select
+                                aria-label={`Type of ${value}`}
+                                bind:value={draft.types[value]}
+                              >
+                                {#each said.readsAs && !SCHEMA_TYPES.includes(said.readsAs) ? [said.readsAs, ...SCHEMA_TYPES] : SCHEMA_TYPES as t (t)}
+                                  <option value={t}>{t}</option>
+                                {/each}
+                              </select>
+                              <span class="dim">{count(said.fields, 'field')}</span>
+                              {#if said.readsAs === null}<span class="dim"
+                                  >· not a type smeltr knows: choose how to read it</span
+                                >{/if}
+                            </div>
+                          {:else}
+                            <div class="reads dim">
+                              as <span class="mono">{draft.types[value]}</span>
+                            </div>
+                          {/if}
+                        </td>
+                      {:else}
+                        <td class="mono">{row[i] ?? ''}</td>
+                      {/if}
+                    {/each}
                   </tr>
                 {/each}
               </tbody>
             </table>
           </div>
+          {#if draft.columns.field != null && draft.columns.type != null}
+            {@const reads = preview.rows
+              .slice(0, 5)
+              .map(
+                (row) =>
+                  `${cellOf(draft, row, 'field')}: ${draft.types[cellOf(draft, row, 'type')] ?? ''}`,
+              )}
+            <p class="note">
+              Reads as {#each reads as said, r (r)}{r > 0 ? ', ' : ''}<span class="mono"
+                  >{said}</span
+                >{/each}{preview.types.reduce((n, t) => n + t.fields, 0) > reads.length
+                ? ', …'
+                : ''}
+            </p>
+          {/if}
         </fieldset>
-        {#if preview.types.length > 0}
-          <fieldset class="types">
-            <legend>What each type value means</legend>
-            <table>
-              <tbody>
-                {#each preview.types as [value, known] (value)}
-                  <tr>
-                    <td class="mono">{value}</td>
-                    <td>
-                      <select aria-label={`Type of ${value}`} bind:value={draft.types[value]}>
-                        {#each known && !SCHEMA_TYPES.includes(known) ? [known, ...SCHEMA_TYPES] : SCHEMA_TYPES as t (t)}
-                          <option value={t}>{t}</option>
-                        {/each}
-                      </select>
-                    </td>
-                    <td class="dim"
-                      >{known === null ? 'not a type smeltr knows: choose how to read it' : ''}</td
-                    >
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </fieldset>
-        {/if}
       {/if}
     {:else if draft.type === 'ocsf'}
       <Field required label="File">
@@ -433,16 +464,14 @@
     font-family: var(--mono);
   }
 
-  .picker,
-  .types {
+  .picker {
     border: 0;
     padding: 0;
     margin: 0;
     min-width: 0;
   }
 
-  .picker legend,
-  .types legend {
+  .picker legend {
     font-weight: 600;
     margin-bottom: 0.3rem;
   }
@@ -461,14 +490,21 @@
   .preview td {
     padding: 0.2rem 0.5rem 0.2rem 0;
     text-align: left;
+    vertical-align: top;
     white-space: nowrap;
     max-width: 16rem;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  .types td {
-    padding: 0.2rem 0.5rem 0.2rem 0;
+  /* A type cell holds its choice, which wraps rather than being cut short. */
+  .preview .typed {
+    white-space: normal;
+    max-width: 20rem;
+  }
+
+  .reads {
+    margin-top: 0.15rem;
   }
 
   .preview .name {

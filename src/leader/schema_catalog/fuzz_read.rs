@@ -19,6 +19,7 @@ use super::*;
 use crate::config_file::SchemaFieldDto;
 use crate::fuzz::{self, Coverage, Rng};
 use crate::io::elastic_mapping::types_for;
+use crate::schema::csv::TypeValue;
 use crate::schema::ocsf::{Cut, DEEPEST};
 
 /// Text a cell may hold, each piece one a CSV or YAML writer has to take care over.
@@ -492,6 +493,8 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
         let mut row = 1;
         // Where a row is spoilt, its number and what the reader says of it.
         let mut spoilt: Option<String> = None;
+        // Each row's type value, as the preview counts them.
+        let mut said: Vec<String> = Vec::new();
         for f in &fields {
             if rng.chance(8) {
                 cov.reach("csv a blank row");
@@ -535,6 +538,7 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
                     spoilt = Some(format!("row {row}: no `type` for `{}`", f.field));
                 }
             }
+            said.push(ty.clone());
             let es = f
                 .elasticsearch
                 .as_ref()
@@ -582,12 +586,41 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
                 preview.columns.field
             ));
         }
-        for (value, ty) in &preview.types {
+        for TypeValue {
+            value, reads_as: ty, ..
+        } in &preview.types
+        {
             if ty.is_none()
                 != (types.contains_key(value) || spoilt.as_ref().is_some_and(|s| s.contains(value.as_str())))
             {
                 return Err(format!("the preview reads `{value}` as {ty:?}"));
             }
+        }
+        // Every value is counted, and shows in a row of the preview.
+        let ty_at = columns.iter().position(|c| *c == "type").ok_or("no type column")?;
+        for t in &preview.types {
+            let held = said.iter().filter(|s| **s == t.value).count();
+            if t.fields != held
+                || !preview
+                    .rows
+                    .iter()
+                    .any(|r| r.get(ty_at).map(|c| c.trim()) == Some(&t.value))
+            {
+                return Err(format!(
+                    "the preview counts `{}` {} times, not {held}, or shows no row of it",
+                    t.value, t.fields
+                ));
+            }
+        }
+        let mut distinct: Vec<&String> = said.iter().filter(|s| !s.is_empty()).collect();
+        distinct.sort();
+        distinct.dedup();
+        if distinct.len() != preview.types.len() {
+            return Err(format!(
+                "the preview holds {} type values, not {}",
+                preview.types.len(),
+                distinct.len()
+            ));
         }
         let read = read(&request(false)).map(|r| r.schema.fields);
         if let Some(said) = spoilt {

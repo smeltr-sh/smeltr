@@ -532,7 +532,7 @@ test('a CSV of fields comes in by its header, example and Elasticsearch type amo
   expect(field('status')).toMatchObject({ type: 'i64', example: '200' });
 });
 
-test("a CSV's columns and types are picked from its first rows when its header names neither", async ({
+test("a CSV's columns and types are picked from its rows when its header names neither", async ({
   admin,
   leader,
   api,
@@ -544,10 +544,18 @@ test("a CSV's columns and types are picked from its first rows when its header n
     'Attribute,Kind,Meaning\n' +
       'host,VARCHAR,The machine it ran on.\n' +
       'port,int,The port it listened on.\n' +
+      'user,VARCHAR,Who ran it.\n' +
+      'pid,int,Its process.\n' +
+      'path,VARCHAR,What it ran.\n' +
+      'args,VARCHAR,What it was told.\n' +
       'tags,widget,What the team calls it.\n',
   );
   const dialog = await addFrom(admin, leader, 'CSV of fields', 'inventory', csv);
   await expect(dialog.getByText('Choose the column that holds')).toBeVisible();
+  await expect(dialog.getByRole('combobox', { name: 'Column Kind holds' })).toHaveValue('');
+  await expect(
+    dialog.getByRole('combobox', { name: 'Column Kind holds' }).locator('option:checked'),
+  ).toHaveText('ignore');
   await expect(dialog.getByRole('button', { name: 'Add', exact: true })).toBeDisabled();
   await dialog.getByRole('combobox', { name: 'Column Attribute holds' }).selectOption('field');
   await dialog.getByRole('combobox', { name: 'Column Kind holds' }).selectOption('type');
@@ -557,7 +565,13 @@ test("a CSV's columns and types are picked from its first rows when its header n
   const widget = dialog.getByRole('combobox', { name: 'Type of widget' });
   await expect(widget).toHaveValue('str');
   await expect(dialog.getByText('not a type smeltr knows')).toBeVisible();
+  // Past the first five rows, `widget` shows in a row of its own; each value says how many rows hold it.
+  await expect(dialog.getByText('4 fields')).toBeVisible();
+  await expect(dialog.getByText('1 field', { exact: true })).toBeVisible();
   await widget.selectOption('{...}');
+  await expect(dialog.getByText(/^Reads as/)).toHaveText(
+    'Reads as host: str, port: i64, user: str, pid: i64, path: str, …',
+  );
   await dialog.screenshot({ path: 'results/schemas-csv-picker.png' });
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();

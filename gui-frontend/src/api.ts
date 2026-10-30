@@ -5312,13 +5312,24 @@ export type CsvColumns = Partial<
   Record<'field' | 'type' | 'required' | 'description' | 'example' | 'elasticsearch', number>
 >;
 
-/** A CSV before its columns are chosen: its header, its first rows, the columns its header names, and each value of
- * its type column with the type it reads as, null where the reader does not know it. */
+/** A CSV before its columns are chosen: its header, its rows to show, the columns its header names, and each value of
+ * its type column. */
 export interface CsvPreview {
   header: string[];
+  /** The first rows, and after them the first row of each type value they do not hold. */
   rows: string[][];
   columns: CsvColumns;
-  types: [string, string | null][];
+  /** In the order the file first holds them. */
+  types: CsvTypeValue[];
+}
+
+/** One value of a CSV's type column. */
+export interface CsvTypeValue {
+  value: string;
+  /** The type it reads as, null where the reader does not know it. */
+  readsAs: string | null;
+  /** How many rows hold it. */
+  fields: number;
 }
 
 /** A file a schema is read from: JSON Schema, ECS's `fields.csv` or `ecs_flat.yml`, `ocsf-schema-compiler`'s output,

@@ -39,42 +39,68 @@ impl Columns {
     }
 }
 
-/// What a file holds before its columns are chosen: its header, its first rows, the columns its header names, and
-/// each value of the type column with the type it reads as, `None` where it is no type the reader knows.
+/// What a file holds before its columns are chosen: its header, its rows to show, the columns its header names, and
+/// each value of the type column.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
 pub struct Preview {
     pub header: Vec<String>,
+    /// The first rows, and after them the first row of each type value they do not hold, so every value shows in one.
     pub rows: Vec<Vec<String>>,
     pub columns: Columns,
-    pub types: Vec<(String, Option<String>)>,
+    /// In the order the file first holds them.
+    pub types: Vec<TypeValue>,
 }
 
-/// How many rows a preview shows.
+/// One value of a CSV's type column.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TypeValue {
+    pub value: String,
+    /// The type it reads as, `None` where it is no type the reader knows.
+    pub reads_as: Option<String>,
+    /// How many rows hold it.
+    pub fields: usize,
+}
+
+/// How many rows a preview shows before those it adds for type values.
 const SHOWN: usize = 5;
 
-/// `text`'s header and first rows, the columns `columns` says or its header names, and the values its type column
+/// `text`'s header and rows to show, the columns `columns` says or its header names, and the values its type column
 /// holds.
 pub fn preview(text: &str, columns: Option<&Columns>) -> Result<Preview, String> {
     let mut rows = rows(text)?.into_iter();
     let (_, header) = rows.next().ok_or("the file is empty")?;
     let columns = columns.cloned().unwrap_or_else(|| Columns::named(&header));
-    let rows: Vec<Vec<String>> = rows.map(|(_, r)| r).collect();
-    let mut seen: Vec<String> = (columns.ty.into_iter())
-        .flat_map(|i| rows.iter().filter_map(move |r| r.get(i)))
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .collect();
-    seen.sort();
-    seen.dedup();
+    let mut types: Vec<TypeValue> = Vec::new();
+    let mut shown = Vec::new();
+    for (n, (_, row)) in rows.enumerate() {
+        let value = columns
+            .ty
+            .and_then(|i| row.get(i))
+            .map(|t| t.trim())
+            .unwrap_or_default();
+        let new = match types.iter_mut().find(|t| t.value == value) {
+            Some(t) => {
+                t.fields += 1;
+                false
+            }
+            None if value.is_empty() => false,
+            None => {
+                types.push(TypeValue {
+                    value: value.to_string(),
+                    reads_as: type_of(value, &BTreeMap::new()),
+                    fields: 1,
+                });
+                true
+            }
+        };
+        if n < SHOWN || new {
+            shown.push(row);
+        }
+    }
     Ok(Preview {
-        types: seen
-            .into_iter()
-            .map(|t| {
-                let ty = type_of(&t, &BTreeMap::new());
-                (t, ty)
-            })
-            .collect(),
-        rows: rows.into_iter().take(SHOWN).collect(),
+        types,
+        rows: shown,
         header,
         columns,
     })
@@ -221,6 +247,20 @@ mod tests {
     }
 
     #[test]
+    fn a_preview_shows_a_row_of_each_type_value_and_counts_them() {
+        let mut text = String::from("field,type\n");
+        for i in 0..8 {
+            text += &format!("f{i},str\n");
+        }
+        text += "late,int\nlater,int\n";
+        let preview = preview(&text, None).unwrap();
+        let shown: Vec<&str> = preview.rows.iter().map(|r| r[0].as_str()).collect();
+        assert_eq!(shown, ["f0", "f1", "f2", "f3", "f4", "late"]);
+        let counts: Vec<(&str, usize)> = preview.types.iter().map(|t| (t.value.as_str(), t.fields)).collect();
+        assert_eq!(counts, [("str", 8), ("int", 2)]);
+    }
+
+    #[test]
     fn a_type_reads_by_its_common_name_or_as_it_is_told() {
         let text = "Column,Data Type\nhost,VARCHAR\nport,int\nseen,timestamp\nshape,widget\n";
         let preview = preview(text, None).unwrap();
@@ -228,7 +268,7 @@ mod tests {
         assert_eq!(preview.header, vec!["Column", "Data Type"]);
         assert_eq!(preview.rows.len(), 4);
         let types: Vec<(&str, Option<&str>)> = (preview.types.iter())
-            .map(|(v, t)| (v.as_str(), t.as_deref()))
+            .map(|t| (t.value.as_str(), t.reads_as.as_deref()))
             .collect();
         assert_eq!(
             types,
