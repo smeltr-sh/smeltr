@@ -1,8 +1,9 @@
 <script lang="ts">
   import GuideLayout from '#lib/components/GuideLayout.svelte';
   const sections = [
-    { id: 'accounts', title: 'Create a local account' },
-    { id: 'manage', title: 'Reset, disable or sign out' },
+    { id: 'accounts', title: 'Add an account' },
+    { id: 'keys', title: 'Call the API with a key' },
+    { id: 'manage', title: 'Find, change, disable or sign out' },
     { id: 'sessions', title: 'Change session lifetimes' },
     { id: 'recovery', title: 'Recover access when nobody can sign in' },
     { id: 'oidc', title: 'Sign in through single sign-on' },
@@ -16,41 +17,88 @@
   {sections}
 >
   <h1>Accounts and access</h1>
-  <h2 id="accounts">Create a local account</h2>
+  <h2 id="accounts">Add an account</h2>
   <p>
-    A local account signs in with a username and password and is always an administrator. Give
-    everybody else access through single sign-on and <a href="#roles">roles</a>.
+    Every account signs in one way: with a <strong>Password</strong>, through <strong>SSO</strong>,
+    or with a <strong>Key</strong>. However it signs in, it can do only what it holds. You add
+    password and key accounts here; an SSO account is created the first time its person signs in
+    through the provider.
   </p>
   <ol>
-    <li>Open Admin → Accounts → Users and select <strong>+ Add user</strong>.</li>
-    <li>Enter Display name and Username, then choose <strong>Add</strong>.</li>
+    <li>Open Admin → Accounts and select <strong>+ Add account</strong>.</li>
+    <li>Under Signs in with, choose <strong>Password</strong> or <strong>Key</strong>.</li>
+    <li>Enter a Display name, and for a password account a Username.</li>
     <li>
-      Securely hand over the one-time password before dismissing the panel. The recipient must
-      choose their own password at first sign-in. If it is lost, reset it; you cannot read it back.
+      Turn on <strong>Administrator</strong> for an account that holds everything, or tick the
+      <a href="#roles">roles</a> it holds. An account with neither can sign in but sees nothing.
+    </li>
+    <li>Choose <strong>Add</strong>.</li>
+    <li>
+      For a password account, securely hand over the one-time password before dismissing the panel.
+      The recipient must choose their own password at first sign-in. If it is lost, reset it; you
+      cannot read it back. A key account's row opens, ready for its first <a href="#keys">key</a>.
     </li>
   </ol>
-  <h2 id="manage">Reset, disable or sign out</h2>
   <p>
-    Choose <strong>Manage</strong> on the person's row.
+    Smeltr keeps at least one enabled password account that is an administrator, as the way in when
+    the provider is down, so it refuses to disable that account or take away its Administrator.
+    Display names need not be unique.
+  </p>
+  <h2 id="keys">Call the API with a key</h2>
+  <p>
+    A script calls Smeltr's API as a key account, with one of its keys. Only an administrator makes
+    a key, and only a key account holds one.
+  </p>
+  <ol>
+    <li>
+      Choose <strong>Manage</strong> on the key account's row, then <strong>+ New key</strong>.
+    </li>
+    <li>
+      Enter a Label that says where the key is used. To have it stop working on its own, enter how
+      many days it lasts in Expires in (days); leave that empty for a key that never expires.
+    </li>
+    <li>
+      Choose <strong>Create key</strong>, and copy the key before dismissing the panel: it is shown
+      only once. The script sends it as <code>Authorization: Bearer &lt;key&gt;</code>.
+    </li>
+  </ol>
+  <p>
+    The Keys table shows when each key was created, when it expires and when it was last used. An
+    expired key is refused. <strong>Revoke</strong> stops a key from its next request. A key account holds
+    any number of keys, so make the new one before you revoke the old.
+  </p>
+  <h2 id="manage">Find, change, disable or sign out</h2>
+  <p>
+    Search Accounts by display name, username or the provider's login, or choose
+    <strong>Password</strong>, <strong>SSO</strong> or <strong>Key</strong> to list only those
+    accounts. Then choose <strong>Manage</strong> on the account's row. It offers what that kind of account
+    has.
   </p>
   <ul>
+    <li><strong>Rename:</strong> change the display name only. Every account.</li>
     <li>
-      <strong>Reset password:</strong> sign out existing sessions and issue a temporary password.
+      <strong>Change access:</strong> turn Administrator on or off, or change the roles it holds. A password
+      or key account; an SSO account holds the roles of its provider groups.
     </li>
     <li>
-      <strong>Disable account:</strong> sign out and block access; keep the account’s name on its past
-      changes.
+      <strong>Reset password:</strong> sign out existing sessions and issue a temporary password. A password
+      account.
     </li>
-    <li><strong>Enable account:</strong> allow new sign-ins without restoring old sessions.</li>
     <li>
       <strong>Revoke sessions:</strong> sign out without changing the password. This does not block future
-      access.
+      access. A password or SSO account.
     </li>
-    <li><strong>Rename:</strong> change the display name only.</li>
+    <li>
+      <strong>Disable account:</strong> sign out, revoke every key, and block access; keep the account’s
+      name on its past changes. Every account.
+    </li>
+    <li>
+      <strong>Enable account:</strong> allow new sign-ins without restoring old sessions or keys.
+    </li>
   </ul>
   <p>
     Smeltr asks you to confirm before it resets a password or disables an account. Your own row has
-    no Reset password: a local account uses Change password in the account menu at the top right,
+    no Reset password: a password account uses Change password in the account menu at the top right,
     which shows your name. A single sign-on account changes its password at the provider.
   </p>
   <h2 id="sessions">Change session lifetimes</h2>
@@ -92,8 +140,8 @@
   <p>
     People can sign in through your organization's identity provider over <a
       href="https://openid.net/specs/openid-connect-core-1_0.html">OpenID Connect</a
-    > (OIDC). Local accounts keep working whatever is set here, so keep at least one local administrator
-    as a way in when the provider is down.
+    > (OIDC). Password accounts keep working whatever is set here, and Smeltr keeps at least one that
+    is an administrator, as a way in when the provider is down.
   </p>
   <ol>
     <li>
@@ -122,7 +170,7 @@
   </p>
   <p>
     The sign-in screen then offers <strong>Sign in with SSO</strong>, with
-    <strong>Sign in with username</strong> beside it for local accounts. The first time somebody
+    <strong>Sign in with username</strong> beside it for password accounts. The first time somebody
     signs in through the provider, Smeltr creates their account. Accounts lists them with SSO as
     their sign-in, and the email or username the provider gives them under their name. To sign in, a
     person must belong to at least one group that has a role. <strong>Refused sign-ins</strong> on the
@@ -138,9 +186,10 @@
   </p>
   <h2 id="roles">Give people access with roles</h2>
   <p>
-    An SSO account can do only what its roles give it. A role is named for one group in the
-    provider's groups claim, and gives whoever holds that group one level in each area: the shared
-    configuration or a worker group.
+    An account can do only what its roles give it, or everything as an administrator. A role gives
+    one level in each area: the shared configuration or a worker group. An SSO account holds the
+    role named for each of its groups in the provider's groups claim. A password or key account
+    holds the roles you give it under Change access.
   </p>
   <ul>
     <li><strong>viewer</strong> reads the area's configuration.</li>
@@ -161,7 +210,10 @@
   </p>
   <ol>
     <li>Open Admin → Accounts → Roles and select <strong>+ Add role</strong>.</li>
-    <li>Enter the group exactly as the provider names it.</li>
+    <li>
+      Enter the group exactly as the provider names it. For a role you give only to password or key
+      accounts, any name will do.
+    </li>
     <li>Choose a level for each area, or tick Administrator, and select <strong>Save</strong>.</li>
   </ol>
   <p>
@@ -169,7 +221,7 @@
     provider applies within a few minutes, while they stay signed in, when the provider issues
     refresh tokens and its refreshes carry an ID token; otherwise at their next sign-in. A refresh
     the provider refuses, or one that leaves them in no group with a role, signs them out. To shut
-    somebody out at once, disable their account in Users, or remove them from those groups at the
-    provider and then revoke their sessions. Users lists each person's roles beside their name.
+    somebody out at once, disable their account in Accounts, or remove them from those groups at the
+    provider and then revoke their sessions. Accounts lists each account's roles beside its name.
   </p>
 </GuideLayout>

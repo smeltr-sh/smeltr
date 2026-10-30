@@ -295,9 +295,10 @@ asks nothing about access.
 `shared` is judged as `shared`, though every group runs it, so a
 `shared` deployer can change what every group runs.
 
-**P4 — A full administrator holds everything.** A local account always
-is, and so is anyone holding a role marked administrator, so one person
-can run the whole system alone. Only administrators reach Admin.
+**P4 — A full administrator holds everything.** An account an
+administrator made one is, and so is anyone holding a role marked
+administrator, so one person can run the whole system alone. Only
+administrators reach Admin, and at least one local administrator remains.
 
 **P5 — Records are editor work.** Capture, preview and samples show
 production records, so they take editor in the area, as changing its
@@ -307,9 +308,11 @@ configuration does.
 status pages show a person only the areas they hold; a change reaching an
 area they do not hold is not shown to them at all.
 
-**P7 — Roles follow the provider.** What an account holds comes from the
-groups its provider last named, and changes within minutes of a change there. A change to a
-role reaches everyone holding it on their next request.
+**P7 — Roles follow the provider, or the administrator.** What an OIDC
+account holds comes from the groups its provider last named, and changes
+within minutes of a change there. What a local or key account holds is the
+roles an administrator gave it. A change to a role reaches everyone holding
+it on their next request.
 
 **P8 — Agent permissions.** A person chooses what their agent may use
 when it acts for them at their prompt: everything they hold, or up to a

@@ -624,7 +624,7 @@ fn signature_for(actor: &Actor) -> (String, String) {
 /// What git allows in an identity. `<`, `>` and a newline end the author line and start whatever came next, so a
 /// display name carrying one could forge the rest of a commit's headers.
 ///
-/// Validation refuses these long before here (`users_api`). This is the second line, in the one place where
+/// Validation refuses these long before here (`accounts_api`). This is the second line, in the one place where
 /// getting it wrong produces a commit object that lies.
 fn sanitize_identity(raw: &str) -> String {
     // A space rather than nothing: dropping the character outright would run the words on either side of it

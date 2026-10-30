@@ -223,7 +223,7 @@ pub enum AuthSource {
     Local,
     /// An issuer and a subject an OpenID provider vouches for. The leader holds no credential for it.
     Oidc,
-    /// A key the leader keeps the hash of, sent on every request ([`KeyAccountRecord`]). It never signs in.
+    /// A key the leader keeps the hash of, sent on every request ([`Store::api_key_by_hash`]). It never signs in.
     Key,
 }
 
@@ -923,7 +923,7 @@ pub trait Store: Send + Sync {
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError>;
 
-    /// Every account, however it signs in, oldest first. A key account's roles and keys are `list_key_accounts`'s.
+    /// Every account, however it signs in, oldest first.
     fn list_users(&self) -> Result<Vec<UserRecord>, StoreError>;
 
     fn get_user(&self, id: &str) -> Result<Option<UserRecord>, StoreError>;

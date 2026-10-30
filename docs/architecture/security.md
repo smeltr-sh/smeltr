@@ -85,13 +85,22 @@ is how an ephemeral worker the leader forgot while it was away comes back.
 ## Identity and access
 
 Identity and access are the leader's alone; nothing in the data plane
-learns a person exists. A person signs in with a local account or through
-the organization's OpenID provider, and either ends in the same session, so
-the gate, its deadlines, disabling and revocation treat the two alike.
+learns a person exists. Whoever calls the leader is an **account**, and an
+account signs in one way: a local account with a password, an OIDC account
+through the organization's OpenID provider, a key account with a key. How it
+signs in decides only how it proves who it is. What it reaches is what it
+holds, and renaming, disabling, its agent permissions and the audit are the
+same for every account. A local and an OIDC sign-in end in the same session,
+so the gate, its deadlines, disabling and revocation treat the two alike.
+Display names may repeat: an account is known by its id.
 
-A local account holds a username and a password the leader verifies. It is
-always an administrator: it is the way in when the provider is down or
-misconfigured. An OIDC account is one identity at one
+A local or key account holds the roles an administrator gives it, or
+everything by its own administrator flag. An OIDC account holds the roles of
+its provider groups, and never the flag. At least one enabled local account
+keeps the flag: it is the way in when the provider is down or misconfigured.
+An administrator makes local and key accounts.
+
+A local account holds a username and a password the leader verifies. An OIDC account is one identity at one
 provider, named by the issuer and the subject the provider gives it and
 never by a name or an address. It holds no password. It is created the
 first time the provider vouches for the person, and records the groups the
@@ -126,7 +135,7 @@ sequenceDiagram
   end
 ```
 
-Access is per area, and governs OIDC accounts. An area is `shared` or one
+Access is per area, and governs every account. An area is `shared` or one
 worker group, the scope every configuration read and write already names. A
 role is one group the provider names and what holding it gives: viewer,
 editor or deployer in each area, each including the ones before it, or
@@ -136,9 +145,13 @@ merged with it. Objects carry nothing, so a team's access is set once rather
 than on every object it makes.
 
 ```text
-  provider groups ──► roles ──► level per area ──► the gate, on every request
-  (at sign-in and     (leader store)
-   each refresh)
+  provider groups ──────┐
+  (OIDC, at sign-in     │
+   and each refresh)    ├─► roles ──► level per area ──► the gate, on every request
+  given by an admin ────┘   (leader store)
+  (local, key)
+
+  administrator flag (local, key) ──► everything
 ```
 
 The gate names the area and level each route needs
@@ -193,12 +206,12 @@ A key account is an account for a script outside the leader that calls its
 API. A person signs in with a password or through a provider and holds a
 session; a key account calls with one of its **keys**, sent as a Bearer token
 on every request, and holds no session. It needs no Origin or CSRF check, since
-no browser sends a key on its own. The leader keeps a key's hash and returns the
-key once, when it is made, as it does a worker's token. An administrator names
-a key account and gives it roles by name, which it holds as an OIDC account
-holds the roles of its groups, or makes it an administrator. It holds any number
-of keys, so one is replaced without a gap. A revoked key stays out, and
-disabling a key account revokes every key it holds.
+no browser sends a key on its own. Only an administrator makes a key, and only
+a key account holds one. The leader keeps a key's hash and returns the key
+once, when it is made, as it does a worker's token. A key may be made to expire
+after a number of days. A key account holds any number of keys, so one is
+replaced without a gap. A revoked or expired key is refused, and disabling a
+key account revokes every key it holds.
 
 What a key reaches is what its account holds, as a session reaches what
 its person holds. What a key account does is recorded as its own, under its
