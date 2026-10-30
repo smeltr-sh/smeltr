@@ -101,7 +101,7 @@
       type: 'csv',
       label: 'CSV of fields',
       category: 'From a file',
-      help: 'A CSV file with a row per field, under a header row. Pick which column holds the field and its type, and optionally required, description, example and elasticsearch.',
+      help: "A CSV file with a row per field and a header row. You choose which column holds each field's name, which holds its type, and optionally which hold required, description, example and elasticsearch.",
       // A grid.
       glyph: { d: 'M10 14 H54 V50 H10 Z M10 26 H54 M10 38 H54 M26 14 V50 M40 14 V50' },
     },
@@ -308,7 +308,7 @@
         <fieldset class="picker">
           <legend>What each column holds</legend>
           {#if draft.columns.field == null || draft.columns.type == null}
-            <p class="problem">
+            <p class="note">
               Choose the column that holds each field's name, and the one that holds its type.
             </p>
           {/if}
@@ -345,7 +345,7 @@
         </fieldset>
         {#if preview.types.length > 0}
           <fieldset class="types">
-            <legend>Types</legend>
+            <legend>What each type value means</legend>
             <table>
               <tbody>
                 {#each preview.types as [value, known] (value)}
@@ -359,7 +359,7 @@
                       </select>
                     </td>
                     <td class="dim"
-                      >{known === null ? 'not a type smeltr knows: read as chosen' : ''}</td
+                      >{known === null ? 'not a type smeltr knows: choose how to read it' : ''}</td
                     >
                   </tr>
                 {/each}
@@ -467,14 +467,17 @@
   }
 
   .preview th,
-  .preview td,
-  .types td {
+  .preview td {
     padding: 0.2rem 0.5rem 0.2rem 0;
     text-align: left;
     white-space: nowrap;
     max-width: 16rem;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .types td {
+    padding: 0.2rem 0.5rem 0.2rem 0;
   }
 
   .preview .name {
@@ -489,6 +492,10 @@
 
   .dim {
     color: var(--dim);
+  }
+
+  .note {
+    margin: 0;
   }
 
   .levels {

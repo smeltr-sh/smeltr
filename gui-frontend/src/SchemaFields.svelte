@@ -77,8 +77,8 @@
         <th>Type</th>
         {#if view === 'elasticsearch'}<th
             >Elasticsearch <Help label="Elasticsearch"
-              >Each field is indexed as this Elasticsearch type. Leave it on default to use the type
-              its schema type maps to.</Help
+              >Each field is indexed as this Elasticsearch type. The first in its list is the type
+              its schema type maps to, and a field left on it saves no mapping of its own.</Help
             ></th
           >{:else}<th>Description</th>
           {#if examples}<th>Example</th>{/if}{/if}
