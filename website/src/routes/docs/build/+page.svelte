@@ -3,7 +3,7 @@
   const links = [
     { id: 'prepare', title: 'Prepare a change', href: '/docs/first-pipeline#prepare' },
     { id: 'preview', title: 'Build against a sample', href: '/docs/first-pipeline#transform' },
-    { id: 'tests', title: 'Save regression tests', href: '/build#test-heading' },
+    { id: 'tests', title: 'Save regression tests', href: '/docs/steps#verify' },
     { id: 'ready', title: 'Ready for review', href: '/docs/review#check' },
   ];
 </script>

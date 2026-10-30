@@ -94,7 +94,7 @@
   <p>
     Enter a name under <strong>Save as</strong> and select <strong>Save sample</strong>. Open the
     saved sample in your pipeline, run it, and inspect the output. Save an expected result as a
-    test, following <a href="/build#test-heading">the Build page</a>. Choose
+    test, as <a href="/docs/steps#verify">Verify</a> describes. Choose
     <strong>Edit</strong> on a sample's row under Build → Resources → Samples to change it.
   </p>
   <p>

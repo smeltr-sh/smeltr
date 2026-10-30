@@ -22,9 +22,14 @@
     <p class="tagline">
       Fast, self-hosted telemetry pipelines.<br /><span>Built visually. Managed with Git.</span>
     </p>
+    <p class="what">
+      Smeltr runs on your own servers, between the systems that send logs and the places that store
+      them, such as your SIEM. You build pipelines that read each source in its own format, drop
+      what nobody searches, and map the rest to one schema.
+    </p>
     <div class="actions">
       <a class="btn large primary" href="/get">Get smeltr</a>
-      <a class="btn large secondary" href="/demo/try/" rel="external">Try Demo</a>
+      <a class="btn large secondary" href="/demo/try/" rel="external">Try the demo</a>
     </div>
     <p class="free">
       Free for individuals and for organizations with fewer than 250 employees.
@@ -34,19 +39,18 @@
 
   <section class="flow-section" id="where-it-fits" aria-labelledby="fit-heading">
     <div class="section-intro centered">
-      <h2 id="fit-heading">Keep the data that matters.</h2>
-      <p>Filter, shape, and route logs and telemetry between your sources and destinations.</p>
+      <h2 id="fit-heading">Less noise. One schema.</h2>
     </div>
     <HomeDataFlow />
     <p class="connection-links">
-      <a href="/docs/sources">Explore sources</a>
-      <a href="/docs/destinations">Explore destinations</a>
+      <a href="/siem-costs">Cut SIEM costs →</a>
+      <a href="/one-schema">Put every source in one schema →</a>
     </p>
   </section>
 
   <section class="demo-section" id="pipeline" aria-labelledby="editor-heading">
     <div class="section-intro centered">
-      <p class="eyebrow">Build with real data</p>
+      <p class="eyebrow">How it works</p>
       <h2 id="editor-heading">See what each change does.</h2>
       <p>
         Capture a sample, edit your pipeline, and inspect the output. Save the input and expected
@@ -55,43 +59,26 @@
     </div>
     <EditorScreenshot focused />
     <p class="connection-links">
-      <a href="/demo/try/" rel="external">Try smeltr in your browser →</a>
+      <a href="/how-it-works">How it works →</a>
+      <a href="/demo/try/" rel="external">Try the demo →</a>
     </p>
-    <ol class="workflow" aria-label="From a sample to deployment">
-      <li><span>01</span><a href="/docs/capture-sample">Capture real data</a></li>
-      <li><span>02</span><a href="/build">Preview changes</a></li>
-      <li><span>03</span><a href="/build#test-heading">Save tests</a></li>
-      <li><span>04</span><a href="/docs/review">Review and merge</a></li>
-    </ol>
   </section>
 
-  <section class="lifecycle-links" aria-label="Why Smeltr">
+  <section class="lifecycle-links detail-grid" aria-label="Why trust it">
     <article>
-      <p class="eyebrow">Performance</p>
-      <h2>Make compute go further.</h2>
-      <p>
-        Self-hosted processing designed for efficiency. Filter unwanted data before it reaches
-        downstream systems, and run workers near your sources.
-      </p>
-      <a href="/docs/getting-started">Choose your deployment →</a>
+      <p class="eyebrow">Your senders</p>
+      <h2>Fits in front of the SIEM you have.</h2>
+      <p>Splunk forwarders, HEC senders, Filebeat and Fluent Bit change only where they send.</p>
+      <a href="/siem-costs#fit-heading">Cut SIEM costs →</a>
     </article>
     <article>
-      <p class="eyebrow">Change management</p>
-      <h2>Git is the workflow.</h2>
+      <p class="eyebrow">Supply chain</p>
+      <h2>Check what you install.</h2>
       <p>
-        Develop on a branch. Commit your changes, review the diff and test results, then merge to
-        main to deploy. Workers follow main.
+        Every release comes with its SBOM, a CVE report and a STIG report. The source code is
+        public.
       </p>
-      <a href="/docs/git/configuration">Explore the Git workflow →</a>
-    </article>
-    <article>
-      <p class="eyebrow">Operations</p>
-      <h2>Know what is running.</h2>
-      <p>
-        Trace data flow, investigate warnings, and see which commit each worker runs. Verify the
-        result at the destination.
-      </p>
-      <a href="/operate">Operate the fleet →</a>
+      <a href="/docs/release-extras">Release extras →</a>
     </article>
   </section>
 </div>
@@ -128,6 +115,14 @@
   }
   .tagline span {
     color: var(--dim);
+  }
+  .home-hero .what {
+    margin: 1rem auto 0;
+    max-width: 40rem;
+    font-size: 1.1rem;
+    line-height: 1.6;
+    color: var(--dim);
+    text-wrap: balance;
   }
   .home-hero .actions {
     justify-content: center;
@@ -173,38 +168,6 @@
     white-space: nowrap;
     text-underline-offset: 0.2em;
   }
-  .workflow {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    list-style: none;
-    padding: 0;
-    margin: 2.5rem 0 0;
-    border-block: 1px solid var(--border);
-  }
-  .workflow li {
-    padding: 1.2rem 0.6rem;
-    display: flex;
-    gap: 0.65rem;
-    align-items: baseline;
-    justify-content: center;
-  }
-  .workflow span {
-    font: 0.75rem var(--mono);
-    color: var(--dim);
-  }
-  .workflow a {
-    color: var(--ink);
-    font-size: 0.85rem;
-    text-underline-offset: 0.2em;
-  }
-  @media (max-width: 48rem) {
-    .workflow {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    .workflow li {
-      justify-content: flex-start;
-    }
-  }
   @media (max-width: 30rem) {
     .hero-mark :global(svg) {
       width: 64px;
@@ -216,9 +179,6 @@
     .home-hero .actions {
       flex-direction: column;
       align-items: stretch;
-    }
-    .workflow {
-      grid-template-columns: 1fr;
     }
   }
 </style>

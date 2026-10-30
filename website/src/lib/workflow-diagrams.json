@@ -998,5 +998,84 @@
         ]
       }
     ]
+  },
+  "siem": {
+    "title": "Two routes from one source",
+    "description": "Source records take two routes. One drops and trims records, then sends them to the SIEM. The other sends every record, unchanged, to object storage.",
+    "caption": "One source can feed both: every route whose condition matches runs.",
+    "layouts": [
+      {
+        "width": 900,
+        "height": 330,
+        "nodes": [
+          {
+            "x": 20,
+            "y": 130,
+            "w": 200,
+            "title": "Source records",
+            "detail": ["Everything sent"]
+          },
+          {
+            "x": 310,
+            "y": 30,
+            "w": 240,
+            "title": "Drop & trim",
+            "detail": ["Only what you search"]
+          },
+          {
+            "x": 650,
+            "y": 30,
+            "w": 230,
+            "title": "SIEM",
+            "detail": ["Smaller volume"]
+          },
+          {
+            "x": 650,
+            "y": 230,
+            "w": 230,
+            "title": "Object storage",
+            "detail": ["Full copy"]
+          }
+        ],
+        "paths": ["M220 170H260V70H300", "M550 70H640", "M260 170V270H640"],
+        "labels": []
+      },
+      {
+        "width": 360,
+        "height": 380,
+        "nodes": [
+          {
+            "x": 80,
+            "y": 10,
+            "w": 200,
+            "title": "Source records",
+            "detail": ["Everything sent"]
+          },
+          {
+            "x": 10,
+            "y": 140,
+            "w": 160,
+            "title": "Drop & trim",
+            "detail": ["What you search"]
+          },
+          {
+            "x": 10,
+            "y": 280,
+            "w": 160,
+            "title": "SIEM",
+            "detail": ["Smaller volume"]
+          },
+          {
+            "x": 190,
+            "y": 280,
+            "w": 160,
+            "title": "Object storage",
+            "detail": ["Full copy"]
+          }
+        ],
+        "paths": ["M180 90V110H90V130", "M90 220V270", "M180 110H270V270"],
+        "labels": []
+      }
+    ]
   }
 }
