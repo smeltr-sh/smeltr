@@ -339,6 +339,13 @@ impl Metadata {
     pub fn property(&self, key: &str) -> Option<&str> {
         self.configuration.get(key).map(String::as_str)
     }
+
+    /// The true-or-false table property `key`; None when it is unset or neither.
+    pub fn flag(&self, key: &str) -> Option<bool> {
+        let value = self.property(key)?.trim();
+        (value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false"))
+            .then(|| value.eq_ignore_ascii_case("true"))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -562,6 +569,17 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// The configuration of the domain `name`; None when the table has no such domain. Err when it does not read as
+    /// a `T`.
+    pub fn domain<T: serde::de::DeserializeOwned>(&self, name: &str) -> Result<Option<T>, String> {
+        let Some(domain) = self.domains.get(name) else {
+            return Ok(None);
+        };
+        serde_json::from_str(&domain.configuration)
+            .map(Some)
+            .map_err(|e| format!("the table's domain {name} does not read: {e}"))
+    }
+
     /// The table as the log has it now, its commits read from the last checkpoint on; None when it has no commit.
     /// Commits carrying `app_id`'s transaction are taken as this writer's.
     pub fn load(log: &Log, app_id: &str) -> Result<Option<Snapshot>, String> {

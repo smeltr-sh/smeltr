@@ -303,12 +303,7 @@ impl Committer for DeltaCommitter {
             "isBlindAppend": true,
             "engineInfo": "smeltr",
         });
-        if self
-            .snapshot
-            .metadata
-            .property("delta.enableRowTracking")
-            .is_some_and(is_true)
-        {
+        if self.snapshot.metadata.flag("delta.enableRowTracking") == Some(true) {
             commit_info["tags"] = json!({"delta.rowTracking.preserved": "true"});
         }
         let mut lines = vec![
@@ -817,8 +812,7 @@ fn wall_clock(micros: i64, digits: u32, separator: char) -> String {
 /// The highest row id a row-tracking table has given, -1 when none; None when the table tracks no rows or suspends it.
 fn high_water_mark(snapshot: &Snapshot) -> Result<Option<i64>, String> {
     let tracked = (snapshot.protocol.writer_features.iter().flatten()).any(|f| f == "rowTracking");
-    let suspended = (snapshot.metadata.property("delta.rowTrackingSuspended")).is_some_and(is_true);
-    if !tracked || suspended {
+    if !tracked || snapshot.metadata.flag("delta.rowTrackingSuspended") == Some(true) {
         return Ok(None);
     }
     #[derive(serde::Deserialize)]
@@ -826,17 +820,8 @@ fn high_water_mark(snapshot: &Snapshot) -> Result<Option<i64>, String> {
     struct RowTracking {
         row_id_high_water_mark: i64,
     }
-    let Some(domain) = snapshot.domains.get(ROW_TRACKING) else {
-        return Ok(Some(-1));
-    };
-    serde_json::from_str::<RowTracking>(&domain.configuration)
-        .map(|r| Some(r.row_id_high_water_mark))
-        .map_err(|e| format!("the table's row-tracking domain does not read: {e}"))
-}
-
-/// Whether a table property's `value` is true.
-fn is_true(value: &str) -> bool {
-    value.trim().eq_ignore_ascii_case("true")
+    let domain = snapshot.domain::<RowTracking>(ROW_TRACKING)?;
+    Ok(Some(domain.map_or(-1, |r| r.row_id_high_water_mark)))
 }
 
 /// The physical paths of the columns the table is clustered by, from its `delta.clustering` domain; none when it is
@@ -847,12 +832,8 @@ fn clustering_columns(snapshot: &Snapshot) -> Result<Vec<Vec<String>>, String> {
     struct Clustering {
         clustering_columns: Vec<Vec<String>>,
     }
-    let Some(domain) = snapshot.domains.get("delta.clustering") else {
-        return Ok(Vec::new());
-    };
-    serde_json::from_str::<Clustering>(&domain.configuration)
-        .map(|c| c.clustering_columns)
-        .map_err(|e| format!("the table's clustering domain does not read: {e}"))
+    let domain = snapshot.domain::<Clustering>("delta.clustering")?;
+    Ok(domain.map_or_else(Vec::new, |c| c.clustering_columns))
 }
 
 /// A data file's statistics as an add action carries them: its row count, and each leaf column's null count and
