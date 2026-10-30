@@ -120,14 +120,11 @@
 
   async function loadReviewers() {
     try {
-      // A review is a person's: a key account never signs in to give one.
+      // Any account that could approve, however it signs in: a key account approves through the API.
       reviewers = (await listAccounts())
         .filter(
           (u) =>
-            u.authSource !== 'key' &&
-            u.enabled &&
-            deployBlocker(entry.touches, u.access) === '' &&
-            u.id !== session().userId,
+            u.enabled && deployBlocker(entry.touches, u.access) === '' && u.id !== session().userId,
         )
         .map((u) => ({ id: u.id, name: u.displayName }));
     } catch {

@@ -4609,7 +4609,7 @@ export function deployCommit(commit: string, confirm = false): Promise<BranchMut
 
 // -- accounts ---------------------------------------------------------------
 //
-// The roster and what an administrator does to it (`users_api.rs`). Every
+// The roster and what an administrator does to it (`accounts_api.rs`). Every
 // mutation but a rename re-asks for the acting administrator's own password:
 // a session alone is not enough to create an administrator or end somebody's
 // access, which is what stands between a walked-away-from browser and either.
@@ -4621,8 +4621,8 @@ export interface AccountDto {
   username?: string;
   displayName: string;
   enabled: boolean;
-  /** Whether the account itself makes it an administrator, as a local account always does and a
-   * key account may. What it holds, from this or its roles, is `access`. */
+  /** The account's own flag, which an administrator gives a local or key account. What it holds, from
+   * this or its roles, is `access`. */
   administrator: boolean;
   /** How the account signs in: `local` (a password), `oidc` (the provider) or `key`. */
   authSource: 'local' | 'oidc' | 'key';
@@ -4631,7 +4631,7 @@ export interface AccountDto {
   createdAt: number;
   updatedAt: number;
   /** The roles this account holds: an OIDC account's provider groups a role exists for, or the roles a
-   * key account was given. Empty for a local account. */
+   * local or key account was given. */
   roles: string[];
   /** Every group the provider named at the last sign-in or refresh, exactly as named. Empty for any other account. */
   groups: string[];
@@ -4691,14 +4691,17 @@ async function accountCall<T>(
   return body as T;
 }
 
-/** A local administrator, answered with the temporary password to hand over. */
+/** A local account holding the roles given, or everything as an administrator, answered with the
+ * temporary password to hand over. */
 export function createLocalAccount(
   username: string,
   displayName: string,
+  roles: string[],
+  administrator: boolean,
 ): Promise<TemporaryPasswordDto | AccountRefusal> {
   return accountCall('/api/accounts', {
     method: 'POST',
-    body: JSON.stringify({ authSource: 'local', username, displayName }),
+    body: JSON.stringify({ authSource: 'local', username, displayName, roles, administrator }),
   });
 }
 
@@ -4715,7 +4718,7 @@ export function createKeyAccount(
 }
 
 /** One change to an account: the leader takes one field per request, and roles and administrator
- * only for a key account. */
+ * only for a local or key account. */
 export type AccountChange =
   { displayName: string } | { enabled: boolean } | { roles: string[] } | { administrator: boolean };
 
@@ -4779,17 +4782,19 @@ export function deleteRole(name: string): Promise<{ ok: boolean; errors: ApiErro
   return apiJson(`/api/roles/${encodeURIComponent(name)}`, { method: 'DELETE' }, 'quiet');
 }
 
-// -- key accounts -------------------------------------------------------------
+// -- keys ---------------------------------------------------------------------
 //
-// A key account is an account a script calls the API as, with one of its keys (`key_accounts_api.rs`). It holds
-// what its roles give, or everything as an administrator. Administrators only, like the roster.
+// A key account is an account a script calls the API as, with one of its keys (`key_accounts_api.rs`).
+// Administrators only, like the roster.
 
-/** A key in force. Never the key itself, which only `createKey` answers. */
+/** A key not revoked, expired or not. Never the key itself, which only `createKey` answers. */
 export interface KeyDto {
   id: string;
   label: string;
   createdAt: number;
-  /** To the minute; absent for a key never used. */
+  /** Null for a key that never expires. */
+  expiresAt: number | null;
+  /** To the minute; null for a key never used. */
   lastUsedAt: number | null;
 }
 
@@ -4798,13 +4803,19 @@ export interface CreatedKeyDto {
   id: string;
   label: string;
   createdAt: number;
+  expiresAt: number | null;
   key: string;
 }
 
-export function createKey(id: string, label: string): Promise<CreatedKeyDto | AccountRefusal> {
+/** `expiresInDays` null makes a key that never expires. */
+export function createKey(
+  id: string,
+  label: string,
+  expiresInDays: number | null,
+): Promise<CreatedKeyDto | AccountRefusal> {
   return accountCall(`/api/accounts/${encodeURIComponent(id)}/keys`, {
     method: 'POST',
-    body: JSON.stringify({ label }),
+    body: JSON.stringify({ label, expiresInDays }),
   });
 }
 

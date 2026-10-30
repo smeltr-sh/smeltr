@@ -3,11 +3,10 @@
   account under Accounts, however it signs in, under Roles what each role
   gives, and under Single sign-on the provider itself.
 
-  A local account is always an administrator. An SSO account holds what the
-  roles named for its provider groups give it, so the roster shows those roles
-  and the Roles tab is where what they give is changed. A key account, which
-  signs in with a key, holds the roles it is given, or everything as an
-  administrator.
+  A local or key account holds the roles an administrator gives it, or
+  everything as an administrator. An SSO account holds what the roles named
+  for its provider groups give it, so the roster shows those roles and the
+  Roles tab is where what they give is changed.
 -->
 <script lang="ts">
   import { reported, unreported } from './errors.svelte';
@@ -15,8 +14,9 @@
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import OidcSettings from './OidcSettings.svelte';
-  import KeyAccountAccess from './KeyAccountAccess.svelte';
-  import KeyAccountFold from './KeyAccountFold.svelte';
+  import AccountAccess from './AccountAccess.svelte';
+  import AccountFold from './AccountFold.svelte';
+  import Chips from './Chips.svelte';
   import { toHash } from './logs';
   import Help from './Help.svelte';
   import Field from './Field.svelte';
@@ -24,7 +24,7 @@
   import SortButton from './SortButton.svelte';
   import SecondaryTabs from './SecondaryTabs.svelte';
   import Segmented from './Segmented.svelte';
-  import { ask, type Question } from './Confirm.svelte';
+  import { ask } from './Confirm.svelte';
   import { TableSort } from './sort.svelte';
   import { ACCOUNTS_TABS, accountsHash, type AccountsSection } from './nav';
   import { LEVELS } from './access';
@@ -40,8 +40,6 @@
     listWorkerGroups,
     putRole,
     refused,
-    resetAccountPassword,
-    revokeAccountSessions,
     type AccountDto,
     type CreatedKeyDto,
     type RoleDto,
@@ -50,8 +48,6 @@
   import { session, type AccessLevel } from './session';
 
   let { section }: { section: AccountsSection } = $props();
-
-  type Action = 'reset' | 'revoke' | 'enable' | 'disable';
 
   /** What a new account can sign in with. An SSO account is made at its first sign-in. */
   const SIGN_INS: { value: 'local' | 'key'; label: string }[] = [
@@ -63,10 +59,8 @@
   let loading = $state(true);
 
   let open = $state<string | null>(null);
-  let renaming = $state(false);
   let creating = $state(false);
 
-  let renameTo = $state('');
   let newSignIn = $state<'local' | 'key'>('local');
   let newUsername = $state('');
   let newDisplayName = $state('');
@@ -92,20 +86,48 @@
     return n === 1 ? '1 key' : `${n} keys`;
   }
 
+  /** How each kind of account signs in, as the Sign-in column and its chips name it. */
+  const SIGN_IN_LABELS: Record<AccountDto['authSource'], string> = {
+    local: 'Password',
+    oidc: 'SSO',
+    key: 'Key',
+  };
+
   function signIn(account: AccountDto): string {
-    return { local: 'Password', oidc: 'SSO', key: 'Key' }[account.authSource];
+    return SIGN_IN_LABELS[account.authSource];
   }
 
-  /** What the Roles column shows: a local account is an administrator by being local, and a
-   * key account one by being made one. */
+  /** What the Roles column shows: the account's own administrator flag, then its roles. */
   function rolesOf(account: AccountDto): string[] {
-    if (account.authSource === 'local') return ['administrator'];
     return account.administrator ? ['administrator', ...account.roles] : account.roles;
   }
 
+  let query = $state('');
+  let kind = $state<AccountDto['authSource'] | null>(null);
+  const kinds = $derived(
+    (['local', 'oidc', 'key'] as const).map((key) => ({
+      key,
+      label: SIGN_IN_LABELS[key],
+      count: accounts.filter((a) => a.authSource === key).length,
+    })),
+  );
+
+  /** Whether `account` is one the search names: by display name, username or provider login. */
+  function matches(account: AccountDto, text: string): boolean {
+    const needle = text.trim().toLowerCase();
+    if (needle === '') return true;
+    return [account.displayName, account.username, account.providerLogin].some((name) =>
+      name?.toLowerCase().includes(needle),
+    );
+  }
+
+  const shownAccounts = $derived(
+    accounts.filter((a) => (kind === null || a.authSource === kind) && matches(a, query)),
+  );
+
   const accountSort = new TableSort<'account' | 'state' | 'signIn' | 'roles'>();
   const sortedAccounts = $derived(
-    accountSort.apply(accounts, {
+    accountSort.apply(shownAccounts, {
       account: (p) => p.displayName,
       state: (p) => (p.enabled ? 'Enabled' : 'Disabled'),
       signIn: signIn,
@@ -124,7 +146,7 @@
   }
 
   // Read each time Accounts opens, so someone who signed in since shows without a reload. The roles
-  // are what a key account can be given.
+  // are what a local or key account can be given.
   $effect(() => {
     if (section !== 'accounts') return;
     void refresh();
@@ -132,22 +154,12 @@
   });
 
   function reset() {
-    renaming = false;
     creating = false;
-    renameTo = '';
     newSignIn = 'local';
     newUsername = '';
     newDisplayName = '';
     newAdministrator = false;
     newRoles = [];
-  }
-
-  function startRename(account: AccountDto) {
-    reset();
-    message = '';
-    open = account.id;
-    renaming = true;
-    renameTo = account.displayName;
   }
 
   const createReady = $derived(
@@ -159,7 +171,12 @@
     busy = true;
     try {
       if (newSignIn === 'local') {
-        const result = await createLocalAccount(newUsername, newDisplayName);
+        const result = await createLocalAccount(
+          newUsername,
+          newDisplayName,
+          newRoles,
+          newAdministrator,
+        );
         if (refused(result)) return;
         handovers = [...handovers, result];
       } else {
@@ -178,74 +195,8 @@
     }
   }
 
-  async function rename(event: SubmitEvent, account: AccountDto) {
-    event.preventDefault();
-    if (busy) return;
-    busy = true;
-
-    try {
-      const result = await changeAccount(account.id, { displayName: renameTo });
-      if (refused(result)) return;
-      message = 'display name updated';
-      reset();
-      await refresh();
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
-  }
-
-  /** What the person loses, for the two actions that take something away. */
-  const ASKS: Partial<Record<Action, (name: string) => Question>> = {
-    reset: (name) => ({
-      title: 'reset password',
-      body: `Sign ${name} out everywhere and give them a temporary password.`,
-      action: 'Reset password',
-      danger: true,
-    }),
-    disable: (name) => ({
-      title: 'disable account',
-      body: `Sign ${name} out everywhere and stop them signing in.`,
-      action: 'Disable account',
-      danger: true,
-    }),
-  };
-
-  async function perform(account: AccountDto, action: Action) {
-    if (busy) return;
-    const question = ASKS[action];
-    if (question && !(await ask(question(account.displayName)))) return;
-    if (busy) return;
-    reset();
-    message = '';
-    busy = true;
-
-    try {
-      if (action === 'enable' || action === 'disable') {
-        const result = await changeAccount(account.id, { enabled: action === 'enable' });
-        if (refused(result)) return;
-        message =
-          action === 'enable' ? 'account enabled' : 'account disabled; its sessions are over';
-      } else if (action === 'reset') {
-        const result = await resetAccountPassword(account.id);
-        if (refused(result)) return;
-        handovers = [...handovers.filter((h) => h.userId !== result.userId), result];
-      } else {
-        const result = await revokeAccountSessions(account.id);
-        if (refused(result)) return;
-        message = `signed out everywhere (${result.ended} ${result.ended === 1 ? 'session' : 'sessions'})`;
-      }
-      await refresh();
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
-  }
-
-  /** After a key account's fold changed it: the roster read again, then what it did said. */
-  async function keyAccountChanged(said: string) {
+  /** After an account's fold changed it: the roster read again, then what it did said. */
+  async function accountChanged(said: string) {
     await refresh();
     message = said;
   }
@@ -464,8 +415,8 @@
     {#snippet help()}
       <p>
         A role is a group your provider names. It gives viewer, editor or deployer in each area:
-        shared or a worker group. Administrators hold everything, and local accounts are always
-        administrators.
+        shared or a worker group. Administrators hold everything. A password or key account holds
+        the roles you give it.
       </p>
     {/snippet}
   </PageHeader>
@@ -521,8 +472,8 @@
           {#snippet help()}The name its changes are recorded under, in the audit and in history.{/snippet}
           <input bind:value={newDisplayName} autocomplete="off" required />
         </Field>
-        <KeyAccountAccess {roles} bind:administrator={newAdministrator} bind:chosen={newRoles} />
       {/if}
+      <AccountAccess {roles} bind:administrator={newAdministrator} bind:chosen={newRoles} />
     </div>
     {#snippet actions()}
       <button type="button" onclick={reset} disabled={busy}>Cancel</button>
@@ -652,144 +603,119 @@
     {#if loading}
       <p>Reading the roster…</p>
     {:else}
-      <table>
-        <thead>
-          <tr>
-            <th aria-sort={accountSort.aria('account')}
-              ><SortButton sort={accountSort} key="account">Account</SortButton></th
-            >
-            <th aria-sort={accountSort.aria('state')}
-              ><SortButton sort={accountSort} key="state">State</SortButton></th
-            >
-            <th class="wide" aria-sort={accountSort.aria('signIn')}
-              ><SortButton sort={accountSort} key="signIn">Sign-in</SortButton></th
-            >
-            <th aria-sort={accountSort.aria('roles')}
-              ><SortButton sort={accountSort} key="roles">Roles</SortButton></th
-            >
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each sortedAccounts as account (account.id)}
-            <tr class:expanded={open === account.id}>
-              <td>
-                <div class="name">{account.displayName}{account.id === me ? ' · you' : ''}</div>
-                <!-- An OIDC account is known by its provider's login, which the
-                   provider may not share. -->
-                {#if account.authSource === 'oidc'}
-                  {#if account.providerLogin}<div class="dim mono">
-                      {account.providerLogin}
-                    </div>{/if}
-                {:else if account.authSource === 'key'}
-                  <div class="dim">{keyCount(account)}</div>
-                {:else}
-                  <div class="dim mono">{account.username ?? '—'}</div>
-                {/if}
-              </td>
-              <td
-                ><span class="pill" class:off={!account.enabled}
-                  >{account.enabled ? 'Enabled' : 'Disabled'}</span
-                ></td
+      <div class="tools">
+        <Chips
+          label="Filter accounts by sign-in"
+          allCount={accounts.length}
+          items={kinds}
+          bind:value={kind}
+        />
+        <label class="search"
+          ><span aria-hidden="true">⌕</span><input
+            type="search"
+            bind:value={query}
+            placeholder="Search names, usernames, logins…"
+            aria-label="Search accounts"
+          /></label
+        >
+      </div>
+      {#if sortedAccounts.length === 0}
+        <p class="dim">No account matches.</p>
+      {:else}
+        <table>
+          <thead>
+            <tr>
+              <th aria-sort={accountSort.aria('account')}
+                ><SortButton sort={accountSort} key="account">Account</SortButton></th
               >
-              <td class="wide dim">{signIn(account)}</td>
-              <td>
-                <div class="pills">
-                  {#each rolesOf(account) as role (role)}
-                    <span class="pill" class:mono={account.authSource !== 'local'}>{role}</span>
-                  {/each}
-                  {#each account.groups.filter((g) => !account.roles.includes(g)) as group (group)}
-                    <button type="button" class="pill ghost mono" onclick={() => roleFor(group)}
-                      >+ {group}</button
-                    >
-                  {/each}
-                </div>
-              </td>
-              <td class="right">
-                <button
-                  type="button"
-                  aria-expanded={open === account.id}
-                  onclick={() => {
-                    const closing = open === account.id;
-                    reset();
-                    message = '';
-                    open = closing ? null : account.id;
-                  }}
-                >
-                  {open === account.id ? 'Close' : 'Manage'}
-                </button>
-              </td>
+              <th aria-sort={accountSort.aria('state')}
+                ><SortButton sort={accountSort} key="state">State</SortButton></th
+              >
+              <th class="wide" aria-sort={accountSort.aria('signIn')}
+                ><SortButton sort={accountSort} key="signIn">Sign-in</SortButton></th
+              >
+              <th aria-sort={accountSort.aria('roles')}
+                ><SortButton sort={accountSort} key="roles">Roles</SortButton></th
+              >
+              <th></th>
             </tr>
-            {#if open === account.id}
-              <tr class="fold">
-                <td colspan="5">
-                  {#if account.authSource === 'key'}
-                    <KeyAccountFold
+          </thead>
+          <tbody>
+            {#each sortedAccounts as account (account.id)}
+              <tr class:expanded={open === account.id}>
+                <td>
+                  <div class="name">{account.displayName}{account.id === me ? ' · you' : ''}</div>
+                  <!-- An OIDC account is known by its provider's login, which the
+                   provider may not share. -->
+                  {#if account.authSource === 'oidc'}
+                    {#if account.providerLogin}<div class="dim mono">
+                        {account.providerLogin}
+                      </div>{/if}
+                  {:else if account.authSource === 'key'}
+                    <div class="dim">{keyCount(account)}</div>
+                  {:else}
+                    <div class="dim mono">{account.username ?? '—'}</div>
+                  {/if}
+                </td>
+                <td
+                  ><span class="pill" class:off={!account.enabled}
+                    >{account.enabled ? 'Enabled' : 'Disabled'}</span
+                  ></td
+                >
+                <td class="wide dim">{signIn(account)}</td>
+                <td>
+                  <div class="pills">
+                    {#each rolesOf(account) as role (role)}
+                      <span class="pill mono">{role}</span>
+                    {/each}
+                    {#each account.groups.filter((g) => !account.roles.includes(g)) as group (group)}
+                      <button type="button" class="pill ghost mono" onclick={() => roleFor(group)}
+                        >+ {group}</button
+                      >
+                    {/each}
+                  </div>
+                </td>
+                <td class="right">
+                  <button
+                    type="button"
+                    aria-expanded={open === account.id}
+                    onclick={() => {
+                      const closing = open === account.id;
+                      reset();
+                      message = '';
+                      open = closing ? null : account.id;
+                    }}
+                  >
+                    {open === account.id ? 'Close' : 'Manage'}
+                  </button>
+                </td>
+              </tr>
+              {#if open === account.id}
+                <tr class="fold">
+                  <td colspan="5">
+                    <AccountFold
                       {account}
                       {roles}
-                      onchanged={keyAccountChanged}
+                      {me}
+                      onchanged={accountChanged}
                       onkey={(created) =>
                         (keyHandovers = [
                           ...keyHandovers,
                           { ...created, account: account.displayName },
                         ])}
+                      onpassword={(result) =>
+                        (handovers = [
+                          ...handovers.filter((h) => h.userId !== result.userId),
+                          result,
+                        ])}
                     />
-                  {:else}
-                    <div class="row">
-                      <button type="button" onclick={() => startRename(account)}>Rename</button>
-                      <!-- Not for your own account. A reset ends every session it
-                         belongs to, including this one, so the page holding the
-                         only copy of the new password would be gone before
-                         anybody could read it. Change password does this safely.
-                         Nor for an OIDC account, which has no password here. -->
-                      {#if account.id !== me && account.authSource !== 'oidc'}
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onclick={() => perform(account, 'reset')}>Reset password</button
-                        >
-                      {/if}
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onclick={() => perform(account, 'revoke')}>Revoke sessions</button
-                      >
-                      {#if account.enabled}
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onclick={() => perform(account, 'disable')}>Disable account</button
-                        >
-                      {:else}
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onclick={() => perform(account, 'enable')}>Enable account</button
-                        >
-                      {/if}
-                    </div>
-
-                    {#if renaming}
-                      <form class="panel" onsubmit={(e) => rename(e, account)}>
-                        <Field required label="Display name">
-                          {#snippet help()}Only the name shown in smeltr changes.{/snippet}
-                          <input bind:value={renameTo} required />
-                        </Field>
-                        <div class="actions">
-                          <button type="button" onclick={reset}>Cancel</button>
-                          <button class="primary" type="submit" disabled={busy}
-                            >Save display name</button
-                          >
-                        </div>
-                      </form>
-                    {/if}
-                  {/if}
-                </td>
-              </tr>
-            {/if}
-          {/each}
-        </tbody>
-      </table>
+                  </td>
+                </tr>
+              {/if}
+            {/each}
+          </tbody>
+        </table>
+      {/if}
     {/if}
   {/if}
 </SectionShell>
@@ -931,13 +857,6 @@
     gap: 0.5rem;
   }
 
-  .row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    padding: 0.9rem 0 0;
-  }
-
   .panel {
     background: var(--bg);
     border: 1px solid var(--border);
@@ -951,6 +870,37 @@
 
   .panel p {
     margin: 0;
+  }
+
+  .tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .search {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1;
+    min-width: 14rem;
+    max-width: 28rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0 0.7rem;
+    color: var(--dim);
+  }
+
+  .search input {
+    width: 100%;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    padding: 1px 2px;
   }
 
   /* Only as wide as its choices, not the dialog. */

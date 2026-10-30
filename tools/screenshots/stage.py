@@ -264,7 +264,8 @@ def accounts(one_time):
     c.change_password("admin", ADMIN_PW)
     admin = as_("admin")
     for username, (display, pw) in PEOPLE.items():
-        made = admin.call("POST", "/api/accounts", {"authSource": "local", "username": username, "displayName": display})
+        made = admin.call("POST", "/api/accounts", {"authSource": "local", "username": username, "displayName": display,
+                                                   "administrator": True})
         p = api.Client()
         p.login(username, made["temporaryPassword"])
         p.change_password(username, pw)

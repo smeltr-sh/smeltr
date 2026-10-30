@@ -1,6 +1,6 @@
 <!--
-  What a key account holds, as the fields that choose it: everything as an
-  administrator, or what the roles it is given give.
+  What a local or key account holds, as the fields that choose it: everything
+  as an administrator, or what the roles it is given give.
 -->
 <script lang="ts">
   import Field from './Field.svelte';

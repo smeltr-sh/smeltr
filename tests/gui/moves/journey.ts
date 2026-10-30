@@ -1846,21 +1846,46 @@ type Account = {
   authSource: string;
   roles: string[];
   groups: string[];
-  keys?: { label: string }[];
+  keys?: { label: string; createdAt: number; expiresAt: number | null }[];
 };
+
+/** A day, in the milliseconds a key's expiry is kept in. */
+const DAY_MILLIS = 86_400_000;
+
+/** In the open access form, the flag on, or else a role or none of those there are. Answers what it chose. */
+async function chooseAccess(
+  j: Journey,
+  within: Locator,
+): Promise<{ administrator: boolean; roles: string[] }> {
+  const { rng, world } = j;
+  const administrator = rng.chance(2);
+  await within.getByRole('switch', { name: 'Administrator' }).setChecked(administrator);
+  if (administrator) return { administrator, roles: [] };
+  const offered = [...world.roles].sort();
+  for (const role of offered) await within.getByRole('checkbox', { name: role }).uncheck();
+  const roles = offered.length > 0 && rng.chance(2) ? [rng.pick(offered)] : [];
+  for (const role of roles) await within.getByRole('checkbox', { name: role }).check();
+  return { administrator, roles };
+}
+
+function said(access: { administrator: boolean; roles: string[] }): string {
+  if (access.administrator) return 'an administrator';
+  return access.roles.length ? `holding ${access.roles.join(', ')}` : 'holding nothing';
+}
 
 const addAccount: Move = {
   name: 'add-account',
-  leadsTo: ['disable-account'],
+  leadsTo: ['disable-account', 'change-access', 'find-account'],
   weight: (w) => (w.password && w.accounts.size < 2 ? 1 : 0),
   run: async (j) => {
     const { page, leader, browser, rng, world } = j;
-    const username = `admin${world.made++}`;
+    const username = `person${world.made++}`;
     await openAdmin(page, 'Accounts');
     await page.getByRole('button', { name: '+ Add account' }).click();
     const dialog = page.getByRole('dialog', { name: 'new account' });
-    await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill(`Admin ${username}`);
+    await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill(`Person ${username}`);
     await dialog.getByRole('textbox', { name: /^Username\b/ }).fill(username);
+    const access = await chooseAccess(j, dialog);
     await dialog.getByRole('button', { name: 'Add' }).click();
     const handover = page.locator('section.handover').filter({ hasText: username });
     await expect(handover.getByText('it is shown only once')).toBeVisible();
@@ -1872,8 +1897,9 @@ const addAccount: Move = {
     expect(users.find((u) => u.username === username)).toMatchObject({
       enabled: true,
       authSource: 'local',
+      ...access,
     });
-    if (!rng.chance(2)) return `add administrator ${username}`;
+    if (!rng.chance(2)) return `add ${username}, ${said(access)}`;
 
     // The one handed the password signs in with it, and chooses their own.
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
@@ -1893,7 +1919,7 @@ const addAccount: Move = {
     } finally {
       await context.close();
     }
-    return `add administrator ${username}, who signs in and chooses a password`;
+    return `add ${username}, ${said(access)}, who signs in and chooses a password`;
   },
 };
 
@@ -1928,24 +1954,27 @@ function keyAccountRow(page: Page, name: string): Locator {
 
 const addKeyAccount: Move = {
   name: 'add-key-account',
-  leadsTo: ['revoke-key'],
+  leadsTo: ['revoke-key', 'change-access'],
   weight: (w) => (w.password && w.keyAccounts.size < 2 ? 1 : 0),
   run: async (j) => {
     const { page, leader, rng, world } = j;
     const name = `key-account-${world.made++}`;
-    const administrator = rng.chance(2);
+    const days = rng.pick([null, 1, 30]);
     await openAdmin(page, 'Accounts');
     await page.getByRole('button', { name: '+ Add account' }).click();
     const dialog = page.getByRole('dialog', { name: 'new account' });
     await dialog.getByRole('button', { name: 'Key' }).click();
     await dialog.getByRole('textbox', { name: /^Display name\b/ }).fill(name);
-    if (administrator) await dialog.getByRole('switch', { name: 'Administrator' }).check();
+    const access = await chooseAccess(j, dialog);
+    const { administrator } = access;
     await dialog.getByRole('button', { name: 'Add' }).click();
     await expect(dialog).toHaveCount(0);
 
     // The new account's row opens on its own, and a key is made there.
     await page.getByRole('button', { name: '+ New key' }).click();
     await page.getByRole('textbox', { name: /^Label\b/ }).fill('journey');
+    if (days !== null)
+      await page.getByRole('spinbutton', { name: /^Expires in \(days\)/ }).fill(String(days));
     await page.getByRole('button', { name: 'Create key' }).click();
     const handover = page.locator('section.handover').filter({ hasText: name });
     await expect(handover.getByText('it is shown only once')).toBeVisible();
@@ -1959,14 +1988,15 @@ const addKeyAccount: Move = {
     )
       .get('/api/accounts')
       .then((a) => a.accounts);
-    expect(accounts.find((a) => a.displayName === name)).toMatchObject({
-      authSource: 'key',
-      administrator,
-      keys: [{ label: 'journey' }],
-    });
+    const made = accounts.find((a) => a.displayName === name)!;
+    expect(made).toMatchObject({ authSource: 'key', ...access, keys: [{ label: 'journey' }] });
+    const [held] = made.keys!;
+    expect(held.expiresAt).toBe(days === null ? null : held.createdAt + days * DAY_MILLIS);
+    // The health of the fleet is the administrator's alone; a role reads no more than shared.
     expect(await withKey(leader, key, 'GET', '/api/health')).toBe(administrator ? 200 : 403);
     expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(administrator ? 200 : 403);
-    return `add key account ${name}${administrator ? ', an administrator,' : ''} with a key`;
+    const lasts = days === null ? 'never expires' : `expires in ${days} days`;
+    return `add key account ${name}, ${said(access)}, with a key that ${lasts}`;
   },
 };
 
@@ -1999,6 +2029,92 @@ const revokeKey: Move = {
     expect(accounts.find((a) => a.displayName === name)?.keys).toEqual([]);
     expect(await withKey(leader, key, 'GET', '/api/health')).toBe(403);
     return `revoke ${name}'s key`;
+  },
+};
+
+/** A local or key account the journey made, changed to hold something else, and the leader holds it. */
+const changeAccess: Move = {
+  name: 'change-access',
+  weight: (w) => (w.accounts.size + w.keyAccounts.size > 0 ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const name = rng.pick([
+      ...[...world.accounts.keys()].map((u) => ({ local: true, name: u })),
+      ...[...world.keyAccounts.keys()].map((n) => ({ local: false, name: n })),
+    ]);
+    await openAdmin(page, 'Accounts');
+    const row = name.local
+      ? page.getByRole('row').filter({ hasText: name.name })
+      : keyAccountRow(page, name.name);
+    await row.getByRole('button', { name: 'Manage' }).click();
+    await page.getByRole('button', { name: 'Change access' }).click();
+    const form = page.locator('tr.fold form');
+    const access = await chooseAccess(j, form);
+    await form.getByRole('button', { name: 'Save access' }).click();
+    await expect(form).toHaveCount(0);
+    const accounts: Account[] = await (
+      await j.truth()
+    )
+      .get('/api/accounts')
+      .then((a) => a.accounts);
+    const changed = accounts.find((a) =>
+      name.local ? a.username === name.name : a.displayName === name.name,
+    );
+    expect(changed).toMatchObject(access);
+    const key = name.local ? null : world.keyAccounts.get(name.name);
+    if (key) {
+      const expected = access.administrator ? 200 : 403;
+      expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(expected);
+    }
+    return `change ${name.name} to ${said(access)}`;
+  },
+};
+
+/** Admin › Accounts searched and filtered by sign-in, and the roster shows what the leader's answer does. */
+const findAccount: Move = {
+  name: 'find-account',
+  weight: (w) => (w.password && w.accounts.size + w.keyAccounts.size > 0 ? 1 : 0),
+  run: async (j) => {
+    const { page, rng } = j;
+    await openAdmin(page, 'Accounts');
+    const accounts: (Account & { providerLogin?: string })[] = await (
+      await j.truth()
+    )
+      .get('/api/accounts')
+      .then((a) => a.accounts);
+    const kinds = { local: 'Password', oidc: 'SSO', key: 'Key' } as const;
+    const kind = rng.pick([null, 'local', 'oidc', 'key'] as const);
+    const named = rng.pick(accounts);
+    const query = rng.pick([
+      '',
+      named.displayName,
+      named.username ?? named.displayName,
+      named.displayName.slice(1, 4).toUpperCase(),
+    ]);
+    const search = page.getByRole('searchbox', { name: 'Search accounts' });
+    const chips = page.getByRole('group', { name: 'Filter accounts by sign-in' });
+    await search.fill(query);
+    await chips
+      .getByRole('button', { name: new RegExp(`^${kind === null ? 'All' : kinds[kind]}\\b`) })
+      .click();
+    const needle = query.trim().toLowerCase();
+    const expected = accounts
+      .filter((a) => kind === null || a.authSource === kind)
+      .filter((a) =>
+        [a.displayName, a.username, a.providerLogin].some((n) => n?.toLowerCase().includes(needle)),
+      )
+      .map((a) => a.displayName)
+      .sort();
+    const shown = page.locator('tbody tr:not(.fold) .name');
+    await expect
+      .poll(async () => (await shown.allInnerTexts()).map((n) => n.replace(/ · you$/, '')).sort())
+      .toEqual(expected);
+    if (expected.length === 0) await expect(page.getByText('No account matches.')).toBeVisible();
+    // Left as found, so the next move sees every account.
+    await search.fill('');
+    await chips.getByRole('button', { name: /^All\b/ }).click();
+    const by = kind === null ? 'every sign-in' : kinds[kind];
+    return `find "${query}" among ${by}: ${expected.length} shown`;
   },
 };
 
@@ -2689,6 +2805,8 @@ export const MOVES: readonly Move[] = [
   addRole,
   addKeyAccount,
   revokeKey,
+  changeAccess,
+  findAccount,
   turnOnAgents,
   setAgentPermissions,
   askAgent,

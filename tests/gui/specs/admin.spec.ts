@@ -592,7 +592,9 @@ test('a key account made under Accounts calls with its key until the key is revo
     .getByRole('table', { name: 'Keys' })
     .getByRole('row')
     .filter({ hasText: 'ci' });
-  await expect(keyRow.getByRole('cell').nth(2)).toHaveText(/ago$/);
+  // Expires, then Last used.
+  await expect(keyRow.getByRole('cell').nth(2)).toHaveText('never');
+  await expect(keyRow.getByRole('cell').nth(3)).toHaveText(/ago$/);
 
   await keyRow.getByRole('button', { name: 'Revoke' }).click();
   await admin

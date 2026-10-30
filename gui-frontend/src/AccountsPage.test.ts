@@ -38,6 +38,19 @@ const ACCOUNTS = [
     access: {},
   },
   {
+    id: 'u-cy',
+    username: 'cy',
+    displayName: 'Cy',
+    enabled: true,
+    administrator: false,
+    authSource: 'local',
+    createdAt: 0,
+    updatedAt: 0,
+    roles: ['smeltr-payments'],
+    groups: [],
+    access: {},
+  },
+  {
     id: 'u-bo',
     displayName: 'Bo',
     providerLogin: 'bo@example.com',
@@ -61,7 +74,16 @@ const ACCOUNTS = [
     roles: ['smeltr-payments'],
     groups: [],
     access: {},
-    keys: [{ id: 'key_1', label: 'nightly', createdAt: 0, lastUsedAt: null }],
+    keys: [
+      { id: 'key_1', label: 'nightly', createdAt: 0, expiresAt: null, lastUsedAt: null },
+      {
+        id: 'key_2',
+        label: 'weekly',
+        createdAt: 0,
+        expiresAt: Date.now() + 10 * 86_400_000 + 60_000,
+        lastUsedAt: null,
+      },
+    ],
   },
 ];
 
@@ -99,10 +121,20 @@ function stubFetch() {
       }
       if (url.startsWith('/api/accounts/') && method === 'PATCH')
         return json({ ok: true, errors: [], ...ACCOUNTS[0] });
+      if (url.endsWith('/keys') && method === 'POST')
+        return json({
+          ok: true,
+          errors: [],
+          id: 'key_3',
+          label: '',
+          createdAt: 0,
+          expiresAt: null,
+          key: 'smk_secret',
+        });
       if (url === '/api/agents') return json({ ok: true, errors: [], userId: 'u-new' });
       if (url.startsWith('/api/agents/')) return json({ ok: true, errors: [], roles: [] });
       if (url === '/api/accounts' && method === 'POST')
-        return json({ ok: true, errors: [], ...ACCOUNTS[2] });
+        return json({ ok: true, errors: [], ...ACCOUNTS[3] });
       if (url === '/api/accounts') return json({ ok: true, errors: [], accounts: ACCOUNTS });
       throw new Error(`unexpected ${url}`);
     }),
@@ -134,6 +166,25 @@ function row(name: string): HTMLTableRowElement {
   return [...target.querySelectorAll('tbody tr')].find(
     (r) => r.querySelector('td .name')?.textContent?.trim() === name,
   ) as HTMLTableRowElement;
+}
+
+/** The accounts the roster shows, by display name. */
+function shown(): string[] {
+  return [...target.querySelectorAll('tbody tr:not(.fold) td .name')].map(
+    (n) => n.textContent?.trim() ?? '',
+  );
+}
+
+/** Types into the dialog's field labelled `label`. */
+function fill(label: string, value: string) {
+  const field = [...target.querySelectorAll('dialog label, dialog .field')].find((l) =>
+    l.textContent?.trim().startsWith(label),
+  );
+  const input = field?.querySelector('input') ?? null;
+  if (input === null) throw new Error(`no field ${label}`);
+  input.value = value;
+  input.dispatchEvent(new Event('input'));
+  flushSync();
 }
 
 /** Lets a click's awaited question settle, answered or not. */
@@ -186,25 +237,142 @@ afterEach(() => {
 });
 
 describe('the Accounts tab', () => {
-  it('shows each account its roles, a local one as administrator', async () => {
+  it('shows each account its administrator flag and its roles, whatever its sign-in', async () => {
     await accountsTab();
     const pills = (name: string) =>
       [...row(name).querySelectorAll('td:nth-child(4) span.pill')].map((p) =>
         p.textContent?.trim(),
       );
     expect(pills('Ada')).toEqual(['administrator']);
+    expect(pills('Cy')).toEqual(['smeltr-payments']);
     expect(pills('Bo')).toEqual(['smeltr-payments', 'smeltr-search']);
     expect(pills('exporter')).toEqual(['smeltr-payments']);
   });
 
-  it('lists a key account among the accounts, by its key, with its own actions', async () => {
+  it('offers each account what its kind of sign-in has', async () => {
+    await accountsTab();
+    const offered = async (name: string) => {
+      await manage(name);
+      const fold = target.querySelector('tr.fold .row')!;
+      const texts = [...fold.querySelectorAll('button')].map((b) => b.textContent?.trim());
+      button('Close', row(name))!.click();
+      await settle();
+      return texts;
+    };
+    expect(await offered('Cy')).toEqual([
+      'Rename',
+      'Change access',
+      'Reset password',
+      'Revoke sessions',
+      'Disable account',
+    ]);
+    expect(await offered('Bo')).toEqual(['Rename', 'Revoke sessions', 'Disable account']);
+    expect(await offered('exporter')).toEqual([
+      'Rename',
+      'Change access',
+      '+ New key',
+      'Disable account',
+    ]);
+  });
+
+  it('lists a key account by its keys, each with when it expires', async () => {
     await accountsTab();
     expect(row('exporter').textContent).toContain('Key');
-    expect(row('exporter').textContent).toContain('1 key');
+    expect(row('exporter').textContent).toContain('2 keys');
     await manage('exporter');
-    expect(button('+ New key')).toBeDefined();
-    expect(button('Reset password')).toBeUndefined();
-    expect(target.querySelector('table[aria-label="Keys"]')?.textContent).toContain('nightly');
+    const keys = target.querySelector('table[aria-label="Keys"]')!;
+    const cells = (label: string) =>
+      [...keys.querySelectorAll('tbody tr')]
+        .find((r) => r.textContent?.includes(label))!
+        .querySelector('td:nth-child(3)')!
+        .textContent?.trim();
+    expect(cells('nightly')).toBe('never');
+    expect(cells('weekly')).toBe('in 10 days');
+  });
+
+  it('makes a key that expires in the days given, or never', async () => {
+    await accountsTab();
+    await manage('exporter');
+    button('+ New key')!.click();
+    flushSync();
+    const days = form().querySelector<HTMLInputElement>('input[type="number"]')!;
+    days.value = '0';
+    days.dispatchEvent(new Event('input'));
+    flushSync();
+    expect(button('Create key')!.disabled).toBe(true);
+    days.value = '30';
+    days.dispatchEvent(new Event('input'));
+    flushSync();
+    button('Create key')!.click();
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual({
+      method: 'POST',
+      url: '/api/accounts/u-exp/keys',
+      body: { label: '', expiresInDays: 30 },
+    });
+
+    await vi.waitFor(() => expect(target.querySelector('.handover')).not.toBeNull());
+    button('+ New key')!.click();
+    flushSync();
+    button('Create key')!.click();
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].body).toEqual({ label: '', expiresInDays: null });
+  });
+
+  it('finds an account by its display name, username or provider login', async () => {
+    await accountsTab();
+    const search = target.querySelector<HTMLInputElement>('input[type="search"]')!;
+    const find = (text: string) => {
+      search.value = text;
+      search.dispatchEvent(new Event('input'));
+      flushSync();
+      return shown().sort();
+    };
+    expect(find('ADA')).toEqual(['Ada']);
+    expect(find('cy')).toEqual(['Cy']);
+    expect(find('example.com')).toEqual(['Bo']);
+    expect(find('nobody')).toEqual([]);
+    expect(target.textContent).toContain('No account matches.');
+    expect(find('')).toEqual(['Ada', 'Bo', 'Cy', 'exporter']);
+  });
+
+  it('filters the accounts by how they sign in', async () => {
+    await accountsTab();
+    const chips = target.querySelector('[aria-label="Filter accounts by sign-in"]')!;
+    const pick = (label: string) => {
+      [...chips.querySelectorAll('button')]
+        .find((b) => b.textContent?.trim().startsWith(label))!
+        .click();
+      flushSync();
+      return shown().sort();
+    };
+    expect(pick('Password')).toEqual(['Ada', 'Cy']);
+    expect(pick('SSO')).toEqual(['Bo']);
+    expect(pick('Key')).toEqual(['exporter']);
+    expect(pick('All')).toEqual(['Ada', 'Bo', 'Cy', 'exporter']);
+  });
+
+  it('adds a local account holding the roles it is given', async () => {
+    await accountsTab();
+    button('+ Add account')!.click();
+    flushSync();
+    fill('Display name', 'Dee');
+    fill('Username', 'dee');
+    target.querySelector<HTMLInputElement>('dialog .roles input')!.click();
+    flushSync();
+    button('Add')!.click();
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual({
+      method: 'POST',
+      url: '/api/accounts',
+      body: {
+        authSource: 'local',
+        username: 'dee',
+        displayName: 'Dee',
+        roles: ['smeltr-admins'],
+        administrator: false,
+      },
+    });
   });
 
   it('stops at a refused change of access, the form still open', async () => {
@@ -269,6 +437,7 @@ describe('the Accounts tab', () => {
   it('resets a password only once it is confirmed', async () => {
     await accountsTab();
     await manage('Ada');
+    expect(button('Reset password')).toBeDefined();
     ask.mockResolvedValueOnce(false);
     button('Reset password')!.click();
     await settle();
