@@ -22,11 +22,6 @@
     <p class="tagline">
       Fast, self-hosted telemetry pipelines.<br /><span>Built visually. Managed with Git.</span>
     </p>
-    <p class="what">
-      Smeltr runs on your own servers, between the systems that send logs and the places that store
-      them, such as your SIEM. You build pipelines that read each source in its own format, drop
-      what nobody searches, and map the rest to one schema.
-    </p>
     <div class="actions">
       <a class="btn large primary" href="/get">Get smeltr</a>
       <a class="btn large secondary" href="/demo/try/" rel="external">Try the demo</a>
@@ -40,6 +35,11 @@
   <section class="flow-section" id="where-it-fits" aria-labelledby="fit-heading">
     <div class="section-intro centered">
       <h2 id="fit-heading">Less noise. One schema.</h2>
+      <p>
+        Smeltr runs on your own servers, between the systems that send logs and the places that
+        store them, such as your SIEM. You build pipelines that read each source in its own format,
+        drop what nobody searches, and map the rest to one schema.
+      </p>
     </div>
     <HomeDataFlow />
     <p class="connection-links">
@@ -115,14 +115,6 @@
   }
   .tagline span {
     color: var(--dim);
-  }
-  .home-hero .what {
-    margin: 1rem auto 0;
-    max-width: 40rem;
-    font-size: 1.1rem;
-    line-height: 1.6;
-    color: var(--dim);
-    text-wrap: balance;
   }
   .home-hero .actions {
     justify-content: center;
