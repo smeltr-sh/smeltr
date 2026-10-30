@@ -183,7 +183,7 @@ describe('objectChanges', () => {
     ]);
     expect(changes.map((c) => [c.section, c.noun, c.status, c.label])).toEqual([
       ['manifest', 'worker group', 'added', 'North'],
-      ['routes', 'route', 'added', 'r'],
+      ['routes', 'route', 'added', 's → p'],
     ]);
     expect(changes[0].fields.map((f) => [f.key, f.after])).toEqual([
       ['name', 'North'],
@@ -263,7 +263,7 @@ describe('sample and test cards', () => {
       },
     ]);
     expect(changes.map((c) => [c.section, c.noun, c.status, c.label])).toEqual([
-      ['routes', 'route', 'added', 'r'],
+      ['routes', 'route', 'added', 's → p'],
       ['samples', 'sample', 'changed', 'Orders EU'],
     ]);
     const [, card] = changes;

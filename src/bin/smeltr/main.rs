@@ -3228,6 +3228,7 @@ mod tests {
             response.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
         assert_eq!(response.route_ids, vec!["audit-orders"]);
+        assert_eq!(response.route_names, vec!["orders \u{2192} audit"]);
         let through = &response.rows[0].through;
         assert_eq!(through.len(), 1, "the group's route took the record");
         let document: serde_json::Value = serde_json::from_str(&through[0].documents[0].document).unwrap();

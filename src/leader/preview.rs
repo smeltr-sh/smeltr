@@ -341,6 +341,9 @@ pub struct RoutePreview {
     /// `RouteConfig::id`, by route index -- position-parallel to `route_pipelines`. Resolves an index in `matched`
     /// or `through` to the id the config gave that route, which an edit keeps and a delete-and-insert does not.
     pub route_ids: Vec<String>,
+    /// Each route's name (`LoadedSystem::route_names`), by route index -- position-parallel to
+    /// `route_pipelines`.
+    pub route_names: Vec<String>,
     /// Destination names by id.
     pub destination_names: HashMap<u32, String>,
     /// The answer to `Unmatched`, with each destination by its author's id. Absent only on failure.
@@ -609,6 +612,7 @@ pub fn run_route_preview(
             .map(|r| system.pipeline_ids.get(r.pipeline).cloned().unwrap_or_default())
             .collect(),
         route_ids,
+        route_names: system.route_names(),
         destination_names: system
             .topology
             .destinations

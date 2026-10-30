@@ -365,7 +365,10 @@ pub(crate) fn from_file_config_at(
         errors.extend(impossible_answers("the group", &group, None, Layer::Group));
         let pipeline_ids: Vec<String> = file.pipelines.iter().map(|p| p.id.clone()).collect();
         for (at, r) in routes.iter().enumerate() {
-            let what = format!("route {}", super::route_name(&sources, &pipelines, &pipeline_ids, &routes, at));
+            let what = format!(
+                "route {}",
+                super::route_name(&sources, &pipelines, &pipeline_ids, &routes, at)
+            );
             errors.extend(impossible_answers(&what, &r.on_exception, Some(&group), Layer::Route));
         }
         for d in &destinations {

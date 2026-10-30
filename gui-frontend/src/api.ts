@@ -2444,6 +2444,8 @@ export interface RoutePreviewResult {
    * resolves an index in `matched`/`through` to the id the config gave that
    * route, which an edit keeps and a delete-and-insert does not. */
   route_ids: string[];
+  /** Each route's name, by route index (`routeName`). */
+  route_names: string[];
   destination_names: Record<number, string>;
   /** What happens to a row no route matched, with the destination by its author's id. */
   unmatched: Answer;

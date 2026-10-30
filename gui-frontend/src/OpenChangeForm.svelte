@@ -11,6 +11,7 @@
   import InlineError from './InlineError.svelte';
   import Locked from './Locked.svelte';
   import {
+    SHARED_SCOPE,
     SAVED_EVENT,
     branchDiff,
     configAt,
@@ -60,11 +61,19 @@
     const scopes = [...new Set(entry.touches.map(scopeOf))].sort();
     const pairs = await Promise.all(
       scopes.map(async (scope) => {
-        const [before, after] = await Promise.all([
+        const inGroup = scope !== SHARED_SCOPE;
+        const [before, after, sharedBefore, sharedAfter] = await Promise.all([
           configAt('main', scope),
           configAt(entry.name, scope),
+          inGroup ? configAt('main', SHARED_SCOPE) : null,
+          inGroup ? configAt(entry.name, SHARED_SCOPE) : null,
         ]);
-        return { scope, before: before.config, after: after.config };
+        // A group's routes are counted after `shared/`'s (`routeName`).
+        const shared =
+          sharedBefore?.config && sharedAfter?.config
+            ? { before: sharedBefore.config, after: sharedAfter.config }
+            : undefined;
+        return { scope, before: before.config, after: after.config, ...(shared && { shared }) };
       }),
     );
     return pairs.filter((pair): pair is ScopeChange => !!pair.before && !!pair.after);

@@ -157,7 +157,9 @@ describe('changeText, a pipeline is said by its name', () => {
     const next = after((c) => {
       c.routes[0].pipeline = 'metrics-pipe';
     });
-    expect(text(next).subject).toBe('Update route catch-all: pipeline Main → Metrics passthrough');
+    expect(text(next).subject).toBe(
+      'Update route kafka-main → Main: pipeline Main → Metrics passthrough',
+    );
   });
 
   it('names a pipeline the change adds and a route moves onto in the same change', () => {
@@ -166,7 +168,7 @@ describe('changeText, a pipeline is said by its name', () => {
       c.routes[0].pipeline = 'pipeline-x7k2m9q1';
     });
     expect(text(next).body.split('\n')).toEqual([
-      'Update route catch-all: pipeline Main → Firewall',
+      'Update route kafka-main → Main: pipeline Main → Firewall',
       'Add pipeline Firewall',
     ]);
   });
@@ -175,7 +177,9 @@ describe('changeText, a pipeline is said by its name', () => {
     const next = after((c) => {
       c.routes[0].pipeline = 'pipeline-gone0000';
     });
-    expect(text(next).subject).toBe('Update route catch-all: pipeline Main → pipeline-gone0000');
+    expect(text(next).subject).toBe(
+      'Update route kafka-main → Main: pipeline Main → pipeline-gone0000',
+    );
   });
 
   it('names the pipelines a call step moved between', () => {
@@ -419,7 +423,7 @@ describe('changeText, more than one object', () => {
       'Add source kafka-eu',
       'Update source kafka-main: brokers b1:9092,b2:9092 → b1:9092,b2:9092,b3:9092',
       'Add destination elastic-logs',
-      'Update route catch-all: condition none → __source.offset > 0',
+      'Update route kafka-main → Main: condition none → __source.offset > 0',
       'Add lookup table user-agents',
       'Update pipeline Main: add code step',
     ]);

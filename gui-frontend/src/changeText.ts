@@ -11,7 +11,8 @@
 
 import type { FileConfigDto } from './api';
 import { diffObjects } from './diff';
-import { SECTIONS, byId, isRecord, type Noun } from './objectChanges';
+import { SECTIONS, byId, isRecord, type Noun, type ScopePair } from './objectChanges';
+import { routeNameIn } from './routeFlow';
 import { count } from './time';
 
 export interface ChangeText {
@@ -28,9 +29,10 @@ export interface ScopeChange {
   scope: string;
   before: FileConfigDto;
   after: FileConfigDto;
+  shared?: ScopePair['shared'];
 }
 
-/** `name` is the object as a reader calls it: its id, or a pipeline's name. */
+/** `name` is the object as a reader calls it: its id, a pipeline's name, or a route's `routeName`. */
 type Edit =
   | { op: 'add'; noun: Noun; name: string; scope: string }
   | { op: 'remove'; noun: Noun; name: string; scope: string }
@@ -264,7 +266,13 @@ function editsForScope(change: ScopeChange): Edit[] {
   // A pipeline is called by the name it had, which is the one a reader
   // knows it by; a pipeline the change adds has only its new one.
   const nameFor = (noun: Noun, id: string) =>
-    noun === 'pipeline' ? nameOf(id, names.before, names.after) : id;
+    noun === 'pipeline'
+      ? nameOf(id, names.before, names.after)
+      : noun === 'route'
+        ? (routeNameIn(change.before, id, change.shared?.before) ??
+          routeNameIn(change.after, id, change.shared?.after) ??
+          id)
+        : id;
 
   for (const section of sections(change.before, change.after)) {
     const was = byId(section.before);

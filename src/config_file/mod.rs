@@ -140,7 +140,10 @@ pub(crate) fn route_name(
     let twin = |o: &&RouteConfig| o.source == r.source && o.pipeline == r.pipeline;
     match routes.iter().filter(twin).count() {
         1 => format!("{source} \u{2192} {pipeline}"),
-        _ => format!("{source} \u{2192} {pipeline} ({})", routes[..at].iter().filter(twin).count() + 1),
+        _ => format!(
+            "{source} \u{2192} {pipeline} ({})",
+            routes[..at].iter().filter(twin).count() + 1
+        ),
     }
 }
 
@@ -247,10 +250,21 @@ impl LoadedSystem {
         }
     }
 
+    /// Every route's [`route_name`], in the order they run.
+    pub fn route_names(&self) -> Vec<String> {
+        let routes = &self.topology.routes;
+        (0..routes.len())
+            .map(|at| route_name(&self.topology.sources, &self.pipelines, &self.pipeline_ids, routes, at))
+            .collect()
+    }
+
     /// `r`, one of the topology's routes, by its [`route_name`].
     fn route_name(&self, r: &RouteConfig) -> String {
         let routes = &self.topology.routes;
-        let at = routes.iter().position(|o| std::ptr::eq(o, r)).expect("a route of this system");
+        let at = routes
+            .iter()
+            .position(|o| std::ptr::eq(o, r))
+            .expect("a route of this system");
         route_name(&self.topology.sources, &self.pipelines, &self.pipeline_ids, routes, at)
     }
 
@@ -697,7 +711,15 @@ mod tests {
         }"#;
         let system = load_str(json).unwrap();
         let names: Vec<String> = (system.topology.routes.iter()).map(|r| system.route_name(r)).collect();
-        assert_eq!(names, ["k \u{2192} p (1)", "k \u{2192} Enrich", "j \u{2192} p", "k \u{2192} p (2)"]);
+        assert_eq!(
+            names,
+            [
+                "k \u{2192} p (1)",
+                "k \u{2192} Enrich",
+                "j \u{2192} p",
+                "k \u{2192} p (2)"
+            ]
+        );
     }
 
     #[test]

@@ -20,6 +20,7 @@ import {
 } from './api';
 import { diffObjects, type DiffEntry } from './diff';
 import { stepSummary, stepsFromDto } from './pipeline';
+import { routeNameIn } from './routeFlow';
 
 export type Noun =
   | 'source'
@@ -211,6 +212,9 @@ export interface ScopePair {
   /** The scope's files that do not read at each end: each path, within the
    * bundle, to why. */
   unreadable?: { before: Map<string, string>; after: Map<string, string> };
+  /** `shared/`'s bundle at each end, for a group's: a group runs shared routes before its own, so they count in a
+   * route's name (`routeName`). */
+  shared?: { before: FileConfigDto; after: FileConfigDto };
 }
 
 /** The file each section is read from. A section whose file does not read
@@ -450,6 +454,7 @@ function objectChange(
   before: unknown,
   after: unknown,
   moved: boolean,
+  label = labelOf(after ?? before, id),
 ): ObjectChange | null {
   const status: Status =
     before === undefined ? 'added' : after === undefined ? 'removed' : 'changed';
@@ -464,7 +469,7 @@ function objectChange(
     section: spec.key,
     noun: spec.noun,
     id,
-    label: labelOf(after ?? before, id),
+    label,
     status,
     fields,
   };
@@ -697,7 +702,20 @@ export function objectChanges(pairs: ScopePair[]): ObjectChange[] {
       for (const id of ids) {
         // Its file says what it is, not that it was removed or added.
         if (unread.has(fileOfObject(spec, id))) continue;
-        const change = objectChange(scope, spec, id, was.get(id), now.get(id), moved.has(id));
+        const route =
+          spec.key === 'routes'
+            ? (routeNameIn(after, id, pair.shared?.after) ??
+              routeNameIn(before, id, pair.shared?.before))
+            : undefined;
+        const change = objectChange(
+          scope,
+          spec,
+          id,
+          was.get(id),
+          now.get(id),
+          moved.has(id),
+          route,
+        );
         if (change) out.push(change);
       }
     }
