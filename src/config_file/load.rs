@@ -324,7 +324,7 @@ pub(crate) fn from_file_config_at(
         ));
     }
 
-    let sources: Vec<SourceConfig> = file.sources.iter().map(|s| to_source(s, maps.sources[&s.id])).collect();
+    let sources = file.sources.iter().map(|s| to_source(s, maps.sources[&s.id])).collect();
     let mut errors = Vec::new();
     let mut group = OnException::default();
     if let Some(layer) = &file.on_exception {
@@ -360,39 +360,12 @@ pub(crate) fn from_file_config_at(
     }));
     errors.extend(pipeline_errors);
 
-    // Only once every answer resolves.
-    if errors.is_empty() {
-        errors.extend(impossible_answers("the group", &group, None, Layer::Group));
-        let pipeline_ids: Vec<String> = file.pipelines.iter().map(|p| p.id.clone()).collect();
-        for (at, r) in routes.iter().enumerate() {
-            let what = format!(
-                "route {}",
-                super::route_name(&sources, &pipelines, &pipeline_ids, &routes, at)
-            );
-            errors.extend(impossible_answers(&what, &r.on_exception, Some(&group), Layer::Route));
-        }
-        for d in &destinations {
-            let mut own = OnException::default();
-            own.answers[ExceptionKind::Refused.index()] = d.on_reject.clone();
-            let what = format!("destination {:?}", d.name);
-            errors.extend(impossible_answers(&what, &own, Some(&group), Layer::Destination));
-            if d.on_reject.targets().contains(&d.id) {
-                errors.push(format!(
-                    "destination {:?} delivers what it refuses to itself, where it would be refused again; give it \
-                     its own answer to Refused",
-                    d.name
-                ));
-            }
-        }
-        errors.extend(refusal_cycles(&destinations));
-    }
-
     if !errors.is_empty() {
         return Err(LoadError::Validation(errors.into_iter().map(Into::into).collect()));
     }
 
     let (named_secrets, named_certificates) = named_by(&file);
-    Ok(super::LoadedSystem {
+    let system = super::LoadedSystem {
         topology: TopologyConfig {
             named_secrets,
             named_certificates,
@@ -426,7 +399,41 @@ pub(crate) fn from_file_config_at(
             .filter(|(_, a)| !a.is_empty())
             .collect(),
         compiled: None,
-    })
+    };
+    // Only once every answer resolves.
+    let errors = impossible_answers_of(&system);
+    if errors.is_empty() {
+        Ok(system)
+    } else {
+        Err(LoadError::Validation(errors.into_iter().map(Into::into).collect()))
+    }
+}
+
+/// Every answer `system` gives that its kind's row cannot carry out, and every refusal that leads back to where it
+/// started.
+fn impossible_answers_of(system: &super::LoadedSystem) -> Vec<String> {
+    let topology = &system.topology;
+    let group = &topology.on_exception;
+    let mut errors = impossible_answers("the group", group, None, Layer::Group);
+    for (at, r) in topology.routes.iter().enumerate() {
+        let what = format!("route {}", system.route_name(at));
+        errors.extend(impossible_answers(&what, &r.on_exception, Some(group), Layer::Route));
+    }
+    for d in &topology.destinations {
+        let mut own = OnException::default();
+        own.answers[ExceptionKind::Refused.index()] = d.on_reject.clone();
+        let what = format!("destination {:?}", d.name);
+        errors.extend(impossible_answers(&what, &own, Some(group), Layer::Destination));
+        if d.on_reject.targets().contains(&d.id) {
+            errors.push(format!(
+                "destination {:?} delivers what it refuses to itself, where it would be refused again; give it \
+                 its own answer to Refused",
+                d.name
+            ));
+        }
+    }
+    errors.extend(refusal_cycles(&topology.destinations));
+    errors
 }
 
 /// Each object's schemas, in the file's order.

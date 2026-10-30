@@ -14,7 +14,7 @@ import {
   ruleName,
   pills,
   routeName,
-  routeNameIn,
+  bundleRoutes,
   plain,
   pushApart,
   removeDest,
@@ -207,8 +207,11 @@ describe("a route's name", () => {
 
   it("counts a group's routes after the shared ones it runs first", () => {
     const shared = { routes: [routes[0]], pipelines };
-    expect(routeNameIn({ routes: [routes[3]], pipelines: [] }, 'd', shared)).toBe('k \u2192 p (2)');
-    expect(routeNameIn({ routes: [routes[1]], pipelines }, 'b')).toBe('k \u2192 Enrich');
-    expect(routeNameIn({ routes: [], pipelines }, 'b')).toBeUndefined();
+    const named = bundleRoutes({ routes: [routes[3], routes[1]], pipelines: [] }, shared);
+    expect(named.map((r) => r.name)).toEqual([
+      'k \u2192 p (1)',
+      'k \u2192 p (2)',
+      'k \u2192 Enrich',
+    ]);
   });
 });

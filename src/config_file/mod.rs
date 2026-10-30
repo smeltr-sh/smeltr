@@ -42,7 +42,7 @@ use crate::core::column::DataType;
 use crate::core::error::ExceptionKind;
 use crate::core::id::{DestId, FunctionId};
 use crate::plan::config::{Answer, CompileError, PipelineConfig};
-use crate::plan::topology::{CompiledTopology, DestinationKind, Records, RouteConfig, SourceConfig, TopologyConfig};
+use crate::plan::topology::{CompiledTopology, DestinationKind, Records, RouteConfig, TopologyConfig};
 
 pub use bundle::{
     BundleError, DirFileSet, FileSet, GROK_PATTERNS_FILE, GROUPS_DIR, LOOKUP_TABLES_FILE, LOOKUPS_DIR, PIPELINES_DIR,
@@ -119,32 +119,6 @@ pub struct LoadedSystem {
     pub accepts: HashMap<DestId, Vec<Arc<crate::schema::Schema>>>,
     /// What `validate` compiled; `None` for a system loaded without validating it.
     pub compiled: Option<CompiledTopology>,
-}
-
-/// `routes[at]` as every screen and message names it: its source, then its pipeline, and `(n)` when another route
-/// runs from that source to that pipeline too, `n` counting those routes in the order they run. A route's id is
-/// minted, so it is never the name. The GUI names routes the same way (`routeName` in `routeFlow.ts`).
-pub(crate) fn route_name(
-    sources: &[SourceConfig],
-    pipelines: &[PipelineConfig],
-    pipeline_ids: &[String],
-    routes: &[RouteConfig],
-    at: usize,
-) -> String {
-    let r = &routes[at];
-    let source = sources.iter().find(|s| s.id == r.source).map_or("", |s| &s.name);
-    let pipeline = match pipelines.iter().find(|p| p.id == r.pipeline) {
-        Some(p) if !p.name.is_empty() => &p.name,
-        _ => pipeline_ids.get(r.pipeline).map_or("", String::as_str),
-    };
-    let twin = |o: &&RouteConfig| o.source == r.source && o.pipeline == r.pipeline;
-    match routes.iter().filter(twin).count() {
-        1 => format!("{source} \u{2192} {pipeline}"),
-        _ => format!(
-            "{source} \u{2192} {pipeline} ({})",
-            routes[..at].iter().filter(twin).count() + 1
-        ),
-    }
 }
 
 /// A route as `LoadedSystem::checked_routes` walks it.
@@ -242,20 +216,32 @@ impl LoadedSystem {
         }
     }
 
-    /// Every route's [`route_name`], in the order they run.
+    /// Every route's [`Self::route_name`], in the order they run.
     pub fn route_names(&self) -> Vec<String> {
         (0..self.topology.routes.len()).map(|at| self.route_name(at)).collect()
     }
 
-    /// The topology's route `at`, by its [`route_name`].
-    fn route_name(&self, at: usize) -> String {
-        route_name(
-            &self.topology.sources,
-            &self.pipelines,
-            &self.pipeline_ids,
-            &self.topology.routes,
-            at,
-        )
+    /// Route `at` as every screen and message names it: its source, then its pipeline, and `(n)` when another route
+    /// runs from that source to that pipeline too, `n` counting those routes in the order they run. A route's id is
+    /// minted, so it is never the name. The GUI names routes the same way (`routeName` in `routeFlow.ts`).
+    pub fn route_name(&self, at: usize) -> String {
+        let routes = &self.topology.routes;
+        let r = &routes[at];
+        let source = (self.topology.sources.iter())
+            .find(|s| s.id == r.source)
+            .map_or("", |s| &s.name);
+        let pipeline = match self.pipelines.iter().find(|p| p.id == r.pipeline) {
+            Some(p) if !p.name.is_empty() => &p.name,
+            _ => self.pipeline_ids.get(r.pipeline).map_or("", String::as_str),
+        };
+        let twin = |o: &&RouteConfig| o.source == r.source && o.pipeline == r.pipeline;
+        match routes.iter().filter(twin).count() {
+            1 => format!("{source} \u{2192} {pipeline}"),
+            _ => format!(
+                "{source} \u{2192} {pipeline} ({})",
+                routes[..at].iter().filter(twin).count() + 1
+            ),
+        }
     }
 
     /// The author's id for `id`, a destination the loaded system has.

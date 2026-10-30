@@ -32,7 +32,7 @@
   import Advanced from './Advanced.svelte';
   import Collapsible from './Collapsible.svelte';
   import RouteFlow from './RouteFlow.svelte';
-  import { cards, namedRoutes, type Card } from './routeFlow';
+  import { bundleRoutes, cards, type Card } from './routeFlow';
   import JsonEditPage from './JsonEditPage.svelte';
   import RoutePreview from './RoutePreview.svelte';
   import ExceptionMatrix from './ExceptionMatrix.svelte';
@@ -153,12 +153,13 @@
   /** Ids `shared/` declares. A group runs `shared/` merged with its own subtree, so a route of its own may name
    * one of these; marking them is what keeps an author from reading a fleet-wide object as their group's. */
   let fromShared: Set<string> = $state(new Set());
-  /** `shared/`'s own routes, which this group runs too. Never saved from here: the page writes its own scope. */
-  let sharedRoutes: RouteDto[] = $state([]);
+  /** `shared/`'s bundle, whose routes this group runs too. Never saved from here: the page writes its own scope. */
+  let shared = $state<FileConfigDto | null>(null);
+  let sharedRoutes = $derived(shared?.routes ?? []);
   let refusals = $derived(
     problems(
       exceptions,
-      namedRoutes([...sharedRoutes, ...routes], (id) => pipelineNames[id] || id),
+      bundleRoutes({ routes, pipelines: loadedConfig?.pipelines ?? [] }, shared),
       destinations,
     ),
   );
@@ -348,7 +349,7 @@
    * what runs is the two merged -- so a group's page has to offer both. `shared/` itself draws on nothing, so
    * there is nothing to add there. A failed read leaves the group's own choices rather than the page. */
   async function addShared() {
-    const shared = await sharedConfig();
+    shared = await sharedConfig();
     if (!shared) return;
     fromShared = new Set([
       ...shared.sources.map((x) => x.id),
@@ -357,7 +358,6 @@
     ]);
     // The group's own first: these lists are also where a new route takes its defaults from, and a route should
     // start on something the group owns rather than on a fleet-wide object it merely draws on.
-    sharedRoutes = shared.routes;
     sourceIds = [...sourceIds, ...shared.sources.map((x) => x.id)];
     pipelineIds = [...pipelineIds, ...shared.pipelines.map((x) => x.id)];
     pipelineNames = {

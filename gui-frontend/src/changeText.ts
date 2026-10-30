@@ -11,8 +11,14 @@
 
 import type { FileConfigDto } from './api';
 import { diffObjects } from './diff';
-import { SECTIONS, byId, isRecord, type Noun, type ScopePair } from './objectChanges';
-import { routeNameIn } from './routeFlow';
+import {
+  SECTIONS,
+  byId,
+  changedRouteName,
+  isRecord,
+  type Noun,
+  type ScopePair,
+} from './objectChanges';
 import { count } from './time';
 
 export interface ChangeText {
@@ -271,9 +277,7 @@ function editsForScope(change: ScopeChange): Edit[] {
     noun === 'pipeline'
       ? nameOf(id, names.before, names.after)
       : noun === 'route'
-        ? (routeNameIn(change.after, id, change.shared?.after) ??
-          routeNameIn(change.before, id, change.shared?.before) ??
-          id)
+        ? (changedRouteName(change, id) ?? id)
         : id;
 
   for (const section of sections(change.before, change.after)) {

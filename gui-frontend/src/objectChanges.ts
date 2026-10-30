@@ -20,7 +20,7 @@ import {
 } from './api';
 import { diffObjects, type DiffEntry } from './diff';
 import { stepSummary, stepsFromDto } from './pipeline';
-import { routeNameIn } from './routeFlow';
+import { bundleRoutes } from './routeFlow';
 
 export type Noun =
   | 'source'
@@ -215,6 +215,16 @@ export interface ScopePair {
   /** `shared/`'s bundle at each end, for a group's: a group runs shared routes before its own, so they count in a
    * route's name (`routeName`). */
   shared?: { before: FileConfigDto; after: FileConfigDto };
+}
+
+/** Route `id` of a scope by its `routeName`: as the change leaves it, or as it was where the change removes it. */
+export function changedRouteName(
+  pair: Pick<ScopePair, 'before' | 'after' | 'shared'>,
+  id: string,
+): string | undefined {
+  const named = (config: FileConfigDto, shared?: FileConfigDto) =>
+    bundleRoutes(config, shared).find((r) => r.id === id)?.name;
+  return named(pair.after, pair.shared?.after) ?? named(pair.before, pair.shared?.before);
 }
 
 /** The file each section is read from. A section whose file does not read
@@ -702,11 +712,7 @@ export function objectChanges(pairs: ScopePair[]): ObjectChange[] {
       for (const id of ids) {
         // Its file says what it is, not that it was removed or added.
         if (unread.has(fileOfObject(spec, id))) continue;
-        const route =
-          spec.key === 'routes'
-            ? (routeNameIn(after, id, pair.shared?.after) ??
-              routeNameIn(before, id, pair.shared?.before))
-            : undefined;
+        const route = spec.key === 'routes' ? changedRouteName(pair, id) : undefined;
         const change = objectChange(
           scope,
           spec,

@@ -9,7 +9,6 @@
   import Field from './Field.svelte';
   import Panel from './Panel.svelte';
   import {
-    MAIN_BRANCH,
     SHARED_SCOPE,
     configAt,
     type MergeConflict,
@@ -18,7 +17,7 @@
   } from './api';
   import { conflictLabel } from './conflictLabel';
   import { scopeOf } from './objectChanges';
-  import { routeNameIn } from './routeFlow';
+  import { bundleRoutes } from './routeFlow';
 
   let {
     branch,
@@ -42,39 +41,35 @@
 
   const key = (c: MergeConflict) => `${c.path}\u0000${c.id ?? ''}`;
 
-  /** Each conflicting route's `routeName`, by `key`: as this branch has it, or as main does where the branch removed
-   * it. */
+  /** Each conflicting route's `routeName` on this branch, by `key`. A route the branch removed has none, and is
+   * told by its JSON. */
   let routeNames = $state<Map<string, string>>(new Map());
   $effect(() => {
     nameRoutes(conflicts);
   });
 
   async function nameRoutes(at: MergeConflicts) {
-    // Without a bundle the label is just `Route`; the JSON beneath it still shows which.
-    const read = (onBranch: string, scope: string, commit: string) =>
-      configAt(onBranch, scope, commit).then(
+    const routes = at.conflicts.filter(
+      (c) => c.id !== undefined && c.path.endsWith('/routes.json'),
+    );
+    if (routes.length === 0) return;
+    // Without its bundle a route's label is just `Route`.
+    const read = (scope: string) =>
+      configAt(branch, scope, at.work).then(
         (res) => res.config,
         () => null,
       );
-    /** The route's name in `scope` at `commit`, its group's counted after `shared/`'s, as the group runs them. */
-    const nameAt = async (onBranch: string, commit: string, scope: string, id: string) => {
-      const [own, shared] = await Promise.all([
-        read(onBranch, scope, commit),
-        scope === SHARED_SCOPE ? null : read(onBranch, SHARED_SCOPE, commit),
-      ]);
-      return own ? routeNameIn(own, id, shared) : undefined;
-    };
-    const named = await Promise.all(
-      at.conflicts.map(async (c) => {
-        if (c.id === undefined || !c.path.endsWith('/routes.json')) return null;
-        const scope = scopeOf(c.path);
-        const name =
-          (await nameAt(branch, at.work, scope, c.id)) ??
-          (await nameAt(MAIN_BRANCH, at.main, scope, c.id));
-        return name === undefined ? null : ([key(c), name] as const);
-      }),
-    );
-    if (at === conflicts) routeNames = new Map(named.filter((n) => n !== null));
+    const shared = await read(SHARED_SCOPE);
+    const names = new Map<string, string>();
+    for (const scope of new Set(routes.map((c) => scopeOf(c.path)))) {
+      const own = scope === SHARED_SCOPE ? shared : await read(scope);
+      const named = own ? bundleRoutes(own, scope === SHARED_SCOPE ? null : shared) : [];
+      for (const c of routes.filter((c) => scopeOf(c.path) === scope)) {
+        const name = named.find((r) => r.id === c.id)?.name;
+        if (name) names.set(key(c), name);
+      }
+    }
+    if (at === conflicts) routeNames = names;
   }
 </script>
 
