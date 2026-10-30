@@ -180,7 +180,6 @@ fn is_object(node: &Map<String, Value>) -> bool {
     node.get("type").and_then(Value::as_str) == Some("object") || node.contains_key("properties")
 }
 
-/// The first of a node's `examples`, as text: a string as it is, any other value as its JSON.
 fn text(node: &Value, key: &str) -> String {
     node.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
 }
