@@ -132,7 +132,7 @@ export type World = {
   supplied: boolean;
   /** The certificate in force was ordered from the journey's certificate authority. It is supplied too. */
   acme: boolean;
-  /** A certificate was ordered over ACME. The leader keeps it, sealed, after a switch away from it. */
+  /** A certificate was ordered over ACME, so ordering is on, and stays on after a switch away from it. */
   ordered: boolean;
 };
 
@@ -1256,23 +1256,21 @@ const regenerateKey: Move = {
         await j.truth()
       ).get('/api/settings/encryption-key');
       expect(key.state).toBe('held');
-      // One in force may be ordered again at once, so it may be sealed or not.
+      // While ordering is on, the leader orders the certificate again whether or not it is in force, so it may
+      // be sealed or not.
       return key.unopenable
         .map((u) => u.name)
-        .filter((name) => !(world.acme && name === 'acme'))
+        .filter((name) => !(world.ordered && name === 'acme'))
         .sort();
     };
-    // An ordered certificate is not entered again: the leader orders it again while ordering is on, and keeps
-    // it sealed while ordering is off. The leader's own certificate is renewed at once, so only what an admin
-    // entered is left to enter again.
-    const ordered = world.ordered && !world.acme ? ['acme'] : [];
+    // An ordered certificate is not entered again, and the leader's own certificate is renewed at once, so only
+    // what an admin entered is left to enter again.
     await expect
       .poll(unopenable, { timeout: 30_000 })
       .toEqual(
         [
           ...world.secrets.keys(),
           ...world.certificates.keys(),
-          ...ordered,
           ...settings.map((s) => s.key),
         ].sort(),
       );
@@ -1307,7 +1305,7 @@ const regenerateKey: Move = {
         .click();
       await expect(page.getByText(setting.label, { exact: true })).toHaveCount(0);
     }
-    expect(await unopenable()).toEqual([...world.secrets.keys(), ...ordered].sort());
+    expect(await unopenable()).toEqual([...world.secrets.keys()].sort());
     const again = [...world.certificates.keys(), ...settings.map((s) => s.label)];
     const entered = again.length ? `, ${again.join(' and ')} entered again` : '';
     return `regenerate the key, ${world.secrets.size} to enter again${entered}`;
