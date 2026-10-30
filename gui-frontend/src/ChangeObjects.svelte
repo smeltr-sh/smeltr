@@ -742,13 +742,13 @@
   }
   .obj-head {
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.6rem;
     padding: 0.55rem 0.8rem;
     border-bottom: 1px solid var(--border);
   }
-  /* One row however narrow the pane: the name and its kind give way, the buttons do not. */
+  /* The name and its kind give way, the buttons do not: past what one row holds, they wrap under it. */
   .obj-head > :global(*) {
     flex-shrink: 0;
     white-space: nowrap;
