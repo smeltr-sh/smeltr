@@ -254,6 +254,44 @@ mod tests {
         assert_eq!(refused(&[]), "the importer wrote no rows");
     }
 
+    /// The OCSF importer of `docs/examples.md` 10 over a compiled schema's authentication class: a row for each
+    /// attribute OCSF requires or recommends, and for each such attribute of the objects those hold, and no deeper.
+    #[test]
+    fn the_ocsf_importer_writes_what_a_class_requires_and_recommends() {
+        let examples = include_str!("../../docs/examples.md");
+        let section = examples.split("## 10.").nth(1).expect("the OCSF importer's section");
+        let body = (section.split("```ts\n").nth(1).and_then(|b| b.split("\n```").next())).expect("its pipeline");
+        let config = json!({
+            "version": 1,
+            "pipelines": [{ "id": "ocsf", "name": "OCSF importer",
+                            "steps": [{ "id": "rows", "type": "code", "body": body }] }],
+        });
+        let req: crate::leader::preview::PreviewRequest =
+            serde_json::from_value(json!({ "config": config.to_string(), "pipeline": "ocsf" })).unwrap();
+        let text = include_str!("../../tests/fixtures/ocsf-authentication.json");
+        let records = records_of(text, Some(r"(\x00)")).unwrap();
+        let preview = crate::leader::preview::run_preview(req, Default::default(), &[], records);
+        assert!(preview.succeeded(), "{:?}", preview.errors);
+        let schema = from_rows("ocsf-authentication", "Authentication", &preview.body.rows)
+            .unwrap()
+            .schema;
+        let field = |path: &str| {
+            let f = (schema.fields.iter().find(|f| f.field == path)).unwrap_or_else(|| panic!("no `{path}`"));
+            (f.ty.as_str(), f.required)
+        };
+        assert_eq!(field("time"), ("i64", true));
+        assert_eq!(field("user"), ("{...}", true));
+        assert_eq!(field("user.name"), ("str", false));
+        assert_eq!(field("metadata.version"), ("str", true));
+        assert_eq!(field("observables"), ("array<{...}>", false));
+        assert_eq!(field("src_endpoint.ip"), ("str", false));
+        assert!(schema.fields.iter().all(|f| f.field.split('.').count() <= 2));
+        assert!(
+            !schema.fields.iter().any(|f| f.field == "unmapped"),
+            "an optional attribute is left out"
+        );
+    }
+
     /// A row dropped on purpose is passed over; one an exception dropped or marked is refused by its number.
     #[test]
     fn an_importer_row_with_an_exception_is_refused_by_its_number() {

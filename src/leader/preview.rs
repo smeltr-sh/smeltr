@@ -1778,4 +1778,44 @@ mod tests {
         );
         assert!(!previewed.succeeded());
     }
+
+    /// An unroll copies none of a record's payload into the rows it makes: a large record, its bulk deleted, unrolls
+    /// into many rows within the budget, and they show no `__source.bytes`.
+    #[test]
+    fn an_unroll_of_a_large_record_stays_within_the_budget() {
+        let items: Vec<serde_json::Value> = (0..40).map(|i| serde_json::json!({"i": i})).collect();
+        let raw = serde_json::json!({"pad": "x".repeat(4_000_000), "items": items}).to_string();
+        let mut record = crate::io::RecordObject::new();
+        record.insert("_raw".into(), serde_json::Value::String(raw));
+        let body =
+            "let s = json(_raw); items: array<{i: i64}> = s.items; delete(_raw); unroll(items, false); $ = items;";
+        let config = serde_json::json!({"version": 1,
+            "sources": [{"id": "in", "type": "kafka", "brokers": "b:9092", "topics": ["t"], "groupId": "g"}],
+            "destinations": [{"id": "out", "type": "kafka", "brokers": "b:9092", "defaultTopic": "t"}],
+            "pipelines": [{"id": "p", "name": "P", "steps": [{"id": "u", "type": "code", "body": body}]}],
+            "routes": [{"id": "r", "source": "in", "pipeline": "p", "deliver": [{"to": ["out"]}]}]})
+        .to_string();
+        let previewed = run_preview(
+            PreviewRequest {
+                config,
+                pipeline: Some("p".into()),
+                sample: None,
+                show_internal: true,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Default::default(),
+            &[],
+            vec![record],
+        );
+        assert!(previewed.succeeded(), "{:?}", previewed.errors);
+        assert_eq!(previewed.body.rows.len(), 40);
+        for row in &previewed.body.rows {
+            let json = row.json.as_ref().unwrap();
+            assert_eq!(json.pointer("/__source/bytes"), None, "{json}");
+        }
+    }
 }
