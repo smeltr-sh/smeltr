@@ -554,7 +554,9 @@ fn is_ancestor(repo_path: &Path, commit: &str, rev: &str) -> Result<bool, GitErr
     let repo = open(repo_path)?;
     let commit = resolve(&repo, commit)?;
     let rev = resolve(&repo, rev)?;
-    Ok(repo.merge_base(commit, rev).is_ok_and(|base| base.detach() == commit))
+    Ok(repo
+        .merge_base(commit, rev)
+        .is_ok_and(|base| base.is_some_and(|base| base.detach() == commit)))
 }
 
 /// A commit's first line.
@@ -2665,7 +2667,8 @@ fn since_main(repo: &gix::Repository, branch: &str) -> Result<(gix::ObjectId, gi
     let head = resolve(repo, MAIN_BRANCH)?;
     let base = repo
         .merge_base(tip, head)
-        .map_err(|e| GitError::failed(format!("{branch:?} and {MAIN_BRANCH} share no commit: {e}")))?
+        .map_err(|e| GitError::failed(format!("couldn't find where {branch:?} left {MAIN_BRANCH}: {e}")))?
+        .ok_or_else(|| GitError::failed(format!("{branch:?} and {MAIN_BRANCH} share no commit")))?
         .detach();
     Ok((base, tip))
 }
