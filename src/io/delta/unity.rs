@@ -1164,7 +1164,7 @@ mod tests {
         #[test]
         fn random_answers_are_taken_or_refused_by_name() {
             let mut cov = Coverage::new(ANSWERS.iter().copied());
-            crate::fuzz::run(0..400, |seed| check(seed, &mut cov));
+            crate::fuzz::run(0..1000, |seed| check(seed, &mut cov));
             cov.assert_complete();
         }
 
