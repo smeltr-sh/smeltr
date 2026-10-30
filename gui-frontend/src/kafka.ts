@@ -263,6 +263,23 @@ export function tlsReason(key: string, hasTls: boolean): string | undefined {
   return 'the TLS settings above already answer this, and librdkafka would take whichever was set last';
 }
 
+/** The labels this form gives the fields a reserved property's reason names by their JSON key. */
+const FIELD_LABELS = new Map([
+  ['brokers', 'brokers'],
+  ['groupId', 'group id'],
+  ['start', 'start at'],
+  ['compression', 'compression'],
+  ['acks', 'acks'],
+  ['fetchBytes', 'fetch buffer'],
+  ['bufferBytes', 'buffer'],
+  ['stallAfterSecs', 'stall after'],
+]);
+
+/** A reason the leader gives, which names a field by its JSON key in backticks, with the form's label for each. */
+function inFormWords(why: string): string {
+  return why.replace(/`([A-Za-z]+)`/g, (_, key: string) => FIELD_LABELS.get(key) ?? key);
+}
+
 /** Why a row of the properties editor cannot be saved, or nothing: the refusals `config_file::load` makes of a
  * property, in the row that caused each. `credential` is the row's table. */
 export function propertyRefusal(
@@ -275,7 +292,7 @@ export function propertyRefusal(
   if (trimmed === '') return undefined;
   if (SECTION_PROPS.includes(trimmed.toLowerCase())) return 'the security section above sets this';
   const owned = reserved.get(trimmed);
-  if (owned !== undefined) return `smeltr owns this: ${owned}`;
+  if (owned !== undefined) return `smeltr owns this: ${inFormWords(owned)}`;
   const tls = tlsReason(trimmed, hasTls);
   if (tls !== undefined) return tls;
   if (!credential && isCredentialValued(trimmed))

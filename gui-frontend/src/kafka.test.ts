@@ -16,7 +16,10 @@ import {
 } from './kafka';
 import type { KafkaProps } from './api';
 
-const reserved = new Map([['group.id', 'set from this source’s groupId']]);
+const reserved = new Map([
+  ['group.id', "set from this source's `groupId` field"],
+  ['max.poll.interval.ms', "caps each destination's `stallAfterSecs` field"],
+]);
 describe('the security section', () => {
   it('reads what the maps already say, and nothing they do not', () => {
     expect(readSecurity({})).toEqual({ protocol: undefined, mechanism: undefined });
@@ -146,7 +149,10 @@ describe('what a save refuses', () => {
 
   it('refuses the properties the leader reserves, as the leader spells them', () => {
     expect(propertyRefusal('group.id', false, false, reserved)).toBe(
-      'smeltr owns this: set from this source’s groupId',
+      "smeltr owns this: set from this source's group id field",
+    );
+    expect(propertyRefusal('max.poll.interval.ms', false, false, reserved)).toBe(
+      "smeltr owns this: caps each destination's stall after field",
     );
     expect(propertyRefusal('GROUP.ID', false, false, reserved)).toBeUndefined();
   });

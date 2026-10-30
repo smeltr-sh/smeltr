@@ -1336,91 +1336,94 @@ const SFTP_MIN_STALL_AFTER: u64 = 15;
 /// of an aliased property appear: librdkafka resolves either to the same setting, and operator properties are applied
 /// after smeltr's.
 pub const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
-    (
-        "bootstrap.servers",
-        "set from this source or destination's own `brokers` field",
-    ),
+    ("bootstrap.servers", "set from the `brokers` field"),
+    // librdkafka runs it through system() on every worker, at client start and on each ticket refresh; its default
+    // already uses the keytab and principal a bundle names, and a bundle may not carry a shell command.
     (
         "sasl.kerberos.kinit.cmd",
-        "librdkafka runs it through system() on every worker, at client start and on each ticket \
-         refresh; its default already uses the keytab and principal a bundle names, and a bundle \
-         may not carry a shell command",
+        "it runs a shell command on every worker, and a config may not carry one",
     ),
     (
         "metadata.broker.list",
-        "librdkafka's other spelling of `bootstrap.servers`, which is set from this source or destination's own `brokers` field",
+        "another name for bootstrap.servers, which is set from the `brokers` field",
     ),
-    ("group.id", "set from this source's own `groupId` field"),
-    ("client.rack", "each worker sets it from its zone setting"),
+    ("group.id", "set from this source's `groupId` field"),
+    ("client.rack", "each worker sets it from its zone"),
     ("group.instance.id", "each worker sets it from its own id"),
+    // smeltr commits explicitly once a batch's destinations have flushed; letting librdkafka auto-commit would
+    // acknowledge offsets for rows that have not been delivered, silently breaking at-least-once.
     (
         "enable.auto.commit",
-        "smeltr commits explicitly once a batch's destinations have flushed; letting librdkafka auto-commit would acknowledge offsets for rows that have not been delivered, silently breaking at-least-once",
+        "smeltr commits only once a batch is delivered, and auto-commit would mark rows done before they are",
     ),
+    // A deprecated topic-level property for librdkafka's legacy simple consumer, which the high-level consumer smeltr
+    // runs ignores; setting it reads as a way to control auto-commit and does nothing at all, where
+    // `enable.auto.commit` is the global property smeltr pins off and reserves.
     (
         "auto.commit.enable",
-        "a deprecated topic-level property for librdkafka's legacy simple consumer, which the high-level consumer smeltr runs ignores -- setting it reads as a way to control auto-commit and does nothing at all, where `enable.auto.commit` is the global property smeltr pins off and reserves",
+        "it does nothing on the consumer smeltr runs, and smeltr keeps auto-commit off",
     ),
-    ("auto.offset.reset", "set from this source's own `start` field"),
+    ("auto.offset.reset", "set from this source's `start` field"),
+    // `io::kafka::MAX_POLL_INTERVAL`. A flush must not outlast it (`StallAfter::MAX`), or the group evicts the consumer.
     (
         "max.poll.interval.ms",
-        "chosen together with the destination stall threshold so a failing destination cannot trigger a group-wide rebalance",
+        "fixed at 5 minutes, which caps each destination's `stallAfterSecs` field, so a slow destination cannot rebalance the group",
     ),
-    (
-        "compression.type",
-        "set from this destination's own `compression` field, which offers exactly the codecs this build can produce -- two ways to set one thing is one way too many",
-    ),
+    // That field offers exactly the codecs this build can produce.
+    ("compression.type", "set from this destination's `compression` field"),
     (
         "compression.codec",
-        "librdkafka's other spelling of `compression.type`, which is set from this destination's own `compression` field",
+        "another name for compression.type, which is set from this destination's `compression` field",
     ),
-    ("acks", "set from this destination's own `acks` field"),
+    ("acks", "set from this destination's `acks` field"),
     (
         "request.required.acks",
-        "librdkafka's other spelling of `acks`, which is set from this destination's own `acks` field",
+        "another name for acks, which is set from this destination's `acks` field",
     ),
+    // That field makes a reader's memory footprint a number this deployment chose.
     (
         "queued.max.messages.kbytes",
-        "set from this source's own `fetchBytes` field, which is what makes a reader's memory footprint a number this deployment chose",
+        "set from this source's `fetchBytes` field",
     ),
+    // The producer holds half of that field, and the egress queue in front of it the other half.
     (
         "queue.buffering.max.kbytes",
-        "set from this destination's own `bufferBytes` field: the producer holds half of it and the egress queue in front of it the other half",
+        "set from this destination's `bufferBytes` field",
     ),
+    // smeltr reports librdkafka's own statistics as `smeltr_destination_throttled_seconds_total` and
+    // `smeltr_destination_buffered_bytes`, which is the only way broker-enforced quota throttling is visible at all;
+    // setting it to 0 would switch those series off with nothing to say they had stopped.
     (
         "statistics.interval.ms",
-        "smeltr reports librdkafka's own statistics as `smeltr_destination_throttled_seconds_total` and \
-         `smeltr_destination_buffered_bytes`, which is the only way broker-enforced quota throttling is visible at \
-         all; setting it to 0 would switch those series off with nothing to say they had stopped",
+        "smeltr needs it on to report destination throttling and buffer size",
     ),
     (
         "queue.buffering.max.messages",
-        "set to its maximum so the producer's half of this destination's own `bufferBytes` field bounds its queue",
+        "set to its maximum, so this destination's `bufferBytes` field bounds the queue",
     ),
-    (
-        "fetch.max.bytes",
-        "set from this source's own `fetchBytes` field: one fetch may carry half the queue, so a fetch always lands with room behind it",
-    ),
+    // One fetch may carry half the queue, so a fetch always lands with room behind it.
+    ("fetch.max.bytes", "set from this source's `fetchBytes` field"),
+    // librdkafka refuses a fetch larger than the message that carries it.
     (
         "receive.message.max.bytes",
-        "raised with the fetch derived from this source's own `fetchBytes` field, since librdkafka refuses a fetch \
-         larger than the message that carries it",
+        "raised with the fetch size, which is set from this source's `fetchBytes` field",
     ),
-    (
-        "fetch.message.max.bytes",
-        "set from this source's own `fetchBytes` field, the same as `fetch.max.bytes`, so one hot partition may fill a fetch",
-    ),
+    // The same as `fetch.max.bytes`, so one hot partition may fill a fetch.
+    ("fetch.message.max.bytes", "set from this source's `fetchBytes` field"),
+    // smeltr runs the producer with it off: an idempotent producer keeps at most five requests in flight, too few for a
+    // far link.
     (
         "enable.idempotence",
-        "smeltr runs the producer with it off: an idempotent producer keeps at most five requests in flight, too few for a far link",
+        "smeltr keeps it off, because an idempotent producer allows too few requests in flight for a distant broker",
     ),
     (
         "transactional.id",
-        "smeltr never begins a transaction, and a transactional producer refuses every record sent outside one",
+        "smeltr never begins a transaction, and a transactional producer refuses records sent outside one",
     ),
+    // Cooperative and eager members must not share a consumer group.
     (
         "partition.assignment.strategy",
-        "smeltr runs cooperative rebalancing, and cooperative and eager members must not share a consumer group -- a source that set this to an eager strategy would break rebalancing for every worker in its group, not only itself",
+        "smeltr uses cooperative rebalancing, and one member on another strategy breaks the group for every worker",
     ),
 ];
 
@@ -7061,7 +7064,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("sasl.kerberos.kinit.cmd") && e.contains("system()")),
+                .any(|e| e.contains("sasl.kerberos.kinit.cmd") && e.contains("shell command")),
             "{errors:?}"
         );
     }
@@ -7080,7 +7083,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("auto.commit.enable") && e.contains("enable.auto.commit")),
+                .any(|e| e.contains("auto.commit.enable") && e.contains("keeps auto-commit off")),
             "{errors:?}"
         );
     }
