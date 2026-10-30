@@ -4806,7 +4806,7 @@ fn load_target(
     }
     let topology = system.compile_topology().map(Arc::new).map_err(|errs| {
         (errs.into_iter())
-            .map(|e| system.to_validation_error(e).message)
+            .map(|e| system.describe(e))
             .collect::<Vec<_>>()
             .join("; ")
     })?;

@@ -693,7 +693,7 @@ fn at_destination(
         .id;
     let compiled = system.compile_topology().map_err(|errors| {
         (errors.into_iter())
-            .map(|e| system.to_validation_error(e).message)
+            .map(|e| system.describe(e))
             .collect::<Vec<_>>()
             .join("; ")
     })?;

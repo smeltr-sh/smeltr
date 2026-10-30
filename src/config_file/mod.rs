@@ -204,6 +204,16 @@ impl LoadedSystem {
         }
     }
 
+    /// `e` as one line for a log or a refusal that carries no fields: a step's error after its pipeline and step.
+    pub fn describe(&self, e: CompileError) -> String {
+        let e = self.to_validation_error(e);
+        match (e.pipeline, e.step) {
+            (Some(p), Some(s)) => format!("pipeline {p}, step {s}: {}", e.message),
+            (Some(p), None) => format!("pipeline {p}: {}", e.message),
+            _ => e.message,
+        }
+    }
+
     /// The author's id for `id`, a destination the loaded system has.
     fn destination_name(&self, id: DestId) -> &str {
         &self
