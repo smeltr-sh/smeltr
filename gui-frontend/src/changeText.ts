@@ -16,8 +16,11 @@ import {
   byId,
   changedRouteName,
   isRecord,
+  pipelineNameAt,
+  sidePipelineNames,
   type Noun,
   type ScopePair,
+  type SideNames,
 } from './objectChanges';
 import { count } from './time';
 
@@ -160,23 +163,6 @@ export function describe(value: unknown): string {
   return 'a value';
 }
 
-/** Each side's pipelines by id, to their names. A value on one side names a
- * pipeline of that side; the other side is the fallback, and the id itself
- * the last one, for an id neither side holds. */
-interface PipelineNames {
-  before: Map<string, string>;
-  after: Map<string, string>;
-}
-
-function pipelineNames(before: FileConfigDto, after: FileConfigDto): PipelineNames {
-  const names = (config: FileConfigDto) => new Map(config.pipelines.map((p) => [p.id, p.name]));
-  return { before: names(before), after: names(after) };
-}
-
-function nameOf(id: string, first: Map<string, string>, second: Map<string, string>): string {
-  return first.get(id) ?? second.get(id) ?? id;
-}
-
 /** Every changed field of one object, as `name from before to after`. Keys are
  * compared whole (`diff.ts`), so a nested value reads as one field rather
  * than a diff inside a diff. With `names`, a `pipeline` field -- a route's,
@@ -185,12 +171,11 @@ function fieldPhrases(
   before: unknown,
   after: unknown,
   skip: string[],
-  names?: PipelineNames,
+  names?: SideNames,
 ): string[] {
   const say = (key: string, value: unknown, side: 'before' | 'after') => {
     if (!names || key !== 'pipeline' || typeof value !== 'string') return describe(value);
-    const other = side === 'before' ? 'after' : 'before';
-    return describe(nameOf(value, names[side], names[other]));
+    return describe(pipelineNameAt(names, value, side));
   };
   return diffObjects(before, after)
     .filter((entry) => entry.kind !== 'unchanged' && !skip.includes(entry.key))
@@ -224,7 +209,7 @@ function stepType(step: Record<string, unknown>): string {
   return typeof step.type === 'string' ? step.type : 'step';
 }
 
-function stepPhrases(before: unknown[], after: unknown[], names: PipelineNames): string[] {
+function stepPhrases(before: unknown[], after: unknown[], names: SideNames): string[] {
   const was = stepsById(before);
   const now = stepsById(after);
   const phrases: string[] = [];
@@ -268,14 +253,14 @@ function sections(before: FileConfigDto, after: FileConfigDto): Section[] {
 function editsForScope(change: ScopeChange): Edit[] {
   const { scope } = change;
   const edits: Edit[] = [];
-  const names = pipelineNames(change.before, change.after);
+  const names = sidePipelineNames(change);
   // A pipeline is called by the name it had, which is the one a reader
   // knows it by; a pipeline the change adds has only its new one. A route is
   // called as the branch has it, as its card on the change page is, falling
   // back to main's for a route the change removes.
   const nameFor = (noun: Noun, id: string) =>
     noun === 'pipeline'
-      ? nameOf(id, names.before, names.after)
+      ? pipelineNameAt(names, id, 'before')
       : noun === 'route'
         ? (changedRouteName(change, id) ?? id)
         : id;

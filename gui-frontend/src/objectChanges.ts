@@ -217,6 +217,35 @@ export interface ScopePair {
   shared?: { before: FileConfigDto; after: FileConfigDto };
 }
 
+/** Each end's pipelines by id, to their names: a scope's own over `shared/`'s, which a group runs too. */
+export interface SideNames {
+  before: Map<string, string>;
+  after: Map<string, string>;
+}
+
+export function sidePipelineNames(pair: Pick<ScopePair, 'before' | 'after' | 'shared'>): SideNames {
+  const names = (config: FileConfigDto, shared?: FileConfigDto) =>
+    new Map([...(shared?.pipelines ?? []), ...config.pipelines].map((p) => [p.id, p.name]));
+  return {
+    before: names(pair.before, pair.shared?.before),
+    after: names(pair.after, pair.shared?.after),
+  };
+}
+
+/** Pipeline `id` as a reader calls it at `side`: its name there, else at the other end, else the id itself. */
+export function pipelineNameAt(names: SideNames, id: string, side: 'before' | 'after'): string {
+  const other = side === 'before' ? 'after' : 'before';
+  return names[side].get(id) || names[other].get(id) || id;
+}
+
+/** A route's `pipeline` field, naming its pipeline at each end. */
+function pipelineByName(f: DiffEntry, names: SideNames): DiffEntry {
+  if (f.key !== 'pipeline') return f;
+  const at = (v: unknown, side: 'before' | 'after') =>
+    typeof v === 'string' ? pipelineNameAt(names, v, side) : v;
+  return { ...f, before: at(f.before, 'before'), after: at(f.after, 'after') };
+}
+
 /** Route `id` of a scope by its `routeName`: as the change leaves it, or as it was where the change removes it. */
 export function changedRouteName(
   pair: Pick<ScopePair, 'before' | 'after' | 'shared'>,
@@ -702,6 +731,7 @@ export function objectChanges(pairs: ScopePair[]): ObjectChange[] {
     const group = unread.has('system.json') ? null : groupChange(pair);
     if (group) out.push(group);
     out.push(...unreadableChanges(scope, pair));
+    const names = sidePipelineNames(pair);
     for (const spec of SECTIONS) {
       const wasList = (before[spec.key] ?? []) as { id: string }[];
       const nowList = (after[spec.key] ?? []) as { id: string }[];
@@ -722,6 +752,8 @@ export function objectChanges(pairs: ScopePair[]): ObjectChange[] {
           moved.has(id),
           route,
         );
+        if (change && spec.key === 'routes')
+          change.fields = change.fields.map((f) => pipelineByName(f, names));
         if (change) out.push(change);
       }
     }
