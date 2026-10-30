@@ -75,15 +75,15 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "POST",
-        path: "/api/preview/from-json-schema",
-        what: "A JSON Schema document read as a schema: its table of fields. No query.",
-        body: "{ id?: string, schema: object }",
+        path: "/api/preview/schema-read",
+        what: "A file read as a schema, its table of fields: a JSON Schema document, ECS's fields.csv or ecs_flat.yml, one class of ocsf-schema-compiler's output (cut to depth keys deep and to the requirement levels named; by default 2, required and recommended), or a CSV of fields under a header row naming field and type, and optionally required, description, example and elasticsearch. No query.",
+        body: "{ id?: string, format: \"json-schema\" | \"ecs\" | \"ocsf\" | \"csv\", text: string, class?: string, cut?: { depth?: number, levels?: (\"required\" | \"recommended\" | \"optional\")[] } }",
     },
     Route {
         method: "POST",
         path: "/api/preview/schema-export",
         what: "A schema written in an export format: a JSON Schema document, or an Elasticsearch index's mapping. No query.",
-        body: "{ schema: { id, title?, description?, fields: { field, type, required?, description? }[] }, format: \"json-schema\" | \"elasticsearch\" }",
+        body: "{ schema: { id, title?, description?, fields: { field, type, required?, description?, example?, elasticsearch? }[] }, format: \"json-schema\" | \"elasticsearch\" }",
     },
     Route {
         method: "PUT",

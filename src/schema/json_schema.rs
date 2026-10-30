@@ -77,6 +77,7 @@ impl<'d> Reader<'d> {
                 ty: typed.ty,
                 required: required.contains(&name.as_str()),
                 description: text(property, "description"),
+                example: example(property),
                 elasticsearch: None,
             });
             let read = match typed.holds {
@@ -179,6 +180,15 @@ fn is_object(node: &Map<String, Value>) -> bool {
     node.get("type").and_then(Value::as_str) == Some("object") || node.contains_key("properties")
 }
 
+/// The first of a node's `examples`, as text: a string as it is, any other value as its JSON.
+fn example(node: &Value) -> String {
+    match node.get("examples").and_then(Value::as_array).and_then(|e| e.first()) {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+    }
+}
+
 fn text(node: &Value, key: &str) -> String {
     node.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
 }
@@ -215,6 +225,14 @@ impl Node<'_> {
             if let Some(f) = child.field {
                 if !f.description.is_empty() {
                     value["description"] = json!(f.description);
+                }
+                if !f.example.is_empty() {
+                    // Text, unless the field holds something else and the example reads as that.
+                    let written = match f.ty {
+                        DataType::Str => None,
+                        _ => serde_json::from_str::<Value>(&f.example).ok(),
+                    };
+                    value["examples"] = json!([written.unwrap_or_else(|| json!(f.example))]);
                 }
                 if f.required {
                     required.push(key.clone());

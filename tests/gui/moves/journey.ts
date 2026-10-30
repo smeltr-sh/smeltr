@@ -1554,13 +1554,36 @@ const addGrokPattern: Move = {
   },
 };
 
-/** A JSON Schema type, and the type the schema's table spells it as. */
-const JSON_TYPES = [
-  ['string', 'str'],
-  ['integer', 'i64'],
-  ['number', 'f64'],
-  ['boolean', 'bool'],
+/** A field's type in each format a schema is read from, the type the schema's table spells it as, and how it maps
+ * in Elasticsearch where that is not its type's own. */
+const FORMAT_TYPES = [
+  { json: 'string', ecs: 'keyword', ocsf: 'string_t', type: 'str' },
+  { json: 'integer', ecs: 'long', ocsf: 'integer_t', type: 'i64' },
+  { json: 'number', ecs: 'double', ocsf: 'float_t', type: 'f64' },
+  { json: 'boolean', ecs: 'boolean', ocsf: 'boolean_t', type: 'bool' },
+  { json: 'string', ecs: 'ip', ocsf: 'ip_t', type: 'str', elasticsearch: { type: 'ip' } },
 ] as const;
+
+/** The tile each format is added from. */
+const FORMAT_TILES = {
+  empty: 'Empty schema',
+  'json-schema': 'JSON Schema',
+  csv: 'CSV of fields',
+  ecs: 'ECS',
+  ocsf: 'OCSF',
+} as const;
+
+type SchemaFormat = keyof typeof FORMAT_TILES;
+
+/** A field as the move writes it, and as the leader keeps it. */
+type Drawn = {
+  field: string;
+  type: string;
+  required?: true;
+  description?: string;
+  example?: string;
+  elasticsearch?: { type: string };
+};
 
 const addSchema: Move = {
   name: 'add-schema',
@@ -1569,28 +1592,101 @@ const addSchema: Move = {
   run: async (j) => {
     const { page, leader, rng, world } = j;
     const id = `schema-${world.made++}`;
-    // Empty, or read from a JSON Schema of a few fields, some required.
-    const fields = rng.chance(3)
-      ? []
-      : Array.from({ length: 1 + rng.below(3) }, (_, i) => {
-          const [json, ty] = rng.pick(JSON_TYPES);
-          return { field: `f${i}`, json, type: ty, required: rng.chance(2) };
-        });
+    const format = rng.pick(Object.keys(FORMAT_TILES) as SchemaFormat[]);
+    // A few fields, some required, read from the format drawn. ECS requires only fields of its own, and an OCSF class
+    // read as by default takes the required and the recommended.
+    const drawn = Array.from({ length: format === 'empty' ? 0 : 1 + rng.below(3) }, (_, i) => {
+      const t = rng.pick(FORMAT_TYPES);
+      const requirement = i === 0 ? 'required' : rng.pick(['required', 'recommended', 'optional']);
+      return { i, t, requirement, example: rng.chance(2) ? `e${i}, "quoted"` : '' };
+    });
+    const onlyRequired = format === 'ocsf' && rng.chance(3);
+    const taken = drawn.filter(
+      (d) =>
+        format !== 'ocsf' ||
+        d.requirement === 'required' ||
+        (d.requirement === 'recommended' && !onlyRequired),
+    );
+    const fields: Drawn[] = taken.map(({ i, t, requirement, example }) => ({
+      field: `f${i}`,
+      type: t.type,
+      ...(requirement === 'required' && format !== 'ecs' ? { required: true as const } : {}),
+      ...(format === 'csv' || format === 'ecs' || format === 'ocsf'
+        ? { description: `Field ${i}.` }
+        : {}),
+      ...(example && format !== 'json-schema' ? { example } : {}),
+      ...('elasticsearch' in t && format !== 'json-schema'
+        ? { elasticsearch: t.elasticsearch }
+        : {}),
+    }));
+    const cell = (s: string) => (/[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s);
+    const file = {
+      empty: '',
+      'json-schema': JSON.stringify({
+        type: 'object',
+        required: drawn.filter((d) => d.requirement === 'required').map((d) => `f${d.i}`),
+        properties: Object.fromEntries(drawn.map((d) => [`f${d.i}`, { type: d.t.json }])),
+      }),
+      csv:
+        'Field,Type,Required,Description,Example,Elasticsearch\n' +
+        fields
+          .map((f) =>
+            [
+              f.field,
+              f.type,
+              f.required ? 'yes' : '',
+              f.description!,
+              f.example ?? '',
+              f.elasticsearch?.type ?? '',
+            ]
+              .map(cell)
+              .join(','),
+          )
+          .join('\n'),
+      ecs:
+        'ECS_Version,Indexed,Field_Set,Field,Type,Level,Normalization,Example,Description\n' +
+        drawn
+          .map((d) =>
+            ['9.1.0', 'true', 'base', `f${d.i}`, d.t.ecs, 'core', '', d.example, `Field ${d.i}.`]
+              .map(cell)
+              .join(','),
+          )
+          .join('\n'),
+      ocsf: JSON.stringify({
+        classes: {
+          web: {
+            attributes: Object.fromEntries(
+              drawn.map((d) => [
+                `f${d.i}`,
+                {
+                  type: d.t.ocsf,
+                  requirement: d.requirement,
+                  description: `Field ${d.i}.`,
+                  ...(d.example ? { example: d.example } : {}),
+                },
+              ]),
+            ),
+          },
+        },
+        objects: {},
+      }),
+    }[format];
     await goto(page, leader, '#/build/schemas');
     await page.getByRole('button', { name: '+ Add schema' }).click();
     const dialog = page.getByRole('dialog');
-    if (fields.length) {
-      await dialog.getByRole('button', { name: 'JSON Schema', exact: true }).click();
-      await dialog.getByLabel('id', { exact: true }).fill(id);
-      const doc = {
-        type: 'object',
-        required: fields.filter((f) => f.required).map((f) => f.field),
-        properties: Object.fromEntries(fields.map((f) => [f.field, { type: f.json }])),
-      };
-      await dialog.getByRole('textbox', { name: 'JSON Schema' }).fill(JSON.stringify(doc));
-    } else {
-      await dialog.getByRole('button', { name: 'Empty schema', exact: true }).click();
-      await dialog.getByLabel('id', { exact: true }).fill(id);
+    await dialog.getByRole('button', { name: FORMAT_TILES[format], exact: true }).click();
+    await dialog.getByLabel('id', { exact: true }).fill(id);
+    if (format === 'json-schema') {
+      await dialog.getByRole('textbox', { name: 'JSON Schema' }).fill(file);
+    } else if (format !== 'empty') {
+      const name = { csv: 'fields.csv', ecs: 'fields.csv', ocsf: 'ocsf.json' }[format];
+      await dialog
+        .getByLabel(/^File/)
+        .setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(file) });
+    }
+    if (format === 'ocsf') {
+      await expect(dialog.getByRole('combobox', { name: 'Class' })).toHaveValue('web');
+      if (onlyRequired) await dialog.getByRole('checkbox', { name: 'recommended' }).uncheck();
     }
     await dialog.getByRole('button', { name: 'Add', exact: true }).click();
     await expect(dialog).toBeHidden();
@@ -1600,14 +1696,8 @@ const addSchema: Move = {
     await editingIsSaved(j);
     const res = await (await j.truth()).get(`/api/areas/shared?branch=${world.branch}`);
     const saved = res.config.schemas.find((s: { id: string }) => s.id === id);
-    expect(saved.fields).toEqual(
-      fields.map((f) =>
-        f.required
-          ? { field: f.field, type: f.type, required: true }
-          : { field: f.field, type: f.type },
-      ),
-    );
-    return `add schema ${id} of ${fields.length} field(s)`;
+    expect(saved.fields, `${id} from ${format}`).toEqual(fields);
+    return `add schema ${id} from ${format}, of ${fields.length} field(s)`;
   },
 };
 

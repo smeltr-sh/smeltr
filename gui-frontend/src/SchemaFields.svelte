@@ -41,6 +41,9 @@
     else onmap?.(f.field, { type });
   }
 
+  /** Whether any field gives an example, so the column is there only where it says something. */
+  let examples = $derived(of.fields.some((f) => f.example));
+
   let shown = $derived.by(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return of.fields;
@@ -70,7 +73,8 @@
               >Each field is indexed as this Elasticsearch type. Leave it on default to use the type
               its schema type maps to.</Help
             ></th
-          >{:else}<th>Description</th>{/if}
+          >{:else}<th>Description</th>
+          {#if examples}<th>Example</th>{/if}{/if}
       </tr>
     </thead>
     <tbody>
@@ -108,6 +112,9 @@
             </td>
           {:else}
             <td class="about">{f.description ?? ''}</td>
+            {#if examples}<td class="example mono" title={f.example}
+                ><div>{f.example ?? ''}</div></td
+              >{/if}
           {/if}
         </tr>
       {/each}
@@ -164,6 +171,20 @@
 
   .name {
     white-space: nowrap;
+  }
+
+  /* An example can be a whole JSON document; two lines of it say what it is. */
+  .example {
+    max-width: 18rem;
+  }
+
+  .example div {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow-wrap: anywhere;
   }
 
   .about {

@@ -13,7 +13,10 @@ use std::sync::Arc;
 use crate::config_file::{SchemaDto, SchemaFieldDto};
 use crate::core::column::DataType;
 
+pub mod csv;
+pub mod ecs;
 pub mod json_schema;
+pub mod ocsf;
 
 /// One contract, by its id in the bundle.
 #[derive(Debug)]
@@ -33,6 +36,8 @@ pub struct Field {
     pub ty: DataType,
     pub required: bool,
     pub description: String,
+    /// A value it may hold, as text.
+    pub example: String,
     /// How it maps in an Elasticsearch index, over the mapping its type has (`io::elastic_mapping`).
     pub elasticsearch: Option<serde_json::Map<String, serde_json::Value>>,
 }
@@ -70,6 +75,7 @@ pub fn read(dto: &SchemaDto) -> Result<Schema, String> {
             ty,
             required: row.required,
             description: row.description.clone(),
+            example: row.example.clone(),
             elasticsearch: row.elasticsearch.clone(),
         });
     }
@@ -114,6 +120,7 @@ pub fn to_dto(schema: &Schema) -> SchemaDto {
                 ty: f.ty.spell(),
                 required: f.required,
                 description: f.description.clone(),
+                example: f.example.clone(),
                 elasticsearch: f.elasticsearch.clone(),
             })
             .collect(),
@@ -448,8 +455,7 @@ mod tests {
             field: field.to_string(),
             ty: ty.to_string(),
             required,
-            description: String::new(),
-            elasticsearch: None,
+            ..Default::default()
         }
     }
 

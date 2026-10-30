@@ -509,13 +509,13 @@ async fn onboard_propose(State(service): State<Service>, Json(body): Json<Onboar
     }
 }
 
-async fn schemas_from_json_schema(
+async fn schemas_read(
     State(service): State<Service>,
-    Json(req): Json<catalog::FromJsonSchema>,
+    Json(req): Json<catalog::ReadRequest>,
 ) -> Envelope<catalog::ReadSchema> {
     service
         .run(unavailable, move || {
-            catalog::from_json_schema(&req).map_err(Refusal::invalid).into()
+            catalog::read(&req).map_err(Refusal::invalid).into()
         })
         .await
 }
@@ -602,7 +602,7 @@ fn app(service: Service) -> Router {
         .route("/connections", post(connections))
         .route("/tests", post(tests))
         .route("/onboard/propose", post(onboard_propose))
-        .route("/schemas/from-json-schema", post(schemas_from_json_schema))
+        .route("/schemas/read", post(schemas_read))
         .route("/schemas/export", post(schemas_export))
         .route("/schema-findings", post(schema_findings))
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))

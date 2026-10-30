@@ -528,10 +528,13 @@ folds open to its table of fields, narrowed to the search, and any schema
 exports as JSON Schema or as an Elasticsearch mapping. The table's
 Elasticsearch view shows the type each field maps to, and on the bundle's own
 schemas chooses it from those the field's type allows; a mapping's other
-parameters are set in Edit JSON. A schema is added empty,
-from a JSON Schema, or imported: a pipeline of the bundle is picked and a file
-uploaded, the leader runs the pipeline over the file's records as a preview
-runs, and each row it writes is a field.
+parameters are set in Edit JSON. A schema is added from a standard (ECS, or
+an OCSF class with how many keys deep and which requirements), from a file (a
+CSV of fields, or JSON Schema), from a pipeline, or empty: one tile for each.
+From a pipeline, a pipeline of the bundle is picked and a file uploaded, the
+leader runs the pipeline over the file's records as a preview runs, and each
+row it writes is a field. A field's example shows in its own column when any
+field has one.
 
 A pipeline names what it produces in the editor's Produces row, and a
 destination what it accepts on its own form. Where the rows do not fit, the

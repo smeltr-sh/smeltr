@@ -37,6 +37,10 @@ zmij = "1"
 # A bytes value's one text spelling, wherever one is written as text.
 base64 = "0.23"
 
+# ECS's `ecs_flat.yml`, read as a schema (`schema::ecs`). yaml-rust2 because it is pure Rust and maintained;
+# serde_yaml is archived.
+yaml-rust2 = { version = "0.13.0", default-features = false }
+
 # The startup file. TOML because a human hand-edits it and comments matter.
 toml = "1"
 # Lookup files are mapped, so a host holds one copy of each in its page cache however many plans name it.

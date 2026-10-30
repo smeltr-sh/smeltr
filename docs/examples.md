@@ -392,120 +392,46 @@ whole. Starlink moves its read position when it answers, so a batch the
 source holds when its worker stops is not asked for again: a smaller
 `batchSize` loses less.
 
-## 9. A schema from a file (the ECS importer)
+## 9. A schema from a file no reader takes (a BigQuery table's schema)
 
-A schema is a table of fields, and a pipeline makes rows, so a schema is
-imported by a pipeline: Add schema, Import, pick the pipeline and a file, and
-each row it writes is a field, with `field`, `type`, and `required` and
-`description` where it has them ([Config plane](architecture/config-plane.md#schemas)).
-The file is cut into records as a source cuts its bytes: a record per line,
-or where a line breaker breaks it. ECS's `generated/csv/fields.csv` is one row
-per field, and some of its quoted examples span lines, so its line breaker
-breaks where a row starts with its ECS version: `([\r\n]+)\d+\.\d+\.\d+`. A
-Drop step takes out its header and each `.text` multi-field, which is the field
-above it indexed as text rather than a key of its own:
-`_raw.startsWith("ECS_Version,") || _raw.includes(".text,match_only_text,")`.
-In: `tests/gui/fixtures/ecs-fields-excerpt.csv`.
-
-```ts
-Object.assign($, csv(_raw, [null, null, null, "field", "ecs", null, "normalization", null, "description"]))
-type = ecs == "date" ? "datetime"
-  : ecs == "long" ? "i64"
-  : ecs == "float" || ecs == "scaled_float" || ecs == "double" ? "f64"
-  : ecs == "boolean" ? "bool"
-  : ecs == "object" || ecs == "geo_point" ? "{...}"
-  : ecs == "nested" ? "array<{...}>"
-  : ecs == "flattened" ? "variant"
-  : "str";
-if (normalization == "array") { type = "array<" + type + ">"; }
-required = field == "@timestamp";
-if (ecs == "wildcard" || ecs == "text" || ecs == "match_only_text" || ecs == "ip" || ecs == "constant_keyword"
-    || ecs == "float" || ecs == "geo_point" || ecs == "nested" || ecs == "flattened") {
-  elasticsearch = {type: ecs};
-}
-delete(_raw, ecs, normalization);
-```
-
-Out, the schema's first rows:
-
-```json
-{"field": "@timestamp", "type": "datetime", "required": true, "description": "Date/time when the event originated."}
-{"field": "labels", "type": "{...}", "description": "Custom key/value pairs."}
-{"field": "message", "type": "str", "description": "Log message optimized for viewing in a log viewer.", "elasticsearch": {"type": "match_only_text"}}
-{"field": "tags", "type": "array<str>", "description": "List of keywords used to tag each event."}
-```
-
-A keyword, a text, an IP and a wildcard are each `str`, since that is what a
-pipeline writes for them; an object a pipeline fills key by key is `{...}`.
-What tells them apart is how Elasticsearch indexes them, so a field whose ECS
-type is not the one its smeltr type maps to on its own says so in
-`elasticsearch`, and the schema's Elasticsearch mapping keeps it.
-
-## 10. A schema from a compiled schema (the OCSF importer)
-
-OCSF spreads one class over files that name each other: the class lists its
-attributes, `dictionary.json` types them, and each object is a file of its
-own. `ocsf-schema-compiler` joins them into one JSON document, every class and
-object with its attributes typed. The importer takes that document as one
-record, with a line breaker it never matches, `(\x00)`, and writes one row per
-attribute of a class that OCSF requires or recommends, and one per such
-attribute of each object those hold: about a hundred rows a class, the list
-OCSF tells a producer to fill. Deeper objects stay `{...}`, which a row fits
-whatever it holds. `cls` names the class. In:
-`tests/fixtures/ocsf-authentication.json`, the authentication class and the
-objects it holds, compiled from OCSF 1.10.0-dev and cut to what the importer
-reads.
+A schema is read from JSON Schema, ECS, an OCSF class or a CSV of fields
+([Config plane](architecture/config-plane.md#schemas)). Any other file of
+fields is imported by a pipeline: Add schema, Import, pick the
+pipeline and a file, and each row it writes is a field, with `field`, `type`,
+and `required` and `description` where it has them. The file is cut into
+records as a source cuts its bytes. `bq show --format=prettyjson` writes a
+table as one JSON document, its columns under `schema.fields`, so the importer
+takes the file as one record, with a line breaker it never matches, `(\x00)`,
+and writes a row per column. A `RECORD` is
+`{...}`, which a row fits whatever it holds. In:
+`tests/fixtures/bigquery-table.json`.
 
 ```ts
-let cls = "authentication";
-let s = json(_raw);
-let attrs: {...} = s.classes[cls].attributes;
-let objects: {...} = s.objects;
-let ty = a => {
-  let t = a.type == "object_t" ? "{...}"
-    : a.type == "boolean_t" ? "bool"
-    : a.type == "integer_t" || a.type == "long_t" || a.type == "port_t" || a.type == "timestamp_t" ? "i64"
-    : a.type == "float_t" ? "f64"
-    : a.type == "datetime_t" ? "datetime"
-    : a.type == "json_t" ? "variant"
+let table = json(_raw);
+let columns: array<{...}> = table.schema.fields;
+let ty = c => {
+  let t = c.type == "TIMESTAMP" ? "datetime"
+    : c.type == "INTEGER" || c.type == "INT64" ? "i64"
+    : c.type == "FLOAT" || c.type == "FLOAT64" ? "f64"
+    : c.type == "BOOLEAN" || c.type == "BOOL" ? "bool"
+    : c.type == "RECORD" ? "{...}"
     : "str";
-  a.is_array == true ? "array<" + t + ">" : t
+  c.mode == "REPEATED" ? "array<" + t + ">" : t
 };
-let wanted = a => a.requirement == "required" || a.requirement == "recommended";
-let mapped = a => a.type == "ip_t" ? {type: "ip"} : a.type == "json_t" ? {type: "flattened"} : null;
-let row = (path, a) => ({field: path, type: ty(a), required: a.requirement == "required", description: a.description,
-                         elasticsearch: mapped(a)});
-let found: array<{field: str, type: str, required: bool, description: str, elasticsearch: {type: str}}> = [];
-for (let top of entries(attrs)) {
-  let a: {type: str, object_type: str, is_array: bool, requirement: str, description: str, ...} = top.value;
-  if (wanted(a)) {
-    found = found.push(row(top.key, a));
-    if (a.type == "object_t") {
-      let inners: {...} = objects[a.object_type].attributes;
-      for (let inner of entries(inners)) {
-        let b: {type: str, object_type: str, is_array: bool, requirement: str, description: str, ...} = inner.value;
-        if (wanted(b)) {
-          found = found.push(row(top.key + "." + inner.key, b));
-        }
-      }
-    }
-  }
+let found: array<{field: str, type: str, required: bool, description: str}> = [];
+for (let column of columns) {
+  let c: {name: str, type: str, mode: str, description: str, ...} = column;
+  found = found.push({field: c.name, type: ty(c), required: c.mode == "REQUIRED", description: c.description});
 }
 out = found;
 unroll(out, false);
 $ = out;
 ```
 
-Out, some of the schema's rows:
+Out, the schema's first rows:
 
 ```json
-{"field": "user", "type": "{...}", "required": true, "description": "The subject (user/role or account) to authenticate."}
-{"field": "user.name", "type": "str", "description": "The username. For example, <code>janedoe1</code>."}
-{"field": "metadata.version", "type": "str", "required": true, "description": "The version of the OCSF schema, using Semantic Versioning Specification (SemVer). For example: <code>1.0.0</code>. Event consumers use the version to determine the available event attributes."}
+{"field": "event_time", "type": "datetime", "required": true, "description": "When the request was served."}
+{"field": "client_ip", "type": "str", "description": "The address the request came from."}
+{"field": "tags", "type": "array<str>", "description": "Labels the edge gave the request."}
 ```
-
-A timestamp is epoch milliseconds in OCSF, so `i64`; a `required` inside an
-object holds where the object is there. An `ip_t` is a `str` that Elasticsearch
-indexes as an IP, and a `json_t` one it keeps whole, so each says so in
-`elasticsearch`.
-

@@ -1094,6 +1094,8 @@ export interface SchemaFieldDto {
   /** Whether a row must hold it. */
   required?: boolean;
   description?: string;
+  /** A value it may hold, as text. */
+  example?: string;
   /** How it maps in an Elasticsearch index: its mapping, laid over the one its type has. */
   elasticsearch?: { type: string; [parameter: string]: unknown };
 }
@@ -5294,18 +5296,33 @@ export function deleteConversation(id: string): Promise<object | AccountRefusal>
 }
 
 // -- schemas ----------------------------------------------------------------
-// JSON Schema in and out (`src/bin/smeltr/schema_api.rs`). A bundle's schemas are its config, saved with `putSchemas`.
+// A standard's file in, a schema out in an export format (`src/bin/smeltr/schema_api.rs`). A bundle's schemas are its config, saved with `putSchemas`.
 
 export interface ReadSchema {
   ok: boolean;
   errors: ApiError[];
-  /** The schema the JSON Schema declares. */
+  /** The schema the file declares. */
   schema: SchemaDto;
 }
 
-/** `doc`, a JSON Schema document, read as the schema `id`. Not `ok`, with why, where it does not read. */
-export function fromJsonSchema(id: string, doc: Record<string, unknown>): Promise<ReadSchema> {
-  return post('/api/preview/from-json-schema', { id, schema: doc }, 'quiet');
+/** A file a schema is read from: JSON Schema, ECS's `fields.csv` or `ecs_flat.yml`, `ocsf-schema-compiler`'s output,
+ * or a CSV of fields under a header row. */
+export type SchemaReadFormat = 'json-schema' | 'ecs' | 'ocsf' | 'csv';
+
+/** An OCSF requirement level. */
+export type OcsfLevel = 'required' | 'recommended' | 'optional';
+
+/** `text`, a file in `format`, read as the schema `id`. Not `ok`, with why, where it does not read. */
+export function readSchema(req: {
+  id: string;
+  format: SchemaReadFormat;
+  text: string;
+  /** The OCSF class to read. */
+  class?: string;
+  /** How much of the OCSF class: how many keys deep, and which requirement levels. */
+  cut?: { depth: number; levels: OcsfLevel[] };
+}): Promise<ReadSchema> {
+  return post('/api/preview/schema-read', req, 'quiet');
 }
 
 /** The schema `id` that `pipeline` of `config`, the bundle as the editor holds it, writes when run over the records of

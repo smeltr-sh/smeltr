@@ -1,9 +1,12 @@
-// Schemas: a bundle's schemas opened and searched by field, one added from a JSON Schema, a pipeline's Produces and
-// a destination's accepts, and what review finds where rows do not fit.
-import { readFile } from 'node:fs/promises';
+// Schemas: a bundle's schemas opened and searched by field, added from a standard's file (ECS, OCSF, a CSV of fields,
+// JSON Schema) or by an importer pipeline, a pipeline's Produces and a destination's accepts, and what review finds
+// where rows do not fit.
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { test, expect, goto, type Api } from '../fleet';
+import type { Page } from '@playwright/test';
+import { test, expect, goto, type Api, type Leader } from '../fleet';
 
 const ON = '?branch=work';
 const SHARED = '/api/areas/shared';
@@ -390,6 +393,143 @@ async function arrangeMisfit(api: Api, branch: string) {
     { id: 'r1', source: 'm1', condition: null, pipeline: 'logins', deliver: [{ to: ['search'] }] },
   ]);
 }
+
+/** A fixture's path, for an upload. */
+const fixture = (path: string) => fileURLToPath(new URL(path, import.meta.url));
+
+/** Opens Add schema at `tile`, names the schema `id` and uploads `file`. Answers the dialog. */
+async function addFrom(admin: Page, leader: Leader, tile: string, id: string, file: string) {
+  await goto(admin, leader, '#/build/schemas');
+  await admin.getByRole('button', { name: '+ Add schema' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: tile, exact: true }).click();
+  await dialog.getByLabel('id', { exact: true }).fill(id);
+  await dialog.getByLabel(/^File/).setInputFiles(file);
+  return dialog;
+}
+
+/** Saves the page, and answers `id`'s fields as the leader keeps them. */
+async function saved(admin: Page, api: Api, id: string) {
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  const config = (await api.get(`${SHARED}${ON}`)).config;
+  type Kept = {
+    field: string;
+    type: string;
+    required?: boolean;
+    example?: string;
+    elasticsearch?: object;
+  };
+  const fields: Kept[] = config.schemas.find((s: { id: string }) => s.id === id).fields;
+  return (name: string) => fields.find((f) => f.field === name);
+}
+
+test('ECS comes in from ecs_flat.yml with its types, settings and examples', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const dialog = await addFrom(
+    admin,
+    leader,
+    'ECS',
+    'ecs',
+    fixture('../../fixtures/ecs-flat-excerpt.yml'),
+  );
+  await expect(dialog.getByRole('heading', { name: /new schema from ECS$/ })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(admin.getByRole('cell', { name: '@timestamp*', exact: true })).toBeVisible();
+  await expect(admin.getByRole('cell', { name: 'Albert Einstein', exact: true })).toBeVisible();
+  const field = await saved(admin, api, 'ecs');
+  expect(field('ecs.version')?.required).toBe(true);
+  expect(field('agent.id')).toMatchObject({ type: 'str', example: '8a4f500d' });
+  expect(field('user.full_name')?.elasticsearch).toEqual({
+    type: 'keyword',
+    ignore_above: 1024,
+    fields: { text: { type: 'match_only_text' } },
+  });
+  expect(field('tags')?.type).toBe('array<str>');
+});
+
+test('ECS comes in from fields.csv, with no line breaker to set', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const dialog = await addFrom(
+    admin,
+    leader,
+    'ECS',
+    'ecs',
+    fixture('../fixtures/ecs-fields-excerpt.csv'),
+  );
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  const field = await saved(admin, api, 'ecs');
+  expect(field('@timestamp')).toMatchObject({ type: 'datetime', required: true });
+  expect(field('message')?.elasticsearch).toEqual({ type: 'match_only_text' });
+  expect(field('gen_ai.input.messages')).toMatchObject({
+    type: 'variant',
+    elasticsearch: { type: 'flattened' },
+  });
+});
+
+test('an OCSF class comes in as deep and with the requirements chosen', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const dialog = await addFrom(
+    admin,
+    leader,
+    'OCSF',
+    'auth',
+    fixture('../../fixtures/ocsf-authentication.json'),
+  );
+  await expect(dialog.getByRole('combobox', { name: 'Class' })).toHaveValue('authentication');
+  await expect(dialog.getByRole('spinbutton', { name: 'Depth' })).toHaveValue('2');
+  await expect(dialog.getByRole('checkbox', { name: 'required' })).toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: 'recommended' })).toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: 'optional' })).not.toBeChecked();
+  await dialog.getByRole('spinbutton', { name: 'Depth' }).fill('1');
+  await dialog.getByRole('checkbox', { name: 'recommended' }).uncheck();
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  const field = await saved(admin, api, 'auth');
+  expect(field('user')).toMatchObject({ type: '{...}', required: true });
+  expect(field('user.name')).toBeUndefined();
+  expect(field('src_endpoint')).toBeUndefined();
+});
+
+test('a CSV of fields comes in by its header, example and Elasticsearch type among them', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const csv = path.join(test.info().outputDir, 'fields.csv');
+  await mkdir(test.info().outputDir, { recursive: true });
+  await writeFile(
+    csv,
+    'Field,Type,Required,Description,Example,Elasticsearch,Owner\n' +
+      'client_ip,str,yes,Where the request came from.,10.0.0.1,ip,web team\n' +
+      'status,i64,,The HTTP status answered.,200,,web team\n',
+  );
+  const dialog = await addFrom(admin, leader, 'CSV of fields', 'web', csv);
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(admin.getByRole('cell', { name: 'Example', exact: true })).toBeVisible();
+  const field = await saved(admin, api, 'web');
+  expect(field('client_ip')).toEqual({
+    field: 'client_ip',
+    type: 'str',
+    required: true,
+    description: 'Where the request came from.',
+    example: '10.0.0.1',
+    elasticsearch: { type: 'ip' },
+  });
+  expect(field('status')).toMatchObject({ type: 'i64', example: '200' });
+});
 
 test('review lists where the rows do not fit a schema, and the dock counts them without blocking', async ({
   admin,
