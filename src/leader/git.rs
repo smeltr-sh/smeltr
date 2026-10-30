@@ -1355,12 +1355,19 @@ fn read_markers(repo_path: &Path, branch: &str) -> Result<Vec<Marker>, GitError>
     let tip = reference.into_fully_peeled_id().map_err(|e| failed(e.to_string()))?;
 
     let mut markers = Vec::new();
-    for info in repo.rev_walk([tip.detach()]).all().map_err(|e| failed(e.to_string()))? {
+    // First parents alone: a marker's last is the commit it names.
+    let walk = repo.rev_walk([tip.detach()]).first_parent_only();
+    for info in walk.all().map_err(|e| failed(e.to_string()))? {
         let info = info.map_err(|e| failed(e.to_string()))?;
         let commit = repo.find_commit(info.id).map_err(|e| failed(e.to_string()))?;
         let message = commit.message_raw().map_err(|e| failed(e.to_string()))?.to_string();
         let Some((kind, text, trailers)) = parse_marker(&message) else {
-            continue;
+            // A kind this build does not know is read past. A commit that is no marker is what a first marker names,
+            // and the chain ends before it.
+            if message.lines().last().is_some_and(|l| l.starts_with(CHANGE_TRAILER)) {
+                continue;
+            }
+            break;
         };
         // A key this build does not know is read past, as a kind it does not know is.
         let trailer = |key: &str| trailers.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.clone());
@@ -1431,7 +1438,8 @@ fn titled(subject: &str, description: &str) -> String {
 /// writing it are one operation: a chain that moved in between is refused rather than written over. `None` is the
 /// first marker, and requires the ref not to exist.
 ///
-/// `trailers` go in the last paragraph, above the kind, each as `<key> <value>`.
+/// `trailers` go in the last paragraph, above the kind, each as `<key> <value>`. The commit a `Smeltr-At:` names is the
+/// marker's last parent, so a ref reaches it and packing keeps it.
 fn write_marker(
     repo_path: &Path,
     branch: &str,
@@ -1462,7 +1470,11 @@ fn write_marker(
         .map_err(|e| GitError::failed(format!("writing the empty tree: {e}")))?
         .detach()
         .to_string();
-    let parents: Vec<&str> = expected.into_iter().collect();
+    let at = trailers
+        .iter()
+        .find(|(key, _)| *key == AT_TRAILER)
+        .map(|(_, at)| at.as_str());
+    let parents: Vec<&str> = expected.into_iter().chain(at).collect();
     let commit = commit_tree(repo_path, &tree, &parents, &[&message], author, Ordered::Clock)?;
     swap_ref(repo_path, &reference, &commit, expected).map_err(|_| {
         GitError::conflict(format!(
@@ -2333,10 +2345,11 @@ fn deploy_in(
     if hold {
         message = format!("{message}\n{HOLD_TRAILER}");
     }
+    // The commit deployed is the marker's last parent, so a ref reaches it and packing keeps it.
     let marker = commit_tree_in(
         repo,
         empty,
-        &log.into_iter().collect::<Vec<_>>(),
+        &log.into_iter().chain([new]).collect::<Vec<_>>(),
         &[&message],
         author,
         Ordered::Clock,
@@ -3348,17 +3361,15 @@ pub fn object_files(repo_path: &Path) -> (usize, usize) {
     (loose, count(&objects.join("pack"), &|n| n.ends_with(".idx")))
 }
 
-/// Pack the objects gix writes loose, and merge packs, once [`LOOSE_LIMIT`] or [`PACK_LIMIT`] is passed. Nothing is
-/// dropped: a deploy-log or change marker names a commit by a trailer git cannot follow, so an object no ref reaches
-/// may still be one a rollback needs.
+/// Pack the objects gix writes loose, and merge packs, once [`LOOSE_LIMIT`] or [`PACK_LIMIT`] is passed. What no ref
+/// reaches is dropped once git's own `gc.pruneExpire` has passed: a marker holds the commit it names as a parent.
 pub fn pack(repo_path: &Path) -> Result<(), GitError> {
     let (loose, packs) = object_files(repo_path);
     if loose <= LOOSE_LIMIT && packs <= PACK_LIMIT {
         return Ok(());
     }
-    // Not `gc --auto`: it leaves an object no ref reaches loose when nothing may be pruned, so it would run again on
-    // every call and pack nothing more. A cruft pack is where `gc` keeps such an object instead, and before git 2.40
-    // it has to be asked for.
+    // Not `gc --auto`: the limits are counted here, the same way a worker counts its packs. A cruft pack is where
+    // `gc` keeps what no ref reaches until it expires, rather than loose, and before git 2.40 it has to be asked for.
     let output = Command::new("git")
         .arg("--git-dir")
         .arg(repo_path)
@@ -3368,8 +3379,6 @@ pub fn pack(repo_path: &Path) -> Result<(), GitError> {
             // Refs are gix's to write, and packing them would hold their lock against a save.
             "-c",
             "gc.packRefs=false",
-            "-c",
-            "gc.pruneExpire=never",
             "gc",
             "--quiet",
         ])
@@ -3659,10 +3668,10 @@ mod tests {
         assert!(status.success(), "git {args:?} failed");
     }
 
-    /// Past the limit, what gix wrote loose is packed, and an object no ref reaches is kept: a marker's trailer may
-    /// name it.
+    /// Past the limit, what gix wrote loose is packed. What no ref reaches goes once it is older than git's grace,
+    /// and a commit only a marker names is reached through it.
     #[test]
-    fn packing_packs_what_is_loose_and_drops_nothing() {
+    fn packing_keeps_what_a_ref_or_a_marker_reaches_and_what_is_recent() {
         let data = temp_dir("pack");
         let repo = repo_path(&data);
         init_bare_repo(&repo).unwrap();
@@ -3670,20 +3679,52 @@ mod tests {
         pack(&repo).unwrap();
         assert!(object_files(&repo).0 > 0, "under the limit, nothing is packed");
 
-        // Twice: the second time, what no ref reaches is already in a pack, which the new one replaces.
-        let mut unreached = Vec::new();
-        for round in 0..2 {
-            let odb = open(&repo).unwrap();
-            unreached.extend((0..=LOOSE_LIMIT).map(|n| odb.write_blob(format!("{round} {n}")).unwrap().detach()));
-            pack(&repo).unwrap();
-            assert_eq!(object_files(&repo).0, 0, "past it, everything is packed");
+        // A comment's branch head, on a branch since gone, is named by its marker alone.
+        let main = main_head(&repo).unwrap();
+        let edit = FileEdit {
+            path: "groups/a/system.json".to_string(),
+            content: Some(b"{}".to_vec()),
+        };
+        let actor = Actor::system();
+        let Committed::At(at) = commit_edits(&repo, "gone", &main, None, &[edit], "save", &actor).unwrap() else {
+            panic!("the commit landed")
+        };
+        delete_ref(&open(&repo).unwrap(), "refs/heads/gone", None).unwrap();
+        let trailers = [(AT_TRAILER, at.clone())];
+        write_marker(&repo, "kept", "a comment", MarkerKind::Comment, &trailers, None, &actor).unwrap();
+
+        let odb = open(&repo).unwrap();
+        let old: Vec<_> = (0..=LOOSE_LIMIT)
+            .map(|n| odb.write_blob(format!("old {n}")).unwrap().detach())
+            .collect();
+        let weeks_ago = std::time::SystemTime::now() - Duration::from_secs(3 * 7 * 24 * 3600);
+        for dir in std::fs::read_dir(repo.join("objects")).unwrap().flatten() {
+            if dir.file_name().len() == 2 {
+                for object in std::fs::read_dir(dir.path()).unwrap().flatten() {
+                    std::fs::File::options()
+                        .write(true)
+                        .open(object.path())
+                        .unwrap()
+                        .set_modified(weeks_ago)
+                        .unwrap();
+                }
+            }
         }
+        let recent = odb.write_blob("recent").unwrap().detach();
+        pack(&repo).unwrap();
+
+        assert_eq!(object_files(&repo).0, 0, "past the limit, everything is packed");
         let odb = open(&repo).unwrap();
         assert!(
-            unreached.iter().all(|id| odb.find_object(*id).is_ok()),
-            "an object no ref reaches is kept"
+            old.iter().all(|id| odb.find_object(*id).is_err()),
+            "what nothing reaches went"
         );
-        assert!(main_head(&repo).is_some(), "and so is what one does");
+        assert!(odb.find_object(recent).is_ok(), "what is recent stays");
+        assert!(
+            odb.find_commit(gix::ObjectId::from_hex(at.as_bytes()).unwrap()).is_ok(),
+            "a marker's commit stays"
+        );
+        assert!(main_head(&repo).is_some(), "and so does what a ref reaches");
         std::fs::remove_dir_all(&data).ok();
     }
 
@@ -5223,6 +5264,7 @@ mod tests {
             .into_fully_peeled_id()
             .unwrap();
         repo.rev_walk([tip.detach()])
+            .first_parent_only()
             .all()
             .unwrap()
             .map(|info| {
