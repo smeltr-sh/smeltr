@@ -561,8 +561,8 @@ pub fn run_route_preview(
         Err(errs) => {
             return Envelope::refused(Refusal::all(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                errs.iter()
-                    .map(|e| ApiError::from_compile(e, system.step_id_for(e.pipeline, e.function)))
+                errs.into_iter()
+                    .map(|e| ApiError::from_validation(&system.to_validation_error(e)))
                     .collect(),
             ));
         }
@@ -691,9 +691,12 @@ fn at_destination(
         .find(|d| d.name == *name)
         .ok_or_else(|| format!("this config has no destination {name:?}"))?
         .id;
-    let compiled = system
-        .compile_topology()
-        .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))?;
+    let compiled = system.compile_topology().map_err(|errors| {
+        (errors.into_iter())
+            .map(|e| system.describe(e))
+            .collect::<Vec<_>>()
+            .join("; ")
+    })?;
     Ok((compiled, dest))
 }
 

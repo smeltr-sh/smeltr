@@ -29,8 +29,8 @@ export interface Call {
 
 /** An error a page shows on its own field or step, and how to take the reader there. */
 export interface Placed {
-  /** What holds it: an item's id, a step's summary. */
-  readonly where: string;
+  /** The step that holds it, by its summary. An item's error names its item in the message itself. */
+  readonly where?: string;
   readonly message: string;
   readonly go: () => void;
 }

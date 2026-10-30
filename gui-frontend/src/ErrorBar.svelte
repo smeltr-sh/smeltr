@@ -57,7 +57,9 @@
                 onclick={(e) => {
                   e.preventDefault();
                   error.go();
-                }}><span class="where">{error.where}</span> {error.message}</a
+                }}
+                >{#if error.where}<span class="where">{error.where}</span
+                  >{' '}{/if}{error.message}</a
               >
             </li>
           {/each}

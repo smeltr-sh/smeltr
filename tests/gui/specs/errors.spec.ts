@@ -128,7 +128,7 @@ test('a refused route is marked on its condition, which the error bar opens its 
 
   await expect(condition).toHaveAttribute('aria-invalid', 'true');
   await expect(card.locator(':scope > .head')).toContainText('1 error');
-  const link = errorBar(admin).getByRole('link', { name: /r1/ });
+  const link = errorBar(admin).getByRole('link', { name: /m1 → p/ });
   await expect(link).toContainText('ipVersion');
 
   // Closed, the card opens to the field the link names, in a window short enough that the field opens low.
