@@ -431,9 +431,11 @@ async fn heartbeat(
     let checks = state.deploy_checks.clone();
     let store = state.store.clone();
     let (deployed, pointer, entitled, findings) = tokio::task::spawn_blocking(move || {
+        // Read once, so the groups and the commit a worker is cued with are of the same deploy.
+        let pointer = deployed_pointer(&data_dir);
         (
-            deployed_groups(&data_dir),
-            git::deployed(&git::repo_path(&data_dir)),
+            groups_in(&data_dir, pointer.as_deref()),
+            pointer,
             at_newest(
                 &entitled(&data_dir, &entitlements, &for_group),
                 // Unreadable, a beat entitles no certificate and the next one tries again.
@@ -1287,14 +1289,19 @@ fn tls_of(topology: &crate::plan::topology::TopologyConfig) -> Vec<DeployedTls> 
 }
 
 fn deployed_groups(data_dir: &std::path::Path) -> std::collections::HashSet<String> {
+    groups_in(data_dir, deployed_pointer(data_dir).as_deref())
+}
+
+/// The commit the deployed pointer names. `None` before anything is deployed.
+fn deployed_pointer(data_dir: &std::path::Path) -> Option<String> {
     let repo = git::repo_path(data_dir);
-    if !git::repo_ready(&repo) {
-        return std::collections::HashSet::new();
-    }
-    let Some(deployed) = git::deployed(&repo) else {
-        return std::collections::HashSet::new();
-    };
-    tree::groups_at(&repo, &deployed)
+    git::repo_ready(&repo).then(|| git::deployed(&repo)).flatten()
+}
+
+/// The groups `commit` holds; none for no commit.
+fn groups_in(data_dir: &std::path::Path, commit: Option<&str>) -> std::collections::HashSet<String> {
+    commit
+        .and_then(|commit| tree::groups_at(&git::repo_path(data_dir), commit).ok())
         .unwrap_or_default()
         .into_iter()
         .collect()

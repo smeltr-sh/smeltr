@@ -6179,8 +6179,6 @@ mod tests {
         assert!(refused.contains("Extended Key Usage"), "{refused}");
     }
 
-    /// The leader repeats a directive until a beat names it taken, so each id is acted on once however many
-    /// answers carry it.
     /// Discovery fetches only to learn something: not while the leader's answer names the commit already fetched,
     /// and always when the answer names another, names none, or never came.
     #[test]
@@ -6200,6 +6198,8 @@ mod tests {
         );
     }
 
+    /// The leader repeats a directive until a beat names it taken, so each id is acted on once however many
+    /// answers carry it.
     #[test]
     fn a_restart_is_taken_once_per_request() {
         let supervisor = supervisor_for(temp_dir("restart-once"));
