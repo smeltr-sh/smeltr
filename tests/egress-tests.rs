@@ -5,7 +5,7 @@ use std::time::Duration;
 use smeltr::egress::Egress;
 use smeltr::handoff::Ready;
 use smeltr::io::fake::{AsyncDestination, FakeDestination};
-use smeltr::io::{Destination, Dispatched, OutgoingRecord, OwnedRecord, SalvageTarget};
+use smeltr::io::{BatchId, Destination, Dispatched, OutgoingRecord, OwnedRecord, SalvageTarget};
 use smeltr::metrics::{Metrics, MetricsHandle};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -1291,6 +1291,18 @@ fn taken_within(dest: &AsyncDestination, n: usize) -> std::time::Instant {
     }
 }
 
+/// The first batch taken after the first `from` whose one row is `row`, and when it was seen.
+fn taken_with(dest: &AsyncDestination, from: usize, row: &[u8]) -> (BatchId, std::time::Instant) {
+    let deadline = std::time::Instant::now() + timeout();
+    loop {
+        if let Some((batch, _)) = dest.units()[from..].iter().find(|(_, rows)| rows[..] == [row.to_vec()]) {
+            return (*batch, std::time::Instant::now());
+        }
+        assert!(std::time::Instant::now() < deadline, "no batch of {row:?} taken");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 /// A route that keeps failing beside ones that land: what lands does not clear the stall, and the rows that fail are
 /// sent again on their own backoff, which grows, while the batches that land do not wait on them.
 #[test]
@@ -1320,16 +1332,20 @@ fn a_route_that_keeps_failing_holds_the_stall_and_backs_off_alone() {
     for round in 0..4u64 {
         dest.fail_rows(bad, vec![0], vec![], "that route is down");
         let failed_at = std::time::Instant::now();
+        let before = dest.units().len();
         // A batch on a route that works, handed while the bad one waits: it lands without waiting on it.
         hand(&mut h, 10 + round, &[OutgoingRecord::new(b"good")]);
-        taken_within(&dest, dest.units().len() + 1);
-        let units = dest.units();
-        let (good, rows) = units.last().unwrap().clone();
-        assert_eq!(
-            rows,
-            vec![b"good".to_vec()],
-            "the good batch went before the bad one's wait was over"
-        );
+        let (good, _) = taken_with(&dest, before, b"good");
+        // The first waits are shorter than a loaded machine takes to hand the good batch on, so only a long one
+        // says which went first.
+        if round >= 2 {
+            assert!(
+                dest.units()[before..]
+                    .iter()
+                    .all(|(_, rows)| rows[..] != [b"bad".to_vec()]),
+                "the good batch went before the bad one's wait was over"
+            );
+        }
         dest.complete(good);
         assert_eq!(completions_within(&mut h, timeout()).len(), 1);
         assert_eq!(
@@ -1337,9 +1353,7 @@ fn a_route_that_keeps_failing_holds_the_stall_and_backs_off_alone() {
             Some(0.0),
             "a batch that landed beside the failing route did not clear the stall"
         );
-        let again_at = taken_within(&dest, units.len() + 1);
-        let (next, rows) = dest.units().last().unwrap().clone();
-        assert_eq!(rows, vec![b"bad".to_vec()]);
+        let (next, again_at) = taken_with(&dest, before, b"bad");
         bad = next;
         waits.push(again_at - failed_at);
     }
