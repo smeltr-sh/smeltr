@@ -103,6 +103,8 @@ export type World = {
   certificates: Map<string, Pki>;
   /** For names nothing has used yet. */
   made: number;
+  /** The schemas added with fields, whose fields the Elasticsearch view can map. */
+  fielded: string[];
   /** When the administrator signed in, the API's own sign-in among them: the leader allows five a minute. */
   signIns: number[];
   /** Each local account the administrator added, by username, and whether it is enabled. */
@@ -147,6 +149,7 @@ export function newWorld(): World {
     secrets: new Map(),
     certificates: new Map(),
     made: 0,
+    fielded: [],
     signIns: [],
     accounts: new Map(),
     roles: new Set(),
@@ -1561,7 +1564,7 @@ const JSON_TYPES = [
 
 const addSchema: Move = {
   name: 'add-schema',
-  leadsTo: ['produce-schema'],
+  leadsTo: ['produce-schema', 'map-schema-field'],
   weight: (w) => (w.password && w.editing.schemas.length < 2 ? 1 : 0),
   run: async (j) => {
     const { page, leader, rng, world } = j;
@@ -1593,6 +1596,7 @@ const addSchema: Move = {
     await expect(dialog).toBeHidden();
     await save(j, unsaved(page));
     world.editing.schemas.push(id);
+    if (fields.length) world.fielded.push(id);
     await editingIsSaved(j);
     const res = await (await j.truth()).get(`/api/areas/shared?branch=${world.branch}`);
     const saved = res.config.schemas.find((s: { id: string }) => s.id === id);
@@ -1604,6 +1608,47 @@ const addSchema: Move = {
       ),
     );
     return `add schema ${id} of ${fields.length} field(s)`;
+  },
+};
+
+/** The schemas on the branch that have fields. */
+const fielded = (w: World) => w.fielded.filter((s) => w.editing.schemas.includes(s));
+
+const mapSchemaField: Move = {
+  name: 'map-schema-field',
+  weight: (w) => (fielded(w).length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const id = rng.pick(fielded(world));
+    // Landing on it opens it alone, so the dropdowns are its own.
+    await goto(page, leader, `#/build/schemas?open=${id}`);
+    await page.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+    const selects = page.getByRole('combobox', { name: /^Elasticsearch type of / });
+    const select = selects.nth(rng.below(await selects.count()));
+    const field = (await select.getAttribute('aria-label'))!.replace('Elasticsearch type of ', '');
+    // Another than it shows, so the choice is an edit: the default, or a type its own allows.
+    const was = await select.inputValue();
+    const offered = await select
+      .locator('option')
+      .evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
+    const type = rng.pick(offered.filter((t) => t !== was));
+    await select.selectOption(type);
+    await save(j, unsaved(page));
+    await editingIsSaved(j);
+    const truth = await j.truth();
+    const res = await truth.get(`/api/areas/shared?branch=${world.branch}`);
+    const schema = res.config.schemas.find((s: { id: string }) => s.id === id);
+    const saved = schema.fields.find((f: { field: string }) => f.field === field);
+    expect(saved.elasticsearch, `${id}'s ${field} maps as chosen`).toEqual(
+      type ? { type } : undefined,
+    );
+    // The export maps it as chosen, or as its type does by default: the first the view offered after it.
+    const exported = await truth.post('/api/preview/schema-export', {
+      schema,
+      format: 'elasticsearch',
+    });
+    expect(exported.document.mappings.properties[field].type).toBe(type || offered[1]);
+    return `map ${id}'s ${field} in Elasticsearch as ${type || 'its default'}`;
   },
 };
 
@@ -2688,6 +2733,7 @@ export const MOVES: readonly Move[] = [
   addLookup,
   addGrokPattern,
   addSchema,
+  mapSchemaField,
   produceSchema,
   pasteSample,
   editSample,

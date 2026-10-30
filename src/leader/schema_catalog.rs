@@ -163,6 +163,9 @@ pub fn findings(
 }
 
 #[cfg(test)]
+mod fuzz;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
