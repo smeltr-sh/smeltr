@@ -127,6 +127,7 @@ const COVERED: &[&str] = &[
     "type widening disabled",
     "widened",
     "type changes kept",
+    "other widen",
     "orc",
     "fault Lost",
     "fault Dropped",
@@ -543,6 +544,16 @@ fn widens_to(from: &str, to: &str) -> bool {
             (from, to),
             ("float", "double") | ("byte" | "short" | "integer", "double") | ("date", "timestamp_ntz")
         ),
+    }
+}
+
+/// The type another writer widens a column of type `p` to.
+fn widened(p: &str) -> Option<&'static str> {
+    match p {
+        "byte" | "short" | "integer" => Some("long"),
+        "float" => Some("double"),
+        "date" => Some("timestamp_ntz"),
+        _ => None,
     }
 }
 
@@ -1220,6 +1231,14 @@ impl Run {
         let mut schema = StructType::parse(&metadata.schema_string)?;
         let rng = &mut self.rng;
         let mut lines = vec![json!({"commitInfo": {"operation": "WRITE", "engineInfo": OTHER}})];
+        // A column another writer may widen: one not partitioning a table that knows type widening.
+        let knows = (snapshot.protocol.writer_features.iter().flatten()).any(|f| f == "typeWidening");
+        let widenable = schema.fields.iter().position(|f| {
+            let schema::Type::Primitive(p) = &f.data_type else {
+                return false;
+            };
+            knows && !metadata.partition_columns.contains(&f.name) && widened(p).is_some()
+        });
         match rng.below(12) {
             0..=4 => {
                 reach("other add");
@@ -1255,7 +1274,8 @@ impl Run {
                 reach("other add column");
                 let mut field = schema::StructField {
                     name: format!("other{}", rng.below(1000)),
-                    data_type: schema::Type::Primitive("long".into()),
+                    // Now and then narrower, for a later writer to widen.
+                    data_type: schema::Type::Primitive((*rng.pick(&["long", "integer"])).into()),
                     nullable: true,
                     metadata: Map::new(),
                 };
@@ -1307,6 +1327,20 @@ impl Run {
             10 => {
                 reach("other partitioning");
                 metadata.partition_columns.reverse();
+                lines.push(json!({"metaData": metadata}));
+            }
+            11 if widenable.is_some() => {
+                reach("other widen");
+                let field = &mut schema.fields[widenable.expect("checked above")];
+                let schema::Type::Primitive(from) = &field.data_type else {
+                    unreachable!("a widenable column is primitive")
+                };
+                let to = widened(from).expect("a widenable column widens");
+                let change = json!({"fromType": from, "toType": to});
+                let changes = field.metadata.entry("delta.typeChanges").or_insert_with(|| json!([]));
+                changes.as_array_mut().expect("type changes are a list").push(change);
+                field.data_type = schema::Type::Primitive(to.into());
+                metadata.schema_string = schema.to_json();
                 lines.push(json!({"metaData": metadata}));
             }
             _ => {

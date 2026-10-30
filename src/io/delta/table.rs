@@ -411,10 +411,16 @@ impl DeltaCommitter {
                 (metadata.configuration).insert("delta.columnMapping.maxColumnId".into(), max_column_id.to_string());
             }
             let version = snapshot.version + 1;
+            // Named as Delta names its own: a commit that both widens and adds is named for the widening.
+            let operation = if evolution.widened {
+                "CHANGE COLUMN"
+            } else {
+                "ADD COLUMNS"
+            };
             let body = [
                 line(
                     "commitInfo",
-                    &json!({"timestamp": now_ms(), "operation": "UPDATE SCHEMA", "engineInfo": "smeltr"}),
+                    &json!({"timestamp": now_ms(), "operation": operation, "engineInfo": "smeltr"}),
                 ),
                 line("metaData", &metadata),
             ]
@@ -479,13 +485,18 @@ impl DeltaCommitter {
         if evolution.changed {
             return Err("another writer dropped a column the record writes".to_string());
         }
-        if schema::physical(&self.arrow, &schema) != self.written {
+        // A column another writer widened still takes this writer's files of its earlier type, as the protocol lets a
+        // table hold, and their stats are read by the schema they were written by.
+        let widened = schema::physical(&self.arrow, &schema) != self.written;
+        if widened && !schema::only_widened(&self.schema, &schema) {
             return Err("another writer changed a column the record writes".to_string());
         }
         if partition_columns(metadata, &schema)? != self.partitions {
             return Err("another writer changed the table's partitioning".to_string());
         }
-        self.schema = schema;
+        if !widened {
+            self.schema = schema;
+        }
         Ok(())
     }
 
@@ -1314,7 +1325,7 @@ mod tests {
         assert_eq!(committer.snapshot.version, 1);
 
         let actions = table.commit(1).unwrap();
-        assert_eq!(action(&actions, "commitInfo")["operation"], "UPDATE SCHEMA");
+        assert_eq!(action(&actions, "commitInfo")["operation"], "ADD COLUMNS");
         assert!(adds(&actions).is_empty());
         let meta = action(&actions, "metaData");
         let schema = StructType::parse(meta["schemaString"].as_str().unwrap()).unwrap();
@@ -1428,12 +1439,42 @@ mod tests {
         let table = table_with(&record, &[], narrow("true"));
         let widened = table.open(&record, &[]).unwrap();
         assert_eq!(widened.written.field(0).data_type(), &arrow_schema::DataType::Int64);
-        let meta = action(&table.commit(1).unwrap(), "metaData").clone();
+        let actions = table.commit(1).unwrap();
+        assert_eq!(action(&actions, "commitInfo")["operation"], "CHANGE COLUMN");
+        let meta = action(&actions, "metaData").clone();
         let schema = StructType::parse(meta["schemaString"].as_str().unwrap()).unwrap();
         assert_eq!(schema.fields[0].data_type, Type::Primitive("long".into()));
         assert_eq!(
             schema.fields[0].metadata["delta.typeChanges"],
             json!([{"fromType": "integer", "toType": "long"}])
+        );
+
+        // Another writer widens the column of a table this writer holds open: its files are still added, of the
+        // earlier type.
+        let table = table_with(&record, &[], narrow("false"));
+        let mut committer = table.open(&record, &[]).unwrap();
+        let mut meta = action(&table.commit(0).unwrap(), "metaData").clone();
+        let widened = json!({"type": "struct", "fields": [{"name": "n", "type": "long", "nullable": true,
+                             "metadata": {"delta.typeChanges": [{"fromType": "integer", "toType": "long"}]}}]});
+        meta["schemaString"] = json!(widened.to_string());
+        table.put(1, &[json!({"metaData": meta.clone()})]);
+        let files = [file(&committer, &[], &[], None)];
+        assert!(matches!(committer.commit(&files), Err(CommitError::Conflict)));
+        committer.commit(&files).unwrap();
+        assert_eq!(committer.written.field(0).data_type(), &arrow_schema::DataType::Int32);
+        assert_eq!(adds(&table.commit(2).unwrap()).len(), 1);
+
+        // A change no widening makes is still refused, though the record could be written narrower still.
+        let changed = json!({"type": "struct", "fields": [{"name": "n", "type": "short", "nullable": true,
+                             "metadata": {}}]});
+        meta["schemaString"] = json!(changed.to_string());
+        table.put(3, &[json!({"metaData": meta})]);
+        let files = [file(&committer, &[], &[], None)];
+        assert!(matches!(committer.commit(&files), Err(CommitError::Conflict)));
+        let refused = committer.commit(&files);
+        assert!(
+            matches!(&refused, Err(CommitError::Transient(why)) if why.contains("changed a column")),
+            "{refused:?}"
         );
     }
 

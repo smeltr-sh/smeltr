@@ -225,6 +225,8 @@ pub struct Evolution {
     /// Whether `schema` is new to the table: the table is created, a column added or one widened. A commit then sets
     /// it.
     pub changed: bool,
+    /// Whether a column was widened.
+    pub widened: bool,
 }
 
 /// The schema a table must have for `record` to be written to it. With no `current` schema the table is new, and the
@@ -251,9 +253,9 @@ pub fn table_schema(
     let columns = columns(fields, *open);
     let mut ids = Ids {
         mapping,
-        widen: widen.is_some(),
-        partitions: widen.unwrap_or_default().to_vec(),
+        widen: widen.map(<[String]>::to_vec),
         changed: false,
+        widened: false,
         type_changes: Vec::new(),
     };
     let fields = match current {
@@ -264,6 +266,7 @@ pub fn table_schema(
         schema: StructType { fields },
         mapping: ids.mapping,
         changed: current.is_none() || ids.changed,
+        widened: ids.widened,
     })
 }
 
@@ -351,6 +354,61 @@ pub fn partition_column(schema: &StructType, name: &str) -> Result<(String, Kind
         )
     })?;
     Ok((field.physical_name().to_string(), kind))
+}
+
+/// Whether `new` is `old` with only some of its types widened, as another writer widens a table: each of `old`'s
+/// fields still in it, the type of each the same or one the protocol lets it widen to, and each widened field's type
+/// changes its earlier ones and more. Files of `old`'s types may still be added to such a table.
+pub fn only_widened(old: &StructType, new: &StructType) -> bool {
+    old.fields.iter().all(|old| {
+        let Some(new) = new.fields.iter().find(|f| f.name == old.name) else {
+            return false;
+        };
+        let changes = |f: &StructField| f.metadata.get(TYPE_CHANGES).and_then(Value::as_array).cloned();
+        let (was, now) = (changes(old).unwrap_or_default(), changes(new).unwrap_or_default());
+        let recorded = old.data_type == new.data_type || (now.len() > was.len() && now.starts_with(&was));
+        old.nullable == new.nullable && recorded && widens(&old.data_type, &new.data_type)
+    })
+}
+
+/// Whether type `from` is `to`, or widens to it as the protocol's type widening allows.
+fn widens(from: &Type, to: &Type) -> bool {
+    match (from, to) {
+        (Type::Primitive(from), Type::Primitive(to)) => {
+            let integers = ["byte", "short", "integer", "long"];
+            let rank = |t: &str| integers.iter().position(|i| *i == t);
+            from == to
+                || rank(from).zip(rank(to)).is_some_and(|(from, to)| from < to)
+                || matches!(
+                    (from.as_str(), to.as_str()),
+                    ("float" | "byte" | "short" | "integer", "double") | ("date", "timestamp_ntz")
+                )
+        }
+        (Type::Struct(from), Type::Struct(to)) => only_widened(from, to),
+        (
+            Type::Array {
+                element: from,
+                contains_null: a,
+            },
+            Type::Array {
+                element: to,
+                contains_null: b,
+            },
+        ) => a == b && widens(from, to),
+        (
+            Type::Map {
+                key: k1,
+                value: v1,
+                value_contains_null: a,
+            },
+            Type::Map {
+                key: k2,
+                value: v2,
+                value_contains_null: b,
+            },
+        ) => a == b && widens(k1, k2) && widens(v1, v2),
+        _ => false,
+    }
 }
 
 /// The first column, at any depth, whose metadata asks of a writer what this one does not do: compute a generated
@@ -457,11 +515,11 @@ fn widened(p: &str, t: &DataType) -> Option<&'static str> {
 /// table lets them widen.
 struct Ids {
     mapping: Mapping,
-    widen: bool,
-    /// The table's partition columns, which are not widened.
-    partitions: Vec<String>,
+    /// The table's partition columns when it lets its columns widen. They are not widened.
+    widen: Option<Vec<String>>,
     /// Whether a column was added or widened.
     changed: bool,
+    widened: bool,
     /// The type changes of the field being evolved, as `delta.typeChanges` records them, not yet recorded.
     type_changes: Vec<Value>,
 }
@@ -531,10 +589,12 @@ impl Ids {
                 Some((_, t)) => {
                     let mut field = field.clone();
                     let outer = std::mem::take(&mut self.type_changes);
-                    let widen = self.widen;
-                    self.widen &= !(path == field.name && self.partitions.contains(&field.name));
+                    let partition = path == field.name && self.widen.as_ref().is_some_and(|p| p.contains(&field.name));
+                    let widen = if partition { self.widen.take() } else { None };
                     field.data_type = self.evolve_type(&field.data_type, t, &path, "")?;
-                    self.widen = widen;
+                    if partition {
+                        self.widen = widen;
+                    }
                     let changes = std::mem::replace(&mut self.type_changes, outer);
                     if !changes.is_empty() {
                         // The field's earlier changes are kept, as the protocol asks, and its new ones follow them.
@@ -567,7 +627,9 @@ impl Ids {
     /// `table`, as `delta.typeChanges` names it: empty at the field, `element` within its array.
     fn evolve_type(&mut self, table: &Type, record: &DataType, path: &str, within: &str) -> Result<Type, String> {
         match (table, record) {
-            (Type::Primitive(p), t) if self.widen && !matches!(t, DataType::Array(_) | DataType::Struct(..)) => {
+            (Type::Primitive(p), t)
+                if self.widen.is_some() && !matches!(t, DataType::Array(_) | DataType::Struct(..)) =>
+            {
                 match widened(p, t) {
                     Some(to) => {
                         let mut change = json!({"fromType": p, "toType": to});
@@ -576,6 +638,7 @@ impl Ids {
                         }
                         self.type_changes.push(change);
                         self.changed = true;
+                        self.widened = true;
                         Ok(Type::Primitive(to.to_string()))
                     }
                     None => self.kept(table, record, path),
