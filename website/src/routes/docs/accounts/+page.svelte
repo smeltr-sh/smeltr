@@ -19,30 +19,35 @@
   <h1>Accounts and access</h1>
   <h2 id="accounts">Add an account</h2>
   <p>
-    Every account signs in one way: with a <strong>Password</strong>, through <strong>SSO</strong>,
-    or with a <strong>Key</strong>. However it signs in, it can do only what it holds. You add
-    password and key accounts here; an SSO account is created the first time its person signs in
-    through the provider.
+    Every account signs in one way: a local account with a password, an OIDC account through single
+    sign-on, and a key account with a key. Accounts calls them <strong>Password</strong>,
+    <strong>SSO</strong> and <strong>Key</strong>. However an account signs in, it can do only what
+    it holds. You add local and key accounts here; an OIDC account is created the first time its
+    person signs in through the provider.
   </p>
   <ol>
     <li>Open Admin → Accounts and select <strong>+ Add account</strong>.</li>
-    <li>Under Signs in with, choose <strong>Password</strong> or <strong>Key</strong>.</li>
-    <li>Enter a Display name, and for a password account a Username.</li>
+    <li>
+      Under Signs in with, choose <strong>Password</strong> for a local account or
+      <strong>Key</strong>
+      for a key account.
+    </li>
+    <li>Enter a Display name, and for a local account a Username.</li>
     <li>
       Turn on <strong>Administrator</strong> for an account that holds everything, or tick the
-      <a href="#roles">roles</a> it holds. An account with neither can sign in but sees nothing.
+      <a href="#roles">roles</a> it holds. An account with neither holds nothing and reaches nothing.
     </li>
     <li>Choose <strong>Add</strong>.</li>
     <li>
-      For a password account, securely hand over the one-time password before dismissing the panel.
-      The recipient must choose their own password at first sign-in. If it is lost, reset it; you
-      cannot read it back. A key account's row opens, ready for its first <a href="#keys">key</a>.
+      For a local account, securely hand over the one-time password before dismissing the panel. The
+      recipient must choose their own password at first sign-in. If it is lost, reset it; you cannot
+      read it back. A key account's row opens, ready for its first <a href="#keys">key</a>.
     </li>
   </ol>
   <p>
-    Smeltr keeps at least one enabled password account that is an administrator, as the way in when
-    the provider is down, so it refuses to disable that account or take away its Administrator.
-    Display names need not be unique.
+    Smeltr keeps at least one enabled local account that is an administrator, as the way in when the
+    provider is down, so it refuses to disable that account or take away its Administrator. Display
+    names need not be unique.
   </p>
   <h2 id="keys">Call the API with a key</h2>
   <p>
@@ -70,23 +75,23 @@
   <h2 id="manage">Find, change, disable or sign out</h2>
   <p>
     Search Accounts by display name, username or the provider's login, or choose
-    <strong>Password</strong>, <strong>SSO</strong> or <strong>Key</strong> to list only those
-    accounts. Then choose <strong>Manage</strong> on the account's row. It offers what that kind of account
-    has.
+    <strong>Password</strong>, <strong>SSO</strong> or <strong>Key</strong> to list only local, OIDC
+    or key accounts. Then choose <strong>Manage</strong> on the account's row. It offers what that kind
+    of account has.
   </p>
   <ul>
     <li><strong>Rename:</strong> change the display name only. Every account.</li>
     <li>
-      <strong>Change access:</strong> turn Administrator on or off, or change the roles it holds. A password
-      or key account; an SSO account holds the roles of its provider groups.
+      <strong>Change access:</strong> turn Administrator on or off, or change the roles it holds. A local
+      or key account; an OIDC account holds the roles of its provider groups.
     </li>
     <li>
-      <strong>Reset password:</strong> sign out existing sessions and issue a temporary password. A password
+      <strong>Reset password:</strong> sign out existing sessions and issue a temporary password. A local
       account.
     </li>
     <li>
       <strong>Revoke sessions:</strong> sign out without changing the password. This does not block future
-      access. A password or SSO account.
+      access. A local or OIDC account.
     </li>
     <li>
       <strong>Disable account:</strong> sign out, revoke every key, and block access; keep the account’s
@@ -98,8 +103,8 @@
   </ul>
   <p>
     Smeltr asks you to confirm before it resets a password or disables an account. Your own row has
-    no Reset password: a password account uses Change password in the account menu at the top right,
-    which shows your name. A single sign-on account changes its password at the provider.
+    no Reset password: a local account uses Change password in the account menu at the top right,
+    which shows your name. An OIDC account changes its password at the provider.
   </p>
   <h2 id="sessions">Change session lifetimes</h2>
   <ol>
@@ -140,8 +145,8 @@
   <p>
     People can sign in through your organization's identity provider over <a
       href="https://openid.net/specs/openid-connect-core-1_0.html">OpenID Connect</a
-    > (OIDC). Password accounts keep working whatever is set here, and Smeltr keeps at least one that
-    is an administrator, as a way in when the provider is down.
+    > (OIDC). Local accounts keep working whatever is set here, and Smeltr keeps at least one that is
+    an administrator, as a way in when the provider is down.
   </p>
   <ol>
     <li>
@@ -170,14 +175,14 @@
   </p>
   <p>
     The sign-in screen then offers <strong>Sign in with SSO</strong>, with
-    <strong>Sign in with username</strong> beside it for password accounts. The first time somebody
+    <strong>Sign in with username</strong> beside it for local accounts. The first time somebody
     signs in through the provider, Smeltr creates their account. Accounts lists them with SSO as
     their sign-in, and the email or username the provider gives them under their name. To sign in, a
     person must belong to at least one group that has a role. <strong>Refused sign-ins</strong> on the
     Roles tab lists everyone turned away, with the groups the provider sent.
   </p>
   <p>
-    The provider owns an SSO account's password, so it has no Reset password. To stop somebody
+    The provider owns an OIDC account's password, so it has no Reset password. To stop somebody
     signing in, remove them from every group that has a role, or disable their account in Smeltr.
   </p>
   <p>
@@ -187,9 +192,9 @@
   <h2 id="roles">Give people access with roles</h2>
   <p>
     An account can do only what its roles give it, or everything as an administrator. A role gives
-    one level in each area: the shared configuration or a worker group. An SSO account holds the
-    role named for each of its groups in the provider's groups claim. A password or key account
-    holds the roles you give it under Change access.
+    one level in each area: the shared configuration or a worker group. An OIDC account holds the
+    role named for each of its groups in the provider's groups claim. A local or key account holds
+    the roles you give it under Change access.
   </p>
   <ul>
     <li><strong>viewer</strong> reads the area's configuration.</li>
@@ -211,7 +216,7 @@
   <ol>
     <li>Open Admin → Accounts → Roles and select <strong>+ Add role</strong>.</li>
     <li>
-      Enter the group exactly as the provider names it. For a role you give only to password or key
+      Enter the group exactly as the provider names it. For a role you give only to local or key
       accounts, any name will do.
     </li>
     <li>Choose a level for each area, or tick Administrator, and select <strong>Save</strong>.</li>

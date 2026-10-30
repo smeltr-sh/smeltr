@@ -388,8 +388,11 @@ impl std::fmt::Display for AccountError {
         match self {
             AccountError::UsernameTaken => write!(f, "that username is already taken"),
             AccountError::NoSuchUser => write!(f, "no such account"),
-            AccountError::LastAdministrator => write!(f, "this is the last local administrator account"),
-            AccountError::HeldByProvider => write!(f, "an OIDC account holds what its provider's groups give"),
+            AccountError::LastAdministrator => write!(f, "this is the last administrator who signs in with a password"),
+            AccountError::HeldByProvider => write!(
+                f,
+                "roles and administrator are not set here: an OIDC account holds what its provider's groups give"
+            ),
             AccountError::Disabled => write!(f, "that account is disabled"),
             AccountError::WrongAuthSource => write!(f, "that account does not sign in with a password"),
             AccountError::Superseded => write!(f, "that account changed since it was read"),

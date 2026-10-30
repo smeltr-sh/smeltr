@@ -296,9 +296,10 @@ asks nothing about access.
 `shared` deployer can change what every group runs.
 
 **P4 — A full administrator holds everything.** An account an
-administrator made one is, and so is anyone holding a role marked
-administrator, so one person can run the whole system alone. Only
-administrators reach Admin, and at least one local administrator remains.
+administrator marks as administrator is one, and so is anyone holding a
+role marked administrator, so one person can run the whole system alone.
+Only administrators reach Admin, and at least one local administrator
+remains.
 
 **P5 — Records are editor work.** Capture, preview and samples show
 production records, so they take editor in the area, as changing its

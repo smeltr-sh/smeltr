@@ -4,7 +4,7 @@
   gives, and under Single sign-on the provider itself.
 
   A local or key account holds the roles an administrator gives it, or
-  everything as an administrator. An SSO account holds what the roles named
+  everything as an administrator. An OIDC account holds what the roles named
   for its provider groups give it, so the roster shows those roles and the
   Roles tab is where what they give is changed.
 -->
@@ -49,7 +49,7 @@
 
   let { section }: { section: AccountsSection } = $props();
 
-  /** What a new account can sign in with. An SSO account is made at its first sign-in. */
+  /** What a new account can sign in with. An OIDC account is made at its first sign-in. */
   const SIGN_INS: { value: 'local' | 'key'; label: string }[] = [
     { value: 'local', label: 'Password' },
     { value: 'key', label: 'Key' },
@@ -614,7 +614,7 @@
           ><span aria-hidden="true">⌕</span><input
             type="search"
             bind:value={query}
-            placeholder="Search names, usernames, logins…"
+            placeholder="Search by name, username or login"
             aria-label="Search accounts"
           /></label
         >

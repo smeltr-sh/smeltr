@@ -517,7 +517,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/accounts",
-        what: "Every account, however it signs in (authSource local, oidc or key), with its roles and, for a key account, its keys not revoked with when each expires, never a key itself, as `accounts`. No query.",
+        what: "Every account, however it signs in (authSource local, oidc or key), with its roles and, for a key account, its keys not revoked, expired ones too, each with when it expires, never a key itself, as `accounts`. No query.",
         body: "",
     },
     Route {

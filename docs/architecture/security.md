@@ -85,14 +85,14 @@ is how an ephemeral worker the leader forgot while it was away comes back.
 ## Identity and access
 
 Identity and access are the leader's alone; nothing in the data plane
-learns a person exists. Whoever calls the leader is an **account**, and an
+learns a person exists. Whoever calls the operator API is an **account**, and an
 account signs in one way: a local account with a password, an OIDC account
 through the organization's OpenID provider, a key account with a key. How it
 signs in decides only how it proves who it is. What it reaches is what it
 holds, and renaming, disabling, its agent permissions and the audit are the
 same for every account. A local and an OIDC sign-in end in the same session,
 so the gate, its deadlines, disabling and revocation treat the two alike.
-Display names may repeat: an account is known by its id.
+Display names may repeat: an account is known by its id, which the audit and git record beside its name.
 
 A local or key account holds the roles an administrator gives it, or
 everything by its own administrator flag. An OIDC account holds the roles of
@@ -214,8 +214,8 @@ replaced without a gap. A revoked or expired key is refused, and disabling a
 key account revokes every key it holds.
 
 What a key reaches is what its account holds, as a session reaches what
-its person holds. What a key account does is recorded as its own, under its
-display name, in the audit and in git.
+its person holds. What a key account does is recorded as its own: by its id in
+the audit, and in git under its display name and its id.
 
 A disable, a password reset or a revocation that lands while a sign-in is
 checking the password refuses that sign-in. Changing a
