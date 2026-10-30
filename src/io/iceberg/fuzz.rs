@@ -81,6 +81,16 @@ const COVERED: &[&str] = &[
     "partition narrowed float",
     "partition narrowed date",
     "partition narrowed timestamp",
+    "table codec zstd",
+    "table codec gzip",
+    "table codec snappy",
+    "table codec lz4",
+    "table codec uncompressed",
+    "table codec brotli",
+    "table codec level",
+    "table row group size",
+    "table target file size",
+    "table bloom filter",
     "evolution refused",
     "sign-in none",
     "sign-in bearer",
@@ -586,6 +596,41 @@ fn file_rows(bytes: Vec<u8>, leaves: &[(String, &str)]) -> Result<Vec<BTreeMap<S
 }
 
 /// The table the fake holds, read back from it and from `store`, against the rows taken.
+/// Err when the data file `bytes` is not written as the table's `write.*` properties ask: its codec, where this writer
+/// has it, and a bloom filter on each column that asks for one.
+fn written_as_asked(bytes: &[u8], properties: &BTreeMap<String, String>) -> Result<(), String> {
+    use ::parquet::basic::Compression as Codec;
+    use ::parquet::file::metadata::ParquetMetaDataReader;
+    let metadata = ParquetMetaDataReader::new()
+        .parse_and_finish(&tokio_util::bytes::Bytes::copy_from_slice(bytes))
+        .map_err(|e| format!("its footer does not read: {e}"))?;
+    let codec = properties.get("write.parquet.compression-codec").map(String::as_str);
+    for group in metadata.row_groups() {
+        for column in group.columns() {
+            let written = match column.compression() {
+                Codec::UNCOMPRESSED => "uncompressed",
+                Codec::GZIP(_) => "gzip",
+                Codec::SNAPPY => "snappy",
+                Codec::LZ4_RAW => "lz4",
+                Codec::ZSTD(_) => "zstd",
+                other => return Err(format!("{other:?} is no codec this writer writes")),
+            };
+            if codec.is_some_and(|c| c != "brotli" && c != written) {
+                return Err(format!(
+                    "{} is {written}, and the table asks {codec:?}",
+                    column.column_path()
+                ));
+            }
+            let path = column.column_path().string();
+            let bloom = format!("write.parquet.bloom-filter-enabled.column.{path}");
+            if properties.get(&bloom).is_some_and(|v| v == "true") && column.bloom_filter_offset().is_none() {
+                return Err(format!("{path} has no bloom filter, and the table asks one"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn check_table(
     fake: &Arc<Mutex<Fake>>,
     store: &Arc<InMemory>,
@@ -637,7 +682,9 @@ fn check_table(
                 if entry.file_path.contains("/partition-") {
                     reached.push("partition path shortened".into());
                 }
-                let rows = file_rows(get(&entry.file_path)?, leaves)?;
+                let bytes = get(&entry.file_path)?;
+                written_as_asked(&bytes, &table.properties).map_err(|e| format!("{}: {e}", entry.file_path))?;
+                let rows = file_rows(bytes, leaves)?;
                 if rows.len() as i64 != entry.record_count {
                     return Err(format!(
                         "{} holds {} rows, and its manifest says {}",
@@ -902,6 +949,39 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
                 table.default_spec_id = 1;
                 table.last_partition_id = 1000;
                 reached.push(format!("partition narrowed {to}"));
+            }
+        }
+        // As another engine set it: how the table's files are written.
+        if rng.chance(2) {
+            let mut fake = fake.lock().unwrap();
+            let table = fake.table.as_mut().ok_or("the earlier table was not made")?;
+            let mut set = |key: &str, value: &str| table.properties.insert(format!("write.{key}"), value.to_string());
+            let codec = *rng.pick(&["zstd", "gzip", "snappy", "lz4", "uncompressed", "brotli"]);
+            set("parquet.compression-codec", codec);
+            reached.push(format!("table codec {codec}"));
+            if rng.chance(2) {
+                set("parquet.compression-level", &(1 + rng.below(9)).to_string());
+                reached.push("table codec level".into());
+            }
+            if rng.chance(2) {
+                set("parquet.row-group-size-bytes", rng.pick(&["4096", "65536", "1048576"]));
+                reached.push("table row group size".into());
+            }
+            if rng.chance(3) {
+                set("target-file-size-bytes", rng.pick(&["65536", "1048576"]));
+                reached.push("table target file size".into());
+            }
+            let leaves: Vec<&str> = (earlier.iter())
+                .filter(|(_, kind)| matches!(*kind, "str" | "i64" | "f64" | "bool" | "datetime" | "bytes"))
+                .map(|(name, _)| *name)
+                .collect();
+            if !leaves.is_empty() && rng.chance(2) {
+                let column = *rng.pick(&leaves);
+                set(&format!("parquet.bloom-filter-enabled.column.{column}"), "true");
+                if rng.chance(2) {
+                    set(&format!("parquet.bloom-filter-fpp.column.{column}"), "0.05");
+                }
+                reached.push("table bloom filter".into());
             }
         }
     } else {

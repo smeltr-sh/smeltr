@@ -14,6 +14,9 @@ use crate::core::column::DataType;
 use crate::ops::civil::civil_from_days;
 use crate::plan::topology::Records;
 
+/// A row group's size where a table sets none: Iceberg's default, and Spark's for Delta.
+pub const ROW_GROUP_BYTES: usize = 128 * 1024 * 1024;
+
 /// A primitive column type, as both formats have it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {

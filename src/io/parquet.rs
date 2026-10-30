@@ -521,33 +521,71 @@ impl Sink {
     }
 }
 
+/// How a file's bytes are written: what a destination's config asks, or a table's own properties.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WriteOptions {
+    pub codec: Compression,
+    /// The codec's level, where it takes one (gzip, zstd); its default when `None` or out of its range.
+    pub level: Option<i32>,
+    /// Leaf columns, by their names in the written file, that carry a bloom filter, each with its false-positive
+    /// probability.
+    pub bloom_filters: Vec<(Vec<String>, f64)>,
+}
+
+impl From<Compression> for WriteOptions {
+    fn from(codec: Compression) -> WriteOptions {
+        WriteOptions {
+            codec,
+            level: None,
+            bloom_filters: Vec::new(),
+        }
+    }
+}
+
+impl WriteOptions {
+    fn properties(&self) -> WriterProperties {
+        use parquet::basic::{Compression as Codec, GzipLevel, ZstdLevel};
+        use parquet::schema::types::ColumnPath;
+        let compression = match self.codec {
+            Compression::None => Codec::UNCOMPRESSED,
+            Compression::Gzip => Codec::GZIP(
+                (self.level.and_then(|l| u32::try_from(l).ok()))
+                    .and_then(|l| GzipLevel::try_new(l).ok())
+                    .unwrap_or_default(),
+            ),
+            Compression::Snappy => Codec::SNAPPY,
+            Compression::Lz4 => Codec::LZ4_RAW,
+            Compression::Zstd => Codec::ZSTD(self.level.and_then(|l| ZstdLevel::try_new(l).ok()).unwrap_or_default()),
+        };
+        // Row groups end where `take_row_group` says, not where the writer's own limits fall.
+        let mut props = WriterProperties::builder()
+            .set_compression(compression)
+            .set_max_row_group_row_count(None)
+            .set_max_row_group_bytes(None);
+        for (path, fpp) in &self.bloom_filters {
+            let column = ColumnPath::new(path.clone());
+            props = props
+                .set_column_bloom_filter_enabled(column.clone(), true)
+                .set_column_bloom_filter_fpp(column, *fpp);
+        }
+        props.build()
+    }
+}
+
 impl FileWriter {
-    /// A writer for rows of chunks cut to `schema`, compressed with `codec`.
-    pub fn open(schema: &Schema, codec: Compression) -> FileWriter {
+    /// A writer for rows of chunks cut to `schema`, its bytes written as `options` say.
+    pub fn open(schema: &Schema, options: &WriteOptions) -> FileWriter {
         match &schema.written {
             Some(written) => FileWriter {
                 written: Some(written.clone()),
-                ..FileWriter::on(written.clone(), codec)
+                ..FileWriter::on(written.clone(), options)
             },
-            None => FileWriter::on(schema.arrow.clone(), codec),
+            None => FileWriter::on(schema.arrow.clone(), options),
         }
     }
 
-    fn on(schema: Arc<ArrowSchema>, codec: Compression) -> FileWriter {
-        use parquet::basic::{Compression as Codec, GzipLevel, ZstdLevel};
-        let compression = match codec {
-            Compression::None => Codec::UNCOMPRESSED,
-            Compression::Gzip => Codec::GZIP(GzipLevel::default()),
-            Compression::Snappy => Codec::SNAPPY,
-            Compression::Lz4 => Codec::LZ4_RAW,
-            Compression::Zstd => Codec::ZSTD(ZstdLevel::default()),
-        };
-        // Row groups end where `take_row_group` says, not where the writer's own limits fall.
-        let props = WriterProperties::builder()
-            .set_compression(compression)
-            .set_max_row_group_row_count(None)
-            .set_max_row_group_bytes(None)
-            .build();
+    fn on(schema: Arc<ArrowSchema>, options: &WriteOptions) -> FileWriter {
+        let props = options.properties();
         let sink = Sink::default();
         // Writing to memory fails only on a schema Parquet cannot hold, and `Schema::new` refuses those.
         let writer = ArrowWriter::try_new(sink.clone(), schema, Some(props)).expect("a writable schema");
@@ -632,7 +670,7 @@ pub fn write<'a>(rows: impl IntoIterator<Item = &'a Columns>, codec: Compression
     let Some(first) = rows.peek() else {
         return Vec::new();
     };
-    let mut writer = FileWriter::on(first.chunk.batch.schema(), codec);
+    let mut writer = FileWriter::on(first.chunk.batch.schema(), &codec.into());
     writer.write(rows);
     writer.finish().0
 }
@@ -1057,9 +1095,28 @@ mod tests {
     }
 
     #[test]
+    fn a_file_carries_the_codec_and_the_bloom_filters_asked() {
+        let schema = raw_schema();
+        let options = WriteOptions {
+            codec: Compression::Gzip,
+            level: Some(9),
+            bloom_filters: vec![(vec!["_raw".into()], 0.05), (vec!["nowhere".into()], 0.05)],
+        };
+        let mut w = FileWriter::open(&schema, &options);
+        w.write(&rows(&schema, &["a", "b"]));
+        let (_, metadata) = w.finish();
+        let column = metadata.row_group(0).column(0);
+        assert!(matches!(column.compression(), parquet::basic::Compression::GZIP(_)));
+        assert!(column.bloom_filter_offset().is_some(), "a bloom filter for _raw");
+        let mut plain = FileWriter::open(&schema, &Compression::Gzip.into());
+        plain.write(&rows(&schema, &["a", "b"]));
+        assert_eq!(plain.finish().1.row_group(0).column(0).bloom_filter_offset(), None);
+    }
+
+    #[test]
     fn a_file_streams_out_a_row_group_at_a_time() {
         let schema = raw_schema();
-        let mut w = FileWriter::open(&schema, Compression::Zstd);
+        let mut w = FileWriter::open(&schema, &Compression::Zstd.into());
         assert!(w.take_row_group().is_empty());
 
         let first = rows(&schema, &["a", "b"]);
@@ -1166,7 +1223,7 @@ mod tests {
             "a schema that narrows nothing checks nothing"
         );
 
-        let mut w = FileWriter::open(&narrow, Compression::None);
+        let mut w = FileWriter::open(&narrow, &Compression::None.into());
         w.write([&rows[0]]);
         let (file, _) = w.finish();
         let batch = ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
@@ -1241,7 +1298,7 @@ mod tests {
         let labelled = schema.clone().with_written(Arc::new(ArrowSchema::new(vec![field])));
         let own = rows(&schema, &["a", "b"]);
         assert!(labelled.matches(&own[0]));
-        let mut w = FileWriter::open(&labelled, Compression::None);
+        let mut w = FileWriter::open(&labelled, &Compression::None.into());
         w.write(&own);
         let (file, _) = w.finish();
         let path = std::env::temp_dir().join(format!("smeltr-parquet-{}-ids.parquet", std::process::id()));
@@ -1290,7 +1347,7 @@ mod tests {
             row: 0,
         };
         assert!(labelled.matches(&row));
-        let mut w = FileWriter::open(&labelled, Compression::None);
+        let mut w = FileWriter::open(&labelled, &Compression::None.into());
         w.write([&row]);
         let (file, _) = w.finish();
 
@@ -1367,7 +1424,7 @@ mod tests {
             row: 0,
         };
         assert!(labelled.matches(&row));
-        let mut w = FileWriter::open(&labelled, Compression::None);
+        let mut w = FileWriter::open(&labelled, &Compression::None.into());
         w.write([&row]);
         let (file, _) = w.finish();
 
