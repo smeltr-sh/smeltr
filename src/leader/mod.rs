@@ -430,9 +430,10 @@ async fn heartbeat(
     // reaches the fleet on the next one.
     let checks = state.deploy_checks.clone();
     let store = state.store.clone();
-    let (deployed, entitled, findings) = tokio::task::spawn_blocking(move || {
+    let (deployed, pointer, entitled, findings) = tokio::task::spawn_blocking(move || {
         (
             deployed_groups(&data_dir),
+            git::deployed(&git::repo_path(&data_dir)),
             at_newest(
                 &entitled(&data_dir, &entitlements, &for_group),
                 // Unreadable, a beat entitles no certificate and the next one tries again.
@@ -507,6 +508,7 @@ async fn heartbeat(
 
     Ok(Json(HeartbeatResponse {
         holds,
+        deployed: pointer,
         authority,
         directive,
         captures: captures_for

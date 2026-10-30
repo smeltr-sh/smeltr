@@ -2293,6 +2293,7 @@ pub fn run_worker(mut config: WorkerConfig) {
         registry,
         secrets: Mutex::new(crate::plan::topology::HeldSecrets::default()),
         last_contact: Mutex::new(None),
+        deployed_cue: Mutex::new(None),
         target: Mutex::new(None),
         arrived: Condvar::new(),
         runtime: Mutex::new(None),
@@ -2523,6 +2524,9 @@ struct Supervisor {
     /// When the leader last answered. `None` until it has answered once, which is what gates everything else:
     /// a worker runs nothing until it has checked in, and its clone buys speed rather than independence.
     last_contact: Mutex<Option<Instant>>,
+    /// The commit the leader's last answer said it deploys. `None` when the last beat went unanswered or the leader
+    /// did not say, and then discovery fetches to find out.
+    deployed_cue: Mutex<Option<String>>,
     /// The newest commit discovery has seen. Ordering is by observation and never by commit ancestry, so a
     /// rollback to an older commit is eligible the moment it is seen, like any other newly observed target.
     target: Mutex<Option<Target>>,
@@ -3061,6 +3065,7 @@ impl Supervisor {
                     std::thread::park();
                 }
             }
+            *self.deployed_cue.lock().unwrap() = answered.as_ref().ok().and_then(|resp| resp.deployed.clone());
             match answered {
                 Ok(resp) => {
                     *self.last_contact.lock().unwrap() = Some(Instant::now());
@@ -3637,7 +3642,11 @@ impl Supervisor {
         loop {
             // What the leader deploys is this worker's to follow only once it has checked in. After that this schedule is its own:
             // a heartbeat that fails cancels no discovery, where before they were the same turn of one loop.
-            if self.contacted() {
+            if self.contacted() && self.cue_confirms_fetched() {
+                let mut supervising = self.supervising.lock().unwrap();
+                supervising.attempted_ms = Some(now_ms());
+                supervising.discovered_ms = supervising.attempted_ms;
+            } else if self.contacted() {
                 self.supervising.lock().unwrap().attempted_ms = Some(now_ms());
                 match fetch_deployed(&self.repo_dir, &self.config.leader_url, &self.token, &self.git_roots) {
                     Ok(head) => {
@@ -3678,6 +3687,14 @@ impl Supervisor {
             }
             std::thread::sleep(self.config.heartbeat_interval);
         }
+    }
+
+    /// Whether the leader's last answer names the commit discovery last fetched, so a fetch would learn nothing. A
+    /// fetch is a new connection to the leader, and this is what keeps one off every interval of a fleet that is not
+    /// being deployed to.
+    fn cue_confirms_fetched(&self) -> bool {
+        let cue = self.deployed_cue.lock().unwrap().clone();
+        cue.is_some() && cue == self.supervising.lock().unwrap().desired_commit
     }
 
     /// Record `commit` as the newest thing seen, and wake the deployer. Only a commit that differs from the last
@@ -6164,6 +6181,25 @@ mod tests {
 
     /// The leader repeats a directive until a beat names it taken, so each id is acted on once however many
     /// answers carry it.
+    /// Discovery fetches only to learn something: not while the leader's answer names the commit already fetched,
+    /// and always when the answer names another, names none, or never came.
+    #[test]
+    fn a_fetch_waits_on_a_cue_that_names_something_new() {
+        let supervisor = supervisor_for(temp_dir("deployed-cue"));
+        let cue = |c: Option<&str>| *supervisor.deployed_cue.lock().unwrap() = c.map(str::to_string);
+        assert!(!supervisor.cue_confirms_fetched(), "nothing fetched yet");
+        supervisor.supervising.lock().unwrap().desired_commit = Some("abc".to_string());
+        cue(None);
+        assert!(!supervisor.cue_confirms_fetched(), "no answer");
+        cue(Some("def"));
+        assert!(!supervisor.cue_confirms_fetched(), "the pointer moved");
+        cue(Some("abc"));
+        assert!(
+            supervisor.cue_confirms_fetched(),
+            "the pointer is where the last fetch found it"
+        );
+    }
+
     #[test]
     fn a_restart_is_taken_once_per_request() {
         let supervisor = supervisor_for(temp_dir("restart-once"));
@@ -6207,6 +6243,7 @@ mod tests {
             registry: Arc::new(Metrics::new()),
             secrets: Mutex::new(crate::plan::topology::HeldSecrets::default()),
             last_contact: Mutex::new(None),
+            deployed_cue: Mutex::new(None),
             target: Mutex::new(None),
             arrived: Condvar::new(),
             runtime: Mutex::new(None),

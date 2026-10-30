@@ -757,8 +757,8 @@ fn taken() -> bool {
     true
 }
 
-/// Leader → worker: what to run is `main`, which the worker fetches for itself -- naming a commit would put the
-/// leader between a worker and a ref it may not own.
+/// Leader → worker: what to run is the deployed pointer, which the worker fetches for itself. [`Self::deployed`] only
+/// says when to look.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeartbeatResponse {
@@ -793,6 +793,11 @@ pub struct HeartbeatResponse {
     /// worker stops reading. An absent key is the empty list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub holds: Vec<Hold>,
+    /// The commit the deployed pointer names, so a worker that has already fetched it need not fetch again to learn
+    /// it has not moved. A cue, not an order: what the worker runs is what its fetch returns. Absent before anything
+    /// is deployed, and from a leader too old to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployed: Option<String>,
 }
 
 /// One thing an operator asked of one worker. The id tells a repeat from a new request: a worker acts on each id
@@ -2073,12 +2078,13 @@ mod tests {
         assert!(json.contains(r#""logs":[{"seq":0,"#), "{json}");
     }
 
-    /// The other direction of the same contract. The answer names no commit and no thread: what to run is `main`,
-    /// which the worker fetches for itself.
+    /// The other direction of the same contract. What to run is the deployed pointer, which the worker fetches for
+    /// itself.
     #[test]
     fn a_heartbeat_response_serializes_to_the_wire_spelling() {
         let resp = HeartbeatResponse {
             holds: Vec::new(),
+            deployed: None,
             authority: None,
             captures: Vec::new(),
             secrets: Vec::new(),
@@ -2325,6 +2331,7 @@ mod tests {
         // Through a response, a vector, an Option -- every shape a caller might have in hand.
         let response = HeartbeatResponse {
             holds: Vec::new(),
+            deployed: None,
             authority: None,
             captures: vec![Invited::Readable(Box::new(invitation))],
             secrets: vec![delivery.clone()],
