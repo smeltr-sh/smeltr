@@ -163,6 +163,22 @@ describe('objectChanges', () => {
     ]);
   });
 
+  it("names a route's pipeline at each end, from shared/ for a group's route", () => {
+    const route = (pipeline: string) => ({ id: 'r', source: 's', condition: null, pipeline });
+    const shared = config({ pipelines: [{ id: 'a', name: 'Alpha', steps: [] }] });
+    const before = config({ routes: [route('a')] });
+    const after = config({
+      pipelines: [{ id: 'b', name: 'Beta', steps: [] }],
+      routes: [route('b')],
+    });
+    const [change] = objectChanges([
+      { scope: 'north', before, after, shared: { before: shared, after: config({}) } },
+    ]);
+    expect(change.fields).toEqual([
+      { key: 'pipeline', kind: 'changed', before: 'Alpha', after: 'Beta' },
+    ]);
+  });
+
   it('finds a route that only moved, since routes are tried in order', () => {
     const route = (id: string) => ({ id, source: 's', condition: null, pipeline: 'p' });
     const before = config({ routes: [route('r1'), route('r2'), route('r3')] });
