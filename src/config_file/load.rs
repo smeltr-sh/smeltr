@@ -7088,6 +7088,23 @@ mod tests {
         );
     }
 
+    /// The GUI's Kafka form (`gui-frontend/src/kafka.ts`, `FIELD_LABELS`) shows each reason with its label for every
+    /// field the reason names in backticks; one it has no label for would show as the JSON key.
+    #[test]
+    fn the_gui_labels_every_field_a_reserved_reason_names() {
+        let source = include_str!("../../gui-frontend/src/kafka.ts");
+        let labels = &source[source.find("const FIELD_LABELS").expect("FIELD_LABELS")..];
+        let labels = &labels[..labels.find("]);").expect("the end of FIELD_LABELS")];
+        for (key, why) in RESERVED_KAFKA_PROPS {
+            for field in why.split('`').skip(1).step_by(2) {
+                assert!(
+                    labels.contains(&format!("['{field}', '")),
+                    "{key} names `{field}`, which the form has no label for"
+                );
+            }
+        }
+    }
+
     /// Every property smeltr sets on a client is reserved.
     #[test]
     fn properties_smeltr_sets_itself_are_reserved() {
