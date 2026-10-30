@@ -123,6 +123,11 @@ const COVERED: &[&str] = &[
     "row tracking suspended",
     "row ids above the high-water mark",
     "other row ids",
+    "type widening enabled",
+    "type widening disabled",
+    "widened",
+    "type changes kept",
+    "other widen",
     "orc",
     "fault Lost",
     "fault Dropped",
@@ -377,7 +382,7 @@ fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bool
             reach("mapping none");
         }
         1 | 2 => {
-            let mapped = schema::table_schema(record, None, Mapping::Name { max_column_id: 0 }).unwrap();
+            let mapped = schema::table_schema(record, None, Mapping::Name { max_column_id: 0 }, None).unwrap();
             let Mapping::Name { max_column_id } = mapped.mapping else {
                 unreachable!("a mapped schema counts its ids")
             };
@@ -470,7 +475,12 @@ fn narrow(rng: &mut Rng, metadata: &mut Value, record: &DataType) {
         let Some((_, t)) = fields.iter().find(|(name, _)| column["name"] == name.as_str()) else {
             continue;
         };
-        let to = match (column["type"].as_str(), t) {
+        // An array's element narrows as a column does.
+        let (slot, t, within) = match (column["type"].is_object(), t) {
+            (true, DataType::Array(element)) => (&mut column["type"]["elementType"], &**element, Some("element")),
+            _ => (&mut column["type"], t, None),
+        };
+        let to = match (slot.as_str(), t) {
             (Some("long"), DataType::I64) => *rng.pick(&["byte", "short", "integer"]),
             (Some("double"), DataType::F64) => "float",
             (Some("timestamp"), DataType::DateTime) => *rng.pick(&["date", "timestamp_ntz"]),
@@ -479,8 +489,22 @@ fn narrow(rng: &mut Rng, metadata: &mut Value, record: &DataType) {
         if rng.chance(4) {
             continue;
         }
-        column["type"] = json!(to);
+        *slot = json!(to);
         reach(format!("narrowed {to}"));
+        // An earlier change, as a table that widened the column once already records it.
+        let from = match to {
+            "short" => Some("byte"),
+            "integer" => Some("short"),
+            "timestamp_ntz" => Some("date"),
+            _ => None,
+        };
+        if let Some(from) = from.filter(|_| rng.chance(2)) {
+            let mut change = json!({"fromType": from, "toType": to});
+            if let Some(within) = within {
+                change["fieldPath"] = json!(within);
+            }
+            column["metadata"]["delta.typeChanges"] = json!([change]);
+        }
     }
     metadata["schemaString"] = json!(schema.to_string());
 }
@@ -508,6 +532,37 @@ fn clustering(rng: &mut Rng, metadata: &Value) -> Option<(Value, Vec<String>)> {
     let domain = json!({"domainMetadata": {"domain": "delta.clustering", "configuration": configuration.to_string(),
                                            "removed": false}});
     Some((domain, chosen))
+}
+
+/// Whether the protocol's type widening allows a column of type `from` to become `to`.
+fn widens_to(from: &str, to: &str) -> bool {
+    let integers = ["byte", "short", "integer", "long"];
+    let rank = |t: &str| integers.iter().position(|i| *i == t);
+    match (rank(from), rank(to)) {
+        (Some(from), Some(to)) => from < to,
+        _ => matches!(
+            (from, to),
+            ("float", "double") | ("byte" | "short" | "integer", "double") | ("date", "timestamp_ntz")
+        ),
+    }
+}
+
+/// The type another writer widens a column of type `p` to.
+fn widened(p: &str) -> Option<&'static str> {
+    match p {
+        "byte" | "short" | "integer" => Some("long"),
+        "float" => Some("double"),
+        "date" => Some("timestamp_ntz"),
+        _ => None,
+    }
+}
+
+/// The type changes of `field`, a field of a schema's JSON.
+fn type_changes(field: &Value) -> Vec<Value> {
+    field["metadata"]["delta.typeChanges"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// The domain that holds a row-tracking table's highest row id, `high`.
@@ -539,8 +594,9 @@ fn narrow_text(kind: &Kind, text: &str) -> bool {
         Kind::Short => text.parse::<i16>().is_ok(),
         Kind::Int => text.parse::<i32>().is_ok(),
         Kind::Float => text.parse::<f32>().is_ok(),
-        // The protocol's form of a time without zone: a space before the time, and no zone.
-        Kind::Timestamp => text.as_bytes().get(10) == Some(&b' ') && !text.ends_with('Z'),
+        // The protocol's form of a time without zone: a space before the time, and no zone. A year past 9999 takes
+        // more digits and a sign.
+        Kind::Timestamp => text.contains(' ') && !text.contains('T') && !text.ends_with('Z'),
         _ => return true,
     };
     if fits {
@@ -856,11 +912,15 @@ impl Run {
                 refused |= configuration(rng, m, &earlier);
             }
         }
-        if !self.rng.chance(3) {
-            for action in &mut actions {
-                if let Some(m) = action.get_mut("metaData") {
-                    narrow(&mut self.rng, m, &earlier);
-                }
+        // A table of writer features knows type widening more often than the protocol draw alone gives, so the seeds
+        // reach both a table that widens and one that does not.
+        for action in &mut actions {
+            let features = action.get_mut("protocol").and_then(|p| p.get_mut("writerFeatures"));
+            if let Some(features) = features.and_then(Value::as_array_mut)
+                && !features.contains(&json!("typeWidening"))
+                && !self.rng.chance(4)
+            {
+                features.push(json!("typeWidening"));
             }
         }
         let features: Vec<Value> = (actions.iter())
@@ -870,6 +930,21 @@ impl Run {
             .iter_mut()
             .find_map(|a| a.get_mut("metaData"))
             .expect("a create holds metaData");
+        // A table that knows type widening is narrowed more often: the writer must widen it if it enables widening,
+        // and leave it as it is if not.
+        let knows = features.contains(&json!("typeWidening"));
+        let widening = knows && self.rng.chance(2);
+        if knows {
+            metadata["configuration"]["delta.enableTypeWidening"] = json!(widening.to_string());
+            reach(if widening {
+                "type widening enabled"
+            } else {
+                "type widening disabled"
+            });
+        }
+        if knows || !self.rng.chance(3) {
+            narrow(&mut self.rng, metadata, &earlier);
+        }
         if features.contains(&json!("rowTracking")) {
             match self.rng.below(3) {
                 0 => {}
@@ -1156,6 +1231,14 @@ impl Run {
         let mut schema = StructType::parse(&metadata.schema_string)?;
         let rng = &mut self.rng;
         let mut lines = vec![json!({"commitInfo": {"operation": "WRITE", "engineInfo": OTHER}})];
+        // A column another writer may widen: one not partitioning a table that knows type widening.
+        let knows = (snapshot.protocol.writer_features.iter().flatten()).any(|f| f == "typeWidening");
+        let widenable = schema.fields.iter().position(|f| {
+            let schema::Type::Primitive(p) = &f.data_type else {
+                return false;
+            };
+            knows && !metadata.partition_columns.contains(&f.name) && widened(p).is_some()
+        });
         match rng.below(12) {
             0..=4 => {
                 reach("other add");
@@ -1191,7 +1274,8 @@ impl Run {
                 reach("other add column");
                 let mut field = schema::StructField {
                     name: format!("other{}", rng.below(1000)),
-                    data_type: schema::Type::Primitive("long".into()),
+                    // Now and then narrower, for a later writer to widen.
+                    data_type: schema::Type::Primitive((*rng.pick(&["long", "integer"])).into()),
                     nullable: true,
                     metadata: Map::new(),
                 };
@@ -1243,6 +1327,20 @@ impl Run {
             10 => {
                 reach("other partitioning");
                 metadata.partition_columns.reverse();
+                lines.push(json!({"metaData": metadata}));
+            }
+            11 if widenable.is_some() => {
+                reach("other widen");
+                let field = &mut schema.fields[widenable.expect("checked above")];
+                let schema::Type::Primitive(from) = &field.data_type else {
+                    unreachable!("a widenable column is primitive")
+                };
+                let to = widened(from).expect("a widenable column widens");
+                let change = json!({"fromType": from, "toType": to});
+                let changes = field.metadata.entry("delta.typeChanges").or_insert_with(|| json!([]));
+                changes.as_array_mut().expect("type changes are a list").push(change);
+                field.data_type = schema::Type::Primitive(to.into());
+                metadata.schema_string = schema.to_json();
                 lines.push(json!({"metaData": metadata}));
             }
             _ => {
@@ -1431,6 +1529,79 @@ impl Run {
         Ok(())
     }
 
+    /// Each schema this writer commits keeps every column's earlier type changes, and changes a column's type only
+    /// where the table lets it widen: to a type the protocol allows, recorded after the earlier changes.
+    fn check_type_changes(&self) -> Result<(), String> {
+        let (mut protocol, mut metadata) = (Value::Null, Value::Null);
+        for (version, bytes) in &self.history {
+            let actions: Vec<Value> = (std::str::from_utf8(bytes).unwrap().lines())
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            let ours = actions.iter().any(|a| a["commitInfo"]["engineInfo"] == "smeltr");
+            let changed = actions.iter().find_map(|a| a.get("metaData"));
+            if let (true, Some(changed), Some(before)) = (ours, changed, metadata["schemaString"].as_str()) {
+                let fields = |schema: &str| {
+                    let schema: Value = serde_json::from_str(schema).unwrap();
+                    schema["fields"].as_array().cloned().unwrap_or_default()
+                };
+                let widens = (protocol["writerFeatures"].as_array())
+                    .is_some_and(|f| f.contains(&json!("typeWidening")))
+                    && metadata["configuration"]["delta.enableTypeWidening"] == "true";
+                let after = fields(changed["schemaString"].as_str().unwrap());
+                for old in fields(before) {
+                    let Some(new) = after.iter().find(|f| f["name"] == old["name"]) else {
+                        continue;
+                    };
+                    let name = &old["name"];
+                    let (was, kept) = (type_changes(&old), type_changes(new));
+                    if !kept.starts_with(&was) {
+                        return Err(format!("commit {version} loses {name}'s type changes {was:?}"));
+                    }
+                    if !was.is_empty() {
+                        reach("type changes kept");
+                    }
+                    let (from, to, within) = match (&old["type"], &new["type"]) {
+                        (from, to) if from == to && kept == was => continue,
+                        (from, to) if from == to => {
+                            return Err(format!(
+                                "commit {version} records type changes {kept:?} of {name}, still {to}"
+                            ));
+                        }
+                        (Value::String(from), Value::String(to)) => (from.as_str(), to.as_str(), None),
+                        (from, to) => match (from["elementType"].as_str(), to["elementType"].as_str()) {
+                            (Some(from), Some(to)) if from != to => (from, to, Some("element")),
+                            _ => return Err(format!("commit {version} changes {name} from {from} to {to}")),
+                        },
+                    };
+                    let partition = (metadata["partitionColumns"].as_array()).is_some_and(|p| p.contains(name));
+                    if !widens || partition || !widens_to(from, to) {
+                        return Err(format!("commit {version} changes {name} from {from} to {to}"));
+                    }
+                    let mut change = json!({"fromType": from, "toType": to});
+                    if let Some(within) = within {
+                        change["fieldPath"] = json!(within);
+                    }
+                    if kept[was.len()..] != [change.clone()] {
+                        return Err(format!(
+                            "commit {version} widens {name}, recording {:?}, not {change}",
+                            &kept[was.len()..]
+                        ));
+                    }
+                    reach("widened");
+                }
+            }
+            for action in &actions {
+                if let Some(p) = action.get("protocol") {
+                    protocol = p.clone();
+                }
+                if let Some(m) = action.get("metaData") {
+                    metadata = m.clone();
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The properties of the log as the run left it.
     fn finish(&mut self) -> Result<(), String> {
         let latest = self.latest();
@@ -1457,6 +1628,7 @@ impl Run {
             ));
         }
         self.check_row_ids()?;
+        self.check_type_changes()?;
         let replayed = self.replay(latest)?;
         let loaded = Replay {
             protocol: Some(serde_json::to_value(&snapshot.protocol).unwrap()),
