@@ -23,8 +23,8 @@
   };
 
   const LABELS: Record<SchemaStart, string> = {
-    import: 'Import',
-    jsonSchema: 'JSON Schema',
+    import: 'schema imported from a file',
+    jsonSchema: 'schema from JSON Schema',
     empty: 'empty',
   };
 

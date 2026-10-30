@@ -34,6 +34,7 @@
     kinds?: CatalogKind<K>[];
     /** A new object of a type, clear of every id in `taken`. */
     blank: (type: T, taken: string[]) => O;
+    /** A type, in the title as `new <label> <noun>`. A label that names the noun itself is the title alone. */
     typeLabel: (type: T) => string;
     /** Whether a draft with a good id can be added. */
     ready?: (draft: O) => boolean;
@@ -55,6 +56,8 @@
     }
   });
 
+  const heading = (label: string) => (label.includes(noun) ? label : `${label} ${noun}`);
+
   async function add() {
     if (!draft || busy || idProblem(draft.id, unavailable) || !ready(draft)) return;
     busy = true;
@@ -70,7 +73,7 @@
 
 <Dialog
   {open}
-  title={draft ? `new ${typeLabel(draft.type)} ${noun}` : `add ${noun}`}
+  title={draft ? `new ${heading(typeLabel(draft.type))}` : `add ${noun}`}
   wide
   {oncancel}
   onback={draft ? () => (draft = null) : kind ? () => (kind = null) : undefined}
