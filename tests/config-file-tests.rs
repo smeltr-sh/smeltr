@@ -1171,22 +1171,22 @@ fn an_answer_a_delivery_kind_cannot_carry_out_is_refused() {
         (
             "Unmatched",
             r#""ignore""#,
-            "the group answers Unmatched with ignore, but a Unmatched row has no route",
+            "the group answers Unmatched with ignore, but an Unmatched row has no route",
         ),
         (
             "Unmatched",
             r#""tag""#,
-            "the group answers Unmatched with tag, but a Unmatched row has no route",
+            "the group answers Unmatched with tag, but an Unmatched row has no route",
         ),
         (
             "Unprocessable",
             r#""ignore""#,
-            "answers Unprocessable with ignore, but a Unprocessable row has no record",
+            "answers Unprocessable with ignore, but an Unprocessable row has no record",
         ),
         (
             "Unprocessable",
             r#""tag""#,
-            "answers Unprocessable with tag, but a Unprocessable row has no record",
+            "answers Unprocessable with tag, but an Unprocessable row has no record",
         ),
         (
             "Refused",
@@ -1215,6 +1215,15 @@ fn an_answer_a_delivery_kind_cannot_carry_out_is_refused() {
     let err = load_str(&own).expect_err("a destination tagging").to_string();
     assert!(
         err.contains(r#"destination "main" answers Refused with tag, but a Refused row has no destination"#),
+        "{err}"
+    );
+
+    // A route is named as the Routes page names it, not by its minted id.
+    let err = load_str(&cfg_with_route(r#","exceptions":{"kinds":{"Unmatched":"tag"}}"#))
+        .expect_err("a route tagging")
+        .to_string();
+    assert!(
+        err.contains("route s \u{2192} p answers Unmatched with tag, but an Unmatched row has no route"),
         "{err}"
     );
 
@@ -1274,7 +1283,7 @@ fn a_deliver_condition_is_compiled_against_the_pipelines_output() {
     let Err(errs) = compile(EMPTY_PIPELINE, "nosuch > 3") else {
         panic!("an unknown field must not compile")
     };
-    assert!(errs[0].message.contains("deliver rule"), "{}", errs[0].message);
+    assert_eq!((errs[0].route, errs[0].rule), (Some(0), Some(0)), "{}", errs[0].message);
     let Err(errs) = compile(sets_severity, "severity") else {
         panic!("a non-Bool must not compile")
     };

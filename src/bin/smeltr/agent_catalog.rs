@@ -1,7 +1,8 @@
 //! The routes the AI agent can call, as its system prompt describes them (`leader::agent`).
 //!
 //! Every gated route is here or in [`LEFT_OUT`], which a test holds to the router. What is left out is what an agent
-//! cannot send as a JSON request, or what is the person's own: signing in and out, and their conversations.
+//! cannot send as a JSON request; what is the person's own (signing in and out, their conversations); and what
+//! answers a key, which only the person is shown.
 
 use smeltr::leader::agent::Route;
 
@@ -545,32 +546,38 @@ pub const CATALOG: &[Route] = &[
     // -- accounts and roles --
     Route {
         method: "GET",
-        path: "/api/users",
-        what: "Every account with its roles, as `users`. No query.",
+        path: "/api/accounts",
+        what: "Every account, however it signs in (authSource local, oidc or key), with its roles and, for a key account, its keys not revoked, expired ones too, each with when it expires, never a key itself, as `accounts`. No query.",
         body: "",
     },
     Route {
         method: "POST",
-        path: "/api/users",
-        what: "Create a local administrator; returns a one-time temporary password. No query.",
-        body: "{ username: string, displayName: string }",
+        path: "/api/accounts",
+        what: "Create a local account, returning a one-time temporary password, or an enabled key account holding no key yet. Each holds the roles it is given; the administrator role holds everything. No query.",
+        body: "{ authSource: 'local', username: string, displayName: string, roles?: string[] } | { authSource: 'key', displayName: string, roles?: string[] }",
     },
     Route {
         method: "PATCH",
-        path: "/api/users/:id",
-        what: "Change one account's display name or enabled state, one field per request. No query.",
-        body: "{ displayName?: string, enabled?: boolean } (exactly one)",
+        path: "/api/accounts/:id",
+        what: "Change one account's display name or enabled state, or a local or key account's roles, one field per request. Disabling an account revokes every key it holds. No query.",
+        body: "{ displayName?: string, enabled?: boolean, roles?: string[] } (exactly one)",
     },
     Route {
         method: "POST",
-        path: "/api/users/:id/reset-password",
-        what: "Give an account a new temporary password (returned) and end its sessions. No query.",
+        path: "/api/accounts/:id/reset-password",
+        what: "Give a local account a new temporary password (returned) and end its sessions. No query.",
         body: "",
     },
     Route {
         method: "POST",
-        path: "/api/users/:id/revoke-sessions",
+        path: "/api/accounts/:id/revoke-sessions",
         what: "End every session an account holds; answers { ended }. No query.",
+        body: "",
+    },
+    Route {
+        method: "DELETE",
+        path: "/api/accounts/:id/keys/:key",
+        what: "Revoke one of a key account's keys. No query.",
         body: "",
     },
     Route {
@@ -600,19 +607,19 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/roles",
-        what: "Every role by name, as `roles`. No query.",
+        what: "Every role by name, as `roles`, each with the provider groups that give it. The administrator role is built in. No query.",
         body: "",
     },
     Route {
         method: "PUT",
         path: "/api/roles/:name",
-        what: "Create a role or replace it whole. No query.",
-        body: "{ administrator?: boolean, areas?: { [area]: 'viewer'|'editor'|'deployer' } }",
+        what: "Create a role or replace it whole. The administrator role holds everything, so only its groups can be changed. No query.",
+        body: "{ groups?: string[], areas?: { [area]: 'viewer'|'editor'|'deployer' } }",
     },
     Route {
         method: "DELETE",
         path: "/api/roles/:name",
-        what: "Delete a role. No query.",
+        what: "Delete a role. The administrator role is built in and cannot be deleted. No query.",
         body: "",
     },
     // -- settings --
@@ -856,6 +863,7 @@ pub const LEFT_OUT: &[(&str, &str)] = &[
     ("POST", "/api/agent/conversations/:id/context"),
     ("POST", "/api/areas/:area/lookups/upload"),
     ("PUT", "/api/me/agent-permissions"),
+    ("POST", "/api/accounts/:id/keys"),
 ];
 
 #[cfg(test)]

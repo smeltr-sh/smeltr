@@ -283,8 +283,8 @@ the ones before it:
 | **editor**   | change it on a branch, and capture, preview and read its samples |
 | **deployer** | approve and deploy a change to it                                |
 
-A role is one group the provider names and the level it gives in each
-area. Holding several roles holds the highest level any of them gives.
+A role is the level it gives in each area, and the provider groups that
+give it. Holding several roles holds the highest level any of them gives.
 Holding any area reads `shared`, since a group is read merged with it.
 
 **P2 — Nothing to set on an object.** An object is in the area it was
@@ -295,9 +295,11 @@ asks nothing about access.
 `shared` is judged as `shared`, though every group runs it, so a
 `shared` deployer can change what every group runs.
 
-**P4 — A full administrator holds everything.** A local account always
-is, and so is anyone holding a role marked administrator, so one person
-can run the whole system alone. Only administrators reach Admin.
+**P4 — A full administrator holds everything.** Anyone holding the
+built-in administrator role is one, given it by an administrator or by a
+provider group, so one person can run the whole system alone. Only
+administrators reach Admin, and at least one local administrator
+remains.
 
 **P5 — Records are editor work.** Capture, preview and samples show
 production records, so they take editor in the area, as changing its
@@ -307,14 +309,16 @@ configuration does.
 status pages show a person only the areas they hold; a change reaching an
 area they do not hold is not shown to them at all.
 
-**P7 — Roles follow the provider.** What an account holds comes from the
-groups its provider last named, and changes within minutes of a change there. A change to a
-role reaches everyone holding it on their next request.
+**P7 — Roles follow the provider, or the administrator.** What an OIDC
+account holds comes from the groups its provider last named, and changes
+within minutes of a change there. What a local or key account holds is the
+roles an administrator gave it. A change to a role reaches everyone holding
+it on their next request.
 
 **P8 — Agent permissions.** A person chooses what their agent may use
-when it acts for them at their prompt: everything they hold, or up to a
-level in each area. The agent holds the lower of that and what the person
-holds, and no agent changes its own permissions.
+when it acts for them at their prompt: up to a level in each area, and, for
+an administrator, the administrator role. The agent holds the lower of that
+and what the person holds, and no agent changes its own permissions.
 
 **P9 — Talk to my agent.** A person asks their agent, on a page of their
 own, to look into or change something for them. They see each request it

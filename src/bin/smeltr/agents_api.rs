@@ -17,8 +17,8 @@ use smeltr::leader::model::{self, Provider, Settings};
 use smeltr::leader::store::Actor;
 use smeltr::leader::{accounts, blocking};
 
+use crate::accounts_api::store_call;
 use crate::gate::{Auth, refuse};
-use crate::users_api::store_call;
 
 /// Why an agent is refused a change to what it may do: only a person sets that.
 const OWN_PERMISSIONS: &str = "an agent cannot change its own permissions";
@@ -55,8 +55,10 @@ pub async fn put_permissions(
     if let Some(refused) = refused_while_off(&auth).await {
         return refused;
     }
-    if let AgentPermissions::Upto { areas, .. } = &permissions
-        && let Some(area) = areas.keys().find(|a| *a != SHARED_DIR && group_subtree(a).is_err())
+    if let Some(area) = permissions
+        .areas
+        .keys()
+        .find(|a| *a != SHARED_DIR && group_subtree(a).is_err())
     {
         return refuse(
             StatusCode::UNPROCESSABLE_ENTITY,

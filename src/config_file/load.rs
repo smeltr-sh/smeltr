@@ -173,8 +173,14 @@ impl<'a> ItemErrors<'a> {
         }
     }
 
-    /// A problem with the item as a whole, or after `at`, with one setting.
+    /// A problem with the item as a whole, or after `at`, with one setting. `message` names the item, as the error
+    /// bar shows it without its id.
     fn push(&mut self, message: String) {
+        debug_assert!(
+            message.contains(&self.item.id),
+            "{message:?} does not name {}",
+            self.item.id
+        );
         self.errors.push(ValidationError {
             item: Some(self.item.clone()),
             field: self.field,
@@ -354,35 +360,12 @@ pub(crate) fn from_file_config_at(
     }));
     errors.extend(pipeline_errors);
 
-    // Only once every answer resolves.
-    if errors.is_empty() {
-        errors.extend(impossible_answers("the group", &group, None, Layer::Group));
-        for r in &routes {
-            let what = format!("route {:?}", r.id);
-            errors.extend(impossible_answers(&what, &r.on_exception, Some(&group), Layer::Route));
-        }
-        for d in &destinations {
-            let mut own = OnException::default();
-            own.answers[ExceptionKind::Refused.index()] = d.on_reject.clone();
-            let what = format!("destination {:?}", d.name);
-            errors.extend(impossible_answers(&what, &own, Some(&group), Layer::Destination));
-            if d.on_reject.targets().contains(&d.id) {
-                errors.push(format!(
-                    "destination {:?} delivers what it refuses to itself, where it would be refused again; give it \
-                     its own answer to Refused",
-                    d.name
-                ));
-            }
-        }
-        errors.extend(refusal_cycles(&destinations));
-    }
-
     if !errors.is_empty() {
         return Err(LoadError::Validation(errors.into_iter().map(Into::into).collect()));
     }
 
     let (named_secrets, named_certificates) = named_by(&file);
-    Ok(super::LoadedSystem {
+    let system = super::LoadedSystem {
         topology: TopologyConfig {
             named_secrets,
             named_certificates,
@@ -416,7 +399,41 @@ pub(crate) fn from_file_config_at(
             .filter(|(_, a)| !a.is_empty())
             .collect(),
         compiled: None,
-    })
+    };
+    // Only once every answer resolves.
+    let errors = impossible_answers_of(&system);
+    if errors.is_empty() {
+        Ok(system)
+    } else {
+        Err(LoadError::Validation(errors.into_iter().map(Into::into).collect()))
+    }
+}
+
+/// Every answer `system` gives that its kind's row cannot carry out, and every refusal that leads back to where it
+/// started.
+fn impossible_answers_of(system: &super::LoadedSystem) -> Vec<String> {
+    let topology = &system.topology;
+    let group = &topology.on_exception;
+    let mut errors = impossible_answers("the group", group, None, Layer::Group);
+    for (at, r) in topology.routes.iter().enumerate() {
+        let what = format!("route {}", system.route_name(at));
+        errors.extend(impossible_answers(&what, &r.on_exception, Some(group), Layer::Route));
+    }
+    for d in &topology.destinations {
+        let mut own = OnException::default();
+        own.answers[ExceptionKind::Refused.index()] = d.on_reject.clone();
+        let what = format!("destination {:?}", d.name);
+        errors.extend(impossible_answers(&what, &own, Some(group), Layer::Destination));
+        if d.on_reject.targets().contains(&d.id) {
+            errors.push(format!(
+                "destination {:?} delivers what it refuses to itself, where it would be refused again; give it \
+                 its own answer to Refused",
+                d.name
+            ));
+        }
+    }
+    errors.extend(refusal_cycles(&topology.destinations));
+    errors
 }
 
 /// Each object's schemas, in the file's order.
@@ -438,7 +455,7 @@ fn resolve_schemas(file: &FileConfig, attributed: &mut Vec<ValidationError>) -> 
             Ok(schema) => {
                 declared.insert(&dto.id, Arc::new(schema));
             }
-            Err(e) => errors.at("fields").push(e),
+            Err(e) => errors.at("fields").push(format!("schema {}'s fields: {e}", dto.id)),
         }
     }
     // `names` is what the object does with a schema: "produces" or "accepts".
@@ -549,16 +566,13 @@ fn impossible_answers(
             continue;
         }
         let lacks = match (*kind, answer) {
-            ("Unmatched", Answer::Ignore | Answer::Tag) => Some("route"),
-            ("Unprocessable", Answer::Ignore | Answer::Tag) => Some("record"),
-            ("Refused", Answer::Ignore | Answer::Tag) => Some("destination"),
+            ("Unmatched", Answer::Ignore | Answer::Tag) => Some("an Unmatched row has no route"),
+            ("Unprocessable", Answer::Ignore | Answer::Tag) => Some("an Unprocessable row has no record"),
+            ("Refused", Answer::Ignore | Answer::Tag) => Some("a Refused row has no destination"),
             _ => None,
         };
         if let Some(lacks) = lacks {
-            errors.push(format!(
-                "{what} answers {kind} with {}, but a {kind} row has no {lacks}",
-                answer.label()
-            ));
+            errors.push(format!("{what} answers {kind} with {}, but {lacks}", answer.label()));
         }
     }
     errors

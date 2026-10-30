@@ -253,7 +253,7 @@ pub fn destination(
             let format: Arc<dyn FileFormat> = match config.format {
                 ObjectFormat::Avro => Arc::new(AvroFormat::new(schemas, config.compression)?),
                 ObjectFormat::Csv => Arc::new(CsvFormat::new(schemas, config.compression)),
-                _ => Arc::new(ParquetFormat::new(schemas, config.compression)),
+                _ => Arc::new(ParquetFormat::new(schemas, config.compression.into())),
             };
             (format, Some(part_of))
         }
@@ -267,6 +267,7 @@ pub fn destination(
         }),
         commit_interval: config.file_interval,
         max_file_bytes: config.max_object_bytes,
+        take_bytes: crate::io::files::TAKE_BYTES,
         buffer_bytes: config.buffer_bytes,
         stall_after: config.stall_after,
         attributes: attributes(

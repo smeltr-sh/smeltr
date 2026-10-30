@@ -13,6 +13,8 @@ import {
   offCard,
   ruleName,
   pills,
+  routeName,
+  bundleRoutes,
   plain,
   pushApart,
   removeDest,
@@ -180,5 +182,36 @@ describe('the flow card model', () => {
     expect(pushApart([300, 300, 300], 100, 10, 0, 1000)).toEqual([190, 300, 410]);
     // Pulled back inside the row.
     expect(pushApart([0, 0], 100, 10, 0, 1000)).toEqual([50, 160]);
+  });
+});
+
+// The same routes as the server's `a_route_is_named_by_its_source_and_pipeline_and_numbered_among_its_twins`.
+describe("a route's name", () => {
+  const routes = [
+    { id: 'a', source: 'k', pipeline: 'p', condition: 'true' },
+    { id: 'b', source: 'k', pipeline: 'q-1f', condition: null },
+    { id: 'c', source: 'j', pipeline: 'p', condition: null },
+    { id: 'd', source: 'k', pipeline: 'p', condition: null },
+  ];
+  const pipelines = [
+    { id: 'p', name: 'p', steps: [] },
+    { id: 'q-1f', name: 'Enrich', steps: [] },
+  ];
+
+  it('is its source and pipeline, numbered among the routes that share both', () => {
+    const names = routes.map((_, i) =>
+      routeName(routes, i, (id) => (id === 'q-1f' ? 'Enrich' : id)),
+    );
+    expect(names).toEqual(['k \u2192 p (1)', 'k \u2192 Enrich', 'j \u2192 p', 'k \u2192 p (2)']);
+  });
+
+  it("counts a group's routes after the shared ones it runs first", () => {
+    const shared = { routes: [routes[0]], pipelines };
+    const named = bundleRoutes({ routes: [routes[3], routes[1]], pipelines: [] }, shared);
+    expect(named.map((r) => r.name)).toEqual([
+      'k \u2192 p (1)',
+      'k \u2192 p (2)',
+      'k \u2192 Enrich',
+    ]);
   });
 });

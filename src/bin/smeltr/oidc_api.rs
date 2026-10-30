@@ -30,7 +30,7 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use smeltr::leader::access::Role;
+use smeltr::leader::access::{Role, given_by};
 use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::leader::oidc::{self, Jwks, Provider, RefreshFailure};
 use smeltr::leader::sessions::{Due, Grant};
@@ -558,8 +558,8 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
         }
     };
     if !admitted(&roles, &claims.groups) {
-        // The groups as the provider sent them: the one place an administrator sees the names a role must match
-        // before anybody has been let in.
+        // The groups as the provider sent them: the one place an administrator sees the names a role's groups must
+        // match before anybody has been let in.
         tracing::warn!(
             target: "leader.sign_in_refused",
             subject = %bounded(&claims.subject),
@@ -619,7 +619,7 @@ pub async fn callback(State(auth): State<Auth>, headers: HeaderMap, Query(query)
     }
     accounts::record(
         auth.store.as_ref(),
-        &Actor::person(&user.id, &user.display_name),
+        &Actor::account(&user.id, &user.display_name),
         "login",
         &user.id,
         "ok",
@@ -764,10 +764,10 @@ fn end_session(auth: &Auth, d: &Due, why: &str) {
     }
 }
 
-/// Whether `groups` lets a person in: one of them is a role's. A person no role names would hold nothing, and a
+/// Whether `groups` lets a person in: one of them gives a role. A person given no role would hold nothing, and a
 /// provider anyone can sign up to would otherwise let every one of its accounts in.
 fn admitted(roles: &[Role], groups: &[String]) -> bool {
-    roles.iter().any(|role| groups.contains(&role.name))
+    !given_by(roles, groups).is_empty()
 }
 
 /// A name the provider sent, made one a git author line can hold: what git cannot hold becomes a space, as
@@ -1031,7 +1031,7 @@ mod tests {
     fn role(name: &str) -> Role {
         Role {
             name: name.to_string(),
-            administrator: false,
+            groups: vec![name.to_string()],
             areas: Default::default(),
         }
     }
@@ -1049,6 +1049,16 @@ mod tests {
         assert!(admitted(&roles, &["other".to_string(), "smeltr-apps".to_string()]));
         assert!(!admitted(&roles, &["smeltr-admins".to_string()]));
         assert!(!admitted(&roles, &[]));
+    }
+
+    /// A role is given by its groups, never by its name: a role with no group admits nobody.
+    #[test]
+    fn a_roles_name_admits_nobody() {
+        let mut admins = role("administrator");
+        admins.groups.clear();
+        assert!(!admitted(&[admins.clone()], &["administrator".to_string()]));
+        admins.groups.push("smeltr-admins".to_string());
+        assert!(admitted(&[admins], &["smeltr-admins".to_string()]));
     }
 
     /// A newline would end a commit's author line, and angle brackets would end its name. Both become a space, so

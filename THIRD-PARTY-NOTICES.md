@@ -257,7 +257,7 @@ license is https://mozilla.org/MPL/2.0/.
 
 ## Rust crates
 
-- Apache License 2.0 (391)
+- Apache License 2.0 (394)
 - MIT License (90)
 - Unicode License v3 (19)
 - BSD 3-Clause "New" or "Revised" License (13)
@@ -6723,6 +6723,7 @@ Used by:
 - [arrayvec 0.7.8](https://github.com/bluss/arrayvec)
 - [asn1-rs-derive 0.6.0](https://github.com/rusticata/asn1-rs.git)
 - [asn1-rs 0.7.2](https://github.com/rusticata/asn1-rs.git)
+- [async-compression 0.4.51](https://github.com/Nullus157/async-compression)
 - [atomic-waker 1.1.2](https://github.com/smol-rs/atomic-waker)
 - [base64 0.22.1](https://github.com/marshallpierce/rust-base64)
 - [base64 0.23.1](https://github.com/marshallpierce/rust-base64)
@@ -6730,6 +6731,8 @@ Used by:
 - [bstr 1.13.1](https://github.com/BurntSushi/bstr)
 - [btoi 0.5.0](https://github.com/niklasf/rust-btoi)
 - [cfg-if 1.0.5](https://github.com/rust-lang/cfg-if)
+- [compression-codecs 0.4.46](https://github.com/Nullus157/async-compression)
+- [compression-core 0.4.34](https://github.com/Nullus157/async-compression)
 - [critical-section 1.2.0](https://github.com/rust-embedded/critical-section)
 - [crossbeam-channel 0.5.17](https://github.com/crossbeam-rs/crossbeam)
 - [crossbeam-deque 0.8.8](https://github.com/crossbeam-rs/crossbeam)

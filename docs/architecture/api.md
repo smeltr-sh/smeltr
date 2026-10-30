@@ -3,7 +3,7 @@
 The leader answers three families of HTTP routes, all under `/api/` but the
 ACME challenge, told apart by the credential a caller holds. Workers call under `/api/worker/` with
 the token they enrolled for. People, through the GUI and their AI agent, and
-integrations call the rest of `/api/` as operators. A few routes are open,
+scripts with a key call the rest of `/api/` as operators. A few routes are open,
 because they are how a caller gets a credential in the first place. The gate
 judges an operator request from its method and path alone, against one table
 of what each route needs, before any handler reads it. Every JSON answer of an
@@ -14,7 +14,7 @@ succeeded. What the API answers never holds a secret's value.
 flowchart LR
   worker[Worker] -- Bearer token --> wgate{the worker's token} --> w["/api/worker/"]
   person[Person: GUI, agent] -- session cookie --> o["/api/, outside /api/worker/"]
-  integration[Integration] -- Bearer token --> o
+  script[Script: key account] -- Bearer token --> o
   anyone[Anyone] --> open["open routes"]
   o --> gate{the gate: what the operator route needs}
   gate --> handler[handler]
@@ -36,7 +36,8 @@ envelope: a failure is a status, with at most a line of text.
 
 **Operator.** Everything else under `/api/`, outside `/api/worker/`. A person
 calls with a session cookie, and an unsafe method also carries a matching
-Origin and the CSRF header. An integration calls with its Bearer token.
+Origin and the CSRF header. A key account calls with one of its keys as a
+Bearer token, and no request carries both a key and a session cookie.
 
 ## Who may call what
 
@@ -109,7 +110,7 @@ grows without bound takes `limit` and a cursor.
 ## Compatibility
 
 The GUI and the agent ship in the binary and meet no other build, so they move
-with it. An integration outside it does not, so within a major no field leaves
+with it. A script outside it does not, so within a major no field leaves
 a request or an answer of the operator API, and a field added is optional.
 
 ## Secrets and files

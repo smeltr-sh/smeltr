@@ -64,7 +64,9 @@ single-worker sources it holds, a
 certificate authority it has just minted, or an operator's directive to restart
 its deployment or shut down. A directive names no commit: what to
 run is the deployed pointer, and the worker fetches it for itself over plain git and runs
-its own group's subtree merged with `shared/`. A commit that moves nothing the
+its own group's subtree merged with `shared/`. Each answer also names the commit the
+pointer is at, as a cue: a worker that has fetched that commit already does not fetch
+again, and one whose beat went unanswered fetches on its own schedule. A commit that moves nothing the
 worker runs is not a redeploy. The leader answers that fetch with git's
 protocol, and a lookup file by its SHA-256 from its lookup store, and nothing
 else: no path a worker sends returns a file git keeps to itself or one beside

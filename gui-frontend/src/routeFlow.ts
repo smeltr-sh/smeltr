@@ -8,7 +8,7 @@
 // The card holds one thing the bundle cannot: a destination brought onto it that no rule sends to yet. It
 // lives on the card only, so the card can warn about it, and a reload forgets it.
 
-import type { DeliverRuleDto, RouteDto } from './api';
+import type { DeliverRuleDto, FileConfigDto, RouteDto } from './api';
 import { elbow } from './map';
 
 export type Point = { x: number; y: number };
@@ -25,6 +25,38 @@ export function cards(routes: RouteDto[]): Card[] {
     else out.push({ source: r.source, routes: [r] });
   }
   return out;
+}
+
+type Routed = Pick<RouteDto, 'source' | 'pipeline'>;
+
+/** `routes[at]` as every screen and message names it: its source, then its pipeline, and `(n)` when another route
+ * runs from that source to that pipeline too, `n` counting those routes in the order they run. A route's id is
+ * minted, so it is never the name. The server names routes the same way (`LoadedSystem::route_name`). */
+export function routeName(
+  routes: readonly Routed[],
+  at: number,
+  pipelineName: (id: string) => string,
+): string {
+  const r = routes[at];
+  const twin = (o: Routed) => o.source === r.source && o.pipeline === r.pipeline;
+  const name = `${r.source} \u2192 ${pipelineName(r.pipeline)}`;
+  const twins = routes.filter(twin).length;
+  return twins === 1 ? name : `${name} (${routes.slice(0, at).filter(twin).length + 1})`;
+}
+
+/** The routes a group runs, `shared`'s first, each with its `routeName`. */
+export function bundleRoutes(
+  config: Pick<FileConfigDto, 'routes' | 'pipelines'>,
+  shared?: Pick<FileConfigDto, 'routes' | 'pipelines'> | null,
+): (RouteDto & { name: string })[] {
+  const routes = [...(shared?.routes ?? []), ...config.routes];
+  const pipelines = new Map(
+    [...(shared?.pipelines ?? []), ...config.pipelines].map((p) => [p.id, p.name || p.id]),
+  );
+  return routes.map((r, at) => ({
+    ...r,
+    name: routeName(routes, at, (id) => pipelines.get(id) ?? id),
+  }));
 }
 
 /** Every destination on the card, once each: those a rule sends to, in first-use order, then the ones brought onto
