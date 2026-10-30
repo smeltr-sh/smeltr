@@ -42,7 +42,7 @@ use crate::core::column::DataType;
 use crate::core::error::ExceptionKind;
 use crate::core::id::{DestId, FunctionId};
 use crate::plan::config::{Answer, CompileError, PipelineConfig};
-use crate::plan::topology::{CompiledTopology, DestinationKind, Records, TopologyConfig};
+use crate::plan::topology::{CompiledTopology, DestinationKind, Records, RouteConfig, TopologyConfig};
 
 pub use bundle::{
     BundleError, DirFileSet, FileSet, GROK_PATTERNS_FILE, GROUPS_DIR, LOOKUP_TABLES_FILE, LOOKUPS_DIR, PIPELINES_DIR,
@@ -176,17 +176,27 @@ impl LoadedSystem {
     pub fn to_validation_error(&self, e: CompileError) -> load::ValidationError {
         // A route's error is about its condition, or about one of its rules' `when`.
         let route = e.route.and_then(|i| self.topology.routes.get(i));
-        // The message names its route, as every item's does: the error bar shows it alone. The screen shows a rule
-        // as the condition on its line to its destinations, unnumbered, so the message names it by them.
+        // The message names its route, as every item's does: the error bar shows it alone. The screen shows no
+        // route's id: a route is the line from its source to its pipeline, and a rule the condition on the line
+        // on to its destinations, unnumbered. So the message names them by those.
         let message = match (route, e.rule.and_then(|k| route?.deliver.get(k as usize))) {
             (Some(r), Some(rule)) => {
                 let to: Vec<&str> = rule.to.iter().map(|&d| self.destination_name(d)).collect();
                 match to.as_slice() {
-                    [] => format!("route {}'s condition for no destination: {}", r.id, e.message),
-                    to => format!("route {}'s condition for {}: {}", r.id, to.join(", "), e.message),
+                    [] => format!(
+                        "route {}'s condition for no destination: {}",
+                        self.route_name(r),
+                        e.message
+                    ),
+                    to => format!(
+                        "route {}'s condition for {}: {}",
+                        self.route_name(r),
+                        to.join(", "),
+                        e.message
+                    ),
                 }
             }
-            (Some(r), None) => format!("route {}'s condition: {}", r.id, e.message),
+            (Some(r), None) => format!("route {}'s condition: {}", self.route_name(r), e.message),
             (None, _) => e.message,
         };
         load::ValidationError {
@@ -212,6 +222,18 @@ impl LoadedSystem {
             (Some(p), None) => format!("pipeline {p}: {}", e.message),
             _ => e.message,
         }
+    }
+
+    /// `r` as the routes page shows it: its source, then its pipeline.
+    fn route_name(&self, r: &RouteConfig) -> String {
+        let source = (self.topology.sources.iter())
+            .find(|s| s.id == r.source)
+            .map_or("", |s| &s.name);
+        let pipeline = match self.pipelines.iter().find(|p| p.id == r.pipeline) {
+            Some(p) if !p.name.is_empty() => &p.name,
+            _ => self.pipeline_ids.get(r.pipeline).map_or("", String::as_str),
+        };
+        format!("{source} \u{2192} {pipeline}")
     }
 
     /// The author's id for `id`, a destination the loaded system has.
@@ -654,7 +676,7 @@ mod tests {
             errors.iter().any(|e| e.item == route
                 && e.field == Some("condition")
                 && e.rule.is_none()
-                && e.message.starts_with("route r's condition: ")),
+                && e.message.starts_with("route k \u{2192} p's condition: ")),
             "{errors:?}"
         );
         let errors = validation_of(&route_json("true", "_raw"));
@@ -662,7 +684,7 @@ mod tests {
             errors.iter().any(|e| e.item == route
                 && e.field == Some("deliver.when")
                 && e.rule == Some(1)
-                && e.message.starts_with("route r's condition for out: ")),
+                && e.message.starts_with("route k \u{2192} p's condition for out: ")),
             "{errors:?}"
         );
     }
