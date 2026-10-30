@@ -188,6 +188,10 @@ fn live_rows_are_committed_as_snapshots_of_a_table_it_creates() {
     assert!(columns.contains(&"host") && columns.contains(&"n"), "{columns:?}");
     let spec = &first["metadata"]["partition-specs"][0]["fields"][0];
     assert_eq!(spec["transform"], "identity", "{spec}");
+    assert_eq!(
+        first["metadata"]["properties"]["write.parquet.compression-codec"], "zstd",
+        "the table says how every writer after this one writes"
+    );
     let s = summary(&first);
     assert_eq!(s["added-records"], "3", "{s}");
     assert_eq!(s["added-data-files"], "2", "one file per host: {s}");
@@ -237,4 +241,188 @@ fn live_rows_are_committed_as_snapshots_of_a_table_it_creates() {
         .collect();
     keys.sort();
     assert_eq!(named, keys);
+}
+
+/// A table another engine made with columns narrower than the record types them takes the record's rows, each value
+/// written as its column's type, and refuses a row whose value its column cannot hold.
+#[test]
+fn live_a_table_made_with_narrower_columns_takes_rows_as_its_types() {
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::{Date32Type, Float32Type, Int32Type, TimestampMicrosecondType};
+    use arrow_schema::{DataType as Arrow, TimeUnit};
+    let name = "live_a_table_made_with_narrower_columns_takes_rows_as_its_types";
+    let Some(catalog) = live::iceberg(name) else {
+        return;
+    };
+    let Some(s3) = live::s3(name) else {
+        return;
+    };
+    ureq::put(format!("{s3}/{BUCKET}")).send_empty().expect("bucket made");
+    let namespace = unique("smeltr");
+    ureq::post(format!("{catalog}/v1/namespaces"))
+        .send_json(serde_json::json!({ "namespace": [namespace] }))
+        .expect("namespace made");
+    // As Spark makes it: an int, a float, a date and a timestamp without a zone, partitioned by the last two.
+    let field =
+        |id: i32, name: &str, ty: &str| serde_json::json!({"id": id, "name": name, "required": false, "type": ty});
+    ureq::post(format!("{catalog}/v1/namespaces/{namespace}/tables"))
+        .send_json(serde_json::json!({
+            "name": "narrow",
+            "schema": {"type": "struct", "schema-id": 0, "fields": [
+                field(1, "n", "int"), field(2, "ratio", "float"), field(3, "day", "date"), field(4, "at", "timestamp"),
+            ]},
+            "partition-spec": {"spec-id": 0, "fields": [
+                {"name": "at_day", "transform": "day", "source-id": 4, "field-id": 1000},
+                {"name": "ratio", "transform": "identity", "source-id": 2, "field-id": 1001},
+            ]},
+            "properties": {"format-version": "2"},
+        }))
+        .expect("table made");
+
+    let plan = harness::compile_ok(vec![harness::code(
+        0,
+        "n: i64; ratio: f64; day: datetime; at: datetime; Object.assign($, json(_raw));",
+    )]);
+    let record = harness::record(&plan);
+    let config = IcebergDestinationConfig {
+        catalog: catalog.clone(),
+        warehouse: None,
+        sign_in: CatalogSignIn::None,
+        namespace: vec![namespace.clone()],
+        table: "narrow".to_string(),
+        partition_by: Vec::new(),
+        storage: Some(S3Access {
+            region: Some("us-east-1".to_string()),
+            endpoint: Some(s3.clone()),
+            auth_endpoint: None,
+            access_key: Some(AccessKey {
+                id: stored("key-id"),
+                secret: stored("key"),
+            }),
+            role: None,
+        }),
+        compression: Compression::Zstd,
+        tls: None,
+        in_flight: 2,
+        max_object_bytes: 1024 * 1024,
+        buffer_bytes: 4 * 1024 * 1024,
+        stall_after: Duration::from_secs(30),
+        file_interval: Duration::from_secs(60),
+    };
+    let mut secrets = HeldSecrets::default();
+    secrets.set_stored([
+        ("key-id".to_string(), 1, "test".to_string()),
+        ("key".to_string(), 1, "test".to_string()),
+    ]);
+    let metrics = smeltr::metrics::MetricsHandle::new(std::sync::Arc::new(smeltr::metrics::Metrics::new()), "live");
+    let records = smeltr::plan::topology::Records::from([(None, record)]);
+    let mut d = smeltr::io::build_destination(&DestinationKind::Iceberg(config), 0, metrics, &secrets, Some(&records))
+        .expect("built");
+
+    let texts = [
+        r#"{"n":7,"ratio":0.1,"day":"2026-10-30T23:59:59Z","at":"2026-10-30T01:02:03.000004Z"}"#,
+        r#"{"n":4000000000,"ratio":1,"day":"2026-10-30T00:00:00Z","at":"2026-10-30T00:00:00Z"}"#,
+    ];
+    let chunk = harness::cut(&plan, &texts);
+    let rows: Vec<OwnedRecord> = (0..texts.len() as u32)
+        .map(|row| OwnedRecord {
+            payload: smeltr::plan::config::Payload::Record,
+            columns: Some(Columns {
+                chunk: chunk.clone(),
+                row,
+            }),
+            ..OwnedRecord::default()
+        })
+        .collect();
+    let (_, refused) = d.deliver(1, Cow::Owned(rows)).expect("delivered");
+    let refused: Vec<(usize, String)> = refused.into_iter().map(|r| (r.doc, r.reason)).collect();
+    assert_eq!(
+        refused,
+        vec![(
+            1,
+            "n is 4000000000, which a 32-bit integer column cannot hold".to_string()
+        )]
+    );
+    d.flush().expect("flushed");
+    let deadline = Instant::now() + Duration::from_secs(90);
+    while !d.poll_completions().expect("landed").iter().any(|c| c.batch == 1) {
+        assert!(Instant::now() < deadline, "no completion");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let table = load(&catalog, &namespace, "narrow");
+    let schema_id = &table["metadata"]["current-schema-id"];
+    let fields = table["metadata"]["schemas"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| &s["schema-id"] == schema_id)
+        .expect("the current schema")["fields"]
+        .as_array()
+        .unwrap();
+    let types = ["n", "ratio", "day", "at"].map(|name| {
+        let f = fields.iter().find(|f| f["name"] == name).expect("a column");
+        f["type"].as_str().unwrap()
+    });
+    assert_eq!(
+        types,
+        ["int", "float", "date", "timestamp"],
+        "the table keeps its own types"
+    );
+    assert_eq!(summary(&table)["added-records"], "1");
+
+    let read = |uri: &str| {
+        let key = uri.strip_prefix("s3://").expect("an S3 address");
+        ureq::get(format!("{s3}/{key}"))
+            .call()
+            .expect("read")
+            .body_mut()
+            .read_to_vec()
+            .unwrap()
+    };
+    let list = read_manifest_list(&read(current(&table)["manifest-list"].as_str().unwrap())).unwrap();
+    let file = read_manifest(&read(&list[0].manifest_path), &list[0])
+        .unwrap()
+        .remove(0);
+    use smeltr::io::iceberg::metadata::Literal;
+    assert_eq!(
+        file.partition,
+        [Some(Literal::Date(20_756)), Some(Literal::Double(0.1f32 as f64))],
+        "partitioned by its day and its ratio as a float"
+    );
+    assert!(
+        file.file_path.contains("/at_day=2026-10-30/ratio=0.1/"),
+        "{}",
+        file.file_path
+    );
+    let batch = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(read(
+        &file.file_path,
+    )))
+    .unwrap()
+    .build()
+    .unwrap()
+    .next()
+    .unwrap()
+    .unwrap();
+    let column = |name: &str| batch.column_by_name(name).expect("written").clone();
+    let written: Vec<Arrow> = ["n", "ratio", "day", "at"]
+        .map(|name| column(name).data_type().clone())
+        .to_vec();
+    assert_eq!(
+        written,
+        [
+            Arrow::Int32,
+            Arrow::Float32,
+            Arrow::Date32,
+            Arrow::Timestamp(TimeUnit::Microsecond, None)
+        ]
+    );
+    assert_eq!(column("n").as_primitive::<Int32Type>().value(0), 7);
+    assert_eq!(column("ratio").as_primitive::<Float32Type>().value(0), 0.1f32);
+    // 2026-10-30, its UTC day.
+    assert_eq!(column("day").as_primitive::<Date32Type>().value(0), 20_756);
+    assert_eq!(
+        column("at").as_primitive::<TimestampMicrosecondType>().value(0),
+        1_793_322_123_000_004
+    );
 }
