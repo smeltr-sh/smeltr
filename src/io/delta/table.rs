@@ -26,7 +26,9 @@ use object_store::Attributes;
 use serde_json::{Map, Value, json};
 
 use super::checkpoint;
-use super::log::{Action, Format, Log, Metadata, Protocol, Snapshot, Txn, commit_name, line, now_ms, uuid};
+use super::log::{
+    Action, DomainMetadata, Format, Log, Metadata, Protocol, Snapshot, Txn, commit_name, line, now_ms, uuid,
+};
 use super::schema::{self, Mapping, StructField, StructType, Type};
 use super::unity::UnityCatalog;
 use crate::core::column::DataType;
@@ -43,7 +45,7 @@ use crate::ops::civil::MICROS_PER_DAY;
 use crate::plan::topology::{DeltaDestinationConfig, HeldSecrets, Records, UnityCatalogTable};
 
 /// The writer features of a table this writer can write. A table needing any other is refused.
-const WRITER_FEATURES: [&str; 11] = [
+const WRITER_FEATURES: [&str; 12] = [
     "appendOnly",
     "invariants",
     "checkConstraints",
@@ -56,7 +58,12 @@ const WRITER_FEATURES: [&str; 11] = [
     "timestampNtz",
     // Our files are appended unclustered: they name no clustering provider, and carry stats for the clustering columns.
     "clustering",
+    // Each file's rows take fresh ids above the table's high-water mark. An append moves no row, so every id is stable.
+    "rowTracking",
 ];
+
+/// The domain that holds a row-tracking table's highest row id.
+const ROW_TRACKING: &str = "delta.rowTracking";
 
 /// The schemes of an S3 location.
 const S3_SCHEMES: [&str; 2] = ["s3", "s3a"];
@@ -287,17 +294,20 @@ impl Committer for DeltaCommitter {
         }
         self.txn_version += 1;
         let now = now_ms();
+        let version = self.snapshot.version + 1;
+        let mut high_water_mark = high_water_mark(&self.snapshot).map_err(CommitError::Transient)?;
+        let mut commit_info = json!({
+            "timestamp": now,
+            "operation": "WRITE",
+            "operationParameters": {"mode": "Append"},
+            "isBlindAppend": true,
+            "engineInfo": "smeltr",
+        });
+        if self.snapshot.metadata.flag("delta.enableRowTracking") == Some(true) {
+            commit_info["tags"] = json!({"delta.rowTracking.preserved": "true"});
+        }
         let mut lines = vec![
-            line(
-                "commitInfo",
-                &json!({
-                    "timestamp": now,
-                    "operation": "WRITE",
-                    "operationParameters": {"mode": "Append"},
-                    "isBlindAppend": true,
-                    "engineInfo": "smeltr",
-                }),
-            ),
+            line("commitInfo", &commit_info),
             line(
                 "txn",
                 &Txn {
@@ -308,14 +318,27 @@ impl Committer for DeltaCommitter {
             ),
         ];
         for file in files {
-            lines.push(line("add", &self.add(file, now).map_err(CommitError::Transient)?));
+            let mut add = self.add(file, now).map_err(CommitError::Transient)?;
+            if let Some(high) = &mut high_water_mark {
+                add["baseRowId"] = json!(*high + 1);
+                add["defaultRowCommitVersion"] = json!(version);
+                *high += file.record_count as i64;
+            }
+            lines.push(line("add", &add));
+        }
+        if let Some(high) = high_water_mark {
+            let domain = DomainMetadata {
+                domain: ROW_TRACKING.into(),
+                configuration: json!({"rowIdHighWaterMark": high}).to_string(),
+                removed: false,
+            };
+            lines.push(line("domainMetadata", &domain));
         }
         let actions = lines
             .iter()
             .map(|l| Action::parse(l))
             .collect::<Result<Vec<_>, String>>()
             .map_err(CommitError::Transient)?;
-        let version = self.snapshot.version + 1;
         match self.log.create(&commit_name(version), lines.join("\n").into_bytes()) {
             Ok(true) => {
                 self.snapshot.committed(actions);
@@ -786,8 +809,21 @@ fn wall_clock(micros: i64, digits: u32, separator: char) -> String {
     )
 }
 
-/// A data file's statistics as an add action carries them: its row count, and each leaf column's null count and
-/// bounds, keyed by physical names. A leaf inside an array or a map has none, nor one past the table's indexed columns.
+/// The highest row id a row-tracking table has given, -1 when none; None when the table tracks no rows or suspends it.
+fn high_water_mark(snapshot: &Snapshot) -> Result<Option<i64>, String> {
+    let tracked = (snapshot.protocol.writer_features.iter().flatten()).any(|f| f == "rowTracking");
+    if !tracked || snapshot.metadata.flag("delta.rowTrackingSuspended") == Some(true) {
+        return Ok(None);
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RowTracking {
+        row_id_high_water_mark: i64,
+    }
+    let domain = snapshot.domain::<RowTracking>(ROW_TRACKING)?;
+    Ok(Some(domain.map_or(-1, |r| r.row_id_high_water_mark)))
+}
+
 /// The physical paths of the columns the table is clustered by, from its `delta.clustering` domain; none when it is
 /// not clustered.
 fn clustering_columns(snapshot: &Snapshot) -> Result<Vec<Vec<String>>, String> {
@@ -796,15 +832,13 @@ fn clustering_columns(snapshot: &Snapshot) -> Result<Vec<Vec<String>>, String> {
     struct Clustering {
         clustering_columns: Vec<Vec<String>>,
     }
-    let Some(domain) = snapshot.domains.get("delta.clustering") else {
-        return Ok(Vec::new());
-    };
-    serde_json::from_str::<Clustering>(&domain.configuration)
-        .map(|c| c.clustering_columns)
-        .map_err(|e| format!("the table's clustering domain does not read: {e}"))
+    let domain = snapshot.domain::<Clustering>("delta.clustering")?;
+    Ok(domain.map_or_else(Vec::new, |c| c.clustering_columns))
 }
 
-/// A file's stats. A clustering column takes them whether or not the table indexes it, as the protocol asks.
+/// A data file's statistics as an add action carries them: its row count, and each leaf column's null count and
+/// bounds, keyed by physical names. A leaf inside an array or a map has none, nor one past the table's indexed columns
+/// unless the table is clustered by it, as the protocol asks.
 fn stats(
     file: &ParquetMetaData,
     schema: &StructType,
@@ -1321,10 +1355,10 @@ mod tests {
         assert!(why.contains("needs writer version 8"), "{why}");
         let why = table_with(&record, &[], |a| {
             protocol("minWriterVersion", json!(7))(a);
-            protocol("writerFeatures", json!(["v2Checkpoint", "rowTracking"]))(a);
+            protocol("writerFeatures", json!(["v2Checkpoint", "identityColumns"]))(a);
         })
         .refused(&record, &[]);
-        assert!(why.contains("writer feature rowTracking"), "{why}");
+        assert!(why.contains("writer feature identityColumns"), "{why}");
         // A V2 table is written classic checkpoints, which the protocol always allows.
         table_with(&record, &[], |a| {
             protocol("minReaderVersion", json!(3))(a);
@@ -1353,6 +1387,62 @@ mod tests {
         assert!(why.contains("orc, not Parquet"), "{why}");
         let why = Table::new().refused(&record, &["raw"]);
         assert!(why.contains("partitioned by raw, a binary column"), "{why}");
+    }
+
+    /// A row-tracking table whose rows are given up to id 9, and that sets `configuration`.
+    fn row_tracking_table(record: &DataType, configuration: Value) -> Table {
+        let table = Table::new();
+        let mut actions: Vec<Value> = (create(record, &[]).unwrap().lines())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        for action in &mut actions {
+            if let Some(p) = action.get_mut("protocol") {
+                *p = json!({"minReaderVersion": 1, "minWriterVersion": 7,
+                            "writerFeatures": ["domainMetadata", "rowTracking"]});
+            }
+            if let Some(m) = action.get_mut("metaData") {
+                m["configuration"] = configuration.clone();
+            }
+        }
+        actions.push(json!({"domainMetadata": {"domain": ROW_TRACKING,
+                                               "configuration": "{\"rowIdHighWaterMark\":9}", "removed": false}}));
+        table.put(0, &actions);
+        table
+    }
+
+    #[test]
+    fn a_row_tracking_tables_new_rows_take_fresh_ids_above_its_high_water_mark() {
+        let record = st(&[("host", DataType::Str)]);
+        let table = row_tracking_table(&record, json!({"delta.enableRowTracking": "true"}));
+        let mut committer = table.open(&record, &[]).unwrap();
+        let files = [file(&committer, &[], &[], None), file(&committer, &[], &[], None)];
+        committer.commit(&files).unwrap();
+
+        let actions = table.commit(1).unwrap();
+        let rows: Vec<(&Value, &Value)> = (adds(&actions).into_iter())
+            .map(|a| (&a["baseRowId"], &a["defaultRowCommitVersion"]))
+            .collect();
+        assert_eq!(rows, [(&json!(10), &json!(1)), (&json!(12), &json!(1))]);
+        let domain = action(&actions, "domainMetadata");
+        assert_eq!(domain["domain"], ROW_TRACKING);
+        assert_eq!(domain["configuration"], "{\"rowIdHighWaterMark\":13}");
+        assert_eq!(
+            action(&actions, "commitInfo")["tags"]["delta.rowTracking.preserved"],
+            "true"
+        );
+    }
+
+    #[test]
+    fn a_table_that_suspends_row_tracking_is_given_no_row_ids() {
+        let record = st(&[("host", DataType::Str)]);
+        let table = row_tracking_table(&record, json!({"delta.rowTrackingSuspended": "true"}));
+        let mut committer = table.open(&record, &[]).unwrap();
+        committer.commit(&[file(&committer, &[], &[], None)]).unwrap();
+
+        let actions = table.commit(1).unwrap();
+        assert_eq!(adds(&actions)[0].get("baseRowId"), None);
+        assert!(!actions.iter().any(|a| a.get("domainMetadata").is_some()));
+        assert_eq!(action(&actions, "commitInfo").get("tags"), None);
     }
 
     #[test]
