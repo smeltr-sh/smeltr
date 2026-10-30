@@ -2,7 +2,7 @@
 //! statistics from its Parquet footer. Each format names its own types and writes these values its own way.
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Date32Type, Int32Type, Int64Type, TimestampMicrosecondType};
+use arrow_array::types::{Date32Type, Float64Type, Int32Type, Int64Type, TimestampMicrosecondType};
 use arrow_array::{Array, ArrayRef};
 use arrow_schema::{DataType as Arrow, TimeUnit};
 use parquet::basic::{LogicalType, TimeUnit as ParquetTimeUnit};
@@ -120,35 +120,28 @@ pub fn read(column: &ArrayRef, at: usize, kind: &Kind, names: &[String]) -> Resu
         (Kind::Long, Arrow::Int64) => Literal::Long(column.as_primitive::<Int64Type>().value(at)),
         (Kind::Int, Arrow::Int32) => Literal::Int(column.as_primitive::<Int32Type>().value(at)),
         // A row's column is the record's, wider than a table may hold it (`parquet::narrows`).
-        (Kind::Byte | Kind::Short | Kind::Int, Arrow::Int64) => {
-            let v = column.as_primitive::<Int64Type>().value(at);
-            let fits = match kind {
-                Kind::Byte => i8::try_from(v).is_ok(),
-                Kind::Short => i16::try_from(v).is_ok(),
-                _ => i32::try_from(v).is_ok(),
+        (Kind::Byte | Kind::Short | Kind::Int, Arrow::Int64) | (Kind::Float, Arrow::Float64) => {
+            let to = match kind {
+                Kind::Byte => Arrow::Int8,
+                Kind::Short => Arrow::Int16,
+                Kind::Int => Arrow::Int32,
+                _ => Arrow::Float32,
             };
-            if !fits {
-                return Err(format!("{} is {v}, which no {kind} holds", names.join(".")));
+            if let Some(why) = crate::io::parquet::misfit(column, at, &to) {
+                return Err(format!("{} {why}", names.join(".")));
             }
-            Literal::Int(v as i32)
-        }
-        (Kind::Float, Arrow::Float64) => {
-            let v = column.as_primitive::<arrow_array::types::Float64Type>().value(at);
-            // Rounded where it fits: what a float column is.
-            let f = v as f32;
-            if v.is_finite() && !f.is_finite() {
-                return Err(format!("{} is {v:?}, beyond a float's range", names.join(".")));
+            match column.data_type() {
+                Arrow::Int64 => Literal::Int(column.as_primitive::<Int64Type>().value(at) as i32),
+                // Rounded: what a float column is.
+                _ => Literal::Double(column.as_primitive::<Float64Type>().value(at) as f32 as f64),
             }
-            Literal::Double(f as f64)
         }
         (Kind::Date, Arrow::Timestamp(TimeUnit::Microsecond, Some(_))) => {
             let us = column.as_primitive::<TimestampMicrosecondType>().value(at);
             // Every day an i64 of microseconds reaches is an i32.
             Literal::Date(us.div_euclid(crate::ops::civil::MICROS_PER_DAY) as i32)
         }
-        (Kind::Double, Arrow::Float64) => {
-            Literal::Double(column.as_primitive::<arrow_array::types::Float64Type>().value(at))
-        }
+        (Kind::Double, Arrow::Float64) => Literal::Double(column.as_primitive::<Float64Type>().value(at)),
         (Kind::Date, Arrow::Date32) => Literal::Date(column.as_primitive::<Date32Type>().value(at)),
         (Kind::Timestamp | Kind::Timestamptz, Arrow::Timestamp(TimeUnit::Microsecond, Some(_))) => {
             Literal::Timestamptz(column.as_primitive::<TimestampMicrosecondType>().value(at))
@@ -296,15 +289,21 @@ mod tests {
         let longs: ArrayRef = Arc::new(Int64Array::from(vec![127, 128, -32_768, 40_000]));
         let at = |kind: Kind, row| read(&longs, row, &kind, &names);
         assert_eq!(at(Kind::Byte, 0), Ok(Some(Literal::Int(127))));
-        assert_eq!(at(Kind::Byte, 1), Err("v is 128, which no byte holds".into()));
+        assert_eq!(
+            at(Kind::Byte, 1),
+            Err("v is 128, which an 8-bit integer column cannot hold".into())
+        );
         assert_eq!(at(Kind::Short, 2), Ok(Some(Literal::Int(-32_768))));
-        assert_eq!(at(Kind::Short, 3), Err("v is 40000, which no short holds".into()));
+        assert_eq!(
+            at(Kind::Short, 3),
+            Err("v is 40000, which a 16-bit integer column cannot hold".into())
+        );
         assert_eq!(at(Kind::Int, 3), Ok(Some(Literal::Int(40_000))));
 
         let doubles: ArrayRef = Arc::new(Float64Array::from(vec![0.1, 1e300, f64::NAN]));
         let at = |row| read(&doubles, row, &Kind::Float, &names);
         assert_eq!(at(0), Ok(Some(Literal::Double(0.1f32 as f64))));
-        assert_eq!(at(1), Err("v is 1e300, beyond a float's range".into()));
+        assert_eq!(at(1), Err("v is 1e300, beyond a 32-bit float column's range".into()));
         assert!(matches!(at(2), Ok(Some(Literal::Double(v))) if v.is_nan()));
 
         let times: ArrayRef = Arc::new(TimestampMicrosecondArray::from(vec![-1]).with_timezone("UTC"));

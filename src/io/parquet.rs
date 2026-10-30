@@ -165,7 +165,7 @@ impl Schema {
             .iter()
             .zip(batch.schema().fields())
             .zip(written.fields()))
-        .find_map(|((column, own), to)| unfit_at(column, to.data_type(), columns.row as usize, own.name()))
+        .find_map(|((column, own), to)| unfit_at(column, to.data_type(), columns.row as usize, &|| own.name().into()))
     }
 
     /// Whether `columns` were cut to this schema, so they can be written by a writer opened on it.
@@ -365,77 +365,77 @@ fn relabelled(array: &ArrayRef, to: &Arrow) -> ArrayRef {
             ))
         }
         // `Schema::unfit` refused every row whose value this column cannot hold.
-        to => narrow_leaf(array, to, "").0,
+        to => narrow_leaf(array, to),
     }
 }
 
-/// Why value `i` of `array` cannot be written as `to`, `written`'s type for it, naming it by `path`.
-fn unfit_at(array: &ArrayRef, to: &Arrow, i: usize, path: &str) -> Option<String> {
+/// Why value `i` of `array` cannot be written as `to`, `written`'s type for it, naming it by `path`, made only then.
+fn unfit_at(array: &ArrayRef, to: &Arrow, i: usize, path: &dyn Fn() -> String) -> Option<String> {
     use arrow_array::cast::AsArray;
     if array.is_null(i) {
         return None;
     }
     match (array.data_type(), to) {
         (Arrow::Struct(own), Arrow::Struct(fields)) => (array.as_struct().columns().iter().zip(own).zip(fields))
-            .find_map(|((child, own), to)| unfit_at(child, to.data_type(), i, &at(path, own.name()))),
+            .find_map(|((child, own), to)| unfit_at(child, to.data_type(), i, &|| at(&path(), own.name()))),
         (Arrow::List(_), Arrow::List(to)) => {
             let list = array.as_list::<i32>();
-            let items = list.value(i);
-            let path = format!("{path}[]");
-            match to.data_type() {
-                Arrow::Struct(_) | Arrow::List(_) => {
-                    (0..items.len()).find_map(|e| unfit_at(&items, to.data_type(), e, &path))
-                }
-                leaf if leaf == items.data_type() => None,
-                leaf => narrow_leaf(&items, leaf, &path).1.into_iter().next(),
-            }
+            let (items, offsets) = (list.values(), list.value_offsets());
+            let path = || format!("{}[]", path());
+            (offsets[i] as usize..offsets[i + 1] as usize).find_map(|e| unfit_at(items, to.data_type(), e, &path))
         }
         (own, to) if own == to => None,
-        _ => narrow_leaf(&array.slice(i, 1), to, path).1.into_iter().next(),
+        _ => misfit(array, i, to).map(|why| format!("{} {why}", path())),
     }
 }
 
-/// `array`'s values as `to`, a type a table holds narrower (`narrows`), a float rounded, and why each one the column
-/// cannot hold, named by `path`, is null.
-fn narrow_leaf(array: &ArrayRef, to: &Arrow, path: &str) -> (ArrayRef, Vec<String>) {
+/// Why value `i` of `array`, a leaf of the record's, cannot be held by a column a table holds as `to` (`narrows`):
+/// `is 300, which an 8-bit integer column cannot hold`. None when it can, and for a time, which every one can.
+pub fn misfit(array: &ArrayRef, i: usize, to: &Arrow) -> Option<String> {
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::{Float64Type, Int64Type};
+    let int = |fits: bool, width: &str| {
+        let v = array.as_primitive::<Int64Type>().value(i);
+        (!fits).then(|| format!("is {v}, which {width} integer column cannot hold"))
+    };
+    match to {
+        Arrow::Int8 => int(
+            i8::try_from(array.as_primitive::<Int64Type>().value(i)).is_ok(),
+            "an 8-bit",
+        ),
+        Arrow::Int16 => int(
+            i16::try_from(array.as_primitive::<Int64Type>().value(i)).is_ok(),
+            "a 16-bit",
+        ),
+        Arrow::Int32 => int(
+            i32::try_from(array.as_primitive::<Int64Type>().value(i)).is_ok(),
+            "a 32-bit",
+        ),
+        Arrow::Float32 => {
+            let v = array.as_primitive::<Float64Type>().value(i);
+            (v.is_finite() && !(v as f32).is_finite())
+                .then(|| format!("is {v:?}, beyond a 32-bit float column's range"))
+        }
+        _ => None,
+    }
+}
+
+/// `array`'s values as `to`, a type a table holds narrower (`narrows`), a float rounded; a value the column cannot
+/// hold (`misfit`) is null.
+fn narrow_leaf(array: &ArrayRef, to: &Arrow) -> ArrayRef {
     use crate::ops::civil::MICROS_PER_DAY;
     use arrow_array::cast::AsArray;
     use arrow_array::types::{Float64Type, Int64Type, TimestampMicrosecondType};
-    let mut unfit = Vec::new();
-    let mut ints = |width: &str, fit: &dyn Fn(i64) -> bool| -> Vec<Option<i64>> {
-        (array.as_primitive::<Int64Type>().iter())
-            .map(|v| match v {
-                Some(v) if !fit(v) => {
-                    unfit.push(format!("{path} is {v}, which {width} integer column cannot hold"));
-                    None
-                }
-                v => v,
-            })
-            .collect()
-    };
-    let narrowed: ArrayRef = match to {
-        Arrow::Int8 => {
-            let values = ints("an 8-bit", &|v| i8::try_from(v).is_ok());
-            Arc::new(values.into_iter().map(|v| v.map(|v| v as i8)).collect::<Int8Array>())
-        }
-        Arrow::Int16 => {
-            let values = ints("a 16-bit", &|v| i16::try_from(v).is_ok());
-            Arc::new(values.into_iter().map(|v| v.map(|v| v as i16)).collect::<Int16Array>())
-        }
-        Arrow::Int32 => {
-            let values = ints("a 32-bit", &|v| i32::try_from(v).is_ok());
-            Arc::new(values.into_iter().map(|v| v.map(|v| v as i32)).collect::<Int32Array>())
-        }
+    let held = |i: usize| !array.is_null(i) && misfit(array, i, to).is_none();
+    let ints = || (0..array.len()).map(|i| held(i).then(|| array.as_primitive::<Int64Type>().value(i)));
+    match to {
+        Arrow::Int8 => Arc::new(ints().map(|v| v.map(|v| v as i8)).collect::<Int8Array>()),
+        Arrow::Int16 => Arc::new(ints().map(|v| v.map(|v| v as i16)).collect::<Int16Array>()),
+        Arrow::Int32 => Arc::new(ints().map(|v| v.map(|v| v as i32)).collect::<Int32Array>()),
+        // Rounded: what a float column is.
         Arrow::Float32 => Arc::new(
-            (array.as_primitive::<Float64Type>().iter())
-                // Rounded where it fits: what a float column is.
-                .map(|v| match v.map(|v| (v, v as f32)) {
-                    Some((v, f)) if v.is_finite() && !f.is_finite() => {
-                        unfit.push(format!("{path} is {v:?}, beyond a 32-bit float column's range"));
-                        None
-                    }
-                    v => v.map(|(_, f)| f),
-                })
+            (0..array.len())
+                .map(|i| held(i).then(|| array.as_primitive::<Float64Type>().value(i) as f32))
                 .collect::<Float32Array>(),
         ),
         // Every day an i64 of microseconds reaches is an i32.
@@ -451,8 +451,7 @@ fn narrow_leaf(array: &ArrayRef, to: &Arrow, path: &str) -> (ArrayRef, Vec<Strin
                 .with_timezone_opt(None::<String>),
         ),
         to => unreachable!("`with_written` narrows a leaf to no {to}"),
-    };
-    (narrowed, unfit)
+    }
 }
 
 /// Adds each row's bytes of `array` to `sizes`: its fixed width, or a string's length and offset, and a list's items.
@@ -1209,12 +1208,16 @@ mod tests {
         ]);
         let lists: ArrayRef = Arc::new(lists);
         let to = Arrow::List(Arc::new(Field::new_list_field(Arrow::Int32, true)));
-        assert_eq!(unfit_at(&lists, &to, 0, "n"), None);
+        assert_eq!(unfit_at(&lists, &to, 0, &|| "n".into()), None);
         assert_eq!(
-            unfit_at(&lists, &to, 1, "n").as_deref(),
+            unfit_at(&lists, &to, 1, &|| "n".into()).as_deref(),
             Some("n[] is 1099511627776, which a 32-bit integer column cannot hold")
         );
-        assert_eq!(unfit_at(&lists, &to, 2, "n"), None, "a null list holds nothing");
+        assert_eq!(
+            unfit_at(&lists, &to, 2, &|| "n".into()),
+            None,
+            "a null list holds nothing"
+        );
         let written = relabelled(&lists.slice(0, 1), &to);
         let items = written.as_list::<i32>().value(0);
         let items = items.as_primitive::<Int32Type>();

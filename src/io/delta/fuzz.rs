@@ -980,7 +980,7 @@ impl Run {
                     continue;
                 }
                 // A value of the record's wider type that the table's narrower column cannot hold.
-                Err(why) if why.contains("which no ") || why.contains("beyond a float's range") => {
+                Err(why) if why.contains("column cannot hold") || why.contains("float column's range") => {
                     let narrowed =
                         |p: &PartitionColumn| matches!(p.kind, Kind::Byte | Kind::Short | Kind::Int | Kind::Float);
                     if !committer.partitions.iter().any(narrowed) {
