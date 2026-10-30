@@ -229,7 +229,7 @@ impl Sequences {
     }
 
     /// Sets a value of column `i` aside for a row, reserving a block first when none is left. Err when the column has
-    /// no value left within a long, another writer changed the table's identity columns, or a block could not be
+    /// no value left in a long's range, another writer changed the table's identity columns, or a block could not be
     /// reserved before the destination stalls.
     fn claim(&self, i: usize) -> Result<(), String> {
         if self.take_free(i) {
@@ -240,7 +240,7 @@ impl Sequences {
             return Ok(());
         }
         Err(format!(
-            "the identity column {} has no value left within a long beyond its high-water mark",
+            "the identity column {} has no value left in a long's range",
             self.columns[i].name
         ))
     }

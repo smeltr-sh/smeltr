@@ -110,7 +110,7 @@
         <li>it sets no check constraint;</li>
         <li>
           no column is generated, has a default or carries an invariant, and every column is
-          nullable, as is every array's element, but for an
+          nullable, as is every array's element, except an
           <a href="#identity-columns">identity column</a> the record does not write;
         </li>
         <li>it has a column a data file can hold, one that is not <code>void</code> alone;</li>
@@ -272,14 +272,14 @@
   <h3 id="identity-columns">Identity columns</h3>
   <p>
     The destination generates the values of each top-level identity column the record does not
-    write: every row takes one, on the column's sequence from <code>delta.identity.start</code> by
-    <code>delta.identity.step</code>, past its <code>delta.identity.highWaterMark</code>, and no
-    value is given twice, by this writer or another. Values are reserved ahead, a block at a time,
-    in commits that raise the high-water mark, so the mark can stand past the largest value in the
-    table. A row that would take a value past a <code>long</code>'s range is
-    <a href="/docs/delivery#refused">refused</a>. The record writes an identity column only where
-    the table sets <code>delta.identity.allowExplicitInsert</code>; its values are then written as
-    they are.
+    write. Each row takes the next value in the column's sequence, which starts at
+    <code>delta.identity.start</code>, moves by <code>delta.identity.step</code> and lies past
+    <code>delta.identity.highWaterMark</code>. No value is given twice, by this writer or another.
+    It reserves values a block at a time, in commits that raise the high-water mark, so the mark can
+    stand past the largest value in the table. A row that would take a value past a
+    <code>long</code>'s range is <a href="/docs/delivery#refused">refused</a>. The record may write
+    an identity column only if the column sets <code>delta.identity.allowExplicitInsert</code>; its
+    values are then written as they are.
   </p>
 
   <h2 id="how-it-works">How it works</h2>
@@ -379,9 +379,7 @@
       to a table partitioned by other columns.
     </dd>
     <dt>
-      <strong
-        >the identity column … has no value left within a long beyond its high-water mark</strong
-      >
+      <strong>the identity column … has no value left in a long's range</strong>
     </dt>
     <dd>
       The column's sequence has reached the end of a <code>long</code>'s range, and the row is

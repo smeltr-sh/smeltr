@@ -1368,7 +1368,7 @@ impl Run {
                 for _ in 0..record_count {
                     match computed.iter().try_for_each(|c| c.admit(&any)) {
                         Ok(()) => admitted += 1,
-                        Err(why) if why.contains("no value left within a long") => reach("identity exhausted"),
+                        Err(why) if why.contains("no value left in a long's range") => reach("identity exhausted"),
                         Err(why) if why.contains("changed the identity column") => reach("identity changed refused"),
                         Err(why) => return Err(format!("a row was refused its identity: {why}")),
                     }
