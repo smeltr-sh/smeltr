@@ -41,7 +41,7 @@ use crate::io::delta::log::{FileAction, Name, file_key};
 use crate::io::parquet::{Chunk, Columns, REST};
 
 /// The seeds a run takes.
-const SEEDS: std::ops::Range<u64> = 1..121;
+const SEEDS: std::ops::Range<u64> = 1..201;
 
 /// What a run must reach over its seeds: every data type, protocol version and feature, table property, fault, other
 /// writer's change and commit outcome it draws.
@@ -119,6 +119,10 @@ const COVERED: &[&str] = &[
     "dataSkippingStatsColumns",
     "clustering column stats",
     "clustering past the indexed columns",
+    "row tracking enabled",
+    "row tracking suspended",
+    "row ids above the high-water mark",
+    "other row ids",
     "orc",
     "fault Lost",
     "fault Dropped",
@@ -506,6 +510,28 @@ fn clustering(rng: &mut Rng, metadata: &Value) -> Option<(Value, Vec<String>)> {
     Some((domain, chosen))
 }
 
+/// The domain that holds a row-tracking table's highest row id, `high`.
+fn row_tracking(high: i64) -> Value {
+    let configuration = json!({"rowIdHighWaterMark": high}).to_string();
+    json!({"domainMetadata": {"domain": "delta.rowTracking", "configuration": configuration, "removed": false}})
+}
+
+/// The row ids a table tracking them gives its next rows: one above its high-water mark. None when it does not.
+fn next_row_id(protocol: &Value, metadata: &Value, high: Option<i64>) -> Option<i64> {
+    let tracked = (protocol["writerFeatures"].as_array()).is_some_and(|f| f.contains(&json!("rowTracking")));
+    let suspended = metadata["configuration"]["delta.rowTrackingSuspended"] == "true";
+    (tracked && !suspended).then(|| high.map_or(0, |high| high + 1))
+}
+
+/// The high-water mark `domain`, an action's domainMetadata, sets, if it is row tracking's.
+fn high_water_mark(domain: &Value) -> Option<i64> {
+    if domain["domain"] != "delta.rowTracking" {
+        return None;
+    }
+    let configuration: Value = serde_json::from_str(domain["configuration"].as_str()?).ok()?;
+    configuration["rowIdHighWaterMark"].as_i64()
+}
+
 /// Whether `text`, a partition value of a `kind` column, reads as that type. A column the record types alike is true.
 fn narrow_text(kind: &Kind, text: &str) -> bool {
     let fits = match kind {
@@ -713,6 +739,7 @@ struct Expected {
     partition_values: Value,
     /// The physical names of the clustering columns its stats must count.
     clustering: Vec<String>,
+    records: u64,
 }
 
 /// One seed's table and what has been seen of it.
@@ -836,15 +863,27 @@ impl Run {
                 }
             }
         }
-        let clustered = (actions.iter()).any(|a| {
-            a["protocol"]["writerFeatures"]
-                .as_array()
-                .is_some_and(|f| f.contains(&json!("clustering")))
-        });
+        let features: Vec<Value> = (actions.iter())
+            .find_map(|a| a["protocol"]["writerFeatures"].as_array().cloned())
+            .unwrap_or_default();
         let metadata = actions
             .iter_mut()
             .find_map(|a| a.get_mut("metaData"))
             .expect("a create holds metaData");
+        if features.contains(&json!("rowTracking")) {
+            match self.rng.below(3) {
+                0 => {}
+                1 => {
+                    metadata["configuration"]["delta.enableRowTracking"] = json!("true");
+                    reach("row tracking enabled");
+                }
+                _ => {
+                    metadata["configuration"]["delta.rowTrackingSuspended"] = json!("true");
+                    reach("row tracking suspended");
+                }
+            }
+        }
+        let clustered = features.contains(&json!("clustering"));
         if let Some((domain, columns)) = clustered.then(|| clustering(&mut self.rng, metadata)).flatten() {
             // With no column indexed, only being clustered takes a column stats.
             if self.rng.chance(2) {
@@ -853,6 +892,9 @@ impl Run {
             }
             actions.push(domain);
             self.clustering = columns;
+        }
+        if features.contains(&json!("rowTracking")) && self.rng.chance(2) {
+            actions.push(row_tracking(self.rng.below(1000) as i64));
         }
         self.put(0, &actions);
         if self.rng.chance(3) {
@@ -1092,6 +1134,7 @@ impl Run {
                         .filter(|c| committer.written.field_with_name(c).is_ok())
                         .cloned()
                         .collect(),
+                    records: record_count,
                 },
             );
             files.push(file);
@@ -1119,10 +1162,19 @@ impl Run {
                 self.other_txn += 1;
                 let path = format!("other-{}.parquet", self.other_txn);
                 lines.push(json!({"txn": {"appId": OTHER, "version": self.other_txn}}));
-                lines.push(
-                    json!({"add": {"path": path, "partitionValues": {}, "size": 1, "modificationTime": 0,
-                                          "dataChange": true}}),
-                );
+                let records = 1 + rng.below(5) as i64;
+                let mut add = json!({"path": path, "partitionValues": {}, "size": 1, "modificationTime": 0,
+                                     "dataChange": true, "stats": json!({"numRecords": records}).to_string()});
+                let high = (snapshot.domains.values()).find_map(|d| high_water_mark(&serde_json::to_value(d).unwrap()));
+                let protocol = serde_json::to_value(&snapshot.protocol).unwrap();
+                if let Some(base) = next_row_id(&protocol, &serde_json::to_value(&metadata).unwrap(), high) {
+                    reach("other row ids");
+                    add["baseRowId"] = json!(base);
+                    add["defaultRowCommitVersion"] = json!(snapshot.version + 1);
+                    // Now and then it reserves ids past those it gives.
+                    lines.push(row_tracking(base + records - 1 + rng.below(3) as i64));
+                }
+                lines.push(json!({"add": add}));
                 self.other_files.push(path);
             }
             5 if !self.other_files.is_empty() => {
@@ -1296,6 +1348,89 @@ impl Run {
         Ok(replay)
     }
 
+    /// Every row id a commit gives is fresh: above the high-water mark it commits over, in no other file's ids, and
+    /// under the mark it leaves. This writer's files take ids, and their commit's version, exactly when the table
+    /// tracks rows.
+    fn check_row_ids(&self) -> Result<(), String> {
+        let (mut protocol, mut metadata, mut high) = (Value::Null, Value::Null, None);
+        let mut given: Vec<(String, i64, i64)> = Vec::new();
+        for (version, bytes) in &self.history {
+            let actions: Vec<Value> = (std::str::from_utf8(bytes).unwrap().lines())
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            let next = next_row_id(&protocol, &metadata, high);
+            let mut highest = None;
+            for add in actions.iter().filter_map(|a| a.get("add")) {
+                let key = file_key(add["path"].as_str().unwrap(), None);
+                let ours = self.ours.get(&key);
+                let records = match ours {
+                    Some(expected) => expected.records as i64,
+                    None => (add["stats"].as_str())
+                        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                        .and_then(|s| s["numRecords"].as_i64())
+                        .unwrap_or(0),
+                };
+                let base = add["baseRowId"].as_i64();
+                if ours.is_some() {
+                    match (next, base) {
+                        (Some(_), None) => {
+                            return Err(format!(
+                                "commit {version} adds {key} with no row ids, though the table tracks them"
+                            ));
+                        }
+                        (None, Some(_)) => {
+                            return Err(format!(
+                                "commit {version} gives {key} row ids, though the table tracks none"
+                            ));
+                        }
+                        (Some(next), Some(base)) if base < next => {
+                            return Err(format!(
+                                "commit {version} gives {key} row ids from {base}, not above its high-water mark {}",
+                                next - 1
+                            ));
+                        }
+                        (Some(_), Some(_)) if add["defaultRowCommitVersion"] != json!(version) => {
+                            return Err(format!(
+                                "commit {version} adds {key} with the row commit version {}",
+                                add["defaultRowCommitVersion"]
+                            ));
+                        }
+                        (Some(_), Some(_)) => reach("row ids above the high-water mark"),
+                        (None, None) => {}
+                    }
+                }
+                let Some(base) = base.filter(|_| records > 0) else {
+                    continue;
+                };
+                let end = base + records;
+                if let Some((other, ..)) = given.iter().find(|(_, b, e)| base < *e && *b < end) {
+                    return Err(format!(
+                        "commit {version} gives {key} row ids {base}..{end}, some of {other}'s"
+                    ));
+                }
+                given.push((key, base, end));
+                highest = highest.max(Some(end - 1));
+            }
+            for action in &actions {
+                if let Some(p) = action.get("protocol") {
+                    protocol = p.clone();
+                }
+                if let Some(m) = action.get("metaData") {
+                    metadata = m.clone();
+                }
+                if let Some(mark) = action.get("domainMetadata").and_then(high_water_mark) {
+                    high = Some(mark);
+                }
+            }
+            if highest.is_some() && high < highest {
+                return Err(format!(
+                    "commit {version} gives row ids up to {highest:?}, above its high-water mark {high:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// The properties of the log as the run left it.
     fn finish(&mut self) -> Result<(), String> {
         let latest = self.latest();
@@ -1321,6 +1456,7 @@ impl Run {
                 snapshot.version
             ));
         }
+        self.check_row_ids()?;
         let replayed = self.replay(latest)?;
         let loaded = Replay {
             protocol: Some(serde_json::to_value(&snapshot.protocol).unwrap()),
