@@ -1040,6 +1040,12 @@ impl Run {
     fn land(&mut self) {
         let late = self.table.store.late.lock().unwrap().take();
         if let Some((path, payload)) = late {
+            // A version the bucket held and no longer does was expired by cleanup, past what any reader reads.
+            if let Name::Commit(version) = Name::of(path.filename().unwrap_or_default())
+                && self.history.contains_key(&version)
+            {
+                return;
+            }
             reach("late landed");
             let put = (self.table.store.inner).put_opts(&path, payload, PutMode::Create.into());
             match self.table.runtime.block_on(put) {
