@@ -5,19 +5,20 @@
 //! every Parquet column the writer writes is.
 //!
 //! A missing table takes the record as its schema. A table that exists keeps every column; a field it lacks, at any
-//! depth, is added as a nullable column; a field it holds as another type is refused, and the user renames the field
-//! in the pipeline or the column in the table. Under column mapping by name each new column takes the next column id
+//! depth, is added as a nullable column; a field it holds narrower (a `byte`, `short`, `integer`, `float`, `date` or
+//! `timestamp_ntz`, as `parquet::narrows` says) is written as that type; a field it holds as another type is refused,
+//! and the user renames the field in the pipeline or the column in the table. Under column mapping by name each new column takes the next column id
 //! and a physical name of its own, and the Parquet files name their columns by those physical names.
 
 use std::sync::Arc;
 
-use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema};
+use arrow_schema::{DataType as Arrow, Field, Fields, Schema as ArrowSchema, TimeUnit};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use serde_json::{Map, Value, json};
 
 use super::log::uuid;
 use crate::core::column::DataType;
-use crate::io::parquet::{at, columns};
+use crate::io::parquet::{at, columns, narrows};
 use crate::io::table::Kind;
 
 const PHYSICAL_NAME: &str = "delta.columnMapping.physicalName";
@@ -283,8 +284,23 @@ fn mapped_type(arrow: &Arrow, table: &Type) -> Arrow {
                 .clone()
                 .with_data_type(mapped_type(element.data_type(), t)),
         )),
+        (other, Type::Primitive(p)) => narrow(p).unwrap_or_else(|| other.clone()),
         (other, _) => other.clone(),
     }
+}
+
+/// The Parquet type a column of the primitive the log names `p` holds, where it is narrower than any record type is
+/// written as.
+fn narrow(p: &str) -> Option<Arrow> {
+    Some(match p {
+        "byte" => Arrow::Int8,
+        "short" => Arrow::Int16,
+        "integer" => Arrow::Int32,
+        "float" => Arrow::Float32,
+        "date" => Arrow::Date32,
+        "timestamp_ntz" => Arrow::Timestamp(TimeUnit::Microsecond, None),
+        _ => return None,
+    })
 }
 
 /// The kind of the primitive type the log names `primitive`, when it is one this writer reads a value of.
@@ -516,7 +532,10 @@ impl Ids {
                 element: Box::new(self.evolve_type(element, e, &format!("{path}[]"))?),
                 contains_null: *contains_null,
             }),
-            (Type::Primitive(p), t) if !matches!(t, DataType::Array(_) | DataType::Struct(..)) && p == primitive(t) => {
+            (Type::Primitive(p), t)
+                if !matches!(t, DataType::Array(_) | DataType::Struct(..))
+                    && (p == primitive(t) || narrow(p).is_some_and(|to| narrows(t, &to))) =>
+            {
                 Ok(table.clone())
             }
             _ => Err(format!(
@@ -833,12 +852,62 @@ mod tests {
                 .unwrap_err()
                 .starts_with("http is struct in the table")
         );
-        let mut narrow = table.clone();
-        narrow.fields.push(plain("n", prim("integer")));
+        let mut decimal = table.clone();
+        decimal.fields.push(plain("n", prim("decimal(10,2)")));
         assert!(
-            table_schema(&st(&[("n", DataType::I64)], false), Some(&narrow), Mapping::None)
+            table_schema(&st(&[("n", DataType::I64)], false), Some(&decimal), Mapping::None)
                 .unwrap_err()
-                .starts_with("n is integer in the table")
+                .starts_with("n is decimal(10,2) in the table")
+        );
+    }
+
+    /// A column the table holds narrower than the record types it takes the record's values, each converted as it is
+    /// written; one of another type is still refused.
+    #[test]
+    fn a_column_the_table_holds_narrower_is_written_as_its_type() {
+        let mut table = table_schema(&record(), None, Mapping::None).unwrap().schema;
+        for (name, p) in [
+            ("b", "byte"),
+            ("s", "short"),
+            ("i", "integer"),
+            ("f", "float"),
+            ("d", "date"),
+        ] {
+            table.fields.push(plain(name, prim(p)));
+        }
+        table.fields.push(plain("ntz", prim("timestamp_ntz")));
+        let narrow = st(
+            &[
+                ("b", DataType::I64),
+                ("s", DataType::I64),
+                ("i", DataType::I64),
+                ("f", DataType::F64),
+                ("d", DataType::DateTime),
+                ("ntz", DataType::DateTime),
+            ],
+            false,
+        );
+        let evolved = table_schema(&narrow, Some(&table), Mapping::None).unwrap();
+        assert!(!evolved.changed, "the table keeps its own types");
+        let file = crate::io::parquet::Schema::new(&narrow).unwrap();
+        let physical = physical(file.arrow(), &evolved.schema);
+        let types: Vec<_> = physical.fields().iter().map(|f| f.data_type().clone()).collect();
+        assert_eq!(
+            types,
+            vec![
+                Arrow::Int8,
+                Arrow::Int16,
+                Arrow::Int32,
+                Arrow::Float32,
+                Arrow::Date32,
+                Arrow::Timestamp(TimeUnit::Microsecond, None),
+            ]
+        );
+        assert!(
+            table_schema(&st(&[("i", DataType::Duration)], false), Some(&table), Mapping::None)
+                .unwrap_err()
+                .starts_with("i is integer in the table"),
+            "a duration is no integer"
         );
     }
 

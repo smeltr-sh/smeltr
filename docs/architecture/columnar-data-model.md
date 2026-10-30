@@ -194,7 +194,10 @@ have no Arrow form:
 
 The kernels follow the [language](language.md), which DataFusion's do not.
 Destinations that write Arrow (Parquet, Delta, Iceberg) cut their columns from
-the batch at egress, once per batch, and that copy is all Arrow would save.
+the batch at egress, once per batch, and that copy is all Arrow would save. A
+table that holds a column narrower than the record types it, an `int` where the
+record has an `i64`, takes each value converted as its file is written, and
+refuses a row whose value the column cannot hold.
 
 ## Seams
 

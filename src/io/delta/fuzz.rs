@@ -9,7 +9,8 @@
 //! - a commit, once in the bucket, is never replaced, and every line of it reads;
 //! - every checkpoint holds the state the commits up to it replay to;
 //! - at the end the log loads at its newest version, every acknowledged file is added exactly once, no file of this
-//!   writer's is added twice, and each add's path and partition values are the file's.
+//!   writer's is added twice, and each add's path and partition values are the file's;
+//! - a column an earlier table holds narrower, as another engine may have made it, is written as that type.
 //!
 //! It draws from `crate::fuzz`: a failure names its seed, `SMELTR_FUZZ_SEED=n` replays seed `n`, and the run fails
 //! when its seeds leave a data type, protocol feature, table property or fault in `COVERED` unreached.
@@ -58,6 +59,13 @@ const COVERED: &[&str] = &[
     "type open struct",
     "new table",
     "existing table",
+    "narrowed byte",
+    "narrowed short",
+    "narrowed integer",
+    "narrowed float",
+    "narrowed date",
+    "narrowed timestamp_ntz",
+    "narrowed written as its type",
     "partitioned",
     "partitioning refused",
     "partition null",
@@ -434,6 +442,78 @@ fn configuration(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bool
     refused
 }
 
+/// The Parquet type a column of `primitive` holds, where a table holds it narrower than the record types it.
+fn narrowed(primitive: &str) -> Option<Arrow> {
+    Some(match primitive {
+        "byte" => Arrow::Int8,
+        "short" => Arrow::Int16,
+        "integer" => Arrow::Int32,
+        "float" => Arrow::Float32,
+        "date" => Arrow::Date32,
+        "timestamp_ntz" => Arrow::Timestamp(arrow_schema::TimeUnit::Microsecond, None),
+        _ => return None,
+    })
+}
+
+/// Some of `record`'s top-level columns in `metadata`'s schema held narrower, as another engine may have made them.
+/// A partition column is left as it is: its random rows' values mostly do not fit, and the run partitions every one.
+fn narrow(rng: &mut Rng, metadata: &mut Value, record: &DataType) {
+    let partitions = metadata["partitionColumns"].clone();
+    let DataType::Struct(fields, _) = record else {
+        unreachable!("a record is a struct")
+    };
+    let Some(mut schema) = metadata["schemaString"]
+        .as_str()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+    else {
+        return;
+    };
+    let Some(columns) = schema["fields"].as_array_mut() else {
+        return;
+    };
+    for column in columns {
+        let Some((_, t)) = fields.iter().find(|(name, _)| column["name"] == name.as_str()) else {
+            continue;
+        };
+        if partitions.as_array().is_some_and(|p| p.contains(&column["name"])) {
+            continue;
+        }
+        let to = match (column["type"].as_str(), t) {
+            (Some("long"), DataType::I64) => *rng.pick(&["byte", "short", "integer"]),
+            (Some("double"), DataType::F64) => "float",
+            (Some("timestamp"), DataType::DateTime) => *rng.pick(&["date", "timestamp_ntz"]),
+            _ => continue,
+        };
+        if rng.chance(4) {
+            continue;
+        }
+        column["type"] = json!(to);
+        reach(format!("narrowed {to}"));
+    }
+    metadata["schemaString"] = json!(schema.to_string());
+}
+
+/// Err when a column `committer`'s table holds narrower is not written as that type.
+fn kept_narrow(committer: &DeltaCommitter) -> Result<(), String> {
+    for column in &committer.schema.fields {
+        let schema::Type::Primitive(p) = &column.data_type else {
+            continue;
+        };
+        let (Some(want), Some(at)) = (narrowed(p), committer.arrow.index_of(&column.name).ok()) else {
+            continue;
+        };
+        let written = committer.written.field(at).data_type();
+        if *written != want {
+            return Err(format!(
+                "{} is {p} in the table, and its files write it as {written}",
+                column.name
+            ));
+        }
+        reach("narrowed written as its type");
+    }
+    Ok(())
+}
+
 /// `record` with fields left out, and sometimes one of another type: the record of an earlier writer.
 fn earlier(rng: &mut Rng, record: &DataType) -> DataType {
     let DataType::Struct(fields, open) = record else {
@@ -714,6 +794,13 @@ impl Run {
                 refused |= configuration(rng, m, &earlier);
             }
         }
+        if !self.rng.chance(3) {
+            for action in &mut actions {
+                if let Some(m) = action.get_mut("metaData") {
+                    narrow(&mut self.rng, m, &earlier);
+                }
+            }
+        }
         self.put(0, &actions);
         if self.rng.chance(3) {
             self.other_commit()?;
@@ -755,6 +842,7 @@ impl Run {
         self.harvest()?;
         match opened {
             Ok(committer) => {
+                kept_narrow(&committer)?;
                 self.committer = Some(committer);
                 Ok(true)
             }

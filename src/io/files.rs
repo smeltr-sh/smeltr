@@ -267,6 +267,9 @@ pub fn admit_columns(schemas: &[Schema], row: &OwnedRecord, partition: &Partitio
     if !schema.matches(columns) {
         return Err("the row's record is not its part's schema".into());
     }
+    if let Some(why) = schema.unfit(columns) {
+        return Err(why);
+    }
     // Egress made the row in this destination's form; a row the cut could not fit is marked in its chunk.
     if let Some(why) = columns.chunk.unfit(columns.row) {
         return Err(why.to_string());

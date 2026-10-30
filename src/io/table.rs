@@ -112,6 +112,16 @@ pub fn read(column: &ArrayRef, at: usize, kind: &Kind, names: &[String]) -> Resu
         (Kind::Boolean, Arrow::Boolean) => Literal::Boolean(column.as_boolean().value(at)),
         (Kind::Long, Arrow::Int64) => Literal::Long(column.as_primitive::<Int64Type>().value(at)),
         (Kind::Int, Arrow::Int32) => Literal::Int(column.as_primitive::<Int32Type>().value(at)),
+        // A row's column is the record's, wider than a table may hold it (`parquet::narrows`).
+        (Kind::Int, Arrow::Int64) => {
+            let v = column.as_primitive::<Int64Type>().value(at);
+            Literal::Int(i32::try_from(v).map_err(|_| format!("{} is {v}, which no int holds", names.join(".")))?)
+        }
+        (Kind::Date, Arrow::Timestamp(TimeUnit::Microsecond, Some(_))) => {
+            let us = column.as_primitive::<TimestampMicrosecondType>().value(at);
+            // Every day an i64 of microseconds reaches is an i32.
+            Literal::Date(us.div_euclid(crate::ops::civil::MICROS_PER_DAY) as i32)
+        }
         (Kind::Double, Arrow::Float64) => {
             Literal::Double(column.as_primitive::<arrow_array::types::Float64Type>().value(at))
         }

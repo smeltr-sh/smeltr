@@ -11,6 +11,8 @@
 //! - every unfit row is refused in its batch, and none is written;
 //! - each data file's row count and partition values are its rows', and it lies under the table's location;
 //! - the table's schema holds every column of the record, the earlier table's ids kept;
+//! - a column the earlier table holds narrower, as another engine may have made it, reads back as that type, and a
+//!   row with a value it cannot hold is refused;
 //! - every call for the table carries the sign-in drawn.
 //!
 //! It draws from `crate::fuzz`: a failure names its seed, `SMELTR_FUZZ_SEED=n` replays seed `n`, and the run fails
@@ -22,7 +24,7 @@ use std::time::Instant;
 
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Float64Type, Int64Type, TimestampMicrosecondType};
+use arrow_array::types::{Date32Type, Float32Type, Float64Type, Int32Type, Int64Type, TimestampMicrosecondType};
 use arrow_array::{Array, StructArray};
 use object_store::memory::InMemory;
 
@@ -33,7 +35,7 @@ use crate::core::column::{Column, StrBuilder, VarType};
 use crate::format::record::RecordView;
 use crate::fuzz::{self, Coverage, Rng};
 use crate::io::iceberg::manifest::Status;
-use crate::io::iceberg::metadata::{Literal, NestedField, Type};
+use crate::io::iceberg::metadata::{Literal, NestedField, Primitive, Type};
 use crate::io::iceberg::transform::apply;
 use crate::io::parquet::{Chunk, Columns};
 use crate::io::{BatchCompletion, Destination, Dispatched, OwnedRecord};
@@ -68,6 +70,12 @@ const COVERED: &[&str] = &[
     "new table",
     "existing table",
     "existing table evolved",
+    "narrowed int",
+    "narrowed float",
+    "narrowed date",
+    "narrowed timestamp",
+    "narrowed nested",
+    "row unfit for a narrowed column",
     "evolution refused",
     "sign-in none",
     "sign-in bearer",
@@ -179,6 +187,25 @@ impl Val {
     }
 }
 
+/// What `v` reads back as from a column the table holds as `narrow`, narrower than the record types it; `None` when
+/// the column cannot hold it. A date reads as its days.
+fn narrowed(v: &Val, narrow: &str) -> Option<Val> {
+    Some(match (narrow, v) {
+        (_, Val::Null) => Val::Null,
+        ("int", Val::Long(n)) => Val::Long(i32::try_from(*n).ok()?.into()),
+        ("float", Val::Double(bits)) => {
+            let f = f64::from_bits(*bits) as f32;
+            if !f.is_finite() {
+                return None;
+            }
+            Val::Double(f64::from(f).to_bits())
+        }
+        ("date", Val::Micros(us)) => Val::Long(us.div_euclid(crate::ops::civil::MICROS_PER_DAY)),
+        ("timestamp", v) => v.clone(),
+        (narrow, v) => unreachable!("{v:?} in a column held as {narrow}"),
+    })
+}
+
 /// Strings that break paths and escapes.
 fn odd_string(rng: &mut Rng) -> String {
     match rng.below(12) {
@@ -247,7 +274,11 @@ fn term(rng: &mut Rng, columns: &[(&str, &str)]) -> (String, bool) {
 /// One writer's batches: rows by id, each refused or taken.
 struct Batch {
     id: u64,
+    /// `None` for a row unfit where it is cut.
     rows: Vec<Option<BTreeMap<String, Val>>>,
+    /// The rows the destination refuses: the unfit ones, and those with a value a column the table holds narrower
+    /// cannot hold.
+    refused: Vec<usize>,
     flush: bool,
 }
 
@@ -505,7 +536,10 @@ fn read_cell(columns: &StructArray, path: &str, kind: &str, row: usize) -> Resul
         "str" => Val::Str(array.as_string::<i32>().value(row).to_string()),
         "i64" | "duration" => Val::Long(array.as_primitive::<Int64Type>().value(row)),
         "f64" => Val::Double(array.as_primitive::<Float64Type>().value(row).to_bits()),
-        "datetime" => Val::Micros(array.as_primitive::<TimestampMicrosecondType>().value(row)),
+        "datetime" | "timestamp" => Val::Micros(array.as_primitive::<TimestampMicrosecondType>().value(row)),
+        "int" => Val::Long(array.as_primitive::<Int32Type>().value(row).into()),
+        "float" => Val::Double(f64::from(array.as_primitive::<Float32Type>().value(row)).to_bits()),
+        "date" => Val::Long(array.as_primitive::<Date32Type>().value(row).into()),
         _ => Val::Bool(array.as_boolean().value(row)),
     })
 }
@@ -755,6 +789,8 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
     // An earlier writer's table: its record a part of this one's, maybe with a column of another type, and no
     // partitioning.
     let mut evolution_refused = None;
+    // The leaves the earlier table holds narrower, and as what.
+    let mut narrow: BTreeMap<String, &'static str> = BTreeMap::new();
     let existing = rng.chance(3);
     if existing {
         reached.push("existing table".into());
@@ -775,6 +811,45 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
         };
         let mut catalog = client(&earlier_config, &secrets);
         open(&mut catalog, &earlier_config, &record_of(&earlier)).map_err(|e| format!("the earlier table: {e:?}"))?;
+        // As another engine made it: some of its columns narrower than the record types them.
+        if evolution_refused.is_none() && (earlier.iter().any(|(_, k)| *k == "datetime") || !rng.chance(4)) {
+            let mut fake = fake.lock().unwrap();
+            let table = fake.table.as_mut().ok_or("the earlier table was not made")?;
+            let current = table.current_schema_id;
+            let schema = (table.schemas.iter_mut())
+                .find(|s| s.schema_id == current)
+                .ok_or("the earlier table has no current schema")?;
+            for (name, kind) in &earlier {
+                let Some(field) = schema.fields.iter_mut().find(|f| f.name == *name) else {
+                    continue;
+                };
+                let (field, leaf, to) = match *kind {
+                    "i64" => (field, name.to_string(), (Primitive::Int, "int")),
+                    "f64" => (field, name.to_string(), (Primitive::Float, "float")),
+                    // By the seed, not a draw: so few seeds hold a time that a draw can miss either.
+                    "datetime" if seed / 2 % 2 == 0 => (field, name.to_string(), (Primitive::Date, "date")),
+                    "datetime" => (field, name.to_string(), (Primitive::Timestamp, "timestamp")),
+                    "struct" => {
+                        let Type::Struct(s) = &mut field.field_type else {
+                            return Err(format!("{name} is no struct in the earlier table"));
+                        };
+                        let zone = (s.fields.iter_mut())
+                            .find(|f| f.name == "zone")
+                            .ok_or(format!("{name} has no zone"))?;
+                        reached.push("narrowed nested".into());
+                        (zone, format!("{name}.zone"), (Primitive::Int, "int"))
+                    }
+                    _ => continue,
+                };
+                // A table seldom holds a time: one that does always narrows it.
+                if *kind != "datetime" && rng.chance(5) {
+                    continue;
+                }
+                field.field_type = Type::Primitive(to.0);
+                reached.push(format!("narrowed {}", to.1));
+                narrow.insert(leaf, to.1);
+            }
+        }
     } else {
         reached.push("new table".into());
     }
@@ -844,10 +919,12 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
         for _ in 0..count {
             batch_id += 1;
             let all_unfit = rng.chance(12);
+            let mut refused = Vec::new();
             let rows: Vec<Option<BTreeMap<String, Val>>> = (0..1 + rng.below(40))
-                .map(|_| {
+                .map(|i| {
                     if all_unfit || rng.chance(15) {
                         reached.push("row unfit".into());
+                        refused.push(i);
                         return None;
                     }
                     let id = next_id;
@@ -862,7 +939,22 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
                         };
                         row.insert(leaf.clone(), v);
                     }
-                    taken.insert(id, row.clone());
+                    // What the table reads back: each value a narrower column holds as that column holds it.
+                    let mut read = row.clone();
+                    for (leaf, to) in &narrow {
+                        match read.get(leaf).map(|v| narrowed(v, to)) {
+                            Some(Some(v)) => {
+                                read.insert(leaf.clone(), v);
+                            }
+                            Some(None) => {
+                                reached.push("row unfit for a narrowed column".into());
+                                refused.push(i);
+                                return Some(row);
+                            }
+                            None => {}
+                        }
+                    }
+                    taken.insert(id, read);
                     Some(row)
                 })
                 .collect();
@@ -876,6 +968,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
             batches.push(Batch {
                 id: batch_id,
                 rows,
+                refused,
                 flush,
             });
         }
@@ -897,10 +990,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
     for (refused, batches) in results.into_iter().zip(&plans) {
         let refused = refused?;
         for batch in batches {
-            let want: Vec<usize> = (batch.rows.iter().enumerate())
-                .filter(|(_, r)| r.is_none())
-                .map(|(i, _)| i)
-                .collect();
+            let want = batch.refused.clone();
             let mut got = refused.get(&batch.id).cloned().unwrap_or_default();
             got.sort();
             if got != want {
@@ -909,7 +999,11 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
         }
     }
 
-    check_table(&fake, &store, &runtime, &leaves, &taken, reached)?;
+    // A leaf the table holds narrower reads back as that type.
+    let read: Vec<(String, &str)> = (leaves.iter())
+        .map(|(leaf, kind)| (leaf.clone(), narrow.get(leaf).copied().unwrap_or(kind)))
+        .collect();
+    check_table(&fake, &store, &runtime, &read, &taken, reached)?;
     let fake = fake.lock().unwrap();
     if let Some(wrong) = fake.signed.iter().find(|s| *s != signed_as) {
         return Err(format!(
