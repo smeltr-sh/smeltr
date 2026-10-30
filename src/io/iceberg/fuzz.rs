@@ -12,7 +12,8 @@
 //! - each data file's row count and partition values are its rows', and it lies under the table's location;
 //! - the table's schema holds every column of the record, the earlier table's ids kept;
 //! - a column the earlier table holds narrower, as another engine may have made it, reads back as that type, and a
-//!   row with a value it cannot hold is refused;
+//!   row with a value it cannot hold is refused; a table partitioned by such a column takes its rows' partitions in
+//!   that type;
 //! - every call for the table carries the sign-in drawn.
 //!
 //! It draws from `crate::fuzz`: a failure names its seed, `SMELTR_FUZZ_SEED=n` replays seed `n`, and the run fails
@@ -35,7 +36,7 @@ use crate::core::column::{Column, StrBuilder, VarType};
 use crate::format::record::RecordView;
 use crate::fuzz::{self, Coverage, Rng};
 use crate::io::iceberg::manifest::Status;
-use crate::io::iceberg::metadata::{Literal, NestedField, Primitive, Type};
+use crate::io::iceberg::metadata::{Literal, NestedField, PartitionField, PartitionSpec, Primitive, Transform, Type};
 use crate::io::iceberg::transform::apply;
 use crate::io::parquet::{Chunk, Columns};
 use crate::io::{BatchCompletion, Destination, Dispatched, OwnedRecord};
@@ -76,6 +77,10 @@ const COVERED: &[&str] = &[
     "narrowed timestamp",
     "narrowed nested",
     "row unfit for a narrowed column",
+    "partition narrowed int",
+    "partition narrowed float",
+    "partition narrowed date",
+    "partition narrowed timestamp",
     "evolution refused",
     "sign-in none",
     "sign-in bearer",
@@ -185,6 +190,15 @@ impl Val {
             Val::Str(s) => Literal::String(s.clone()),
         })
     }
+}
+
+/// `v`, as `narrowed` reads it back from a column held as `kind`, as a partition source of that type holds it.
+fn literal_as(v: &Val, kind: &str) -> Option<Literal> {
+    Some(match (kind, v.literal()?) {
+        ("int", Literal::Long(n)) => Literal::Int(i32::try_from(n).ok()?),
+        ("date", Literal::Long(days)) => Literal::Date(i32::try_from(days).ok()?),
+        (_, literal) => literal,
+    })
 }
 
 /// What `v` reads back as from a column the table holds as `narrow`, narrower than the record types it; `None` when
@@ -650,7 +664,8 @@ fn check_table(
                         let path = path_of(&schema.fields, field.source_id)
                             .ok_or(format!("partition field {} has no source", field.name))?;
                         let source = sent.get(&path).cloned().unwrap_or(Val::Null);
-                        let want = source.literal().and_then(|l| apply(&field.transform, &l));
+                        let kind = leaves.iter().find(|(leaf, _)| *leaf == path).map_or("", |(_, k)| *k);
+                        let want = literal_as(&source, kind).and_then(|l| apply(&field.transform, &l));
                         if want.is_none() {
                             reached.push("partition null".into());
                         }
@@ -816,6 +831,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
             let mut fake = fake.lock().unwrap();
             let table = fake.table.as_mut().ok_or("the earlier table was not made")?;
             let current = table.current_schema_id;
+            let mut sources: Vec<(i32, &str)> = Vec::new();
             let schema = (table.schemas.iter_mut())
                 .find(|s| s.schema_id == current)
                 .ok_or("the earlier table has no current schema")?;
@@ -827,7 +843,7 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
                     "i64" => (field, name.to_string(), (Primitive::Int, "int")),
                     "f64" => (field, name.to_string(), (Primitive::Float, "float")),
                     // By the seed, not a draw: so few seeds hold a time that a draw can miss either.
-                    "datetime" if seed / 2 % 2 == 0 => (field, name.to_string(), (Primitive::Date, "date")),
+                    "datetime" if (seed / 2).is_multiple_of(2) => (field, name.to_string(), (Primitive::Date, "date")),
                     "datetime" => (field, name.to_string(), (Primitive::Timestamp, "timestamp")),
                     "struct" => {
                         let Type::Struct(s) = &mut field.field_type else {
@@ -847,7 +863,45 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
                 }
                 field.field_type = Type::Primitive(to.0);
                 reached.push(format!("narrowed {}", to.1));
+                if !leaf.contains('.') {
+                    sources.push((field.id, to.1));
+                }
                 narrow.insert(leaf, to.1);
+            }
+            // Partitioned by a column it holds narrower, as another engine may have made it.
+            // A time where the table holds one, always, as so few seeds do; else by the seed, not a draw.
+            let time = (sources.iter().copied()).find(|(_, to)| matches!(*to, "date" | "timestamp"));
+            if time.is_some() || (!sources.is_empty() && !rng.chance(3)) {
+                let (source_id, to) = time.unwrap_or(sources[(seed / 4) as usize % sources.len()]);
+                let transforms: &[Transform] = match to {
+                    "int" => &[Transform::Identity, Transform::Bucket(4), Transform::Truncate(10)],
+                    "date" => &[
+                        Transform::Identity,
+                        Transform::Year,
+                        Transform::Day,
+                        Transform::Bucket(4),
+                    ],
+                    "timestamp" => &[
+                        Transform::Identity,
+                        Transform::Month,
+                        Transform::Hour,
+                        Transform::Bucket(4),
+                    ],
+                    _ => &[Transform::Identity],
+                };
+                let transform = rng.pick(transforms).clone();
+                table.partition_specs.push(PartitionSpec {
+                    spec_id: 1,
+                    fields: vec![PartitionField {
+                        name: "narrowed".into(),
+                        transform,
+                        source_id,
+                        field_id: 1000,
+                    }],
+                });
+                table.default_spec_id = 1;
+                table.last_partition_id = 1000;
+                reached.push(format!("partition narrowed {to}"));
             }
         }
     } else {

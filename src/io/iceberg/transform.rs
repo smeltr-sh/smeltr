@@ -73,22 +73,20 @@ pub fn partition_name(transform: &Transform, path: &[String]) -> String {
     }
 }
 
-/// The type `transform` makes of a `source` value. Err when the spec does not define the pair, or when it is one this
-/// writer has no `Literal` for (`float`, `timestamp` without zone).
+/// The type `transform` makes of a `source` value. Err when the spec does not define the pair.
 pub fn result_type(transform: &Transform, source: &Primitive) -> Result<Primitive, String> {
     use Primitive as P;
     let supported = match transform {
-        Transform::Identity => matches!(
-            source,
-            P::Boolean | P::Int | P::Long | P::Double | P::Date | P::Timestamptz | P::String | P::Binary
-        ),
-        Transform::Year | Transform::Month | Transform::Day => matches!(source, P::Date | P::Timestamptz),
-        Transform::Hour => matches!(source, P::Timestamptz),
+        Transform::Identity => !matches!(source, P::Other(_)),
+        Transform::Year | Transform::Month | Transform::Day => {
+            matches!(source, P::Date | P::Timestamp | P::Timestamptz)
+        }
+        Transform::Hour => matches!(source, P::Timestamp | P::Timestamptz),
         Transform::Bucket(n) => {
             *n > 0
                 && matches!(
                     source,
-                    P::Int | P::Long | P::Date | P::Timestamptz | P::String | P::Binary
+                    P::Int | P::Long | P::Date | P::Timestamp | P::Timestamptz | P::String | P::Binary
                 )
         }
         Transform::Truncate(w) => *w > 0 && matches!(source, P::Int | P::Long | P::String | P::Binary),
@@ -184,10 +182,11 @@ pub fn murmur3_x86_32(data: &[u8]) -> i32 {
     h as i32
 }
 
-/// A partition value as it reads in a data file's path, escaped as Java's URLEncoder escapes it, as Iceberg's own
-/// writer does: `2026-10-10` for a day, `2026-10-10-13` for an hour, `null` for null. A string or a binary's Base64
-/// that reads `null` escapes its first letter, so that `literal_of` can tell it from null.
-pub fn path_text(value: Option<&Literal>, transform: &Transform) -> String {
+/// A partition value of the `result` type `transform` makes, as it reads in a data file's path, escaped as Java's
+/// URLEncoder escapes it, as Iceberg's own writer does: `2026-10-10` for a day, `2026-10-10-13` for an hour, `null`
+/// for null. A string or a binary's Base64 that reads `null` escapes its first letter, so that `literal_of` can tell
+/// it from null.
+pub fn path_text(value: Option<&Literal>, result: &Primitive, transform: &Transform) -> String {
     let Some(value) = value else {
         return NULL.to_string();
     };
@@ -205,13 +204,15 @@ pub fn path_text(value: Option<&Literal>, transform: &Transform) -> String {
         (Literal::Boolean(b), _) => b.to_string(),
         (Literal::Int(v), _) => v.to_string(),
         (Literal::Long(v), _) => v.to_string(),
+        (Literal::Double(v), _) if *result == Primitive::Float => java_float(*v as f32),
         (Literal::Double(v), _) => java_double(*v),
         (Literal::Date(d), _) => iso_date(*d as i64),
         (Literal::Timestamptz(us), _) => {
             let (day, time) = (us.div_euclid(MICROS_PER_DAY), us.rem_euclid(MICROS_PER_DAY));
             let secs = time / 1_000_000;
+            let zone = if *result == Primitive::Timestamp { "" } else { "+00:00" };
             format!(
-                "{}T{:02}:{:02}:{:02}.{:06}+00:00",
+                "{}T{:02}:{:02}:{:02}.{:06}{zone}",
                 iso_date(day),
                 secs / 3600,
                 secs / 60 % 60,
@@ -262,12 +263,17 @@ pub fn literal_of(result: &Primitive, transform: &Transform, text: &str) -> Resu
         (Primitive::Boolean, _) => Literal::Boolean(human.parse().map_err(|_| bad())?),
         (Primitive::Int, _) => Literal::Int(human.parse().map_err(|_| bad())?),
         (Primitive::Long, _) => Literal::Long(human.parse().map_err(|_| bad())?),
+        (Primitive::Float, _) => Literal::Double(human.parse::<f32>().map_err(|_| bad())? as f64),
         (Primitive::Double, _) => Literal::Double(human.parse().map_err(|_| bad())?),
         (Primitive::Date, _) => {
             let days = parse_date(&human).ok_or_else(bad)?;
             Literal::Date(i32::try_from(days).map_err(|_| bad())?)
         }
-        (Primitive::Timestamptz, _) => Literal::Timestamptz(parse_timestamptz(&human).ok_or_else(bad)?),
+        (Primitive::Timestamp, _) => Literal::Timestamptz(parse_timestamp(&human).ok_or_else(bad)?),
+        (Primitive::Timestamptz, _) => {
+            let time = human.strip_suffix("+00:00").or_else(|| human.strip_suffix('Z'));
+            Literal::Timestamptz(time.and_then(parse_timestamp).ok_or_else(bad)?)
+        }
         (Primitive::String, _) => Literal::String(human),
         (Primitive::Binary, _) => Literal::Binary(
             base64::engine::general_purpose::STANDARD
@@ -282,6 +288,16 @@ pub fn literal_of(result: &Primitive, transform: &Transform, text: &str) -> Resu
 /// Java's `Double.toString`, which Iceberg writes a double's partition value with: plain from 10⁻³ up to 10⁷,
 /// `1.0E10` beyond.
 fn java_double(v: f64) -> String {
+    java_number(v, format!("{v:?}"), format!("{v:e}"))
+}
+
+/// Java's `Float.toString`, as `java_double` for a float: the fewest digits that read back as `v`.
+fn java_float(v: f32) -> String {
+    java_number(v as f64, format!("{v:?}"), format!("{v:e}"))
+}
+
+/// `v` as Java writes it, from its shortest digits as `{:?}` and `{:e}` write them.
+fn java_number(v: f64, plain: String, sci: String) -> String {
     if v.is_nan() {
         return "NaN".to_string();
     }
@@ -290,9 +306,8 @@ fn java_double(v: f64) -> String {
     }
     let magnitude = v.abs();
     if magnitude == 0.0 || (1e-3..1e7).contains(&magnitude) {
-        return format!("{v:?}");
+        return plain;
     }
-    let sci = format!("{v:e}");
     let (mantissa, exponent) = sci.split_once('e').expect("{:e} writes an exponent");
     let dot = if mantissa.contains('.') { "" } else { ".0" };
     format!("{mantissa}{dot}E{exponent}")
@@ -349,10 +364,9 @@ fn parse_date(s: &str) -> Option<i64> {
     date_days(y, m, d)
 }
 
-/// Microseconds of `2026-10-10T13:05:09.000123+00:00`; the fraction may have up to six digits, or be left out.
-fn parse_timestamptz(s: &str) -> Option<i64> {
+/// Microseconds of `2026-10-10T13:05:09.000123`; the fraction may have up to six digits, or be left out.
+fn parse_timestamp(s: &str) -> Option<i64> {
     let (date, time) = s.split_once('T')?;
-    let time = time.strip_suffix("+00:00").or_else(|| time.strip_suffix('Z'))?;
     let (hms, fraction) = time.split_once('.').unwrap_or((time, ""));
     let [h, m, sec] = hms
         .split(':')
@@ -378,9 +392,9 @@ pub struct TablePartitioner {
 struct SpecField {
     /// The partition field's name.
     name: String,
-    /// The source column's names from the record's root, and its type. `None` for void, which reads no source: its
-    /// column may since have been dropped.
-    source: Option<(Vec<String>, Kind)>,
+    /// The source column's names from the record's root, its type, and the type the transform makes of it. `None` for
+    /// void, which reads no source: its column may since have been dropped.
+    source: Option<(Vec<String>, Kind, Primitive)>,
     transform: Transform,
 }
 
@@ -412,12 +426,12 @@ impl TablePartitioner {
                         source.join(".")
                     ));
                 };
-                result_type(&field.transform, source_type)
+                let result = result_type(&field.transform, source_type)
                     .map_err(|e| format!("the partition field {}: {e}", field.name))?;
                 let kind = source_type.kind().expect("result_type refuses Other");
                 Ok(SpecField {
                     name: field.name.clone(),
-                    source: Some((source, kind)),
+                    source: Some((source, kind, result)),
                     transform: field.transform.clone(),
                 })
             })
@@ -467,18 +481,18 @@ impl Partitioner for TablePartitioner {
         let mut path = Vec::with_capacity(self.fields.len());
         let mut values = Vec::with_capacity(self.fields.len());
         for field in &self.fields {
-            let value = match &field.source {
-                None => None,
-                Some((source, source_type)) => {
+            let text = match &field.source {
+                None => NULL.to_string(),
+                Some((source, source_type, result)) => {
                     let column = column_at(batch, source, at)?;
-                    column
+                    let value = column
                         .map(|c| read(&c, at, source_type, source))
                         .transpose()?
                         .flatten()
-                        .and_then(|v| apply(&field.transform, &v))
+                        .and_then(|v| apply(&field.transform, &v));
+                    path_text(value.as_ref(), result, &field.transform)
                 }
             };
-            let text = path_text(value.as_ref(), &field.transform);
             path.push(format!("{}={text}", url_encode(&field.name)));
             values.push((field.name.clone(), text));
         }
@@ -619,13 +633,16 @@ mod tests {
         assert_eq!(ok(Transform::Bucket(8), P::String), P::Int);
         assert_eq!(ok(Transform::Truncate(8), P::Long), P::Long);
         assert_eq!(ok(Transform::Void, P::Double), P::Double);
+        assert_eq!(ok(Transform::Identity, P::Float), P::Float);
+        assert_eq!(ok(Transform::Day, P::Timestamp), P::Date);
+        assert_eq!(ok(Transform::Bucket(8), P::Timestamp), P::Int);
         for (t, s) in [
             (Transform::Hour, P::Date),
             (Transform::Bucket(8), P::Double),
+            (Transform::Bucket(8), P::Float),
             (Transform::Bucket(0), P::Long),
             (Transform::Truncate(4), P::Boolean),
-            (Transform::Identity, P::Float),
-            (Transform::Day, P::Timestamp),
+            (Transform::Truncate(4), P::Timestamp),
             (Transform::Other("zorder".into()), P::Long),
             (Transform::Identity, P::Other("decimal(9,2)".into())),
         ] {
@@ -662,6 +679,18 @@ mod tests {
                 "-2.5E-7",
             ),
             (
+                Some(Literal::Double(0.1f32 as f64)),
+                P::Float,
+                Transform::Identity,
+                "0.1",
+            ),
+            (
+                Some(Literal::Double(1e10f32 as f64)),
+                P::Float,
+                Transform::Identity,
+                "1.0E10",
+            ),
+            (
                 Some(Literal::Date(-719_528)),
                 P::Date,
                 Transform::Identity,
@@ -672,6 +701,12 @@ mod tests {
                 P::Timestamptz,
                 Transform::Identity,
                 "2026-10-10T13%3A05%3A09.000123%2B00%3A00",
+            ),
+            (
+                Some(Literal::Timestamptz(at_13)),
+                P::Timestamp,
+                Transform::Identity,
+                "2026-10-10T13%3A05%3A09.000123",
             ),
             (
                 Some(Literal::String("a b/ü=1".into())),
@@ -700,7 +735,11 @@ mod tests {
             (None, P::String, Transform::Identity, "null"),
             (None, P::Int, Transform::Void, "null"),
         ] {
-            assert_eq!(path_text(value.as_ref(), &transform), text, "{value:?} by {transform}");
+            assert_eq!(
+                path_text(value.as_ref(), &result, &transform),
+                text,
+                "{value:?} by {transform}"
+            );
             assert_eq!(literal_of(&result, &transform, text), Ok(value), "{text}");
         }
     }
@@ -729,7 +768,7 @@ mod tests {
                     _ => Primitive::Date,
                 };
                 let result = result_type(&transform, &source).unwrap();
-                let text = path_text(value.as_ref(), &transform);
+                let text = path_text(value.as_ref(), &result, &transform);
                 assert_eq!(literal_of(&result, &transform, &text), Ok(value), "{text}");
             }
         }
@@ -744,6 +783,8 @@ mod tests {
             (P::Int, Transform::Hour, "2026-10-10-24"),
             (P::Int, Transform::Year, "twenty"),
             (P::Timestamptz, Transform::Identity, "2026-10-10T13:05:09.1234567+00:00"),
+            (P::Timestamptz, Transform::Identity, "2026-10-10T13:05:09.123456"),
+            (P::Timestamp, Transform::Identity, "2026-10-10T13:05:09.123456+00:00"),
             (P::String, Transform::Identity, "%zz"),
             (P::Other("uuid".into()), Transform::Identity, "x"),
         ] {

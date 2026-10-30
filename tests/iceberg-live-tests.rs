@@ -258,7 +258,7 @@ fn live_a_table_made_with_narrower_columns_takes_rows_as_its_types() {
     ureq::post(format!("{catalog}/v1/namespaces"))
         .send_json(serde_json::json!({ "namespace": [namespace] }))
         .expect("namespace made");
-    // As Spark makes it: an int, a float, a date and a timestamp without a zone.
+    // As Spark makes it: an int, a float, a date and a timestamp without a zone, partitioned by the last two.
     let field =
         |id: i32, name: &str, ty: &str| serde_json::json!({"id": id, "name": name, "required": false, "type": ty});
     ureq::post(format!("{catalog}/v1/namespaces/{namespace}/tables"))
@@ -266,6 +266,10 @@ fn live_a_table_made_with_narrower_columns_takes_rows_as_its_types() {
             "name": "narrow",
             "schema": {"type": "struct", "schema-id": 0, "fields": [
                 field(1, "n", "int"), field(2, "ratio", "float"), field(3, "day", "date"), field(4, "at", "timestamp"),
+            ]},
+            "partition-spec": {"spec-id": 0, "fields": [
+                {"name": "at_day", "transform": "day", "source-id": 4, "field-id": 1000},
+                {"name": "ratio", "transform": "identity", "source-id": 2, "field-id": 1001},
             ]},
             "properties": {"format-version": "2"},
         }))
@@ -376,6 +380,17 @@ fn live_a_table_made_with_narrower_columns_takes_rows_as_its_types() {
     let file = read_manifest(&read(&list[0].manifest_path), &list[0])
         .unwrap()
         .remove(0);
+    use smeltr::io::iceberg::metadata::Literal;
+    assert_eq!(
+        file.partition,
+        [Some(Literal::Date(20_756)), Some(Literal::Double(0.1f32 as f64))],
+        "partitioned by its day and its ratio as a float"
+    );
+    assert!(
+        file.file_path.contains("/at_day=2026-10-30/ratio=0.1/"),
+        "{}",
+        file.file_path
+    );
     let batch = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(read(
         &file.file_path,
     )))

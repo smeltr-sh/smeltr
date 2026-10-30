@@ -7,8 +7,9 @@
 //! A missing table takes the record as its schema. A table that exists keeps every column; a field it lacks, at any
 //! depth, is added as a nullable column; a field it holds narrower (a `byte`, `short`, `integer`, `float`, `date` or
 //! `timestamp_ntz`, as `parquet::narrows` says) is written as that type; a field it holds as another type is refused,
-//! and the user renames the field in the pipeline or the column in the table. Under column mapping by name each new column takes the next column id
-//! and a physical name of its own, and the Parquet files name their columns by those physical names.
+//! and the user renames the field in the pipeline or the column in the table. Under column mapping by name each new
+//! column takes the next column id and a physical name of its own, and the Parquet files name their columns by those
+//! physical names.
 
 use std::sync::Arc;
 
@@ -307,12 +308,15 @@ fn narrow(p: &str) -> Option<Arrow> {
 pub fn kind(primitive: &str) -> Option<Kind> {
     match primitive {
         "boolean" => Some(Kind::Boolean),
-        "byte" | "short" | "integer" => Some(Kind::Int),
+        "byte" => Some(Kind::Byte),
+        "short" => Some(Kind::Short),
+        "integer" => Some(Kind::Int),
         "long" => Some(Kind::Long),
         "float" => Some(Kind::Float),
         "double" => Some(Kind::Double),
         "date" => Some(Kind::Date),
         "timestamp" => Some(Kind::Timestamptz),
+        "timestamp_ntz" => Some(Kind::Timestamp),
         "string" => Some(Kind::String),
         "binary" => Some(Kind::Binary),
         _ => None,
@@ -1028,7 +1032,7 @@ mod tests {
             partition_column(&schema, "day").unwrap(),
             ("day".to_string(), Kind::Date)
         );
-        assert_eq!(partition_column(&schema, "i").unwrap().1, Kind::Int);
+        assert_eq!(partition_column(&schema, "i").unwrap().1, Kind::Short);
         assert_eq!(
             partition_column(&schema, "http").unwrap_err(),
             "the table is partitioned by http, a struct column, and this writer writes no partition value of that type"

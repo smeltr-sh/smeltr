@@ -10,7 +10,8 @@
 //! - every checkpoint holds the state the commits up to it replay to;
 //! - at the end the log loads at its newest version, every acknowledged file is added exactly once, no file of this
 //!   writer's is added twice, and each add's path and partition values are the file's;
-//! - a column an earlier table holds narrower, as another engine may have made it, is written as that type.
+//! - a column an earlier table holds narrower, as another engine may have made it, is written as that type, and a
+//!   partition value of it reads as that type or its row is refused.
 //!
 //! It draws from `crate::fuzz`: a failure names its seed, `SMELTR_FUZZ_SEED=n` replays seed `n`, and the run fails
 //! when its seeds leave a data type, protocol feature, table property or fault in `COVERED` unreached.
@@ -66,6 +67,8 @@ const COVERED: &[&str] = &[
     "narrowed date",
     "narrowed timestamp_ntz",
     "narrowed written as its type",
+    "narrowed partition",
+    "narrowed partition refused",
     "partitioned",
     "partitioning refused",
     "partition null",
@@ -458,7 +461,6 @@ fn narrowed(primitive: &str) -> Option<Arrow> {
 /// Some of `record`'s top-level columns in `metadata`'s schema held narrower, as another engine may have made them.
 /// A partition column is left as it is: its random rows' values mostly do not fit, and the run partitions every one.
 fn narrow(rng: &mut Rng, metadata: &mut Value, record: &DataType) {
-    let partitions = metadata["partitionColumns"].clone();
     let DataType::Struct(fields, _) = record else {
         unreachable!("a record is a struct")
     };
@@ -475,9 +477,6 @@ fn narrow(rng: &mut Rng, metadata: &mut Value, record: &DataType) {
         let Some((_, t)) = fields.iter().find(|(name, _)| column["name"] == name.as_str()) else {
             continue;
         };
-        if partitions.as_array().is_some_and(|p| p.contains(&column["name"])) {
-            continue;
-        }
         let to = match (column["type"].as_str(), t) {
             (Some("long"), DataType::I64) => *rng.pick(&["byte", "short", "integer"]),
             (Some("double"), DataType::F64) => "float",
@@ -491,6 +490,23 @@ fn narrow(rng: &mut Rng, metadata: &mut Value, record: &DataType) {
         reach(format!("narrowed {to}"));
     }
     metadata["schemaString"] = json!(schema.to_string());
+}
+
+/// Whether `text`, a partition value of a `kind` column, reads as that type. A column the record types alike is true.
+fn narrow_text(kind: &Kind, text: &str) -> bool {
+    let fits = match kind {
+        Kind::Byte => text.parse::<i8>().is_ok(),
+        Kind::Short => text.parse::<i16>().is_ok(),
+        Kind::Int => text.parse::<i32>().is_ok(),
+        Kind::Float => text.parse::<f32>().is_ok(),
+        // The protocol's form of a time without zone: a space before the time, and no zone.
+        Kind::Timestamp => text.as_bytes().get(10) == Some(&b' ') && !text.ends_with('Z'),
+        _ => return true,
+    };
+    if fits {
+        reach("narrowed partition");
+    }
+    fits
 }
 
 /// Err when a column `committer`'s table holds narrower is not written as that type.
@@ -963,6 +979,16 @@ impl Run {
                     reach("partition key too long");
                     continue;
                 }
+                // A value of the record's wider type that the table's narrower column cannot hold.
+                Err(why) if why.contains("which no ") || why.contains("beyond a float's range") => {
+                    let narrowed =
+                        |p: &PartitionColumn| matches!(p.kind, Kind::Byte | Kind::Short | Kind::Int | Kind::Float);
+                    if !committer.partitions.iter().any(narrowed) {
+                        return Err(format!("a row's partition was refused: {why}"));
+                    }
+                    reach("narrowed partition refused");
+                    continue;
+                }
                 Err(why) => return Err(format!("a row's partition was refused: {why}")),
             };
             for (segment, (column, (_, text))) in partition
@@ -980,6 +1006,14 @@ impl Run {
                 };
                 if url_decode(name).as_deref() != Some(column.name.as_str()) || value != *text {
                     return Err(format!("the directory {segment} is not {}={text:?}", column.name));
+                }
+            }
+            for (column, (_, text)) in committer.partitions.iter().zip(&partition.values) {
+                if !text.is_empty() && !narrow_text(&column.kind, text) {
+                    return Err(format!(
+                        "{}'s partition value {text:?} is no {}",
+                        column.name, column.kind
+                    ));
                 }
             }
             let path = committer.file_path(&partition, &objects::object_id());

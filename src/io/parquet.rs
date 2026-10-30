@@ -430,7 +430,7 @@ fn narrow_leaf(array: &ArrayRef, to: &Arrow, path: &str) -> (ArrayRef, Vec<Strin
             (array.as_primitive::<Float64Type>().iter())
                 // Rounded where it fits: what a float column is.
                 .map(|v| match v.map(|v| (v, v as f32)) {
-                    Some((v, f)) if !f.is_finite() => {
+                    Some((v, f)) if v.is_finite() && !f.is_finite() => {
                         unfit.push(format!("{path} is {v:?}, beyond a 32-bit float column's range"));
                         None
                     }
