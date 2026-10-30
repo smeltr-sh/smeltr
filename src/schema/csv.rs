@@ -2,7 +2,7 @@
 //! `field` and `type` are named; `required`, `description`, `example` and `elasticsearch` (an Elasticsearch type) may
 //! be. Other columns are a spreadsheet's own and are passed over. A header is matched without regard to case.
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::config_file::SchemaFieldDto;
 use crate::format::csv_scan;
@@ -80,15 +80,6 @@ fn yes(cell: &str) -> Result<bool, &str> {
         "" | "false" | "no" | "n" | "0" => Ok(false),
         "true" | "yes" | "y" | "1" => Ok(true),
         _ => Err(cell),
-    }
-}
-
-/// `value` as a field's example: a string as it is, any other value as its JSON.
-pub(super) fn example_of(value: Option<&Value>) -> String {
-    match value {
-        None | Some(Value::Null) => String::new(),
-        Some(Value::String(s)) => s.clone(),
-        Some(other) => other.to_string(),
     }
 }
 

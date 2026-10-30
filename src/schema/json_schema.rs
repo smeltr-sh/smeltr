@@ -77,7 +77,7 @@ impl<'d> Reader<'d> {
                 ty: typed.ty,
                 required: required.contains(&name.as_str()),
                 description: text(property, "description"),
-                example: example(property),
+                example: super::example_of(property.get("examples").and_then(|e| e.get(0))),
                 elasticsearch: None,
             });
             let read = match typed.holds {
@@ -181,14 +181,6 @@ fn is_object(node: &Map<String, Value>) -> bool {
 }
 
 /// The first of a node's `examples`, as text: a string as it is, any other value as its JSON.
-fn example(node: &Value) -> String {
-    match node.get("examples").and_then(Value::as_array).and_then(|e| e.first()) {
-        None | Some(Value::Null) => String::new(),
-        Some(Value::String(s)) => s.clone(),
-        Some(other) => other.to_string(),
-    }
-}
-
 fn text(node: &Value, key: &str) -> String {
     node.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
 }

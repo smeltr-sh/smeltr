@@ -18,6 +18,15 @@ pub mod ecs;
 pub mod json_schema;
 pub mod ocsf;
 
+/// `value` as a field's example: a string as it is, any other value as its JSON.
+fn example_of(value: Option<&serde_json::Value>) -> String {
+    match value {
+        None | Some(serde_json::Value::Null) => String::new(),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+    }
+}
+
 /// One contract, by its id in the bundle.
 #[derive(Debug)]
 pub struct Schema {

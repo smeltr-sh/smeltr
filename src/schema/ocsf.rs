@@ -130,7 +130,7 @@ impl Reader<'_> {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                example: super::csv::example_of(a.get("example")),
+                example: super::example_of(a.get("example")),
                 // An IP is text Elasticsearch indexes as one, and JSON a value it keeps whole.
                 elasticsearch: match ty {
                     "ip_t" => json!({ "type": "ip" }).as_object().cloned(),

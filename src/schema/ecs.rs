@@ -98,7 +98,7 @@ fn from_yaml(text: &str) -> Result<Vec<Ecs>, String> {
                 array: (f.get("normalize").and_then(Value::as_array)).is_some_and(|n| n.iter().any(|n| n == "array")),
                 required: f.get("required") == Some(&Value::Bool(true)),
                 description: text("description"),
-                example: csv::example_of(f.get("example")),
+                example: super::example_of(f.get("example")),
                 settings,
             })
         })
