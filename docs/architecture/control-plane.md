@@ -77,8 +77,9 @@ versions of each uploaded file name and whatever a branch or a running
 deployment names, so a rollback reaches as far back as that.
 
 Git itself stays compact on both sides. The leader packs its repository once
-git's own limits are passed, and drops nothing, since a deploy-log marker names
-a commit no ref may reach. A worker has no git binary and gains a pack per
+git's own limits are passed, and drops what no ref reaches once git's grace
+has passed. A deploy-log or change marker holds the commit it names as a
+parent, so what a marker names is kept with it. A worker has no git binary and gains a pack per
 fetch, so past the same limit it writes what its fetched and running commits
 reach as one pack and removes the rest.
 
