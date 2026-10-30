@@ -5318,6 +5318,8 @@ export interface CsvPreview {
   header: string[];
   /** The first rows, and after them the first row of each type value they do not hold. */
   rows: string[][];
+  /** How many of `rows` are the file's first; those after are added for their type values. */
+  first: number;
   columns: CsvColumns;
   /** In the order the file first holds them. */
   types: CsvTypeValue[];

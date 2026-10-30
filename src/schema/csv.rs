@@ -46,6 +46,8 @@ pub struct Preview {
     pub header: Vec<String>,
     /// The first rows, and after them the first row of each type value they do not hold, so every value shows in one.
     pub rows: Vec<Vec<String>>,
+    /// How many of `rows` are the file's first; those after are added for their type values.
+    pub first: usize,
     pub columns: Columns,
     /// In the order the file first holds them.
     pub types: Vec<TypeValue>,
@@ -100,6 +102,7 @@ pub fn preview(text: &str, columns: Option<&Columns>) -> Result<Preview, String>
     }
     Ok(Preview {
         types,
+        first: shown.len().min(SHOWN),
         rows: shown,
         header,
         columns,
@@ -256,6 +259,7 @@ mod tests {
         let preview = preview(&text, None).unwrap();
         let shown: Vec<&str> = preview.rows.iter().map(|r| r[0].as_str()).collect();
         assert_eq!(shown, ["f0", "f1", "f2", "f3", "f4", "late"]);
+        assert_eq!(preview.first, 5);
         let counts: Vec<(&str, usize)> = preview.types.iter().map(|t| (t.value.as_str(), t.fields)).collect();
         assert_eq!(counts, [("str", 8), ("int", 2)]);
     }

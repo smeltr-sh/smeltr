@@ -566,6 +566,7 @@ test("a CSV's columns and types are picked from its rows when its header names n
   await expect(widget).toHaveValue('str');
   await expect(dialog.getByText('not a type smeltr knows')).toBeVisible();
   // Past the first five rows, `widget` shows in a row of its own; each value says how many rows hold it.
+  await expect(dialog.getByRole('cell', { name: '…', exact: true })).toBeVisible();
   await expect(dialog.getByText('4 fields')).toBeVisible();
   await expect(dialog.getByText('1 field', { exact: true })).toBeVisible();
   await widget.selectOption('{...}');

@@ -338,6 +338,9 @@
                   {@const first =
                     preview.rows.findIndex((o) => cellOf(draft, o, 'type') === value) === r}
                   {@const said = preview.types.find((t) => t.value === value)}
+                  {#if r === preview.first}
+                    <tr><td class="dim" colspan={preview.header.length}>…</td></tr>
+                  {/if}
                   <tr>
                     {#each preview.header as _, i (i)}
                       {#if i === draft.columns.type && said}
@@ -375,7 +378,7 @@
           </div>
           {#if draft.columns.field != null && draft.columns.type != null}
             {@const reads = preview.rows
-              .slice(0, 5)
+              .slice(0, preview.first)
               .map(
                 (row) =>
                   `${cellOf(draft, row, 'field')}: ${draft.types[cellOf(draft, row, 'type')] ?? ''}`,
