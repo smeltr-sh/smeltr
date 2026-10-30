@@ -71,7 +71,7 @@
       type: 'csv',
       label: 'CSV of fields',
       category: 'From a file',
-      help: 'A spreadsheet with a row per field, under a header naming field and type, and optionally required, description, example and elasticsearch.',
+      help: 'A CSV file with a row per field. Its header row names the columns field and type, and optionally required, description, example and elasticsearch.',
       // A grid.
       glyph: { d: 'M10 14 H54 V50 H10 Z M10 26 H54 M10 38 H54 M26 14 V50 M40 14 V50' },
     },
@@ -87,7 +87,7 @@
       type: 'import',
       label: 'Import',
       category: 'From a pipeline',
-      help: 'A pipeline of the bundle reads a file of any other format and writes one row per field.',
+      help: 'A pipeline in this area reads a file of any other format and writes one row per field.',
       // An arrow into a tray.
       glyph: { d: 'M32 8 V40 M20 28 L32 40 L44 28 M12 46 V56 H52 V46' },
     },
@@ -235,12 +235,12 @@
         <Field
           required
           label="Depth"
-          help="How many keys deep fields are read: 1 is the class's own attributes, 2 adds those of the objects they hold."
+          help="How many levels of nested objects to read: 1 is the class's own attributes, 2 adds those of the objects they hold."
         >
           <input type="number" min="1" max="8" bind:value={draft.depth} />
         </Field>
         <fieldset class="levels">
-          <legend>Requirements read</legend>
+          <legend>Include fields that are</legend>
           {#each OCSF_LEVELS as l (l)}
             <label
               ><input
