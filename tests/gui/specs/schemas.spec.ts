@@ -163,7 +163,10 @@ test('an integer indexed as a date counts milliseconds or seconds, as its choice
       .find((s: { id: string }) => s.id === 'login')
       .fields.find((f: { field: string }) => f.field === 'time');
   };
-  expect((await saved()).elasticsearch).toEqual({ type: 'date', format: 'epoch_second' });
+  expect((await saved()).elasticsearch).toEqual({
+    type: 'date',
+    format: 'epoch_second||strict_date_optional_time',
+  });
   await expect(time).toHaveValue('date in seconds');
   await time.selectOption({ label: 'date (milliseconds)' });
   expect((await saved()).elasticsearch).toEqual({ type: 'date' });
@@ -184,7 +187,7 @@ test('an integer indexed as a date counts milliseconds or seconds, as its choice
   expect((await saved()).elasticsearch).toEqual({
     type: 'date',
     ignore_malformed: true,
-    format: 'epoch_second',
+    format: 'epoch_second||strict_date_optional_time',
   });
   // A date in a format of its own says it, and keeps it until another is chosen.
   await api.put(`${SHARED}/schemas${ON}`, [

@@ -1768,7 +1768,9 @@ const mapSchemaField: Move = {
     const saved = schema.fields.find((f: { field: string }) => f.field === field);
     // An integer's date in seconds is a date its format reads as seconds.
     const mapping =
-      type === 'date in seconds' ? { type: 'date', format: 'epoch_second' } : { type };
+      type === 'date in seconds'
+        ? { type: 'date', format: 'epoch_second||strict_date_optional_time' }
+        : { type };
     expect(saved.elasticsearch, `${id}'s ${field} maps as chosen`).toEqual(
       type === offered[0] ? undefined : mapping,
     );

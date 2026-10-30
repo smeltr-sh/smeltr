@@ -37,6 +37,8 @@
   /** An integer read as a date counts milliseconds, Elasticsearch's own reading of a number, or seconds, which its
    * mapping's format says. */
   const SECONDS = 'date in seconds';
+  /** Seconds as a number, and ISO time as a query's bounds are written, which `epoch_second` alone refuses. */
+  const SECONDS_FORMAT = 'epoch_second||strict_date_optional_time';
   /** A date its mapping gives another format, set in Edit JSON, which the dropdown names and keeps. */
   const FORMATTED = 'date as formatted';
 
@@ -70,7 +72,9 @@
     const type = f.elasticsearch?.type ?? (own === 'dynamic' ? '' : own);
     const format = f.elasticsearch?.format;
     if (type !== 'date' || format === undefined) return type;
-    return integer(f) && format === 'epoch_second' ? SECONDS : FORMATTED;
+    return integer(f) && [SECONDS_FORMAT, 'epoch_second'].includes(String(format))
+      ? SECONDS
+      : FORMATTED;
   }
 
   /** The field's own type saves no mapping: what it maps as of itself needs none. */
@@ -82,7 +86,7 @@
     const { format: _, ...date } =
       f.elasticsearch?.type === 'date' ? f.elasticsearch : { type: 'date' };
     if (type === SECONDS) {
-      onmap?.(f.field, { ...date, format: 'epoch_second' });
+      onmap?.(f.field, { ...date, format: SECONDS_FORMAT });
       return;
     }
     onmap?.(f.field, type === '' || type === own ? undefined : type === 'date' ? date : { type });
