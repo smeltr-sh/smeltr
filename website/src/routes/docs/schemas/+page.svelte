@@ -30,7 +30,7 @@
     <li>
       Open Build → Resources → Schemas and choose <strong>+ Add schema</strong>.
     </li>
-    <li>Choose how it starts, and give it its file.</li>
+    <li>Choose how it starts, and its file if it reads one.</li>
     <li>Select <strong>Add</strong>, then <strong>Save</strong>.</li>
   </ol>
   <ul>
@@ -88,7 +88,7 @@
   <p>
     Choose <strong>CSV of fields</strong> and the file. The file needs a header row. Choose the column
     that holds each field's name and the one that holds its type. Columns for required, description, example
-    and elasticsearch are optional. If a type value is not one smeltr knows, choose how to read it.
+    and elasticsearch are optional. If a type value is not one Smeltr knows, choose how to read it.
   </p>
 
   <h2 id="produces">Hold a pipeline to a schema</h2>
@@ -120,7 +120,7 @@
     the same fields to other tools.
   </p>
   <p>
-    Each field maps to the Elasticsearch type its type maps to. To change one, set
+    Each field maps to the Elasticsearch type that matches its Smeltr type. To change one, set
     <strong>Fields shown as</strong> to <strong>Elasticsearch</strong> and choose its type, such as
     <code>ip</code> for an address held as a string. Save the change.
   </p>
