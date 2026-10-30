@@ -104,6 +104,7 @@ test('the Elasticsearch view chooses the type a field maps to, saved with the sc
   await admin.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
   await admin.getByRole('button', { name: 'About Elasticsearch' }).click();
   await expect(admin.getByText(/Each field is indexed as this Elasticsearch type/)).toBeVisible();
+  await admin.screenshot({ path: 'results/schemas-elasticsearch-help.png' });
   await admin.keyboard.press('Escape');
   const ip = admin.getByRole('combobox', { name: 'Elasticsearch type of src_endpoint.ip' });
   await expect(ip).toHaveValue('');
