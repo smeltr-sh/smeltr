@@ -241,14 +241,12 @@ fn a_document_a_real_cluster_refuses_is_a_rejection_and_the_batch_survives() {
     assert_eq!(count(&url, &index), 2, "the two good documents landed anyway");
 }
 
-/// Documents hitting a range query on `field`, from `from` to `to` inclusive.
+/// Documents hitting a range query on `field`, from `from` to `to` inclusive, its bounds read in the field's own
+/// format.
 fn in_range(url: &str, index: &str, field: &str, from: &str, to: &str) -> u64 {
     refresh(url, index);
     let body: serde_json::Value = ureq::post(format!("{url}/{index}/_count"))
-        // A field with a format of its own reads a query's bounds in it too, unless the query names another.
-        .send_json(serde_json::json!({
-            "query": { "range": { field: { "gte": from, "lte": to, "format": "strict_date_optional_time" } } }
-        }))
+        .send_json(serde_json::json!({ "query": { "range": { field: { "gte": from, "lte": to } } } }))
         .expect("counting a range")
         .body_mut()
         .read_json()
@@ -289,7 +287,7 @@ fn an_integer_or_a_string_mapped_as_a_date_reads_as_its_mapping_says() {
     };
     let (millis, seconds, text) = (
         date(None),
-        date(Some("epoch_second")),
+        date(Some("epoch_second||strict_date_optional_time")),
         date(Some("yyyy-MM-dd HH:mm:ss")),
     );
     let mapped: Mapped = [
@@ -317,10 +315,13 @@ fn an_integer_or_a_string_mapped_as_a_date_reads_as_its_mapping_says() {
     .expect("delivered");
     assert!(rejections.is_empty(), "{rejections:?}");
 
+    // Seconds take an ISO bound too, as a query writes one; the text, in its own format.
     let at = "2024-10-30T18:06:13Z";
-    for field in ["millis", "seconds", "text"] {
+    for field in ["millis", "seconds"] {
         assert_eq!(in_range(&url, &index, field, at, at), 1, "`{field}` reads as {at}");
     }
+    let at = "2024-10-30 18:06:13";
+    assert_eq!(in_range(&url, &index, "text", at, at), 1, "`text` reads as {at}");
     // Seconds read as milliseconds: the 21st of January 1970.
     assert_eq!(
         in_range(
