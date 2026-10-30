@@ -417,6 +417,9 @@ impl DeltaCommitter {
             let generated = generated(&identities, &arrow, &snapshot.metadata.partition_columns)?;
             let evolution =
                 schema::table_schema(record, Some(&current), mapping(&snapshot.metadata)?, widens(&snapshot))?;
+            if let Some(why) = schema::refused_column(&evolution.schema) {
+                return Err(why);
+            }
             if !evolution.changed {
                 break (current, identities, generated);
             }
@@ -459,9 +462,6 @@ impl DeltaCommitter {
                 }
             }
         };
-        if let Some(why) = schema::refused_column(&schema) {
-            return Err(why);
-        }
         let partitions = partition_columns(&snapshot.metadata, &schema)?;
         let written = schema::physical(&arrow, &schema);
         let sequences = Arc::new(Sequences::new(generated, log.clone()));
@@ -1746,7 +1746,7 @@ mod tests {
     }
 
     #[test]
-    fn an_identity_column_that_partitions_the_table_or_does_not_read_is_refused_before_anything_is_committed() {
+    fn a_column_this_writer_cannot_fill_is_refused_before_anything_is_committed() {
         let record = st(&[("host", DataType::Str)]);
         // The record adds a column, which an open that took the table would commit first.
         let wider = st(&[("host", DataType::Str), ("n", DataType::I64)]);
@@ -1762,6 +1762,9 @@ mod tests {
         assert!(why.contains("steps by 0"), "{why}");
         let why = refused(&[], json!({"delta.identity.step": 1}));
         assert!(why.contains("has no delta.identity.start"), "{why}");
+        // Nor is a column whose values this writer does not compute.
+        let why = refused(&[], json!({"delta.generationExpression": "1"}));
+        assert!(why.contains("carries delta.generationExpression"), "{why}");
 
         let writes = st(&[("host", DataType::Str), ("id", DataType::I64), ("n", DataType::I64)]);
         let table = identity_table(

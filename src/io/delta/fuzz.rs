@@ -145,6 +145,10 @@ const COVERED: &[&str] = &[
     "identity changed refused",
     "other identity values",
     "other identity column",
+    "unhonoured delta.generationExpression",
+    "unhonoured CURRENT_DEFAULT",
+    "unhonoured delta.invariants",
+    "unhonoured nested identity",
     "other identity change",
     "orc",
     "fault Lost",
@@ -707,6 +711,42 @@ fn identity_column(rng: &mut Rng, metadata: &mut Value, record: &DataType) -> bo
     refused || step == 0
 }
 
+/// Gives a column of `metadata`'s, or a struct's field, what the writer does not fill or check: a generated value, a
+/// default, an invariant, or an identity below the top level. Gives whether it did, so the writer must refuse the
+/// table.
+fn unhonoured(rng: &mut Rng, metadata: &mut Value) -> bool {
+    let Some(mut schema) = (metadata["schemaString"].as_str()).and_then(|s| serde_json::from_str::<Value>(s).ok())
+    else {
+        return false;
+    };
+    let fields = schema["fields"].as_array_mut().expect("a schema has fields");
+    match rng.below(4) {
+        0 => {
+            let nested = (fields.iter_mut()).find_map(|f| {
+                f.get_mut("type")?
+                    .get_mut("fields")?
+                    .as_array_mut()
+                    .filter(|c| !c.is_empty())
+            });
+            let Some(children) = nested else {
+                return false;
+            };
+            reach("unhonoured nested identity");
+            children[0]["metadata"]["delta.identity.start"] = json!(1);
+            children[0]["metadata"]["delta.identity.step"] = json!(1);
+        }
+        _ if fields.is_empty() => return false,
+        n => {
+            let key = ["delta.generationExpression", "CURRENT_DEFAULT", "delta.invariants"][n - 1];
+            reach(format!("unhonoured {key}"));
+            let at = rng.below(fields.len());
+            fields[at]["metadata"][key] = json!("1");
+        }
+    }
+    metadata["schemaString"] = json!(schema.to_string());
+    true
+}
+
 /// The values `step` from `start` beyond `mark`, `n` of them; None when a long holds fewer.
 fn identity_values(start: i64, step: i64, mark: Option<i64>, n: usize) -> Option<Vec<i64>> {
     let (start, step) = (start as i128, step as i128);
@@ -1056,6 +1096,9 @@ impl Run {
         if (writer == 6 || features.contains(&json!("identityColumns"))) && self.rng.chance(2) {
             refused |= identity_column(&mut self.rng, metadata, &self.record);
         }
+        if self.rng.chance(12) {
+            refused |= unhonoured(&mut self.rng, metadata);
+        }
         // A table that knows type widening is narrowed more often: the writer must widen it if it enables widening,
         // and leave it as it is if not.
         let knows = features.contains(&json!("typeWidening"));
@@ -1098,7 +1141,8 @@ impl Run {
             actions.push(row_tracking(self.rng.below(1000) as i64));
         }
         self.put(0, &actions);
-        if self.rng.chance(3) {
+        // Another writer's commit could make a table the writer must refuse one it may write.
+        if !refused && self.rng.chance(3) {
             self.other_commit()?;
         }
         if self.rng.chance(4) {
