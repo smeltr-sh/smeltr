@@ -37,20 +37,30 @@
   /** An integer read as a date counts milliseconds, Elasticsearch's own reading of a number, or seconds, which its
    * mapping's format says. */
   const SECONDS = 'date in seconds';
+  /** A date its mapping gives another format, set in Edit JSON, which the dropdown names and keeps. */
+  const FORMATTED = 'date as formatted';
 
   function integer(f: SchemaFieldDto): boolean {
     return /^(array<)*i64>*$/.test(f.type);
   }
 
-  /** The choices a field's dropdown offers, each with its label: an integer's date is one for each unit. */
+  /** The choices a field's dropdown offers, each with its label: an integer's date is one for each unit, and a date
+   * with another format is one more, named by it. */
   function choices(f: SchemaFieldDto, types: string[]): { value: string; label: string }[] {
+    const formatted =
+      mapsAs(f) === FORMATTED
+        ? [{ value: FORMATTED, label: `date (${f.elasticsearch?.format})` }]
+        : [];
     return types.flatMap((t) =>
-      t === 'date' && integer(f)
-        ? [
-            { value: t, label: 'date (milliseconds)' },
-            { value: SECONDS, label: 'date (seconds)' },
-          ]
-        : [{ value: t, label: t }],
+      t !== 'date'
+        ? [{ value: t, label: t }]
+        : integer(f)
+          ? [
+              { value: t, label: 'date (milliseconds)' },
+              { value: SECONDS, label: 'date (seconds)' },
+              ...formatted,
+            ]
+          : [{ value: t, label: t }, ...formatted],
     );
   }
 
@@ -58,9 +68,9 @@
   function mapsAs(f: SchemaFieldDto): string {
     const own = ownType(f);
     const type = f.elasticsearch?.type ?? (own === 'dynamic' ? '' : own);
-    return type === 'date' && integer(f) && f.elasticsearch?.format === 'epoch_second'
-      ? SECONDS
-      : type;
+    const format = f.elasticsearch?.format;
+    if (type !== 'date' || format === undefined) return type;
+    return integer(f) && format === 'epoch_second' ? SECONDS : FORMATTED;
   }
 
   /** The field's own type saves no mapping: what it maps as of itself needs none. */
@@ -128,7 +138,7 @@
             {@const types = elasticsearchTypes(f.type)}
             <!-- An integer's unit is its choice of type, not another setting. -->
             {@const others = Object.keys(f.elasticsearch ?? {}).filter(
-              (k) => k !== 'type' && !(k === 'format' && mapsAs(f) === SECONDS),
+              (k) => k !== 'type' && !(k === 'format' && [SECONDS, FORMATTED].includes(mapsAs(f))),
             )}
             <td class="mapping">
               {#if types.length === 0}

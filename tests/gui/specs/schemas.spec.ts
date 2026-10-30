@@ -186,6 +186,34 @@ test('an integer indexed as a date counts milliseconds or seconds, as its choice
     ignore_malformed: true,
     format: 'epoch_second',
   });
+  // A date in a format of its own says it, and keeps it until another is chosen.
+  await api.put(`${SHARED}/schemas${ON}`, [
+    {
+      ...LOGIN,
+      fields: LOGIN.fields.map((f) =>
+        f.field === 'user.name'
+          ? { ...f, elasticsearch: { type: 'date', format: 'yyyy-MM-dd HH:mm:ss' } }
+          : f,
+      ),
+    },
+    AUDIT,
+  ]);
+  await admin.reload();
+  await admin.getByRole('button', { name: 'login fields' }).click();
+  await admin.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+  const name = admin.getByRole('combobox', { name: 'Elasticsearch type of user.name' });
+  await expect(name.locator('option:checked')).toHaveText('date (yyyy-MM-dd HH:mm:ss)');
+  await expect(admin.getByText('more setting')).toBeHidden();
+  await name.selectOption({ label: 'date', exact: true });
+  const user = async () => {
+    await admin.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+    const { config } = await api.get(`${SHARED}${ON}`);
+    return config.schemas
+      .find((s: { id: string }) => s.id === 'login')
+      .fields.find((f: { field: string }) => f.field === 'user.name');
+  };
+  expect((await user()).elasticsearch).toEqual({ type: 'date' });
   // A string's date is the text it holds, so it has no unit.
   await expect(
     admin
