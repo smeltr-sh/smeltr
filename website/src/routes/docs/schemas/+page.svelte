@@ -33,10 +33,7 @@
     reads its records.
   </p>
   <WorkflowDiagram kind="schemas" />
-  <p>
-    Schemas come in from ECS, OCSF, a CSV or a JSON Schema. They go out as a JSON Schema or an
-    Elasticsearch mapping.
-  </p>
+  <p>A pipeline names the schemas it produces. A destination may name the schemas it accepts.</p>
 
   <h2 id="why">What schemas get you</h2>
   <ul>
