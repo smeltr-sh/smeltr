@@ -114,10 +114,6 @@ impl<'d> Reader<'d> {
         let format = node.get("format").and_then(Value::as_str);
         Ok(match types.as_slice() {
             ["string"] if format == Some("date-time") => leaf(DataType::DateTime),
-            ["string"] => leaf(DataType::Str),
-            ["integer"] => leaf(DataType::I64),
-            ["number"] => leaf(DataType::F64),
-            ["boolean"] => leaf(DataType::Bool),
             ["object"] => Typed {
                 ty: DataType::Struct(Vec::new(), true),
                 holds: Some(node),
@@ -129,6 +125,9 @@ impl<'d> Reader<'d> {
                     ty: DataType::Array(Box::new(element.ty)),
                     ..element
                 }
+            }
+            [t] if let Some(named) = super::named(t) => {
+                leaf(crate::expr::parse::parse_type(named).expect("a type `named` spells"))
             }
             // Two types at once, or none: JSON Schema leaves it open, and so does the check.
             _ => leaf(DataType::Variant),

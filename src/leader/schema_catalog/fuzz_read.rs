@@ -55,6 +55,9 @@ fn read_as(format: ReadFormat, text: String) -> Result<Vec<SchemaFieldDto>, Stri
         text,
         class: String::new(),
         cut: Cut::default(),
+        columns: None,
+        types: Default::default(),
+        preview: false,
     })
     .map(|r| r.schema.fields)
 }
@@ -386,6 +389,16 @@ fn draw_fields(rng: &mut Rng, prefix: &str, depth: usize, out: &mut Vec<SchemaFi
     }
 }
 
+/// Each type a field drawn holds of itself, with names other systems give it.
+const COMMON: [(&str, &[&str]); 6] = [
+    ("str", &["String", "VARCHAR", "text"]),
+    ("i64", &["int", "BIGINT", "Integer", "long"]),
+    ("f64", &["double", "Float", "decimal"]),
+    ("bool", &["boolean", "Bool"]),
+    ("datetime", &["timestamp", "DateTime"]),
+    ("bytes", &["binary"]),
+];
+
 /// The columns a CSV of fields may have, as its reader names them.
 const COLUMNS: [&str; 6] = ["field", "type", "required", "description", "example", "elasticsearch"];
 
@@ -402,6 +415,10 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
             "csv a column left out",
             "csv a row with no type is refused",
             "csv a required it cannot read is refused",
+            "csv columns chosen",
+            "csv a type by a common name",
+            "csv a type it is told",
+            "csv a type it does not know is refused",
         ]
         .map(String::from),
     );
@@ -450,9 +467,27 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
             }
             false => "\n",
         };
-        let header: Vec<String> = (columns.iter())
-            .map(|c| if caps { c.to_uppercase() } else { c.to_string() })
+        // Columns chosen by their place, under a header that names none of them.
+        let chosen = rng.chance(3).then(|| {
+            cov.reach("csv columns chosen");
+            let at = |role: &str| columns.iter().position(|c| *c == role);
+            crate::schema::csv::Columns {
+                field: at("field"),
+                ty: at("type"),
+                required: at("required"),
+                description: at("description"),
+                example: at("example"),
+                elasticsearch: at("elasticsearch"),
+            }
+        });
+        let header: Vec<String> = (columns.iter().enumerate())
+            .map(|(i, c)| match (&chosen, caps) {
+                (Some(_), _) => format!("c{i}"),
+                (None, true) => c.to_uppercase(),
+                (None, false) => c.to_string(),
+            })
             .collect();
+        let mut types = std::collections::BTreeMap::new();
         let mut text = header.join(",") + end;
         let mut row = 1;
         // Where a row is spoilt, its number and what the reader says of it.
@@ -470,6 +505,25 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
             };
             let mut required = required.to_string();
             let mut ty = f.ty.clone();
+            // A type as another system spells it, or one only the reader is told.
+            if let Some((_, common)) = COMMON.iter().find(|(t, _)| *t == f.ty)
+                && rng.chance(3)
+            {
+                cov.reach("csv a type by a common name");
+                ty = rng.pick(common).to_string();
+            } else if rng.chance(6) {
+                ty = format!("kind {}", f.field);
+                match spoilt.is_none() && rng.chance(10) {
+                    true => {
+                        cov.reach("csv a type it does not know is refused");
+                        spoilt = Some(format!("row {row}: `{ty}` is no type smeltr knows"));
+                    }
+                    false => {
+                        cov.reach("csv a type it is told");
+                        types.insert(ty.clone(), f.ty.clone());
+                    }
+                }
+            }
             if spoilt.is_none() && rng.chance(40) {
                 if columns.contains(&"required") && rng.chance(2) {
                     cov.reach("csv a required it cannot read is refused");
@@ -509,7 +563,33 @@ fn a_csv_of_fields_reads_as_the_fields_it_lists_and_names_a_row_it_cannot() {
                 .collect();
             text += &(cells.join(",") + end);
         }
-        let read = read_as(ReadFormat::Csv, text);
+        let request = |preview| ReadRequest {
+            id: "fuzzed".into(),
+            format: ReadFormat::Csv,
+            text: text.clone(),
+            class: String::new(),
+            cut: Cut::default(),
+            columns: chosen.clone(),
+            types: types.clone(),
+            preview,
+        };
+        // A preview finds the columns as the read does, and knows every type but those it is told.
+        let preview = read(&request(true))?.preview.ok_or("no preview")?;
+        let field_at = columns.iter().position(|c| *c == "field");
+        if preview.columns.field != field_at {
+            return Err(format!(
+                "the preview takes column {:?} as the field",
+                preview.columns.field
+            ));
+        }
+        for (value, ty) in &preview.types {
+            if ty.is_none()
+                != (types.contains_key(value) || spoilt.as_ref().is_some_and(|s| s.contains(value.as_str())))
+            {
+                return Err(format!("the preview reads `{value}` as {ty:?}"));
+            }
+        }
+        let read = read(&request(false)).map(|r| r.schema.fields);
         if let Some(said) = spoilt {
             return match read {
                 Err(e) if e == said => Ok(()),
@@ -663,6 +743,9 @@ fn an_ocsf_class_reads_as_deep_as_its_cut_and_at_the_levels_taken() {
             text: doc.to_string(),
             class: "c".into(),
             cut: cut.clone(),
+            columns: None,
+            types: Default::default(),
+            preview: false,
         })
         .map(|r| r.schema.fields);
         if let Some(said) = said {

@@ -532,6 +532,41 @@ test('a CSV of fields comes in by its header, example and Elasticsearch type amo
   expect(field('status')).toMatchObject({ type: 'i64', example: '200' });
 });
 
+test("a CSV's columns and types are picked from its first rows when its header names neither", async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const csv = path.join(test.info().outputDir, 'columns.csv');
+  await mkdir(test.info().outputDir, { recursive: true });
+  await writeFile(
+    csv,
+    'Attribute,Kind,Meaning\n' +
+      'host,VARCHAR,The machine it ran on.\n' +
+      'port,int,The port it listened on.\n' +
+      'tags,widget,What the team calls it.\n',
+  );
+  const dialog = await addFrom(admin, leader, 'CSV of fields', 'inventory', csv);
+  await expect(dialog.getByText('Choose the column that holds')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Add', exact: true })).toBeDisabled();
+  await dialog.getByRole('combobox', { name: 'Column Attribute holds' }).selectOption('field');
+  await dialog.getByRole('combobox', { name: 'Column Kind holds' }).selectOption('type');
+  await dialog.getByRole('combobox', { name: 'Column Meaning holds' }).selectOption('description');
+  await expect(dialog.getByRole('combobox', { name: 'Type of VARCHAR' })).toHaveValue('str');
+  await expect(dialog.getByRole('combobox', { name: 'Type of int' })).toHaveValue('i64');
+  const widget = dialog.getByRole('combobox', { name: 'Type of widget' });
+  await expect(widget).toHaveValue('str');
+  await expect(dialog.getByText('not a type smeltr knows')).toBeVisible();
+  await widget.selectOption('{...}');
+  await dialog.screenshot({ path: 'results/schemas-csv-picker.png' });
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  const field = await saved(admin, api, 'inventory');
+  expect(field('host')).toMatchObject({ type: 'str', description: 'The machine it ran on.' });
+  expect(field('port')?.type).toBe('i64');
+  expect(field('tags')?.type).toBe('{...}');
+});
+
 test('review lists where the rows do not fit a schema, and the dock counts them without blocking', async ({
   admin,
   leader,

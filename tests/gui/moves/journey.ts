@@ -1557,11 +1557,18 @@ const addGrokPattern: Move = {
 /** A field's type in each format a schema is read from, the type the schema's table spells it as, and how it maps
  * in Elasticsearch where that is not its type's own. */
 const FORMAT_TYPES = [
-  { json: 'string', ecs: 'keyword', ocsf: 'string_t', type: 'str' },
-  { json: 'integer', ecs: 'long', ocsf: 'integer_t', type: 'i64' },
-  { json: 'number', ecs: 'double', ocsf: 'float_t', type: 'f64' },
-  { json: 'boolean', ecs: 'boolean', ocsf: 'boolean_t', type: 'bool' },
-  { json: 'string', ecs: 'ip', ocsf: 'ip_t', type: 'str', elasticsearch: { type: 'ip' } },
+  { json: 'string', ecs: 'keyword', ocsf: 'string_t', common: 'VARCHAR', type: 'str' },
+  { json: 'integer', ecs: 'long', ocsf: 'integer_t', common: 'BIGINT', type: 'i64' },
+  { json: 'number', ecs: 'double', ocsf: 'float_t', common: 'double', type: 'f64' },
+  { json: 'boolean', ecs: 'boolean', ocsf: 'boolean_t', common: 'Boolean', type: 'bool' },
+  {
+    json: 'string',
+    ecs: 'ip',
+    ocsf: 'ip_t',
+    common: 'String',
+    type: 'str',
+    elasticsearch: { type: 'ip' },
+  },
 ] as const;
 
 /** The tile each format is added from. */
@@ -1619,6 +1626,10 @@ const addSchema: Move = {
         ? { elasticsearch: t.elasticsearch }
         : {}),
     }));
+    // A CSV's columns picked by hand, under a header that names none of them; its types as other systems spell them.
+    const picked = format === 'csv' && rng.chance(2);
+    const common = taken.map(() => rng.chance(2));
+    const told = taken.map(() => format === 'csv' && rng.chance(4));
     const cell = (s: string) => (/[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s);
     const file = {
       empty: '',
@@ -1628,12 +1639,15 @@ const addSchema: Move = {
         properties: Object.fromEntries(drawn.map((d) => [`f${d.i}`, { type: d.t.json }])),
       }),
       csv:
-        'Field,Type,Required,Description,Example,Elasticsearch\n' +
+        (picked
+          ? 'Name,Kind,Must,About,Sample,Index\n'
+          : 'Field,Type,Required,Description,Example,Elasticsearch\n') +
         fields
-          .map((f) =>
+          .map((f, i) =>
             [
               f.field,
-              f.type,
+              // As another system spells it, a type the leader knows, or one it is told.
+              told[i] ? `kind ${i}` : common[i] ? taken[i].t.common : f.type,
               f.required ? 'yes' : '',
               f.description!,
               f.example ?? '',
@@ -1683,6 +1697,18 @@ const addSchema: Move = {
       await dialog
         .getByLabel(/^File/)
         .setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(file) });
+    }
+    if (format === 'csv' && picked) {
+      const roles = ['field', 'type', 'required', 'description', 'example', 'elasticsearch'];
+      const names = ['Name', 'Kind', 'Must', 'About', 'Sample', 'Index'];
+      for (const [i, role] of roles.entries()) {
+        await dialog.getByRole('combobox', { name: `Column ${names[i]} holds` }).selectOption(role);
+      }
+    }
+    for (const [i, f] of fields.entries()) {
+      if (told[i]) {
+        await dialog.getByRole('combobox', { name: `Type of kind ${i}` }).selectOption(f.type);
+      }
     }
     if (format === 'ocsf') {
       await expect(dialog.getByRole('combobox', { name: 'Class' })).toHaveValue('web');

@@ -131,16 +131,12 @@ fn with_multi_fields(ecs: Vec<Ecs>) -> Vec<SchemaFieldDto> {
 }
 
 fn field(f: Ecs) -> SchemaFieldDto {
+    // A keyword, a text, an IP or a wildcard is each a `str` a pipeline writes; what tells them apart is the mapping.
     let element = match f.ty.as_str() {
-        "date" | "date_nanos" => "datetime",
-        "long" | "integer" | "short" | "byte" | "unsigned_long" => "i64",
-        "float" | "half_float" | "scaled_float" | "double" => "f64",
-        "boolean" => "bool",
-        "object" | "geo_point" => "{...}",
+        "geo_point" => "{...}",
         "nested" => "array<{...}>",
         "flattened" => "variant",
-        "binary" => "bytes",
-        _ => "str",
+        ty => super::named(ty).unwrap_or("str"),
     };
     let ty = match f.array && !element.starts_with("array") {
         true => format!("array<{element}>"),

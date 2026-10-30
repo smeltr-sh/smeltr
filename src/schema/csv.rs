@@ -1,21 +1,97 @@
-//! A schema from a CSV of fields: a spreadsheet's table, one row per field under a header row that names its columns.
-//! `field` and `type` are named; `required`, `description`, `example` and `elasticsearch` (an Elasticsearch type) may
-//! be. Other columns are a spreadsheet's own and are passed over. A header is matched without regard to case.
+//! A schema from a CSV of fields: a spreadsheet's table, one row per field under a header row. `Columns` says which
+//! column holds a field's path and type, and which its `required`, `description`, `example` and `elasticsearch` (an
+//! Elasticsearch type); other columns are a spreadsheet's own and are passed over. Unsaid, a column is found by its
+//! header's name, without regard to case. A type is smeltr's spelling, a common name for one (`schema::named`), or
+//! a value the reader is told the type of.
+
+use std::collections::BTreeMap;
 
 use serde_json::json;
 
 use crate::config_file::SchemaFieldDto;
 use crate::format::csv_scan;
 
-/// The fields `text` declares, its rows in order. `Err` names the row at fault, counting the header as row 1.
-pub fn read(text: &str) -> Result<Vec<SchemaFieldDto>, String> {
+/// Which column holds what, each by its index from 0.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Columns {
+    pub field: Option<usize>,
+    #[serde(rename = "type")]
+    pub ty: Option<usize>,
+    pub required: Option<usize>,
+    pub description: Option<usize>,
+    pub example: Option<usize>,
+    pub elasticsearch: Option<usize>,
+}
+
+impl Columns {
+    /// The columns `header` names, each by a name it may go by.
+    fn named(header: &[String]) -> Columns {
+        let at = |names: &[&str]| (header.iter()).position(|h| names.iter().any(|n| h.trim().eq_ignore_ascii_case(n)));
+        Columns {
+            field: at(&["field", "name", "path", "column"]),
+            ty: at(&["type", "data type", "datatype"]),
+            required: at(&["required"]),
+            description: at(&["description"]),
+            example: at(&["example"]),
+            elasticsearch: at(&["elasticsearch"]),
+        }
+    }
+}
+
+/// What a file holds before its columns are chosen: its header, its first rows, the columns its header names, and
+/// each value of the type column with the type it reads as, `None` where it is no type the reader knows.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct Preview {
+    pub header: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub columns: Columns,
+    pub types: Vec<(String, Option<String>)>,
+}
+
+/// How many rows a preview shows.
+const SHOWN: usize = 5;
+
+/// `text`'s header and first rows, the columns `columns` says or its header names, and the values its type column
+/// holds.
+pub fn preview(text: &str, columns: Option<&Columns>) -> Result<Preview, String> {
     let mut rows = rows(text)?.into_iter();
     let (_, header) = rows.next().ok_or("the file is empty")?;
-    let at = |name: &str| header.iter().position(|h| h.trim().eq_ignore_ascii_case(name));
-    let field = at("field").ok_or("the header names no `field` column")?;
-    let ty = at("type").ok_or("the header names no `type` column")?;
-    let (required, description, example, elasticsearch) =
-        (at("required"), at("description"), at("example"), at("elasticsearch"));
+    let columns = columns.cloned().unwrap_or_else(|| Columns::named(&header));
+    let rows: Vec<Vec<String>> = rows.map(|(_, r)| r).collect();
+    let mut seen: Vec<String> = (columns.ty.into_iter())
+        .flat_map(|i| rows.iter().filter_map(move |r| r.get(i)))
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    seen.sort();
+    seen.dedup();
+    Ok(Preview {
+        types: seen
+            .into_iter()
+            .map(|t| {
+                let ty = type_of(&t, &BTreeMap::new());
+                (t, ty)
+            })
+            .collect(),
+        rows: rows.into_iter().take(SHOWN).collect(),
+        header,
+        columns,
+    })
+}
+
+/// The fields `text` declares, its rows in order, from the columns `columns` says or its header names. `types` gives
+/// the type of a value the reader does not know. `Err` names the row at fault, counting the header as row 1.
+pub fn read(
+    text: &str,
+    columns: Option<&Columns>,
+    types: &BTreeMap<String, String>,
+) -> Result<Vec<SchemaFieldDto>, String> {
+    let mut rows = rows(text)?.into_iter();
+    let (_, header) = rows.next().ok_or("the file is empty")?;
+    let c = columns.cloned().unwrap_or_else(|| Columns::named(&header));
+    let field = c.field.ok_or("the header names no `field` column")?;
+    let ty = c.ty.ok_or("the header names no `type` column")?;
     let mut fields = Vec::new();
     for (n, row) in rows {
         let cell = |i: Option<usize>| i.and_then(|i| row.get(i)).map(|c| c.trim()).unwrap_or_default();
@@ -23,22 +99,35 @@ pub fn read(text: &str) -> Result<Vec<SchemaFieldDto>, String> {
         if name.is_empty() {
             return Err(format!("row {n}: no `field`"));
         }
-        let ty = cell(Some(ty));
-        if ty.is_empty() {
+        let said = cell(Some(ty));
+        if said.is_empty() {
             return Err(format!("row {n}: no `type` for `{name}`"));
         }
+        let ty = type_of(said, types).ok_or_else(|| format!("row {n}: `{said}` is no type smeltr knows"))?;
         fields.push(SchemaFieldDto {
             field: name.to_string(),
-            ty: ty.to_string(),
-            required: yes(cell(required)).map_err(|said| format!("row {n}: `required` is {said:?}, not yes or no"))?,
-            description: cell(description).to_string(),
-            example: cell(example).to_string(),
-            elasticsearch: Some(cell(elasticsearch))
+            ty,
+            required: yes(cell(c.required))
+                .map_err(|said| format!("row {n}: `required` is {said:?}, not yes or no"))?,
+            description: cell(c.description).to_string(),
+            example: cell(c.example).to_string(),
+            elasticsearch: Some(cell(c.elasticsearch))
                 .filter(|t| !t.is_empty())
                 .map(|t| json!({ "type": t }).as_object().cloned().expect("an object")),
         });
     }
     Ok(fields)
+}
+
+/// The type `said` reads as: the one `types` gives it, smeltr's own spelling, or a common name for one.
+fn type_of(said: &str, types: &BTreeMap<String, String>) -> Option<String> {
+    if let Some(ty) = types.get(said) {
+        return Some(ty.clone());
+    }
+    if crate::expr::parse::parse_type(said).is_ok() {
+        return Some(said.to_string());
+    }
+    super::named(said).map(str::to_string)
 }
 
 /// Each record of `text` but blank ones, split into its cells, with its row number from 1. A quoted cell may hold a
@@ -87,13 +176,17 @@ fn yes(cell: &str) -> Result<bool, &str> {
 mod tests {
     use super::*;
 
+    fn by_header(text: &str) -> Result<Vec<SchemaFieldDto>, String> {
+        read(text, None, &BTreeMap::new())
+    }
+
     #[test]
     fn a_spreadsheet_of_fields_reads_by_its_header() {
         let text = "Notes,FIELD,Type,Required,Description,Example,Elasticsearch\r\n\
                     x,client.ip,str,yes,\"Where it came from,\nthe address.\",10.0.0.1,ip\r\n\
                     ,status,i64,,The HTTP status.,200,\r\n\
                     \r\n";
-        let fields = read(text).unwrap();
+        let fields = by_header(text).unwrap();
         assert_eq!(fields.len(), 2);
         assert_eq!(fields[0].field, "client.ip");
         assert!(fields[0].required);
@@ -106,17 +199,62 @@ mod tests {
 
     #[test]
     fn a_spreadsheet_says_what_it_lacks_by_row() {
-        assert_eq!(read("").unwrap_err(), "the file is empty");
+        assert_eq!(by_header("").unwrap_err(), "the file is empty");
         assert_eq!(
-            read("name,type\na,str").unwrap_err(),
+            by_header("key,type\na,str").unwrap_err(),
             "the header names no `field` column"
         );
-        assert_eq!(read("field,type\na,str\n,i64").unwrap_err(), "row 3: no `field`");
-        assert_eq!(read("field,type\na,").unwrap_err(), "row 2: no `type` for `a`");
+        assert_eq!(by_header("field,type\na,str\n,i64").unwrap_err(), "row 3: no `field`");
+        assert_eq!(by_header("field,type\na,").unwrap_err(), "row 2: no `type` for `a`");
         assert_eq!(
-            read("field,type,required\na,str,maybe").unwrap_err(),
+            by_header("field,type,required\na,str,maybe").unwrap_err(),
             "row 2: `required` is \"maybe\", not yes or no"
         );
-        assert_eq!(read("field,type\n\"a,str").unwrap_err(), "row 2: a quote is not closed");
+        assert_eq!(
+            by_header("field,type\n\"a,str").unwrap_err(),
+            "row 2: a quote is not closed"
+        );
+        assert_eq!(
+            by_header("field,type\na,widget").unwrap_err(),
+            "row 2: `widget` is no type smeltr knows"
+        );
+    }
+
+    #[test]
+    fn a_type_reads_by_its_common_name_or_as_it_is_told() {
+        let text = "Column,Data Type\nhost,VARCHAR\nport,int\nseen,timestamp\nshape,widget\n";
+        let preview = preview(text, None).unwrap();
+        assert_eq!((preview.columns.field, preview.columns.ty), (Some(0), Some(1)));
+        assert_eq!(preview.header, vec!["Column", "Data Type"]);
+        assert_eq!(preview.rows.len(), 4);
+        let types: Vec<(&str, Option<&str>)> = (preview.types.iter())
+            .map(|(v, t)| (v.as_str(), t.as_deref()))
+            .collect();
+        assert_eq!(
+            types,
+            [
+                ("VARCHAR", Some("str")),
+                ("int", Some("i64")),
+                ("timestamp", Some("datetime")),
+                ("widget", None)
+            ]
+        );
+        let columns = Columns {
+            field: Some(0),
+            ty: Some(1),
+            ..Columns::default()
+        };
+        let told = BTreeMap::from([("widget".to_string(), "{...}".to_string())]);
+        let fields = read(text, Some(&columns), &told).unwrap();
+        let got: Vec<(&str, &str)> = fields.iter().map(|f| (f.field.as_str(), f.ty.as_str())).collect();
+        assert_eq!(
+            got,
+            [
+                ("host", "str"),
+                ("port", "i64"),
+                ("seen", "datetime"),
+                ("shape", "{...}")
+            ]
+        );
     }
 }

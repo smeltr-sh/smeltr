@@ -40,12 +40,23 @@ pub struct ReadRequest {
     /// How much of an OCSF class to read.
     #[serde(default)]
     pub cut: crate::schema::ocsf::Cut,
+    /// Which column of a CSV holds what; unsaid, its header says.
+    #[serde(default)]
+    pub columns: Option<crate::schema::csv::Columns>,
+    /// The type of each value of a CSV's type column the reader does not know of itself.
+    #[serde(default)]
+    pub types: std::collections::BTreeMap<String, String>,
+    /// Answer what a CSV holds, for its columns and types to be chosen, rather than read it.
+    #[serde(default)]
+    pub preview: bool,
 }
 
-/// A schema read from a file, as a bundle declares one.
+/// A schema read from a file, as a bundle declares one, or, asked for, what a CSV holds before it is read.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct ReadSchema {
     pub schema: SchemaDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<crate::schema::csv::Preview>,
 }
 
 /// The schema `req`'s file declares, checked as a bundle's would be.
@@ -56,11 +67,18 @@ pub fn read(req: &ReadRequest) -> Result<ReadSchema, String> {
             let schema = json_schema::read(&req.id, &json()?)?;
             return Ok(ReadSchema {
                 schema: crate::schema::to_dto(&schema),
+                preview: None,
             });
         }
         ReadFormat::Ecs => crate::schema::ecs::read(&req.text)?,
         ReadFormat::Ocsf => crate::schema::ocsf::read(&json()?, &req.class, &req.cut)?,
-        ReadFormat::Csv => crate::schema::csv::read(&req.text)?,
+        ReadFormat::Csv if req.preview => {
+            return Ok(ReadSchema {
+                preview: Some(crate::schema::csv::preview(&req.text, req.columns.as_ref())?),
+                ..ReadSchema::default()
+            });
+        }
+        ReadFormat::Csv => crate::schema::csv::read(&req.text, req.columns.as_ref(), &req.types)?,
     };
     declared(&req.id, "", fields)
 }
@@ -74,7 +92,7 @@ fn declared(id: &str, title: &str, fields: Vec<crate::config_file::SchemaFieldDt
         fields,
     };
     crate::schema::read(&schema)?;
-    Ok(ReadSchema { schema })
+    Ok(ReadSchema { schema, preview: None })
 }
 
 /// What a schema is exported as.
@@ -219,6 +237,9 @@ mod tests {
             text: doc.to_string(),
             class: String::new(),
             cut: Default::default(),
+            columns: None,
+            types: Default::default(),
+            preview: false,
         }
     }
 
@@ -230,6 +251,9 @@ mod tests {
             text: text.to_string(),
             class: "authentication".to_string(),
             cut: Default::default(),
+            columns: None,
+            types: Default::default(),
+            preview: false,
         };
         let fields = |r: Result<ReadSchema, String>| r.unwrap().schema.fields.len();
         assert_eq!(fields(read(&req(ReadFormat::Csv, "field,type\na,str\nb,i64"))), 2);
@@ -251,9 +275,9 @@ mod tests {
             "the file is not JSON: expected ident at line 1 column 2"
         );
         assert!(
-            read(&req(ReadFormat::Csv, "field,type\na,nope"))
+            read(&req(ReadFormat::Csv, "field,type,elasticsearch\na,str,long"))
                 .unwrap_err()
-                .starts_with("`a`: `nope` is no type")
+                .starts_with("`a`: Elasticsearch's `long` cannot hold str")
         );
         assert!(
             read(&req(ReadFormat::Csv, "field,type,elasticsearch\na,str,long"))

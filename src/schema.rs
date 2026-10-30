@@ -18,6 +18,25 @@ pub mod ecs;
 pub mod json_schema;
 pub mod ocsf;
 
+/// The type a common name for one means, as a schema spells it: what a database, a spreadsheet or a standard calls a
+/// type, matched without regard to case. Each reader takes what is its own first, then this.
+pub fn named(name: &str) -> Option<&'static str> {
+    Some(match name.trim().to_ascii_lowercase().as_str() {
+        "str" | "string" | "text" | "varchar" | "char" | "keyword" => "str",
+        "i64" | "int" | "integer" | "long" | "bigint" | "smallint" | "tinyint" | "short" | "byte" | "unsigned_long" => {
+            "i64"
+        }
+        "f64" | "float" | "double" | "number" | "decimal" | "real" | "half_float" | "scaled_float" => "f64",
+        "bool" | "boolean" => "bool",
+        "datetime" | "date" | "timestamp" | "date_nanos" => "datetime",
+        "duration" => "duration",
+        "bytes" | "binary" => "bytes",
+        "object" | "json" | "map" | "struct" => "{...}",
+        "variant" | "any" => "variant",
+        _ => return None,
+    })
+}
+
 /// `value` as a field's example: a string as it is, any other value as its JSON.
 fn example_of(value: Option<&serde_json::Value>) -> String {
     match value {

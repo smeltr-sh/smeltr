@@ -5,7 +5,7 @@
 -->
 <script lang="ts" module>
   import type { CatalogType } from './TypeCatalog.svelte';
-  import type { OcsfLevel, SchemaReadFormat } from './api';
+  import type { CsvColumns, CsvPreview, OcsfLevel, SchemaReadFormat } from './api';
 
   export type SchemaStart = 'ecs' | 'ocsf' | 'csv' | 'jsonSchema' | 'import' | 'empty';
 
@@ -39,7 +39,37 @@
     depth: number;
     /** Which OCSF requirement levels are read. */
     levels: OcsfLevel[];
+    /** A CSV as the leader read it before its columns were chosen, or why it could not. */
+    preview: CsvPreview | null;
+    previewError: string;
+    /** Which CSV column holds what. */
+    columns: CsvColumns;
+    /** The type each value of the CSV's type column reads as. */
+    types: Record<string, string>;
   };
+
+  /** What a CSV column may hold. */
+  export const CSV_ROLES = [
+    'field',
+    'type',
+    'required',
+    'description',
+    'example',
+    'elasticsearch',
+  ] as const;
+
+  /** The types a value of a CSV's type column may be read as. */
+  export const SCHEMA_TYPES = [
+    'str',
+    'i64',
+    'f64',
+    'bool',
+    'datetime',
+    'duration',
+    'bytes',
+    'variant',
+    '{...}',
+  ];
 
   const LABELS: Record<SchemaStart, string> = {
     ecs: 'schema from ECS',
@@ -71,7 +101,7 @@
       type: 'csv',
       label: 'CSV of fields',
       category: 'From a file',
-      help: 'A CSV file with a row per field. Its header row names the columns field and type, and optionally required, description, example and elasticsearch.',
+      help: 'A CSV file with a row per field, under a header row. Pick which column holds the field and its type, and optionally required, description, example and elasticsearch.',
       // A grid.
       glyph: { d: 'M10 14 H54 V50 H10 Z M10 26 H54 M10 38 H54 M26 14 V50 M40 14 V50' },
     },
@@ -106,6 +136,7 @@
   import Field from './Field.svelte';
   import { suggestId } from './ids';
   import LineBreakerField from './LineBreakerField.svelte';
+  import { readSchema } from './api';
 
   let {
     open,
@@ -136,13 +167,65 @@
       class: '',
       depth: 2,
       levels: ['required', 'recommended'],
+      preview: null,
+      previewError: '',
+      columns: {},
+      types: {},
     };
+  }
+
+  /** Reads the CSV for its preview, with the columns chosen, or as its header names them. A type already chosen
+   * stays; one the leader does not know is read as `str` until another is chosen. */
+  let previews = 0;
+  async function previewCsv(draft: SchemaDraft, columns?: CsvColumns) {
+    // Only the latest answers: a column picked while an earlier preview is out must not be undone by it.
+    const asked = ++previews;
+    const read = await readSchema({
+      id: draft.id,
+      format: 'csv',
+      text: draft.text,
+      preview: true,
+      ...(columns ? { columns } : {}),
+    }).catch((e: unknown) => ({ ok: false, errors: [{ message: String(e) }], preview: undefined }));
+    if (asked !== previews) return;
+    if (!read.ok || !read.preview) {
+      draft.preview = null;
+      draft.previewError = read.errors.map((e) => e.message).join(' ');
+      return;
+    }
+    draft.preview = read.preview;
+    draft.previewError = '';
+    draft.columns = read.preview.columns;
+    draft.types = Object.fromEntries(
+      read.preview.types.map(([value, ty]) => [value, draft.types[value] ?? ty ?? 'str']),
+    );
+  }
+
+  /** Column `at` holds `role`, and no other column does; no role, it holds nothing the schema reads. */
+  function hold(draft: SchemaDraft, at: number, role: string) {
+    const columns: CsvColumns = {};
+    for (const r of CSV_ROLES) {
+      const i = draft.columns[r];
+      if (i !== undefined && i !== null && i !== at && r !== role) columns[r] = i;
+    }
+    if (role) columns[role as (typeof CSV_ROLES)[number]] = at;
+    draft.columns = columns;
+    void previewCsv(draft, columns);
+  }
+
+  /** The role column `at` holds, or '' for none. */
+  function roleOf(draft: SchemaDraft, at: number): string {
+    return CSV_ROLES.find((r) => draft.columns[r] === at) ?? '';
   }
 
   async function upload(draft: SchemaDraft, input: HTMLInputElement) {
     const file = input.files?.[0];
     if (!file) return;
     draft.text = await file.text();
+    if (draft.type === 'csv') {
+      draft.types = {};
+      await previewCsv(draft);
+    }
     if (draft.type === 'ocsf') {
       // The classes to pick from. A file that is not JSON lists none, and the leader says why on Add.
       try {
@@ -166,8 +249,9 @@
 
   function ready(d: SchemaDraft): boolean {
     switch (d.type) {
-      case 'ecs':
       case 'csv':
+        return d.preview !== null && d.columns.field != null && d.columns.type != null;
+      case 'ecs':
       case 'jsonSchema':
         return d.text.trim() !== '';
       case 'ocsf':
@@ -217,6 +301,73 @@
           onchange={(e) => upload(draft, e.currentTarget)}
         />
       </Field>
+      {#if draft.type === 'csv' && draft.previewError}
+        <p class="problem" role="alert">{draft.previewError}</p>
+      {:else if draft.type === 'csv' && draft.preview}
+        {@const preview = draft.preview}
+        <fieldset class="picker">
+          <legend>What each column holds</legend>
+          {#if draft.columns.field == null || draft.columns.type == null}
+            <p class="problem">
+              Choose the column that holds each field's name, and the one that holds its type.
+            </p>
+          {/if}
+          <div class="scroll">
+            <table class="preview">
+              <thead>
+                <tr>
+                  {#each preview.header as h, i (i)}
+                    <th>
+                      <select
+                        aria-label={`Column ${h || i + 1} holds`}
+                        value={roleOf(draft, i)}
+                        onchange={(e) => hold(draft, i, e.currentTarget.value)}
+                      >
+                        <option value="">nothing</option>
+                        {#each CSV_ROLES as r (r)}<option value={r}>{r}</option>{/each}
+                      </select>
+                    </th>
+                  {/each}
+                </tr>
+                <tr>
+                  {#each preview.header as h, i (i)}<th class="name mono">{h}</th>{/each}
+                </tr>
+              </thead>
+              <tbody>
+                {#each preview.rows as row, r (r)}
+                  <tr>
+                    {#each preview.header as _, i (i)}<td class="mono">{row[i] ?? ''}</td>{/each}
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        </fieldset>
+        {#if preview.types.length > 0}
+          <fieldset class="types">
+            <legend>Types</legend>
+            <table>
+              <tbody>
+                {#each preview.types as [value, known] (value)}
+                  <tr>
+                    <td class="mono">{value}</td>
+                    <td>
+                      <select aria-label={`Type of ${value}`} bind:value={draft.types[value]}>
+                        {#each known && !SCHEMA_TYPES.includes(known) ? [known, ...SCHEMA_TYPES] : SCHEMA_TYPES as t (t)}
+                          <option value={t}>{t}</option>
+                        {/each}
+                      </select>
+                    </td>
+                    <td class="dim"
+                      >{known === null ? 'not a type smeltr knows: read as chosen' : ''}</td
+                    >
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </fieldset>
+        {/if}
+      {/if}
     {:else if draft.type === 'ocsf'}
       <Field required label="File">
         <input
@@ -289,6 +440,55 @@
 
   .mono {
     font-family: var(--mono);
+  }
+
+  .picker,
+  .types {
+    border: 0;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+  }
+
+  .picker legend,
+  .types legend {
+    font-weight: 600;
+    margin-bottom: 0.3rem;
+  }
+
+  .scroll {
+    overflow-x: auto;
+    max-width: 100%;
+  }
+
+  .preview {
+    border-collapse: collapse;
+    font-size: var(--text-note);
+  }
+
+  .preview th,
+  .preview td,
+  .types td {
+    padding: 0.2rem 0.5rem 0.2rem 0;
+    text-align: left;
+    white-space: nowrap;
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .preview .name {
+    color: var(--dim);
+    font-weight: 400;
+  }
+
+  .problem {
+    color: var(--error);
+    margin: 0;
+  }
+
+  .dim {
+    color: var(--dim);
   }
 
   .levels {

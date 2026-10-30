@@ -5303,6 +5303,22 @@ export interface ReadSchema {
   errors: ApiError[];
   /** The schema the file declares. */
   schema: SchemaDto;
+  /** Asked for, what a CSV holds before it is read. */
+  preview?: CsvPreview;
+}
+
+/** Which column of a CSV holds what, each by its index from 0. */
+export type CsvColumns = Partial<
+  Record<'field' | 'type' | 'required' | 'description' | 'example' | 'elasticsearch', number>
+>;
+
+/** A CSV before its columns are chosen: its header, its first rows, the columns its header names, and each value of
+ * its type column with the type it reads as, null where the reader does not know it. */
+export interface CsvPreview {
+  header: string[];
+  rows: string[][];
+  columns: CsvColumns;
+  types: [string, string | null][];
 }
 
 /** A file a schema is read from: JSON Schema, ECS's `fields.csv` or `ecs_flat.yml`, `ocsf-schema-compiler`'s output,
@@ -5321,6 +5337,12 @@ export function readSchema(req: {
   class?: string;
   /** How much of the OCSF class: how many keys deep, and which requirement levels. */
   cut?: { depth: number; levels: OcsfLevel[] };
+  /** Which column of a CSV holds what; absent, its header says. */
+  columns?: CsvColumns;
+  /** The type of each value of a CSV's type column the reader does not know. */
+  types?: Record<string, string>;
+  /** Answer what a CSV holds rather than read it. */
+  preview?: boolean;
 }): Promise<ReadSchema> {
   return post('/api/preview/schema-read', req, 'quiet');
 }

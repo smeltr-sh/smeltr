@@ -112,14 +112,10 @@ impl Reader<'_> {
             };
             let ty = a.get("type").and_then(Value::as_str).unwrap_or_default();
             let element = match ty {
-                "object_t" => "{...}",
-                "boolean_t" => "bool",
                 // A timestamp is epoch milliseconds.
-                "integer_t" | "long_t" | "port_t" | "timestamp_t" => "i64",
-                "float_t" => "f64",
-                "datetime_t" => "datetime",
+                "port_t" | "timestamp_t" => "i64",
                 "json_t" => "variant",
-                _ => "str",
+                ty => super::named(ty.trim_end_matches("_t")).unwrap_or("str"),
             };
             out.push(SchemaFieldDto {
                 field: path.clone(),
