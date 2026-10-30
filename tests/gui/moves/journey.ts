@@ -2237,21 +2237,25 @@ const setAgentPermissions: Move = {
     await page.getByRole('button', { name: /^signed in as / }).click();
     await page.getByRole('button', { name: 'Agent permissions' }).click();
     await expect(page.getByRole('heading', { name: 'Agent permissions' })).toBeVisible();
+    // The journey's person is an administrator, so they are offered the administrator role for their agent, and
+    // holding it leaves no levels to set.
+    const administrator = page.getByRole('checkbox', { name: 'Your agent is an administrator' });
     let expected: object;
     if (rng.chance(3)) {
-      await page.getByRole('button', { name: 'Everything you hold' }).click();
-      expected = { kind: 'everything' };
+      await administrator.check();
+      await expect(page.getByRole('combobox', { name: /^Every area\b/ })).toHaveCount(0);
+      expected = { administrator: true };
     } else {
       const level = rng.pick(LEVELS);
       const shared = rng.pick(LEVELS);
-      await page.getByRole('button', { name: 'Up to a level' }).click();
+      await administrator.uncheck();
       await page.getByRole('combobox', { name: /^Every area\b/ }).selectOption(level);
       await page.getByRole('combobox', { name: 'shared level' }).selectOption(shared);
-      expected = { kind: 'upto', default: level, areas: { shared } };
+      expected = { administrator: false, default: level, areas: { shared } };
     }
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByRole('status')).toHaveText('agent permissions saved');
-    expect(await (await j.truth()).get('/api/me/agent-permissions')).toEqual({
+    expect(await (await j.truth()).get('/api/me/agent-permissions')).toMatchObject({
       ok: true,
       errors: [],
       ...expected,

@@ -55,8 +55,10 @@ pub async fn put_permissions(
     if let Some(refused) = refused_while_off(&auth).await {
         return refused;
     }
-    if let AgentPermissions::Upto { areas, .. } = &permissions
-        && let Some(area) = areas.keys().find(|a| *a != SHARED_DIR && group_subtree(a).is_err())
+    if let Some(area) = permissions
+        .areas
+        .keys()
+        .find(|a| *a != SHARED_DIR && group_subtree(a).is_err())
     {
         return refuse(
             StatusCode::UNPROCESSABLE_ENTITY,

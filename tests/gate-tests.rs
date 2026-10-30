@@ -1130,7 +1130,7 @@ fn the_agent_apis_wait_until_ai_agents_are_turned_on() {
     let (status, body) = leader.put_as(
         &op,
         "/api/me/agent-permissions",
-        serde_json::json!({ "kind": "everything" }),
+        serde_json::json!({ "administrator": true, "default": "deployer" }),
     );
     assert_eq!(status, 409, "{body}");
     assert_eq!(body["errors"][0]["message"], "AI agents are not turned on");
@@ -1223,25 +1223,31 @@ fn a_person_sets_what_their_agent_may_use() {
     assert_eq!(status, 200);
     assert_eq!(
         permissions,
-        serde_json::json!({ "ok": true, "errors": [], "kind": "upto", "default": "viewer", "areas": {} })
+        serde_json::json!({ "ok": true, "errors": [], "administrator": false, "default": "viewer", "areas": {} })
     );
     let (status, _) = leader.put_as(
         &op,
         "/api/me/agent-permissions",
-        serde_json::json!({ "kind": "everything" }),
+        serde_json::json!({ "administrator": true, "default": "deployer" }),
     );
     assert_eq!(status, 200);
     let (_, permissions) = leader.get_as(&op.session, "/api/me/agent-permissions");
     assert_eq!(
         permissions,
-        serde_json::json!({ "ok": true, "errors": [], "kind": "everything" })
+        serde_json::json!({ "ok": true, "errors": [], "administrator": true, "default": "deployer", "areas": {} })
     );
     let (status, _) = leader.put_as(
         &op,
         "/api/me/agent-permissions",
-        serde_json::json!({ "kind": "upto", "default": "viewer", "areas": { "../x": "editor" } }),
+        serde_json::json!({ "default": "viewer", "areas": { "../x": "editor" } }),
     );
     assert_eq!(status, 422);
+    let (status, _) = leader.put_as(
+        &op,
+        "/api/me/agent-permissions",
+        serde_json::json!({ "kind": "everything" }),
+    );
+    assert_eq!(status, 422, "the shape before the administrator role is refused");
 }
 
 /// The conversation `id` once its turn has ended.
@@ -2511,11 +2517,11 @@ fn a_key_account_sets_its_own_agent_permissions() {
         &key,
         "PUT",
         "/api/me/agent-permissions",
-        Some(serde_json::json!({ "kind": "everything" })),
+        Some(serde_json::json!({ "administrator": true, "default": "deployer" })),
     );
     assert_eq!(status, 200, "{body}");
     let (_, permissions) = with_key(&leader, &key, "GET", "/api/me/agent-permissions", None);
-    assert_eq!(permissions["kind"], "everything");
+    assert_eq!(permissions["administrator"], true);
 }
 
 /// Point 7: renaming and disabling are one write for every account, audited alike.

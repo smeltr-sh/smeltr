@@ -176,13 +176,14 @@ roles that named it.
 
 The leader's AI agent is a principal of the same kind. Acting for a person, it
 carries their session and holds their **agent permissions**: the level in each
-area they let it use, viewer everywhere until they choose otherwise, up to
-everything they hold. The gate judges its requests by the lower of the person's
+area they let it use, viewer everywhere until they choose otherwise, and
+whether it holds the administrator role with them. The gate judges its requests by the lower of the person's
 level and the agent permissions in each area, so an agent never holds more than
 its person, and loses what they lose on their next request. Only the leader
 marks a request as the agent's. No agent changes its own permissions: only
 its person sets them. An administrator's agent is an administrator only when
-its permissions are everything. What it does is recorded as its person's
+its permissions name the administrator role; for anyone else, naming it gives
+nothing. What it does is recorded as its person's
 agent's, in the audit and in git.
 None of this acts until an administrator turns AI agents on and names the
 model endpoint they think with: until then no agent permissions are set, and

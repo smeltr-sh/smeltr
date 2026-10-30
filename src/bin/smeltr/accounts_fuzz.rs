@@ -94,7 +94,8 @@ const OPTIONS: &[&str] = &[
     "key-already-expired",
     "key-revoked",
     "key-revoked-again-refused",
-    "agent-everything",
+    "agent-administrator",
+    "agent-administrator-gives-nothing",
     "agent-upto",
     "probe-local",
     "probe-oidc",
@@ -230,16 +231,16 @@ impl Model {
                 named => named.copied(),
             },
         }?;
-        match (&account.agent, by_agent) {
-            (AgentPermissions::Upto { default, areas }, true) => Some(level.min(*areas.get(area).unwrap_or(default))),
-            _ => Some(level),
+        if by_agent && !self.administers(account, true) {
+            let agent = &account.agent;
+            return Some(level.min(*agent.areas.get(area).unwrap_or(&agent.default)));
         }
+        Some(level)
     }
 
-    /// Whether `account`, or its agent, is an administrator: an agent only when it may use everything.
+    /// Whether `account`, or its agent, is an administrator: an agent only when its permissions name the role too.
     fn administers(&self, account: &Account, by_agent: bool) -> bool {
-        matches!(self.held(account), Held::Everything)
-            && (!by_agent || matches!(account.agent, AgentPermissions::Everything))
+        matches!(self.held(account), Held::Everything) && (!by_agent || account.agent.administrator)
     }
 
     /// The enabled local administrators but `id`, who keep a way in.
@@ -850,21 +851,22 @@ async fn key(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Covera
 fn agent_permissions(leader: &Leader, model: &mut Model, rng: &mut Rng, cov: &mut Coverage) -> Result<(), String> {
     let i = rng.below(model.accounts.len());
     let levels = [Level::Viewer, Level::Editor, Level::Deployer];
-    let permissions = if rng.chance(3) {
-        cov.reach("agent-everything");
-        AgentPermissions::Everything
-    } else {
-        cov.reach("agent-upto");
-        let mut areas = BTreeMap::new();
-        for area in AREAS {
-            if rng.chance(2) {
-                areas.insert(area.to_string(), *rng.pick(&levels));
-            }
+    let administrator = rng.chance(3);
+    cov.reach(match (administrator, model.administers(&model.accounts[i], false)) {
+        (true, true) => "agent-administrator",
+        (true, false) => "agent-administrator-gives-nothing",
+        (false, _) => "agent-upto",
+    });
+    let mut areas = BTreeMap::new();
+    for area in AREAS {
+        if rng.chance(2) {
+            areas.insert(area.to_string(), *rng.pick(&levels));
         }
-        AgentPermissions::Upto {
-            default: *rng.pick(&levels),
-            areas,
-        }
+    }
+    let permissions = AgentPermissions {
+        administrator,
+        default: *rng.pick(&levels),
+        areas,
     };
     let account = &mut model.accounts[i];
     let event = accounts::event_for(

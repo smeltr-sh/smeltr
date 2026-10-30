@@ -13,8 +13,8 @@ function json(body: unknown) {
   return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
 }
 
-/** Signs in as an editor of `payments`, with `permissions` stored for their agent. */
-async function open(permissions: unknown) {
+/** Signs in as an editor of `payments`, or as an administrator, with `permissions` stored for their agent. */
+async function open(permissions: unknown, administrator = false) {
   stored = permissions;
   vi.stubGlobal(
     'fetch',
@@ -22,10 +22,12 @@ async function open(permissions: unknown) {
       if (url === '/api/auth/session') {
         return json({
           authenticated: true,
-          administrator: false,
+          administrator,
           mustChangePassword: false,
           csrf: 'csrf',
-          access: { administrator: false, areas: { payments: 'editor' } },
+          access: administrator
+            ? { administrator: true, areas: {} }
+            : { administrator: false, areas: { payments: 'editor' } },
         });
       }
       if (url === '/api/me/agent-permissions') {
@@ -85,39 +87,56 @@ afterEach(() => {
 
 describe('agent permissions', () => {
   it('offers the areas the person holds, each beside what they hold there', async () => {
-    await open({ kind: 'upto', default: 'viewer', areas: {} });
+    await open({ administrator: false, default: 'viewer', areas: {} });
     const areas = [...target.querySelectorAll('.area-name')].map((a) => a.textContent);
     expect(areas).toEqual(['shared', 'payments']);
     expect(target.textContent).toContain('you hold editor');
   });
 
   it('saves a level for every area and another for the areas given one', async () => {
-    await open({ kind: 'upto', default: 'viewer', areas: {} });
+    await open({ administrator: false, default: 'viewer', areas: {} });
     choose(
       target.querySelector<HTMLSelectElement>('select[aria-label="payments level"]')!,
       'editor',
     );
     button('Save').click();
     await vi.waitFor(() => expect(saved).toHaveLength(1));
-    expect(saved[0]).toEqual({ kind: 'upto', default: 'viewer', areas: { payments: 'editor' } });
+    expect(saved[0]).toEqual({
+      administrator: false,
+      default: 'viewer',
+      areas: { payments: 'editor' },
+    });
   });
 
-  it('saves everything the person holds', async () => {
-    await open({ kind: 'upto', default: 'viewer', areas: {} });
-    button('Everything you hold').click();
+  it('lets an administrator give their agent the administrator role, which leaves no levels', async () => {
+    await open({ administrator: false, default: 'viewer', areas: {} }, true);
+    target.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
     flushSync();
     expect(target.querySelector('select')).toBeNull();
     button('Save').click();
     await vi.waitFor(() => expect(saved).toHaveLength(1));
-    expect(saved[0]).toEqual({ kind: 'everything' });
+    expect(saved[0]).toEqual({ administrator: true, default: 'viewer', areas: {} });
+  });
+
+  it('offers the administrator role to no one else, and keeps it as saved', async () => {
+    await open({ administrator: true, default: 'deployer', areas: {} });
+    expect(target.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(target.querySelector('select')).not.toBeNull();
+    button('Save').click();
+    await vi.waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]).toEqual({ administrator: true, default: 'deployer', areas: {} });
   });
 
   it('keeps an area the saved permissions name that the person no longer holds', async () => {
-    await open({ kind: 'upto', default: 'editor', areas: { search: 'deployer' } });
+    await open({ administrator: false, default: 'editor', areas: { search: 'deployer' } });
     const areas = [...target.querySelectorAll('.area-name')].map((a) => a.textContent);
     expect(areas).toEqual(['shared', 'payments', 'search']);
     button('Save').click();
     await vi.waitFor(() => expect(saved).toHaveLength(1));
-    expect(saved[0]).toEqual({ kind: 'upto', default: 'editor', areas: { search: 'deployer' } });
+    expect(saved[0]).toEqual({
+      administrator: false,
+      default: 'editor',
+      areas: { search: 'deployer' },
+    });
   });
 });

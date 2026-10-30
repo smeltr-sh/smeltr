@@ -89,24 +89,24 @@ pub enum Access {
 #[derive(Clone, Copy, Debug)]
 pub struct ByAgent;
 
-/// How much of what a person holds their agent may use.
+/// How much of what a person holds their agent may use: at most `default` in every area the person holds, or the
+/// level `areas` names for that area. With `administrator`, the agent of a person holding the [`ADMINISTRATOR`] role
+/// holds that role too, and so everything; for anyone else it gives nothing.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase", tag = "kind")]
-pub enum AgentPermissions {
-    /// Everything the person holds, administrator included.
-    Everything,
-    /// At most `default` in every area the person holds, or the level `areas` names for that area.
-    Upto {
-        default: Level,
-        #[serde(default)]
-        areas: BTreeMap<String, Level>,
-    },
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentPermissions {
+    #[serde(default)]
+    pub administrator: bool,
+    pub default: Level,
+    #[serde(default)]
+    pub areas: BTreeMap<String, Level>,
 }
 
 impl Default for AgentPermissions {
     /// What a person's agent may use until they say otherwise: reading what they read.
     fn default() -> AgentPermissions {
-        AgentPermissions::Upto {
+        AgentPermissions {
+            administrator: false,
             default: Level::Viewer,
             areas: BTreeMap::new(),
         }
@@ -114,20 +114,14 @@ impl Default for AgentPermissions {
 }
 
 impl AgentPermissions {
-    /// The highest level these permissions let an agent use in `area`. `None` for all of it.
-    fn cap(&self, area: &str) -> Option<Level> {
-        match self {
-            AgentPermissions::Everything => None,
-            AgentPermissions::Upto { default, areas } => Some(areas.get(area).copied().unwrap_or(*default)),
-        }
+    /// The highest level these permissions let an agent use in `area`.
+    fn cap(&self, area: &str) -> Level {
+        self.areas.get(area).copied().unwrap_or(self.default)
     }
 
-    /// The highest level these permissions give in any area. `None` for all of it.
-    fn highest(&self) -> Option<Level> {
-        match self {
-            AgentPermissions::Everything => None,
-            AgentPermissions::Upto { default, areas } => Some(areas.values().copied().fold(*default, Level::max)),
-        }
+    /// The highest level these permissions give in any area.
+    fn highest(&self) -> Level {
+        self.areas.values().copied().fold(self.default, Level::max)
     }
 }
 
@@ -151,12 +145,12 @@ impl Access {
 
     /// What `self`'s agent holds, given the agent permissions `self` gives it.
     pub fn for_agent(self, permissions: AgentPermissions) -> Access {
-        match permissions {
-            AgentPermissions::Everything => self,
-            permissions => Access::Agent {
-                held: Box::new(self),
-                permissions,
-            },
+        if permissions.administrator && self.is_administrator() {
+            return self;
+        }
+        Access::Agent {
+            held: Box::new(self),
+            permissions,
         }
     }
 
@@ -180,7 +174,7 @@ impl Access {
             }
             Access::Agent { held, permissions } => {
                 let level = held.level(area)?;
-                Some(permissions.cap(area).map_or(level, |cap| level.min(cap)))
+                Some(level.min(permissions.cap(area)))
             }
         }
     }
@@ -197,9 +191,9 @@ impl Access {
             Access::Areas(areas) => areas.values().any(|held| *held >= need),
             Access::Agent { held, permissions } => match held.as_ref() {
                 // Every area is held, so the permissions' own highest level is held somewhere.
-                Access::Administrator => permissions.highest().is_none_or(|highest| highest >= need),
+                Access::Administrator => permissions.highest() >= need,
                 Access::Areas(areas) => areas.keys().any(|area| self.allows(area, need)),
-                Access::Agent { .. } => held.somewhere(need) && permissions.highest().is_none_or(|h| h >= need),
+                Access::Agent { .. } => held.somewhere(need) && permissions.highest() >= need,
             },
         }
     }
@@ -296,7 +290,8 @@ mod tests {
     }
 
     fn upto(default: Level, areas: &[(&str, Level)]) -> AgentPermissions {
-        AgentPermissions::Upto {
+        AgentPermissions {
+            administrator: false,
             default,
             areas: areas.iter().map(|(a, l)| (a.to_string(), *l)).collect(),
         }
@@ -328,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn an_administrators_agent_is_no_administrator_unless_given_everything() {
+    fn an_administrators_agent_is_no_administrator_unless_its_permissions_say_so() {
         let agent = Access::Administrator.for_agent(AgentPermissions::default());
         assert!(!agent.is_administrator());
         assert!(agent.allows("anything", Level::Viewer));
@@ -339,11 +334,24 @@ mod tests {
                 .for_agent(upto(Level::Viewer, &[("payments", Level::Deployer)]))
                 .somewhere(Level::Deployer)
         );
-        assert!(
-            Access::Administrator
-                .for_agent(AgentPermissions::Everything)
-                .is_administrator()
-        );
+        let administrator = AgentPermissions {
+            administrator: true,
+            ..AgentPermissions::default()
+        };
+        assert!(Access::Administrator.for_agent(administrator).is_administrator());
+    }
+
+    #[test]
+    fn administrator_in_agent_permissions_gives_nothing_to_anyone_else() {
+        let roles = [role("r", &[("payments", Level::Deployer)])];
+        let person = Access::of(&groups(&["r"]), &roles);
+        let agent = person.for_agent(AgentPermissions {
+            administrator: true,
+            ..upto(Level::Editor, &[])
+        });
+        assert!(!agent.is_administrator());
+        assert_eq!(agent.level("payments"), Some(Level::Editor));
+        assert_eq!(agent.level("search"), None);
     }
 
     #[test]

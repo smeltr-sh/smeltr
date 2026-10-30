@@ -26,7 +26,7 @@ use axum::extract::State;
 use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use smeltr::leader::access::{Access, AgentPermissions, ByAgent, Level, given_by};
+use smeltr::leader::access::{Access, ByAgent, Level, given_by};
 use smeltr::leader::auth::hash_secret;
 use smeltr::leader::blocking;
 use smeltr::leader::envelope::Refusal;
@@ -484,10 +484,9 @@ impl From<&Access> for AccessDto {
             // The areas its person names, each as the agent permissions leave it. An administrator's agent names
             // only the areas its permissions do, since an administrator names none.
             Access::Agent { held, permissions } => {
-                let named: Vec<&String> = match (held.as_ref(), permissions) {
-                    (Access::Areas(areas), _) => areas.keys().collect(),
-                    (_, AgentPermissions::Upto { areas, .. }) => areas.keys().collect(),
-                    (_, AgentPermissions::Everything) => vec![],
+                let named: Vec<&String> = match held.as_ref() {
+                    Access::Areas(areas) => areas.keys().collect(),
+                    _ => permissions.areas.keys().collect(),
                 };
                 AccessDto {
                     administrator: false,
@@ -715,7 +714,7 @@ mod tests {
 
         use axum::Router;
         use axum::routing::{get, put};
-        use smeltr::leader::access::{ADMINISTRATOR, Role};
+        use smeltr::leader::access::{ADMINISTRATOR, AgentPermissions, Role};
         use smeltr::leader::accounts;
         use smeltr::leader::sqlite_store::SqliteStore;
         use smeltr::leader::store::{NewApiKey, NewKeyAccount, OidcSignIn};
@@ -946,7 +945,8 @@ mod tests {
             assert_eq!(status, 403, "{body}");
             assert!(body.contains("this needs editor in payments"), "{body}");
 
-            let permissions = AgentPermissions::Upto {
+            let permissions = AgentPermissions {
+                administrator: false,
                 default: Level::Viewer,
                 areas: BTreeMap::from([
                     ("payments".to_string(), Level::Editor),
@@ -1029,9 +1029,9 @@ mod tests {
             assert_eq!(ask_with_key(direct, &current, "GET", "/api/accounts").await, 200);
         }
 
-        /// An administrator's agent is no administrator until they give it everything.
+        /// An administrator's agent is no administrator until its permissions name the administrator role.
         #[tokio::test]
-        async fn an_administrators_agent_is_an_administrator_only_when_given_everything() {
+        async fn an_administrators_agent_is_an_administrator_only_when_its_permissions_say_so() {
             let store = store();
             let admins = Role {
                 name: ADMINISTRATOR.into(),
@@ -1048,7 +1048,14 @@ mod tests {
             assert_eq!(ask(agent, &auth, &person, "GET", "/api/areas/search").await.0, 200);
             let event = accounts::event_for(&Actor::system(), "agent-permissions-put", &person.id, "ok");
             store
-                .put_agent_permissions(&person.id, &AgentPermissions::Everything, &event)
+                .put_agent_permissions(
+                    &person.id,
+                    &AgentPermissions {
+                        administrator: true,
+                        ..AgentPermissions::default()
+                    },
+                    &event,
+                )
                 .unwrap()
                 .unwrap();
             assert_eq!(ask(agent, &auth, &person, "GET", "/api/accounts").await.0, 200);

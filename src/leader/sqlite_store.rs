@@ -340,8 +340,9 @@ pub(crate) const STEPS: &[&str] = &[
     "CREATE TABLE acme_certificates (name TEXT PRIMARY KEY);",
     // 14 -- key accounts, which a script calls the operator API as, and the keys each holds; the roles an
     // administrator gives a local or key account; the groups that give each role; and the built-in administrator
-    // role (`access::ADMINISTRATOR`), the one way to hold everything. Breaking: a build without this step reads a
-    // 'key' account as local, and reads both administrator flags it drops.
+    // role (`access::ADMINISTRATOR`), the one way to hold everything, which agent permissions now name. Breaking: a
+    // build without this step reads a 'key' account as local, reads both administrator flags it drops, and cannot
+    // read agent permissions.
     "-- An OIDC account's roles are the ones its provider's groups give (`role_groups`), so it has no row here.
      CREATE TABLE account_roles (
          user_id     TEXT PRIMARY KEY,
@@ -377,6 +378,11 @@ pub(crate) const STEPS: &[&str] = &[
      INSERT INTO account_roles (user_id, auth_source, roles)
          SELECT id, auth_source, '[\"administrator\"]' FROM users WHERE auth_source = 'local' AND administrator = 1;
      ALTER TABLE users DROP COLUMN administrator;
+     -- Agent permissions were everything or up to a level, by their kind. Everything becomes the administrator role
+     -- and deployer everywhere, which is what it gave; up to a level loses its kind, and is the same caps.
+     UPDATE agent_permissions SET permissions = CASE json_extract(permissions, '$.kind')
+         WHEN 'everything' THEN '{\"administrator\":true,\"default\":\"deployer\",\"areas\":{}}'
+         ELSE json_remove(permissions, '$.kind') END;
      -- A key belongs to a key account and to no other kind, as a password does to a local one. A revoked key is
      -- marked rather than removed, so it stays refused, and what it did stays answerable.
      CREATE TABLE api_keys (
@@ -4699,7 +4705,7 @@ mod tests {
     /// Model, point 3: the step carries every role and flag over so nobody gains or loses anything. A role keeps
     /// the group it was named for; one marked administrator gives its groups to the built-in role and goes; one
     /// already called administrator keeps its areas under another name; a local account with the flag holds the
-    /// role.
+    /// role; agent permissions of everything name the role, with deployer everywhere.
     #[test]
     fn the_administrator_role_step_carries_every_role_and_flag_over() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -4710,7 +4716,10 @@ mod tests {
              INSERT INTO roles (name, administrator)
              VALUES ('payments', 0), ('smeltr-admins', 1), ('ops', 1), ('administrator', 0);
              INSERT INTO role_areas (role, area, level)
-             VALUES ('payments', 'payments', 'viewer'), ('administrator', 'search', 'editor'), ('ops', 'x', 'viewer');",
+             VALUES ('payments', 'payments', 'viewer'), ('administrator', 'search', 'editor'), ('ops', 'x', 'viewer');
+             INSERT INTO agent_permissions (user_id, permissions)
+             VALUES ('u_local', '{\"kind\":\"everything\"}'),
+                    ('u_oidc', '{\"kind\":\"upto\",\"default\":\"viewer\",\"areas\":{\"x\":\"editor\"}}');",
         )
         .unwrap();
         super::super::steps::upgrade_sqlite(&mut conn, "leader.db", &STEPS[..14]).unwrap();
@@ -4751,6 +4760,32 @@ mod tests {
             )
             .unwrap();
         assert_eq!(flags, 0);
+        let agent: Vec<(String, AgentPermissions)> =
+            rows("SELECT user_id, permissions FROM agent_permissions ORDER BY user_id")
+                .into_iter()
+                .map(|(id, json)| (id, serde_json::from_str(&json).unwrap()))
+                .collect();
+        assert_eq!(
+            agent,
+            [
+                (
+                    "u_local".to_string(),
+                    AgentPermissions {
+                        administrator: true,
+                        default: Level::Deployer,
+                        areas: std::collections::BTreeMap::new(),
+                    }
+                ),
+                (
+                    "u_oidc".to_string(),
+                    AgentPermissions {
+                        administrator: false,
+                        default: Level::Viewer,
+                        areas: std::collections::BTreeMap::from([("x".to_string(), Level::Editor)]),
+                    }
+                ),
+            ]
+        );
     }
 
     fn key_account_event(action: &str) -> SecurityEvent {
@@ -4884,7 +4919,10 @@ mod tests {
             s.set_display_name(id, "same").unwrap().unwrap();
             s.put_agent_permissions(
                 id,
-                &AgentPermissions::Everything,
+                &AgentPermissions {
+                    administrator: true,
+                    ..AgentPermissions::default()
+                },
                 &key_account_event("agent-permissions"),
             )
             .unwrap()
@@ -5081,21 +5119,21 @@ mod tests {
         })
         .unwrap();
         assert_eq!(s.agent_permissions_of("u_admin").unwrap(), AgentPermissions::default());
+        let administrator = AgentPermissions {
+            administrator: true,
+            ..AgentPermissions::default()
+        };
         s.put_agent_permissions(
             "u_admin",
-            &AgentPermissions::Everything,
+            &administrator,
             &role_event("agent-permissions-put", "u_admin"),
         )
         .unwrap()
         .unwrap();
-        assert_eq!(s.agent_permissions_of("u_admin").unwrap(), AgentPermissions::Everything);
+        assert_eq!(s.agent_permissions_of("u_admin").unwrap(), administrator);
         assert_eq!(
-            s.put_agent_permissions(
-                "u_none",
-                &AgentPermissions::Everything,
-                &role_event("agent-permissions-put", "u_none")
-            )
-            .unwrap(),
+            s.put_agent_permissions("u_none", &administrator, &role_event("agent-permissions-put", "u_none"))
+                .unwrap(),
             Err(AccountError::NoSuchUser)
         );
     }

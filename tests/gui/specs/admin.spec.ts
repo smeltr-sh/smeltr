@@ -621,18 +621,21 @@ test('a person sets what their agent may use from their name', async ({ admin, a
   expect(await api.get('/api/me/agent-permissions')).toEqual({
     ok: true,
     errors: [],
-    kind: 'upto',
+    administrator: false,
     default: 'viewer',
     areas: { shared: 'editor' },
   });
 
-  await admin.getByRole('button', { name: 'Everything you hold' }).click();
+  await admin.getByRole('checkbox', { name: 'Your agent is an administrator' }).check();
+  await expect(admin.getByRole('combobox', { name: /^Every area\b/ })).toHaveCount(0);
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByRole('status')).toHaveText('agent permissions saved');
   expect(await api.get('/api/me/agent-permissions')).toEqual({
     ok: true,
     errors: [],
-    kind: 'everything',
+    administrator: true,
+    default: 'viewer',
+    areas: { shared: 'editor' },
   });
 });
 

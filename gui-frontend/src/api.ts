@@ -4828,11 +4828,14 @@ export function revokeKey(id: string, key: string): Promise<object | AccountRefu
 //
 // The leader's agent, acting for a person within their agent permissions (`agents_api.rs`).
 
-/** What a person lets their own agent use: everything they hold, or up to `default` in each area and the level
- * `areas` names in the ones it names. The agent holds the lower of this and what the person holds. */
-export type AgentPermissionsDto =
-  | { kind: 'everything' }
-  | { kind: 'upto'; default: AccessLevel; areas: Record<string, AccessLevel> };
+/** What a person lets their own agent use: up to `default` in each area and the level `areas` names in the ones it
+ * names, and with `administrator` the administrator role, when the person holds it. The agent holds the lower of
+ * this and what the person holds. */
+export type AgentPermissionsDto = {
+  administrator: boolean;
+  default: AccessLevel;
+  areas: Record<string, AccessLevel>;
+};
 
 export function getAgentPermissions(): Promise<AgentPermissionsDto> {
   return readJson('/api/me/agent-permissions');

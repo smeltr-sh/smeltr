@@ -316,9 +316,9 @@ roles an administrator gave it. A change to a role reaches everyone holding
 it on their next request.
 
 **P8 — Agent permissions.** A person chooses what their agent may use
-when it acts for them at their prompt: everything they hold, or up to a
-level in each area. The agent holds the lower of that and what the person
-holds, and no agent changes its own permissions.
+when it acts for them at their prompt: up to a level in each area, and, for
+an administrator, the administrator role. The agent holds the lower of that
+and what the person holds, and no agent changes its own permissions.
 
 **P9 — Talk to my agent.** A person asks their agent, on a page of their
 own, to look into or change something for them. They see each request it
