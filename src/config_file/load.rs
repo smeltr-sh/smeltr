@@ -559,21 +559,13 @@ fn impossible_answers(
             continue;
         }
         let lacks = match (*kind, answer) {
-            ("Unmatched", Answer::Ignore | Answer::Tag) => Some("route"),
-            ("Unprocessable", Answer::Ignore | Answer::Tag) => Some("record"),
-            ("Refused", Answer::Ignore | Answer::Tag) => Some("destination"),
+            ("Unmatched", Answer::Ignore | Answer::Tag) => Some("an Unmatched row has no route"),
+            ("Unprocessable", Answer::Ignore | Answer::Tag) => Some("an Unprocessable row has no record"),
+            ("Refused", Answer::Ignore | Answer::Tag) => Some("a Refused row has no destination"),
             _ => None,
         };
         if let Some(lacks) = lacks {
-            let a = if kind.starts_with(['A', 'E', 'I', 'O', 'U']) {
-                "an"
-            } else {
-                "a"
-            };
-            errors.push(format!(
-                "{what} answers {kind} with {}, but {a} {kind} row has no {lacks}",
-                answer.label()
-            ));
+            errors.push(format!("{what} answers {kind} with {}, but {lacks}", answer.label()));
         }
     }
     errors
