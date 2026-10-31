@@ -254,7 +254,8 @@
         <tr><th scope="row"><code>str</code></th><td><code>string</code></td></tr>
         <tr
           ><th scope="row"><code>variant</code></th><td
-            >JSON <code>string</code> or native <code>variant</code></td
+            >JSON <code>string</code>, or native <code>variant</code> in a table with the
+            <code>variantType</code> feature</td
           ></tr
         >
         <tr><th scope="row"><code>datetime</code></th><td><code>timestamp</code>, in UTC</td></tr>
