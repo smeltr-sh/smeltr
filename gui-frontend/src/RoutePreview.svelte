@@ -33,6 +33,8 @@
   }: { config: FileConfigDto | null; result?: RoutePreviewResult | null } = $props();
 
   let samples: SampleSummary[] = $state([]);
+  // Until the list arrives, no sample is not the same as none naming a source.
+  let loaded = $state(false);
   let selected = $state('');
   let own = $state<RoutePreviewResult | null>(null);
   let driven = $derived(given !== undefined);
@@ -48,6 +50,7 @@
       // Only a sample that names a source can be routed: routing selects on
       // one, so a pasted sample with none matches nothing.
       samples = res.samples.filter((s) => s.source);
+      loaded = true;
       if (!selected && samples.length > 0) selected = samples[0].id;
     } catch (e) {
       error = unreported(e);
@@ -168,7 +171,7 @@
       </button>
     </div>
 
-    {#if samples.length === 0}
+    {#if loaded && samples.length === 0}
       <p>
         No sample names a source. Routing selects on a source, so a sample has to say which one its
         records stand for &mdash; set that on the <a class="link" href="#/build">Samples</a> page.
