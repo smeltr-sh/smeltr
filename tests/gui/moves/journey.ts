@@ -2508,7 +2508,7 @@ type Role = { name: string; builtIn: boolean; groups: string[]; areas: Record<st
 
 /** The open role's groups field. */
 function groupsField(page: Page): Locator {
-  return page.locator('tr.fold form').getByRole('textbox', { name: /^Groups\b/ });
+  return page.locator('tr.fold form').getByRole('textbox', { name: /^SSO groups\b/ });
 }
 
 /** Gives the role whose row is open `groups` and, unless it is the administrator role, a level in shared; saves
