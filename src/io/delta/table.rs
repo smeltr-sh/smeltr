@@ -1058,7 +1058,8 @@ fn indexed_columns(schema: &StructType, partition_columns: &[String], n: usize) 
         .cloned()
         .collect();
     let mut out = Vec::new();
-    walk(&data, &[], &mut n.clone(), &mut out);
+    let mut left = n;
+    walk(&data, &[], &mut left, &mut out);
     out
 }
 
