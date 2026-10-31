@@ -44,13 +44,14 @@
   <p>It also takes the settings <a href="/docs/steps#settings">every step</a> takes.</p>
   <SettingsTable settings={kind(STEPS, 'remove').settings} />
   <p>
-    In the editor, the step lists every field the record holds where the step starts, ticked while
-    it is kept. Untick a field to remove it. <strong>Find a field</strong> narrows the list, and
+    In the editor, the step lists the fields the pipeline declares where the step starts, ticked
+    while it is kept. Untick a field to remove it. <strong>Find a field</strong> narrows the list,
+    and
     <strong>Remove all</strong> and <strong>Keep all</strong> act on the fields it shows. To remove
     a field that matches nothing in the list, type its name and choose
-    <strong>Remove &lt;name&gt;</strong> under the search box. The list shows the fields the pipeline
-    declares; a field a JSON or key-value parser read without declaring it is not in it, and is removed
-    this way. A name the record cannot hold there is an error at the step.
+    <strong>Remove &lt;name&gt;</strong> under the search box. A field a JSON or key-value parser read
+    without declaring it is not in the list, and is removed this way. A name the record cannot hold there
+    is an error at the step.
   </p>
 
   <h2 id="how-it-works">How it works</h2>
