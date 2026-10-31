@@ -825,11 +825,11 @@ mod tests {
             panic!("http is a struct")
         };
         http.fields
-            .push(field(12, "v", prim(Primitive::Other("timestamp_ns".into()))));
+            .push(field(12, "v", prim(Primitive::Other("file".into()))));
         let parquet = crate::io::parquet::Schema::new(&record()).unwrap();
         assert_eq!(
             with_field_ids(parquet.arrow(), &table).unwrap_err(),
-            "the table's column http.v is a timestamp_ns, a type this writer cannot write"
+            "the table's column http.v is a file, a type this writer cannot write"
         );
     }
 
