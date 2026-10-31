@@ -287,7 +287,7 @@ test("a field's requirement is chosen on the Schemas page, and shared/'s schemas
   await admin.screenshot({ path: 'results/schemas-requirement.png' });
 
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(admin.getByText('Unsaved', { exact: true })).toBeHidden({ timeout: 15_000 });
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
   const fields: { field: string; requirement?: string }[] = (
     await api.get(`${SHARED}${ON}`)
   ).config.schemas.find((s: { id: string }) => s.id === 'login').fields;
@@ -298,7 +298,7 @@ test("a field's requirement is chosen on the Schemas page, and shared/'s schemas
     type: '{...}',
   });
 
-  await admin.getByRole('button', { name: 'shared', exact: true }).click();
+  await admin.getByRole('button', { name: 'Group shared', exact: true }).click();
   await admin.getByRole('button', { name: /^default/ }).click();
   await admin.getByRole('button', { name: '▸ login' }).click();
   await expect(admin.getByRole('combobox', { name: /^Requirement of / })).toHaveCount(0);
