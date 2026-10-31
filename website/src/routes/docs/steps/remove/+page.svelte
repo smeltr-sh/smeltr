@@ -24,8 +24,8 @@
   <p class="eyebrow">Pipeline reference</p>
   <h1>Remove step</h1>
   <p class="lede">
-    A Remove step takes the fields it names out of each record, so no later step or destination sees
-    them.
+    A Remove step takes the fields it names out of each record. With no filter, no later step or
+    destination sees them.
   </p>
   <p>
     It names each field to remove. With no filter, the step is the
@@ -43,25 +43,25 @@
     In the editor, the step lists every field the record holds where the step starts, ticked while
     it is kept. Untick a field to remove it. <strong>Find a field</strong> narrows the list, and
     <strong>Remove all</strong> and <strong>Keep all</strong> act on the fields it shows. To remove
-    a field the list does not show, type its name and choose <strong>Remove</strong> under the list.
+    a field that matches nothing in the list, type its name and choose
+    <strong>Remove &lt;name&gt;</strong> under the search box.
   </p>
 
   <h2 id="how-it-works">How it works</h2>
   <p>
-    Later steps cannot read a removed field, and a step that does fails to compile. A later step can
-    write the name again.
+    With no filter, later steps cannot read a removed field, and a step that does fails to compile.
+    A later step can write the name again.
   </p>
 
   <h3 id="objects">Objects</h3>
   <p>A dot names a field inside an object, and removing an object removes every field inside it:</p>
   <StepExample example={examples.object} />
 
-  <h3 id="filter">Remove from selected records</h3>
+  <h3 id="filter">With a filter</h3>
   <p>
-    With a filter, the step removes the fields only from records where it is true. A record where it
-    is false or null passes the step unchanged. The field stays for later steps, null on the records
-    the step removed it from. A Remove step inside an <a href="/docs/steps/if">If step</a> branch works
-    the same way.
+    With a filter, the step sets the fields to null on the records where it is true, and the fields
+    stay for later steps. A record where it is false or null passes the step unchanged. A Remove
+    step inside an <a href="/docs/steps/if">If step</a> branch works the same way.
   </p>
   <p>The parser declares <code>level</code> and <code>trace</code> as <code>str</code>.</p>
   <StepExample example={examples.filtered} />
