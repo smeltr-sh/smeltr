@@ -95,7 +95,7 @@
       type: 'csv',
       label: 'CSV of fields',
       category: 'From a file',
-      help: "A CSV file with a row per field and a header row. You choose which column holds each field's name, which holds its type, and optionally which hold requirement, description, example and elasticsearch. A column headed Requirement or Required is picked for you. A requirement is required, recommended or optional; yes means required, and no or an empty cell optional.",
+      help: "A CSV file with a header row and a row per field. You choose which column holds each field's name, which holds its type, and optionally which hold requirement, description, example and elasticsearch.",
       // A grid.
       glyph: { d: 'M10 14 H54 V50 H10 Z M10 26 H54 M10 38 H54 M26 14 V50 M40 14 V50' },
     },
